@@ -279,6 +279,11 @@ func setupGitRepoInDir(t *testing.T, dir string) {
 	cmd = exec.Command("git", "config", "user.name", "Test User")
 	cmd.Dir = dir
 	_ = cmd.Run()
+
+	// Isolate from global core.hooksPath so tests use .git/hooks by default
+	cmd = exec.Command("git", "config", "--local", "core.hooksPath", filepath.Join(dir, ".git", "hooks"))
+	cmd.Dir = dir
+	_ = cmd.Run()
 }
 
 // Edge case tests for CheckGitHooks
@@ -744,21 +749,17 @@ func TestCheckSyncBranchHookCompatibility_OldHookFormat(t *testing.T) {
 			expectedStatus: "warning",
 			expectInMsg:    "Could not determine",
 		},
-		// Note: core.hooksPath is NOT respected by this check (or CheckGitHooks)
-		// Both functions use .git/hooks/ for consistency. This is a known limitation.
-		// A future fix could make both respect core.hooksPath.
 		{
-			name: "hook in standard location with core.hooksPath set elsewhere",
+			name: "hook found via core.hooksPath",
 			setup: func(t *testing.T, dir string) {
 				setupGitRepoInDir(t, dir)
-				// Put hook in standard .git/hooks location
-				gitDir := filepath.Join(dir, ".git")
-				hooksDir := filepath.Join(gitDir, "hooks")
-				os.MkdirAll(hooksDir, 0755)
+				// Put hook in custom core.hooksPath location
+				customHooksDir := filepath.Join(dir, ".git-hooks")
+				os.MkdirAll(customHooksDir, 0755)
 				hookContent := "#!/bin/sh\n# bd-hooks-version: 0.29.0\nbd sync\n"
-				os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hookContent), 0755)
-				// configure core.hooksPath (ignored by this check)
-				cmd := exec.Command("git", "config", "core.hooksPath", ".git-hooks")
+				os.WriteFile(filepath.Join(customHooksDir, "pre-push"), []byte(hookContent), 0755)
+				// configure core.hooksPath to custom location
+				cmd := exec.Command("git", "config", "core.hooksPath", customHooksDir)
 				cmd.Dir = dir
 				_ = cmd.Run()
 				// use env var to configure sync-branch
@@ -767,6 +768,29 @@ func TestCheckSyncBranchHookCompatibility_OldHookFormat(t *testing.T) {
 			},
 			expectedStatus: "ok",
 			expectInMsg:    "compatible",
+		},
+		{
+			name: "hook in .git/hooks ignored when core.hooksPath set elsewhere",
+			setup: func(t *testing.T, dir string) {
+				setupGitRepoInDir(t, dir)
+				// Put hook in standard .git/hooks location
+				gitDir := filepath.Join(dir, ".git")
+				hooksDir := filepath.Join(gitDir, "hooks")
+				os.MkdirAll(hooksDir, 0755)
+				hookContent := "#!/bin/sh\n# bd-hooks-version: 0.29.0\nbd sync\n"
+				os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hookContent), 0755)
+				// configure core.hooksPath to empty dir (no hook there)
+				emptyHooksDir := filepath.Join(dir, ".git-hooks")
+				os.MkdirAll(emptyHooksDir, 0755)
+				cmd := exec.Command("git", "config", "core.hooksPath", emptyHooksDir)
+				cmd.Dir = dir
+				_ = cmd.Run()
+				// use env var to configure sync-branch
+				os.Setenv("BEADS_SYNC_BRANCH", "beads-sync")
+				t.Cleanup(func() { os.Unsetenv("BEADS_SYNC_BRANCH") })
+			},
+			expectedStatus: "ok",
+			expectInMsg:    "N/A",
 		},
 	}
 

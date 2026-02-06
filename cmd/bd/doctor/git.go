@@ -383,8 +383,20 @@ func CheckSyncBranchHookCompatibility(path string) DoctorCheck {
 		gitCommonDir = filepath.Join(path, gitCommonDir)
 	}
 
-	// Hooks are shared across worktrees and live in the common git directory
-	hookPath := filepath.Join(gitCommonDir, "hooks", "pre-push")
+	// Find pre-push hook (check shared hooks first via core.hooksPath)
+	var hookPath string
+	hooksPathCmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	hooksPathCmd.Dir = path
+	if hooksPathOutput, err := hooksPathCmd.Output(); err == nil {
+		sharedHooksDir := strings.TrimSpace(string(hooksPathOutput))
+		if !filepath.IsAbs(sharedHooksDir) {
+			sharedHooksDir = filepath.Join(path, sharedHooksDir)
+		}
+		hookPath = filepath.Join(sharedHooksDir, "pre-push")
+	} else {
+		// Hooks are in the common git directory, not the worktree-specific one
+		hookPath = filepath.Join(gitCommonDir, "hooks", "pre-push")
+	}
 
 	hookContent, err := os.ReadFile(hookPath) // #nosec G304 - path is controlled
 	if err != nil {
