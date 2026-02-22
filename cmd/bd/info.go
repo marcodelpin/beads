@@ -244,7 +244,7 @@ var versionChanges = []VersionChange{
 			"FIX: mol squash auto-closes wisp root to prevent Dolt lock errors",
 			"FIX: Release CI zig cross-compilation cache race (--parallelism 1)",
 			"FIX: Android ARM64 build uses CGO_ENABLED=0 (server mode only)",
-			"FIX: macOS cross-builds use netgo tag with zig 0.14.0",
+			"NEW: Mux setup recipe with layered AGENTS and managed hooks",
 		},
 	},
 	{
