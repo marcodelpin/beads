@@ -541,6 +541,11 @@ func runDiagnostics(path string) doctorResult {
 	result.Checks = append(result.Checks, gitignoreCheck)
 	// Don't fail overall check for gitignore, just warn
 
+	// Check 14a: Project-root .gitignore has Dolt exclusion patterns (GH#2034)
+	projectGitignoreCheck := convertWithCategory(doctor.CheckProjectGitignore(), doctor.CategoryGit)
+	result.Checks = append(result.Checks, projectGitignoreCheck)
+	// Don't fail overall check for project gitignore, just warn
+
 	// Check 14b: redirect file tracking (worktree redirect files shouldn't be committed)
 	redirectTrackingCheck := convertWithCategory(doctor.CheckRedirectNotTracked(), doctor.CategoryGit)
 	result.Checks = append(result.Checks, redirectTrackingCheck)

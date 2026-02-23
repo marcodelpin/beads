@@ -209,6 +209,13 @@ environment variable.`,
 				}
 			}
 
+			// Add .dolt/ and *.db to project-root .gitignore (GH#2034)
+			// Prevents users from accidentally committing Dolt database files
+			if err := doctor.EnsureProjectGitignore(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to update project .gitignore: %v\n", err)
+				// Non-fatal - continue anyway
+			}
+
 			// Ensure interactions.jsonl exists (append-only agent audit log)
 			interactionsPath := filepath.Join(beadsDir, "interactions.jsonl")
 			if _, err := os.Stat(interactionsPath); os.IsNotExist(err) {
