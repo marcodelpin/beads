@@ -450,7 +450,14 @@ func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[stri
 		return fmt.Errorf("dolt commit: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Status changes affect the active set used by blocked ID computation
+	if _, hasStatus := updates["status"]; hasStatus {
+		s.invalidateBlockedIDsCache()
+	}
+	return nil
 }
 
 // ClaimIssue atomically claims an issue using compare-and-swap semantics.
@@ -521,7 +528,12 @@ func (s *DoltStore) ClaimIssue(ctx context.Context, id string, actor string) err
 		return fmt.Errorf("dolt commit: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Claiming changes status to in_progress, affecting blocked ID computation
+	s.invalidateBlockedIDsCache()
+	return nil
 }
 
 // CloseIssue closes an issue with a reason
@@ -566,7 +578,12 @@ func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, ac
 		return fmt.Errorf("dolt commit: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Closing changes the active set, which affects blocked ID computation (GH#1495)
+	s.invalidateBlockedIDsCache()
+	return nil
 }
 
 // DeleteIssue permanently removes an issue
