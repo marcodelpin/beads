@@ -2,6 +2,9 @@
 
 package main
 
-// autoMigrateSQLiteToDolt is a no-op in non-CGO builds.
-// SQLite reading requires CGO; users on non-CGO builds must migrate manually.
-func autoMigrateSQLiteToDolt() {}
+// autoMigrateSQLiteToDolt uses the sqlite3 CLI shim for non-CGO builds.
+// This enables automatic SQLite→Dolt migration without requiring the
+// ncruces/go-sqlite3 CGO driver.
+func autoMigrateSQLiteToDolt() {
+	shimMigrateSQLiteToDolt()
+}
