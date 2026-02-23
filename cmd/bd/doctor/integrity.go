@@ -362,7 +362,7 @@ func CheckRepoFingerprint(path string) DoctorCheck {
 // This is more robust than checking a single ID's format, since base36 hash IDs can be all-numeric.
 func DetectHashBasedIDs(db *sql.DB, sampleIDs []string) bool {
 	// Heuristic 1: Check for child_counters table (added for hash ID support)
-	// Use a direct query instead of sqlite_master so this works with both SQLite and Dolt.
+	// Use a direct query to check for the table's existence.
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM child_counters").Scan(&count)
 	if err == nil {

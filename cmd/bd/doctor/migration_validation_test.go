@@ -207,7 +207,7 @@ func TestCheckMigrationCompletionResult_NotDoltBackend(t *testing.T) {
 		t.Fatalf("failed to create .beads: %v", err)
 	}
 
-	// Create JSONL (SQLite backend by default)
+	// Create JSONL (no Dolt backend present)
 	jsonl := `{"id":"bd-001","title":"Test 1"}`
 	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(jsonl), 0644); err != nil {
 		t.Fatalf("failed to create JSONL: %v", err)

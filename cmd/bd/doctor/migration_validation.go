@@ -42,7 +42,7 @@ type MigrationValidationResult struct {
 // CheckMigrationReadiness validates that a beads installation is ready for Dolt migration.
 // This is a pre-migration check that ensures:
 // 1. JSONL file exists and is valid (parseable, no corruption)
-// 2. All issues in JSONL are also in SQLite (or explains discrepancies)
+// 2. All issues in JSONL are also in the database (or explains discrepancies)
 // 3. No blocking issues prevent migration
 //
 // Returns a doctor check suitable for standard output and a detailed result for automation.
