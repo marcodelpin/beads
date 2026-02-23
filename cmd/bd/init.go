@@ -61,8 +61,8 @@ environment variable.`,
 			// Non-fatal - continue with defaults
 		}
 
-		// Safety guard: check for existing JSONL with issues
-		// This prevents accidental re-initialization in fresh clones
+		// Safety guard: check for existing beads data
+		// This prevents accidental re-initialization
 		if !force {
 			if err := checkExistingBeadsData(prefix); err != nil {
 				FatalError("%v", err)
@@ -392,7 +392,6 @@ environment variable.`,
 			// Non-fatal - continue anyway
 		}
 
-		// Import issues on init:
 		// Dolt backend bootstraps itself on first open — no explicit import needed.
 
 		// Prompt for contributor mode if:
@@ -780,8 +779,7 @@ Aborting.`, ui.RenderWarn("⚠"), dbPath, ui.RenderAccent("bd list"), beadsDir, 
 // and returns an error if found (safety guard for bd-emg)
 //
 // Note: This only blocks when a database already exists (workspace is initialized).
-// Fresh clones with JSONL but no database are allowed - init will create the database
-// and import from JSONL automatically (bd-4h9: fixes circular dependency with doctor --fix).
+// Fresh clones without a database are allowed — init will create the database.
 //
 // For worktrees, checks the main repository root instead of current directory
 // since worktrees should share the database with the main repository.

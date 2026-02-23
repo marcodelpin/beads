@@ -53,9 +53,6 @@ var (
 	storeMutex  sync.Mutex // Protects store access from background goroutine
 	storeActive = false    // Tracks if store is available
 
-	// No-db mode
-	noDb bool // Use --no-db mode: operate without a database
-
 	// Version upgrade tracking
 	versionUpgradeDetected = false // Set to true if bd version changed since last run
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)

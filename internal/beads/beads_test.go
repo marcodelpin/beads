@@ -164,11 +164,6 @@ func TestHasBeadsProjectFiles(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "jsonl files alone are not project files",
-			files:    []string{"issues.jsonl"},
-			expected: false,
-		},
-		{
 			name:     "has metadata.json",
 			files:    []string{"metadata.json"},
 			expected: true,
