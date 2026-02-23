@@ -4,6 +4,8 @@ package doctor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,9 +32,18 @@ func setupStaleClosedTestDB(t *testing.T, numClosed int, closedAt time.Time, pin
 		t.Fatal(err)
 	}
 
+	// Generate unique database name for test isolation
+	h := sha256.Sum256([]byte(t.Name() + fmt.Sprintf("%d", time.Now().UnixNano())))
+	dbName := "doctest_" + hex.EncodeToString(h[:6])
+	port := doctorTestServerPort()
+
 	cfg := configfile.DefaultConfig()
 	cfg.Backend = configfile.BackendDolt
 	cfg.StaleClosedIssuesDays = thresholdDays
+	cfg.DoltMode = configfile.DoltModeServer
+	cfg.DoltServerHost = "127.0.0.1"
+	cfg.DoltServerPort = port
+	cfg.DoltDatabase = dbName
 	if err := cfg.Save(beadsDir); err != nil {
 		t.Fatalf("Failed to save config: %v", err)
 	}
@@ -40,11 +51,17 @@ func setupStaleClosedTestDB(t *testing.T, numClosed int, closedAt time.Time, pin
 	dbPath := filepath.Join(beadsDir, "dolt")
 	ctx := context.Background()
 
-	store, err := dolt.New(ctx, &dolt.Config{Path: dbPath})
+	store, err := dolt.New(ctx, &dolt.Config{
+		Path:       dbPath,
+		ServerHost: "127.0.0.1",
+		ServerPort: port,
+		Database:   dbName,
+	})
 	if err != nil {
 		t.Skipf("skipping: Dolt server not available: %v", err)
 	}
 	defer store.Close()
+	t.Cleanup(func() { dropDoctorTestDatabase(dbName, port) })
 
 	if err := store.SetConfig(ctx, "issue_prefix", "test"); err != nil {
 		t.Fatalf("Failed to set issue_prefix: %v", err)
