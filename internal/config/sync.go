@@ -31,11 +31,6 @@ type SyncMode string
 const (
 	// SyncModeDoltNative uses Dolt remote directly (the only supported mode)
 	SyncModeDoltNative SyncMode = "dolt-native"
-
-	// Deprecated: SyncModeGitPortable is no longer supported. Kept for config migration.
-	SyncModeGitPortable SyncMode = "git-portable"
-	// Deprecated: SyncModeBeltAndSuspenders is no longer supported. Kept for config migration.
-	SyncModeBeltAndSuspenders SyncMode = "belt-and-suspenders"
 )
 
 // validSyncModes is the set of allowed sync mode values

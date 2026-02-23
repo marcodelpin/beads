@@ -913,7 +913,7 @@ func TestCheckGitignore_VariousStatuses(t *testing.T) {
 			description:    "returns ok when gitignore matches template",
 		},
 		{
-			name: "missing one merge artifact pattern",
+			name: "missing required patterns",
 			setupFunc: func(t *testing.T, tmpDir string) {
 				beadsDir := filepath.Join(tmpDir, ".beads")
 				if err := os.Mkdir(beadsDir, 0750); err != nil {
@@ -922,11 +922,6 @@ func TestCheckGitignore_VariousStatuses(t *testing.T) {
 				content := `*.db
 *.db?*
 daemon.log
-beads.base.jsonl
-beads.left.jsonl
-beads.base.meta.json
-beads.left.meta.json
-beads.right.meta.json
 `
 				gitignorePath := filepath.Join(beadsDir, ".gitignore")
 				if err := os.WriteFile(gitignorePath, []byte(content), 0600); err != nil {
@@ -935,7 +930,7 @@ beads.right.meta.json
 			},
 			expectedStatus: StatusWarning,
 			expectedFix:    "Run: bd doctor --fix or bd init (safe to re-run)",
-			description:    "returns warning when missing beads.right.jsonl",
+			description:    "returns warning when missing required patterns like dolt/ and redirect",
 		},
 		{
 			name: "missing multiple required patterns",

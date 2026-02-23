@@ -49,25 +49,12 @@ daemon.lock
 daemon.log
 daemon-*.log.gz
 daemon.pid
-beads.base.jsonl
-beads.base.meta.json
-beads.left.jsonl
-beads.left.meta.json
-beads.right.jsonl
-beads.right.meta.json
-
 # NOTE: Config files (metadata.json, config.yaml) are tracked by git
 # by default since no pattern above ignores them.
 `
 
 // requiredPatterns are patterns that MUST be in .beads/.gitignore
 var requiredPatterns = []string{
-	"beads.base.jsonl",
-	"beads.left.jsonl",
-	"beads.right.jsonl",
-	"beads.base.meta.json",
-	"beads.left.meta.json",
-	"beads.right.meta.json",
 	"*.db?*",
 	"redirect",
 	"last-touched",
@@ -119,7 +106,7 @@ func CheckGitignore() DoctorCheck {
 		return DoctorCheck{
 			Name:    "Gitignore",
 			Status:  "warning",
-			Message: "Outdated .beads/.gitignore (missing merge artifact patterns)",
+			Message: "Outdated .beads/.gitignore (missing required patterns)",
 			Detail:  "Missing: " + strings.Join(missing, ", "),
 			Fix:     "Run: bd doctor --fix or bd init (safe to re-run)",
 		}

@@ -155,10 +155,8 @@ func TestInitCommand(t *testing.T) {
 					"daemon.log",
 					"daemon.pid",
 					"bd.sock",
-					"beads.base.jsonl",
-					"beads.left.jsonl",
-					"beads.right.jsonl",
-					"Do NOT add negation patterns", // Comment explaining fork protection
+					"dolt/",
+					"dolt-access.lock",
 				}
 				for _, pattern := range expectedPatterns {
 					if !strings.Contains(gitignoreStr, pattern) {
