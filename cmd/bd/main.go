@@ -342,7 +342,7 @@ var rootCmd = &cobra.Command{
 			FatalError("%v", err)
 		}
 
-		// GH#1093: Check noDbCommands BEFORE expensive operations (ensureForkProtection)
+		// GH#1093: Check noDbCommands BEFORE expensive operations
 		// to avoid spawning git subprocesses for simple commands
 		// like "bd version" that don't need database access.
 		noDbCommands := []string{
@@ -391,9 +391,6 @@ var rootCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetBool("version"); v {
 			return
 		}
-
-		// Protect forks from accidentally committing upstream issue database
-		ensureForkProtection()
 
 		// Performance profiling setup
 		if profileEnabled {
