@@ -88,10 +88,15 @@ func handleToDoltMigration(dryRun bool, autoYes bool) {
 	// Create Dolt database
 	printProgress("Creating Dolt database...")
 
-	// Use prefix-based database name to avoid cross-rig contamination.
-	dbName := "beads"
-	if data.prefix != "" {
+	// Respect existing config's database name to avoid creating phantom catalog
+	// entries when a user has renamed their database (GH#2051).
+	dbName := ""
+	if existingCfg, _ := configfile.Load(beadsDir); existingCfg != nil && existingCfg.DoltDatabase != "" {
+		dbName = existingCfg.DoltDatabase
+	} else if data.prefix != "" {
 		dbName = "beads_" + data.prefix
+	} else {
+		dbName = "beads"
 	}
 	doltStore, err := dolt.New(ctx, &dolt.Config{Path: doltPath, Database: dbName})
 	if err != nil {

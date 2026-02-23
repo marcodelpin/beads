@@ -251,10 +251,15 @@ environment variable.`,
 
 		// Create Dolt storage backend
 		storagePath := filepath.Join(beadsDir, "dolt")
-		// Use prefix-based database name to avoid cross-rig contamination (bd-u8rda)
-		dbName := "beads"
-		if prefix != "" {
+		// Respect existing config's database name to avoid creating phantom catalog
+		// entries when a user has renamed their database (GH#2051).
+		dbName := ""
+		if existingCfg, _ := configfile.Load(beadsDir); existingCfg != nil && existingCfg.DoltDatabase != "" {
+			dbName = existingCfg.DoltDatabase
+		} else if prefix != "" {
 			dbName = "beads_" + prefix
+		} else {
+			dbName = "beads"
 		}
 		// Build config. Beads always uses dolt sql-server.
 		// AutoStart is always enabled during init — we need a server to initialize the database.
@@ -353,8 +358,9 @@ environment variable.`,
 				}
 
 				// Set prefix-based SQL database name to avoid cross-rig contamination (bd-u8rda).
-				// E.g., prefix "gt" → database "beads_gt", prefix "bd" → database "beads_bd".
-				if prefix != "" {
+				// Only set if not already configured — overwriting a user-renamed database
+				// creates phantom catalog entries that crash information_schema (GH#2051).
+				if cfg.DoltDatabase == "" && prefix != "" {
 					cfg.DoltDatabase = "beads_" + prefix
 				}
 
