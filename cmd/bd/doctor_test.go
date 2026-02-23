@@ -680,7 +680,7 @@ func TestExportDiagnostics(t *testing.T) {
 		Platform: map[string]string{
 			"os_arch":        "darwin/arm64",
 			"go_version":     "go1.21.0",
-			"sqlite_version": "3.42.0",
+			"backend": "dolt",
 		},
 		Checks: []doctorCheck{
 			{
