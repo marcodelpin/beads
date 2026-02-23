@@ -47,9 +47,17 @@ type State struct {
 }
 
 // file paths within .beads/
-func pidPath(beadsDir string) string  { return filepath.Join(beadsDir, "dolt-server.pid") }
-func logPath(beadsDir string) string  { return filepath.Join(beadsDir, "dolt-server.log") }
-func lockPath(beadsDir string) string { return filepath.Join(beadsDir, "dolt-server.lock") }
+func pidPath(beadsDir string) string      { return filepath.Join(beadsDir, "dolt-server.pid") }
+func logPath(beadsDir string) string      { return filepath.Join(beadsDir, "dolt-server.log") }
+func lockPath(beadsDir string) string     { return filepath.Join(beadsDir, "dolt-server.lock") }
+func portPath(beadsDir string) string     { return filepath.Join(beadsDir, "dolt-server.port") }
+func activityPath(beadsDir string) string { return filepath.Join(beadsDir, "dolt-server.activity") }
+func monitorPidPath(beadsDir string) string {
+	return filepath.Join(beadsDir, "dolt-monitor.pid")
+}
+
+// portFallbackRange is the number of additional ports to try if the derived port is busy.
+const portFallbackRange = 9
 
 // DerivePort computes a stable port from the beadsDir path.
 // Maps to range 13307–14306 to avoid common service ports.
@@ -62,6 +70,52 @@ func DerivePort(beadsDir string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(abs))
 	return portRangeBase + int(h.Sum32()%uint32(portRangeSize))
+}
+
+// isPortAvailable checks if a TCP port is available for binding.
+func isPortAvailable(host string, port int) bool {
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
+// findAvailablePort tries the derived port first, then the next portFallbackRange ports.
+// Returns the first available port, or the derived port if none are available
+// (letting the caller handle the bind error with a clear message).
+func findAvailablePort(host string, derivedPort int) int {
+	for i := 0; i <= portFallbackRange; i++ {
+		candidate := derivedPort + i
+		if candidate >= portRangeBase+portRangeSize {
+			candidate = portRangeBase + (candidate - portRangeBase - portRangeSize)
+		}
+		if isPortAvailable(host, candidate) {
+			return candidate
+		}
+	}
+	return derivedPort
+}
+
+// readPortFile reads the actual port from the port file, if it exists.
+// Returns 0 if the file doesn't exist or is unreadable.
+func readPortFile(beadsDir string) int {
+	data, err := os.ReadFile(portPath(beadsDir))
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return port
+}
+
+// writePortFile records the actual port the server is listening on.
+func writePortFile(beadsDir string, port int) error {
+	return os.WriteFile(portPath(beadsDir), []byte(strconv.Itoa(port)), 0600)
 }
 
 // DefaultConfig returns config with sensible defaults.
@@ -121,14 +175,20 @@ func IsRunning(beadsDir string) (*State, error) {
 	if !isDoltProcess(pid) {
 		// PID was reused by another process
 		_ = os.Remove(pidPath(beadsDir))
+		_ = os.Remove(portPath(beadsDir))
 		return &State{Running: false}, nil
 	}
 
-	cfg := DefaultConfig(beadsDir)
+	// Read actual port from port file; fall back to config-derived port
+	port := readPortFile(beadsDir)
+	if port == 0 {
+		cfg := DefaultConfig(beadsDir)
+		port = cfg.Port
+	}
 	return &State{
 		Running: true,
 		PID:     pid,
-		Port:    cfg.Port,
+		Port:    port,
 		DataDir: filepath.Join(beadsDir, "dolt"),
 	}, nil
 }
@@ -142,6 +202,8 @@ func EnsureRunning(beadsDir string) (int, error) {
 		return 0, err
 	}
 	if state.Running {
+		// Touch activity file so idle monitor knows we're active
+		touchActivity(beadsDir)
 		return state.Port, nil
 	}
 
@@ -149,7 +211,13 @@ func EnsureRunning(beadsDir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	touchActivity(beadsDir)
 	return s.Port, nil
+}
+
+// touchActivity updates the activity file timestamp.
+func touchActivity(beadsDir string) {
+	_ = os.WriteFile(activityPath(beadsDir), []byte(strconv.FormatInt(time.Now().Unix(), 10)), 0600)
 }
 
 // Start explicitly starts a dolt sql-server for the project.
@@ -216,10 +284,19 @@ func Start(beadsDir string) (*State, error) {
 		return nil, fmt.Errorf("opening log file: %w", err)
 	}
 
+	// Find an available port (tries derived port, then next 9)
+	actualPort := cfg.Port
+	if !isPortAvailable(cfg.Host, actualPort) {
+		actualPort = findAvailablePort(cfg.Host, cfg.Port)
+		if actualPort != cfg.Port {
+			fmt.Fprintf(os.Stderr, "Port %d busy, using %d instead\n", cfg.Port, actualPort)
+		}
+	}
+
 	// Start dolt sql-server
 	cmd := exec.Command(doltBin, "sql-server",
 		"-H", cfg.Host,
-		"-P", strconv.Itoa(cfg.Port),
+		"-P", strconv.Itoa(actualPort),
 	)
 	cmd.Dir = doltDir
 	cmd.Stdout = logFile
@@ -236,36 +313,45 @@ func Start(beadsDir string) (*State, error) {
 
 	pid := cmd.Process.Pid
 
-	// Write PID file
+	// Write PID and port files
 	if err := os.WriteFile(pidPath(beadsDir), []byte(strconv.Itoa(pid)), 0600); err != nil {
-		// Best effort — kill the server if we can't track it
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("writing PID file: %w", err)
+	}
+	if err := writePortFile(beadsDir, actualPort); err != nil {
+		_ = cmd.Process.Kill()
+		_ = os.Remove(pidPath(beadsDir))
+		return nil, fmt.Errorf("writing port file: %w", err)
 	}
 
 	// Release the process handle so it outlives us
 	_ = cmd.Process.Release()
 
 	// Wait for server to accept connections
-	if err := waitForReady(cfg.Host, cfg.Port, 10*time.Second); err != nil {
+	if err := waitForReady(cfg.Host, actualPort, 10*time.Second); err != nil {
 		// Server started but not responding — clean up
 		if proc, findErr := os.FindProcess(pid); findErr == nil {
 			_ = proc.Signal(syscall.SIGKILL)
 		}
 		_ = os.Remove(pidPath(beadsDir))
+		_ = os.Remove(portPath(beadsDir))
 		return nil, fmt.Errorf("server started (PID %d) but not accepting connections on port %d: %w\nCheck logs: %s",
-			pid, cfg.Port, err, logPath(beadsDir))
+			pid, actualPort, err, logPath(beadsDir))
 	}
+
+	// Touch activity and fork idle monitor
+	touchActivity(beadsDir)
+	forkIdleMonitor(beadsDir)
 
 	return &State{
 		Running: true,
 		PID:     pid,
-		Port:    cfg.Port,
+		Port:    actualPort,
 		DataDir: doltDir,
 	}, nil
 }
 
-// Stop gracefully stops the managed server.
+// Stop gracefully stops the managed server and its idle monitor.
 // Sends SIGTERM, waits up to 5 seconds, then SIGKILL.
 func Stop(beadsDir string) error {
 	state, err := IsRunning(beadsDir)
@@ -278,13 +364,13 @@ func Stop(beadsDir string) error {
 
 	process, err := os.FindProcess(state.PID)
 	if err != nil {
-		_ = os.Remove(pidPath(beadsDir))
+		cleanupStateFiles(beadsDir)
 		return fmt.Errorf("finding process %d: %w", state.PID, err)
 	}
 
 	// Send SIGTERM for graceful shutdown
 	if err := process.Signal(syscall.SIGTERM); err != nil {
-		_ = os.Remove(pidPath(beadsDir))
+		cleanupStateFiles(beadsDir)
 		return fmt.Errorf("sending SIGTERM to PID %d: %w", state.PID, err)
 	}
 
@@ -293,7 +379,7 @@ func Stop(beadsDir string) error {
 		time.Sleep(500 * time.Millisecond)
 		if err := process.Signal(syscall.Signal(0)); err != nil {
 			// Process has exited
-			_ = os.Remove(pidPath(beadsDir))
+			cleanupStateFiles(beadsDir)
 			return nil
 		}
 	}
@@ -301,9 +387,17 @@ func Stop(beadsDir string) error {
 	// Still running — force kill
 	_ = process.Signal(syscall.SIGKILL)
 	time.Sleep(100 * time.Millisecond)
-	_ = os.Remove(pidPath(beadsDir))
+	cleanupStateFiles(beadsDir)
 
 	return nil
+}
+
+// cleanupStateFiles removes all server state files.
+func cleanupStateFiles(beadsDir string) {
+	_ = os.Remove(pidPath(beadsDir))
+	_ = os.Remove(portPath(beadsDir))
+	_ = os.Remove(activityPath(beadsDir))
+	stopIdleMonitor(beadsDir)
 }
 
 // LogPath returns the path to the server log file.
@@ -390,4 +484,130 @@ func ensureDoltInit(doltDir string) error {
 	}
 
 	return nil
+}
+
+// --- Idle monitor ---
+
+// DefaultIdleTimeout is the default duration before the idle monitor stops the server.
+const DefaultIdleTimeout = 30 * time.Minute
+
+// MonitorCheckInterval is how often the idle monitor checks activity.
+const MonitorCheckInterval = 60 * time.Second
+
+// forkIdleMonitor starts the idle monitor as a detached process.
+// It runs `bd dolt idle-monitor --beads-dir=<dir>` in the background.
+func forkIdleMonitor(beadsDir string) {
+	// Don't fork if there's already a monitor running
+	if isMonitorRunning(beadsDir) {
+		return
+	}
+
+	bdBin, err := os.Executable()
+	if err != nil {
+		return // best effort
+	}
+
+	cmd := exec.Command(bdBin, "dolt", "idle-monitor", "--beads-dir", beadsDir)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return // best effort
+	}
+
+	// Write monitor PID file
+	_ = os.WriteFile(monitorPidPath(beadsDir), []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
+	_ = cmd.Process.Release()
+}
+
+// isMonitorRunning checks if the idle monitor process is alive.
+func isMonitorRunning(beadsDir string) bool {
+	data, err := os.ReadFile(monitorPidPath(beadsDir))
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// stopIdleMonitor kills the idle monitor process if running.
+func stopIdleMonitor(beadsDir string) {
+	data, err := os.ReadFile(monitorPidPath(beadsDir))
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		_ = os.Remove(monitorPidPath(beadsDir))
+		return
+	}
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Signal(syscall.SIGTERM)
+	}
+	_ = os.Remove(monitorPidPath(beadsDir))
+}
+
+// ReadActivityTime reads the last activity timestamp from the activity file.
+// Returns zero time if the file doesn't exist or is unreadable.
+func ReadActivityTime(beadsDir string) time.Time {
+	data, err := os.ReadFile(activityPath(beadsDir))
+	if err != nil {
+		return time.Time{}
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
+}
+
+// RunIdleMonitor is the main loop for the idle monitor sidecar process.
+// It checks the activity file periodically and stops the server if idle
+// for longer than the configured timeout. If the server crashed but
+// activity is recent, it restarts it (watchdog behavior).
+//
+// idleTimeout of 0 means monitoring is disabled (exits immediately).
+func RunIdleMonitor(beadsDir string, idleTimeout time.Duration) {
+	if idleTimeout == 0 {
+		return
+	}
+
+	for {
+		time.Sleep(MonitorCheckInterval)
+
+		state, err := IsRunning(beadsDir)
+		if err != nil {
+			continue
+		}
+
+		lastActivity := ReadActivityTime(beadsDir)
+		idleDuration := time.Since(lastActivity)
+
+		if state.Running {
+			// Server is running — check if idle
+			if !lastActivity.IsZero() && idleDuration > idleTimeout {
+				// Idle too long — stop the server and exit
+				_ = Stop(beadsDir)
+				return
+			}
+		} else {
+			// Server is NOT running — watchdog behavior
+			if lastActivity.IsZero() || idleDuration > idleTimeout {
+				// No recent activity — just exit
+				_ = os.Remove(monitorPidPath(beadsDir))
+				return
+			}
+			// Recent activity but server crashed — restart
+			_, _ = Start(beadsDir)
+		}
+	}
 }

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -309,10 +311,53 @@ Displays whether the server is running, its PID, port, and data directory.`,
 	},
 }
 
+var doltIdleMonitorCmd = &cobra.Command{
+	Use:    "idle-monitor",
+	Short:  "Run idle monitor (internal, not for direct use)",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		beadsDir, _ := cmd.Flags().GetString("beads-dir")
+		if beadsDir == "" {
+			beadsDir = beads.FindBeadsDir()
+		}
+		if beadsDir == "" {
+			os.Exit(1)
+		}
+
+		// Write our PID
+		_ = os.WriteFile(filepath.Join(beadsDir, "dolt-monitor.pid"),
+			[]byte(strconv.Itoa(os.Getpid())), 0600)
+
+		// Parse idle timeout from config
+		idleTimeout := doltserver.DefaultIdleTimeout
+		if v := config.GetYamlConfig("dolt.idle-timeout"); v != "" {
+			if v == "0" {
+				// Disabled
+				return
+			}
+			if d, err := time.ParseDuration(v); err == nil {
+				idleTimeout = d
+			}
+		}
+
+		// Handle SIGTERM gracefully
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			<-sigCh
+			_ = os.Remove(filepath.Join(beadsDir, "dolt-monitor.pid"))
+			os.Exit(0)
+		}()
+
+		doltserver.RunIdleMonitor(beadsDir, idleTimeout)
+	},
+}
+
 func init() {
 	doltSetCmd.Flags().Bool("update-config", false, "Also write to config.yaml for team-wide defaults")
 	doltPushCmd.Flags().Bool("force", false, "Force push (overwrite remote changes)")
 	doltCommitCmd.Flags().StringP("message", "m", "", "Commit message (default: auto-generated)")
+	doltIdleMonitorCmd.Flags().String("beads-dir", "", "Path to .beads directory")
 	doltCmd.AddCommand(doltShowCmd)
 	doltCmd.AddCommand(doltSetCmd)
 	doltCmd.AddCommand(doltTestCmd)
@@ -322,6 +367,7 @@ func init() {
 	doltCmd.AddCommand(doltStartCmd)
 	doltCmd.AddCommand(doltStopCmd)
 	doltCmd.AddCommand(doltStatusCmd)
+	doltCmd.AddCommand(doltIdleMonitorCmd)
 	rootCmd.AddCommand(doltCmd)
 }
 

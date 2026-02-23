@@ -97,9 +97,6 @@ type Config struct {
 	RemoteUser     string // Hosted Dolt remote user (set via DOLT_REMOTE_USER env var)
 	RemotePassword string // Hosted Dolt remote password (set via DOLT_REMOTE_PASSWORD env var)
 
-	// Watchdog options
-	DisableWatchdog bool // Disable server health monitoring (default: enabled in server mode)
-
 	// AutoStart enables transparent server auto-start when connection fails.
 	// When true and the host is localhost, bd will start a dolt sql-server
 	// automatically if one isn't running. Disabled under Gas Town (GT_ROOT set).

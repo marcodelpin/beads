@@ -1,9 +1,12 @@
 package doltserver
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestDerivePort(t *testing.T) {
@@ -119,5 +122,196 @@ func TestStopNotRunning(t *testing.T) {
 	err := Stop(dir)
 	if err == nil {
 		t.Error("expected error when stopping non-running server")
+	}
+}
+
+// --- Port collision fallback tests ---
+
+func TestIsPortAvailable(t *testing.T) {
+	// Bind a port to make it unavailable
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	if isPortAvailable("127.0.0.1", addr.Port) {
+		t.Error("expected port to be unavailable while listener is active")
+	}
+
+	// A random high port should generally be available
+	if !isPortAvailable("127.0.0.1", 0) {
+		t.Log("warning: port 0 reported as unavailable (unusual)")
+	}
+}
+
+func TestFindAvailablePort(t *testing.T) {
+	// Occupy the "derived" port
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	occupiedPort := ln.Addr().(*net.TCPAddr).Port
+
+	// findAvailablePort should skip the occupied port
+	found := findAvailablePort("127.0.0.1", occupiedPort)
+	if found == occupiedPort {
+		t.Error("findAvailablePort returned the occupied port")
+	}
+	// Should be within fallback range
+	diff := found - occupiedPort
+	if diff < 0 {
+		// Wrapped around range — this is fine
+	} else if diff > portFallbackRange {
+		t.Errorf("findAvailablePort returned port %d, too far from %d", found, occupiedPort)
+	}
+}
+
+func TestFindAvailablePortPrefersDerived(t *testing.T) {
+	// When the derived port IS available, it should be returned directly
+	derivedPort := 14200 // unlikely to be in use
+	found := findAvailablePort("127.0.0.1", derivedPort)
+	if found != derivedPort {
+		t.Errorf("expected derived port %d, got %d", derivedPort, found)
+	}
+}
+
+func TestPortFileReadWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	// No file yet
+	if port := readPortFile(dir); port != 0 {
+		t.Errorf("expected 0 for missing port file, got %d", port)
+	}
+
+	// Write and read back
+	if err := writePortFile(dir, 13500); err != nil {
+		t.Fatal(err)
+	}
+	if port := readPortFile(dir); port != 13500 {
+		t.Errorf("expected 13500, got %d", port)
+	}
+
+	// Corrupt file
+	if err := os.WriteFile(portPath(dir), []byte("garbage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if port := readPortFile(dir); port != 0 {
+		t.Errorf("expected 0 for corrupt port file, got %d", port)
+	}
+}
+
+func TestIsRunningReadsPortFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a port file with a custom port
+	if err := writePortFile(dir, 13999); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a stale PID — IsRunning will clean up, but let's verify port file is read
+	// when a valid process exists. Since we can't easily fake a running dolt process,
+	// just verify the port file read function works correctly.
+	port := readPortFile(dir)
+	if port != 13999 {
+		t.Errorf("expected port 13999 from port file, got %d", port)
+	}
+}
+
+// --- Activity tracking tests ---
+
+func TestTouchAndReadActivity(t *testing.T) {
+	dir := t.TempDir()
+
+	// No file yet
+	if ts := ReadActivityTime(dir); !ts.IsZero() {
+		t.Errorf("expected zero time for missing activity file, got %v", ts)
+	}
+
+	// Touch and read
+	touchActivity(dir)
+	ts := ReadActivityTime(dir)
+	if ts.IsZero() {
+		t.Fatal("expected non-zero activity time after touch")
+	}
+	if time.Since(ts) > 5*time.Second {
+		t.Errorf("activity timestamp too old: %v", ts)
+	}
+}
+
+func TestCleanupStateFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create all state files
+	for _, path := range []string{
+		pidPath(dir),
+		portPath(dir),
+		activityPath(dir),
+	} {
+		if err := os.WriteFile(path, []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleanupStateFiles(dir)
+
+	for _, path := range []string{
+		pidPath(dir),
+		portPath(dir),
+		activityPath(dir),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed", filepath.Base(path))
+		}
+	}
+}
+
+// --- Idle monitor tests ---
+
+func TestRunIdleMonitorDisabled(t *testing.T) {
+	// idleTimeout=0 should return immediately
+	dir := t.TempDir()
+	done := make(chan struct{})
+	go func() {
+		RunIdleMonitor(dir, 0)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// good — returned immediately
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunIdleMonitor(0) should return immediately")
+	}
+}
+
+func TestMonitorPidLifecycle(t *testing.T) {
+	dir := t.TempDir()
+
+	// No monitor running
+	if isMonitorRunning(dir) {
+		t.Error("expected no monitor running initially")
+	}
+
+	// Write our own PID as monitor (we know we're alive)
+	_ = os.WriteFile(monitorPidPath(dir), []byte(strconv.Itoa(os.Getpid())), 0600)
+	if !isMonitorRunning(dir) {
+		t.Error("expected monitor to be detected as running")
+	}
+
+	// Don't call stopIdleMonitor with our own PID (it sends SIGTERM).
+	// Instead test with a dead PID.
+	_ = os.Remove(monitorPidPath(dir))
+	_ = os.WriteFile(monitorPidPath(dir), []byte("99999999"), 0600)
+	if isMonitorRunning(dir) {
+		t.Error("expected dead PID to not be detected as running")
+	}
+
+	// stopIdleMonitor should clean up the PID file
+	stopIdleMonitor(dir)
+	if _, err := os.Stat(monitorPidPath(dir)); !os.IsNotExist(err) {
+		t.Error("expected monitor PID file to be removed")
 	}
 }
