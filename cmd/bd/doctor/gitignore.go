@@ -49,8 +49,10 @@ daemon.lock
 daemon.log
 daemon-*.log.gz
 daemon.pid
-# NOTE: Config files (metadata.json, config.yaml) are tracked by git
-# by default since no pattern above ignores them.
+# NOTE: Do NOT add negation patterns here.
+# They would override fork protection in .git/info/exclude.
+# Config files (metadata.json, config.yaml) are tracked by git by default
+# since no pattern above ignores them.
 `
 
 // requiredPatterns are patterns that MUST be in .beads/.gitignore

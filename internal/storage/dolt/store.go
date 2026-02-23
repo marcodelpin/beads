@@ -1,8 +1,7 @@
 // Package dolt implements the storage interface using Dolt (versioned MySQL-compatible database).
 //
 // Dolt provides native version control for SQL data with cell-level merge, history queries,
-// and federation via Dolt remotes. This backend eliminates the need for JSONL sync layers
-// by making the database itself version-controlled.
+// and federation via Dolt remotes. The database itself is version-controlled.
 //
 // Dolt capabilities:
 //   - Native version control (commit, push, pull, branch, merge)

@@ -241,7 +241,7 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 		}
 
 		// Persist labels from the issue struct into the labels table (GH#1844).
-		// Without this, labels parsed from JSONL are silently dropped on import.
+		// Without this, labels from the issue struct are silently dropped on import.
 		for _, label := range issue.Labels {
 			_, err := tx.ExecContext(ctx, `
 				INSERT INTO labels (issue_id, label)
@@ -1346,7 +1346,7 @@ func (s *DoltStore) ClearRepoMtime(ctx context.Context, repoPath string) error {
 	return nil
 }
 
-// GetRepoMtime returns the cached mtime (in nanoseconds) for a repository's JSONL file.
+// GetRepoMtime returns the cached mtime (in nanoseconds) for a repository's data file.
 // Returns 0 if no cache entry exists.
 func (s *DoltStore) GetRepoMtime(ctx context.Context, repoPath string) (int64, error) {
 	var mtimeNs int64
@@ -1359,7 +1359,7 @@ func (s *DoltStore) GetRepoMtime(ctx context.Context, repoPath string) (int64, e
 	return mtimeNs, nil
 }
 
-// SetRepoMtime updates the mtime cache for a repository's JSONL file.
+// SetRepoMtime updates the mtime cache for a repository's data file.
 func (s *DoltStore) SetRepoMtime(ctx context.Context, repoPath, jsonlPath string, mtimeNs int64) error {
 	_, err := s.execContext(ctx, `
 		INSERT INTO repo_mtimes (repo_path, jsonl_path, mtime_ns, last_checked)

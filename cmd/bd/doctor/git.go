@@ -44,9 +44,9 @@ func CheckGitHooks(cliVersion string) DoctorCheck {
 
 	// Recommended hooks and their purposes
 	recommendedHooks := map[string]string{
-		"pre-commit": "Flushes pending bd changes before commit",
-		"post-merge": "Runs chained hooks after git pull/merge",
-		"pre-push":   "Validates state before push",
+		"pre-commit": "Syncs pending bd changes before commit",
+		"post-merge": "Syncs database after git pull/merge",
+		"pre-push":   "Validates database state before push",
 	}
 	var missingHooks []string
 	var installedHooks []string

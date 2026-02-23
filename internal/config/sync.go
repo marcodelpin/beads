@@ -8,7 +8,7 @@ import (
 )
 
 // Sync mode configuration values (from hq-ew1mbr.3)
-// These control how Dolt syncs with JSONL/remotes.
+// These control how Dolt syncs with remotes.
 
 // ConfigWarnings controls whether warnings are logged for invalid config values.
 // Set to false to suppress warnings (useful for tests or scripts).

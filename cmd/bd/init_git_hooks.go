@@ -213,7 +213,7 @@ fi
 #
 # bd (beads) pre-commit hook
 #
-# This hook ensures that any pending bd issue changes are flushed
+# This hook ensures that any pending bd issue changes are synced
 # before the commit is created.
 
 ` + preCommitHookBody()
@@ -254,7 +254,7 @@ func buildPostMergeHook(chainHooks bool, existingHooks []hookInfo) string {
 # bd (beads) post-merge hook (chained)
 #
 # This hook chains bd functionality with your existing post-merge hook.
-# Dolt backend handles sync internally, so no JSONL import is needed.
+# Dolt backend handles sync internally.
 
 # Run existing hook first
 if [ -x "` + existingPostMerge + `" ]; then

@@ -42,7 +42,7 @@ func FindDatabasePath() string {
 	return beads.FindDatabasePath()
 }
 
-// FindBeadsDir finds the .beads/ directory in the current directory tree
+// FindBeadsDir finds the .beads/ directory in the current directory tree.
 // Returns empty string if not found.
 func FindBeadsDir() string {
 	return beads.FindBeadsDir()

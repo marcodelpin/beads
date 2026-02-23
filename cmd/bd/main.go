@@ -53,6 +53,9 @@ var (
 	storeMutex  sync.Mutex // Protects store access from background goroutine
 	storeActive = false    // Tracks if store is available
 
+	// No-db mode
+	noDb bool // Use --no-db mode: operate without a database
+
 	// Version upgrade tracking
 	versionUpgradeDetected = false // Set to true if bd version changed since last run
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)
@@ -111,7 +114,7 @@ var readOnlyCommands = map[string]bool{
 	"duplicates": true,
 	"comments":   true, // list comments (not add)
 	"current":    true, // bd sync mode current
-	// NOTE: "export" is NOT read-only - it writes to clear dirty issues and update state
+	// NOTE: "export" is NOT read-only - it writes to clear dirty issues
 }
 
 // isReadOnlyCommand returns true if the command only reads from the database.
@@ -416,8 +419,7 @@ var rootCmd = &cobra.Command{
 			if foundDB := beads.FindDatabasePath(); foundDB != "" {
 				dbPath = foundDB
 			} else {
-				// No database found
-				// Allow some commands to run without a database
+				// No database found — allow some commands to run without a database
 				// - import: auto-initializes database if missing
 				// - setup: creates editor integration files (no DB needed)
 				// - config set/get for yaml-only keys: writes to config.yaml, not db (GH#536)
