@@ -394,7 +394,7 @@ func CheckGitUpstream(path string) DoctorCheck {
 			Status:  StatusWarning,
 			Message: fmt.Sprintf("Behind upstream by %d commit(s)", behind),
 			Detail:  fmt.Sprintf("Branch: %s, upstream: %s", branch, upstream),
-			Fix:     "Run 'git pull --rebase' (then re-run bd sync / bd doctor)",
+			Fix:     "Run 'git pull --rebase' (then re-run bd doctor)",
 		}
 	}
 

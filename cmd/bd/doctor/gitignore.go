@@ -196,7 +196,7 @@ func CheckIssuesTracking() DoctorCheck {
 		return DoctorCheck{
 			Name:    "Issues Tracking",
 			Status:  "warning",
-			Message: "issues.jsonl is ignored by git (bd sync will fail)",
+			Message: "issues.jsonl is ignored by git (JSONL import/export will fail)",
 			Detail:  detail,
 			Fix:     "Check global gitignore: git config --global core.excludesfile",
 		}
@@ -493,7 +493,7 @@ func CheckRedirectTargetSyncWorktree() DoctorCheck {
 			Status:  StatusWarning,
 			Message: "Redirect target missing beads-sync worktree",
 			Detail:  fmt.Sprintf("Expected worktree at: %s", worktreePath),
-			Fix:     fmt.Sprintf("Run 'bd sync' in %s to create the worktree", targetRepoRoot),
+			Fix:     fmt.Sprintf("Run 'bd init' in %s to set up beads", targetRepoRoot),
 		}
 	}
 
