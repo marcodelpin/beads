@@ -190,13 +190,6 @@ func hooksNeedDoltUpdate(beadsDir string) bool {
 	return true
 }
 
-// handleToSQLiteMigration is no longer supported — SQLite backend was removed.
-func handleToSQLiteMigration(_ bool, _ bool) {
-	exitWithError("sqlite_removed",
-		"SQLite backend has been removed; migration to SQLite is no longer supported",
-		"Dolt is now the only storage backend")
-}
-
 // extractFromSQLite extracts all data from a SQLite database using raw SQL.
 // This is the CGO path — it reads SQLite directly via the ncruces/go-sqlite3 driver.
 // For non-CGO builds, see migrate_shim.go which uses the sqlite3 CLI instead.
