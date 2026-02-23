@@ -60,9 +60,9 @@ func TestCheckDatabaseVersion(t *testing.T) {
 		expectedStatus string
 	}{
 		{
-			name: "no database no jsonl",
+			name: "no database",
 			setup: func(t *testing.T, dir string) {
-				// No database, no JSONL - error (need to run bd init)
+				// No dolt/ directory - error (need to run bd init)
 			},
 			expectedStatus: "error",
 		},
@@ -125,80 +125,15 @@ func TestCheckDatabaseIntegrity_EdgeCases(t *testing.T) {
 	t.Skip("SQLite-specific edge cases (locked DB, read-only file); Dolt backend uses server connections")
 }
 
-func TestCheckDatabaseVersion_EdgeCases(t *testing.T) {
-	t.Skip("SQLite version tests; Dolt backend checks dolt/ directory, not beads.db")
-}
-
-func TestCheckSchemaCompatibility_EdgeCases(t *testing.T) {
-	t.Skip("SQLite schema tests; Dolt backend uses different schema validation")
-}
-
-func TestClassifyDatabaseError(t *testing.T) {
-	tests := []struct {
-		name             string
-		errMsg           string
-		expectedType     string
-		containsRecovery string
-	}{
-		{
-			name:             "locked database",
-			errMsg:           "database is locked",
-			expectedType:     "Database is locked",
-			containsRecovery: "Kill any stale processes",
-		},
-		{
-			name:             "not a database",
-			errMsg:           "file is not a database",
-			expectedType:     "File is not a valid SQLite database",
-			containsRecovery: "bd init",
-		},
-		{
-			name:             "migration failed",
-			errMsg:           "migration failed",
-			expectedType:     "Database migration or validation failed",
-			containsRecovery: "bd init",
-		},
-		{
-			name:             "generic error",
-			errMsg:           "some unknown error",
-			expectedType:     "Failed to open database",
-			containsRecovery: "bd doctor --fix --force",
-		},
+func TestSqliteBackendWarning(t *testing.T) {
+	check := sqliteBackendWarning("Database")
+	if check.Status != StatusWarning {
+		t.Errorf("expected status %q, got %q", StatusWarning, check.Status)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			errorType, recoverySteps := classifyDatabaseError(tt.errMsg)
-			if errorType != tt.expectedType {
-				t.Errorf("expected error type %q, got %q", tt.expectedType, errorType)
-			}
-			if tt.containsRecovery != "" {
-				found := false
-				if len(recoverySteps) > 0 {
-					for _, substr := range []string{tt.containsRecovery} {
-						if len(recoverySteps) > 0 && containsStr(recoverySteps, substr) {
-							found = true
-							break
-						}
-					}
-				}
-				if !found {
-					t.Errorf("expected recovery steps to contain %q, got %q", tt.containsRecovery, recoverySteps)
-				}
-			}
-		})
+	if check.Message != "SQLite backend detected" {
+		t.Errorf("expected message %q, got %q", "SQLite backend detected", check.Message)
 	}
-}
-
-func containsStr(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	if check.Fix == "" {
+		t.Error("expected non-empty Fix field")
 	}
-	return false
 }

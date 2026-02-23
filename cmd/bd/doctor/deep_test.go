@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestRunDeepValidation_EmptyBeadsDir(t *testing.T) {
 
 	result := RunDeepValidation(tmpDir)
 
-	// Should return OK with "no database" message
+	// Should return OK with "no database" message (no dolt/ directory)
 	if len(result.AllChecks) != 1 {
 		t.Errorf("Expected 1 check, got %d", len(result.AllChecks))
 	}
@@ -198,10 +199,10 @@ func TestDeepValidationResultJSON(t *testing.T) {
 
 	// Should contain expected fields
 	jsonStr := string(jsonBytes)
-	if !contains(jsonStr, "total_issues") {
+	if !strings.Contains(jsonStr, "total_issues") {
 		t.Error("JSON should contain total_issues")
 	}
-	if !contains(jsonStr, "overall_ok") {
+	if !strings.Contains(jsonStr, "overall_ok") {
 		t.Error("JSON should contain overall_ok")
 	}
 }
