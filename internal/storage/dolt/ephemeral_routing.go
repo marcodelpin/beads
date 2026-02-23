@@ -15,16 +15,34 @@ func IsEphemeralID(id string) bool {
 	return strings.Contains(id, "-wisp-")
 }
 
-// isActiveWisp checks if an ephemeral-looking ID still exists in the wisps table.
-// Returns false if the ID is not ephemeral, or if the wisp was promoted/deleted.
+// isActiveWisp checks if an issue ID exists in the wisps table.
+// Returns false if the wisp was promoted/deleted or doesn't exist.
 // Used by CRUD methods to decide whether to route to wisp tables or fall through
 // to permanent tables (handles promoted wisps correctly).
+//
+// For IDs matching the -wisp- pattern, does a full row scan (fast path for
+// auto-generated wisp IDs). For other IDs, uses a lightweight existence check
+// to support ephemeral beads created with explicit IDs (GH#2053).
 func (s *DoltStore) isActiveWisp(ctx context.Context, id string) bool {
-	if !IsEphemeralID(id) {
-		return false
+	if IsEphemeralID(id) {
+		wisp, _ := s.getWisp(ctx, id)
+		return wisp != nil
 	}
-	wisp, _ := s.getWisp(ctx, id)
-	return wisp != nil
+	// Fallback: check wisps table for ephemeral beads with explicit IDs.
+	// Ephemeral beads created with --id=<custom> don't contain "-wisp-" in
+	// their ID, but are still stored in the wisps table. Use a lightweight
+	// existence check to avoid full row scan on every non-wisp lookup.
+	return s.wispExists(ctx, id)
+}
+
+// wispExists checks if an ID exists in the wisps table using a lightweight query.
+// Used as a fallback for ephemeral beads with explicit (non-wisp) IDs (GH#2053).
+func (s *DoltStore) wispExists(ctx context.Context, id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var exists int
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM wisps WHERE id = ? LIMIT 1", id).Scan(&exists)
+	return err == nil
 }
 
 // allEphemeral returns true if all IDs in the slice are ephemeral.
