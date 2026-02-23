@@ -342,16 +342,7 @@ environment variable.`,
 				// Preserve existing config
 				cfg = existingCfg
 			} else {
-				// Create new config, detecting JSONL filename from existing files
 				cfg = configfile.DefaultConfig()
-				// Check if beads.jsonl exists but issues.jsonl doesn't (legacy)
-				issuesPath := filepath.Join(beadsDir, "issues.jsonl")
-				beadsPath := filepath.Join(beadsDir, "beads.jsonl")
-				if _, err := os.Stat(beadsPath); err == nil {
-					if _, err := os.Stat(issuesPath); os.IsNotExist(err) {
-						cfg.JSONLExport = "beads.jsonl" // Legacy filename
-					}
-				}
 			}
 
 			// Always store backend explicitly in metadata.json

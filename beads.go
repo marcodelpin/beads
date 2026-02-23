@@ -43,14 +43,9 @@ func FindDatabasePath() string {
 }
 
 // FindBeadsDir finds the .beads/ directory in the current directory tree
-// Returns empty string if not found. Supports both database and JSONL-only mode.
+// Returns empty string if not found.
 func FindBeadsDir() string {
 	return beads.FindBeadsDir()
-}
-
-// FindJSONLPath finds the JSONL file corresponding to a database path
-func FindJSONLPath(dbPath string) string {
-	return beads.FindJSONLPath(dbPath)
 }
 
 // DatabaseInfo contains information about a beads database

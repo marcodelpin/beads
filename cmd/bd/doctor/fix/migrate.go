@@ -103,17 +103,6 @@ func DatabaseVersionWithBdVersion(path string, bdVersion string) error {
 	return nil
 }
 
-// findJSONLPath returns the path to the JSONL file in the beads directory.
-// Delegates to utils.FindJSONLInDir for path discovery but returns empty
-// string if no JSONL file actually exists on disk.
-func findJSONLPath(beadsDir string) string {
-	path := utils.FindJSONLInDir(beadsDir)
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	return ""
-}
-
 // SchemaCompatibility fixes schema compatibility issues by updating database metadata
 func SchemaCompatibility(path string) error {
 	return DatabaseVersion(path)

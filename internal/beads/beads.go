@@ -415,21 +415,6 @@ func FindBeadsDir() string {
 	return ""
 }
 
-// FindJSONLPath returns the expected JSONL file path for the given database path.
-// It searches for existing *.jsonl files in the database directory and returns
-// the first one found, preferring issues.jsonl over beads.jsonl.
-//
-// This function does not create directories or files - it only discovers paths.
-// Use this when you need to know where bd stores its JSONL export.
-func FindJSONLPath(dbPath string) string {
-	if dbPath == "" {
-		return ""
-	}
-
-	// Get the directory containing the database and delegate to shared utility
-	return utils.FindJSONLInDir(filepath.Dir(dbPath))
-}
-
 // DatabaseInfo contains information about a discovered beads database
 type DatabaseInfo struct {
 	Path       string // Full path to the .db file

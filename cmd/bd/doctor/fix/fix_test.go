@@ -91,60 +91,6 @@ func TestUntrackedJSONL_Validation(t *testing.T) {
 	})
 }
 
-// TestFindJSONLPath tests the findJSONLPath helper
-func TestFindJSONLPath(t *testing.T) {
-	t.Run("returns empty for no JSONL", func(t *testing.T) {
-		dir := t.TempDir()
-		path := findJSONLPath(dir)
-		if path != "" {
-			t.Errorf("expected empty path, got %s", path)
-		}
-	})
-
-	t.Run("finds issues.jsonl", func(t *testing.T) {
-		dir := t.TempDir()
-		jsonlPath := filepath.Join(dir, "issues.jsonl")
-		if err := os.WriteFile(jsonlPath, []byte("{}"), 0600); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-
-		path := findJSONLPath(dir)
-		if path != jsonlPath {
-			t.Errorf("expected %s, got %s", jsonlPath, path)
-		}
-	})
-
-	t.Run("finds beads.jsonl as fallback", func(t *testing.T) {
-		dir := t.TempDir()
-		jsonlPath := filepath.Join(dir, "beads.jsonl")
-		if err := os.WriteFile(jsonlPath, []byte("{}"), 0600); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-
-		path := findJSONLPath(dir)
-		if path != jsonlPath {
-			t.Errorf("expected %s, got %s", jsonlPath, path)
-		}
-	})
-
-	t.Run("prefers issues.jsonl over beads.jsonl", func(t *testing.T) {
-		dir := t.TempDir()
-		issuesPath := filepath.Join(dir, "issues.jsonl")
-		beadsPath := filepath.Join(dir, "beads.jsonl")
-		if err := os.WriteFile(issuesPath, []byte("{}"), 0600); err != nil {
-			t.Fatalf("failed to create issues.jsonl: %v", err)
-		}
-		if err := os.WriteFile(beadsPath, []byte("{}"), 0600); err != nil {
-			t.Fatalf("failed to create beads.jsonl: %v", err)
-		}
-
-		path := findJSONLPath(dir)
-		if path != issuesPath {
-			t.Errorf("expected %s, got %s", issuesPath, path)
-		}
-	})
-}
-
 // TestIsWithinWorkspace tests the isWithinWorkspace helper
 func TestIsWithinWorkspace(t *testing.T) {
 	root := t.TempDir()

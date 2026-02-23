@@ -52,24 +52,6 @@ func TestFindBeadsDir(t *testing.T) {
 	_ = dir
 }
 
-func TestFindJSONLPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, ".beads", "beads.db")
-
-	// Create the directory
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		t.Fatalf("failed to create directory: %v", err)
-	}
-
-	jsonlPath := beads.FindJSONLPath(dbPath)
-	// bd-6xd: Default is now issues.jsonl (canonical name)
-	expectedPath := filepath.Join(tmpDir, ".beads", "issues.jsonl")
-
-	if jsonlPath != expectedPath {
-		t.Errorf("FindJSONLPath returned %s, expected %s", jsonlPath, expectedPath)
-	}
-}
-
 func TestOpenFromConfig_ServerModeFailsWithoutServer(t *testing.T) {
 	// Server mode should fail-fast when no server is listening
 	tmpDir := t.TempDir()

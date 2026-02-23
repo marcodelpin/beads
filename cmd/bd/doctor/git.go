@@ -44,9 +44,9 @@ func CheckGitHooks(cliVersion string) DoctorCheck {
 
 	// Recommended hooks and their purposes
 	recommendedHooks := map[string]string{
-		"pre-commit": "Flushes pending bd changes to JSONL before commit",
-		"post-merge": "Imports updated JSONL after git pull/merge",
-		"pre-push":   "Exports database to JSONL before push",
+		"pre-commit": "Flushes pending bd changes before commit",
+		"post-merge": "Runs chained hooks after git pull/merge",
+		"pre-push":   "Validates state before push",
 	}
 	var missingHooks []string
 	var installedHooks []string
@@ -574,7 +574,7 @@ func CheckGitHooksDoltCompatibility(path string) DoctorCheck {
 		Name:    "Git Hooks Dolt Compatibility",
 		Status:  StatusError,
 		Message: "Git hooks incompatible with Dolt backend",
-		Detail:  "Installed hooks attempt JSONL sync which fails with Dolt. This causes errors on git pull/commit.",
+		Detail:  "Installed hooks are outdated and incompatible with the Dolt backend.",
 		Fix:     "Run 'bd hooks install --force' to update hooks for Dolt compatibility",
 	}
 }
