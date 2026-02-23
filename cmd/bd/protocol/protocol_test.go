@@ -190,6 +190,25 @@ func (w *workspace) tryRun(args ...string) (string, error) {
 	return string(out), err
 }
 
+// runExpectError runs bd and expects a non-zero exit code.
+// Returns the combined output and exit code.
+func (w *workspace) runExpectError(args ...string) (string, int) {
+	w.t.Helper()
+	cmd := exec.Command(w.bd, args...)
+	cmd.Dir = w.dir
+	cmd.Env = w.env()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		w.t.Fatalf("bd %s: expected non-zero exit, got success\nOutput: %s",
+			strings.Join(args, " "), out)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		w.t.Fatalf("bd %s: unexpected error type: %v", strings.Join(args, " "), err)
+	}
+	return string(out), exitErr.ExitCode()
+}
+
 // create runs bd create --silent and returns the issue ID.
 func (w *workspace) create(args ...string) string {
 	w.t.Helper()
