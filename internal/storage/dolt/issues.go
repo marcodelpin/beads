@@ -108,6 +108,13 @@ func (s *DoltStore) CreateIssue(ctx context.Context, issue *types.Issue, actor s
 		return fmt.Errorf("failed to record creation event: %w", err)
 	}
 
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: create %s", issue.ID)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
+	}
+
 	return tx.Commit()
 }
 
@@ -285,6 +292,13 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 		}
 	}
 
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: create %d issue(s)", len(issues))
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
+	}
+
 	return tx.Commit()
 }
 
@@ -366,7 +380,14 @@ func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[stri
 		return s.updateWisp(ctx, id, updates, actor)
 	}
 
-	oldIssue, err := s.GetIssue(ctx, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // No-op after successful commit
+
+	// Read inside transaction to avoid TOCTOU race
+	oldIssue, err := scanIssueTxFromTable(ctx, tx, "issues", id)
 	if err != nil {
 		return fmt.Errorf("failed to get issue for update: %w", err)
 	}
@@ -407,12 +428,6 @@ func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[stri
 
 	args = append(args, id)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // No-op after successful commit
-
 	// nolint:gosec // G201: setClauses contains only column names (e.g. "status = ?"), actual values passed via args
 	query := fmt.Sprintf("UPDATE issues SET %s WHERE id = ?", strings.Join(setClauses, ", "))
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
@@ -428,6 +443,13 @@ func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[stri
 		return fmt.Errorf("failed to record event: %w", err)
 	}
 
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: update %s", id)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
+	}
+
 	return tx.Commit()
 }
 
@@ -440,18 +462,19 @@ func (s *DoltStore) ClaimIssue(ctx context.Context, id string, actor string) err
 		return s.claimWisp(ctx, id, actor)
 	}
 
-	oldIssue, err := s.GetIssue(ctx, id)
-	if err != nil {
-		return fmt.Errorf("failed to get issue for claim: %w", err)
-	}
-
-	now := time.Now().UTC()
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // No-op after successful commit
+
+	// Read inside transaction for consistent snapshot
+	oldIssue, err := scanIssueTxFromTable(ctx, tx, "issues", id)
+	if err != nil {
+		return fmt.Errorf("failed to get issue for claim: %w", err)
+	}
+
+	now := time.Now().UTC()
 
 	// Use conditional UPDATE with WHERE clause to ensure atomicity.
 	// The UPDATE only succeeds if assignee is currently empty.
@@ -470,10 +493,9 @@ func (s *DoltStore) ClaimIssue(ctx context.Context, id string, actor string) err
 	}
 
 	if rowsAffected == 0 {
-		// The UPDATE didn't affect any rows, which means the assignee was not empty.
-		// Query to find out who has it claimed.
+		// Query current assignee inside the same transaction for consistency.
 		var currentAssignee string
-		err := s.db.QueryRowContext(ctx, `SELECT assignee FROM issues WHERE id = ?`, id).Scan(&currentAssignee)
+		err := tx.QueryRowContext(ctx, `SELECT assignee FROM issues WHERE id = ?`, id).Scan(&currentAssignee)
 		if err != nil {
 			return fmt.Errorf("failed to get current assignee: %w", err)
 		}
@@ -490,6 +512,13 @@ func (s *DoltStore) ClaimIssue(ctx context.Context, id string, actor string) err
 
 	if err := recordEvent(ctx, tx, id, "claimed", actor, string(oldData), string(newData)); err != nil {
 		return fmt.Errorf("failed to record claim event: %w", err)
+	}
+
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: claim %s", id)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
 	}
 
 	return tx.Commit()
@@ -528,6 +557,13 @@ func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, ac
 
 	if err := recordEvent(ctx, tx, id, types.EventClosed, actor, "", reason); err != nil {
 		return fmt.Errorf("failed to record event: %w", err)
+	}
+
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: close %s", id)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
 	}
 
 	return tx.Commit()
@@ -575,6 +611,13 @@ func (s *DoltStore) DeleteIssue(ctx context.Context, id string) error {
 	}
 	if rows == 0 {
 		return fmt.Errorf("issue not found: %s", id)
+	}
+
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: delete %s", id)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
 	}
 
 	return tx.Commit()
@@ -812,6 +855,13 @@ func (s *DoltStore) DeleteIssues(ctx context.Context, ids []string, cascade bool
 		totalDeleted += int(rowsAffected)
 	}
 	result.DeletedCount = totalDeleted + wispDeleteCount
+
+	// DOLT_COMMIT inside transaction — atomic with the writes
+	commitMsg := fmt.Sprintf("bd: delete %d issue(s)", totalDeleted)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return nil, fmt.Errorf("dolt commit: %w", err)
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)

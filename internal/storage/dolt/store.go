@@ -316,6 +316,11 @@ func (s *DoltStore) queryContext(ctx context.Context, query string, args ...any)
 	)
 	var rows *sql.Rows
 	err := s.withRetry(ctx, func() error {
+		// Close any Rows from a previous failed attempt to avoid leaking connections.
+		if rows != nil {
+			_ = rows.Close()
+			rows = nil
+		}
 		var queryErr error
 		rows, queryErr = s.db.QueryContext(ctx, query, args...)
 		return queryErr
