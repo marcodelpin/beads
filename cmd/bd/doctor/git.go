@@ -197,8 +197,18 @@ func findOutdatedBDHookVersions(
 		if err != nil {
 			continue
 		}
-		hookVersion, ok := parseBDHookVersion(string(content))
+		contentStr := string(content)
+		hookVersion, ok := parseBDHookVersion(contentStr)
 		if !ok || !IsValidSemver(hookVersion) {
+			// No version comment found. If this is a bd hook (has shim marker,
+			// inline marker, or calls bd hooks run), treat it as outdated since
+			// all current hook templates include a version comment. (GH#1466)
+			if isBdHookContent(contentStr) {
+				outdated = append(outdated, fmt.Sprintf("%s@unknown", hookName))
+				if oldest == "" {
+					oldest = "0.0.0"
+				}
+			}
 			continue
 		}
 		if CompareVersions(hookVersion, cliVersion) < 0 {
@@ -209,6 +219,13 @@ func findOutdatedBDHookVersions(
 		}
 	}
 	return outdated, oldest
+}
+
+// isBdHookContent checks if hook content is a bd hook (shim, inline, or calls bd hooks run).
+func isBdHookContent(content string) bool {
+	return strings.Contains(content, bdShimMarker) ||
+		strings.Contains(content, bdInlineHookMarker) ||
+		bdHooksRunPattern.MatchString(content)
 }
 
 func parseBDHookVersion(content string) (string, bool) {
