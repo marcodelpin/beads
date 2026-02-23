@@ -175,10 +175,11 @@ func TestGetAdaptiveIDLength_QueryError(t *testing.T) {
 	}
 }
 
-// TestApplyConfigDefaults_TestModePanicsWithoutPort verifies that
-// applyConfigDefaults panics when BEADS_TEST_MODE=1 but BEADS_DOLT_PORT
-// is not set, preventing accidental connections to the production server.
-func TestApplyConfigDefaults_TestModePanicsWithoutPort(t *testing.T) {
+// TestApplyConfigDefaults_TestModeUseSentinelPort verifies that
+// applyConfigDefaults uses sentinel port 1 when BEADS_TEST_MODE=1 but
+// BEADS_DOLT_PORT is not set, preventing accidental connections to
+// the production server while allowing tests to handle connection errors.
+func TestApplyConfigDefaults_TestModeUseSentinelPort(t *testing.T) {
 	// Save and restore env vars.
 	origTestMode := os.Getenv("BEADS_TEST_MODE")
 	origPort := os.Getenv("BEADS_DOLT_PORT")
@@ -194,22 +195,12 @@ func TestApplyConfigDefaults_TestModePanicsWithoutPort(t *testing.T) {
 	os.Setenv("BEADS_TEST_MODE", "1")
 	os.Unsetenv("BEADS_DOLT_PORT")
 
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic when BEADS_TEST_MODE=1 without BEADS_DOLT_PORT, but did not panic")
-		}
-		msg, ok := r.(string)
-		if !ok {
-			t.Fatalf("expected string panic, got %T: %v", r, r)
-		}
-		if msg == "" {
-			t.Fatal("panic message was empty")
-		}
-	}()
-
 	cfg := &Config{} // ServerPort defaults to 0
 	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != 1 {
+		t.Errorf("expected sentinel port 1 in test mode without BEADS_DOLT_PORT, got %d", cfg.ServerPort)
+	}
 }
 
 // TestApplyConfigDefaults_TestModeWithPort verifies that applyConfigDefaults

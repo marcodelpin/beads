@@ -392,9 +392,14 @@ func applyConfigDefaults(cfg *Config) {
 		}
 		if cfg.ServerPort == 0 {
 			if os.Getenv("BEADS_TEST_MODE") == "1" {
-				panic("BEADS_TEST_MODE=1 but BEADS_DOLT_PORT is not set; refusing to connect to production Dolt server")
+				// Test mode without BEADS_DOLT_PORT: use a port that will
+				// always fail to connect. This prevents accidentally hitting
+				// a production Dolt server while still allowing tests to
+				// handle the connection error gracefully.
+				cfg.ServerPort = 1 // reserved port, connection will be refused
+			} else {
+				cfg.ServerPort = DefaultSQLPort
 			}
-			cfg.ServerPort = DefaultSQLPort
 		}
 	}
 	if cfg.ServerUser == "" {
