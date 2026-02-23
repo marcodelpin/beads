@@ -63,7 +63,7 @@ func TestCheckParentConsistency_OrphanedDeps(t *testing.T) {
 	}
 
 	// Insert a parent-child dep pointing to non-existent parent via raw SQL
-	db := store.DB()
+	db := store.UnderlyingDB()
 	_, err := db.ExecContext(ctx,
 		"INSERT INTO dependencies (issue_id, depends_on_id, type, created_at, created_by) VALUES (?, ?, ?, NOW(), ?)",
 		"bd-1", "bd-missing", "parent-child", "test")
@@ -120,7 +120,7 @@ func TestCheckEpicCompleteness_CompletedEpic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db := store.DB()
+	db := store.UnderlyingDB()
 	check := checkEpicCompleteness(db)
 
 	// Epic with all children closed should be detected
@@ -158,7 +158,7 @@ func TestCheckMailThreadIntegrity_ValidThreads(t *testing.T) {
 	}
 
 	// Insert a dependency with valid thread_id via raw SQL (replies-to with thread_id)
-	db := store.DB()
+	db := store.UnderlyingDB()
 	_, err := db.ExecContext(ctx,
 		"INSERT INTO dependencies (issue_id, depends_on_id, type, thread_id, created_at, created_by) VALUES (?, ?, ?, ?, NOW(), ?)",
 		"thread-reply", "thread-root", "replies-to", "thread-root", "test")

@@ -162,7 +162,7 @@ func TestChildParentDependencies_NoBadDeps(t *testing.T) {
 	}
 
 	// Verify the good dependency still exists
-	db := store.DB()
+	db := store.UnderlyingDB()
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM dependencies").Scan(&count); err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestChildParentDependencies_FixesBadDeps(t *testing.T) {
 	}
 
 	// Verify all bad dependencies were removed
-	db := store.DB()
+	db := store.UnderlyingDB()
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM dependencies").Scan(&count); err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestChildParentDependencies_PreservesParentChildType(t *testing.T) {
 	// Verify only 'blocks' type was removed, 'parent-child' preserved.
 	// Only bd-abc.2→bd-abc parent-child survives because bd-abc.1→bd-abc
 	// was overwritten by the blocks dep (ON DUPLICATE KEY UPDATE), then removed by fix.
-	db := store.DB()
+	db := store.UnderlyingDB()
 
 	var blocksCount int
 	if err := db.QueryRow("SELECT COUNT(*) FROM dependencies WHERE type = 'blocks'").Scan(&blocksCount); err != nil {
