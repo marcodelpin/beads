@@ -1026,6 +1026,24 @@ func insertIssue(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
 			?, ?, ?, ?, ?, ?,
 			?, ?, ?
 		)
+		ON DUPLICATE KEY UPDATE
+			content_hash = VALUES(content_hash),
+			title = VALUES(title),
+			description = VALUES(description),
+			design = VALUES(design),
+			acceptance_criteria = VALUES(acceptance_criteria),
+			notes = VALUES(notes),
+			status = VALUES(status),
+			priority = VALUES(priority),
+			issue_type = VALUES(issue_type),
+			assignee = VALUES(assignee),
+			estimated_minutes = VALUES(estimated_minutes),
+			updated_at = VALUES(updated_at),
+			closed_at = VALUES(closed_at),
+			external_ref = VALUES(external_ref),
+			source_repo = VALUES(source_repo),
+			close_reason = VALUES(close_reason),
+			metadata = VALUES(metadata)
 	`,
 		issue.ID, issue.ContentHash, issue.Title, issue.Description, issue.Design, issue.AcceptanceCriteria, issue.Notes,
 		issue.Status, issue.Priority, issue.IssueType, nullString(issue.Assignee), nullInt(issue.EstimatedMinutes),
@@ -1326,6 +1344,32 @@ func (s *DoltStore) ClearRepoMtime(ctx context.Context, repoPath string) error {
 	}
 
 	return nil
+}
+
+// GetRepoMtime returns the cached mtime (in nanoseconds) for a repository's JSONL file.
+// Returns 0 if no cache entry exists.
+func (s *DoltStore) GetRepoMtime(ctx context.Context, repoPath string) (int64, error) {
+	var mtimeNs int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT mtime_ns FROM repo_mtimes WHERE repo_path = ?`, repoPath,
+	).Scan(&mtimeNs)
+	if err != nil {
+		return 0, nil // No cache entry
+	}
+	return mtimeNs, nil
+}
+
+// SetRepoMtime updates the mtime cache for a repository's JSONL file.
+func (s *DoltStore) SetRepoMtime(ctx context.Context, repoPath, jsonlPath string, mtimeNs int64) error {
+	_, err := s.execContext(ctx, `
+		INSERT INTO repo_mtimes (repo_path, jsonl_path, mtime_ns, last_checked)
+		VALUES (?, ?, ?, NOW())
+		ON DUPLICATE KEY UPDATE
+			jsonl_path = VALUES(jsonl_path),
+			mtime_ns = VALUES(mtime_ns),
+			last_checked = NOW()
+	`, repoPath, jsonlPath, mtimeNs)
+	return err
 }
 
 func formatJSONStringArray(arr []string) string {
