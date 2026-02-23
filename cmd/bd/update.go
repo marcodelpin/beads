@@ -65,6 +65,10 @@ create, update, show, or close operation).`,
 		}
 		if cmd.Flags().Changed("title") {
 			title, _ := cmd.Flags().GetString("title")
+			title = strings.TrimSpace(title)
+			if title == "" {
+				FatalErrorRespectJSON("title cannot be empty")
+			}
 			updates["title"] = title
 		}
 		if cmd.Flags().Changed("assignee") {
