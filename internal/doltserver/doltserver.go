@@ -288,7 +288,33 @@ func DefaultConfig(beadsDir string) *Config {
 
 // IsRunning checks if a managed server is running for this beadsDir.
 // Returns a State with Running=true if a valid dolt process is found.
+// Under Gas Town (GT_ROOT set), checks the daemon PID file first since the
+// daemon writes to $GT_ROOT/daemon/dolt.pid, not .beads/dolt-server.pid.
 func IsRunning(beadsDir string) (*State, error) {
+	// Under Gas Town, check daemon PID file first — the daemon manages
+	// the server and writes its PID to a different location.
+	if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
+		daemonPidFile := filepath.Join(gtRoot, "daemon", "dolt.pid")
+		if data, readErr := os.ReadFile(daemonPidFile); readErr == nil {
+			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && pid > 0 {
+				if process, findErr := os.FindProcess(pid); findErr == nil {
+					if process.Signal(syscall.Signal(0)) == nil && isDoltProcess(pid) {
+						port := readPortFile(beadsDir)
+						if port == 0 {
+							port = GasTownPort
+						}
+						return &State{
+							Running: true,
+							PID:     pid,
+							Port:    port,
+							DataDir: filepath.Join(beadsDir, "dolt"),
+						}, nil
+					}
+				}
+			}
+		}
+	}
+
 	data, err := os.ReadFile(pidPath(beadsDir))
 	if err != nil {
 		if os.IsNotExist(err) {

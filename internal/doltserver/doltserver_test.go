@@ -45,6 +45,15 @@ func TestDerivePortRange(t *testing.T) {
 func TestIsRunningNoServer(t *testing.T) {
 	dir := t.TempDir()
 
+	// Unset GT_ROOT so we don't pick up a real daemon PID
+	orig := os.Getenv("GT_ROOT")
+	os.Unsetenv("GT_ROOT")
+	defer func() {
+		if orig != "" {
+			os.Setenv("GT_ROOT", orig)
+		}
+	}()
+
 	state, err := IsRunning(dir)
 	if err != nil {
 		t.Fatalf("IsRunning error: %v", err)
@@ -54,8 +63,64 @@ func TestIsRunningNoServer(t *testing.T) {
 	}
 }
 
+func TestIsRunningChecksDaemonPidUnderGasTown(t *testing.T) {
+	dir := t.TempDir()
+	gtRoot := t.TempDir()
+
+	// Set GT_ROOT to simulate Gas Town environment
+	orig := os.Getenv("GT_ROOT")
+	os.Setenv("GT_ROOT", gtRoot)
+	defer func() {
+		if orig != "" {
+			os.Setenv("GT_ROOT", orig)
+		} else {
+			os.Unsetenv("GT_ROOT")
+		}
+	}()
+
+	// No daemon PID file, no standard PID file → not running
+	state, err := IsRunning(dir)
+	if err != nil {
+		t.Fatalf("IsRunning error: %v", err)
+	}
+	if state.Running {
+		t.Error("expected Running=false when no PID files exist")
+	}
+
+	// Write a stale daemon PID file → still not running
+	daemonDir := filepath.Join(gtRoot, "daemon")
+	if err := os.MkdirAll(daemonDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	daemonPidFile := filepath.Join(daemonDir, "dolt.pid")
+	if err := os.WriteFile(daemonPidFile, []byte("99999999"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err = IsRunning(dir)
+	if err != nil {
+		t.Fatalf("IsRunning error: %v", err)
+	}
+	if state.Running {
+		t.Error("expected Running=false for stale daemon PID")
+	}
+
+	// Daemon PID file should NOT be cleaned up (it's owned by the daemon)
+	if _, err := os.Stat(daemonPidFile); os.IsNotExist(err) {
+		t.Error("daemon PID file should not be cleaned up by IsRunning")
+	}
+}
+
 func TestIsRunningStalePID(t *testing.T) {
 	dir := t.TempDir()
+
+	// Unset GT_ROOT so we don't pick up a real daemon PID
+	orig := os.Getenv("GT_ROOT")
+	os.Unsetenv("GT_ROOT")
+	defer func() {
+		if orig != "" {
+			os.Setenv("GT_ROOT", orig)
+		}
+	}()
 
 	// Write a PID file with a definitely-dead PID
 	pidFile := filepath.Join(dir, "dolt-server.pid")
@@ -80,6 +145,15 @@ func TestIsRunningStalePID(t *testing.T) {
 
 func TestIsRunningCorruptPID(t *testing.T) {
 	dir := t.TempDir()
+
+	// Unset GT_ROOT so we don't pick up a real daemon PID
+	orig := os.Getenv("GT_ROOT")
+	os.Unsetenv("GT_ROOT")
+	defer func() {
+		if orig != "" {
+			os.Setenv("GT_ROOT", orig)
+		}
+	}()
 
 	pidFile := filepath.Join(dir, "dolt-server.pid")
 	if err := os.WriteFile(pidFile, []byte("not-a-number"), 0600); err != nil {
