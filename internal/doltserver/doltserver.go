@@ -404,6 +404,7 @@ func StopWithForce(beadsDir string, force bool) error {
 	if !force && IsDaemonManaged() {
 		return fmt.Errorf("Dolt server is managed by the Gas Town daemon.\nUse 'gt dolt stop' instead, or pass --force to override.")
 	}
+
 	state, err := IsRunning(beadsDir)
 	if err != nil {
 		return err
@@ -459,6 +460,10 @@ func LogPath(beadsDir string) string {
 // not tracked by the canonical PID file. Under Gas Town, the canonical
 // server is at $GT_ROOT/.beads/ or $GT_ROOT/daemon/dolt.pid (daemon-managed);
 // in standalone mode, beadsDir is used.
+//
+// Under Gas Town, if no canonical PID can be identified from either location,
+// this function refuses to kill anything to avoid accidentally killing the
+// daemon-managed server.
 // Returns the PIDs of killed processes.
 func KillStaleServers(beadsDir string) ([]int, error) {
 	out, err := exec.Command("pgrep", "-f", "dolt sql-server").Output()
@@ -485,6 +490,13 @@ func KillStaleServers(beadsDir string) ([]int, error) {
 				canonicalPIDs[pid] = true
 			}
 		}
+	}
+
+	// Under Gas Town, if we can't identify any canonical server, refuse to
+	// kill anything. Without knowing which process is canonical, we'd kill
+	// all dolt servers including the daemon-managed one.
+	if IsDaemonManaged() && len(canonicalPIDs) == 0 {
+		return nil, fmt.Errorf("under Gas Town but no canonical PID file found\n\nThe Dolt server is likely managed by the gt daemon. Use 'gt dolt' commands instead.\nTo force kill all dolt servers: pkill -f 'dolt sql-server'")
 	}
 
 	var killed []int
@@ -598,7 +610,15 @@ const MonitorCheckInterval = 60 * time.Second
 
 // forkIdleMonitor starts the idle monitor as a detached process.
 // It runs `bd dolt idle-monitor --beads-dir=<dir>` in the background.
+// Under Gas Town, the idle monitor is not forked — the daemon handles lifecycle.
 func forkIdleMonitor(beadsDir string) {
+	// Under Gas Town, the daemon manages server lifecycle (health checks,
+	// restart on crash, etc.). Don't fork a beads idle monitor that could
+	// interfere by stopping the shared server.
+	if IsDaemonManaged() {
+		return
+	}
+
 	// Don't fork if there's already a monitor running
 	if isMonitorRunning(beadsDir) {
 		return
@@ -678,8 +698,13 @@ func ReadActivityTime(beadsDir string) time.Time {
 // activity is recent, it restarts it (watchdog behavior).
 //
 // idleTimeout of 0 means monitoring is disabled (exits immediately).
+// Under Gas Town, exits immediately — the daemon handles server lifecycle.
 func RunIdleMonitor(beadsDir string, idleTimeout time.Duration) {
 	if idleTimeout == 0 {
+		return
+	}
+	// Belt and suspenders: don't run under Gas Town even if somehow forked.
+	if IsDaemonManaged() {
 		return
 	}
 

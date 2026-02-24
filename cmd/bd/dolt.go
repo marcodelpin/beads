@@ -271,7 +271,10 @@ var doltStopCmd = &cobra.Command{
 	Long: `Stop the dolt sql-server managed by beads for the current project.
 
 This sends a graceful shutdown signal. The server will restart automatically
-on the next bd command unless auto-start is disabled.`,
+on the next bd command unless auto-start is disabled.
+
+Under Gas Town, the server is managed by the gt daemon and cannot be stopped
+via bd. Use 'gt dolt stop' instead.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		beadsDir := beads.FindBeadsDir()
 		if beadsDir == "" {
@@ -391,6 +394,9 @@ one tracked by the current project's PID file.`,
 		killed, err := doltserver.KillStaleServers(beadsDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if doltserver.IsDaemonManaged() {
+				fmt.Fprintf(os.Stderr, "\nUnder Gas Town, use 'gt dolt' commands to manage the server.\n")
+			}
 			os.Exit(1)
 		}
 
