@@ -257,3 +257,68 @@ func TestFieldMapperIssueToTracker(t *testing.T) {
 		t.Errorf("priority = %v, want Highest", fields["priority"])
 	}
 }
+
+func TestFieldMapperDescriptionV3UsesADF(t *testing.T) {
+	mapper := &jiraFieldMapper{apiVersion: "3"}
+	issue := &types.Issue{Title: "T", Description: "Hello world"}
+	fields := mapper.IssueToTracker(issue)
+
+	// v3: description must be ADF JSON (json.RawMessage), not a plain string.
+	raw, ok := fields["description"].(json.RawMessage)
+	if !ok {
+		t.Fatalf("v3 description type = %T, want json.RawMessage", fields["description"])
+	}
+	var doc struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("v3 description is not valid JSON: %v", err)
+	}
+	if doc.Type != "doc" {
+		t.Errorf("v3 description ADF type = %q, want %q", doc.Type, "doc")
+	}
+}
+
+func TestFieldMapperDescriptionV2UsesPlainString(t *testing.T) {
+	mapper := &jiraFieldMapper{apiVersion: "2"}
+	issue := &types.Issue{Title: "T", Description: "Hello world"}
+	fields := mapper.IssueToTracker(issue)
+
+	// v2: description must be a plain string.
+	desc, ok := fields["description"].(string)
+	if !ok {
+		t.Fatalf("v2 description type = %T, want string", fields["description"])
+	}
+	if desc != "Hello world" {
+		t.Errorf("v2 description = %q, want %q", desc, "Hello world")
+	}
+}
+
+func TestFieldMapperDescriptionEmptyAPIVersionDefaultsToADF(t *testing.T) {
+	// Empty apiVersion should behave like v3 (ADF).
+	mapper := &jiraFieldMapper{apiVersion: ""}
+	issue := &types.Issue{Title: "T", Description: "text"}
+	fields := mapper.IssueToTracker(issue)
+
+	if _, ok := fields["description"].(json.RawMessage); !ok {
+		t.Errorf("empty apiVersion description type = %T, want json.RawMessage (ADF)", fields["description"])
+	}
+}
+
+func TestTrackerFieldMapperPropagatesVersion(t *testing.T) {
+	tr := &Tracker{apiVersion: "2"}
+	mapper := tr.FieldMapper().(*jiraFieldMapper)
+	if mapper.apiVersion != "2" {
+		t.Errorf("FieldMapper apiVersion = %q, want %q", mapper.apiVersion, "2")
+	}
+}
+
+func TestTrackerFieldMapperDefaultVersion(t *testing.T) {
+	// A tracker with no apiVersion set should produce a mapper that uses ADF (v3 behavior).
+	tr := &Tracker{}
+	issue := &types.Issue{Title: "T", Description: "desc"}
+	fields := tr.FieldMapper().IssueToTracker(issue)
+	if _, ok := fields["description"].(json.RawMessage); !ok {
+		t.Errorf("default tracker description type = %T, want json.RawMessage (ADF)", fields["description"])
+	}
+}
