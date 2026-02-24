@@ -308,6 +308,12 @@ func (s *DoltStore) execContext(ctx context.Context, query string, args ...any) 
 	return result, finalErr
 }
 
+// DB returns the underlying sql.DB connection for direct queries.
+// Use sparingly — prefer the store's typed methods for normal operations.
+func (s *DoltStore) DB() *sql.DB {
+	return s.db
+}
+
 // queryContext wraps s.db.QueryContext with retry for transient errors.
 func (s *DoltStore) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	ctx, span := doltTracer.Start(ctx, "dolt.query",

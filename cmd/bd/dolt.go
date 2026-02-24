@@ -408,12 +408,97 @@ one tracked by the current project's PID file.`,
 	},
 }
 
+// staleDatabasePrefixes identifies test/polecat databases that should not persist
+// on the production Dolt server. These accumulate from interrupted test runs and
+// terminated polecats, wasting server memory.
+var staleDatabasePrefixes = []string{"testdb_", "doctest_", "doctortest_"}
+
+var doltCleanDatabasesCmd = &cobra.Command{
+	Use:   "clean-databases",
+	Short: "Drop stale test/polecat databases from the Dolt server",
+	Long: `Identify and drop leftover test and polecat databases that accumulate
+on the shared Dolt server from interrupted test runs and terminated polecats.
+
+Stale database prefixes: testdb_*, doctest_*, doctortest_*
+
+These waste server memory and can degrade performance under concurrent load.
+Use --dry-run to see what would be dropped without actually dropping.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		s := getStore()
+		if s == nil {
+			fmt.Fprintln(os.Stderr, "Error: no Dolt store available")
+			os.Exit(1)
+		}
+		db := s.DB()
+		if db == nil {
+			fmt.Fprintln(os.Stderr, "Error: no database connection available")
+			os.Exit(1)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		rows, err := db.QueryContext(ctx, "SHOW DATABASES")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing databases: %v\n", err)
+			os.Exit(1)
+		}
+		defer rows.Close()
+
+		var stale []string
+		for rows.Next() {
+			var dbName string
+			if err := rows.Scan(&dbName); err != nil {
+				continue
+			}
+			for _, prefix := range staleDatabasePrefixes {
+				if strings.HasPrefix(dbName, prefix) {
+					stale = append(stale, dbName)
+					break
+				}
+			}
+		}
+
+		if len(stale) == 0 {
+			fmt.Println("No stale databases found.")
+			return
+		}
+
+		fmt.Printf("Found %d stale databases:\n", len(stale))
+		for _, name := range stale {
+			fmt.Printf("  %s\n", name)
+		}
+
+		if dryRun {
+			fmt.Println("\n(dry run — no databases dropped)")
+			return
+		}
+
+		fmt.Println()
+		dropped := 0
+		for _, name := range stale {
+			// name is from SHOW DATABASES — safe to use in backtick-quoted identifier
+			_, err := db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE `%s`", name)) //nolint:gosec // G201: name from SHOW DATABASES
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  FAIL: %s: %v\n", name, err)
+			} else {
+				fmt.Printf("  Dropped: %s\n", name)
+				dropped++
+			}
+		}
+		fmt.Printf("\nDropped %d/%d stale databases.\n", dropped, len(stale))
+	},
+}
+
 func init() {
 	doltSetCmd.Flags().Bool("update-config", false, "Also write to config.yaml for team-wide defaults")
 	doltStopCmd.Flags().Bool("force", false, "Force stop even when managed by Gas Town daemon")
 	doltPushCmd.Flags().Bool("force", false, "Force push (overwrite remote changes)")
 	doltCommitCmd.Flags().StringP("message", "m", "", "Commit message (default: auto-generated)")
 	doltIdleMonitorCmd.Flags().String("beads-dir", "", "Path to .beads directory")
+	doltCleanDatabasesCmd.Flags().Bool("dry-run", false, "Show what would be dropped without dropping")
 	doltCmd.AddCommand(doltShowCmd)
 	doltCmd.AddCommand(doltSetCmd)
 	doltCmd.AddCommand(doltTestCmd)
@@ -425,6 +510,7 @@ func init() {
 	doltCmd.AddCommand(doltStatusCmd)
 	doltCmd.AddCommand(doltIdleMonitorCmd)
 	doltCmd.AddCommand(doltKillallCmd)
+	doltCmd.AddCommand(doltCleanDatabasesCmd)
 	rootCmd.AddCommand(doltCmd)
 }
 
