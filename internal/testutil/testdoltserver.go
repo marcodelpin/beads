@@ -24,6 +24,12 @@ type TestDoltServer struct {
 	pidFile string
 }
 
+// serverStartTimeout is the max time to wait for the test dolt server to accept connections.
+const serverStartTimeout = 30 * time.Second
+
+// maxPortRetries is how many times to retry port allocation + server start on port conflict.
+const maxPortRetries = 3
+
 // StartTestDoltServer starts a dedicated Dolt SQL server in a temp directory
 // on a dynamic port. Cleans up stale test servers first. Installs a signal
 // handler so cleanup runs even when tests are interrupted with Ctrl+C.
@@ -34,6 +40,7 @@ func StartTestDoltServer(tmpDirPrefix string) (*TestDoltServer, func()) {
 	CleanStaleTestServers()
 
 	if _, err := exec.LookPath("dolt"); err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: dolt not found in PATH, skipping test server\n")
 		return nil, func() {}
 	}
 
@@ -74,40 +81,55 @@ func StartTestDoltServer(tmpDirPrefix string) (*TestDoltServer, func()) {
 		return nil, func() {}
 	}
 
-	port, err := FindFreePort()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: failed to find free port: %v\n", err)
-		_ = os.RemoveAll(tmpDir)
-		return nil, func() {}
-	}
+	// Retry loop: FindFreePort releases the socket before dolt binds it,
+	// creating a race window where another process can grab the port.
+	var serverCmd *exec.Cmd
+	var port int
+	var pidFile string
+	verbose := os.Getenv("BEADS_TEST_DOLT_VERBOSE") == "1"
 
-	serverCmd := exec.Command("dolt", "sql-server",
-		"-H", "127.0.0.1",
-		"-P", fmt.Sprintf("%d", port),
-		"--no-auto-commit",
-	)
-	serverCmd.Dir = dbDir
-	serverCmd.Env = doltEnv
-	if os.Getenv("BEADS_TEST_DOLT_VERBOSE") != "1" {
-		serverCmd.Stderr = nil
-		serverCmd.Stdout = nil
-	}
-	if err := serverCmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: failed to start test dolt server: %v\n", err)
-		_ = os.RemoveAll(tmpDir)
-		return nil, func() {}
-	}
+	for attempt := 0; attempt < maxPortRetries; attempt++ {
+		port, err = FindFreePort()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WARN: failed to find free port (attempt %d/%d): %v\n", attempt+1, maxPortRetries, err)
+			continue
+		}
 
-	// Write PID file so stale cleanup can find orphans from interrupted runs
-	pidFile := filepath.Join(testPidDir, fmt.Sprintf("%s%d.pid", testPidPrefix, port))
-	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(serverCmd.Process.Pid)), 0600)
+		serverCmd = exec.Command("dolt", "sql-server",
+			"-H", "127.0.0.1",
+			"-P", fmt.Sprintf("%d", port),
+			"--no-auto-commit",
+		)
+		serverCmd.Dir = dbDir
+		serverCmd.Env = doltEnv
+		if !verbose {
+			serverCmd.Stderr = nil
+			serverCmd.Stdout = nil
+		}
+		if err = serverCmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "WARN: failed to start test dolt server on port %d (attempt %d/%d): %v\n", port, attempt+1, maxPortRetries, err)
+			continue
+		}
 
-	if !WaitForServer(port, 10*time.Second) {
-		fmt.Fprintf(os.Stderr, "WARN: test dolt server did not become ready on port %d\n", port)
+		// Write PID file so stale cleanup can find orphans from interrupted runs
+		pidFile = filepath.Join(testPidDir, fmt.Sprintf("%s%d.pid", testPidPrefix, port))
+		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(serverCmd.Process.Pid)), 0600)
+
+		if WaitForServer(port, serverStartTimeout) {
+			break // Server is ready
+		}
+
+		// Server failed to become ready — clean up this attempt and retry
+		fmt.Fprintf(os.Stderr, "WARN: test dolt server did not become ready on port %d (attempt %d/%d)\n", port, attempt+1, maxPortRetries)
 		_ = serverCmd.Process.Kill()
 		_ = serverCmd.Wait()
-		_ = os.RemoveAll(tmpDir)
 		_ = os.Remove(pidFile)
+		serverCmd = nil
+	}
+
+	if serverCmd == nil {
+		fmt.Fprintf(os.Stderr, "WARN: test dolt server failed to start after %d attempts, tests requiring dolt will be skipped\n", maxPortRetries)
+		_ = os.RemoveAll(tmpDir)
 		return nil, func() {}
 	}
 
