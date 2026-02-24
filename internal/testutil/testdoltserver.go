@@ -34,9 +34,24 @@ const maxPortRetries = 3
 // on a dynamic port. Cleans up stale test servers first. Installs a signal
 // handler so cleanup runs even when tests are interrupted with Ctrl+C.
 //
+// If BEADS_DOLT_PORT is already set in the environment (e.g. by an outer test
+// runner or scripts/test.sh with BEADS_TEST_SHARED_SERVER=1), the existing
+// server is reused and cleanup is a no-op.
+//
 // tmpDirPrefix is the os.MkdirTemp prefix (e.g. "beads-test-dolt-*").
 // Returns the server (nil if dolt not installed) and a cleanup function.
 func StartTestDoltServer(tmpDirPrefix string) (*TestDoltServer, func()) {
+	// Reuse existing server if BEADS_DOLT_PORT is already set by an outer runner.
+	// This avoids spawning redundant dolt processes when running go test ./...
+	// with a pre-started shared server.
+	if port := os.Getenv("BEADS_DOLT_PORT"); port != "" {
+		p, err := strconv.Atoi(port)
+		if err == nil && WaitForServer(p, 2*time.Second) {
+			return &TestDoltServer{Port: p}, func() {}
+		}
+		fmt.Fprintf(os.Stderr, "WARN: BEADS_DOLT_PORT=%s set but server not reachable, starting new server\n", port)
+	}
+
 	CleanStaleTestServers()
 
 	if _, err := exec.LookPath("dolt"); err != nil {
