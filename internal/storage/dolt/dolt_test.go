@@ -30,11 +30,17 @@ func testContext(t *testing.T) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), testTimeout)
 }
 
-// skipIfNoDolt skips the test if Dolt is not installed
+// skipIfNoDolt skips the test if Dolt is not installed or the test server
+// is not running. This prevents tests from accidentally hitting a production
+// Dolt server — tests MUST run against the isolated test server started by
+// TestMain in testmain_test.go.
 func skipIfNoDolt(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("dolt"); err != nil {
 		t.Skip("Dolt not installed, skipping test")
+	}
+	if testServerPort == 0 {
+		t.Skip("Test Dolt server not running, skipping test")
 	}
 }
 
