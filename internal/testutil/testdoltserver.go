@@ -176,40 +176,98 @@ func (s *TestDoltServer) cleanup() {
 }
 
 // CleanStaleTestServers kills orphaned test dolt servers from previous
-// interrupted test runs by scanning PID files in /tmp.
+// interrupted test runs by scanning PID files in /tmp, and removes
+// orphaned temp directories left behind by crashed tests.
 func CleanStaleTestServers() {
-	pattern := filepath.Join(testPidDir, testPidPrefix+"*.pid")
-	entries, err := filepath.Glob(pattern)
+	cleanStalePIDFiles()
+	cleanOrphanedTempDirs()
+}
+
+// cleanStalePIDFiles scans PID files in /tmp for dead or orphaned test servers.
+// Handles both the current prefix (beads-test-dolt-) and the legacy prefix
+// (dolt-test-server-) from before the rename.
+func cleanStalePIDFiles() {
+	prefixes := []string{testPidPrefix, "dolt-test-server-"}
+	for _, prefix := range prefixes {
+		pattern := filepath.Join(testPidDir, prefix+"*.pid")
+		entries, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, pidFile := range entries {
+			cleanPIDFile(pidFile)
+		}
+		// Also clean matching .lock files
+		lockPattern := filepath.Join(testPidDir, prefix+"*.lock")
+		lockEntries, _ := filepath.Glob(lockPattern)
+		for _, lockFile := range lockEntries {
+			_ = os.Remove(lockFile)
+		}
+	}
+}
+
+// cleanPIDFile handles a single PID file: removes if dead, kills if alive and is dolt.
+func cleanPIDFile(pidFile string) {
+	data, err := os.ReadFile(pidFile)
 	if err != nil {
+		_ = os.Remove(pidFile)
 		return
 	}
-	for _, pidFile := range entries {
-		data, err := os.ReadFile(pidFile)
-		if err != nil {
-			_ = os.Remove(pidFile)
-			continue
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil {
-			_ = os.Remove(pidFile)
-			continue
-		}
-		process, err := os.FindProcess(pid)
-		if err != nil {
-			_ = os.Remove(pidFile)
-			continue
-		}
-		if err := process.Signal(syscall.Signal(0)); err != nil {
-			// Process is dead — clean up stale PID file
-			_ = os.Remove(pidFile)
-			continue
-		}
-		// Process is alive — verify it's a dolt server before killing
-		if isDoltTestProcess(pid) {
-			_ = process.Signal(syscall.SIGKILL)
-			time.Sleep(100 * time.Millisecond)
-		}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
 		_ = os.Remove(pidFile)
+		return
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		_ = os.Remove(pidFile)
+		return
+	}
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		// Process is dead — clean up stale PID file
+		_ = os.Remove(pidFile)
+		return
+	}
+	// Process is alive — verify it's a dolt server before killing
+	if isDoltTestProcess(pid) {
+		_ = process.Signal(syscall.SIGKILL)
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = os.Remove(pidFile)
+}
+
+// cleanOrphanedTempDirs removes test temp directories whose owning server
+// process is no longer running. Handles both data dirs (beads-test-dolt-*)
+// and test working dirs (beads-bd-tests-*) in the system temp directory.
+func cleanOrphanedTempDirs() {
+	tmpDir := os.TempDir()
+	for _, prefix := range []string{"beads-test-dolt-", "beads-bd-tests-", "fix-test-dolt-", "doctor-test-dolt-"} {
+		pattern := filepath.Join(tmpDir, prefix+"*")
+		entries, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			info, err := os.Stat(entry)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			// Skip dirs modified in the last 5 minutes (may be in active use)
+			if time.Since(info.ModTime()) < 5*time.Minute {
+				continue
+			}
+			// Go module caches have read-only perms; fix before removal
+			_ = filepath.Walk(entry, func(path string, fi os.FileInfo, err error) error {
+				if err != nil {
+					return nil
+				}
+				if fi.IsDir() && fi.Mode()&0200 == 0 {
+					_ = os.Chmod(path, fi.Mode()|0200)
+				}
+				return nil
+			})
+			_ = os.RemoveAll(entry)
+		}
 	}
 }
 
