@@ -175,14 +175,19 @@ func TestIsPortAvailable(t *testing.T) {
 }
 
 func TestReclaimPortAvailable(t *testing.T) {
-	// When the port is free, reclaimPort should succeed
-	err := reclaimPort("127.0.0.1", 14200, "/tmp/nonexistent")
+	dir := t.TempDir()
+	// When the port is free, reclaimPort should return (0, nil)
+	adoptPID, err := reclaimPort("127.0.0.1", 14200, dir)
 	if err != nil {
 		t.Errorf("reclaimPort failed on free port: %v", err)
+	}
+	if adoptPID != 0 {
+		t.Errorf("expected adoptPID=0 for free port, got %d", adoptPID)
 	}
 }
 
 func TestReclaimPortBusyNonDolt(t *testing.T) {
+	dir := t.TempDir()
 	// Occupy a port with a non-dolt process
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -192,9 +197,67 @@ func TestReclaimPortBusyNonDolt(t *testing.T) {
 	occupiedPort := ln.Addr().(*net.TCPAddr).Port
 
 	// reclaimPort should fail (not silently use another port)
-	err = reclaimPort("127.0.0.1", occupiedPort, "/tmp/nonexistent")
+	adoptPID, err := reclaimPort("127.0.0.1", occupiedPort, dir)
 	if err == nil {
 		t.Error("reclaimPort should fail when a non-dolt process holds the port")
+	}
+	if adoptPID != 0 {
+		t.Errorf("expected adoptPID=0 on error, got %d", adoptPID)
+	}
+}
+
+func TestMaxDoltServers(t *testing.T) {
+	t.Run("standalone", func(t *testing.T) {
+		orig := os.Getenv("GT_ROOT")
+		os.Unsetenv("GT_ROOT")
+		defer func() {
+			if orig != "" {
+				os.Setenv("GT_ROOT", orig)
+			}
+		}()
+
+		if max := maxDoltServers(); max != 3 {
+			t.Errorf("expected 3 in standalone mode, got %d", max)
+		}
+	})
+
+	t.Run("gastown", func(t *testing.T) {
+		orig := os.Getenv("GT_ROOT")
+		os.Setenv("GT_ROOT", t.TempDir())
+		defer func() {
+			if orig != "" {
+				os.Setenv("GT_ROOT", orig)
+			} else {
+				os.Unsetenv("GT_ROOT")
+			}
+		}()
+
+		if max := maxDoltServers(); max != 1 {
+			t.Errorf("expected 1 under Gas Town, got %d", max)
+		}
+	})
+}
+
+func TestIsProcessInDir(t *testing.T) {
+	// Our own process should have a CWD we can check
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Our PID should be in our CWD
+	if !isProcessInDir(os.Getpid(), cwd) {
+		t.Log("isProcessInDir returned false for own process CWD (lsof may not be available)")
+	}
+
+	// Our PID should NOT be in a random temp dir
+	if isProcessInDir(os.Getpid(), t.TempDir()) {
+		t.Error("isProcessInDir should return false for wrong directory")
+	}
+
+	// Dead PID should return false
+	if isProcessInDir(99999999, cwd) {
+		t.Error("isProcessInDir should return false for dead PID")
 	}
 }
 

@@ -1,10 +1,15 @@
-// Package doltserver manages the lifecycle of a local dolt sql-server process
-// for standalone beads users. It provides transparent auto-start so that
-// `bd init` and `bd <command>` work without manual server management.
+// Package doltserver manages the lifecycle of a local dolt sql-server process.
+// It provides transparent auto-start so that `bd init` and `bd <command>` work
+// without manual server management.
 //
-// Each beads project gets its own dolt server on a deterministic port derived
-// from the project path (hash → range 13307–14307). Users with explicit port
-// config in metadata.json always use that port instead.
+// Under Gas Town (GT_ROOT set), all worktrees share a single server on port 3307.
+// In standalone mode, each project gets a deterministic port derived from the
+// project path (hash → range 13307–14307). Users with explicit port config in
+// metadata.json always use that port instead.
+//
+// Anti-proliferation: the server enforces one-server-one-port. If the canonical
+// port is busy, the server identifies and handles the occupant rather than
+// silently starting on another port.
 //
 // Server state files (PID, log, lock) live in the .beads/ directory.
 package doltserver
@@ -113,14 +118,16 @@ func isPortAvailable(host string, port int) bool {
 
 // reclaimPort ensures the canonical port is available for use.
 // If the port is busy:
+//   - If our dolt server (same data dir or daemon-managed) → return its PID for adoption
 //   - If a stale/orphan dolt sql-server holds it → kill it and reclaim
 //   - If a non-dolt process holds it → return error (don't silently use another port)
 //
-// This replaces the old findAvailablePort fallback which created orphan servers
-// by silently starting on the next available port.
-func reclaimPort(host string, port int, expectedDataDir string) error {
+// Returns (adoptPID, nil) when an existing server should be adopted.
+// Returns (0, nil) when the port is free for a new server.
+// Returns (0, err) when the port can't be used.
+func reclaimPort(host string, port int, beadsDir string) (adoptPID int, err error) {
 	if isPortAvailable(host, port) {
-		return nil // port is free
+		return 0, nil // port is free
 	}
 
 	// Port is busy — find out what's using it
@@ -130,32 +137,44 @@ func reclaimPort(host string, port int, expectedDataDir string) error {
 		// Wait briefly and retry.
 		time.Sleep(2 * time.Second)
 		if isPortAvailable(host, port) {
-			return nil
+			return 0, nil
 		}
-		return fmt.Errorf("port %d is busy but cannot identify the process.\n\nCheck with: lsof -i :%d", port, port)
+		return 0, fmt.Errorf("port %d is busy but cannot identify the process.\n\nCheck with: lsof -i :%d", port, port)
 	}
 
 	// Check if it's a dolt sql-server process
 	if !isDoltProcess(pid) {
-		return fmt.Errorf("port %d is in use by a non-dolt process (PID %d).\n\nFree the port or configure a different one with: bd dolt set port <port>", port, pid)
+		return 0, fmt.Errorf("port %d is in use by a non-dolt process (PID %d).\n\nFree the port or configure a different one with: bd dolt set port <port>", port, pid)
 	}
 
-	// It's a dolt server. Check if it's using the same data directory (i.e., it's "ours").
-	if expectedDataDir != "" && isDoltProcessWithDataDir(pid, expectedDataDir) {
-		// This IS our server — the caller should reuse it, not start a new one.
-		// Write/update the PID file so IsRunning() can find it.
-		return fmt.Errorf("existing dolt server (PID %d) is already serving this data directory.\nReuse it instead of starting a new one", pid)
+	// It's a dolt process. Check if it's one we should adopt.
+
+	// Under Gas Town, check the daemon PID file first
+	if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
+		daemonPidFile := filepath.Join(gtRoot, "daemon", "dolt.pid")
+		if data, readErr := os.ReadFile(daemonPidFile); readErr == nil {
+			if daemonPID, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && daemonPID == pid {
+				return pid, nil // daemon-managed server — adopt it
+			}
+		}
+	}
+
+	// Check if the process is using our data directory (CWD matches our dolt dir).
+	// dolt sql-server is started with cmd.Dir = doltDir, so CWD is the data dir.
+	doltDir := filepath.Join(beadsDir, "dolt")
+	if isProcessInDir(pid, doltDir) {
+		return pid, nil // our server — adopt it
 	}
 
 	// It's an orphan/stale dolt server on our port — kill it
 	fmt.Fprintf(os.Stderr, "Killing orphan dolt server (PID %d) on port %d\n", pid, port)
-	if proc, err := os.FindProcess(pid); err == nil {
+	if proc, findErr := os.FindProcess(pid); findErr == nil {
 		_ = proc.Signal(syscall.SIGTERM)
 		// Wait for graceful exit
 		for i := 0; i < 10; i++ {
 			time.Sleep(500 * time.Millisecond)
 			if proc.Signal(syscall.Signal(0)) != nil {
-				return nil // exited
+				return 0, nil // exited
 			}
 		}
 		_ = proc.Signal(syscall.SIGKILL)
@@ -163,9 +182,9 @@ func reclaimPort(host string, port int, expectedDataDir string) error {
 	}
 
 	if isPortAvailable(host, port) {
-		return nil
+		return 0, nil
 	}
-	return fmt.Errorf("failed to reclaim port %d from orphan dolt server (PID %d)", port, pid)
+	return 0, fmt.Errorf("failed to reclaim port %d from orphan dolt server (PID %d)", port, pid)
 }
 
 // findPIDOnPort uses lsof to find the PID of the process listening on a TCP port.
@@ -199,16 +218,26 @@ func countDoltServers() int {
 	return count
 }
 
-// isDoltProcessWithDataDir checks if a dolt process is using the expected data directory.
-func isDoltProcessWithDataDir(pid int, expectedDir string) bool {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+// isProcessInDir checks if a process's working directory matches the given path.
+// Uses lsof to look up the CWD, which is more reliable than checking command-line
+// args since dolt sql-server is started with cmd.Dir (not a --data-dir flag).
+func isProcessInDir(pid int, dir string) bool {
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
 	if err != nil {
 		return false
 	}
-	cmdline := string(out)
-	// Normalize paths for comparison
-	absExpected, _ := filepath.Abs(expectedDir)
-	return strings.Contains(cmdline, absExpected) || strings.Contains(cmdline, expectedDir)
+	absDir, _ := filepath.Abs(dir)
+	// lsof -Fn output format: "p<pid>\nfcwd\nn<path>"
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "n") {
+			cwd := strings.TrimSpace(line[1:])
+			absCwd, _ := filepath.Abs(cwd)
+			if absCwd == absDir {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // readPortFile reads the actual port from the port file, if it exists.
@@ -413,17 +442,21 @@ func Start(beadsDir string) (*State, error) {
 	// Reclaim the canonical port. Kill orphan dolt servers on it; fail if
 	// a non-dolt process holds it. Never silently fall back to another port.
 	actualPort := cfg.Port
-	if err := reclaimPort(cfg.Host, actualPort, doltDir); err != nil {
+	adoptPID, reclaimErr := reclaimPort(cfg.Host, actualPort, beadsDir)
+	if reclaimErr != nil {
 		logFile.Close()
-		// If the error says our server is already running, try to adopt it
-		if strings.Contains(err.Error(), "already serving this data directory") {
-			if pid := findPIDOnPort(actualPort); pid > 0 {
-				_ = os.WriteFile(pidPath(beadsDir), []byte(strconv.Itoa(pid)), 0600)
-				_ = writePortFile(beadsDir, actualPort)
-				return &State{Running: true, PID: pid, Port: actualPort, DataDir: doltDir}, nil
-			}
+		return nil, fmt.Errorf("cannot start dolt server on port %d: %w", actualPort, reclaimErr)
+	}
+	if adoptPID > 0 {
+		// Existing server is ours (same data dir or daemon-managed) — adopt it
+		logFile.Close()
+		_ = os.WriteFile(pidPath(beadsDir), []byte(strconv.Itoa(adoptPID)), 0600)
+		_ = writePortFile(beadsDir, actualPort)
+		touchActivity(beadsDir)
+		if !IsDaemonManaged() {
+			forkIdleMonitor(beadsDir)
 		}
-		return nil, fmt.Errorf("cannot start dolt server on port %d: %w", actualPort, err)
+		return &State{Running: true, PID: adoptPID, Port: actualPort, DataDir: doltDir}, nil
 	}
 
 	// Start dolt sql-server
