@@ -233,8 +233,9 @@ required. Use this command for explicit control or diagnostics.`,
 			fmt.Fprintf(os.Stderr, "Error: not in a beads repository (no .beads directory found)\n")
 			os.Exit(1)
 		}
+		serverDir := doltserver.ResolveServerDir(beadsDir)
 
-		state, err := doltserver.Start(beadsDir)
+		state, err := doltserver.Start(serverDir)
 		if err != nil {
 			if strings.Contains(err.Error(), "already running") {
 				fmt.Println(err)
@@ -246,7 +247,7 @@ required. Use this command for explicit control or diagnostics.`,
 
 		fmt.Printf("Dolt server started (PID %d, port %d)\n", state.PID, state.Port)
 		fmt.Printf("  Data: %s\n", state.DataDir)
-		fmt.Printf("  Logs: %s\n", doltserver.LogPath(beadsDir))
+		fmt.Printf("  Logs: %s\n", doltserver.LogPath(serverDir))
 	},
 }
 
@@ -263,8 +264,9 @@ on the next bd command unless auto-start is disabled.`,
 			fmt.Fprintf(os.Stderr, "Error: not in a beads repository (no .beads directory found)\n")
 			os.Exit(1)
 		}
+		serverDir := doltserver.ResolveServerDir(beadsDir)
 
-		if err := doltserver.Stop(beadsDir); err != nil {
+		if err := doltserver.Stop(serverDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -284,8 +286,9 @@ Displays whether the server is running, its PID, port, and data directory.`,
 			fmt.Fprintf(os.Stderr, "Error: not in a beads repository (no .beads directory found)\n")
 			os.Exit(1)
 		}
+		serverDir := doltserver.ResolveServerDir(beadsDir)
 
-		state, err := doltserver.IsRunning(beadsDir)
+		state, err := doltserver.IsRunning(serverDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -297,7 +300,7 @@ Displays whether the server is running, its PID, port, and data directory.`,
 		}
 
 		if state == nil || !state.Running {
-			cfg := doltserver.DefaultConfig(beadsDir)
+			cfg := doltserver.DefaultConfig(serverDir)
 			fmt.Println("Dolt server: not running")
 			fmt.Printf("  Expected port: %d\n", cfg.Port)
 			return
@@ -307,7 +310,7 @@ Displays whether the server is running, its PID, port, and data directory.`,
 		fmt.Printf("  PID:  %d\n", state.PID)
 		fmt.Printf("  Port: %d\n", state.Port)
 		fmt.Printf("  Data: %s\n", state.DataDir)
-		fmt.Printf("  Logs: %s\n", doltserver.LogPath(beadsDir))
+		fmt.Printf("  Logs: %s\n", doltserver.LogPath(serverDir))
 	},
 }
 
@@ -353,6 +356,37 @@ var doltIdleMonitorCmd = &cobra.Command{
 	},
 }
 
+var doltKillallCmd = &cobra.Command{
+	Use:   "killall",
+	Short: "Kill all orphan Dolt server processes",
+	Long: `Find and kill orphan dolt sql-server processes not tracked by the
+canonical PID file.
+
+Under Gas Town, the canonical server lives at $GT_ROOT/.beads/. Any other
+dolt sql-server processes are considered orphans and will be killed.
+
+In standalone mode, all dolt sql-server processes are killed except the
+one tracked by the current project's PID file.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		beadsDir := beads.FindBeadsDir()
+		if beadsDir == "" {
+			beadsDir = "." // best effort
+		}
+
+		killed, err := doltserver.KillStaleServers(beadsDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		if len(killed) == 0 {
+			fmt.Println("No orphan dolt servers found.")
+		} else {
+			fmt.Printf("Killed %d orphan dolt server(s): %v\n", len(killed), killed)
+		}
+	},
+}
+
 func init() {
 	doltSetCmd.Flags().Bool("update-config", false, "Also write to config.yaml for team-wide defaults")
 	doltPushCmd.Flags().Bool("force", false, "Force push (overwrite remote changes)")
@@ -368,6 +402,7 @@ func init() {
 	doltCmd.AddCommand(doltStopCmd)
 	doltCmd.AddCommand(doltStatusCmd)
 	doltCmd.AddCommand(doltIdleMonitorCmd)
+	doltCmd.AddCommand(doltKillallCmd)
 	rootCmd.AddCommand(doltCmd)
 }
 

@@ -103,17 +103,45 @@ func TestIsRunningCorruptPID(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	dir := t.TempDir()
 
-	cfg := DefaultConfig(dir)
-	if cfg.Host != "127.0.0.1" {
-		t.Errorf("expected host 127.0.0.1, got %s", cfg.Host)
-	}
-	if cfg.Port < portRangeBase || cfg.Port >= portRangeBase+portRangeSize {
-		t.Errorf("expected port in range [%d, %d), got %d",
-			portRangeBase, portRangeBase+portRangeSize, cfg.Port)
-	}
-	if cfg.BeadsDir != dir {
-		t.Errorf("expected BeadsDir=%s, got %s", dir, cfg.BeadsDir)
-	}
+	t.Run("standalone", func(t *testing.T) {
+		// Clear GT_ROOT to test standalone behavior
+		orig := os.Getenv("GT_ROOT")
+		os.Unsetenv("GT_ROOT")
+		defer func() {
+			if orig != "" {
+				os.Setenv("GT_ROOT", orig)
+			}
+		}()
+
+		cfg := DefaultConfig(dir)
+		if cfg.Host != "127.0.0.1" {
+			t.Errorf("expected host 127.0.0.1, got %s", cfg.Host)
+		}
+		if cfg.Port < portRangeBase || cfg.Port >= portRangeBase+portRangeSize {
+			t.Errorf("expected port in range [%d, %d), got %d",
+				portRangeBase, portRangeBase+portRangeSize, cfg.Port)
+		}
+		if cfg.BeadsDir != dir {
+			t.Errorf("expected BeadsDir=%s, got %s", dir, cfg.BeadsDir)
+		}
+	})
+
+	t.Run("gastown", func(t *testing.T) {
+		orig := os.Getenv("GT_ROOT")
+		os.Setenv("GT_ROOT", t.TempDir())
+		defer func() {
+			if orig != "" {
+				os.Setenv("GT_ROOT", orig)
+			} else {
+				os.Unsetenv("GT_ROOT")
+			}
+		}()
+
+		cfg := DefaultConfig(dir)
+		if cfg.Port != GasTownPort {
+			t.Errorf("expected GasTownPort %d under GT_ROOT, got %d", GasTownPort, cfg.Port)
+		}
+	})
 }
 
 func TestStopNotRunning(t *testing.T) {

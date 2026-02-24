@@ -31,6 +31,28 @@ const (
 	portRangeSize = 1000
 )
 
+// GasTownPort is the fixed port used when running under Gas Town (GT_ROOT set).
+// All worktrees share this single server instead of each getting a derived port.
+const GasTownPort = 3307
+
+// resolveServerDir returns the canonical server directory for dolt state files.
+// Under Gas Town (GT_ROOT set), all server operations use $GT_ROOT/.beads/
+// so that N worktrees share one server instead of spawning N servers.
+// Outside Gas Town, returns beadsDir unchanged.
+func resolveServerDir(beadsDir string) string {
+	if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
+		return filepath.Join(gtRoot, ".beads")
+	}
+	return beadsDir
+}
+
+// ResolveServerDir is the exported version of resolveServerDir.
+// CLI commands use this to resolve the server directory before calling
+// Start, Stop, or IsRunning.
+func ResolveServerDir(beadsDir string) string {
+	return resolveServerDir(beadsDir)
+}
+
 // Config holds the server configuration.
 type Config struct {
 	BeadsDir string // Path to .beads/ directory
@@ -134,7 +156,12 @@ func DefaultConfig(beadsDir string) *Config {
 	}
 
 	if cfg.Port == 0 {
-		cfg.Port = DerivePort(beadsDir)
+		// Under Gas Town, use fixed port so all worktrees share one server.
+		if os.Getenv("GT_ROOT") != "" {
+			cfg.Port = GasTownPort
+		} else {
+			cfg.Port = DerivePort(beadsDir)
+		}
 	}
 
 	return cfg
@@ -195,23 +222,27 @@ func IsRunning(beadsDir string) (*State, error) {
 
 // EnsureRunning starts the server if it is not already running.
 // This is the main auto-start entry point. Thread-safe via file lock.
+// Under Gas Town (GT_ROOT set), resolves to the canonical server directory
+// so all worktrees share one server.
 // Returns the port the server is listening on.
 func EnsureRunning(beadsDir string) (int, error) {
-	state, err := IsRunning(beadsDir)
+	serverDir := resolveServerDir(beadsDir)
+
+	state, err := IsRunning(serverDir)
 	if err != nil {
 		return 0, err
 	}
 	if state.Running {
 		// Touch activity file so idle monitor knows we're active
-		touchActivity(beadsDir)
+		touchActivity(serverDir)
 		return state.Port, nil
 	}
 
-	s, err := Start(beadsDir)
+	s, err := Start(serverDir)
 	if err != nil {
 		return 0, err
 	}
-	touchActivity(beadsDir)
+	touchActivity(serverDir)
 	return s.Port, nil
 }
 
@@ -403,6 +434,46 @@ func cleanupStateFiles(beadsDir string) {
 // LogPath returns the path to the server log file.
 func LogPath(beadsDir string) string {
 	return logPath(beadsDir)
+}
+
+// KillStaleServers finds and kills orphan dolt sql-server processes
+// not tracked by the canonical PID file. Under Gas Town, the canonical
+// server is at $GT_ROOT/.beads/; in standalone mode, beadsDir is used.
+// Returns the PIDs of killed processes.
+func KillStaleServers(beadsDir string) ([]int, error) {
+	out, err := exec.Command("pgrep", "-f", "dolt sql-server").Output()
+	if err != nil {
+		// pgrep returns exit 1 when no processes match
+		return nil, nil
+	}
+
+	// Determine the canonical PID (the one we should NOT kill)
+	serverDir := resolveServerDir(beadsDir)
+	var canonicalPID int
+	if serverDir != "" {
+		if data, readErr := os.ReadFile(pidPath(serverDir)); readErr == nil {
+			canonicalPID, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+	}
+
+	var killed []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(line))
+		if parseErr != nil || pid == 0 || pid == os.Getpid() {
+			continue
+		}
+		if canonicalPID != 0 && pid == canonicalPID {
+			continue // preserve the canonical server
+		}
+		if !isDoltProcess(pid) {
+			continue
+		}
+		if proc, findErr := os.FindProcess(pid); findErr == nil {
+			_ = proc.Signal(syscall.SIGKILL)
+			killed = append(killed, pid)
+		}
+	}
+	return killed, nil
 }
 
 // waitForReady polls TCP until the server accepts connections.
