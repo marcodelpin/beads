@@ -10,6 +10,8 @@
 package protocol
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -122,6 +124,17 @@ type workspace struct {
 	t   *testing.T
 }
 
+// testPrefix returns a unique prefix with a random suffix to ensure each test
+// invocation gets its own Dolt database (beads_<prefix>), avoiding cross-test
+// pollution and stale data from prior runs.
+func testPrefix(t *testing.T) string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	return "t" + hex.EncodeToString(b[:]) // e.g. "t1a2b3c4d" — 9 chars, valid SQL identifier
+}
+
 func newWorkspace(t *testing.T) *workspace {
 	t.Helper()
 	if _, err := exec.LookPath("dolt"); err != nil {
@@ -141,7 +154,8 @@ func newWorkspace(t *testing.T) *workspace {
 	w.git("add", ".")
 	w.git("commit", "-m", "initial")
 
-	w.run("init", "--prefix", "test", "--quiet")
+	prefix := testPrefix(t)
+	w.run("init", "--prefix", prefix, "--quiet")
 	return w
 }
 
