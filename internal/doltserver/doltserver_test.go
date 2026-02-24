@@ -174,8 +174,16 @@ func TestIsPortAvailable(t *testing.T) {
 	}
 }
 
-func TestFindAvailablePort(t *testing.T) {
-	// Occupy the "derived" port
+func TestReclaimPortAvailable(t *testing.T) {
+	// When the port is free, reclaimPort should succeed
+	err := reclaimPort("127.0.0.1", 14200, "/tmp/nonexistent")
+	if err != nil {
+		t.Errorf("reclaimPort failed on free port: %v", err)
+	}
+}
+
+func TestReclaimPortBusyNonDolt(t *testing.T) {
+	// Occupy a port with a non-dolt process
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -183,26 +191,26 @@ func TestFindAvailablePort(t *testing.T) {
 	defer ln.Close()
 	occupiedPort := ln.Addr().(*net.TCPAddr).Port
 
-	// findAvailablePort should skip the occupied port
-	found := findAvailablePort("127.0.0.1", occupiedPort)
-	if found == occupiedPort {
-		t.Error("findAvailablePort returned the occupied port")
-	}
-	// Should be within fallback range
-	diff := found - occupiedPort
-	if diff < 0 {
-		// Wrapped around range — this is fine
-	} else if diff > portFallbackRange {
-		t.Errorf("findAvailablePort returned port %d, too far from %d", found, occupiedPort)
+	// reclaimPort should fail (not silently use another port)
+	err = reclaimPort("127.0.0.1", occupiedPort, "/tmp/nonexistent")
+	if err == nil {
+		t.Error("reclaimPort should fail when a non-dolt process holds the port")
 	}
 }
 
-func TestFindAvailablePortPrefersDerived(t *testing.T) {
-	// When the derived port IS available, it should be returned directly
-	derivedPort := 14200 // unlikely to be in use
-	found := findAvailablePort("127.0.0.1", derivedPort)
-	if found != derivedPort {
-		t.Errorf("expected derived port %d, got %d", derivedPort, found)
+func TestCountDoltServers(t *testing.T) {
+	// Just verify it doesn't panic and returns a non-negative number
+	count := countDoltServers()
+	if count < 0 {
+		t.Errorf("countDoltServers returned negative: %d", count)
+	}
+}
+
+func TestFindPIDOnPortEmpty(t *testing.T) {
+	// A port nobody is listening on should return 0
+	pid := findPIDOnPort(19999)
+	if pid != 0 {
+		t.Errorf("expected 0 for unused port, got %d", pid)
 	}
 }
 

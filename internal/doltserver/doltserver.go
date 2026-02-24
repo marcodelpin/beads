@@ -78,8 +78,14 @@ func monitorPidPath(beadsDir string) string {
 	return filepath.Join(beadsDir, "dolt-monitor.pid")
 }
 
-// portFallbackRange is the number of additional ports to try if the derived port is busy.
-const portFallbackRange = 9
+// MaxDoltServers is the hard ceiling on concurrent dolt sql-server processes.
+// Under Gas Town, only 1 is allowed. Standalone allows up to 3 (e.g., multiple projects).
+func maxDoltServers() int {
+	if IsDaemonManaged() {
+		return 1
+	}
+	return 3
+}
 
 // DerivePort computes a stable port from the beadsDir path.
 // Maps to range 13307–14306 to avoid common service ports.
@@ -105,20 +111,104 @@ func isPortAvailable(host string, port int) bool {
 	return true
 }
 
-// findAvailablePort tries the derived port first, then the next portFallbackRange ports.
-// Returns the first available port, or the derived port if none are available
-// (letting the caller handle the bind error with a clear message).
-func findAvailablePort(host string, derivedPort int) int {
-	for i := 0; i <= portFallbackRange; i++ {
-		candidate := derivedPort + i
-		if candidate >= portRangeBase+portRangeSize {
-			candidate = portRangeBase + (candidate - portRangeBase - portRangeSize)
+// reclaimPort ensures the canonical port is available for use.
+// If the port is busy:
+//   - If a stale/orphan dolt sql-server holds it → kill it and reclaim
+//   - If a non-dolt process holds it → return error (don't silently use another port)
+//
+// This replaces the old findAvailablePort fallback which created orphan servers
+// by silently starting on the next available port.
+func reclaimPort(host string, port int, expectedDataDir string) error {
+	if isPortAvailable(host, port) {
+		return nil // port is free
+	}
+
+	// Port is busy — find out what's using it
+	pid := findPIDOnPort(port)
+	if pid == 0 {
+		// Can't identify the process; port may be in TIME_WAIT or transient use.
+		// Wait briefly and retry.
+		time.Sleep(2 * time.Second)
+		if isPortAvailable(host, port) {
+			return nil
 		}
-		if isPortAvailable(host, candidate) {
-			return candidate
+		return fmt.Errorf("port %d is busy but cannot identify the process.\n\nCheck with: lsof -i :%d", port, port)
+	}
+
+	// Check if it's a dolt sql-server process
+	if !isDoltProcess(pid) {
+		return fmt.Errorf("port %d is in use by a non-dolt process (PID %d).\n\nFree the port or configure a different one with: bd dolt set port <port>", port, pid)
+	}
+
+	// It's a dolt server. Check if it's using the same data directory (i.e., it's "ours").
+	if expectedDataDir != "" && isDoltProcessWithDataDir(pid, expectedDataDir) {
+		// This IS our server — the caller should reuse it, not start a new one.
+		// Write/update the PID file so IsRunning() can find it.
+		return fmt.Errorf("existing dolt server (PID %d) is already serving this data directory.\nReuse it instead of starting a new one", pid)
+	}
+
+	// It's an orphan/stale dolt server on our port — kill it
+	fmt.Fprintf(os.Stderr, "Killing orphan dolt server (PID %d) on port %d\n", pid, port)
+	if proc, err := os.FindProcess(pid); err == nil {
+		_ = proc.Signal(syscall.SIGTERM)
+		// Wait for graceful exit
+		for i := 0; i < 10; i++ {
+			time.Sleep(500 * time.Millisecond)
+			if proc.Signal(syscall.Signal(0)) != nil {
+				return nil // exited
+			}
+		}
+		_ = proc.Signal(syscall.SIGKILL)
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if isPortAvailable(host, port) {
+		return nil
+	}
+	return fmt.Errorf("failed to reclaim port %d from orphan dolt server (PID %d)", port, pid)
+}
+
+// findPIDOnPort uses lsof to find the PID of the process listening on a TCP port.
+// Returns 0 if no process found or on error.
+func findPIDOnPort(port int) int {
+	out, err := exec.Command("lsof", "-ti", fmt.Sprintf(":%d", port), "-sTCP:LISTEN").Output()
+	if err != nil {
+		return 0
+	}
+	// lsof may return multiple PIDs; take the first one
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if pid, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && pid > 0 {
+			return pid
 		}
 	}
-	return derivedPort
+	return 0
+}
+
+// countDoltServers returns the number of running dolt sql-server processes.
+func countDoltServers() int {
+	out, err := exec.Command("pgrep", "-f", "dolt sql-server").Output()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// isDoltProcessWithDataDir checks if a dolt process is using the expected data directory.
+func isDoltProcessWithDataDir(pid int, expectedDir string) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return false
+	}
+	cmdline := string(out)
+	// Normalize paths for comparison
+	absExpected, _ := filepath.Abs(expectedDir)
+	return strings.Contains(cmdline, absExpected) || strings.Contains(cmdline, expectedDir)
 }
 
 // readPortFile reads the actual port from the port file, if it exists.
@@ -309,19 +399,31 @@ func Start(beadsDir string) (*State, error) {
 		return nil, fmt.Errorf("initializing dolt database: %w", err)
 	}
 
+	// Process census: refuse to start if too many dolt servers already running
+	if count := countDoltServers(); count >= maxDoltServers() {
+		return nil, fmt.Errorf("too many dolt sql-server processes running (%d, max %d).\n\nKill orphans with: bd dolt killall\nList processes: pgrep -la 'dolt sql-server'", count, maxDoltServers())
+	}
+
 	// Open log file
 	logFile, err := os.OpenFile(logPath(beadsDir), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("opening log file: %w", err)
 	}
 
-	// Find an available port (tries derived port, then next 9)
+	// Reclaim the canonical port. Kill orphan dolt servers on it; fail if
+	// a non-dolt process holds it. Never silently fall back to another port.
 	actualPort := cfg.Port
-	if !isPortAvailable(cfg.Host, actualPort) {
-		actualPort = findAvailablePort(cfg.Host, cfg.Port)
-		if actualPort != cfg.Port {
-			fmt.Fprintf(os.Stderr, "Port %d busy, using %d instead\n", cfg.Port, actualPort)
+	if err := reclaimPort(cfg.Host, actualPort, doltDir); err != nil {
+		logFile.Close()
+		// If the error says our server is already running, try to adopt it
+		if strings.Contains(err.Error(), "already serving this data directory") {
+			if pid := findPIDOnPort(actualPort); pid > 0 {
+				_ = os.WriteFile(pidPath(beadsDir), []byte(strconv.Itoa(pid)), 0600)
+				_ = writePortFile(beadsDir, actualPort)
+				return &State{Running: true, PID: pid, Port: actualPort, DataDir: doltDir}, nil
+			}
 		}
+		return nil, fmt.Errorf("cannot start dolt server on port %d: %w", actualPort, err)
 	}
 
 	// Start dolt sql-server
