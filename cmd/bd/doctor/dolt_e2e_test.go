@@ -47,11 +47,13 @@ func TestMain(m *testing.M) {
 	srv, cleanupServer := testutil.StartTestDoltServer("doctor-test-dolt-*")
 	if srv != nil {
 		os.Setenv("BEADS_DOLT_PORT", fmt.Sprintf("%d", srv.Port))
+		os.Setenv("BEADS_TEST_MODE", "1")
 	}
 
 	code := m.Run()
 
 	os.Unsetenv("BEADS_DOLT_PORT")
+	os.Unsetenv("BEADS_TEST_MODE")
 	cleanupServer()
 	if testBDDir != "" {
 		os.RemoveAll(testBDDir)

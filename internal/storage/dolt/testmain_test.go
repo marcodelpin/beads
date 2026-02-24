@@ -24,11 +24,13 @@ func testMainInner(m *testing.M) int {
 	if srv != nil {
 		testServerPort = srv.Port
 		os.Setenv("BEADS_DOLT_PORT", fmt.Sprintf("%d", srv.Port))
+		os.Setenv("BEADS_TEST_MODE", "1")
 	}
 
 	code := m.Run()
 
 	testServerPort = 0
 	os.Unsetenv("BEADS_DOLT_PORT")
+	os.Unsetenv("BEADS_TEST_MODE")
 	return code
 }

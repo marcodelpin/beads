@@ -269,6 +269,7 @@ func (w *workspace) runEnv() []string {
 	}
 	if testDoltServerPort != 0 {
 		env = append(env, "BEADS_DOLT_PORT="+strconv.Itoa(testDoltServerPort))
+		env = append(env, "BEADS_TEST_MODE=1")
 	}
 	if v := os.Getenv("TMPDIR"); v != "" {
 		env = append(env, "TMPDIR="+v)
