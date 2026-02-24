@@ -570,8 +570,12 @@ func ProjectToEpic(lp *Project) *types.Issue {
 		status = types.StatusOpen // planned, or unknown
 	}
 
+	externalRef := lp.URL
+	if canonical, ok := CanonicalizeLinearExternalRef(externalRef); ok {
+		externalRef = canonical
+	}
+
 	issue := &types.Issue{
-		ID:          lp.ID, // Use Linear UUID as ID for now
 		Title:       lp.Name,
 		Description: lp.Description,
 		Status:      status,
@@ -579,7 +583,18 @@ func ProjectToEpic(lp *Project) *types.Issue {
 		Priority:    2, // Default medium priority
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
-		ExternalRef: &lp.URL,
+		ExternalRef: &externalRef,
+	}
+
+	if lp.CompletedAt != "" {
+		completedAt, err := time.Parse(time.RFC3339, lp.CompletedAt)
+		if err == nil {
+			issue.ClosedAt = &completedAt
+		}
+	}
+
+	if lp.State == "canceled" {
+		issue.CloseReason = "canceled"
 	}
 
 	return issue
@@ -590,6 +605,8 @@ func MapEpicToProjectState(status types.Status) string {
 	switch status {
 	case types.StatusClosed:
 		return "completed"
+	case types.StatusInProgress:
+		return "started"
 	default:
 		return "planned"
 	}

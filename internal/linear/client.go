@@ -813,7 +813,7 @@ func (c *Client) CreateProject(ctx context.Context, name, description, state str
 	`
 
 	input := map[string]interface{}{
-		"teamId":      c.TeamID,
+		"teamIds":     []string{c.TeamID},
 		"name":        name,
 		"description": description,
 	}

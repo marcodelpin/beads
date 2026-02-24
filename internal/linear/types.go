@@ -175,7 +175,7 @@ type Project struct {
 	SlugId      string `json:"slugId"`
 	URL         string `json:"url"`
 	State       string `json:"state"` // "planned", "started", "paused", "completed", "canceled"
-	Progress    int    `json:"progress"`
+	Progress    float64 `json:"progress"`
 	CreatedAt   string `json:"createdAt"`
 	UpdatedAt   string `json:"updatedAt"`
 	CompletedAt string `json:"completedAt,omitempty"`
