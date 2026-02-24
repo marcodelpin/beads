@@ -308,6 +308,36 @@ func TestCreateWispNoDoubleHyphen(t *testing.T) {
 	}
 }
 
+// TestCreateWispNoDoublePrefix verifies that wisps with IDPrefix="wisp" don't
+// get double-prefixed as "bd-wisp-wisp-xxx" (beads-yzh).
+func TestCreateWispNoDoublePrefix(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	wisp := &types.Issue{
+		Title:     "test wisp double prefix",
+		Status:    types.StatusOpen,
+		Priority:  3,
+		IssueType: types.TypeTask,
+		Ephemeral: true,
+		IDPrefix:  "wisp", // Set by cloneSubgraph for wisp molecules
+	}
+	if err := store.createWisp(ctx, wisp, "test-user"); err != nil {
+		t.Fatalf("createWisp failed: %v", err)
+	}
+
+	// ID should be "<prefix>-wisp-<hash>", NOT "<prefix>-wisp-wisp-<hash>"
+	if strings.Contains(wisp.ID, "wisp-wisp") {
+		t.Errorf("wisp ID has double 'wisp' prefix: %q", wisp.ID)
+	}
+	if !strings.Contains(wisp.ID, "-wisp-") {
+		t.Errorf("wisp ID should contain '-wisp-', got %q", wisp.ID)
+	}
+}
+
 // TestTransactionCreateIssueNoDoubleHyphen verifies that issue IDs created
 // within a transaction don't get double hyphens if the DB has a trailing-hyphen
 // prefix (bd-6uly). This tests the transaction.go code path.
