@@ -610,9 +610,11 @@ environment variable.`,
 			addAgentsInstructions(!quiet, agentsTemplate)
 		}
 
-		// Check for missing git upstream and warn if not configured
+		// Check for missing git upstream and warn if not configured.
+		// Only warn when remotes exist (has origin but no upstream).
+		// Skip for brand-new repos with no remotes — the warning is noise there.
 		if isGitRepo() && !quiet {
-			if !gitHasUpstream() {
+			if gitHasAnyRemotes() && !gitHasUpstream() {
 				fmt.Fprintf(os.Stderr, "\n%s Git upstream not configured\n", ui.RenderWarn("⚠"))
 				fmt.Fprintf(os.Stderr, "  For sync workflows, set your upstream with:\n")
 				fmt.Fprintf(os.Stderr, "  %s\n\n", ui.RenderAccent("git remote add upstream <repo-url>"))
