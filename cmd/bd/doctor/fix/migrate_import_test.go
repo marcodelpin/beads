@@ -174,6 +174,13 @@ func TestDatabaseVersionWithBdVersion_ImportsJSONL(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Pre-flight: verify Dolt server is reachable (skip in CI without server)
+	probe, probeErr := dolt.NewFromConfig(ctx, beadsDir)
+	if probeErr != nil {
+		t.Skipf("skipping: Dolt not available: %v", probeErr)
+	}
+	_ = probe.Close()
+
 	// Write JSONL with issues
 	issues := []types.Issue{
 		{ID: "mdp-1", Title: "Test migration", Status: "open", IssueType: "task", Priority: 2},
