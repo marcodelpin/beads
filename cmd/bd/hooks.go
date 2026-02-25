@@ -84,8 +84,8 @@ func CheckGitHooks() []HookStatus {
 			status.IsShim = versionInfo.IsShim
 
 			// Thin shims are never outdated (they delegate to bd)
-			// Legacy hooks are outdated if version differs from current bd version
-			if !versionInfo.IsShim && versionInfo.Version != "" && versionInfo.Version != Version {
+			// bd hooks are outdated if version is missing (legacy inline) or differs
+			if !versionInfo.IsShim && versionInfo.IsBdHook && versionInfo.Version != Version {
 				status.Outdated = true
 			}
 		}
