@@ -23,6 +23,7 @@ type Tracker struct {
 	store      storage.Storage
 	jiraURL    string
 	projectKey string
+	apiVersion string // "2" or "3" (default: "3")
 }
 
 func (t *Tracker) Name() string         { return "jira" }
@@ -51,6 +52,14 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 	}
 
 	t.client = NewClient(jiraURL, username, apiToken)
+
+	apiVersion, _ := t.getConfig(ctx, "jira.api_version", "JIRA_API_VERSION")
+	if apiVersion == "" {
+		apiVersion = "3"
+	}
+	t.apiVersion = apiVersion
+	t.client.APIVersion = apiVersion
+
 	return nil
 }
 
@@ -140,7 +149,7 @@ func (t *Tracker) UpdateIssue(ctx context.Context, externalID string, issue *typ
 }
 
 func (t *Tracker) FieldMapper() tracker.FieldMapper {
-	return &jiraFieldMapper{}
+	return &jiraFieldMapper{apiVersion: t.apiVersion}
 }
 
 func (t *Tracker) IsExternalRef(ref string) bool {

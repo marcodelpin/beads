@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/steveyegge/beads/internal/debug"
 )
 
 // Issue represents a Jira issue from the REST API.
@@ -86,26 +88,37 @@ type Client struct {
 	URL        string
 	Username   string
 	APIToken   string
+	APIVersion string // "2" or "3" (default: "3")
 	HTTPClient *http.Client
 }
 
 // NewClient creates a new Jira client.
 func NewClient(url, username, apiToken string) *Client {
 	return &Client{
-		URL:      strings.TrimSuffix(url, "/"),
-		Username: username,
-		APIToken: apiToken,
+		URL:        strings.TrimSuffix(url, "/"),
+		Username:   username,
+		APIToken:   apiToken,
+		APIVersion: "3",
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 }
 
+// apiBase returns the versioned REST API base URL, e.g. "https://host/rest/api/3".
+func (c *Client) apiBase() string {
+	v := c.APIVersion
+	if v == "" {
+		v = "3"
+	}
+	return c.URL + "/rest/api/" + v
+}
+
 // FetchIssueTimestamp fetches the updated timestamp for a single Jira issue.
 func (c *Client) FetchIssueTimestamp(ctx context.Context, jiraKey string) (time.Time, error) {
 	var zero time.Time
 
-	apiURL := fmt.Sprintf("%s/rest/api/3/issue/%s?fields=updated", c.URL, url.PathEscape(jiraKey))
+	apiURL := fmt.Sprintf("%s/issue/%s?fields=updated", c.apiBase(), url.PathEscape(jiraKey))
 
 	body, err := c.doRequest(ctx, "GET", apiURL, nil)
 	if err != nil {
@@ -147,7 +160,12 @@ func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) 
 			"maxResults": {fmt.Sprintf("%d", maxResults)},
 		}
 
-		apiURL := fmt.Sprintf("%s/rest/api/3/search/jql?%s", c.URL, params.Encode())
+		// v3 uses /search/jql; v2 uses /search (both accept jql as a query param)
+		searchPath := "search/jql"
+		if c.APIVersion == "2" {
+			searchPath = "search"
+		}
+		apiURL := fmt.Sprintf("%s/%s?%s", c.apiBase(), searchPath, params.Encode())
 
 		body, err := c.doRequest(ctx, "GET", apiURL, nil)
 		if err != nil {
@@ -172,7 +190,7 @@ func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) 
 
 // GetIssue fetches a single Jira issue by key (e.g., "PROJ-123").
 func (c *Client) GetIssue(ctx context.Context, key string) (*Issue, error) {
-	apiURL := fmt.Sprintf("%s/rest/api/3/issue/%s?fields=%s", c.URL, url.PathEscape(key), searchFields)
+	apiURL := fmt.Sprintf("%s/issue/%s?fields=%s", c.apiBase(), url.PathEscape(key), searchFields)
 
 	body, err := c.doRequest(ctx, "GET", apiURL, nil)
 	if err != nil {
@@ -196,7 +214,7 @@ func (c *Client) CreateIssue(ctx context.Context, fields map[string]interface{})
 		return nil, fmt.Errorf("marshal create request: %w", err)
 	}
 
-	apiURL := fmt.Sprintf("%s/rest/api/3/issue", c.URL)
+	apiURL := fmt.Sprintf("%s/issue", c.apiBase())
 
 	body, err := c.doRequest(ctx, "POST", apiURL, data)
 	if err != nil {
@@ -224,7 +242,7 @@ func (c *Client) UpdateIssue(ctx context.Context, key string, fields map[string]
 		return fmt.Errorf("marshal update request: %w", err)
 	}
 
-	apiURL := fmt.Sprintf("%s/rest/api/3/issue/%s", c.URL, url.PathEscape(key))
+	apiURL := fmt.Sprintf("%s/issue/%s", c.apiBase(), url.PathEscape(key))
 
 	_, err = c.doRequest(ctx, "PUT", apiURL, data)
 	if err != nil {
@@ -236,6 +254,8 @@ func (c *Client) UpdateIssue(ctx context.Context, key string, fields map[string]
 
 // doRequest executes an authenticated HTTP request and returns the response body.
 func (c *Client) doRequest(ctx context.Context, method, apiURL string, body []byte) ([]byte, error) {
+	debug.Logf("jira: %s %s\n", method, apiURL)
+
 	if c.URL == "" {
 		return nil, fmt.Errorf("jira URL not configured")
 	}

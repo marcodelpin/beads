@@ -8,7 +8,9 @@ import (
 )
 
 // jiraFieldMapper implements tracker.FieldMapper for Jira.
-type jiraFieldMapper struct{}
+type jiraFieldMapper struct {
+	apiVersion string // "2" or "3" (default: "3")
+}
 
 func (m *jiraFieldMapper) PriorityToBeads(trackerPriority interface{}) int {
 	if name, ok := trackerPriority.(string); ok {
@@ -143,9 +145,13 @@ func (m *jiraFieldMapper) IssueToTracker(issue *types.Issue) map[string]interfac
 		"summary": issue.Title,
 	}
 
-	// Convert description to ADF
+	// v3 requires ADF (Atlassian Document Format); v2 accepts a plain string.
 	if issue.Description != "" {
-		fields["description"] = PlainTextToADF(issue.Description)
+		if m.apiVersion == "2" {
+			fields["description"] = issue.Description
+		} else {
+			fields["description"] = PlainTextToADF(issue.Description)
+		}
 	}
 
 	// Set issue type
