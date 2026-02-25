@@ -359,7 +359,7 @@ The agent-friendly design works for any AI-assisted workflow.
 Yes! Each agent can:
 
 1. Query ready work: `bd ready --assignee agent-name`
-2. Claim issues: `bd update <id> --claim [--assignee agent-name]`
+2. Claim issues: `bd update <id> --claim --assignee agent-name`
 3. Create discovered work: `bd create "Found issue" --deps discovered-from:<parent-id>`
 4. Sync via git commits
 
