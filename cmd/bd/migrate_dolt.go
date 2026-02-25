@@ -95,7 +95,7 @@ func handleToDoltMigration(dryRun bool, autoYes bool) {
 	if existingCfg, _ := configfile.Load(beadsDir); existingCfg != nil && existingCfg.DoltDatabase != "" {
 		dbName = existingCfg.DoltDatabase
 	} else if data.prefix != "" {
-		dbName = "beads_" + data.prefix
+		dbName = data.prefix
 	} else {
 		dbName = "beads"
 	}

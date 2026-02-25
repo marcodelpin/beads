@@ -787,12 +787,16 @@ func testDoltConnection() {
 	}
 }
 
+// serverDialTimeout controls the TCP dial timeout for server connection tests.
+// Tests may reduce this to avoid slow unreachable-host hangs in CI.
+var serverDialTimeout = 3 * time.Second
+
 func testServerConnection(cfg *configfile.Config) bool {
 	host := cfg.GetDoltServerHost()
 	port := cfg.GetDoltServerPort()
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	conn, err := net.DialTimeout("tcp", addr, serverDialTimeout)
 	if err != nil {
 		return false
 	}
