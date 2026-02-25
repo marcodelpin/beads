@@ -140,7 +140,7 @@ Use --limit or --range to view specific steps:
 				}
 				fmt.Println(".")
 				fmt.Println("\nTo start work on a molecule:")
-				fmt.Println("  bd mol pour <proto-id>      # Instantiate a molecule from template")
+				fmt.Println("  bd mol wisp create <proto-id>  # Instantiate as ephemeral wisp")
 				fmt.Println("  bd update <step-id> --status in_progress  # Claim a step")
 				return
 			}
@@ -304,9 +304,21 @@ func findHookedMolecules(ctx context.Context, s *dolt.DoltStore, agent string) [
 		return nil
 	}
 
-	// For each hooked issue, check for blocks dependencies on molecules
+	// For each hooked issue, check if it IS a molecule or has blocks deps on one
 	moleculeMap := make(map[string]*MoleculeProgress)
 	for _, issue := range hookedIssues {
+		// Check if the hooked issue itself is a molecule (e.g., patrol wisps
+		// are directly hooked without a separate handoff bead). hq-3paz0m
+		if issue.IssueType == types.TypeEpic {
+			if _, exists := moleculeMap[issue.ID]; !exists {
+				progress, err := getMoleculeProgress(ctx, s, issue.ID)
+				if err == nil {
+					moleculeMap[issue.ID] = progress
+					continue
+				}
+			}
+		}
+
 		deps, err := s.GetDependencyRecords(ctx, issue.ID)
 		if err != nil {
 			continue

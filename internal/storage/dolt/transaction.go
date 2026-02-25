@@ -63,28 +63,29 @@ func (s *DoltStore) runDoltTransaction(ctx context.Context, commitMsg string, fn
 		return err
 	}
 
-	// DOLT_COMMIT ends the SQL transaction implicitly — no tx.Commit() needed after.
-	// Calling tx.Commit() after DOLT_COMMIT can cause connection state issues under
-	// concurrent load (the transaction is already closed by Dolt).
-	if commitMsg != "" {
-		_, err := sqlTx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
-			commitMsg, s.commitAuthorString())
-		if err != nil && !isDoltNothingToCommit(err) {
-			_ = sqlTx.Rollback()
-			return fmt.Errorf("dolt commit: %w", err)
-		}
-		if err != nil {
-			// "nothing to commit" — DOLT_COMMIT did NOT end the transaction.
-			// Commit the SQL transaction to persist writes to dolt_ignore'd
-			// tables (wisps, wisp_labels, wisp_dependencies).
-			return sqlTx.Commit()
-		}
-		// DOLT_COMMIT succeeded and already ended the transaction.
-		return nil
+	// Commit the SQL transaction first to persist all working set changes,
+	// including writes to dolt-ignored tables (e.g., wisps). (hq-3paz0m)
+	//
+	// Previously, DOLT_COMMIT was called inside the transaction. When it
+	// returned "nothing to commit" (all writes to dolt-ignored tables), the
+	// Go sql.Tx was left in a broken state and Commit() failed silently,
+	// losing wisp data.
+	if err := sqlTx.Commit(); err != nil {
+		return fmt.Errorf("sql commit: %w", err)
 	}
 
-	// No dolt commit requested — commit the SQL transaction normally.
-	return sqlTx.Commit()
+	// Create a Dolt version commit from the working set.
+	// Runs outside the transaction on a pool connection.
+	// "Nothing to commit" is benign (all writes to dolt-ignored tables).
+	if commitMsg != "" {
+		_, err := s.db.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)",
+			commitMsg, s.commitAuthorString())
+		if err != nil && !isDoltNothingToCommit(err) {
+			return fmt.Errorf("dolt commit: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // isDoltNothingToCommit returns true if the error indicates there were no
