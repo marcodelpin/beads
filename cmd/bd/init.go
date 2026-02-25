@@ -634,7 +634,7 @@ environment variable.`,
 		}
 		port := serverPort
 		if port == 0 {
-			port = configfile.DefaultDoltServerPort
+			port = doltserver.DefaultConfig(beadsDir).Port
 		}
 		user := serverUser
 		if user == "" {
