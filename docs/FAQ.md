@@ -359,9 +359,14 @@ The agent-friendly design works for any AI-assisted workflow.
 Yes! Each agent can:
 
 1. Query ready work: `bd ready --assignee agent-name`
-2. Claim issues: `bd update <id> --claim --assignee agent-name`
-3. Create discovered work: `bd create "Found issue" --deps discovered-from:<parent-id>`
-4. Sync via git commits
+2. Assign issues: `bd update <id> --assignee agent-name`
+3. Start work (as assigned agent): `bd update <id> --status in_progress`
+4. Create discovered work: `bd create "Found issue" --deps discovered-from:<parent-id>`
+5. Sync via git commits
+
+Note: In orchestrated workflows, assignment is usually done by an orchestrator.
+If an agent picks work directly, use `bd update <id> --claim --assignee agent-name`.
+If the issue is already assigned, start with `bd update <id> --status in_progress`.
 
 bd's git-based sync means agents work independently and merge their changes like developers do.
 
