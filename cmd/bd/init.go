@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/ui"
@@ -28,6 +29,10 @@ var initCmd = &cobra.Command{
 	Short:   "Initialize bd in the current directory",
 	Long: `Initialize bd in the current directory by creating a .beads/ directory
 and database file. Optionally specify a custom issue prefix.
+
+Use --database to specify an existing server database name, overriding the
+default prefix-based naming. This is useful when an external tool (e.g. gastown)
+has already created the database.
 
 With --stealth: configures per-repository git settings for invisible beads usage:
   • .git/info/exclude to prevent beads files from being committed
@@ -52,6 +57,14 @@ environment variable.`,
 		serverHost, _ := cmd.Flags().GetString("server-host")
 		serverPort, _ := cmd.Flags().GetInt("server-port")
 		serverUser, _ := cmd.Flags().GetString("server-user")
+		database, _ := cmd.Flags().GetString("database")
+
+		// Validate --database early, before any side effects
+		if database != "" {
+			if err := dolt.ValidateDatabaseName(database); err != nil {
+				FatalError("invalid database name %q: %v", database, err)
+			}
+		}
 
 		// Dolt is the only supported backend
 		backend := configfile.BackendDolt
@@ -108,6 +121,13 @@ environment variable.`,
 		// Normalize prefix: strip trailing hyphens
 		// The hyphen is added automatically during ID generation
 		prefix = strings.TrimRight(prefix, "-")
+
+		// Sanitize prefix for use as a MySQL database name.
+		// Directory names like "001" (common in temp dirs) are invalid because
+		// MySQL identifiers must start with a letter or underscore.
+		if len(prefix) > 0 && !((prefix[0] >= 'a' && prefix[0] <= 'z') || (prefix[0] >= 'A' && prefix[0] <= 'Z') || prefix[0] == '_') {
+			prefix = "bd_" + prefix
+		}
 
 		// Determine beadsDir first (used for all storage path calculations).
 		// BEADS_DIR takes precedence, otherwise use CWD/.beads (with redirect support).
@@ -258,16 +278,22 @@ environment variable.`,
 		if existingCfg, _ := configfile.Load(beadsDir); existingCfg != nil && existingCfg.DoltDatabase != "" {
 			dbName = existingCfg.DoltDatabase
 		} else if prefix != "" {
-			dbName = "beads_" + prefix
+			dbName = prefix
 		} else {
 			dbName = "beads"
+		}
+		// --database flag overrides all prefix-based naming. This allows callers
+		// (e.g. gastown) to specify a pre-existing database name, preventing orphan
+		// database creation when the database was already created externally.
+		if database != "" {
+			dbName = database
 		}
 		// Build config. Beads always uses dolt sql-server.
 		// AutoStart is always enabled during init — we need a server to initialize the database.
 		doltCfg := &dolt.Config{
 			Path:      storagePath,
 			Database:  dbName,
-			AutoStart: os.Getenv("GT_ROOT") == "" && os.Getenv("BEADS_DOLT_AUTO_START") != "0",
+			AutoStart: !doltserver.IsDaemonManaged() && os.Getenv("BEADS_DOLT_AUTO_START") != "0",
 		}
 		if serverHost != "" {
 			doltCfg.ServerHost = serverHost
@@ -358,11 +384,14 @@ environment variable.`,
 					cfg.Database = "dolt"
 				}
 
-				// Set prefix-based SQL database name to avoid cross-rig contamination (bd-u8rda).
-				// Only set if not already configured — overwriting a user-renamed database
+				// Set SQL database name. --database flag takes precedence over prefix-based
+				// naming to avoid cross-rig contamination (bd-u8rda). Only set prefix-based
+				// name if not already configured — overwriting a user-renamed database
 				// creates phantom catalog entries that crash information_schema (GH#2051).
-				if cfg.DoltDatabase == "" && prefix != "" {
-					cfg.DoltDatabase = "beads_" + prefix
+				if database != "" {
+					cfg.DoltDatabase = database
+				} else if cfg.DoltDatabase == "" && prefix != "" {
+					cfg.DoltDatabase = prefix
 				}
 
 				// Always server mode
@@ -526,7 +555,11 @@ environment variable.`,
 		// Install by default unless --skip-hooks is passed
 		// Hooks are installed to .beads/hooks/ (uses git config core.hooksPath)
 		// For jujutsu colocated repos, use simplified hooks (no staging needed)
-		if !skipHooks && !hooksInstalled() {
+		hooksExist := hooksInstalled()
+		if !skipHooks && (!hooksExist || hooksNeedUpdate()) {
+			if hooksExist && !quiet {
+				fmt.Printf("  Updating hooks to version %s...\n", Version)
+			}
 			isJJ := git.IsJujutsuRepo()
 			isColocated := git.IsColocatedJJGit()
 
@@ -607,7 +640,7 @@ environment variable.`,
 		}
 		fmt.Printf("  Mode: %s\n", ui.RenderAccent("server"))
 		fmt.Printf("  Server: %s\n", ui.RenderAccent(fmt.Sprintf("%s@%s:%d", user, host, port)))
-		fmt.Printf("  Database: %s\n", ui.RenderAccent(storagePath))
+		fmt.Printf("  Database: %s\n", ui.RenderAccent(dbName))
 		fmt.Printf("  Issue prefix: %s\n", ui.RenderAccent(prefix))
 		fmt.Printf("  Issues will be named: %s\n\n", ui.RenderAccent(prefix+"-<hash> (e.g., "+prefix+"-a3f2dd)"))
 		fmt.Printf("Run %s to get started.\n\n", ui.RenderAccent("bd quickstart"))
@@ -655,6 +688,7 @@ func init() {
 	initCmd.Flags().String("server-host", "", "Dolt server host (default: 127.0.0.1)")
 	initCmd.Flags().Int("server-port", 0, "Dolt server port (default: 3307)")
 	initCmd.Flags().String("server-user", "", "Dolt server MySQL user (default: root)")
+	initCmd.Flags().String("database", "", "Use existing server database name (overrides prefix-based naming)")
 
 	rootCmd.AddCommand(initCmd)
 }
@@ -753,10 +787,10 @@ This workspace is already initialized.
 To use the existing database:
   Just run bd commands normally (e.g., %s)
 
-To completely reinitialize (data loss warning):
-  rm -rf %s && bd init --backend dolt --prefix %s
+To force reinitialize (data loss warning):
+  bd init --force --prefix %s
 
-Aborting.`, ui.RenderWarn("⚠"), location, ui.RenderAccent("bd list"), beadsDir, prefix)
+Aborting.`, ui.RenderWarn("⚠"), location, ui.RenderAccent("bd list"), prefix)
 		}
 	}
 
@@ -777,10 +811,10 @@ To use the existing database:
   Just run bd commands normally (e.g., %s)
   The redirect will route to the canonical database.
 
-To reinitialize the canonical location (data loss warning):
-  rm %s && bd init --prefix %s
+To force reinitialize (data loss warning):
+  bd init --force --prefix %s
 
-Aborting.`, ui.RenderWarn("⚠"), redirectTarget, targetDBPath, ui.RenderAccent("bd list"), targetDBPath, prefix)
+Aborting.`, ui.RenderWarn("⚠"), redirectTarget, targetDBPath, ui.RenderAccent("bd list"), prefix)
 		}
 		return nil // Redirect target has no database - safe to init
 	}
@@ -796,10 +830,10 @@ This workspace is already initialized.
 To use the existing database:
   Just run bd commands normally (e.g., %s)
 
-To completely reinitialize (data loss warning):
-  rm -rf %s && bd init --prefix %s
+To force reinitialize (data loss warning):
+  bd init --force --prefix %s
 
-Aborting.`, ui.RenderWarn("⚠"), dbPath, ui.RenderAccent("bd list"), beadsDir, prefix)
+Aborting.`, ui.RenderWarn("⚠"), dbPath, ui.RenderAccent("bd list"), prefix)
 	}
 
 	return nil // No database found, safe to init

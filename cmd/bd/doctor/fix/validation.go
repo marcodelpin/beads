@@ -147,11 +147,16 @@ func OrphanedDependencies(path string, verbose bool) error {
 	}
 
 	// Delete orphaned dependencies
-	// Show individual items if verbose or count is small (<20)
+	// Uses explicit transaction so writes persist when @@autocommit is OFF
+	// (e.g. Dolt server started with --no-auto-commit).
 	showIndividual := verbose || len(orphans) < 20
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
 	var removed int
 	for _, o := range orphans {
-		_, err := db.Exec("DELETE FROM dependencies WHERE issue_id = ? AND depends_on_id = ?",
+		_, err := tx.Exec("DELETE FROM dependencies WHERE issue_id = ? AND depends_on_id = ?",
 			o.issueID, o.dependsOnID)
 		if err != nil {
 			fmt.Printf("  Warning: failed to remove %s→%s: %v\n", o.issueID, o.dependsOnID, err)
@@ -161,6 +166,9 @@ func OrphanedDependencies(path string, verbose bool) error {
 				fmt.Printf("  Removed orphaned dependency: %s→%s\n", o.issueID, o.dependsOnID)
 			}
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit orphaned dependency removals: %w", err)
 	}
 
 	// Commit changes in Dolt
@@ -223,11 +231,16 @@ func ChildParentDependencies(path string, verbose bool) error {
 	}
 
 	// Delete child→parent blocking dependencies (preserving parent-child type)
-	// Show individual items if verbose or count is small (<20)
+	// Uses explicit transaction so writes persist when @@autocommit is OFF
+	// (e.g. Dolt server started with --no-auto-commit).
 	showIndividual := verbose || len(badDeps) < 20
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
 	var removed int
 	for _, d := range badDeps {
-		_, err := db.Exec("DELETE FROM dependencies WHERE issue_id = ? AND depends_on_id = ? AND type = ?",
+		_, err := tx.Exec("DELETE FROM dependencies WHERE issue_id = ? AND depends_on_id = ? AND type = ?",
 			d.issueID, d.dependsOnID, d.depType)
 		if err != nil {
 			fmt.Printf("  Warning: failed to remove %s→%s: %v\n", d.issueID, d.dependsOnID, err)
@@ -237,6 +250,9 @@ func ChildParentDependencies(path string, verbose bool) error {
 				fmt.Printf("  Removed child→parent dependency: %s→%s\n", d.issueID, d.dependsOnID)
 			}
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit dependency removals: %w", err)
 	}
 
 	// Commit changes in Dolt

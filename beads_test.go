@@ -12,7 +12,27 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads"
+	"github.com/steveyegge/beads/internal/testutil"
 )
+
+// testServerPort is the port of the shared test Dolt server (0 = not running).
+var testServerPort int
+
+func TestMain(m *testing.M) {
+	srv, cleanup := testutil.StartTestDoltServer("beads-root-test-*")
+	os.Setenv("BEADS_TEST_MODE", "1")
+	if srv != nil {
+		testServerPort = srv.Port
+		os.Setenv("BEADS_DOLT_PORT", fmt.Sprintf("%d", srv.Port))
+	}
+
+	code := m.Run()
+
+	os.Unsetenv("BEADS_DOLT_PORT")
+	os.Unsetenv("BEADS_TEST_MODE")
+	cleanup()
+	os.Exit(code)
+}
 
 func skipIfNoDolt(t *testing.T) {
 	t.Helper()
@@ -23,9 +43,13 @@ func skipIfNoDolt(t *testing.T) {
 
 func skipIfNoDoltServer(t *testing.T) {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:3307", 200*time.Millisecond)
+	if testServerPort == 0 {
+		t.Skip("Test Dolt server not available, skipping test")
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", testServerPort)
+	conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 	if err != nil {
-		t.Skip("Dolt server not running on 127.0.0.1:3307, skipping test")
+		t.Skipf("Dolt server not running on %s, skipping test", addr)
 	}
 	_ = conn.Close()
 }
@@ -121,7 +145,18 @@ func TestOpenFromConfig_DefaultsToEmbedded(t *testing.T) {
 }
 
 func TestOpenFromConfig_ServerModeFailsWithoutServer(t *testing.T) {
-	// Server mode should fail-fast when no server is listening
+	// Server mode should fail-fast when no server is listening.
+	// Temporarily unset BEADS_DOLT_PORT/BEADS_TEST_MODE so the config port
+	// isn't overridden by applyConfigDefaults to the test server.
+	if prev := os.Getenv("BEADS_DOLT_PORT"); prev != "" {
+		os.Unsetenv("BEADS_DOLT_PORT")
+		t.Cleanup(func() { os.Setenv("BEADS_DOLT_PORT", prev) })
+	}
+	if prev := os.Getenv("BEADS_TEST_MODE"); prev != "" {
+		os.Unsetenv("BEADS_TEST_MODE")
+		t.Cleanup(func() { os.Setenv("BEADS_TEST_MODE", prev) })
+	}
+
 	tmpDir := t.TempDir()
 	beadsDir := filepath.Join(tmpDir, ".beads")
 	if err := os.MkdirAll(beadsDir, 0755); err != nil {

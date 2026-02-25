@@ -225,15 +225,16 @@ func scanIssueTxFromTable(ctx context.Context, tx *sql.Tx, table, id string) (*t
 }
 
 // wispPrefix returns the ID prefix for wisp ID generation.
-// Appends "-wisp" to the config prefix (e.g., "bd" -> "bd-wisp").
+// Uses IDPrefix if set (e.g., IDPrefix="wisp" → "bd-wisp"), otherwise
+// appends "-wisp" to the config prefix (e.g., "bd" → "bd-wisp").
 func wispPrefix(configPrefix string, issue *types.Issue) string {
-	prefix := configPrefix
 	if issue.PrefixOverride != "" {
-		prefix = issue.PrefixOverride
-	} else if issue.IDPrefix != "" {
-		prefix = configPrefix + "-" + issue.IDPrefix
+		return issue.PrefixOverride
 	}
-	return prefix + "-wisp"
+	if issue.IDPrefix != "" {
+		return configPrefix + "-" + issue.IDPrefix
+	}
+	return configPrefix + "-wisp"
 }
 
 // createWisp creates an issue in the wisps table.
@@ -294,6 +295,9 @@ func (s *DoltStore) createWisp(ctx context.Context, issue *types.Issue, actor st
 	} else if err != nil {
 		return fmt.Errorf("failed to get config: %w", err)
 	}
+
+	// Normalize prefix: strip trailing hyphen to prevent double-hyphen IDs (bd-6uly)
+	configPrefix = strings.TrimSuffix(configPrefix, "-")
 
 	// Generate wisp ID if not provided
 	if issue.ID == "" {

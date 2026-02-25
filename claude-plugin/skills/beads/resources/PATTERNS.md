@@ -70,14 +70,14 @@ NEXT: Need user input on budget constraints before finalizing recommendations"
 
 **Why this works**: Captures context immediately (before forgetting), preserves relationship to main work, allows flexible prioritization.
 
-**Example (with MCP):**
+**Example (MCP + atomic CLI claim):**
 
 Working on "Implement checkout flow" (checkout-1), discover payment validation security hole:
 
 1. Create bug issue: `mcp__plugin_beads_beads__create` with `{title: "Fix: payment validation bypasses card expiry check", type: "bug", priority: 0}`
 2. Link discovery: `mcp__plugin_beads_beads__dep` with `{from_issue: "checkout-1", to_issue: "payment-bug-2", type: "discovered-from"}`
 3. Block current work: `mcp__plugin_beads_beads__update` with `{issue_id: "checkout-1", status: "blocked", notes: "Blocked by payment-bug-2: security hole in validation"}`
-4. Start new work: `mcp__plugin_beads_beads__update` with `{issue_id: "payment-bug-2", status: "in_progress"}`
+4. Start new work atomically: `mcp__plugin_beads_beads__claim` with `{issue_id: "payment-bug-2"}`
 
 (CLI: `bd create "Fix: payment validation..." -t bug -p 0` then `bd dep add` and `bd update` commands)
 
@@ -92,10 +92,10 @@ Working on "Implement checkout flow" (checkout-1), discover payment validation s
 2. **Check what's stuck**: Use `mcp__plugin_beads_beads__blocked` to understand blockers
 3. **Check recent progress**: Use `mcp__plugin_beads_beads__list` with `status:"closed"` to see completions
 4. **Read detailed context**: Use `mcp__plugin_beads_beads__show` for the issue you'll work on
-5. **Update status**: Use `mcp__plugin_beads_beads__update` with `status:"in_progress"`
+5. **Claim issue**: Use `mcp__plugin_beads_beads__claim` (or CLI `bd update <id> --claim`) for atomic start
 6. **Begin work**: Create TodoWrite from notes field's NEXT section
 
-(CLI: `bd ready`, `bd blocked`, `bd list --status closed`, `bd show <id>`, `bd update <id> --status in_progress`)
+(CLI: `bd ready`, `bd blocked`, `bd list --status closed`, `bd show <id>`, `bd update <id> --claim`)
 
 **Example**:
 ```bash
