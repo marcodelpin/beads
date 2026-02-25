@@ -1,7 +1,12 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,5 +325,111 @@ func TestTrackerFieldMapperDefaultVersion(t *testing.T) {
 	fields := tr.FieldMapper().IssueToTracker(issue)
 	if _, ok := fields["description"].(json.RawMessage); !ok {
 		t.Errorf("default tracker description type = %T, want json.RawMessage (ADF)", fields["description"])
+	}
+}
+
+// newTrackerWithServer creates a Tracker backed by a test HTTP server.
+func newTrackerWithServer(srvURL, version string) *Tracker {
+	return &Tracker{
+		client:     newTestClient(srvURL, version),
+		jiraURL:    srvURL,
+		apiVersion: version,
+	}
+}
+
+// issueResponse returns a Jira Issue JSON response with the given status name.
+func issueResponse(key, statusName string) Issue {
+	return Issue{
+		ID:  "10001",
+		Key: key,
+		Fields: IssueFields{
+			Status: &StatusField{Name: statusName},
+		},
+	}
+}
+
+func TestUpdateIssueAppliesTransitionWhenStatusChanges(t *testing.T) {
+	const key = "PROJ-1"
+	issuePath := "/rest/api/3/issue/" + key
+	transitionsPath := issuePath + "/transitions"
+
+	var transitionPostedID string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == issuePath:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == issuePath:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(issueResponse(key, "To Do"))
+		case r.Method == http.MethodGet && r.URL.Path == transitionsPath:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(TransitionsResult{
+				Transitions: []Transition{
+					{ID: "11", Name: "Start Progress", To: StatusField{Name: "In Progress"}},
+					{ID: "31", Name: "Resolve", To: StatusField{Name: "Done"}},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == transitionsPath:
+			body, _ := io.ReadAll(r.Body)
+			var payload struct {
+				Transition map[string]string `json:"transition"`
+			}
+			_ = json.Unmarshal(body, &payload)
+			transitionPostedID = payload.Transition["id"]
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	tr := newTrackerWithServer(srv.URL, "3")
+	_, err := tr.UpdateIssue(context.Background(), key, &types.Issue{
+		Title:  "Test",
+		Status: types.StatusInProgress,
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue error: %v", err)
+	}
+	if transitionPostedID != "11" {
+		t.Errorf("transition ID posted = %q, want %q", transitionPostedID, "11")
+	}
+}
+
+func TestUpdateIssueSkipsTransitionWhenStatusUnchanged(t *testing.T) {
+	const key = "PROJ-1"
+	issuePath := "/rest/api/3/issue/" + key
+
+	var transitionCalled bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == issuePath:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == issuePath:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(issueResponse(key, "In Progress"))
+		case strings.Contains(r.URL.Path, "/transitions"):
+			transitionCalled = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	tr := newTrackerWithServer(srv.URL, "3")
+	_, err := tr.UpdateIssue(context.Background(), key, &types.Issue{
+		Title:  "Updated title",
+		Status: types.StatusInProgress, // matches current Jira status
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue error: %v", err)
+	}
+	if transitionCalled {
+		t.Error("transitions endpoint called unexpectedly when status was already correct")
 	}
 }
