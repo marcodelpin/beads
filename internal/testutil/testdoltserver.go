@@ -24,7 +24,7 @@ type TestDoltServer struct {
 	tmpDir   string
 	pidFile  string
 	crashed  chan struct{} // closed when server exits unexpectedly
-	exitErr  error        // set before crashed is closed
+	exitErr  error         // set before crashed is closed
 	exitOnce sync.Once
 }
 
@@ -299,11 +299,27 @@ func cleanPIDFile(pidFile string) {
 }
 
 // cleanOrphanedTempDirs removes test temp directories whose owning server
-// process is no longer running. Handles both data dirs (beads-test-dolt-*)
-// and test working dirs (beads-bd-tests-*) in the system temp directory.
+// process is no longer running. Covers all prefixes used by StartTestDoltServer
+// callers and test working dirs in the system temp directory.
 func cleanOrphanedTempDirs() {
 	tmpDir := os.TempDir()
-	for _, prefix := range []string{"beads-test-dolt-", "beads-bd-tests-", "fix-test-dolt-", "doctor-test-dolt-"} {
+	for _, prefix := range []string{
+		// Server data dirs (one per StartTestDoltServer caller)
+		"beads-test-dolt-",
+		"beads-root-test-",
+		"beads-integration-test-",
+		"bd-regression-dolt-",
+		"tracker-pkg-test-",
+		"dolt-pkg-test-",
+		"molecules-pkg-test-",
+		"doctor-test-dolt-",
+		"fix-test-dolt-",
+		"protocol-test-dolt-",
+		// Test working dirs
+		"beads-bd-tests-",
+		// Legacy prefix (no longer created)
+		"dolt-test-server-",
+	} {
 		pattern := filepath.Join(tmpDir, prefix+"*")
 		entries, err := filepath.Glob(pattern)
 		if err != nil {
