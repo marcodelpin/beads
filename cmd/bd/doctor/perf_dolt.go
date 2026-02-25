@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // DoltPerfMetrics holds performance metrics for Dolt operations
@@ -55,9 +56,12 @@ func RunDoltPerformanceDiagnostics(path string, enableProfiling bool) (*DoltPerf
 		GoVersion: runtime.Version(),
 	}
 
+	// Resolve server config (handles standalone hash-derived ports)
+	dsCfg := doltserver.DefaultConfig(beadsDir)
+
 	// Check server status
 	doltDir := filepath.Join(beadsDir, "dolt")
-	serverRunning := isDoltServerRunning("127.0.0.1", 3307)
+	serverRunning := isDoltServerRunning(dsCfg.Host, dsCfg.Port)
 	if serverRunning {
 		metrics.ServerStatus = "running"
 	} else {
@@ -83,10 +87,10 @@ func RunDoltPerformanceDiagnostics(path string, enableProfiling bool) (*DoltPerf
 
 	// Connect and run diagnostics via server
 	if !serverRunning {
-		return metrics, fmt.Errorf("dolt sql-server is not running on 127.0.0.1:3307; start it with 'dolt sql-server'")
+		return metrics, fmt.Errorf("dolt sql-server is not running on %s:%d; start it with 'bd dolt start'", dsCfg.Host, dsCfg.Port)
 	}
 
-	if err := runDoltServerDiagnostics(metrics, "127.0.0.1", 3307, dbName); err != nil {
+	if err := runDoltServerDiagnostics(metrics, dsCfg.Host, dsCfg.Port, dbName); err != nil {
 		return metrics, fmt.Errorf("server diagnostics failed: %w", err)
 	}
 

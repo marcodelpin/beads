@@ -381,7 +381,7 @@ func TestTestServerConnection(t *testing.T) {
 		cfg.DoltServerHost = "192.0.2.1" // RFC 5737 TEST-NET, guaranteed unreachable
 		cfg.DoltServerPort = 3307
 
-		result := testServerConnection(cfg)
+		result := testServerConnection(cfg.DoltServerHost, cfg.DoltServerPort)
 		if result {
 			t.Error("expected connection to fail for unreachable host")
 		}
@@ -394,7 +394,7 @@ func TestTestServerConnection(t *testing.T) {
 		cfg.DoltServerHost = "127.0.0.1"
 		cfg.DoltServerPort = 59999 // Unlikely to be in use
 
-		result := testServerConnection(cfg)
+		result := testServerConnection(cfg.DoltServerHost, cfg.DoltServerPort)
 		if result {
 			t.Error("expected connection to fail for unused port")
 		}
@@ -405,7 +405,7 @@ func TestTestServerConnection(t *testing.T) {
 		cfg.DoltServerHost = "::1"
 		cfg.DoltServerPort = 59998 // Unlikely to be in use
 
-		result := testServerConnection(cfg)
+		result := testServerConnection(cfg.DoltServerHost, cfg.DoltServerPort)
 		if result {
 			t.Error("expected connection to fail for unused port on IPv6")
 		}

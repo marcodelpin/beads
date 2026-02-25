@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
@@ -94,7 +95,7 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 	}
 	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
 		doltCfg.ServerHost = cfg.GetDoltServerHost()
-		doltCfg.ServerPort = cfg.GetDoltServerPort()
+		doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
 		doltCfg.ServerUser = cfg.GetDoltServerUser()
 		doltCfg.ServerPassword = cfg.GetDoltServerPassword()
 		doltCfg.ServerTLS = cfg.GetDoltServerTLS()
@@ -138,9 +139,8 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 	cfg.Backend = configfile.BackendDolt
 	cfg.Database = "dolt"
 	cfg.DoltDatabase = dbName
-	if cfg.DoltServerPort == 0 {
-		cfg.DoltServerPort = configfile.DefaultDoltServerPort
-	}
+	// Don't set DoltServerPort - let doltserver.DefaultConfig derive it
+	// from the project path at runtime.
 	if err := cfg.Save(beadsDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to update metadata.json: %v\n", err)
 	}

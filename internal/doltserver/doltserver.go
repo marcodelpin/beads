@@ -213,11 +213,19 @@ func writePortFile(beadsDir string, port int) error {
 }
 
 // DefaultConfig returns config with sensible defaults.
-// Checks metadata.json for an explicit port first, falls back to DerivePort.
+// Priority: env var > metadata.json > Gas Town fixed port > hash-derived port.
 func DefaultConfig(beadsDir string) *Config {
 	cfg := &Config{
 		BeadsDir: beadsDir,
 		Host:     "127.0.0.1",
+	}
+
+	// Check env var override first (used by tests and manual overrides)
+	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
+		if port, err := strconv.Atoi(p); err == nil {
+			cfg.Port = port
+			return cfg
+		}
 	}
 
 	// Check if user configured an explicit port
