@@ -17,6 +17,12 @@ import (
 
 // CreateIssue creates a new issue
 func (s *DoltStore) CreateIssue(ctx context.Context, issue *types.Issue, actor string) error {
+	// Validate metadata against schema if configured (GH#1416 Phase 2)
+	// Runs before ephemeral routing so wisps are also validated.
+	if err := validateMetadataIfConfigured(issue.Metadata); err != nil {
+		return err
+	}
+
 	// Route ephemeral issues to wisps table
 	if issue.Ephemeral {
 		return s.createWisp(ctx, issue, actor)
@@ -147,6 +153,9 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 	}
 	if allEph {
 		for _, issue := range issues {
+			if err := validateMetadataIfConfigured(issue.Metadata); err != nil {
+				return fmt.Errorf("metadata validation failed for issue %s: %w", issue.ID, err)
+			}
 			if err := s.createWisp(ctx, issue, actor); err != nil {
 				return err
 			}
@@ -179,6 +188,9 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 		return fmt.Errorf("failed to get config: %w", err)
 	}
 
+	// Normalize prefix: strip trailing hyphen to prevent double-hyphen IDs (bd-6uly)
+	configPrefix = strings.TrimSuffix(configPrefix, "-")
+
 	for _, issue := range issues {
 		now := time.Now().UTC()
 		if issue.CreatedAt.IsZero() {
@@ -201,6 +213,11 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 		// Validate issue
 		if err := issue.ValidateWithCustom(customStatuses, customTypes); err != nil {
 			return fmt.Errorf("validation failed for issue %s: %w", issue.ID, err)
+		}
+
+		// Validate metadata against schema if configured (GH#1416 Phase 2)
+		if err := validateMetadataIfConfigured(issue.Metadata); err != nil {
+			return fmt.Errorf("metadata validation failed for issue %s: %w", issue.ID, err)
 		}
 
 		if issue.ContentHash == "" {
@@ -395,6 +412,17 @@ func (s *DoltStore) GetIssueByExternalRef(ctx context.Context, externalRef strin
 
 // UpdateIssue updates fields on an issue
 func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error {
+	// Validate metadata against schema before wisp routing (GH#1416 Phase 2)
+	if rawMeta, ok := updates["metadata"]; ok {
+		metadataStr, err := storage.NormalizeMetadataValue(rawMeta)
+		if err != nil {
+			return fmt.Errorf("invalid metadata: %w", err)
+		}
+		if err := validateMetadataIfConfigured(json.RawMessage(metadataStr)); err != nil {
+			return err
+		}
+	}
+
 	// Route ephemeral IDs to wisps table (falls through for promoted wisps)
 	if s.isActiveWisp(ctx, id) {
 		return s.updateWisp(ctx, id, updates, actor)
@@ -433,6 +461,7 @@ func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[stri
 			args = append(args, string(waitersJSON))
 		} else if key == "metadata" {
 			// GH#1417: Normalize metadata to string, accepting string/[]byte/json.RawMessage
+			// Schema validation already ran in the pre-routing block above.
 			metadataStr, err := storage.NormalizeMetadataValue(value)
 			if err != nil {
 				return fmt.Errorf("invalid metadata: %w", err)
@@ -668,6 +697,12 @@ func (s *DoltStore) DeleteIssue(ctx context.Context, id string) error {
 // deleteBatchSize controls the maximum number of IDs per IN-clause query.
 // Kept small to avoid large IN-clause queries. See steveyegge/beads#1692.
 const deleteBatchSize = 50
+
+// queryBatchSize controls the maximum number of IDs per IN-clause in read
+// queries (label hydration, wisp lookups). Without batching, queries like
+// `SELECT ... FROM wisp_labels WHERE issue_id IN (?,?,?,...thousands)` take
+// 20+ seconds on databases with many wisps (e.g., hq with 29K wisps).
+const queryBatchSize = 200
 
 func (s *DoltStore) DeleteIssues(ctx context.Context, ids []string, cascade bool, force bool, dryRun bool) (*types.DeleteIssuesResult, error) {
 	if len(ids) == 0 {

@@ -66,6 +66,18 @@ func hooksInstalled() bool {
 	return true
 }
 
+// hooksNeedUpdate checks if installed bd hooks are outdated and need updating.
+// Delegates to CheckGitHooks() which handles version comparison, shim detection,
+// and inline hook detection consistently.
+func hooksNeedUpdate() bool {
+	for _, s := range CheckGitHooks() {
+		if s.Outdated {
+			return true
+		}
+	}
+	return false
+}
+
 // hookInfo contains information about an existing hook
 type hookInfo struct {
 	name                 string
@@ -192,6 +204,7 @@ func buildPreCommitHook(chainHooks bool, existingHooks []hookInfo) string {
 		}
 
 		return `#!/bin/sh
+# bd-hooks-version: ` + Version + `
 #
 # bd (beads) pre-commit hook (chained)
 #
@@ -210,6 +223,7 @@ fi
 	}
 
 	return `#!/bin/sh
+# bd-hooks-version: ` + Version + `
 #
 # bd (beads) pre-commit hook
 #
@@ -250,6 +264,7 @@ func buildPostMergeHook(chainHooks bool, existingHooks []hookInfo) string {
 		}
 
 		return `#!/bin/sh
+# bd-hooks-version: ` + Version + `
 #
 # bd (beads) post-merge hook (chained)
 #
@@ -270,6 +285,7 @@ exit 0
 	}
 
 	return `#!/bin/sh
+# bd-hooks-version: ` + Version + `
 #
 # bd (beads) post-merge hook
 #
@@ -364,6 +380,7 @@ func buildJJPreCommitHook(chainHooks bool, existingHooks []hookInfo) string {
 		}
 
 		return `#!/bin/sh
+# bd-hooks-version: ` + Version + `
 #
 # bd (beads) pre-commit hook (chained, jujutsu mode)
 #
@@ -383,6 +400,7 @@ fi
 	}
 
 	return `#!/bin/sh
+# bd-hooks-version: ` + Version + `
 #
 # bd (beads) pre-commit hook (jujutsu mode)
 #

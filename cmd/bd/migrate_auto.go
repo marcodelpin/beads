@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
@@ -34,6 +35,8 @@ func autoMigrateSQLiteToDolt() {
 // After a successful migration, beads.db is renamed to beads.db.migrated.
 //
 // Edge cases handled:
+//   - beads.db is 0 bytes → not a real database, remove it
+//   - metadata.json backend already "dolt" → stale leftover, rename to .migrated
 //   - beads.db.migrated already exists → migration already completed, skip
 //   - beads.db + dolt/ both exist → leftover SQLite, rename it
 //   - Dolt directory already exists → no migration needed
@@ -49,6 +52,29 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 	// Skip backup/migrated files
 	base := filepath.Base(sqlitePath)
 	if strings.Contains(base, ".backup") || strings.Contains(base, ".migrated") {
+		return
+	}
+
+	// Guard: if the file is empty (0 bytes), it's not a real SQLite database.
+	// This happens when a process creates beads.db but crashes before writing.
+	// Remove the empty file to prevent repeated failed migration attempts.
+	if info, err := os.Stat(sqlitePath); err == nil && info.Size() == 0 {
+		debug.Logf("auto-migrate-sqlite: removing empty %s (not a valid database)", base)
+		_ = os.Remove(sqlitePath)
+		return
+	}
+
+	// Guard: if metadata.json already indicates Dolt backend, the beads.db is stale
+	// leftover — not a database that needs migrating. This covers dolt-server mode
+	// where there is no local dolt/ directory (data is stored remotely on the Dolt
+	// SQL server), so the dolt/ directory check below would miss it.
+	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.Backend == configfile.BackendDolt {
+		migratedPath := sqlitePath + ".migrated"
+		if _, err := os.Stat(migratedPath); err != nil {
+			if err := os.Rename(sqlitePath, migratedPath); err == nil {
+				debug.Logf("auto-migrate-sqlite: renamed stale %s (backend already dolt)", base)
+			}
+		}
 		return
 	}
 
@@ -84,7 +110,7 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 	// Determine database name from prefix
 	dbName := "beads"
 	if data.prefix != "" {
-		dbName = "beads_" + data.prefix
+		dbName = data.prefix
 	}
 
 	// Load existing config for server connection settings
@@ -94,7 +120,7 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 	}
 	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
 		doltCfg.ServerHost = cfg.GetDoltServerHost()
-		doltCfg.ServerPort = cfg.GetDoltServerPort()
+		doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
 		doltCfg.ServerUser = cfg.GetDoltServerUser()
 		doltCfg.ServerPassword = cfg.GetDoltServerPassword()
 		doltCfg.ServerTLS = cfg.GetDoltServerTLS()
@@ -138,9 +164,8 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 	cfg.Backend = configfile.BackendDolt
 	cfg.Database = "dolt"
 	cfg.DoltDatabase = dbName
-	if cfg.DoltServerPort == 0 {
-		cfg.DoltServerPort = configfile.DefaultDoltServerPort
-	}
+	// Don't set DoltServerPort - let doltserver.DefaultConfig derive it
+	// from the project path at runtime.
 	if err := cfg.Save(beadsDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to update metadata.json: %v\n", err)
 	}

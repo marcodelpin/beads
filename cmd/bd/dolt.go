@@ -50,7 +50,7 @@ Version control:
 Configuration keys for 'bd dolt set':
   database  Database name (default: issue prefix or "beads")
   host      Server host (default: 127.0.0.1)
-  port      Server port (default: 3307)
+  port      Server port (auto-detected; override with bd dolt set port <N>)
   user      MySQL user (default: root)
 
 Flags for 'bd dolt set':
@@ -78,7 +78,7 @@ var doltSetCmd = &cobra.Command{
 Keys:
   database  Database name (default: issue prefix or "beads")
   host      Server host (default: 127.0.0.1)
-  port      Server port (default: 3307)
+  port      Server port (auto-detected; override with bd dolt set port <N>)
   user      MySQL user (default: root)
 
 Use --update-config to also write to config.yaml for team-wide defaults.
@@ -237,7 +237,7 @@ required. Use this command for explicit control or diagnostics.`,
 		}
 		serverDir := doltserver.ResolveServerDir(beadsDir)
 
-		if doltserver.IsDaemonManaged() {
+		if doltserver.IsDaemonManagedFor(beadsDir) {
 			// Check if daemon's server is already accepting connections
 			cfg := doltserver.DefaultConfig(serverDir)
 			addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
@@ -396,7 +396,7 @@ one tracked by the current project's PID file.`,
 		killed, err := doltserver.KillStaleServers(beadsDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			if doltserver.IsDaemonManaged() {
+			if doltserver.IsDaemonManagedFor(beadsDir) {
 				fmt.Fprintf(os.Stderr, "\nUnder Gas Town, use 'gt dolt' commands to manage the server.\n")
 			}
 			os.Exit(1)
@@ -592,17 +592,22 @@ func showDoltConfig(testConnection bool) {
 
 	backend := cfg.GetBackend()
 
+	// Resolve actual server port for connection testing
+	showHost := cfg.GetDoltServerHost()
+	dsCfg := doltserver.DefaultConfig(beadsDir)
+	showPort := dsCfg.Port
+
 	if jsonOutput {
 		result := map[string]interface{}{
 			"backend": backend,
 		}
 		if backend == configfile.BackendDolt {
 			result["database"] = cfg.GetDoltDatabase()
-			result["host"] = cfg.GetDoltServerHost()
-			result["port"] = cfg.GetDoltServerPort()
+			result["host"] = showHost
+			result["port"] = showPort
 			result["user"] = cfg.GetDoltServerUser()
 			if testConnection {
-				result["connection_ok"] = testServerConnection(cfg)
+				result["connection_ok"] = testServerConnection(showHost, showPort)
 			}
 		}
 		outputJSON(result)
@@ -617,13 +622,13 @@ func showDoltConfig(testConnection bool) {
 	fmt.Println("Dolt Configuration")
 	fmt.Println("==================")
 	fmt.Printf("  Database: %s\n", cfg.GetDoltDatabase())
-	fmt.Printf("  Host:     %s\n", cfg.GetDoltServerHost())
-	fmt.Printf("  Port:     %d\n", cfg.GetDoltServerPort())
+	fmt.Printf("  Host:     %s\n", showHost)
+	fmt.Printf("  Port:     %d\n", showPort)
 	fmt.Printf("  User:     %s\n", cfg.GetDoltServerUser())
 
 	if testConnection {
 		fmt.Println()
-		if testServerConnection(cfg) {
+		if testServerConnection(showHost, showPort) {
 			fmt.Printf("  %s\n", ui.RenderPass("✓ Server connection OK"))
 		} else {
 			fmt.Printf("  %s\n", ui.RenderWarn("✗ Server not reachable"))
@@ -760,11 +765,11 @@ func testDoltConnection() {
 	}
 
 	host := cfg.GetDoltServerHost()
-	port := cfg.GetDoltServerPort()
+	port := doltserver.DefaultConfig(beadsDir).Port
 	addr := fmt.Sprintf("%s:%d", host, port)
 
 	if jsonOutput {
-		ok := testServerConnection(cfg)
+		ok := testServerConnection(host, port)
 		outputJSON(map[string]interface{}{
 			"host":          host,
 			"port":          port,
@@ -778,7 +783,7 @@ func testDoltConnection() {
 
 	fmt.Printf("Testing connection to %s...\n", addr)
 
-	if testServerConnection(cfg) {
+	if testServerConnection(host, port) {
 		fmt.Printf("%s\n", ui.RenderPass("✓ Connection successful"))
 	} else {
 		fmt.Printf("%s\n", ui.RenderWarn("✗ Connection failed"))
@@ -787,12 +792,14 @@ func testDoltConnection() {
 	}
 }
 
-func testServerConnection(cfg *configfile.Config) bool {
-	host := cfg.GetDoltServerHost()
-	port := cfg.GetDoltServerPort()
+// serverDialTimeout controls the TCP dial timeout for server connection tests.
+// Tests may reduce this to avoid slow unreachable-host hangs in CI.
+var serverDialTimeout = 3 * time.Second
+
+func testServerConnection(host string, port int) bool {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	conn, err := net.DialTimeout("tcp", addr, serverDialTimeout)
 	if err != nil {
 		return false
 	}
@@ -821,7 +828,7 @@ func openDoltServerConnection() (*sql.DB, func()) {
 	}
 
 	host := cfg.GetDoltServerHost()
-	port := cfg.GetDoltServerPort()
+	port := doltserver.DefaultConfig(beadsDir).Port
 	user := cfg.GetDoltServerUser()
 	password := os.Getenv("BEADS_DOLT_PASSWORD")
 

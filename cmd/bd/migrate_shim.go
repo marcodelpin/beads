@@ -52,6 +52,29 @@ func doShimMigrate(beadsDir string) {
 		return
 	}
 
+	// Guard: if the file is empty (0 bytes), it's not a real SQLite database.
+	// This happens when a process creates beads.db but crashes before writing.
+	// Remove the empty file to prevent repeated failed migration attempts.
+	if info, err := os.Stat(sqlitePath); err == nil && info.Size() == 0 {
+		debug.Logf("shim-migrate: removing empty %s (not a valid database)", base)
+		_ = os.Remove(sqlitePath)
+		return
+	}
+
+	// Guard: if metadata.json already indicates Dolt backend, the beads.db is stale
+	// leftover — not a database that needs migrating. This covers dolt-server mode
+	// where there is no local dolt/ directory (data is stored remotely on the Dolt
+	// SQL server), so the dolt/ directory check below would miss it.
+	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.Backend == configfile.BackendDolt {
+		migratedPath := sqlitePath + ".migrated"
+		if _, err := os.Stat(migratedPath); err != nil {
+			if err := os.Rename(sqlitePath, migratedPath); err == nil {
+				debug.Logf("shim-migrate: renamed stale %s (backend already dolt)", base)
+			}
+		}
+		return
+	}
+
 	// Check if Dolt already exists — if so, SQLite is leftover from a prior migration
 	doltPath := filepath.Join(beadsDir, "dolt")
 	if _, err := os.Stat(doltPath); err == nil {
@@ -93,13 +116,14 @@ func doShimMigrate(beadsDir string) {
 	// Determine database name from prefix
 	dbName := "beads"
 	if data.prefix != "" {
-		dbName = "beads_" + data.prefix
+		dbName = data.prefix
 	}
 
 	// Load existing config for server connection settings
 	doltCfg := &dolt.Config{
-		Path:     doltPath,
-		Database: dbName,
+		Path:      doltPath,
+		Database:  dbName,
+		AutoStart: os.Getenv("GT_ROOT") == "" && os.Getenv("BEADS_DOLT_AUTO_START") != "0",
 	}
 	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
 		doltCfg.ServerHost = cfg.GetDoltServerHost()
@@ -147,9 +171,8 @@ func doShimMigrate(beadsDir string) {
 	cfg.Backend = configfile.BackendDolt
 	cfg.Database = "dolt"
 	cfg.DoltDatabase = dbName
-	if cfg.DoltServerPort == 0 {
-		cfg.DoltServerPort = configfile.DefaultDoltServerPort
-	}
+	// Don't set DoltServerPort — let doltserver.DefaultConfig derive it from
+	// the project path at runtime (same rationale as migrate_dolt.go).
 	if err := cfg.Save(beadsDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to update metadata.json: %v\n", err)
 	}

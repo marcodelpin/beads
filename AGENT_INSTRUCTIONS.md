@@ -34,11 +34,11 @@ beads/
 
 ```bash
 # Create test issues in isolated database
-BEADS_DB=/tmp/test.db ./bd init --quiet --prefix test
-BEADS_DB=/tmp/test.db ./bd create "Test issue" -p 1
+BEADS_DB=/tmp/test.db bd init --quiet --prefix test
+BEADS_DB=/tmp/test.db bd create "Test issue" -p 1
 
 # Or for quick testing
-BEADS_DB=/tmp/test.db ./bd create "Test feature" -p 1
+BEADS_DB=/tmp/test.db bd create "Test feature" -p 1
 ```
 
 **For automated tests**, use `t.TempDir()` in Go tests:
@@ -193,7 +193,7 @@ bd update <id> --acceptance "acceptance criteria"
 # Make changes (each write auto-commits to Dolt)
 bd create "Fix bug" -p 1
 bd create "Add tests" -p 1
-bd update bd-42 --status in_progress
+bd update bd-42 --claim
 bd close bd-40 --reason "Completed"
 
 # Push Dolt data to remote if configured
@@ -254,8 +254,8 @@ This installs:
 ## Building and Testing
 
 ```bash
-# Build
-go build -o bd ./cmd/bd
+# Build and install bd to ~/.local/bin (the canonical location)
+make install
 
 # Test (local baseline)
 make test
@@ -267,11 +267,15 @@ make test-full-cgo
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 
-# Run locally
-./bd init --prefix test
-./bd create "Test issue" -p 1
-./bd ready
+# Verify installed binary
+bd init --prefix test
+bd create "Test issue" -p 1
+bd ready
 ```
+
+> **WARNING**: Do NOT use `go build -o bd ./cmd/bd` or `go install ./cmd/bd`.
+> These create stale binaries in the working directory or `~/go/bin/` that
+> shadow the canonical install at `~/.local/bin/bd`. Always use `make install`.
 
 ## Version Management
 

@@ -235,6 +235,11 @@ func (c *Config) GetDoltServerHost() string {
 	return DefaultDoltServerHost
 }
 
+// Deprecated: Use doltserver.DefaultConfig(beadsDir).Port instead.
+// This method falls back to 3307 which is wrong for standalone mode
+// (where the port is hash-derived from the project path).
+// Kept for backward compatibility with external consumers.
+//
 // GetDoltServerPort returns the Dolt server port.
 // Checks BEADS_DOLT_SERVER_PORT env var first, then config, then default.
 func (c *Config) GetDoltServerPort() int {

@@ -20,6 +20,7 @@ import (
 	"hash/fnv"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -101,6 +102,10 @@ type Config struct {
 	// When true and the host is localhost, bd will start a dolt sql-server
 	// automatically if one isn't running. Disabled under Gas Town (GT_ROOT set).
 	AutoStart bool
+
+	// MaxOpenConns overrides the connection pool size (0 = default 10).
+	// Set to 1 for branch isolation in tests (DOLT_CHECKOUT is session-level).
+	MaxOpenConns int
 }
 
 // Retry configuration for transient connection errors (stale pool connections,
@@ -391,28 +396,22 @@ func applyConfigDefaults(cfg *Config) {
 	if cfg.ServerHost == "" {
 		cfg.ServerHost = "127.0.0.1"
 	}
-	// In test mode, BEADS_DOLT_PORT ALWAYS overrides cfg.ServerPort — even if
-	// already set by NewFromConfigWithOptions reading metadata.json. Without this,
-	// tests that go through the config path silently connect to the prod server.
-	if os.Getenv("BEADS_TEST_MODE") == "1" {
-		if envPort := os.Getenv("BEADS_DOLT_PORT"); envPort != "" {
-			if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
-				cfg.ServerPort = p
-			}
-		} else if cfg.ServerPort == 0 || cfg.ServerPort == DefaultSQLPort {
-			// No test server port set — use sentinel port 1 so connection
-			// fails immediately instead of silently hitting prod.
+	// BEADS_DOLT_PORT always overrides cfg.ServerPort (env > config convention).
+	// Callers (standalone CI, Gas Town, etc.) set this to route bd to a specific
+	// Dolt server. Without this override, metadata.json's dolt_server_port wins,
+	// which causes test databases to leak onto production (port 3307).
+	if envPort := os.Getenv("BEADS_DOLT_PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
+			cfg.ServerPort = p
+		}
+	} else if os.Getenv("BEADS_TEST_MODE") == "1" {
+		// Test mode with no explicit port — use sentinel port 1 so connection
+		// fails immediately instead of silently hitting prod.
+		if cfg.ServerPort == 0 || cfg.ServerPort == DefaultSQLPort {
 			cfg.ServerPort = 1
 		}
 	} else if cfg.ServerPort == 0 {
-		if envPort := os.Getenv("BEADS_DOLT_PORT"); envPort != "" {
-			if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
-				cfg.ServerPort = p
-			}
-		}
-		if cfg.ServerPort == 0 {
-			cfg.ServerPort = DefaultSQLPort
-		}
+		cfg.ServerPort = DefaultSQLPort
 	}
 	if cfg.ServerUser == "" {
 		cfg.ServerUser = "root"
@@ -483,6 +482,25 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 			if dialErr != nil {
 				return nil, fmt.Errorf("Dolt server auto-started but still unreachable at %s: %w\n\n"+
 					"Check logs: %s", addr, dialErr, doltserver.LogPath(beadsDir))
+			}
+		} else if doltserver.IsDaemonManaged() {
+			// Gas Town detected (GT_ROOT or filesystem heuristic) — delegate
+			// server start to gt, which manages the lifecycle properly.
+			gtBin, lookErr := exec.LookPath("gt")
+			if lookErr != nil {
+				return nil, fmt.Errorf("Dolt server unreachable at %s (Gas Town detected but 'gt' not found in PATH): %w\n\n"+
+					"Start the server with: gt dolt start", addr, dialErr)
+			}
+			cmd := exec.CommandContext(ctx, gtBin, "dolt", "start")
+			if out, runErr := cmd.CombinedOutput(); runErr != nil {
+				return nil, fmt.Errorf("Dolt server unreachable at %s and 'gt dolt start' failed: %w\n\ngt output: %s",
+					addr, runErr, strings.TrimSpace(string(out)))
+			}
+			// Retry connection after gt started the server
+			conn, dialErr = net.DialTimeout("tcp", addr, 3*time.Second)
+			if dialErr != nil {
+				return nil, fmt.Errorf("Dolt server still unreachable at %s after 'gt dolt start': %w",
+					addr, dialErr)
 			}
 		} else {
 			return nil, fmt.Errorf("Dolt server unreachable at %s: %w\n\nThe Dolt server may not be running. Try:\n  bd dolt start    # Start a local server\n  gt dolt start    # If using Gas Town",
@@ -590,8 +608,12 @@ func openServerConnection(ctx context.Context, cfg *Config) (*sql.DB, string, er
 	}
 
 	// Server mode supports multi-writer, configure reasonable pool size
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	maxOpen := 10
+	if cfg.MaxOpenConns > 0 {
+		maxOpen = cfg.MaxOpenConns
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(min(5, maxOpen))
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	// Ensure database exists (may need to create it)
@@ -605,11 +627,11 @@ func openServerConnection(ctx context.Context, cfg *Config) (*sql.DB, string, er
 	defer func() { _ = initDB.Close() }()
 
 	// Validate database name to prevent SQL injection via backtick escaping
-	if err := validateDatabaseName(cfg.Database); err != nil {
+	if err := ValidateDatabaseName(cfg.Database); err != nil {
 		_ = db.Close()
 		return nil, "", fmt.Errorf("invalid database name %q: %w", cfg.Database, err)
 	}
-	_, err = initDB.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", cfg.Database)) //nolint:gosec // G201: cfg.Database validated by validateDatabaseName above
+	_, err = initDB.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", cfg.Database)) //nolint:gosec // G201: cfg.Database validated by ValidateDatabaseName above
 	if err != nil {
 		// Dolt may return error 1007 even with IF NOT EXISTS - ignore if database already exists
 		errLower := strings.ToLower(err.Error())
@@ -872,12 +894,20 @@ func (s *DoltStore) Commit(ctx context.Context, message string) (retErr error) {
 // This is the primary commit mechanism for batch mode, where multiple bd commands
 // accumulate changes in the working set before committing at a logical boundary.
 func (s *DoltStore) CommitPending(ctx context.Context, actor string) (bool, error) {
-	// Check if there are any uncommitted changes
-	status, err := s.Status(ctx)
+	// Check if there are any committable changes (excluding dolt_ignore'd tables
+	// like wisp tables, which appear in dolt_status but can't be staged).
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM dolt_status s
+		WHERE NOT EXISTS (
+			SELECT 1 FROM dolt_ignore di
+			WHERE di.ignored = 1
+			AND s.table_name LIKE di.pattern
+		)`).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check status: %w", err)
 	}
-	if len(status.Staged) == 0 && len(status.Unstaged) == 0 {
+	if count == 0 {
 		return false, nil // Nothing to commit
 	}
 
@@ -936,8 +966,14 @@ func (s *DoltStore) buildBatchCommitMessage(ctx context.Context, actor string) s
 	// This surfaces label, comment, event, and dependency changes that
 	// would otherwise produce a generic fallback message.
 	var otherTables []string
-	statusRows, statusErr := s.db.QueryContext(ctx,
-		`SELECT table_name FROM dolt_status WHERE table_name != 'issues'`)
+	statusRows, statusErr := s.db.QueryContext(ctx, `
+		SELECT table_name FROM dolt_status s
+		WHERE table_name != 'issues'
+		AND NOT EXISTS (
+			SELECT 1 FROM dolt_ignore di
+			WHERE di.ignored = 1
+			AND s.table_name LIKE di.pattern
+		)`)
 	if statusErr == nil {
 		defer statusRows.Close()
 		for statusRows.Next() {
