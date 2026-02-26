@@ -25,6 +25,7 @@ var migrationsList = []Migration{
 	{"wisps_table", migrations.MigrateWispsTable},
 	{"wisp_auxiliary_tables", migrations.MigrateWispAuxiliaryTables},
 	{"issue_counter_table", migrations.MigrateIssueCounterTable},
+	{"infra_to_wisps", migrations.MigrateInfraToWisps},
 }
 
 // RunMigrations executes all registered Dolt migrations in order.

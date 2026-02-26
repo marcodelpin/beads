@@ -302,6 +302,9 @@ var listCmd = &cobra.Command{
 		// Gate filtering (bd-7zka.2)
 		includeGates, _ := cmd.Flags().GetBool("include-gates")
 
+		// Infra type filtering: exclude agent/rig/role/message by default
+		includeInfra, _ := cmd.Flags().GetBool("include-infra")
+
 		// Parent filtering (--filter-parent is alias for --parent)
 		parentID, _ := cmd.Flags().GetString("parent")
 		if parentID == "" {
@@ -557,6 +560,22 @@ var listCmd = &cobra.Command{
 		// Use --include-gates or --type gate to show gate issues
 		if !includeGates && issueType != "gate" {
 			filter.ExcludeTypes = append(filter.ExcludeTypes, "gate")
+		}
+
+		// Infra type filtering: exclude agent/rig/role/message by default.
+		// These types live in the wisps table after migration 007.
+		// Use --include-infra or --type=agent to show infra beads.
+		if !includeInfra && !dolt.IsInfraType(types.IssueType(issueType)) {
+			for _, t := range []string{"agent", "rig", "role", "message"} {
+				filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(t))
+			}
+		}
+
+		// When explicitly requesting an infra type, search the wisps table
+		// (where infra beads live after migration 007).
+		if dolt.IsInfraType(types.IssueType(issueType)) {
+			ephemeral := true
+			filter.Ephemeral = &ephemeral
 		}
 
 		// Parent filtering: filter children by parent issue
@@ -867,6 +886,9 @@ func init() {
 
 	// Gate filtering: exclude gate issues by default (bd-7zka.2)
 	listCmd.Flags().Bool("include-gates", false, "Include gate issues in output (normally hidden)")
+
+	// Infra type filtering: exclude agent/rig/role/message by default
+	listCmd.Flags().Bool("include-infra", false, "Include infrastructure beads (agent/rig/role/message) in output")
 
 	// Parent filtering: filter children by parent issue
 	listCmd.Flags().String("parent", "", "Filter by parent issue ID (shows children of specified issue)")

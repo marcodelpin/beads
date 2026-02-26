@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -570,6 +571,11 @@ func runWispGC(cmd *cobra.Command, args []string) {
 	now := time.Now()
 	var abandoned []*types.Issue
 	for _, issue := range issues {
+		// Never GC infrastructure beads (agent, rig, role, message)
+		if dolt.IsInfraType(issue.IssueType) {
+			continue
+		}
+
 		// Skip closed issues unless --all is specified
 		if issue.Status == types.StatusClosed && !cleanAll {
 			continue
@@ -642,12 +648,17 @@ func runWispPurgeClosed(ctx context.Context, dryRun bool, force bool) {
 		FatalError("listing closed wisps: %v", err)
 	}
 
-	// Filter out pinned issues (protected from cleanup)
+	// Filter out pinned and infra issues (protected from cleanup)
 	pinnedCount := 0
+	infraCount := 0
 	filtered := make([]*types.Issue, 0, len(closedIssues))
 	for _, issue := range closedIssues {
 		if issue.Pinned {
 			pinnedCount++
+			continue
+		}
+		if dolt.IsInfraType(issue.IssueType) {
+			infraCount++
 			continue
 		}
 		filtered = append(filtered, issue)
@@ -656,6 +667,9 @@ func runWispPurgeClosed(ctx context.Context, dryRun bool, force bool) {
 
 	if pinnedCount > 0 && !jsonOutput {
 		fmt.Printf("Skipping %d pinned issue(s) (protected from cleanup)\n", pinnedCount)
+	}
+	if infraCount > 0 && !jsonOutput {
+		fmt.Printf("Skipping %d infra issue(s) (agent/rig/role/message - protected from GC)\n", infraCount)
 	}
 
 	if len(closedIssues) == 0 {

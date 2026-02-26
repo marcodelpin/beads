@@ -15,6 +15,17 @@ func IsEphemeralID(id string) bool {
 	return strings.Contains(id, "-wisp-")
 }
 
+// IsInfraType returns true if the issue type is infrastructure (agent, rig, role, message).
+// Infra types are routed to the wisps table automatically to keep the versioned
+// issues table clean for real work items.
+func IsInfraType(t types.IssueType) bool {
+	switch t {
+	case "agent", "rig", "role", "message":
+		return true
+	}
+	return false
+}
+
 // isActiveWisp checks if an issue ID exists in the wisps table.
 // Returns false if the wisp was promoted/deleted or doesn't exist.
 // Used by CRUD methods to decide whether to route to wisp tables or fall through
