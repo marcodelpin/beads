@@ -146,7 +146,6 @@ uncommitted changes in its working set).`,
 				os.Exit(1)
 			}
 		}
-		commandDidExplicitPush = true
 		fmt.Println("Push complete.")
 	},
 }
