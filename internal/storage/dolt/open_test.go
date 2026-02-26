@@ -86,6 +86,18 @@ func TestResolveAutoStart(t *testing.T) {
 			currentValue:  true,
 			wantAutoStart: false,
 		},
+		{
+			name:          "BEADS_DOLT_AUTO_START=0 overrides caller true",
+			autoStartEnv:  "0",
+			currentValue:  true,
+			wantAutoStart: false,
+		},
+		{
+			name:          "IsDaemonManaged overrides caller true",
+			gtRoot:        "/fake/gt/root",
+			currentValue:  true,
+			wantAutoStart: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -96,8 +108,9 @@ func TestResolveAutoStart(t *testing.T) {
 
 			// t.Setenv records and restores the original state (incl. whether
 			// the var was set at all) so subtests don't leak into each other.
-			// Our resolveAutoStart checks are exact-value ("== 1"), so setting
-			// a var to "" is equivalent to unsetting it for our purposes.
+		// BEADS_TEST_MODE is checked for exact value "1" (to enable test mode);
+		// BEADS_DOLT_AUTO_START is checked for exact value "0" (to disable
+		// auto-start). Setting either to "" is effectively a no-op for both checks.
 			t.Setenv("BEADS_TEST_MODE", tc.testMode)
 			t.Setenv("GT_ROOT", tc.gtRoot)
 			t.Setenv("BEADS_DOLT_AUTO_START", tc.autoStartEnv)
