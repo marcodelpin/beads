@@ -383,10 +383,12 @@ var rootCmd = &cobra.Command{
 		cmdName := cmd.Name()
 		if cmd.Parent() != nil {
 			parentName := cmd.Parent().Name()
-			if parentName == "dolt" && slices.Contains(needsStoreDoltSubcommands, cmdName) {
-				// GH#2042: dolt push/pull/commit need the store — fall through to init
-			} else if slices.Contains(noDbCommands, parentName) {
-				return
+			if parentName == "dolt" {
+				if slices.Contains(needsStoreDoltSubcommands, cmdName) {
+					// GH#2042: dolt push/pull/commit need the store — fall through to init
+				} else if slices.Contains(noDbCommands, parentName) {
+					return
+				}
 			}
 		}
 		if slices.Contains(noDbCommands, cmdName) {
