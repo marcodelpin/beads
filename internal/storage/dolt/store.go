@@ -29,8 +29,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	// Import MySQL driver for server mode connections
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -1139,11 +1138,43 @@ func (s *DoltStore) Pull(ctx context.Context) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("failed to pull from %s/%s: %w", s.remote, s.branch, err)
 		}
+		if err := s.resetAutoIncrements(ctx); err != nil {
+			return fmt.Errorf("failed to reset auto-increments after pull: %w", err)
+		}
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, "CALL DOLT_PULL(?, ?)", s.remote, s.branch)
 	if err != nil {
 		return fmt.Errorf("failed to pull from %s/%s: %w", s.remote, s.branch, err)
+	}
+	if err := s.resetAutoIncrements(ctx); err != nil {
+		return fmt.Errorf("failed to reset auto-increments after pull: %w", err)
+	}
+	return nil
+}
+
+func (s *DoltStore) resetAutoIncrements(ctx context.Context) error {
+	tables := []string{"events", "comments", "issue_snapshots", "compaction_snapshots", "wisp_events", "wisp_comments"}
+	for _, table := range tables {
+		var maxID int64
+		//nolint:gosec // G201: table is a hardcoded constant
+		err := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COALESCE(MAX(id), 0) FROM %s", table)).Scan(&maxID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			var mysqlErr *mysql.MySQLError
+			if errors.As(err, &mysqlErr) && mysqlErr.Number == 1146 {
+				continue
+			}
+			return fmt.Errorf("failed to query max id for %s: %w", table, err)
+		}
+		if maxID > 0 {
+			//nolint:gosec // G201: table is a hardcoded constant
+			if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s AUTO_INCREMENT = %d", table, maxID+1)); err != nil {
+				return fmt.Errorf("failed to reset AUTO_INCREMENT for %s: %w", table, err)
+			}
+		}
 	}
 	return nil
 }
