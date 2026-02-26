@@ -61,6 +61,12 @@ func DatabaseVersionWithBdVersion(path string, bdVersion string) error {
 		}
 		defer func() { _ = store.Close() }()
 
+		// Create local marker directory so FindDatabasePath can discover the
+		// database. Server mode doesn't create it automatically (bd-u8rda).
+		if mkErr := os.MkdirAll(dbPath, 0o750); mkErr != nil {
+			fmt.Printf("  Warning: failed to create dolt marker dir: %v\n", mkErr)
+		}
+
 		// Set version metadata if provided
 		if bdVersion != "" {
 			if err := store.SetMetadata(ctx, "bd_version", bdVersion); err != nil {
