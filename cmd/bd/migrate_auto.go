@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
@@ -64,18 +63,26 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 		return
 	}
 
-	// Guard: if metadata.json already indicates Dolt backend, the beads.db is stale
-	// leftover — not a database that needs migrating. This covers dolt-server mode
-	// where there is no local dolt/ directory (data is stored remotely on the Dolt
-	// SQL server), so the dolt/ directory check below would miss it.
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.Backend == configfile.BackendDolt {
-		migratedPath := sqlitePath + ".migrated"
-		if _, err := os.Stat(migratedPath); err != nil {
-			if err := os.Rename(sqlitePath, migratedPath); err == nil {
-				debug.Logf("auto-migrate-sqlite: renamed stale %s (backend already dolt)", base)
-			}
+	// Guard: if metadata.json explicitly indicates SQLite backend, the user has
+	// opted to keep SQLite. Do NOT auto-migrate. Fixes GH#2016.
+	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
+		// Use GetBackend() for SQLite check (normalizes case, checks env var)
+		if cfg.GetBackend() == configfile.BackendSQLite {
+			debug.Logf("auto-migrate-sqlite: skipping — backend explicitly set to sqlite")
+			return
 		}
-		return
+		// Use raw field for Dolt check: only match when metadata.json was
+		// explicitly written with "dolt" (by a prior migration). Empty/missing
+		// Backend field means legacy pre-Dolt config that needs migration.
+		if strings.EqualFold(cfg.Backend, configfile.BackendDolt) {
+			migratedPath := sqlitePath + ".migrated"
+			if _, err := os.Stat(migratedPath); err != nil {
+				if err := os.Rename(sqlitePath, migratedPath); err == nil {
+					debug.Logf("auto-migrate-sqlite: renamed stale %s (backend already dolt)", base)
+				}
+			}
+			return
+		}
 	}
 
 	// Check if Dolt already exists — if so, SQLite is leftover from a prior migration
@@ -94,18 +101,30 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 
 	ctx := context.Background()
 
+	// Phase 1: Backup — ALWAYS backup before touching anything
+	fmt.Fprintf(os.Stderr, "Backing up SQLite database...\n")
+	backupPath, backupErr := backupSQLite(sqlitePath)
+	if backupErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration aborted (backup failed): %v\n", backupErr)
+		fmt.Fprintf(os.Stderr, "Hint: check disk space and permissions, then retry\n")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  Backup saved to %s\n", filepath.Base(backupPath))
+
 	// Extract data from SQLite (read-only)
-	fmt.Fprintf(os.Stderr, "Migrating SQLite database to Dolt...\n")
+	fmt.Fprintf(os.Stderr, "Extracting data from SQLite...\n")
 	data, err := extractFromSQLite(ctx, sqlitePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration failed (extract): %v\n", err)
-		fmt.Fprintf(os.Stderr, "Hint: run 'bd migrate dolt' manually, or remove %s to skip\n", base)
+		fmt.Fprintf(os.Stderr, "Hint: run 'bd migrate --to-dolt' manually, or remove %s to skip\n", base)
+		fmt.Fprintf(os.Stderr, "  Your backup is at: %s\n", backupPath)
 		return
 	}
 
 	if data.issueCount == 0 {
-		debug.Logf("auto-migrate-sqlite: SQLite database is empty, skipping import")
+		debug.Logf("auto-migrate-sqlite: SQLite database is empty, migrating empty database")
 	}
+	fmt.Fprintf(os.Stderr, "  Found %d issues\n", data.issueCount)
 
 	// Determine database name from prefix
 	dbName := "beads"
@@ -113,37 +132,67 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 		dbName = data.prefix
 	}
 
-	// Load existing config for server connection settings
-	doltCfg := &dolt.Config{
-		Path:     doltPath,
-		Database: dbName,
-	}
+	// Resolve server connection settings once — used for both verification and import
+	resolvedPort := doltserver.DefaultConfig(beadsDir).Port
+	resolvedHost := "127.0.0.1"
+	resolvedUser := "root"
+	resolvedPassword := ""
+	resolvedTLS := false
 	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
-		doltCfg.ServerHost = cfg.GetDoltServerHost()
-		doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
-		doltCfg.ServerUser = cfg.GetDoltServerUser()
-		doltCfg.ServerPassword = cfg.GetDoltServerPassword()
-		doltCfg.ServerTLS = cfg.GetDoltServerTLS()
+		resolvedHost = cfg.GetDoltServerHost()
+		if cfg.DoltServerPort > 0 {
+			resolvedPort = cfg.DoltServerPort
+		}
+		resolvedUser = cfg.GetDoltServerUser()
+		resolvedPassword = cfg.GetDoltServerPassword()
+		resolvedTLS = cfg.GetDoltServerTLS()
 	}
 
-	// Create Dolt store (connects to running dolt sql-server)
+	// Verify server target — don't write to the wrong Dolt server
+	if err := verifyServerTarget(dbName, resolvedPort); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration aborted (server check): %v\n", err)
+		fmt.Fprintf(os.Stderr, "\nTo fix:\n")
+		fmt.Fprintf(os.Stderr, "  1. Stop the other project's Dolt server\n")
+		fmt.Fprintf(os.Stderr, "  2. Or set BEADS_DOLT_SERVER_PORT to a unique port for this project\n")
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
+		return
+	}
+
+	// Save original config for rollback
+	originalCfg, _ := configfile.Load(beadsDir)
+
+	// Phase 2: Create Dolt store and import — use same resolved settings as verification
+	doltPath = filepath.Join(beadsDir, "dolt")
+	doltCfg := &dolt.Config{
+		Path:           doltPath,
+		Database:       dbName,
+		ServerHost:     resolvedHost,
+		ServerPort:     resolvedPort,
+		ServerUser:     resolvedUser,
+		ServerPassword: resolvedPassword,
+		ServerTLS:      resolvedTLS,
+	}
+
+	fmt.Fprintf(os.Stderr, "Creating Dolt database...\n")
 	doltStore, err := dolt.New(ctx, doltCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration failed (dolt init): %v\n", err)
 		fmt.Fprintf(os.Stderr, "Hint: ensure the Dolt server is running, then retry any bd command\n")
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
 		return
 	}
 
-	// Import data
+	fmt.Fprintf(os.Stderr, "Importing data...\n")
 	imported, skipped, importErr := importToDolt(ctx, doltStore, data)
 	if importErr != nil {
 		_ = doltStore.Close()
-		_ = os.RemoveAll(doltPath)
+		_ = os.RemoveAll(doltPath) // Safe: doltPath was just created by us (guarded by Stat check above)
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration failed (import): %v\n", importErr)
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
 		return
 	}
 
-	// Set sync mode
+	// Set sync mode in Dolt config table
 	if err := doltStore.SetConfig(ctx, "sync.mode", "dolt-native"); err != nil {
 		debug.Logf("auto-migrate-sqlite: failed to set sync.mode: %v", err)
 	}
@@ -156,35 +205,33 @@ func doAutoMigrateSQLiteToDolt(beadsDir string) {
 
 	_ = doltStore.Close()
 
-	// Update metadata.json to point to Dolt
-	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-	cfg.Backend = configfile.BackendDolt
-	cfg.Database = "dolt"
-	cfg.DoltDatabase = dbName
-	// Don't set DoltServerPort - let doltserver.DefaultConfig derive it
-	// from the project path at runtime.
-	if err := cfg.Save(beadsDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to update metadata.json: %v\n", err)
-	}
-
-	// Write sync.mode to config.yaml
-	if err := config.SaveConfigValue("sync.mode", string(config.SyncModeDoltNative), beadsDir); err != nil {
-		debug.Logf("auto-migrate-sqlite: failed to write sync.mode to config.yaml: %v", err)
+	// Verify migration counts before finalizing
+	// Note: importToDolt returns issue counts only, not dep counts.
+	// Pass 0 for deps to skip that check (deps are imported with issues).
+	if err := verifyMigrationCounts(data.issueCount, 0, imported+skipped, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: migration verification failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
+		// Rollback: remove dolt dir, restore metadata
+		_ = os.RemoveAll(doltPath)
+		if originalCfg != nil {
+			if rbErr := rollbackMetadata(beadsDir, originalCfg); rbErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: metadata rollback also failed: %v\n", rbErr)
+			}
+		}
+		return
 	}
 
-	// Rename SQLite file to mark migration complete
-	migratedPath := sqlitePath + ".migrated"
-	if err := os.Rename(sqlitePath, migratedPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: migration succeeded but failed to rename %s: %v\n", base, err)
-		fmt.Fprintf(os.Stderr, "Hint: manually rename or remove %s\n", sqlitePath)
+	// Finalize — update metadata and rename SQLite (atomic cutover)
+	if err := finalizeMigration(beadsDir, sqlitePath, dbName); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: migration completed but finalization failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Data is in Dolt but metadata may be inconsistent.\n")
+		fmt.Fprintf(os.Stderr, "  Run 'bd doctor --fix' to repair.\n")
+		return
 	}
 
 	if skipped > 0 {
 		fmt.Fprintf(os.Stderr, "Migrated %d issues from SQLite to Dolt (%d skipped)\n", imported, skipped)
 	} else {
-		fmt.Fprintf(os.Stderr, "Migrated %d issues from SQLite to Dolt\n", imported)
+		fmt.Fprintf(os.Stderr, "Migrated %d issues from SQLite to Dolt ✓\n", imported)
 	}
 }

@@ -330,6 +330,10 @@ func applyFixList(path string, fixes []doctorCheck) {
 			err = fix.ConfigValues(path)
 		case "Classic Artifacts":
 			err = fix.ClassicArtifacts(path)
+		case "Broken Migration State":
+			err = fix.BrokenMigrationState(path)
+		case "SQLite Residue":
+			err = fix.SQLiteResidue(path)
 		default:
 			fmt.Printf("  ⚠ No automatic fix available for %s\n", check.Name)
 			fmt.Printf("  Manual fix: %s\n", check.Fix)

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/storage/dolt"
@@ -61,18 +60,26 @@ func doShimMigrate(beadsDir string) {
 		return
 	}
 
-	// Guard: if metadata.json already indicates Dolt backend, the beads.db is stale
-	// leftover — not a database that needs migrating. This covers dolt-server mode
-	// where there is no local dolt/ directory (data is stored remotely on the Dolt
-	// SQL server), so the dolt/ directory check below would miss it.
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.Backend == configfile.BackendDolt {
-		migratedPath := sqlitePath + ".migrated"
-		if _, err := os.Stat(migratedPath); err != nil {
-			if err := os.Rename(sqlitePath, migratedPath); err == nil {
-				debug.Logf("shim-migrate: renamed stale %s (backend already dolt)", base)
-			}
+	// Guard: if metadata.json explicitly indicates SQLite backend, the user has
+	// opted to keep SQLite. Do NOT auto-migrate. Fixes GH#2016.
+	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
+		// Use GetBackend() for SQLite check (normalizes case, checks env var)
+		if cfg.GetBackend() == configfile.BackendSQLite {
+			debug.Logf("shim-migrate: skipping — backend explicitly set to sqlite")
+			return
 		}
-		return
+		// Use raw field for Dolt check: only match when metadata.json was
+		// explicitly written with "dolt" (by a prior migration). Empty/missing
+		// Backend field means legacy pre-Dolt config that needs migration.
+		if strings.EqualFold(cfg.Backend, configfile.BackendDolt) {
+			migratedPath := sqlitePath + ".migrated"
+			if _, err := os.Stat(migratedPath); err != nil {
+				if err := os.Rename(sqlitePath, migratedPath); err == nil {
+					debug.Logf("shim-migrate: renamed stale %s (backend already dolt)", base)
+				}
+			}
+			return
+		}
 	}
 
 	// Check if Dolt already exists — if so, SQLite is leftover from a prior migration
@@ -93,25 +100,37 @@ func doShimMigrate(beadsDir string) {
 	sqlite3Path, err := exec.LookPath("sqlite3")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration requires the sqlite3 CLI tool\n")
-		fmt.Fprintf(os.Stderr, "Hint: install sqlite3 and retry, or run 'bd migrate dolt' with a CGO-enabled build\n")
+		fmt.Fprintf(os.Stderr, "Hint: install sqlite3 and retry, or run 'bd migrate --to-dolt' with a CGO-enabled build\n")
 		return
 	}
 	debug.Logf("shim-migrate: using sqlite3 at %s", sqlite3Path)
 
 	ctx := context.Background()
 
+	// Phase 1: Backup — ALWAYS backup before touching anything
+	fmt.Fprintf(os.Stderr, "Backing up SQLite database...\n")
+	backupPath, backupErr := backupSQLite(sqlitePath)
+	if backupErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration aborted (backup failed): %v\n", backupErr)
+		fmt.Fprintf(os.Stderr, "Hint: check disk space and permissions, then retry\n")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  Backup saved to %s\n", filepath.Base(backupPath))
+
 	// Extract data from SQLite via CLI
-	fmt.Fprintf(os.Stderr, "Migrating SQLite database to Dolt (via sqlite3 CLI)...\n")
+	fmt.Fprintf(os.Stderr, "Extracting data from SQLite (via sqlite3 CLI)...\n")
 	data, err := extractViaSQLiteCLI(ctx, sqlitePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration failed (extract): %v\n", err)
-		fmt.Fprintf(os.Stderr, "Hint: run 'bd migrate dolt' manually, or remove %s to skip\n", base)
+		fmt.Fprintf(os.Stderr, "Hint: run 'bd migrate --to-dolt' manually, or remove %s to skip\n", base)
+		fmt.Fprintf(os.Stderr, "  Your backup is at: %s\n", backupPath)
 		return
 	}
 
 	if data.issueCount == 0 {
-		debug.Logf("shim-migrate: SQLite database is empty, skipping import")
+		debug.Logf("shim-migrate: SQLite database is empty, migrating empty database")
 	}
+	fmt.Fprintf(os.Stderr, "  Found %d issues\n", data.issueCount)
 
 	// Determine database name from prefix
 	dbName := "beads"
@@ -119,7 +138,25 @@ func doShimMigrate(beadsDir string) {
 		dbName = data.prefix
 	}
 
-	// Load existing config for server connection settings
+	// Verify server target — don't write to the wrong Dolt server
+	serverPort := 0
+	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
+		serverPort = cfg.GetDoltServerPort()
+	}
+	if err := verifyServerTarget(dbName, serverPort); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration aborted (server check): %v\n", err)
+		fmt.Fprintf(os.Stderr, "\nTo fix:\n")
+		fmt.Fprintf(os.Stderr, "  1. Stop the other project's Dolt server\n")
+		fmt.Fprintf(os.Stderr, "  2. Or set BEADS_DOLT_SERVER_PORT to a unique port for this project\n")
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
+		return
+	}
+
+	// Save original config for rollback
+	originalCfg, _ := configfile.Load(beadsDir)
+
+	// Phase 2: Create Dolt store and import
+	doltPath = filepath.Join(beadsDir, "dolt")
 	doltCfg := &dolt.Config{
 		Path:      doltPath,
 		Database:  dbName,
@@ -133,24 +170,26 @@ func doShimMigrate(beadsDir string) {
 		doltCfg.ServerTLS = cfg.GetDoltServerTLS()
 	}
 
-	// Create Dolt store
+	fmt.Fprintf(os.Stderr, "Creating Dolt database...\n")
 	doltStore, err := dolt.New(ctx, doltCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration failed (dolt init): %v\n", err)
 		fmt.Fprintf(os.Stderr, "Hint: ensure the Dolt server is running, then retry any bd command\n")
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
 		return
 	}
 
-	// Import data
+	fmt.Fprintf(os.Stderr, "Importing data...\n")
 	imported, skipped, importErr := importToDolt(ctx, doltStore, data)
 	if importErr != nil {
 		_ = doltStore.Close()
-		_ = os.RemoveAll(doltPath)
+		_ = os.RemoveAll(doltPath) // Safe: doltPath was just created by us (guarded by Stat check above)
 		fmt.Fprintf(os.Stderr, "Warning: SQLite auto-migration failed (import): %v\n", importErr)
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
 		return
 	}
 
-	// Set sync mode
+	// Set sync mode in Dolt config table
 	if err := doltStore.SetConfig(ctx, "sync.mode", "dolt-native"); err != nil {
 		debug.Logf("shim-migrate: failed to set sync.mode: %v", err)
 	}
@@ -163,36 +202,33 @@ func doShimMigrate(beadsDir string) {
 
 	_ = doltStore.Close()
 
-	// Update metadata.json to point to Dolt
-	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-	cfg.Backend = configfile.BackendDolt
-	cfg.Database = "dolt"
-	cfg.DoltDatabase = dbName
-	// Don't set DoltServerPort — let doltserver.DefaultConfig derive it from
-	// the project path at runtime (same rationale as migrate_dolt.go).
-	if err := cfg.Save(beadsDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to update metadata.json: %v\n", err)
-	}
-
-	// Write sync.mode to config.yaml
-	if err := config.SaveConfigValue("sync.mode", string(config.SyncModeDoltNative), beadsDir); err != nil {
-		debug.Logf("shim-migrate: failed to write sync.mode to config.yaml: %v", err)
+	// Verify migration counts before finalizing
+	// Note: importToDolt returns issue counts only, not dep counts.
+	// Pass 0 for deps to skip that check (deps are imported with issues).
+	if err := verifyMigrationCounts(data.issueCount, 0, imported+skipped, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: migration verification failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
+		_ = os.RemoveAll(doltPath)
+		if originalCfg != nil {
+			if rbErr := rollbackMetadata(beadsDir, originalCfg); rbErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: metadata rollback also failed: %v\n", rbErr)
+			}
+		}
+		return
 	}
 
-	// Rename SQLite file to mark migration complete
-	migratedPath := sqlitePath + ".migrated"
-	if err := os.Rename(sqlitePath, migratedPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: migration succeeded but failed to rename %s: %v\n", base, err)
-		fmt.Fprintf(os.Stderr, "Hint: manually rename or remove %s\n", sqlitePath)
+	// Finalize — update metadata and rename SQLite (atomic cutover)
+	if err := finalizeMigration(beadsDir, sqlitePath, dbName); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: migration completed but finalization failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Data is in Dolt but metadata may be inconsistent.\n")
+		fmt.Fprintf(os.Stderr, "  Run 'bd doctor --fix' to repair.\n")
+		return
 	}
 
 	if skipped > 0 {
 		fmt.Fprintf(os.Stderr, "Migrated %d issues from SQLite to Dolt (%d skipped)\n", imported, skipped)
 	} else {
-		fmt.Fprintf(os.Stderr, "Migrated %d issues from SQLite to Dolt\n", imported)
+		fmt.Fprintf(os.Stderr, "Migrated %d issues from SQLite to Dolt ✓\n", imported)
 	}
 }
 
@@ -229,46 +265,79 @@ func extractViaSQLiteCLI(_ context.Context, dbPath string) (*migrationData, erro
 	issueCols := queryColumnSet(dbPath, "issues")
 	depCols := queryColumnSet(dbPath, "dependencies")
 
-	specIDExpr := sqliteOptionalTextExpr(issueCols, "spec_id", "''")
-	closedBySessionExpr := sqliteOptionalTextExpr(issueCols, "closed_by_session", "''")
-	wispTypeExpr := sqliteOptionalTextExpr(issueCols, "wisp_type", "''")
-	metadataExpr := sqliteOptionalTextExpr(issueCols, "metadata", "'{}'")
+	// All columns that may be missing in older beads database schemas.
+	// Uses sqliteOptionalTextExpr which checks PRAGMA table_info before querying.
+	// Fixes "no such column" errors for pre-v0.49 databases (GH#2016).
+	opt := func(col, fallback string) string {
+		return sqliteOptionalTextExpr(issueCols, col, fallback)
+	}
 
 	// Extract issues
 	issueQuery := fmt.Sprintf(`
-		SELECT id, COALESCE(content_hash,'') as content_hash,
-			COALESCE(title,'') as title, COALESCE(description,'') as description,
-			COALESCE(design,'') as design, COALESCE(acceptance_criteria,'') as acceptance_criteria,
-			COALESCE(notes,'') as notes,
-			COALESCE(status,'') as status, COALESCE(priority,0) as priority,
-			COALESCE(issue_type,'') as issue_type,
-			COALESCE(assignee,'') as assignee, estimated_minutes,
-			COALESCE(created_at,'') as created_at, COALESCE(created_by,'') as created_by,
-			COALESCE(owner,'') as owner,
-			COALESCE(updated_at,'') as updated_at, closed_at, external_ref, %s as spec_id,
-			COALESCE(compaction_level,0) as compaction_level,
-			COALESCE(compacted_at,'') as compacted_at, compacted_at_commit,
-			COALESCE(original_size,0) as original_size,
-			COALESCE(sender,'') as sender, COALESCE(ephemeral,0) as ephemeral, %s as wisp_type,
-			COALESCE(pinned,0) as pinned,
-			COALESCE(is_template,0) as is_template, COALESCE(crystallizes,0) as crystallizes,
-			COALESCE(mol_type,'') as mol_type, COALESCE(work_type,'') as work_type,
-			quality_score,
-			COALESCE(source_system,'') as source_system, COALESCE(source_repo,'') as source_repo,
-			COALESCE(close_reason,'') as close_reason, %s as closed_by_session,
-			COALESCE(event_kind,'') as event_kind, COALESCE(actor,'') as actor,
-			COALESCE(target,'') as target, COALESCE(payload,'') as payload,
-			COALESCE(await_type,'') as await_type, COALESCE(await_id,'') as await_id,
-			COALESCE(timeout_ns,0) as timeout_ns, COALESCE(waiters,'') as waiters,
-			COALESCE(hook_bead,'') as hook_bead, COALESCE(role_bead,'') as role_bead,
-			COALESCE(agent_state,'') as agent_state,
-			COALESCE(last_activity,'') as last_activity, COALESCE(role_type,'') as role_type,
-			COALESCE(rig,'') as rig,
-			COALESCE(due_at,'') as due_at, COALESCE(defer_until,'') as defer_until,
+		SELECT id, %s as content_hash,
+			%s as title, %s as description,
+			%s as design, %s as acceptance_criteria,
+			%s as notes,
+			%s as status, %s as priority,
+			%s as issue_type,
+			%s as assignee, %s as estimated_minutes,
+			%s as created_at, %s as created_by,
+			%s as owner,
+			%s as updated_at, %s as closed_at, %s as external_ref, %s as spec_id,
+			%s as compaction_level,
+			%s as compacted_at, %s as compacted_at_commit,
+			%s as original_size,
+			%s as sender, %s as ephemeral, %s as wisp_type,
+			%s as pinned,
+			%s as is_template, %s as crystallizes,
+			%s as mol_type, %s as work_type,
+			%s as quality_score,
+			%s as source_system, %s as source_repo,
+			%s as close_reason, %s as closed_by_session,
+			%s as event_kind, %s as actor,
+			%s as target, %s as payload,
+			%s as await_type, %s as await_id,
+			%s as timeout_ns, %s as waiters,
+			%s as hook_bead, %s as role_bead,
+			%s as agent_state,
+			%s as last_activity, %s as role_type,
+			%s as rig,
+			%s as due_at, %s as defer_until,
 			%s as metadata
 		FROM issues
 		ORDER BY created_at, id
-	`, specIDExpr, wispTypeExpr, closedBySessionExpr, metadataExpr)
+	`,
+		opt("content_hash", "''"),
+		opt("title", "''"), opt("description", "''"),
+		opt("design", "''"), opt("acceptance_criteria", "''"),
+		opt("notes", "''"),
+		opt("status", "''"), opt("priority", "0"),
+		opt("issue_type", "''"),
+		opt("assignee", "''"), opt("estimated_minutes", "NULL"),
+		opt("created_at", "''"), opt("created_by", "''"),
+		opt("owner", "''"),
+		opt("updated_at", "''"), opt("closed_at", "NULL"), opt("external_ref", "NULL"), opt("spec_id", "''"),
+		opt("compaction_level", "0"),
+		opt("compacted_at", "''"), opt("compacted_at_commit", "NULL"),
+		opt("original_size", "0"),
+		opt("sender", "''"), opt("ephemeral", "0"), opt("wisp_type", "''"),
+		opt("pinned", "0"),
+		opt("is_template", "0"), opt("crystallizes", "0"),
+		opt("mol_type", "''"), opt("work_type", "''"),
+		opt("quality_score", "NULL"),
+		opt("source_system", "''"), opt("source_repo", "''"),
+		opt("close_reason", "''"), opt("closed_by_session", "''"),
+		opt("event_kind", "''"), opt("actor", "''"),
+		opt("target", "''"), opt("payload", "''"),
+		opt("await_type", "''"), opt("await_id", "''"),
+		opt("timeout_ns", "0"), opt("waiters", "''"),
+		opt("hook_bead", "''"), opt("role_bead", "''"),
+		opt("agent_state", "''"),
+		opt("last_activity", "''"), opt("role_type", "''"),
+		opt("rig", "''"),
+		opt("due_at", "''"), opt("defer_until", "''"),
+		opt("metadata", "'{}'"),
+	)
 	issueRows, err := queryJSON(dbPath, issueQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query issues: %w", err)
@@ -295,14 +364,15 @@ func extractViaSQLiteCLI(_ context.Context, dbPath string) (*migrationData, erro
 
 	// Extract dependencies
 	depsMap := make(map[string][]*types.Dependency)
-	depMetadataExpr := sqliteOptionalTextExpr(depCols, "metadata", "'{}'")
-	depThreadExpr := sqliteOptionalTextExpr(depCols, "thread_id", "''")
+	depOpt := func(col, fallback string) string {
+		return sqliteOptionalTextExpr(depCols, col, fallback)
+	}
 	depQuery := fmt.Sprintf(`
-		SELECT issue_id, depends_on_id, COALESCE(type,'') as type, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at,
+		SELECT issue_id, depends_on_id, COALESCE(type,'') as type, %s as created_by, COALESCE(created_at,'') as created_at,
 			%s as metadata, %s as thread_id
 		FROM dependencies
 		ORDER BY created_at, issue_id, depends_on_id
-	`, depMetadataExpr, depThreadExpr)
+	`, depOpt("created_by", "''"), depOpt("metadata", "'{}'"), depOpt("thread_id", "''"))
 	depRows, err := queryJSON(dbPath, depQuery)
 	if err == nil {
 		for _, row := range depRows {

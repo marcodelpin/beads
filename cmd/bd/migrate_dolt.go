@@ -240,34 +240,58 @@ func extractFromSQLite(ctx context.Context, dbPath string) (*migrationData, erro
 	issueCols, _ := sqliteTableColumns(ctx, db, "issues")
 	depCols, _ := sqliteTableColumns(ctx, db, "dependencies")
 
-	specIDExpr := sqliteOptionalTextExpr(issueCols, "spec_id", "''")
-	closedBySessionExpr := sqliteOptionalTextExpr(issueCols, "closed_by_session", "''")
-	wispTypeExpr := sqliteOptionalTextExpr(issueCols, "wisp_type", "''")
-	metadataExpr := sqliteOptionalTextExpr(issueCols, "metadata", "'{}'")
+	// All columns that may be missing in older beads database schemas.
+	// Uses sqliteOptionalTextExpr which checks PRAGMA table_info before querying.
+	// Fixes "no such column" errors for pre-v0.49 databases (GH#2016).
+	opt := func(col, fallback string) string {
+		return sqliteOptionalTextExpr(issueCols, col, fallback)
+	}
 
 	// Get all issues
 	//nolint:gosec // SQL fragments come from fixed column names discovered via PRAGMA table_info.
+	// Build query with ALL non-id columns optional to handle any schema version.
+	// Core columns (id, title, status, priority, created_at, updated_at) are
+	// assumed present in all versions. Everything else uses opt() to gracefully
+	// handle missing columns in older databases.
 	issueQuery := fmt.Sprintf(`
-		SELECT id, COALESCE(content_hash,''), COALESCE(title,''), COALESCE(description,''),
-			COALESCE(design,''), COALESCE(acceptance_criteria,''), COALESCE(notes,''),
-			COALESCE(status,''), COALESCE(priority,0), COALESCE(issue_type,''),
-			COALESCE(assignee,''), estimated_minutes,
-			COALESCE(created_at,''), COALESCE(created_by,''), COALESCE(owner,''),
-			COALESCE(updated_at,''), COALESCE(closed_at,''), external_ref, %s,
-			COALESCE(compaction_level,0), COALESCE(compacted_at,''), compacted_at_commit,
-			COALESCE(original_size,0),
-			COALESCE(sender,''), COALESCE(ephemeral,0), %s, COALESCE(pinned,0),
-			COALESCE(is_template,0), COALESCE(crystallizes,0),
-			COALESCE(mol_type,''), COALESCE(work_type,''), quality_score,
-			COALESCE(source_system,''), COALESCE(source_repo,''), COALESCE(close_reason,''), %s,
-			COALESCE(event_kind,''), COALESCE(actor,''), COALESCE(target,''), COALESCE(payload,''),
-			COALESCE(await_type,''), COALESCE(await_id,''), COALESCE(timeout_ns,0), COALESCE(waiters,''),
-			COALESCE(hook_bead,''), COALESCE(role_bead,''), COALESCE(agent_state,''),
-			COALESCE(last_activity,''), COALESCE(role_type,''), COALESCE(rig,''),
-			COALESCE(due_at,''), COALESCE(defer_until,''), %s
+		SELECT id, %s, %s, %s,
+			%s, %s, %s,
+			%s, %s, %s,
+			%s, %s,
+			%s, %s, %s,
+			%s, %s, %s, %s,
+			%s, %s, %s,
+			%s,
+			%s, %s, %s, %s,
+			%s, %s,
+			%s, %s, %s,
+			%s, %s, %s, %s,
+			%s, %s, %s, %s,
+			%s, %s, %s, %s,
+			%s, %s, %s,
+			%s, %s, %s,
+			%s, %s, %s
 		FROM issues
 		ORDER BY created_at, id
-	`, specIDExpr, wispTypeExpr, closedBySessionExpr, metadataExpr)
+	`,
+		opt("content_hash", "''"), opt("title", "''"), opt("description", "''"),
+		opt("design", "''"), opt("acceptance_criteria", "''"), opt("notes", "''"),
+		opt("status", "''"), opt("priority", "0"), opt("issue_type", "''"),
+		opt("assignee", "''"), opt("estimated_minutes", "NULL"),
+		opt("created_at", "''"), opt("created_by", "''"), opt("owner", "''"),
+		opt("updated_at", "''"), opt("closed_at", "NULL"), opt("external_ref", "NULL"), opt("spec_id", "''"),
+		opt("compaction_level", "0"), opt("compacted_at", "''"), opt("compacted_at_commit", "NULL"),
+		opt("original_size", "0"),
+		opt("sender", "''"), opt("ephemeral", "0"), opt("wisp_type", "''"), opt("pinned", "0"),
+		opt("is_template", "0"), opt("crystallizes", "0"),
+		opt("mol_type", "''"), opt("work_type", "''"), opt("quality_score", "NULL"),
+		opt("source_system", "''"), opt("source_repo", "''"), opt("close_reason", "''"), opt("closed_by_session", "''"),
+		opt("event_kind", "''"), opt("actor", "''"), opt("target", "''"), opt("payload", "''"),
+		opt("await_type", "''"), opt("await_id", "''"), opt("timeout_ns", "0"), opt("waiters", "''"),
+		opt("hook_bead", "''"), opt("role_bead", "''"), opt("agent_state", "''"),
+		opt("last_activity", "''"), opt("role_type", "''"), opt("rig", "''"),
+		opt("due_at", "''"), opt("defer_until", "''"), opt("metadata", "'{}'"),
+	)
 	issueRows, err := db.QueryContext(ctx, issueQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query issues: %w", err)
@@ -284,12 +308,13 @@ func extractFromSQLite(ctx context.Context, dbPath string) (*migrationData, erro
 		var waitersJSON string
 		var closedAt, compactedAt, lastActivity, dueAt, deferUntil sql.NullString
 		var specID, wispType, closedBySession, metadataRaw sql.NullString
+		var createdByVal, ownerVal sql.NullString
 		if err := issueRows.Scan(
 			&issue.ID, &issue.ContentHash, &issue.Title, &issue.Description,
 			&issue.Design, &issue.AcceptanceCriteria, &issue.Notes,
 			&issue.Status, &issue.Priority, &issue.IssueType,
 			&issue.Assignee, &estMin,
-			&issue.CreatedAt, &issue.CreatedBy, &issue.Owner,
+			&issue.CreatedAt, &createdByVal, &ownerVal,
 			&issue.UpdatedAt, &closedAt, &extRef, &specID,
 			&issue.CompactionLevel, &compactedAt, &compactCommit,
 			&issue.OriginalSize,
@@ -304,6 +329,12 @@ func extractFromSQLite(ctx context.Context, dbPath string) (*migrationData, erro
 			&dueAt, &deferUntil, &metadataRaw,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan issue: %w", err)
+		}
+		if createdByVal.Valid {
+			issue.CreatedBy = createdByVal.String
+		}
+		if ownerVal.Valid {
+			issue.Owner = ownerVal.String
 		}
 		if estMin.Valid {
 			v := int(estMin.Int64)
@@ -358,21 +389,25 @@ func extractFromSQLite(ctx context.Context, dbPath string) (*migrationData, erro
 
 	// Get dependencies
 	depsMap := make(map[string][]*types.Dependency)
-	depMetadataExpr := sqliteOptionalTextExpr(depCols, "metadata", "'{}'")
-	depThreadExpr := sqliteOptionalTextExpr(depCols, "thread_id", "''")
+	depOpt := func(col, fallback string) string {
+		return sqliteOptionalTextExpr(depCols, col, fallback)
+	}
 	//nolint:gosec // SQL fragments come from fixed column names discovered via PRAGMA table_info.
 	depQuery := fmt.Sprintf(`
-		SELECT issue_id, depends_on_id, COALESCE(type,''), COALESCE(created_by,''), COALESCE(created_at,''), %s, %s
+		SELECT issue_id, depends_on_id, COALESCE(type,''), %s, COALESCE(created_at,''), %s, %s
 		FROM dependencies
 		ORDER BY created_at, issue_id, depends_on_id
-	`, depMetadataExpr, depThreadExpr)
+	`, depOpt("created_by", "''"), depOpt("metadata", "'{}'"), depOpt("thread_id", "''"))
 	depRows, err := db.QueryContext(ctx, depQuery)
 	if err == nil {
 		defer depRows.Close()
 		for depRows.Next() {
 			var dep types.Dependency
-			var metadata, threadID sql.NullString
-			if err := depRows.Scan(&dep.IssueID, &dep.DependsOnID, &dep.Type, &dep.CreatedBy, &dep.CreatedAt, &metadata, &threadID); err == nil {
+			var metadata, threadID, depCreatedBy sql.NullString
+			if err := depRows.Scan(&dep.IssueID, &dep.DependsOnID, &dep.Type, &depCreatedBy, &dep.CreatedAt, &metadata, &threadID); err == nil {
+				if depCreatedBy.Valid {
+					dep.CreatedBy = depCreatedBy.String
+				}
 				if metadata.Valid {
 					dep.Metadata = strings.TrimSpace(metadata.String)
 				}

@@ -196,10 +196,13 @@ func TestAutoMigrate_FullMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write metadata.json with server config so migration can connect
+	// Write metadata.json with server config so migration can connect.
+	// Backend is empty to simulate a legacy pre-Dolt config (the real-world
+	// upgrade scenario). Explicit "sqlite" backend means the user opted to
+	// keep SQLite and migration should be skipped (see GH#2016).
 	cfg := &configfile.Config{
 		Database:       "beads.db",
-		Backend:        "sqlite",
+		Backend:        "", // legacy config — no backend field
 		DoltMode:       configfile.DoltModeServer,
 		DoltServerHost: "127.0.0.1",
 		DoltServerPort: testDoltServerPort,
@@ -317,6 +320,225 @@ func TestAutoMigrate_ExtractFromSQLite(t *testing.T) {
 	if data.config["issue_prefix"] != "ext" {
 		t.Errorf("config should contain issue_prefix=ext, got %v", data.config)
 	}
+}
+
+func TestAutoMigrate_SkipsWhenBackendExplicitlySQLite(t *testing.T) {
+	// When metadata.json explicitly says backend=sqlite, the user has opted to
+	// keep SQLite. Auto-migration must NOT proceed. Fixes GH#2016.
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write metadata.json with explicit sqlite backend
+	cfg := &configfile.Config{
+		Database: "beads.db",
+		Backend:  configfile.BackendSQLite,
+	}
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatalf("failed to write metadata.json: %v", err)
+	}
+
+	// Create a real SQLite database with data
+	sqlitePath := filepath.Join(beadsDir, "beads.db")
+	createTestSQLiteDB(t, sqlitePath, "keep", 5)
+
+	// Run auto-migration — should be skipped
+	doAutoMigrateSQLiteToDolt(beadsDir)
+
+	// beads.db should still exist (NOT renamed)
+	if _, err := os.Stat(sqlitePath); err != nil {
+		t.Error("beads.db should still exist when backend=sqlite — migration should be skipped")
+	}
+
+	// No dolt/ directory should be created
+	if _, err := os.Stat(filepath.Join(beadsDir, "dolt")); !os.IsNotExist(err) {
+		t.Error("dolt/ should not be created when backend=sqlite")
+	}
+
+	// metadata.json should be unchanged
+	updatedCfg, err := configfile.Load(beadsDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if updatedCfg.Backend != configfile.BackendSQLite {
+		t.Errorf("backend should still be 'sqlite', got %q", updatedCfg.Backend)
+	}
+}
+
+// createOldSchemaTestSQLiteDB creates a SQLite database with the pre-v0.49
+// schema that is missing the 'owner' and 'created_by' columns.
+// Tests that extractFromSQLite handles old schemas gracefully.
+func createOldSchemaTestSQLiteDB(t *testing.T, dbPath string, prefix string, issueCount int) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("failed to create test SQLite DB: %v", err)
+	}
+	defer db.Close()
+
+	// Old schema — missing owner, created_by, and other newer columns
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
+		`CREATE TABLE IF NOT EXISTS issues (
+			id TEXT PRIMARY KEY,
+			content_hash TEXT DEFAULT '',
+			title TEXT DEFAULT '',
+			description TEXT DEFAULT '',
+			design TEXT DEFAULT '',
+			acceptance_criteria TEXT DEFAULT '',
+			notes TEXT DEFAULT '',
+			status TEXT DEFAULT 'open',
+			priority INTEGER DEFAULT 2,
+			issue_type TEXT DEFAULT 'task',
+			assignee TEXT DEFAULT '',
+			estimated_minutes INTEGER,
+			created_at TEXT DEFAULT '',
+			updated_at TEXT DEFAULT '',
+			closed_at TEXT,
+			external_ref TEXT,
+			compaction_level INTEGER DEFAULT 0,
+			compacted_at TEXT DEFAULT '',
+			compacted_at_commit TEXT,
+			original_size INTEGER DEFAULT 0,
+			sender TEXT DEFAULT '',
+			ephemeral INTEGER DEFAULT 0,
+			pinned INTEGER DEFAULT 0,
+			is_template INTEGER DEFAULT 0,
+			crystallizes INTEGER DEFAULT 0,
+			mol_type TEXT DEFAULT '',
+			work_type TEXT DEFAULT '',
+			quality_score REAL,
+			source_system TEXT DEFAULT '',
+			source_repo TEXT DEFAULT '',
+			close_reason TEXT DEFAULT '',
+			event_kind TEXT DEFAULT '',
+			actor TEXT DEFAULT '',
+			target TEXT DEFAULT '',
+			payload TEXT DEFAULT '',
+			await_type TEXT DEFAULT '',
+			await_id TEXT DEFAULT '',
+			timeout_ns INTEGER DEFAULT 0,
+			waiters TEXT DEFAULT '',
+			hook_bead TEXT DEFAULT '',
+			role_bead TEXT DEFAULT '',
+			agent_state TEXT DEFAULT '',
+			last_activity TEXT DEFAULT '',
+			role_type TEXT DEFAULT '',
+			rig TEXT DEFAULT '',
+			due_at TEXT DEFAULT '',
+			defer_until TEXT DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS labels (issue_id TEXT, label TEXT)`,
+		`CREATE TABLE IF NOT EXISTS dependencies (
+			issue_id TEXT, depends_on_id TEXT, type TEXT DEFAULT '',
+			created_at TEXT DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS events (
+			issue_id TEXT, event_type TEXT DEFAULT '', actor TEXT DEFAULT '',
+			old_value TEXT, new_value TEXT, comment TEXT, created_at TEXT DEFAULT ''
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("failed to create schema: %v", err)
+		}
+	}
+
+	if prefix != "" {
+		if _, err := db.Exec(`INSERT INTO config (key, value) VALUES ('issue_prefix', ?)`, prefix); err != nil {
+			t.Fatalf("failed to set prefix: %v", err)
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := 0; i < issueCount; i++ {
+		id := prefix + "-old-" + time.Now().Format("150405") + "-" + string(rune('a'+i))
+		_, err := db.Exec(`INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at)
+			VALUES (?, ?, 'open', 2, 'task', ?, ?)`,
+			id, "Old schema issue "+id, now, now)
+		if err != nil {
+			t.Fatalf("failed to insert test issue: %v", err)
+		}
+	}
+}
+
+func TestAutoMigrate_ExtractFromOldSchemaSQLite(t *testing.T) {
+	// Test that extractFromSQLite handles old schemas missing 'owner',
+	// 'created_by', and other newer columns. Fixes the "no such column"
+	// error that affects pre-v0.49 beads databases.
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sqlitePath := filepath.Join(beadsDir, "beads.db")
+	createOldSchemaTestSQLiteDB(t, sqlitePath, "old", 3)
+
+	ctx := t.Context()
+	data, err := extractFromSQLite(ctx, sqlitePath)
+	if err != nil {
+		t.Fatalf("extractFromSQLite failed on old schema: %v", err)
+	}
+
+	if data.prefix != "old" {
+		t.Errorf("expected prefix 'old', got %q", data.prefix)
+	}
+	if data.issueCount != 3 {
+		t.Errorf("expected 3 issues, got %d", data.issueCount)
+	}
+	// Verify missing columns default to empty strings
+	for _, issue := range data.issues {
+		if issue.Owner != "" {
+			t.Errorf("owner should default to empty for old schema, got %q", issue.Owner)
+		}
+		if issue.CreatedBy != "" {
+			t.Errorf("created_by should default to empty for old schema, got %q", issue.CreatedBy)
+		}
+	}
+}
+
+func TestAutoMigrate_FullMigrationOldSchema(t *testing.T) {
+	// Test that full auto-migration works with old-schema SQLite databases.
+	if testDoltServerPort == 0 {
+		t.Skip("Dolt test server not available, skipping")
+	}
+
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &configfile.Config{
+		Database:       "beads.db",
+		Backend:        "",
+		DoltMode:       configfile.DoltModeServer,
+		DoltServerHost: "127.0.0.1",
+		DoltServerPort: testDoltServerPort,
+	}
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatal(err)
+	}
+
+	sqlitePath := filepath.Join(beadsDir, "beads.db")
+	createOldSchemaTestSQLiteDB(t, sqlitePath, "oldmig", 4)
+
+	doAutoMigrateSQLiteToDolt(beadsDir)
+
+	// Verify migration succeeded
+	if _, err := os.Stat(sqlitePath); !os.IsNotExist(err) {
+		t.Error("beads.db should have been renamed after successful migration")
+	}
+
+	updatedCfg, err := configfile.Load(beadsDir)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if updatedCfg.Backend != configfile.BackendDolt {
+		t.Errorf("backend should be 'dolt', got %q", updatedCfg.Backend)
+	}
+
+	dropTestDatabase("oldmig", testDoltServerPort)
 }
 
 func TestAutoMigrate_Idempotent(t *testing.T) {
@@ -456,10 +678,10 @@ func TestAutoMigrate_MetadataJSONValid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write initial metadata.json
+	// Write initial metadata.json (empty backend = legacy pre-Dolt config)
 	cfg := &configfile.Config{
 		Database:       "beads.db",
-		Backend:        "sqlite",
+		Backend:        "", // legacy config — triggers auto-migration
 		DoltMode:       configfile.DoltModeServer,
 		DoltServerHost: "127.0.0.1",
 		DoltServerPort: testDoltServerPort,
