@@ -591,7 +591,11 @@ func buildServerDSN(cfg *Config, database string) string {
 		dbPart = "/"
 	}
 
-	params := "parseTime=true"
+	// Timeouts prevent agents from blocking forever when Dolt server hangs.
+	// timeout=5s: TCP connect timeout
+	// readTimeout=10s: I/O read timeout (covers hung queries)
+	// writeTimeout=10s: I/O write timeout
+	params := "parseTime=true&timeout=5s&readTimeout=10s&writeTimeout=10s"
 	if cfg.ServerTLS {
 		params += "&tls=true"
 	}
