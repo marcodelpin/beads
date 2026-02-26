@@ -51,7 +51,9 @@ func NewFromConfigWithOptions(ctx context.Context, beadsDir string, cfg *Config)
 		}
 	}
 
-	// Enable auto-start for standalone users (same logic as main.go).
+	// Enable auto-start for standalone users (similar to main.go's auto-start
+	// handling), with additional support for BEADS_TEST_MODE and a config.yaml
+	// fallback for library consumers that never call config.Initialize().
 	// Disabled under Gas Town (which manages its own server), by explicit config,
 	// or in test mode (tests manage their own server lifecycle via testdoltserver).
 	// Note: cfg.ReadOnly refers to the store's read-only mode, not the server —
@@ -73,12 +75,13 @@ func NewFromConfigWithOptions(ctx context.Context, beadsDir string, cfg *Config)
 // caller-provided value (current) while applying system-level overrides.
 //
 // Priority (highest to lowest):
-//  1. BEADS_TEST_MODE=1               → always false (tests own the server lifecycle)
-//  2. IsDaemonManaged()               → always false (Gas Town manages the server)
-//  3. BEADS_DOLT_AUTO_START=0         → always false (explicit env opt-out)
-//  4. doltAutoStartCfg == "false"/"0"/"off" → false (config.yaml opt-out)
-//  5. current == true                 → true (caller explicitly enabled auto-start)
-//  6. default                         → true (standalone user; auto-start is the safe default)
+//  1. BEADS_TEST_MODE=1                    → always false (tests own the server lifecycle)
+//  2. IsDaemonManaged()                    → always false (Gas Town manages the server)
+//  3. BEADS_DOLT_AUTO_START=0              → always false (explicit env opt-out)
+//  4. current == true                      → true  (caller option wins over config file,
+//                                                   per NewFromConfigWithOptions contract)
+//  5. doltAutoStartCfg == "false"/"0"/"off" → false (config.yaml opt-out)
+//  6. default                              → true  (standalone user; safe default)
 //
 // doltAutoStartCfg is the raw value of the "dolt.auto-start" key from config.yaml
 // (pass config.GetString("dolt.auto-start") at the call site).
@@ -97,11 +100,12 @@ func resolveAutoStart(current bool, doltAutoStartCfg string) bool {
 	if os.Getenv("BEADS_DOLT_AUTO_START") == "0" {
 		return false
 	}
-	if doltAutoStartCfg == "false" || doltAutoStartCfg == "0" || doltAutoStartCfg == "off" {
-		return false
-	}
+	// Caller option wins over config.yaml (NewFromConfigWithOptions contract).
 	if current {
 		return true
+	}
+	if doltAutoStartCfg == "false" || doltAutoStartCfg == "0" || doltAutoStartCfg == "off" {
+		return false
 	}
 	// Default: auto-start for standalone users.
 	return true
