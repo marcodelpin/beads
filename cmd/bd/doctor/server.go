@@ -13,6 +13,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // ServerHealthResult holds the results of all server health checks
@@ -83,7 +84,9 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Server mode is configured - run health checks
 	host := cfg.GetDoltServerHost()
-	port := cfg.GetDoltServerPort()
+	// Use doltserver.DefaultConfig for port resolution (env > config > DerivePort).
+	// cfg.GetDoltServerPort() falls back to 3307 which is wrong for standalone mode.
+	port := doltserver.DefaultConfig(beadsDir).Port
 
 	// Check 1: Server reachability (TCP connect)
 	reachCheck := checkServerReachable(host, port)
@@ -95,7 +98,7 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 	}
 
 	// Check 2: Connect and verify it's Dolt (get version)
-	versionCheck, db := checkDoltVersion(cfg)
+	versionCheck, db := checkDoltVersion(cfg, beadsDir)
 	result.Checks = append(result.Checks, versionCheck)
 	if versionCheck.Status == StatusError {
 		result.OverallOK = false
@@ -265,9 +268,9 @@ func checkServerReachable(host string, port int) DoctorCheck {
 
 // checkDoltVersion connects to the server and checks if it's a Dolt server
 // Returns the DoctorCheck and an open database connection (caller must close)
-func checkDoltVersion(cfg *configfile.Config) (DoctorCheck, *sql.DB) {
+func checkDoltVersion(cfg *configfile.Config, beadsDir string) (DoctorCheck, *sql.DB) {
 	host := cfg.GetDoltServerHost()
-	port := cfg.GetDoltServerPort()
+	port := doltserver.DefaultConfig(beadsDir).Port
 	user := cfg.GetDoltServerUser()
 
 	// Get password from environment (more secure than config file)
