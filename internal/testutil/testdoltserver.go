@@ -48,12 +48,20 @@ func StartTestDoltServer(tmpDirPrefix string) (*TestDoltServer, func()) {
 	// Reuse existing server if BEADS_DOLT_PORT is already set by an outer runner.
 	// This avoids spawning redundant dolt processes when running go test ./...
 	// with a pre-started shared server.
+	//
+	// CRITICAL: If BEADS_TEST_MODE=1 and BEADS_DOLT_PORT is the production port
+	// (3307), we must NOT reuse it — that would point all tests at production.
+	// This is Clown Show #15: gastown's metadata.json injects BEADS_DOLT_PORT=3307
+	// into bd subprocesses, which leaks into test environments.
 	if port := os.Getenv("BEADS_DOLT_PORT"); port != "" {
 		p, err := strconv.Atoi(port)
-		if err == nil && WaitForServer(p, 2*time.Second) {
+		if err == nil && os.Getenv("BEADS_TEST_MODE") == "1" && p == 3307 {
+			fmt.Fprintf(os.Stderr, "WARN: BEADS_TEST_MODE=1 but BEADS_DOLT_PORT=%d is production — starting isolated server\n", p)
+		} else if err == nil && WaitForServer(p, 2*time.Second) {
 			return &TestDoltServer{Port: p}, func() {}
+		} else {
+			fmt.Fprintf(os.Stderr, "WARN: BEADS_DOLT_PORT=%s set but server not reachable, starting new server\n", port)
 		}
-		fmt.Fprintf(os.Stderr, "WARN: BEADS_DOLT_PORT=%s set but server not reachable, starting new server\n", port)
 	}
 
 	CleanStaleTestServers()
