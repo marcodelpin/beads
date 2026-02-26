@@ -485,11 +485,12 @@ var rootCmd = &cobra.Command{
 		// the database (which breaks file watchers).
 		useReadOnly := isReadOnlyCommand(cmd.Name())
 
-		// Auto-migrate database on version bump
-		// Skip for read-only commands - they can't write anyway
-		if !useReadOnly {
-			autoMigrateOnVersionBump(filepath.Dir(dbPath))
-		}
+		// Auto-migrate database on version bump (bd-jgxi).
+		// Runs for ALL commands (including read-only ones) because the migration
+		// opens its own store connection, writes the version metadata, commits it,
+		// and closes BEFORE the main store is opened. This ensures bd doctor and
+		// read-only commands see the correct version after a CLI upgrade.
+		autoMigrateOnVersionBump(filepath.Dir(dbPath))
 
 		// Initialize direct storage access
 		var err error
