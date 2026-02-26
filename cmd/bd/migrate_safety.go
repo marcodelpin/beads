@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
+	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
 // backupSQLite copies the SQLite database to a timestamped backup file in the
@@ -61,20 +63,37 @@ func backupSQLite(sqlitePath string) (string, error) {
 	return backupPath, nil
 }
 
-// verifyServerTarget checks that no Dolt server is running on the given port,
-// or if one is, that it is serving the expected database. This prevents the
-// migration from accidentally writing to the wrong Dolt instance.
+// doltSystemDatabases are databases that Dolt/MySQL always creates.
+// These are not user databases and should be ignored when checking
+// for cross-project conflicts.
+var doltSystemDatabases = map[string]bool{
+	"information_schema": true,
+	"mysql":              true,
+	"performance_schema": true,
+	"sys":                true,
+}
+
+// verifyServerTarget checks whether a Dolt server on the given port is an
+// appropriate target for the expected database. It queries SHOW DATABASES
+// and verifies the expected database name against what the server hosts.
 //
-// Returns nil if no server is listening (connection refused) or if the server
-// is serving the expected database.
-// verifyServerTarget checks whether a Dolt server on the given port already
-// hosts databases that could conflict with the expected database name.
-// Returns nil if no server is running (connection refused) or if the server
-// does not have a conflicting database. Returns error for timeouts, auth
-// failures, or other uncertain states.
+// Returns nil if:
+//   - No server is listening (connection refused — will be started later)
+//   - Server is running and already hosts the expected database (idempotent)
+//   - Server is running with only system databases (fresh server)
+//   - Server is running with other user databases (shared server model —
+//     logs the database list for diagnostics)
+//
+// Returns error if:
+//   - Server is unreachable (timeout) or unqueryable (not a Dolt server)
+//   - Port is non-zero but expectedDBName is empty
 func verifyServerTarget(expectedDBName string, port int) error {
 	if port == 0 {
 		return nil
+	}
+
+	if expectedDBName == "" {
+		return fmt.Errorf("empty database name — cannot verify server target")
 	}
 
 	host := "127.0.0.1"
@@ -97,7 +116,7 @@ func verifyServerTarget(expectedDBName string, port int) error {
 	}
 	conn.Close()
 
-	// Server is listening. Query SHOW DATABASES to see what's there.
+	// Server is listening. Query SHOW DATABASES to verify target.
 	dsn := fmt.Sprintf("root@tcp(%s)/", addr)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -114,22 +133,41 @@ func verifyServerTarget(expectedDBName string, port int) error {
 	}
 	defer rows.Close()
 
-	// Scan database names — if expectedDBName already exists, that's fine
-	// (idempotent migration). We're only concerned if the server appears to
-	// be a completely different project's server with no relation to us.
+	var userDatabases []string
+	found := false
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
 			continue
 		}
 		if name == expectedDBName {
-			// Our database already exists on this server — safe (idempotent)
-			return nil
+			found = true
+		}
+		if !doltSystemDatabases[name] {
+			userDatabases = append(userDatabases, name)
 		}
 	}
 
-	// Database doesn't exist yet — server will create it. This is the normal
-	// first-migration case for a shared server (Gas Town model).
+	if found {
+		// Our database already exists on this server — verified target match
+		debug.Logf("verifyServerTarget: database %q found on port %d (idempotent)", expectedDBName, port)
+		return nil
+	}
+
+	if len(userDatabases) == 0 {
+		// Only system databases — fresh/clean server, safe to create our database
+		debug.Logf("verifyServerTarget: fresh server on port %d (no user databases), will create %q", port, expectedDBName)
+		return nil
+	}
+
+	// Server has user databases but NOT ours. In the shared server model
+	// (Gas Town), this is expected — one Dolt server hosts many project
+	// databases. Log the database list for diagnostics in case migration
+	// writes to the wrong server.
+	debug.Logf("verifyServerTarget: server on port %d has databases %v but not %q — "+
+		"will create database (shared server model)", port, userDatabases, expectedDBName)
+	fmt.Fprintf(os.Stderr, "  Note: Dolt server on port %d already hosts %d database(s); will create %q\n",
+		port, len(userDatabases), expectedDBName)
 	return nil
 }
 
@@ -152,6 +190,190 @@ func verifyMigrationCounts(sourceIssueCount, sourceDepsCount, doltIssueCount, do
 		return fmt.Errorf("migration verification failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// verifyMigrationData connects to the Dolt server independently (not via the
+// DoltStore) and verifies that the migrated data matches the source. This
+// catches issues that count-only verification misses: wrong server target,
+// corrupted imports, partial writes.
+//
+// Checks performed:
+//  1. Issue count matches source
+//  2. Dependency count matches source
+//  3. Spot-check: first and last issue IDs and titles match
+func verifyMigrationData(sourceData *migrationData, dbName string, host string, port int, user string, password string) error {
+	if sourceData.issueCount == 0 {
+		// Empty database — nothing to verify
+		return nil
+	}
+
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", user, password, host, port, dbName)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return fmt.Errorf("connecting to Dolt for verification: %w", err)
+	}
+	defer db.Close()
+	db.SetConnMaxLifetime(5 * time.Second)
+
+	// 1. Verify issue count
+	var doltIssueCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM issues").Scan(&doltIssueCount); err != nil {
+		return fmt.Errorf("querying Dolt issue count: %w", err)
+	}
+	if doltIssueCount < sourceData.issueCount {
+		return fmt.Errorf("issue count mismatch: source=%d, dolt=%d", sourceData.issueCount, doltIssueCount)
+	}
+
+	// 2. Verify dependency count
+	var doltDepsCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM dependencies").Scan(&doltDepsCount); err != nil {
+		// dependencies table might not exist in very old schemas
+		debug.Logf("verifyMigrationData: dependencies count query failed (non-fatal): %v", err)
+	} else {
+		sourceDepsCount := 0
+		for _, deps := range sourceData.depsMap {
+			sourceDepsCount += len(deps)
+		}
+		if doltDepsCount < sourceDepsCount {
+			return fmt.Errorf("dependency count mismatch: source=%d, dolt=%d", sourceDepsCount, doltDepsCount)
+		}
+	}
+
+	// 3. Spot-check: verify first and last issue by ID and title
+	if len(sourceData.issues) > 0 {
+		firstSource := sourceData.issues[0]
+		lastSource := sourceData.issues[len(sourceData.issues)-1]
+
+		// Check first issue
+		var doltTitle string
+		err := db.QueryRow("SELECT title FROM issues WHERE id = ?", firstSource.ID).Scan(&doltTitle)
+		if err != nil {
+			return fmt.Errorf("spot-check failed: first issue %q not found in Dolt: %w", firstSource.ID, err)
+		}
+		if doltTitle != firstSource.Title {
+			return fmt.Errorf("spot-check failed: first issue %q title mismatch: source=%q, dolt=%q",
+				firstSource.ID, firstSource.Title, doltTitle)
+		}
+
+		// Check last issue (only if different from first)
+		if lastSource.ID != firstSource.ID {
+			err = db.QueryRow("SELECT title FROM issues WHERE id = ?", lastSource.ID).Scan(&doltTitle)
+			if err != nil {
+				return fmt.Errorf("spot-check failed: last issue %q not found in Dolt: %w", lastSource.ID, err)
+			}
+			if doltTitle != lastSource.Title {
+				return fmt.Errorf("spot-check failed: last issue %q title mismatch: source=%q, dolt=%q",
+					lastSource.ID, lastSource.Title, doltTitle)
+			}
+		}
+	}
+
+	debug.Logf("verifyMigrationData: verified %d issues, spot-checked first/last titles", doltIssueCount)
+	return nil
+}
+
+// migrationParams holds the configuration needed for the shared migration
+// safety phases (verify → import → commit → verify → finalize).
+type migrationParams struct {
+	beadsDir   string
+	sqlitePath string
+	backupPath string
+	data       *migrationData
+	doltCfg    *dolt.Config
+	dbName     string
+	// Server connection info for independent verification
+	serverHost     string
+	serverPort     int
+	serverUser     string
+	serverPassword string
+}
+
+// runMigrationPhases runs the common post-extraction migration phases shared
+// by both the CGO (migrate_auto.go) and shim (migrate_shim.go) paths:
+//
+//  1. Verify server target (ensure we're writing to the right Dolt server)
+//  2. Create Dolt store and import data
+//  3. Set sync mode and commit
+//  4. Verify migration data (independent re-query with spot-checks)
+//  5. Finalize (update metadata, rename SQLite)
+//
+// On failure, performs rollback: removes dolt dir and restores original config.
+// Returns (imported, skipped) counts on success, or error on failure.
+func runMigrationPhases(ctx context.Context, params *migrationParams) (imported int, skipped int, err error) {
+	beadsDir := params.beadsDir
+	sqlitePath := params.sqlitePath
+	backupPath := params.backupPath
+	data := params.data
+	doltCfg := params.doltCfg
+	dbName := params.dbName
+
+	// Verify server target — don't write to the wrong Dolt server
+	if err := verifyServerTarget(dbName, params.serverPort); err != nil {
+		return 0, 0, fmt.Errorf("server check failed: %w\n\nTo fix:\n"+
+			"  1. Stop the other project's Dolt server\n"+
+			"  2. Or set BEADS_DOLT_SERVER_PORT to a unique port for this project\n"+
+			"  Your SQLite database is intact. Backup at: %s", err, backupPath)
+	}
+
+	// Save original config for rollback
+	originalCfg, _ := configfile.Load(beadsDir)
+
+	// Create Dolt store and import
+	doltPath := doltCfg.Path
+	fmt.Fprintf(os.Stderr, "Creating Dolt database...\n")
+	doltStore, err := dolt.New(ctx, doltCfg)
+	if err != nil {
+		return 0, 0, fmt.Errorf("dolt init failed: %w\n"+
+			"Hint: ensure the Dolt server is running, then retry any bd command\n"+
+			"  Your SQLite database is intact. Backup at: %s", err, backupPath)
+	}
+
+	fmt.Fprintf(os.Stderr, "Importing data...\n")
+	imported, skipped, importErr := importToDolt(ctx, doltStore, data)
+	if importErr != nil {
+		_ = doltStore.Close()
+		_ = os.RemoveAll(doltPath) // Safe: doltPath was just created by us
+		return 0, 0, fmt.Errorf("import failed: %w\n"+
+			"  Your SQLite database is intact. Backup at: %s", importErr, backupPath)
+	}
+
+	// Set sync mode in Dolt config table
+	if err := doltStore.SetConfig(ctx, "sync.mode", "dolt-native"); err != nil {
+		debug.Logf("migration: failed to set sync.mode: %v", err)
+	}
+
+	// Commit the migration
+	commitMsg := fmt.Sprintf("Auto-migrate from SQLite: %d issues imported", imported)
+	if err := doltStore.Commit(ctx, commitMsg); err != nil {
+		debug.Logf("migration: failed to create Dolt commit: %v", err)
+	}
+
+	_ = doltStore.Close()
+
+	// Verify migration data by independently querying the Dolt server.
+	// This catches issues that the import return values alone cannot:
+	// wrong server target, partial writes, data corruption.
+	if err := verifyMigrationData(data, dbName, params.serverHost, params.serverPort, params.serverUser, params.serverPassword); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: migration verification failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Your SQLite database is intact. Backup at: %s\n", backupPath)
+		// Rollback: remove dolt dir, restore metadata
+		_ = os.RemoveAll(doltPath)
+		if originalCfg != nil {
+			if rbErr := rollbackMetadata(beadsDir, originalCfg); rbErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: metadata rollback also failed: %v\n", rbErr)
+			}
+		}
+		return 0, 0, fmt.Errorf("verification failed: %w", err)
+	}
+
+	// Finalize — update metadata and rename SQLite (atomic cutover)
+	if err := finalizeMigration(beadsDir, sqlitePath, dbName); err != nil {
+		return imported, skipped, fmt.Errorf("finalization failed: %w\n"+
+			"  Data is in Dolt but metadata may be inconsistent.\n"+
+			"  Run 'bd doctor --fix' to repair.", err)
+	}
+
+	return imported, skipped, nil
 }
 
 // finalizeMigration updates metadata and config to reflect the completed

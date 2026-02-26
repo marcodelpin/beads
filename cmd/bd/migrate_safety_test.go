@@ -10,6 +10,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 // --- backupSQLite tests ---
@@ -168,9 +169,19 @@ func TestVerifyServerTarget_NoServerRunning(t *testing.T) {
 }
 
 func TestVerifyServerTarget_PortZero(t *testing.T) {
-	err := verifyServerTarget("beads",0)
+	err := verifyServerTarget("beads", 0)
 	if err != nil {
 		t.Fatalf("expected nil for port 0, got: %v", err)
+	}
+}
+
+func TestVerifyServerTarget_EmptyDBName(t *testing.T) {
+	err := verifyServerTarget("", 3307)
+	if err == nil {
+		t.Fatal("expected error for empty database name, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty database name") {
+		t.Errorf("expected 'empty database name' error, got: %v", err)
 	}
 }
 
@@ -195,9 +206,39 @@ func TestVerifyServerTarget_NonMySQLServer(t *testing.T) {
 	}()
 
 	// verifyServerTarget should return an error (can't query non-MySQL server)
-	err = verifyServerTarget("beads",port)
+	err = verifyServerTarget("beads", port)
 	if err == nil {
 		t.Error("expected error when connecting to non-MySQL server, got nil")
+	}
+}
+
+// --- verifyMigrationData tests ---
+
+func TestVerifyMigrationData_EmptySource(t *testing.T) {
+	// Empty source data should pass without connecting to anything
+	data := &migrationData{issueCount: 0}
+	err := verifyMigrationData(data, "beads", "127.0.0.1", 0, "root", "")
+	if err != nil {
+		t.Fatalf("expected nil for empty source, got: %v", err)
+	}
+}
+
+func TestVerifyMigrationData_ConnectionFailure(t *testing.T) {
+	// Use a port that nothing is listening on
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	data := &migrationData{
+		issueCount: 5,
+		issues:     make([]*types.Issue, 5),
+	}
+	err = verifyMigrationData(data, "beads", "127.0.0.1", port, "root", "")
+	if err == nil {
+		t.Fatal("expected error when Dolt server is unreachable, got nil")
 	}
 }
 
