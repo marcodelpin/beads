@@ -3,8 +3,10 @@ package dolt
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // NewFromConfig creates a DoltStore based on the metadata.json configuration.
@@ -45,6 +47,21 @@ func NewFromConfigWithOptions(ctx context.Context, beadsDir string, cfg *Config)
 		}
 		if cfg.ServerUser == "" {
 			cfg.ServerUser = fileCfg.GetDoltServerUser()
+		}
+	}
+
+	// Enable auto-start for standalone users (same logic as main.go).
+	// Disabled under Gas Town (which manages its own server), by explicit config,
+	// or in test mode (tests manage their own server lifecycle via testdoltserver).
+	// Note: cfg.ReadOnly refers to the store's read-only mode, not the server —
+	// the server must be running regardless of whether the store is read-only.
+	if os.Getenv("BEADS_TEST_MODE") != "1" {
+		cfg.AutoStart = true
+		if doltserver.IsDaemonManaged() {
+			cfg.AutoStart = false
+		}
+		if os.Getenv("BEADS_DOLT_AUTO_START") == "0" {
+			cfg.AutoStart = false
 		}
 	}
 
