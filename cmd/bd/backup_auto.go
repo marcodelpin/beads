@@ -10,10 +10,30 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 )
 
+// isBackupAutoEnabled returns whether backup should run.
+// If user explicitly configured backup.enabled, use that.
+// Otherwise, auto-enable when a git remote exists.
+func isBackupAutoEnabled() bool {
+	if config.GetValueSource("backup.enabled") != config.SourceDefault {
+		return config.GetBool("backup.enabled")
+	}
+	return primeHasGitRemote()
+}
+
+// isBackupGitPushEnabled returns whether git push should run after backup.
+// If user explicitly configured backup.git-push, use that.
+// Otherwise, enable when backup is auto-enabled.
+func isBackupGitPushEnabled() bool {
+	if config.GetValueSource("backup.git-push") != config.SourceDefault {
+		return config.GetBool("backup.git-push")
+	}
+	return isBackupAutoEnabled()
+}
+
 // maybeAutoBackup runs a JSONL backup if enabled and the throttle interval has passed.
 // Called from PersistentPostRun after auto-commit.
 func maybeAutoBackup(ctx context.Context) {
-	if !config.GetBool("backup.enabled") {
+	if !isBackupAutoEnabled() {
 		return
 	}
 	if store == nil {
@@ -65,7 +85,7 @@ func maybeAutoBackup(ctx context.Context) {
 		newState.Counts.Issues, newState.Counts.Events, newState.Counts.Comments)
 
 	// Optional git push
-	if config.GetBool("backup.git-push") {
+	if isBackupGitPushEnabled() {
 		if err := gitBackup(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: backup git push failed: %v\n", err)
 		}

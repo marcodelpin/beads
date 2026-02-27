@@ -36,7 +36,7 @@ var backupCmd = &cobra.Command{
 			state.Counts.Dependencies, state.Counts.Labels, state.Counts.Config)
 
 		// Optional git push
-		if config.GetBool("backup.git-push") {
+		if isBackupGitPushEnabled() {
 			if err := gitBackup(rootCtx); err != nil {
 				return err
 			}
@@ -85,11 +85,31 @@ var backupStatusCmd = &cobra.Command{
 			state.Counts.Issues, state.Counts.Events, state.Counts.Comments,
 			state.Counts.Dependencies, state.Counts.Labels, state.Counts.Config)
 
-		// Show config
-		enabled := config.GetBool("backup.enabled")
+		// Show config (effective values with source)
+		enabled := isBackupAutoEnabled()
 		interval := config.GetDuration("backup.interval")
-		gitPush := config.GetBool("backup.git-push")
-		fmt.Printf("\nConfig: enabled=%v interval=%s git-push=%v\n", enabled, interval, gitPush)
+		gitPush := isBackupGitPushEnabled()
+		enabledSource := config.GetValueSource("backup.enabled")
+		gitPushSource := config.GetValueSource("backup.git-push")
+		enabledNote := ""
+		if enabledSource == config.SourceDefault {
+			if enabled {
+				enabledNote = " (auto: git remote detected)"
+			} else {
+				enabledNote = " (auto: no git remote)"
+			}
+		}
+		gitPushNote := ""
+		if gitPushSource == config.SourceDefault {
+			if gitPush {
+				gitPushNote = " (auto)"
+			}
+		}
+		fmt.Printf("\nConfig: enabled=%v%s interval=%s git-push=%v%s\n",
+			enabled, enabledNote, interval, gitPush, gitPushNote)
+		if gitRepo := config.GetString("backup.git-repo"); gitRepo != "" {
+			fmt.Printf("Git repo: %s\n", gitRepo)
+		}
 
 		return nil
 	},

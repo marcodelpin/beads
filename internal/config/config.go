@@ -197,6 +197,7 @@ func Initialize() error {
 	v.SetDefault("backup.enabled", false)
 	v.SetDefault("backup.interval", "15m")
 	v.SetDefault("backup.git-push", false)
+	v.SetDefault("backup.git-repo", "")
 
 	// AI configuration defaults
 	v.SetDefault("ai.model", "claude-haiku-4-5-20251001")

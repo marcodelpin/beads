@@ -66,11 +66,13 @@ func createConfigYaml(beadsDir string, noDbMode bool, prefix string) error {
 #     - ~/beads-planning  # Personal planning repo
 #     - ~/work-planning   # Work planning repo
 
-# JSONL backup (periodic export to .beads/backup/ for off-machine recovery)
+# JSONL backup (periodic export for off-machine recovery)
+# Auto-enabled when a git remote exists. Override explicitly:
 # backup:
-#   enabled: false     # Set to true to enable auto-backup after write commands
+#   enabled: false     # Disable auto-backup entirely
 #   interval: 15m      # Minimum time between auto-exports
-#   git-push: false    # Auto git-add + commit + push after export
+#   git-push: false    # Disable git push (export locally only)
+#   git-repo: ""       # Separate git repo for backups (default: project repo)
 
 # Integration settings (access with 'bd config get/set')
 # These are stored in the database, not in this file:

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 )
 
@@ -28,7 +30,25 @@ type backupState struct {
 }
 
 // backupDir returns the backup directory path, creating it if needed.
+// When backup.git-repo is set to a valid git repo, returns a backup/ subdirectory
+// inside that repo. Otherwise falls back to .beads/backup/.
 func backupDir() (string, error) {
+	gitRepo := config.GetString("backup.git-repo")
+	if gitRepo != "" {
+		if strings.HasPrefix(gitRepo, "~/") {
+			home, _ := os.UserHomeDir()
+			gitRepo = filepath.Join(home, gitRepo[2:])
+		}
+		if _, err := os.Stat(filepath.Join(gitRepo, ".git")); err != nil {
+			debug.Logf("backup: git-repo %s is not a git repo, falling back to .beads/backup\n", gitRepo)
+		} else {
+			dir := filepath.Join(gitRepo, "backup")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				return "", fmt.Errorf("failed to create backup dir in git-repo: %w", err)
+			}
+			return dir, nil
+		}
+	}
 	beadsDir := findBeadsDir()
 	dir := filepath.Join(beadsDir, "backup")
 	if err := os.MkdirAll(dir, 0700); err != nil {
