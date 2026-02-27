@@ -886,7 +886,8 @@ func isOnlyComments(stmt string) bool {
 	return true
 }
 
-// Close closes the database connection
+// Close closes the database connection and removes any 0-byte noms LOCK files
+// left behind by the embedded Dolt engine.
 func (s *DoltStore) Close() error {
 	s.closed.Store(true)
 	s.mu.Lock()
@@ -901,7 +902,38 @@ func (s *DoltStore) Close() error {
 		}
 	}
 	s.db = nil
+
+	// Clean up 0-byte noms LOCK files. The Dolt engine creates these when
+	// opening a database; they should be removed on clean shutdown but may
+	// persist after crashes or when bd init triggers hook reopens.
+	if s.dbPath != "" {
+		cleanZeroByteNomsLocks(s.dbPath)
+	}
+
 	return err
+}
+
+// cleanZeroByteNomsLocks removes 0-byte noms LOCK files from all databases
+// under doltDir. Only empty LOCK files are removed — non-empty ones may
+// indicate an active lock held by a running server.
+func cleanZeroByteNomsLocks(doltDir string) {
+	entries, err := os.ReadDir(doltDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		lockPath := filepath.Join(doltDir, entry.Name(), ".dolt", "noms", "LOCK")
+		info, statErr := os.Stat(lockPath)
+		if statErr != nil {
+			continue
+		}
+		if info.Size() == 0 {
+			_ = os.Remove(lockPath)
+		}
+	}
 }
 
 // Path returns the database directory path

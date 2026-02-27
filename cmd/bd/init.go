@@ -540,6 +540,9 @@ environment variable.`,
 			fmt.Fprintf(os.Stderr, "Warning: failed to close database: %v\n", err)
 		}
 
+		// Clean up 0-byte noms LOCK files left behind by the store open/close cycle.
+		dolt.CleanStaleNomsLocks(doltserver.ResolveDoltDir(beadsDir))
+
 		// Fork detection: offer to configure .git/info/exclude (GH#742)
 		setupExclude, _ := cmd.Flags().GetBool("setup-exclude")
 		if setupExclude {
@@ -622,6 +625,36 @@ environment variable.`,
 		if !stealth {
 			agentsTemplate, _ := cmd.Flags().GetString("agents-template")
 			addAgentsInstructions(!quiet, agentsTemplate)
+		}
+
+		// Auto-stage and commit beads files so bd doctor doesn't warn about
+		// untracked files or dirty working tree in a clean room setup.
+		// Only runs when not stealth, in a git repo, and using local storage.
+		if !stealth && isGitRepo() && useLocalBeads {
+			gitAddCmd := exec.Command("git", "add", ".beads/")
+			if _, addErr := gitAddCmd.CombinedOutput(); addErr == nil {
+				// Also stage AGENTS.md if it exists
+				if _, statErr := os.Stat("AGENTS.md"); statErr == nil {
+					agentsCmd := exec.Command("git", "add", "AGENTS.md")
+					_ = agentsCmd.Run()
+				}
+				// Also stage .gitignore if modified by EnsureProjectGitignore
+				if _, statErr := os.Stat(".gitignore"); statErr == nil {
+					giCmd := exec.Command("git", "add", ".gitignore")
+					_ = giCmd.Run()
+				}
+				commitCmd := exec.Command("git", "commit", "-m", "bd init: initialize beads issue tracking")
+				if commitOut, commitErr := commitCmd.CombinedOutput(); commitErr != nil {
+					if !quiet && !strings.Contains(string(commitOut), "nothing to commit") {
+						fmt.Fprintf(os.Stderr, "Warning: failed to commit beads files: %v\n", commitErr)
+					}
+				} else if !quiet {
+					fmt.Printf("  %s Committed beads files to git\n", ui.RenderPass("✓"))
+				}
+				// Clean up LOCK files again — the pre-commit hook may have
+				// reopened the database and left a new LOCK behind.
+				dolt.CleanStaleNomsLocks(doltserver.ResolveDoltDir(beadsDir))
+			}
 		}
 
 		// Check for missing git upstream and warn if not configured.
