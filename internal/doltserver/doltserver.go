@@ -432,11 +432,6 @@ func Start(beadsDir string) (*State, error) {
 		return nil, fmt.Errorf("initializing dolt database: %w", err)
 	}
 
-	// Process census: refuse to start if too many dolt servers already running
-	if count := countDoltProcesses(); count >= maxDoltServers() {
-		return nil, fmt.Errorf("too many dolt sql-server processes running (%d, max %d).\n\nKill orphans with: bd dolt killall\nList processes: %s", count, maxDoltServers(), processListHint)
-	}
-
 	// Open log file
 	logFile, err := os.OpenFile(logPath(beadsDir), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec // G304: logPath derives from user-configured beadsDir
 	if err != nil {
