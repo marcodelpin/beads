@@ -46,6 +46,9 @@ Tool-level settings you can configure:
 | `git.no-gpg-sign` | - | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `directory.labels` | - | - | (none) | Map directories to labels for automatic filtering |
 | `external_projects` | - | - | (none) | Map project names to paths for cross-project deps |
+| `backup.enabled` | - | `BD_BACKUP_ENABLED` | `false` | Enable periodic JSONL backup to `.beads/backup/` |
+| `backup.interval` | - | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-exports |
+| `backup.git-push` | - | `BD_BACKUP_GIT_PUSH` | `false` | Auto git-add + commit + push after export |
 | `db` | `--db` | `BD_DB` | (auto-discover) | Database path |
 | `actor` | `--actor` | `BD_ACTOR` | `git config user.name` | Actor name for audit trail (see below) |
 
@@ -75,6 +78,31 @@ dolt:
 ```
 
 **Caveat:** enabling this creates **more Dolt commits** over time (one per write command). This is intentional so changes are not left only in the working set.
+
+### JSONL Backup
+
+Periodic JSONL export to `.beads/backup/` provides an off-machine recovery path. Local Dolt snapshots (via `dolt.auto-commit`) remain the primary safety net; JSONL backup is a secondary layer.
+
+```yaml
+backup:
+  enabled: true    # Enable auto-backup after write commands
+  interval: 15m    # Minimum time between auto-exports
+  git-push: false  # Auto git-add + commit + push after export
+```
+
+**How it works:**
+- After each write command (in PersistentPostRun), `bd` checks the Dolt HEAD commit hash against the last backup state
+- If data changed and the throttle interval has passed, all tables are exported to sorted JSONL files
+- Events are exported incrementally (append-only) using a high-water mark
+- Each table is written atomically via temp file + rename (crash-safe)
+- State is tracked in `.beads/backup/backup_state.json`
+
+**Manual commands:**
+- `bd backup` — run export immediately (ignores throttle)
+- `bd backup --force` — export even if nothing changed
+- `bd backup status` — show last backup time, commit hash, counts
+
+**Git push mode:** When `backup.git-push: true`, after each export `bd` runs `git add -f .beads/backup/`, commits with a timestamped message, and pushes. Push failures are warnings only (non-fatal).
 
 ### Actor Identity Resolution
 

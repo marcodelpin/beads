@@ -112,6 +112,7 @@ var readOnlyCommands = map[string]bool{
 	"duplicates": true,
 	"comments":   true, // list comments (not add)
 	"current":    true, // bd sync mode current
+	"backup":     true, // reads from Dolt, writes only to .beads/backup/
 	// NOTE: "export" is NOT read-only - it writes to clear dirty issues
 }
 
@@ -641,6 +642,9 @@ var rootCmd = &cobra.Command{
 				}
 			}
 		}
+
+		// Auto-backup: export JSONL to .beads/backup/ if enabled and due
+		maybeAutoBackup(rootCtx)
 
 		// Signal that store is closing (prevents background flush from accessing closed store)
 		storeMutex.Lock()

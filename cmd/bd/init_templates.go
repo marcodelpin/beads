@@ -66,6 +66,12 @@ func createConfigYaml(beadsDir string, noDbMode bool, prefix string) error {
 #     - ~/beads-planning  # Personal planning repo
 #     - ~/work-planning   # Work planning repo
 
+# JSONL backup (periodic export to .beads/backup/ for off-machine recovery)
+# backup:
+#   enabled: false     # Set to true to enable auto-backup after write commands
+#   interval: 15m      # Minimum time between auto-exports
+#   git-push: false    # Auto git-add + commit + push after export
+
 # Integration settings (access with 'bd config get/set')
 # These are stored in the database, not in this file:
 # - jira.url

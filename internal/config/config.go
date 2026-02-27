@@ -193,6 +193,11 @@ func Initialize() error {
 	// Maps directory patterns to labels for automatic filtering in monorepos
 	v.SetDefault("directory.labels", map[string]string{})
 
+	// Backup configuration defaults (JSONL export to .beads/backup/)
+	v.SetDefault("backup.enabled", false)
+	v.SetDefault("backup.interval", "15m")
+	v.SetDefault("backup.git-push", false)
+
 	// AI configuration defaults
 	v.SetDefault("ai.model", "claude-haiku-4-5-20251001")
 
