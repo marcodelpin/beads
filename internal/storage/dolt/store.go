@@ -90,6 +90,9 @@ type DoltStore struct {
 	spanAttrsOnce  sync.Once
 	spanAttrsCache []attribute.KeyValue
 
+	// Circuit breaker for Dolt server connections
+	breaker *circuitBreaker
+
 	// Version control config
 	committerName  string
 	committerEmail string
@@ -229,17 +232,38 @@ func wrapLockError(err error) error {
 }
 
 // withRetry executes an operation with retry for transient errors.
+// If a circuit breaker is configured, it checks the breaker before each attempt
+// and records connection failures/successes to coordinate fail-fast across processes.
 func (s *DoltStore) withRetry(ctx context.Context, op func() error) error {
+	// Circuit breaker: fail-fast if the server is known to be down.
+	if s.breaker != nil && !s.breaker.Allow() {
+		doltMetrics.circuitRejected.Add(ctx, 1)
+		return ErrCircuitOpen
+	}
+
 	attempts := 0
 	bo := newServerRetryBackoff()
 	err := backoff.Retry(func() error {
 		attempts++
 		err := op()
 		if err != nil && isRetryableError(err) {
+			// Record connection-level failures to the circuit breaker
+			if s.breaker != nil && isConnectionError(err) {
+				s.breaker.RecordFailure()
+				// Check if the breaker just tripped — if so, stop retrying
+				if s.breaker.State() == circuitOpen {
+					doltMetrics.circuitTrips.Add(ctx, 1)
+					return backoff.Permanent(fmt.Errorf("%w (circuit breaker tripped)", err))
+				}
+			}
 			return err // Retryable - backoff will retry
 		}
 		if err != nil {
 			return backoff.Permanent(err) // Non-retryable - stop immediately
+		}
+		// Success — reset the circuit breaker
+		if s.breaker != nil {
+			s.breaker.RecordSuccess()
 		}
 		return nil
 	}, backoff.WithContext(bo, ctx))
@@ -257,8 +281,10 @@ var doltTracer = otel.Tracer("github.com/steveyegge/beads/storage/dolt")
 // Instruments are registered against the global delegating provider at init time,
 // so they automatically forward to the real provider once telemetry.Init() runs.
 var doltMetrics struct {
-	retryCount metric.Int64Counter
-	lockWaitMs metric.Float64Histogram
+	retryCount      metric.Int64Counter
+	lockWaitMs      metric.Float64Histogram
+	circuitTrips    metric.Int64Counter
+	circuitRejected metric.Int64Counter
 }
 
 func init() {
@@ -270,6 +296,14 @@ func init() {
 	doltMetrics.lockWaitMs, _ = m.Float64Histogram("bd.db.lock_wait_ms",
 		metric.WithDescription("Time spent waiting to acquire the dolt access lock"),
 		metric.WithUnit("ms"),
+	)
+	doltMetrics.circuitTrips, _ = m.Int64Counter("bd.db.circuit_trips",
+		metric.WithDescription("Number of times the Dolt circuit breaker tripped open"),
+		metric.WithUnit("{trip}"),
+	)
+	doltMetrics.circuitRejected, _ = m.Int64Counter("bd.db.circuit_rejected",
+		metric.WithDescription("Requests rejected by open circuit breaker (fail-fast)"),
+		metric.WithUnit("{request}"),
 	)
 }
 
@@ -503,6 +537,14 @@ func New(ctx context.Context, cfg *Config) (*DoltStore, error) {
 // newServerMode creates a DoltStore connected to a running dolt sql-server.
 // This path is pure Go and does not require CGO.
 func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
+	breaker := newCircuitBreaker(cfg.ServerPort)
+
+	// Circuit breaker: fail-fast if the server is known to be down.
+	if !breaker.Allow() {
+		doltMetrics.circuitRejected.Add(ctx, 1)
+		return nil, ErrCircuitOpen
+	}
+
 	// Fail-fast TCP check before MySQL protocol initialization.
 	// This gives an immediate, clear error if the Dolt server isn't running,
 	// rather than waiting for MySQL driver timeouts.
@@ -530,6 +572,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 			// Retry connection with longer timeout (server just started)
 			conn, dialErr = net.DialTimeout("tcp", addr, 2*time.Second)
 			if dialErr != nil {
+				breaker.RecordFailure()
 				return nil, fmt.Errorf("Dolt server auto-started but still unreachable at %s: %w\n\n"+
 					"Check logs: %s", addr, dialErr, doltserver.LogPath(beadsDir))
 			}
@@ -549,15 +592,19 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 			// Retry connection after gt started the server
 			conn, dialErr = net.DialTimeout("tcp", addr, 3*time.Second)
 			if dialErr != nil {
+				breaker.RecordFailure()
 				return nil, fmt.Errorf("Dolt server still unreachable at %s after 'gt dolt start': %w",
 					addr, dialErr)
 			}
 		} else {
+			breaker.RecordFailure()
 			return nil, fmt.Errorf("Dolt server unreachable at %s: %w\n\nThe Dolt server may not be running. Try:\n  bd dolt start    # Start a local server\n  gt dolt start    # If using Gas Town",
 				addr, dialErr)
 		}
 	}
 	_ = conn.Close()
+	// TCP dial succeeded — record success to reset the breaker
+	breaker.RecordSuccess()
 
 	// Server mode: connect via MySQL protocol to dolt sql-server
 	db, connStr, err := openServerConnection(ctx, cfg)
@@ -575,6 +622,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 		db:             db,
 		dbPath:         cfg.Path,
 		connStr:        connStr,
+		breaker:        breaker,
 		committerName:  cfg.CommitterName,
 		committerEmail: cfg.CommitterEmail,
 		remote:         cfg.Remote,
