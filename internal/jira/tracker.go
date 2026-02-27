@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
@@ -204,6 +205,7 @@ func (t *Tracker) applyTransition(ctx context.Context, key string, status types.
 		}
 	}
 
+	debug.Logf("jira: no available transition to %q for %s (%d transitions checked)\n", desiredName, key, len(transitions))
 	return nil
 }
 
