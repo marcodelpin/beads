@@ -19,7 +19,7 @@ func isDoltAutoPushEnabled(ctx context.Context) bool {
 	}
 	// Auto-enable when a Dolt remote exists
 	st := getStore()
-	if st == nil {
+	if st == nil || st.IsClosed() {
 		return false
 	}
 	has, err := st.HasRemote(ctx, "origin")
@@ -38,7 +38,7 @@ func maybeAutoPush(ctx context.Context) {
 	}
 
 	st := getStore()
-	if st == nil {
+	if st == nil || st.IsClosed() {
 		return
 	}
 

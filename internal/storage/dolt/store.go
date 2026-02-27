@@ -307,9 +307,15 @@ func endSpan(span trace.Span, err error) {
 // execContext wraps a write statement in an explicit BEGIN/COMMIT to ensure
 // durability when the Dolt server runs with autocommit disabled (the default
 // when started with --no-auto-commit). Without this, writes remain in an
+// ErrStoreClosed is returned when an operation is attempted on a closed store.
+var ErrStoreClosed = errors.New("store is closed")
+
 // uncommitted implicit transaction that Dolt rolls back on connection close,
 // causing silent data loss for callers that do not use db.BeginTx themselves.
 func (s *DoltStore) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if s.closed.Load() {
+		return nil, ErrStoreClosed
+	}
 	ctx, span := doltTracer.Start(ctx, "dolt.exec",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(append(s.doltSpanAttrs(),
@@ -344,6 +350,9 @@ func (s *DoltStore) DB() *sql.DB {
 
 // queryContext wraps s.db.QueryContext with retry for transient errors.
 func (s *DoltStore) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if s.closed.Load() {
+		return nil, ErrStoreClosed
+	}
 	ctx, span := doltTracer.Start(ctx, "dolt.query",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(append(s.doltSpanAttrs(),
@@ -370,6 +379,9 @@ func (s *DoltStore) queryContext(ctx context.Context, query string, args ...any)
 // queryRowContext wraps s.db.QueryRowContext with retry for transient errors.
 // The scan function receives the *sql.Row and should call .Scan() on it.
 func (s *DoltStore) queryRowContext(ctx context.Context, scan func(*sql.Row) error, query string, args ...any) error {
+	if s.closed.Load() {
+		return ErrStoreClosed
+	}
 	ctx, span := doltTracer.Start(ctx, "dolt.query_row",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(append(s.doltSpanAttrs(),
@@ -884,6 +896,11 @@ func isOnlyComments(stmt string) bool {
 		return false
 	}
 	return true
+}
+
+// IsClosed returns true if the store has been closed.
+func (s *DoltStore) IsClosed() bool {
+	return s.closed.Load()
 }
 
 // Close closes the database connection and removes any 0-byte noms LOCK files
