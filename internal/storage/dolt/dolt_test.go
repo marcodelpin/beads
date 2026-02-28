@@ -445,16 +445,20 @@ func TestGetCustomTypes(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	// defaultConfig seeds types.custom — verify it's accessible
+	// types.custom is set via SetConfig (not seeded by defaultConfig)
+	if err := store.SetConfig(ctx, "types.custom", "molecule,gate,convoy,merge-request,slot,agent,role,rig,message"); err != nil {
+		t.Fatalf("SetConfig(types.custom) failed: %v", err)
+	}
+
 	types, err := store.GetCustomTypes(ctx)
 	if err != nil {
 		t.Fatalf("GetCustomTypes failed: %v", err)
 	}
 	if len(types) == 0 {
-		t.Fatal("expected custom types to be seeded by defaultConfig, got none")
+		t.Fatal("expected custom types from SetConfig, got none")
 	}
 
-	// Verify "agent" is among the seeded types
+	// Verify "agent" is among the configured types
 	found := false
 	for _, ct := range types {
 		if ct == "agent" {
