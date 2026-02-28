@@ -375,13 +375,3 @@ Every metric name, span name, and attribute listed in this document is backed by
 | `anthropic.messages.new` | `bd.ai.model`, `bd.ai.operation` | `haiku.go:129-130` |
 | `anthropic.messages.new` | `bd.ai.input_tokens`, `bd.ai.output_tokens`, `bd.ai.attempts` | `haiku.go:165-167` |
 | `anthropic.messages.new` | `bd.ai.batch_size` (find_duplicates only) | `find_duplicates.go:433` |
-
-### Absent metrics (confirmed by grep)
-
-| Metric | Status | Verification |
-|--------|--------|--------------|
-| `hook_exec_duration_ms` | Does not exist | Grep `internal/hooks/` for `Counter\|Histogram` → zero matches |
-| `hook_exec_total` | Does not exist | Same grep |
-| `doltserver_start_total` | Does not exist | Grep `internal/doltserver/` for `otel\|telemetry` → zero matches |
-| `doltserver_stop_total` | Does not exist | Same grep |
-| `doltserver_uptime_ms` | Does not exist | Same grep |
