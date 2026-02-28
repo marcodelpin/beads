@@ -2,10 +2,30 @@
 
 Complete schema of all telemetry events emitted by Beads. Each event consists of:
 
-1. **Log record** (→ any OTLP v1.x+ backend, defaults to VictoriaLogs) with full structured attributes
-2. **Metric counter** (→ any OTLP v1.x+ backend, defaults to VictoriaMetrics) for aggregation
+1. **Span** (→ any OTLP v1.x+ backend, stdout when `BD_OTEL_STDOUT=true`) with full structured attributes
+2. **Metric counter/histogram** (→ any OTLP v1.x+ backend, defaults to VictoriaMetrics) for aggregation
 
-All events automatically carry \`bd.command\`, \`bd.version\`, \`bd.actor\` from command context for correlation.
+All command spans automatically carry `bd.command`, `bd.version`, `bd.args` from startup context; `bd.actor` is added after actor resolution.
+
+---
+
+## Metric Naming Convention
+
+OTel SDK names use **dot notation** internally. Prometheus-compatible backends (VictoriaMetrics, Prometheus) export these as **underscore-separated** names, appending type suffixes:
+
+| Code name (SDK) | Exported name (Prometheus/VM) |
+|-----------------|-------------------------------|
+| `bd.storage.operations` | `bd_storage_operations_total` |
+| `bd.storage.operation.duration` | `bd_storage_operation_duration_ms` |
+| `bd.storage.errors` | `bd_storage_errors_total` |
+| `bd.issue.count` | `bd_issue_count` |
+| `bd.db.retry_count` | `bd_db_retry_count_total` |
+| `bd.db.lock_wait_ms` | `bd_db_lock_wait_ms` |
+| `bd.db.circuit_trips` | `bd_db_circuit_trips_total` |
+| `bd.db.circuit_rejected` | `bd_db_circuit_rejected_total` |
+| `bd.ai.input_tokens` | `bd_ai_input_tokens_total` |
+| `bd.ai.output_tokens` | `bd_ai_output_tokens_total` |
+| `bd.ai.request.duration` | `bd_ai_request_duration_ms` |
 
 ---
 
@@ -13,11 +33,12 @@ All events automatically carry \`bd.command\`, \`bd.version\`, \`bd.actor\` from
 
 | Event | Category | Status |
 |-------|----------|--------|
-| \`bd.command\` | CLI | ✅ Main |
-| \`storage.*\` | Storage | ✅ Main |
-| \`dolt.*\` | Dolt Backend | ✅ Main |
-| \`doltserver.*\` | Server Lifecycle | ✅ Main |
-| \`hook.exec\` | Hooks | ✅ Main |
+| `bd.command` | CLI | ✅ Implemented |
+| `storage.*` | Storage | ✅ Implemented |
+| `dolt.*` | Dolt Backend | ✅ Implemented |
+| `doltserver.*` | Server Lifecycle | 🔲 Roadmap (Tier 1) |
+| `hook.exec` | Hooks | ✅ Implemented (span only) |
+| `anthropic.messages.new` | AI | ✅ Implemented |
 
 ---
 
@@ -29,470 +50,340 @@ The outermost grouping. Derived at command startup time from the machine hostnam
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`host\` | string | System hostname |
-| \`os\` | string | System OS information |
+| `host` | string | System hostname |
+| `os` | string | System OS information |
 
 ### 1.2 Command
 
-Each \`bd\` command execution generates a span with full context.
+Each `bd` command execution generates a span with full context.
 
 | Attribute | Type | Source |
 |---|---|---|
-| \`bd.command\` | string | Subcommand name (\`create\`, \`list\`, \`show\`, etc.) |
-| \`bd.version\` | string | bd version (e.g., \`"0.9.3"\`) |
-| \`bd.args\` | string | Full argument list |
-| \`bd.actor\` | string | Actor identity (from git config or env) |
+| `bd.command` | string | Subcommand name (`create`, `list`, `show`, etc.) |
+| `bd.version` | string | bd version (e.g., `"0.9.3"`) |
+| `bd.args` | string | Full argument list |
+| `bd.actor` | string | Actor identity — set after actor resolution (may lag span start) |
 
 ---
 
 ## 2. CLI Command Events
 
-### \`bd.command\`
+### `bd.command.<name>`
 
-Emitted once per \`bd\` subcommand execution. Anchors all subsequent events for that command.
+Emitted once per `bd` subcommand execution. Anchors all subsequent events for that command. The span name is `bd.command.` + command name (e.g. `bd.command.create`).
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`bd.command\` | string | Subcommand name |
-| \`bd.version\` | string | bd version |
-| \`bd.args\` | string | Full arguments passed to command |
-| \`bd.actor\` | string | Actor identity |
-| \`duration_ms\` | float | Wall-clock duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `bd.command` | string | Subcommand name |
+| `bd.version` | string | bd version |
+| `bd.args` | string | Full arguments passed to command |
+| `bd.actor` | string | Actor identity (set after actor resolution) |
 
 ---
 
 ## 3. Storage Events
 
-### \`storage.CreateIssue\`
+### `storage.CreateIssue`
 
 Emitted when an issue is created.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"CreateIssue"\` |
-| \`bd.issue.id\` | string | Newly created issue ID |
-| \`bd.issue.type\` | string | Issue type (\`task\`, \`epic\`, \`merge-request\`, etc.) |
-| \`bd.actor\` | string | Actor creating the issue |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"CreateIssue"` |
+| `bd.issue.type` | string | Issue type (`task`, `epic`, `merge-request`, etc.) |
+| `bd.actor` | string | Actor creating the issue |
 
-### \`storage.UpdateIssue\`
+### `storage.UpdateIssue`
 
 Emitted when an issue is updated.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"UpdateIssue"\` |
-| \`bd.issue.id\` | string | Issue ID being updated |
-| \`bd.update.count\` | int | Number of fields being updated |
-| \`bd.actor\` | string | Actor updating the issue |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"UpdateIssue"` |
+| `bd.issue.id` | string | Issue ID being updated |
+| `bd.update.count` | int | Number of fields being updated |
+| `bd.actor` | string | Actor updating the issue |
 
-### \`storage.GetIssue\`
+### `storage.GetIssue`
 
 Emitted when an issue is retrieved.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"GetIssue"\` |
-| \`bd.issue.id\` | string | Issue ID being retrieved |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"GetIssue"` |
+| `bd.issue.id` | string | Issue ID being retrieved |
 
-### \`storage.SearchIssues\`
+### `storage.SearchIssues`
 
 Emitted when searching for issues.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"SearchIssues"\` |
-| \`bd.query\` | string | Search query string |
-| \`bd.result.count\` | int | Number of results returned |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"SearchIssues"` |
+| `bd.query` | string | Search query string |
+| `bd.result.count` | int | Number of results returned |
 
-### \`storage.GetReadyWork\`
+### `storage.GetReadyWork`
 
 Emitted when querying for ready work.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"GetReadyWork"\` |
-| \`bd.result.count\` | int | Number of ready issues returned |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"GetReadyWork"` |
+| `bd.result.count` | int | Number of ready issues returned |
 
-### \`storage.GetBlockedIssues\`
+### `storage.GetBlockedIssues`
 
 Emitted when querying for blocked issues.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"GetBlockedIssues"\` |
-| \`bd.result.count\` | int | Number of blocked issues returned |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"GetBlockedIssues"` |
+| `bd.result.count` | int | Number of blocked issues returned |
 
-### \`storage.RunInTransaction\`
+### `storage.RunInTransaction`
 
 Emitted when executing a transaction.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`db.operation\` | string | \`"RunInTransaction"\` |
-| \`db.commit_msg\` | string | Commit message |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `db.operation` | string | `"RunInTransaction"` |
+| `db.commit_msg` | string | Commit message |
 
 ---
 
 ## 4. Dolt Backend Events
 
-### \`dolt.query\`
+### `dolt.query`
 
-Emitted for each SQL query executed against Dolt.
-
-| Attribute | Type | Description |
-|---|---|---|
-| \`db.operation\` | string | SQL query type (truncated) |
-| \`db.table\` | string | Table being queried (when determinable) |
-| \`duration_ms\` | float | Query execution time in milliseconds |
-| \`rows_affected\` | int | Number of rows affected (for INSERT/UPDATE/DELETE) |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
-
-### \`dolt.lock_wait\`
-
-Emitted when waiting for Dolt access lock.
+Emitted for each SQL read query via `queryContext()`.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`dolt_lock_type\` | string | Lock type (\`dolt-access.lock\`, \`noms_lock\`) |
-| \`wait_ms\` | float | Wait time in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
+| `db.operation` | string | `"query"` |
+| `db.statement` | string | SQL statement (truncated to 300 chars) |
+| `db.system` | string | `"dolt"` |
+| `db.readonly` | bool | Whether store is read-only |
 
-### \`dolt.commit\`
+### `dolt.exec`
+
+Emitted for each SQL write statement via `execContext()`.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `db.operation` | string | `"exec"` |
+| `db.statement` | string | SQL statement (truncated to 300 chars) |
+| `db.system` | string | `"dolt"` |
+
+### `dolt.query_row`
+
+Emitted for single-row queries via `queryRowContext()`.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `db.operation` | string | `"query_row"` |
+| `db.statement` | string | SQL statement (truncated to 300 chars) |
+| `db.system` | string | `"dolt"` |
+
+### `dolt.commit`
 
 Emitted for DOLT_COMMIT operations.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`commit_msg\` | string | Commit message |
-| \`duration_ms\` | float | Commit operation duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `commit_msg` | string | Commit message |
 
-### \`dolt.push\`
+### `dolt.push`
 
 Emitted for DOLT_PUSH operations.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`branch\` | string | Branch being pushed |
-| \`remote_url\` | string | Remote URL |
-| \`changes_count\` | int | Number of commits pushed |
-| \`duration_ms\` | float | Push duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `dolt.branch` | string | Branch being pushed |
 
-### \`dolt.pull\`
+### `dolt.pull`
 
 Emitted for DOLT_PULL operations.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`branch\` | string | Branch being pulled |
-| \`remote_url\` | string | Remote URL |
-| \`changes_count\` | int | Number of commits pulled |
-| \`duration_ms\` | float | Pull duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `dolt.branch` | string | Branch being pulled |
 
-### \`dolt.merge\`
+### `dolt.merge`
 
 Emitted for DOLT_MERGE operations.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`strategy\` | string | Merge strategy (\`ours\`, \`theirs\`, \`union\`) |
-| \`conflict_count\` | int | Number of conflicts encountered |
-| \`duration_ms\` | float | Merge duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `dolt.merge_branch` | string | Branch being merged |
 
-### \`dolt.branch\`
+### `dolt.branch`
 
 Emitted for DOLT_BRANCH operations.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`branch_name\` | string | Branch name |
-| \`start_ref\` | string | Starting reference (when applicable) |
-| \`duration_ms\` | float | Branch operation duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `dolt.branch` | string | Branch name |
 
-### \`dolt.checkout\`
+### `dolt.checkout`
 
 Emitted for DOLT_CHECKOUT operations.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`ref\` | string | Reference being checked out |
-| \`duration_ms\` | float | Checkout duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `dolt.branch` | string | Branch being checked out |
 
 ---
 
-## 5. Dolt Server Events
+## 5. Dolt Server Events (Roadmap — not yet implemented)
 
-### \`doltserver.start\`
+`internal/doltserver/` has no OTel imports. The events below are planned for Tier 1.
 
-Emitted when Dolt sql-server is started.
-
-| Attribute | Type | Description |
-|---|---|---|
-| \`port\` | int | Port server is listening on |
-| \`data_dir\` | string | Path to Dolt data directory |
-| \`pid\` | int | Process ID of server |
-| \`source\` | string | Port source (\`hash\` derived, \`config\` explicit) |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
-
-### \`doltserver.stop\`
-
-Emitted when Dolt sql-server is stopped.
+### `doltserver.start` *(planned)*
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`pid\` | int | Process ID of stopped server |
-| \`reason\` | string | Stop reason (\`graceful\`, \`forced\`, \`idle_timeout\`, \`crash\`) |
-| \`uptime_ms\` | float | Server uptime in milliseconds (when available) |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `port` | int | Port server is listening on |
+| `data_dir` | string | Path to Dolt data directory |
+| `pid` | int | Process ID of server |
 
-### \`doltserver.port_allocated\`
-
-Emitted when port is allocated for Dolt server.
+### `doltserver.stop` *(planned)*
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`port\` | int | Allocated port number |
-| \`source\` | string | Port source (\`hash\` derived, \`config\` explicit) |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-
-### \`doltserver.port_reclaimed\`
-
-Emitted when adopting or cleaning up orphan Dolt server.
-
-| Attribute | Type | Description |
-|---|---|---|
-| \`port\` | int | Port being reclaimed |
-| \`adopted_pid\` | int | PID of adopted server (0 if none) |
-| \`action\` | string | Action taken (\`adopt\`, \`kill_orphan\`) |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
-
-### \`doltserver.idle_timeout\`
-
-Emitted when idle monitor shuts down server.
-
-| Attribute | Type | Description |
-|---|---|---|
-| \`idle_duration_ms\` | float | Idle time before shutdown |
-| \`timeout_config\` | string | Configured timeout value |
-| \`status\` | string | \`"ok"\` |
-
-### \`doltserver.restart\`
-
-Emitted when idle monitor restarts crashed server.
-
-| Attribute | Type | Description |
-|---|---|---|
-| \`crash_detected\` | bool | Whether restart was due to detected crash |
-| \`last_activity_age_ms\` | float | Time since last activity |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `pid` | int | Process ID of stopped server |
+| `reason` | string | Stop reason (`graceful`, `forced`, `idle_timeout`, `crash`) |
 
 ---
 
 ## 6. Hooks Events
 
-### \`hook.exec\`
+### `hook.exec`
 
-Emitted for hook execution.
+Emitted for hook execution. **Span only** — no metric counters or histograms exist for hooks. Duration aggregation is a Tier 3 roadmap item.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`hook.event\` | string | Event type (\`create\`, \`update\`, \`close\`, \`delete\`, etc.) |
-| \`hook.path\` | string | Absolute path to hook script |
-| \`bd.issue_id\` | string | ID of triggering issue (when applicable) |
-| \`hook.stdout\` | string | Script standard output (truncated to 1024 bytes) |
-| \`hook.stderr\` | string | Script error output (truncated to 1024 bytes) |
-| \`output\` | string | Output text (\`stdout\` or \`stderr\`) |
-| \`bytes\` | int | Original output size before truncation |
-| \`duration_ms\` | float | Hook execution duration in milliseconds |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `hook.event` | string | Event type (`create`, `update`, `close`, `delete`, etc.) |
+| `hook.path` | string | Absolute path to hook script |
+| `bd.issue_id` | string | ID of triggering issue |
+
+Stdout/stderr are added as span **events** (not attributes):
+- `hook.stdout` event: `output` (string, truncated), `bytes` (int, original size)
+- `hook.stderr` event: `output` (string, truncated), `bytes` (int, original size)
 
 ---
 
 ## 7. AI Events
 
-Emitted by the compaction engine (`bd compact`) and duplicate detection (`bd duplicates --ai`). Both use the Anthropic SDK directly via `ANTHROPIC_API_KEY`.
+Emitted by the compaction engine (`bd compact`) via `internal/compact/haiku.go`, and by duplicate detection (`bd find-duplicates --method ai`) via `cmd/bd/find_duplicates.go`. Both use the Anthropic SDK directly via `ANTHROPIC_API_KEY`.
 
-### \`anthropic.messages.new\`
+> **Note**: Only `compact/haiku.go` records to the `bd.ai.*` OTel metric instruments. `find_duplicates.go` records token counts as span attributes only.
 
-One span per Anthropic API call. The \`bd.ai.operation\` attribute distinguishes the two callers.
+### `anthropic.messages.new`
+
+One span per Anthropic API call. The `bd.ai.operation` attribute distinguishes the two callers.
 
 | Attribute | Type | Description |
 |---|---|---|
-| \`bd.ai.model\` | string | Model used (e.g. \`"claude-haiku-4-5"\`) |
-| \`bd.ai.operation\` | string | \`"compact"\` or \`"find_duplicates"\` |
-| \`bd.ai.input_tokens\` | int | Input tokens consumed |
-| \`bd.ai.output_tokens\` | int | Output tokens generated |
-| \`bd.ai.attempts\` | int | Number of attempts (including retries) |
-| \`bd.ai.batch_size\` | int | Candidate pairs evaluated (find_duplicates only) |
-| \`status\` | string | \`"ok"\` · \`"error"\` |
-| \`error\` | string | Error message (empty when status=\`"ok"\`) |
+| `bd.ai.model` | string | Model used (e.g. `"claude-haiku-4-5"`) |
+| `bd.ai.operation` | string | `"compact"` or `"find_duplicates"` |
+| `bd.ai.input_tokens` | int | Input tokens consumed |
+| `bd.ai.output_tokens` | int | Output tokens generated |
+| `bd.ai.attempts` | int | Number of attempts (including retries) |
+| `bd.ai.batch_size` | int | Candidate pairs evaluated (`find_duplicates` only) |
 
-**Retry policy**: exponential backoff, up to 3 attempts, on HTTP 429 and 5xx errors.
+**Retry policy**: exponential backoff, up to 3 attempts, on HTTP 429, 5xx, and network timeout errors.
 
 ---
 
 ## 8. Metrics Reference
 
-| Metric | Type | Labels | Status |
+| Metric (code name) | Type | Labels | Status |
 |--------|------|--------|--------|
-| \`bd_storage_operations_total\` | Counter | \`db.operation\`, \`status\` | ✅ Main |
-| \`bd_storage_operation_duration_ms\` | Histogram | \`db.operation\` | ✅ Main |
-| \`bd_storage_errors_total\` | Counter | \`db.operation\`, \`error_type\` | ✅ Main |
-| \`bd_issue_count\` | Gauge | \`status\` | ✅ Main |
-| \`bd_db_retry_count_total\` | Counter | — | ✅ Main |
-| \`bd_db_lock_wait_ms\` | Histogram | \`dolt_lock_type\` | ✅ Main |
-| \`doltserver_start_total\` | Counter | \`status\`, \`source\` | ✅ Main |
-| \`doltserver_stop_total\` | Counter | \`reason\`, \`status\` | ✅ Main |
-| \`doltserver_uptime_ms\` | Histogram | — | ✅ Main |
-| \`hook_exec_duration_ms\` | Histogram | \`hook.event\`, \`status\` | ✅ Main |
-| \`hook_exec_total\` | Counter | \`hook.event\`, \`status\` | ✅ Main |
-| \`bd.ai.input_tokens\` | Counter | \`bd.ai.model\` | ✅ Main |
-| \`bd.ai.output_tokens\` | Counter | \`bd.ai.model\` | ✅ Main |
-| \`bd.ai.request.duration\` | Histogram (ms) | \`bd.ai.model\` | ✅ Main |
+| `bd.storage.operations` | Counter | `db.operation` | ✅ Implemented |
+| `bd.storage.operation.duration` | Histogram (ms) | `db.operation` | ✅ Implemented |
+| `bd.storage.errors` | Counter | `db.operation` | ✅ Implemented |
+| `bd.issue.count` | Gauge | `status` | ✅ Implemented |
+| `bd.db.retry_count` | Counter | — | ✅ Implemented |
+| `bd.db.lock_wait_ms` | Histogram | — | 🔲 Registered, not recorded |
+| `bd.db.circuit_trips` | Counter | — | ✅ Implemented |
+| `bd.db.circuit_rejected` | Counter | — | ✅ Implemented |
+| `bd.ai.input_tokens` | Counter | `bd.ai.model` | ✅ Implemented (compact only) |
+| `bd.ai.output_tokens` | Counter | `bd.ai.model` | ✅ Implemented (compact only) |
+| `bd.ai.request.duration` | Histogram (ms) | `bd.ai.model` | ✅ Implemented (compact only) |
 
 ---
 
 ## 9. Recommended Indexed Attributes
 
-\`\`\`
-host, os, bd.command, bd.version, bd.actor, db.operation, db.table,
-bd.issue.id, bd.issue.type, dolt_lock_type,
-hook.event, hook.path, branch_name, bd.ai.model, bd.ai.operation
-\`\`\`
+```
+host, os, bd.command, bd.version, bd.actor, db.operation, db.statement,
+bd.issue.id, bd.issue.type, hook.event, hook.path, bd.ai.model, bd.ai.operation
+```
 
 ---
 
-## 10. Status Field Semantics
+## 10. Configuration and Backend
 
-All events include a \`status\` field:
+Environment variables, backend compatibility, Dolt system tables, and roadmap are documented in [otel-architecture.md](otel-architecture.md) to avoid duplication.
 
-| Value | Meaning |
-|-------|---------|
-| "ok" | Operation completed successfully |
-| "error" | Operation failed |
-
-When status is "error", the \`error\` field contains the error message. When status is "ok", \`error\` is an empty string.
+Key variables: `BD_OTEL_METRICS_URL`, `BD_OTEL_LOGS_URL`, `BD_OTEL_STDOUT`.
 
 ---
 
-## 11. Environment Variables
+## Appendix: Source Reference Audit
 
-| Variable | Set by | Description |
-|-----------|----------|-------------|
-| \`BD_OTEL_METRICS_URL\` | Operator | OTLP metrics endpoint URL |
-| \`BD_OTEL_LOGS_URL\` | Operator | OTLP logs endpoint URL |
-| \`BD_OTEL_STDOUT\` | Operator | Set to \`true\` to enable stdout traces |
+Audited at:
+- **This branch** (`docs/otel-design`): `986a284c` — commit at which this document was written
+- **`main`** cross-checked: `371df32b` — used to verify `bd.db.circuit_trips` and `bd.db.circuit_rejected`
 
-\`OTEL_RESOURCE_ATTRIBUTES\` can also be used to set custom resource attributes that will be attached to all spans and metrics.
+Every metric name, span name, and attribute listed in this document is backed by a specific source location. This table exists to prevent documentation drift and to make re-verification straightforward after code changes.
 
----
+### Metrics (`internal/telemetry/storage.go`, `internal/storage/dolt/store.go`, `internal/compact/haiku.go`)
 
-## 12. Backend Compatibility
+| Metric (SDK name) | Type | Source |
+|-------------------|------|--------|
+| `bd.storage.operations` | Counter | `storage.go:38` — `m.Int64Counter("bd.storage.operations")` |
+| `bd.storage.operation.duration` | Histogram | `storage.go:41` — `m.Float64Histogram("bd.storage.operation.duration")` |
+| `bd.storage.errors` | Counter | `storage.go:45` — `m.Int64Counter("bd.storage.errors")` |
+| `bd.issue.count` | Gauge | `storage.go:48` — `m.Int64Gauge("bd.issue.count")` |
+| `bd.db.retry_count` | Counter | `store.go:265` — `m.Int64Counter("bd.db.retry_count")` |
+| `bd.db.lock_wait_ms` | Histogram | `store.go:269` — registered; `.Record()` not called anywhere |
+| `bd.db.circuit_trips` | Counter | `store.go:310` on `main` — `m.Int64Counter("bd.db.circuit_trips")` |
+| `bd.db.circuit_rejected` | Counter | `store.go:314` on `main` — `m.Int64Counter("bd.db.circuit_rejected")` |
+| `bd.ai.input_tokens` | Counter | `haiku.go:110` — `m.Int64Counter("bd.ai.input_tokens")` |
+| `bd.ai.output_tokens` | Counter | `haiku.go:114` — `m.Int64Counter("bd.ai.output_tokens")` |
+| `bd.ai.request.duration` | Histogram | `haiku.go:118` — `m.Float64Histogram("bd.ai.request.duration")` |
 
-This data model is **backend-agnostic** — any OTLP v1.x+ compatible backend can consume these events:
+### Spans and attributes
 
-- **VictoriaMetrics** — Default for local development. Override with \`BD_OTEL_METRICS_URL\` to use any OTLP-compatible backend.
-- **VictoriaLogs** — Reserved for future log export. Override with \`BD_OTEL_LOGS_URL\`.
-- **Prometheus** — Via remote_write receiver
-- **Grafana Mimir** — Via write endpoint
-- **OpenTelemetry Collector** — Universal forwarder to any backend
+| Span name | Attributes | Source |
+|-----------|-----------|--------|
+| `bd.command.<name>` | `bd.command`, `bd.version`, `bd.args` | `cmd/bd/main.go:266-271` |
+| `bd.command.<name>` | `bd.actor` (added later) | `cmd/bd/main.go:478` |
+| `storage.<op>` (all methods) | `db.operation` + method-specific attrs | `internal/telemetry/storage.go:62-69` |
+| `dolt.query` | `db.operation="query"`, `db.statement`, `db.system="dolt"` | `store.go:346-352` |
+| `dolt.exec` | `db.operation="exec"`, `db.statement`, `db.system="dolt"` | `store.go:312-318` |
+| `dolt.query_row` | `db.operation="query_row"`, `db.statement`, `db.system="dolt"` | `store.go:372-378` |
+| `dolt.commit` | `commit_msg` | `store.go:913` |
+| `dolt.push` | `dolt.branch` | `store.go:1058, 1093` |
+| `dolt.pull` | `dolt.branch` | `store.go:1122` |
+| `dolt.merge` | `dolt.merge_branch` | `store.go:1216` |
+| `dolt.branch` | `dolt.branch` | `store.go:1184` |
+| `dolt.checkout` | `dolt.branch` | `store.go:1199` |
+| `hook.exec` | `hook.event`, `hook.path`, `bd.issue_id` | `hooks_unix.go:31-36` |
+| `hook.exec` events | `hook.stdout` / `hook.stderr` with `output`, `bytes` | `hooks_otel.go:14-25` |
+| `anthropic.messages.new` | `bd.ai.model`, `bd.ai.operation` | `haiku.go:128-131` |
+| `anthropic.messages.new` | `bd.ai.input_tokens`, `bd.ai.output_tokens`, `bd.ai.attempts` | `haiku.go:164-168` |
+| `anthropic.messages.new` | `bd.ai.batch_size` (find_duplicates only) | `find_duplicates.go:433` |
 
-The schema uses standard OpenTelemetry Protocol (OTLP) with protobuf encoding, which is universally supported.
+### Absent metrics (confirmed by grep)
 
----
-
-## 13. Dolt-Specific Telemetry Opportunities
-
-### Available Dolt System Tables
-
-Dolt maintains several system tables that can be queried for telemetry:
-
-| Table | Telemetry Use Case |
-|--------|-------------------|
-| \`dolt_log\` | Commit rate, author analysis, commit frequency |
-| \`dolt_status\` | Working set size, uncommitted changes tracking |
-| \`dolt_diff\` | Cell-level change analysis, conflict detection |
-| \`dolt_branches\` | Branch proliferation monitoring |
-| \`dolt_conflicts\` | Merge conflict rate by operation |
-
-### Sample Queries for Dolt Telemetry
-
-**Commit frequency analysis:**
-\`\`\`sql
-SELECT
-    DATE_FORMAT(commit_date, '%Y-%m') as month,
-    COUNT(*) as commits
-FROM dolt_log
-GROUP BY month
-ORDER BY month DESC;
-\`\`\`
-
-**Working set size tracking:**
-\`\`\`sql
-SELECT
-    COUNT(*) as staged_changes,
-    SUM(CASE WHEN staged = 1 THEN 1 ELSE 0 END) as added,
-    SUM(CASE WHEN staged = 0 THEN 1 ELSE 0 END) as removed
-FROM dolt_status;
-\`\`\`
-
-**Branch proliferation detection:**
-\`\`\`sql
-SELECT
-    COUNT(*) as branch_count,
-    MIN(commit_date) as oldest,
-    MAX(commit_date) as newest
-FROM dolt_branches;
-\`\`\`
-
-**Conflict analysis:**
-\`\`\`sql
-SELECT
-    COUNT(*) as conflict_count,
-    COUNT(DISTINCT table_name) as tables_affected
-FROM dolt_conflicts;
-\`\`\`
-
-### Future Dolt Telemetry Integration
-
-Consider adding periodic queries to collect metrics from Dolt system tables:
-
-| Metric | Query | Collection Frequency |
-|--------|--------|-------------------|
-| \`bd_dolt_commits_per_hour\` | \`dolt_log\` GROUP BY hour | Every 5 minutes |
-| \`bd_dolt_working_set_size\` | \`dolt_status\` COUNT(*) | Every 1 minute |
-| \`bd_dolt_branch_count\` | \`dolt_branches\` COUNT(*) | Every 5 minutes |
-| \`bd_dolt_conflicts_per_day\` | \`dolt_conflicts\` COUNT(*) | Every hour |
+| Metric | Status | Verification |
+|--------|--------|--------------|
+| `hook_exec_duration_ms` | Does not exist | Grep `internal/hooks/` for `Counter\|Histogram` → zero matches |
+| `hook_exec_total` | Does not exist | Same grep |
+| `doltserver_start_total` | Does not exist | Grep `internal/doltserver/` for `otel\|telemetry` → zero matches |
+| `doltserver_stop_total` | Does not exist | Same grep |
+| `doltserver_uptime_ms` | Does not exist | Same grep |

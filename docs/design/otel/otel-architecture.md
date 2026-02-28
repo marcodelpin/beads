@@ -29,18 +29,15 @@ Beads uses OpenTelemetry (OTel) for structured observability of all database ope
 | Feature | Status | Notes |
 |---------|--------|-------|
 | SQL query tracing | ✅ Implemented | All Dolt queries wrapped with spans |
-| Dolt lock wait timing | ✅ Implemented | `bd_db_lock_wait_ms` histogram |
-| Dolt retry counting | ✅ Implemented | `bd_db_retry_count_total` counter |
+| Dolt lock wait timing | ✅ Defined | `bd.db.lock_wait_ms` histogram registered; `.Record()` not yet called |
+| Dolt retry counting | ✅ Implemented | `bd.db.retry_count` counter |
+| Dolt circuit breaker | ✅ Implemented | `bd.db.circuit_trips`, `bd.db.circuit_rejected` counters |
 | Auto-commit tracking | ✅ Implemented | Per-command auto-commit events |
 | Working set flush tracking | ✅ Implemented | Flush on shutdown/signal |
 
-### Server Lifecycle Telemetry (Implemented ✅)
+### Server Lifecycle Telemetry (Not yet instrumented ❌)
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Server start/stop events | ✅ Implemented | Via `doltserver` package spans |
-| Server health monitoring | ✅ Partial | Connection tests, port availability |
-| Idle monitor tracking | ✅ Implemented | Activity file, idle shutdown |
+`internal/doltserver/` has no OTel imports. Server lifecycle spans and metrics are roadmap items (see Tier 1 below).
 
 ---
 
@@ -102,6 +99,16 @@ Data integrity errors are currently silent until they surface as user-visible fa
 New spans: `validation.check_dependencies`, `validation.check_schema`
 New metrics: `bd_validation_errors_total` (Counter) — by `error_type`
 
+#### Dolt version control (`internal/storage/dolt/versioned.go`)
+
+`versioned.go` has no OTel imports yet. Future spans:
+- `History`: Query complete version history for an issue
+- `AsOf`: Query state at specific commit or branch
+- `Diff`: Cell-level diff between two commits
+- `ListBranches`: Enumerate all branches
+- `GetCurrentCommit`: Get HEAD commit hash
+- `GetConflicts`: Check for merge conflicts
+
 #### Dolt system table polling
 
 Periodic SQL queries against Dolt system tables to surface metrics unavailable via OTLP (Dolt has no native OTel export):
@@ -119,8 +126,9 @@ Periodic SQL queries against Dolt system tables to surface metrics unavailable v
 
 - **Command-level sub-spans**: Instrument validation vs. DB vs. render breakdown per command (`bd create`, `bd list`, `bd compact`, etc.)
 - **Molecules & recipes**: `molecule.create`, `recipe.execute` spans
-- **Hook duration metrics**: Currently only spans, no histogram for aggregation
+- **Hook duration metrics**: Currently only spans (`hook.exec`), no histogram for aggregation
 - **OTel test suite**: Integration tests that verify telemetry output (currently none)
+- **Lock wait recording**: `bd.db.lock_wait_ms` histogram is registered but `.Record()` is not yet called
 
 ---
 
@@ -128,14 +136,13 @@ Periodic SQL queries against Dolt system tables to surface metrics unavailable v
 
 ### 1. Initialization (`internal/telemetry/telemetry.go`)
 
-The `telemetry.Init()` function sets up OTel providers on process startup:
+The `telemetry.Init()` function sets up OTel providers on process startup and returns only an `error`:
 
 ```go
-provider, err := telemetry.Init(ctx, "bd", version)
-if err != nil {
+if err := telemetry.Init(ctx, "bd", version); err != nil {
     // Log and continue — telemetry is best-effort
 }
-defer provider.Shutdown(ctx)
+defer telemetry.Shutdown(ctx)
 ```
 
 **Providers:**
@@ -160,7 +167,7 @@ defer provider.Shutdown(ctx)
 - `os`: system OS info
 
 **Custom resource attributes** (via `OTEL_RESOURCE_ATTRIBUTES` env var or `BD_ACTOR`):
-- `bd.actor`: Actor identity (from git config or env)
+- `bd.actor`: Actor identity (from git config or env) — set after actor resolution
 - `bd.command`: Current command name
 - `bd.args`: Full arguments passed to command
 
@@ -184,6 +191,12 @@ func WrapStorage(s storage.Storage) storage.Storage {
 }
 ```
 
+**Metric names in code** (OTel SDK notation with dots):
+- `bd.storage.operations` → exported as `bd_storage_operations_total` by Prometheus/VM
+- `bd.storage.operation.duration` → `bd_storage_operation_duration_ms`
+- `bd.storage.errors` → `bd_storage_errors_total`
+- `bd.issue.count` → `bd_issue_count`
+
 **Instrumented Storage Operations:**
 - Issue CRUD: `CreateIssue`, `GetIssue`, `UpdateIssue`, `CloseIssue`, `DeleteIssue`
 - Dependencies: `AddDependency`, `RemoveDependency`, `GetDependencies`
@@ -197,64 +210,72 @@ func WrapStorage(s storage.Storage) storage.Storage {
 ### 3. Dolt Backend Telemetry (`internal/storage/dolt/store.go`)
 
 Dolt storage layer emits metrics for:
-- `bd_db_retry_count_total`: SQL retries in server mode
-- `bd_db_lock_wait_ms`: Wait time to acquire `dolt-access.lock`
-- SQL query spans: Each Dolt query via `queryContext()` wrapper
-- Dolt version control spans: `DOLT_COMMIT`, `DOLT_PUSH`, `DOLT_PULL`, `DOLT_MERGE`
+- `bd.db.retry_count`: SQL retries in server mode (recorded in `withRetry` when `attempts > 1`)
+- `bd.db.lock_wait_ms`: Histogram registered but `.Record()` not yet called (stub)
+- `bd.db.circuit_trips`: Circuit breaker trips to open state (recorded in `withRetry`)
+- `bd.db.circuit_rejected`: Requests rejected by open circuit breaker (fail-fast path)
+- SQL query spans via `queryContext()`, `execContext()`, `queryRowContext()` wrappers using `doltTracer`
+- Dolt version control spans: `dolt.commit`, `dolt.push`, `dolt.pull`, `dolt.merge`, `dolt.branch`, `dolt.checkout`
 
-**Dolt Lock Wait Tracking:**
+**SQL Span pattern (`queryContext`):**
 ```go
-func (s *DoltStore) queryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-    start := time.Now()
-    // Acquire lock
-    err := s.lockFile.FlockExclusive(lockF)
-    // Record wait time if metrics enabled
-    if s.metrics != nil {
-        waitMs := float64(time.Since(start).Milliseconds())
-        s.metrics.LockWaitDuration.Record(ctx, waitMs)
-    }
-    // Execute query
-    rows, err := s.db.QueryContext(ctx, query, args...)
+func (s *DoltStore) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+    ctx, span := doltTracer.Start(ctx, "dolt.query",
+        trace.WithSpanKind(trace.SpanKindClient),
+        trace.WithAttributes(append(s.doltSpanAttrs(),
+            attribute.String("db.operation", "query"),
+            attribute.String("db.statement", spanSQL(query)),
+        )...),
+    )
+    var rows *sql.Rows
+    err := s.withRetry(ctx, func() error {
+        rows, queryErr = s.db.QueryContext(ctx, query, args...)
+        return queryErr
+    })
+    endSpan(span, wrapLockError(err))
     return rows, err
 }
 ```
 
 ---
 
-### 4. Dolt Server Management (`internal/doltserver/doltserver.go`)
+### 4. Dolt Version Control Telemetry (`internal/storage/dolt/store.go`)
 
-Server lifecycle operations are traced:
-- Server start/stop via `Start()`, `Stop()` functions
-- Port allocation and availability checking
-- Orphan server detection and cleanup
-- Idle monitor lifecycle
+Version control operations emit spans directly in `store.go` via `doltTracer.Start()`. These are **not** in `versioned.go` (which has no OTel imports).
 
-**Idle Monitor Telemetry:**
-The idle monitor (`RunIdleMonitor`) tracks:
-- Activity file timestamp updates
-- Idle duration before shutdown
-- Server crash detection and restart
-
-**Activity File Tracking:**
-```go
-func touchActivity(beadsDir string) {
-    // Update activity timestamp
-    os.WriteFile(activityPath(beadsDir),
-        []byte(strconv.FormatInt(time.Now().Unix(), 10)), 0600)
-}
-```
+Implemented spans (see Appendix for exact source locations):
+- `dolt.commit` — `CALL DOLT_COMMIT`
+- `dolt.push` — `CALL DOLT_PUSH`
+- `dolt.pull` — `CALL DOLT_PULL`
+- `dolt.merge` — `CALL DOLT_MERGE`
+- `dolt.branch` — `CALL DOLT_BRANCH`
+- `dolt.checkout` — `CALL DOLT_CHECKOUT`
 
 ---
 
-### 5. Dolt Version Control Telemetry (`internal/storage/dolt/versioned.go`)
+### 5. Hook Telemetry (`internal/hooks/`)
 
-Version control operations emit spans:
-- `History`: Query complete version history for an issue
-- `AsOf`: Query state at specific commit or branch
-- `Diff`: Cell-level diff between two commits
-- `ListBranches`: Enumerate all branches
-- `GetCurrentCommit`: Get HEAD commit hash
-- `GetConflicts`: Check for merge conflicts
+Hooks emit a single root span per execution (`hook.exec`). There are no metric counters or histograms for hooks — only span-level observability. Duration metrics are a roadmap item (Tier 3).
+
+---
+
+## Metric Naming Convention
+
+OTel SDK uses dot-notation internally. Prometheus-compatible backends (VictoriaMetrics, Prometheus) export these as underscore-separated names with type suffixes:
+
+| Code name | Exported name |
+|-----------|---------------|
+| `bd.storage.operations` | `bd_storage_operations_total` |
+| `bd.storage.operation.duration` | `bd_storage_operation_duration_ms` |
+| `bd.storage.errors` | `bd_storage_errors_total` |
+| `bd.issue.count` | `bd_issue_count` |
+| `bd.db.retry_count` | `bd_db_retry_count_total` |
+| `bd.db.lock_wait_ms` | `bd_db_lock_wait_ms` |
+| `bd.db.circuit_trips` | `bd_db_circuit_trips_total` |
+| `bd.db.circuit_rejected` | `bd_db_circuit_rejected_total` |
+| `bd.ai.input_tokens` | `bd_ai_input_tokens_total` |
+| `bd.ai.output_tokens` | `bd_ai_output_tokens_total` |
+| `bd.ai.request.duration` | `bd_ai_request_duration_ms` |
 
 ---
 
@@ -300,7 +321,6 @@ Version control operations emit spans:
 | Event | Trigger | Key Attributes |
 |-------|---------|----------------|
 | `bd.command.<name>` | Each `bd` subcommand execution | `bd.command`, `bd.version`, `bd.args`, `bd.actor` |
-| `bd.command.duration_ms` | Command execution time | `bd.command` |
 
 ### Storage Events
 
@@ -318,31 +338,21 @@ Version control operations emit spans:
 
 | Event | Trigger | Key Attributes |
 |-------|---------|----------------|
-| `dolt.query` | Each SQL query | `db.operation` |
-| `dolt.lock_wait` | Waiting for dolt-access.lock | `dolt_lock_type` |
+| `dolt.query` | Each SQL query (`queryContext`) | `db.operation`, `db.statement` |
+| `dolt.exec` | Each SQL write (`execContext`) | `db.operation`, `db.statement` |
+| `dolt.query_row` | Single-row queries (`queryRowContext`) | `db.operation`, `db.statement` |
 | `dolt.commit` | DOLT_COMMIT operation | `commit_msg` |
-| `dolt.push` | DOLT_PUSH operation | `remote_url`, `branch` |
-| `dolt.pull` | DOLT_PULL operation | `remote_url`, `branch` |
-| `dolt.merge` | DOLT_MERGE operation | `strategy`, `conflict_count` |
-| `dolt.branch` | DOLT_BRANCH operation | `branch_name` |
-| `dolt.checkout` | DOLT_CHECKOUT operation | `ref` |
-
-### Dolt Server Events
-
-| Event | Trigger | Key Attributes |
-|-------|---------|----------------|
-| `doltserver.start` | Server start | `port`, `data_dir`, `pid` |
-| `doltserver.stop` | Server stop (graceful or forced) | `pid`, `reason` |
-| `doltserver.port_allocated` | Port assignment (hash-derived or explicit) | `port`, `source` (hash/config) |
-| `doltserver.port_reclaimed` | Orphan server cleanup | `adopted_pid`, `port` |
-| `doltserver.idle_timeout` | Idle shutdown | `idle_duration_ms`, `timeout_config` |
-| `doltserver.restart` | Server restart by idle monitor | `crash_detected` |
+| `dolt.push` | DOLT_PUSH operation | `dolt.branch` |
+| `dolt.pull` | DOLT_PULL operation | `dolt.branch` |
+| `dolt.merge` | DOLT_MERGE operation | `dolt.merge_branch` |
+| `dolt.branch` | DOLT_BRANCH operation | `dolt.branch` |
+| `dolt.checkout` | DOLT_CHECKOUT operation | `dolt.branch` |
 
 ### Hooks Events
 
 | Event | Trigger | Key Attributes |
 |-------|---------|----------------|
-| `hook.exec` | Hook execution | `hook.event`, `hook.path`, `bd.issue_id` |
+| `hook.exec` | Hook execution (span only — no metric counters) | `hook.event`, `hook.path`, `bd.issue_id` |
 
 ---
 
@@ -353,24 +363,26 @@ Version control operations emit spans:
 | Area | Coverage |
 |-------|----------|
 | Storage operations | Full (all CRUD, queries, transactions) |
-| CLI command lifecycle | Full (all commands with arguments and duration) |
-| Dolt SQL queries | Full (all queries via queryContext wrapper) |
-| Dolt lock contention | Full (lock wait time histogram) |
-| Dolt version control | Full (commit, push, pull, merge, branch) |
-| Dolt server lifecycle | Full (start, stop, idle monitor) |
+| CLI command lifecycle | Full (all commands with arguments) |
+| Dolt SQL queries | Full (all queries via queryContext/execContext wrappers) |
+| Dolt retry counting | Full (retry counter incremented in withRetry) |
+| Dolt version control | Full (commit, push, pull, merge, branch, checkout) |
+| AI compaction | Full (bd.ai.* metrics in compact/haiku.go) |
 
 ### Not Currently Monitored ❌
 
 | Area | Notes | Operational Impact |
 |-------|-------|-------------------|
+| **Dolt lock wait time** | `bd.db.lock_wait_ms` registered but `.Record()` not called | Lock contention invisible |
+| **Dolt server lifecycle** | `internal/doltserver/` has no OTel imports | Server crashes are silent |
+| **Hook execution time** | `hook.exec` span exists but no duration histogram | Cannot detect hook regressions |
+| **versioned.go operations** | `versioned.go` has no OTel imports | History/AsOf/Diff invisible |
 | **Dolt server metrics** | Dolt has internal metrics but not exposed to OTel | Cannot monitor server health, connection count, query load |
 | **Working set size** | Uncommitted changes count unknown | Cannot detect batch mode accumulation |
 | **Database size growth** | Dolt database size not tracked | Cannot plan capacity or detect bloat |
 | **Branch proliferation** | Branch count not exposed | Cannot detect cleanup needed |
 | **Remote sync bandwidth** | Bytes transferred not tracked | Cannot monitor network usage or cost |
 | **Query execution plans** | EXPLAIN ANALYZE not captured | Cannot identify slow queries |
-| **Conflict rate by operation** | Dolt merge conflicts counted but not categorized | Cannot detect problematic operations |
-| **Hook execution time** | Hook spans lack duration metrics | Cannot detect hook regressions |
 | **Connection pool utilization** | Active/idle counts not tracked | Cannot tune connection pool sizing |
 
 ---
@@ -400,29 +412,6 @@ bd_issue_count{status="closed"}
 bd_issue_count{status="deferred"}
 ```
 
-**Dolt lock contention:**
-```promql
-histogram_quantile(0.95, bd_db_lock_wait_ms)
-rate(bd_db_lock_wait_ms_sum[5m]) / rate(bd_db_lock_wait_ms_count[5m])
-```
-
-### VictoriaLogs (Structured Logs)
-
-**Find all events for a command:**
-```logsql
-_msg:bd.command.* | json bd.command = "create"
-```
-
-**Error analysis:**
-```logsql
-_msg:* | json status = "error" | level >= ERROR
-```
-
-**Dolt lock wait analysis:**
-```logsql
-_msg:dolt.lock_wait | histogram_quantile(0.95, wait_ms)
-```
-
 ---
 
 ## Dolt Telemetry Capabilities
@@ -438,14 +427,6 @@ Dolt exposes internal metrics only via:
 **Beads implementation**:
 Beads currently queries Dolt metrics via direct SQL (see `cmd/bd/doctor/perf_dolt.go`) rather than via OTLP. This is intentional — Dolt lacks native OTel support.
 
-**Future Dolt OTel support**:
-If Dolt adds native OTLP export, it would likely be configured via:
-- Dolt configuration file
-- Environment variables
-- `dolt config` CLI commands
-
-Track DoltHub releases for updates on OTel capabilities.
-
 ### Dolt System Tables for Telemetry
 
 | Table | Purpose |
@@ -455,13 +436,6 @@ Track DoltHub releases for updates on OTel capabilities.
 | `dolt_diff` | Cell-level diff between commits |
 | `dolt_branches` | Branch metadata |
 | `dolt_conflicts` | Merge conflicts (when present) |
-
-**Telemetry integration opportunities:**
-1. Query `dolt_log` for commit metrics (commit rate, authors, timestamps)
-2. Query `dolt_status` for working set size
-3. Query `dolt_diff` for cell-level change analysis
-4. Query `dolt_branches` for branch proliferation detection
-5. Query `dolt_conflicts` for conflict rate
 
 ### Sample Queries for Dolt Telemetry
 
@@ -501,17 +475,6 @@ SELECT
 FROM dolt_conflicts;
 ```
 
-### Future Dolt Telemetry Integration
-
-Consider adding periodic queries to collect metrics from Dolt system tables:
-
-| Metric | Query | Collection Frequency |
-|--------|--------|-------------------|
-| `bd_dolt_commits_per_hour` | `dolt_log` GROUP BY hour | Every 5 minutes |
-| `bd_dolt_working_set_size` | `dolt_status` COUNT(*) | Every 1 minute |
-| `bd_dolt_branch_count` | `dolt_branches` COUNT(*) | Every 5 minutes |
-| `bd_dolt_conflicts_per_day` | `dolt_conflicts` COUNT(*) | Every hour |
-
 ---
 
 ## Related Documentation
@@ -519,7 +482,7 @@ Consider adding periodic queries to collect metrics from Dolt system tables:
 - [OTel Data Model](otel-data-model.md) — Complete event schema
 - [OBSERVABILITY.md](../../OBSERVABILITY.md) — Quick reference for metrics
 - [Dolt Backend](../../DOLT.md) — Dolt configuration and usage
-- [Dolt Concurrency](dolt-concurrency.md) — Concurrency model and transactions
+- [Dolt Concurrency](../dolt-concurrency.md) — Concurrency model and transactions
 
 ## Backends Compatible with OTLP
 
@@ -537,3 +500,108 @@ Consider adding periodic queries to collect metrics from Dolt system tables:
 - Advanced processing and batching
 - Support for multiple backends simultaneously
 - Better resource efficiency than per-process exporters
+
+---
+
+## Appendix: Source Reference Audit
+
+Audited against **`main` @ `371df32b`**. All line numbers below refer to that commit.
+
+Every factual claim in this document is backed by a specific source location. This table exists to prevent documentation drift and to make it easy to re-verify after code changes.
+
+### Initialization (`internal/telemetry/telemetry.go`, `cmd/bd/main.go`)
+
+| Claim | Source |
+|-------|--------|
+| `Init` signature — returns only `error` | `telemetry.go:64` |
+| `Enabled()` — true when `BD_OTEL_METRICS_URL` set or `BD_OTEL_STDOUT=true` | `telemetry.go:53-55` |
+| Traces: stdout only when `BD_OTEL_STDOUT=true` | `telemetry.go:84-93` |
+| Metrics: HTTP OTLP when `BD_OTEL_METRICS_URL` set | `telemetry.go:131-139` |
+| Resource: `service.name`, `service.version` | `telemetry.go:73-75` |
+| Resource: `WithHost()`, `WithProcess()` | `telemetry.go:76-77` |
+| `Shutdown(ctx)` signature | `telemetry.go:162` |
+| `Init` called in `PersistentPreRun` | `main.go:256` |
+| Command span started with `bd.command`, `bd.version`, `bd.args` | `main.go:262-266` |
+| `bd.actor` set on span after actor resolution | `main.go:474` |
+| `Shutdown` called in `PersistentPostRun` | `main.go:681` |
+
+### Storage Instrumentation (`internal/telemetry/storage.go`)
+
+| Claim | Source |
+|-------|--------|
+| `WrapStorage` returns original store when telemetry disabled | `storage.go:33-36` |
+| Metric `bd.storage.operations` (Counter) | `storage.go:38-40` |
+| Metric `bd.storage.operation.duration` (Histogram, ms) | `storage.go:41-44` |
+| Metric `bd.storage.errors` (Counter) | `storage.go:45-47` |
+| Gauge `bd.issue.count` | `storage.go:48-50` |
+| `CreateIssue` — attrs: `bd.actor`, `bd.issue.type` | `storage.go:86` |
+| `UpdateIssue` — attrs: `bd.issue.id`, `bd.update.count`, `bd.actor` | `storage.go:131` |
+| `GetIssue` — attr: `bd.issue.id` | `storage.go:108` |
+| `SearchIssues` — attrs: `bd.query`, `bd.result.count` | `storage.go:162` |
+| `GetReadyWork` — attr: `bd.result.count` | `storage.go:283` |
+| `GetBlockedIssues` — attr: `bd.result.count` | `storage.go:293` |
+| `RunInTransaction` — attr: `db.commit_msg` | `storage.go:393` |
+| `GetStatistics` emits gauge broken down by status | `storage.go:349` |
+| `AddDependency`, `RemoveDependency`, `GetDependencies` instrumented | `storage.go:175, 187, 198` |
+| `AddLabel`, `RemoveLabel`, `GetLabels` instrumented | `storage.go:243, 254, 265` |
+
+### Dolt Backend (`internal/storage/dolt/store.go`)
+
+| Claim | Source |
+|-------|--------|
+| `doltTracer` package-level var | `store.go:288` |
+| Metric `bd.db.retry_count` (Counter) registered | `store.go:302` |
+| `retryCount.Add()` called when `attempts > 1` | `store.go:281` |
+| Metric `bd.db.lock_wait_ms` (Histogram) registered | `store.go:306` |
+| `lockWaitMs.Record()` never called anywhere | grep `store.go` for `lockWaitMs\.Record` → zero matches |
+| Metric `bd.db.circuit_trips` (Counter) registered | `store.go:310` |
+| `circuitTrips.Add()` called on circuit open | `store.go:265` |
+| Metric `bd.db.circuit_rejected` (Counter) registered | `store.go:314` |
+| `circuitRejected.Add()` called on fail-fast | `store.go:250, 554` |
+| `withRetry()` function | `store.go:247` |
+| `execContext()` uses `doltTracer.Start()` + `withRetry()` | `store.go:359` |
+| `queryContext()` uses `doltTracer.Start()` + `withRetry()` | `store.go:396` |
+| `queryRowContext()` uses `doltTracer.Start()` + `withRetry()` | `store.go:425` |
+| Span `dolt.commit` | `store.go:1086` |
+| Span `dolt.push` | `store.go:1231, 1266` |
+| Span `dolt.pull` | `store.go:1295` |
+| Span `dolt.merge` | `store.go:1389` |
+| Span `dolt.branch` | `store.go:1357` |
+| Span `dolt.checkout` | `store.go:1372` |
+
+### versioned.go — no OTel
+
+| Claim | Source |
+|-------|--------|
+| `versioned.go` has no OTel imports | `versioned.go:1-9` — imports: `context`, `fmt`, `storage`, `types` only |
+
+### doltserver — no OTel
+
+| Claim | Source |
+|-------|--------|
+| `internal/doltserver/` has no OTel imports | grep `internal/doltserver/*.go` for `otel\|telemetry\|otlp` → zero matches |
+
+### Hooks (`internal/hooks/`)
+
+| Claim | Source |
+|-------|--------|
+| Span `hook.exec` created in `runHook` | `hooks_unix.go:31` |
+| Span attrs: `hook.event`, `hook.path`, `bd.issue_id` | `hooks_unix.go:33-35` |
+| Stdout/stderr added as span events via `addHookOutputEvents` | `hooks_otel.go:14, 20` |
+| `hook.stdout` / `hook.stderr` events carry `output`, `bytes` attrs | `hooks_otel.go:15-16, 21-22` |
+| No metric counters or histograms for hooks | grep `internal/hooks/` for `Counter\|Histogram` → zero matches |
+
+### AI (`internal/compact/haiku.go`, `cmd/bd/find_duplicates.go`)
+
+| Claim | Source |
+|-------|--------|
+| Metric `bd.ai.input_tokens` (Counter) | `haiku.go:110` |
+| Metric `bd.ai.output_tokens` (Counter) | `haiku.go:114` |
+| Metric `bd.ai.request.duration` (Histogram, ms) | `haiku.go:118` |
+| Metrics initialized lazily via `aiMetricsOnce` | `haiku.go:62, 106` |
+| Span `anthropic.messages.new` | `haiku.go:126` |
+| Span attrs: `bd.ai.model`, `bd.ai.operation` | `haiku.go:129-130` |
+| Span attrs: `bd.ai.input_tokens`, `bd.ai.output_tokens`, `bd.ai.attempts` | `haiku.go:165-167` |
+| Retry on HTTP 429 and 5xx | `haiku.go:217` |
+| `find_duplicates.go` — span attrs only, no `aiMetrics.*` calls | `find_duplicates.go:429-454` |
+| `find_duplicates.go` — `bd.ai.batch_size` attr | `find_duplicates.go:433` |
