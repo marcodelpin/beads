@@ -175,7 +175,7 @@ func (s *DoltStore) PromoteFromEphemeral(ctx context.Context, id string, actor s
 		return fmt.Errorf("wisp %s not found", id)
 	}
 	if err != nil {
-		return err
+		return wrapDBError("get wisp for promote", err)
 	}
 	if issue == nil {
 		return fmt.Errorf("wisp %s not found", id)
@@ -192,7 +192,7 @@ func (s *DoltStore) PromoteFromEphemeral(ctx context.Context, id string, actor s
 	// Copy labels directly to permanent labels table (bypass IsEphemeralID routing)
 	labels, err := s.getWispLabels(ctx, id)
 	if err != nil {
-		return err
+		return wrapQueryError("get wisp labels for promote", err)
 	}
 	for _, label := range labels {
 		if _, err := s.execContext(ctx,
@@ -205,7 +205,7 @@ func (s *DoltStore) PromoteFromEphemeral(ctx context.Context, id string, actor s
 	// Copy dependencies directly to permanent dependencies table
 	deps, err := s.getWispDependencyRecords(ctx, id)
 	if err != nil {
-		return err
+		return wrapQueryError("get wisp dependencies for promote", err)
 	}
 	for _, dep := range deps {
 		metadata := dep.Metadata

@@ -58,7 +58,7 @@ func scanIssueFrom(s issueScanner) (*types.Issue, error) {
 		&dueAt, &deferUntil,
 		&qualityScore, &workType, &sourceSystem, &metadata,
 	); err != nil {
-		return nil, err
+		return nil, wrapScanError("scan issue", err)
 	}
 
 	// Parse timestamp strings (TEXT columns require manual parsing)
