@@ -1508,3 +1508,54 @@
 {"actor":"beads/witness","comment":"","created_at":"2026-02-28T10:57:18Z","event_type":"closed","id":5319,"issue_id":"bd-wisp-v2byn","new_value":"patrol cycle complete: Patrol 14: Quiet rig. No polecats, no mail, no MRs. Deacon alive. No timer gates, no swarms.","old_value":""}
 {"actor":"beads/witness","comment":"","created_at":"2026-02-28T10:58:38Z","event_type":"closed","id":5320,"issue_id":"bd-wisp-w6g1d","new_value":"patrol cycle complete: Patrol 1: Rig quiet. No polecats, no MRs, no swarms. Deacon alive, refinery down (no work pending). Inbox clean.","old_value":""}
 {"actor":"beads/witness","comment":"","created_at":"2026-02-28T11:29:15Z","event_type":"closed","id":5321,"issue_id":"bd-wisp-v1ena","new_value":"patrol cycle complete: Patrol 11: Rig quiet. No polecats, no mail, no MRs. Deacon alive, refinery idle (no pending work).","old_value":""}
+{"actor":"beads/refinery","comment":"","created_at":"2026-02-28T11:29:31Z","event_type":"closed","id":5322,"issue_id":"bd-wisp-k4mxp","new_value":"patrol cycle complete: Patrol cycle: queue empty, no branches to merge. Synced main (41 commits). Inbox clean. Session healthy.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:33Z","event_type":"closed","id":5323,"issue_id":"bd-wisp-1gz8y","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:33Z","event_type":"closed","id":5324,"issue_id":"bd-wisp-1n4m2","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:33Z","event_type":"closed","id":5325,"issue_id":"bd-wisp-2hwd1","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:33Z","event_type":"closed","id":5326,"issue_id":"bd-wisp-2jdb3","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5327,"issue_id":"bd-wisp-2tt5b","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5328,"issue_id":"bd-wisp-508v4","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5329,"issue_id":"bd-wisp-54gnn","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5330,"issue_id":"bd-wisp-55wf5","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5331,"issue_id":"bd-wisp-5o31w","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5332,"issue_id":"bd-wisp-7byj7","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5333,"issue_id":"bd-wisp-8kmb9","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5334,"issue_id":"bd-wisp-8lcv1","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5335,"issue_id":"bd-wisp-9foed","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:34Z","event_type":"closed","id":5336,"issue_id":"bd-wisp-acjin","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5337,"issue_id":"bd-wisp-b2owd","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5338,"issue_id":"bd-wisp-bgg6g","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5339,"issue_id":"bd-wisp-cvny4","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5340,"issue_id":"bd-wisp-ekcet","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5341,"issue_id":"bd-wisp-f6mvd","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5342,"issue_id":"bd-wisp-fm8hz","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5343,"issue_id":"bd-wisp-gjd78","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5344,"issue_id":"bd-wisp-h7cax","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5345,"issue_id":"bd-wisp-h9h1w","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5346,"issue_id":"bd-wisp-hm7st","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:35Z","event_type":"closed","id":5347,"issue_id":"bd-wisp-hz0cj","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5348,"issue_id":"bd-wisp-ihbbn","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5349,"issue_id":"bd-wisp-ii7ed","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5350,"issue_id":"bd-wisp-ldm6x","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5351,"issue_id":"bd-wisp-mbya0","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5352,"issue_id":"bd-wisp-mn34j","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5353,"issue_id":"bd-wisp-n8b01","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5354,"issue_id":"bd-wisp-neptf","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5355,"issue_id":"bd-wisp-nxtmw","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5356,"issue_id":"bd-wisp-oot02","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:36Z","event_type":"closed","id":5357,"issue_id":"bd-wisp-pei33","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5358,"issue_id":"bd-wisp-qa6do","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5359,"issue_id":"bd-wisp-qyq79","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5360,"issue_id":"bd-wisp-rvyy6","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5361,"issue_id":"bd-wisp-sdlww","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5362,"issue_id":"bd-wisp-sf4y9","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5363,"issue_id":"bd-wisp-t5wdu","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:37Z","event_type":"closed","id":5364,"issue_id":"bd-wisp-tdkg2","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5365,"issue_id":"bd-wisp-ukhs0","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5366,"issue_id":"bd-wisp-ux2w9","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5367,"issue_id":"bd-wisp-vifa3","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5368,"issue_id":"bd-wisp-w349r","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5369,"issue_id":"bd-wisp-xb09u","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5370,"issue_id":"bd-wisp-yix1w","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5371,"issue_id":"bd-wisp-yvpyz","new_value":"Wisp pollution cleanup","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-28T11:32:38Z","event_type":"closed","id":5372,"issue_id":"bd-wisp-zzrzj","new_value":"Wisp pollution cleanup","old_value":""}
