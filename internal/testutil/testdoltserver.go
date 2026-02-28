@@ -269,6 +269,7 @@ func cleanOrphanedTempDirs() {
 		"doctor-test-dolt-",
 		"fix-test-dolt-",
 		"protocol-test-dolt-",
+		"utils-pkg-test-",
 		// Test working dirs
 		"beads-bd-tests-",
 		// Legacy prefix (no longer created)
