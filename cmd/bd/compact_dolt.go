@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	compactDoltDryRun  bool
-	compactDoltForce   bool
-	compactDoltDays    int
+	compactDoltDryRun bool
+	compactDoltForce  bool
+	compactDoltDays   int
 )
 
 var compactDoltCmd = &cobra.Command{
@@ -190,12 +190,12 @@ Examples:
 		for rows.Next() {
 			var h string
 			if err := rows.Scan(&h); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				FatalError("failed to scan commit hash: %v", err)
 			}
 			recentHashes = append(recentHashes, h)
 		}
-		rows.Close()
+		_ = rows.Close()
 
 		if !jsonOutput {
 			fmt.Printf("Compacting: %d old commits → 1, preserving %d recent\n",
@@ -259,16 +259,16 @@ Examples:
 
 		if jsonOutput {
 			outputJSON(map[string]interface{}{
-				"success":         true,
-				"commits_before":  totalCommits,
-				"commits_after":   resultCommits,
-				"old_squashed":    oldCommits,
-				"recent_kept":     len(recentHashes),
-				"size_before":     sizeBefore,
-				"size_after":      sizeAfter,
-				"freed_bytes":     freed,
-				"freed_display":   formatBytes(freed),
-				"elapsed_ms":      elapsed.Milliseconds(),
+				"success":        true,
+				"commits_before": totalCommits,
+				"commits_after":  resultCommits,
+				"old_squashed":   oldCommits,
+				"recent_kept":    len(recentHashes),
+				"size_before":    sizeBefore,
+				"size_after":     sizeAfter,
+				"freed_bytes":    freed,
+				"freed_display":  formatBytes(freed),
+				"elapsed_ms":     elapsed.Milliseconds(),
 			})
 			return
 		}

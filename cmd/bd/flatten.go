@@ -180,14 +180,14 @@ Examples:
 
 		if jsonOutput {
 			outputJSON(map[string]interface{}{
-				"success":            true,
-				"commits_before":     commitCount,
-				"commits_after":      1,
-				"size_before":        sizeBefore,
-				"size_after":         sizeAfter,
-				"freed_bytes":        freed,
-				"freed_display":      formatBytes(freed),
-				"elapsed_ms":         elapsed.Milliseconds(),
+				"success":        true,
+				"commits_before": commitCount,
+				"commits_after":  1,
+				"size_before":    sizeBefore,
+				"size_after":     sizeAfter,
+				"freed_bytes":    freed,
+				"freed_display":  formatBytes(freed),
+				"elapsed_ms":     elapsed.Milliseconds(),
 			})
 			return
 		}

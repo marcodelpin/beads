@@ -78,13 +78,13 @@ type DoltStore struct {
 	readOnly bool         // True if opened in read-only mode
 
 	// Per-invocation caches (lifetime = DoltStore lifetime)
-	customStatusCache  []string // cached result of GetCustomStatuses
-	customStatusCached bool     // true once customStatusCache has been populated
-	customTypeCache    []string // cached result of GetCustomTypes
-	customTypeCached   bool     // true once customTypeCache has been populated
+	customStatusCache  []string        // cached result of GetCustomStatuses
+	customStatusCached bool            // true once customStatusCache has been populated
+	customTypeCache    []string        // cached result of GetCustomTypes
+	customTypeCached   bool            // true once customTypeCache has been populated
 	infraTypeCache     map[string]bool // cached result of GetInfraTypes
 	infraTypeCached    bool            // true once infraTypeCache has been populated
-	blockedIDsCache    []string // cached result of computeBlockedIDs
+	blockedIDsCache    []string        // cached result of computeBlockedIDs
 	blockedIDsCacheMap map[string]bool
 	blockedIDsCached   bool // true once blockedIDsCache has been populated
 	cacheMu            sync.Mutex
