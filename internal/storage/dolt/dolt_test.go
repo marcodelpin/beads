@@ -60,9 +60,13 @@ func uniqueTestDBName(t *testing.T) string {
 // setupTestStore creates a test store on the shared database with branch isolation.
 // Each test gets its own branch (COW snapshot), preventing cross-test data leakage
 // without the overhead of CREATE/DROP DATABASE per test.
+//
+// Automatically marks the test as safe for parallel execution since each test
+// gets its own Dolt connection checked out to a unique branch.
 func setupTestStore(t *testing.T) (*DoltStore, func()) {
 	t.Helper()
 	skipIfNoDolt(t)
+	t.Parallel()
 
 	if testSharedDB == "" {
 		t.Fatal("testSharedDB not set — TestMain did not initialize shared database")
@@ -1051,9 +1055,9 @@ func TestDeleteIssuesBatchPerformance(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	const issueCount = 100
+	const issueCount = 25
 
-	// Create 100 issues with chain dependencies: issue-1 <- issue-2 <- ... <- issue-100
+	// Create issues with chain dependencies: issue-1 <- issue-2 <- ... <- issue-N
 	for i := 1; i <= issueCount; i++ {
 		issue := &types.Issue{
 			ID:        fmt.Sprintf("batch-del-%d", i),

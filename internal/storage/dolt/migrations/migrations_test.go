@@ -22,6 +22,7 @@ func openTestDoltBranch(t *testing.T) *sql.DB {
 	if testServerPort == 0 {
 		t.Skip("test Dolt server not running, skipping migration test")
 	}
+	t.Parallel()
 
 	dsn := fmt.Sprintf("root@tcp(127.0.0.1:%d)/%s?parseTime=true&timeout=10s",
 		testServerPort, testSharedDB)
