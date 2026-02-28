@@ -334,9 +334,7 @@ Key variables: `BD_OTEL_METRICS_URL`, `BD_OTEL_LOGS_URL`, `BD_OTEL_STDOUT`.
 
 ## Appendix: Source Reference Audit
 
-Audited at:
-- **This branch** (`docs/otel-design`): `986a284c` — commit at which this document was written
-- **`main`** cross-checked: `371df32b` — used to verify `bd.db.circuit_trips` and `bd.db.circuit_rejected`
+Audited against **`main` @ `371df32b`**. All line numbers below refer to that commit.
 
 Every metric name, span name, and attribute listed in this document is backed by a specific source location. This table exists to prevent documentation drift and to make re-verification straightforward after code changes.
 
@@ -348,10 +346,10 @@ Every metric name, span name, and attribute listed in this document is backed by
 | `bd.storage.operation.duration` | Histogram | `storage.go:41` — `m.Float64Histogram("bd.storage.operation.duration")` |
 | `bd.storage.errors` | Counter | `storage.go:45` — `m.Int64Counter("bd.storage.errors")` |
 | `bd.issue.count` | Gauge | `storage.go:48` — `m.Int64Gauge("bd.issue.count")` |
-| `bd.db.retry_count` | Counter | `store.go:265` — `m.Int64Counter("bd.db.retry_count")` |
-| `bd.db.lock_wait_ms` | Histogram | `store.go:269` — registered; `.Record()` not called anywhere |
-| `bd.db.circuit_trips` | Counter | `store.go:310` on `main` — `m.Int64Counter("bd.db.circuit_trips")` |
-| `bd.db.circuit_rejected` | Counter | `store.go:314` on `main` — `m.Int64Counter("bd.db.circuit_rejected")` |
+| `bd.db.retry_count` | Counter | `store.go:302` — `m.Int64Counter("bd.db.retry_count")` |
+| `bd.db.lock_wait_ms` | Histogram | `store.go:306` — registered; `.Record()` not called anywhere |
+| `bd.db.circuit_trips` | Counter | `store.go:310` — `m.Int64Counter("bd.db.circuit_trips")` |
+| `bd.db.circuit_rejected` | Counter | `store.go:314` — `m.Int64Counter("bd.db.circuit_rejected")` |
 | `bd.ai.input_tokens` | Counter | `haiku.go:110` — `m.Int64Counter("bd.ai.input_tokens")` |
 | `bd.ai.output_tokens` | Counter | `haiku.go:114` — `m.Int64Counter("bd.ai.output_tokens")` |
 | `bd.ai.request.duration` | Histogram | `haiku.go:118` — `m.Float64Histogram("bd.ai.request.duration")` |
@@ -360,22 +358,22 @@ Every metric name, span name, and attribute listed in this document is backed by
 
 | Span name | Attributes | Source |
 |-----------|-----------|--------|
-| `bd.command.<name>` | `bd.command`, `bd.version`, `bd.args` | `cmd/bd/main.go:266-271` |
-| `bd.command.<name>` | `bd.actor` (added later) | `cmd/bd/main.go:478` |
+| `bd.command.<name>` | `bd.command`, `bd.version`, `bd.args` | `cmd/bd/main.go:262-266` |
+| `bd.command.<name>` | `bd.actor` (added later) | `cmd/bd/main.go:474` |
 | `storage.<op>` (all methods) | `db.operation` + method-specific attrs | `internal/telemetry/storage.go:62-69` |
-| `dolt.query` | `db.operation="query"`, `db.statement`, `db.system="dolt"` | `store.go:346-352` |
-| `dolt.exec` | `db.operation="exec"`, `db.statement`, `db.system="dolt"` | `store.go:312-318` |
-| `dolt.query_row` | `db.operation="query_row"`, `db.statement`, `db.system="dolt"` | `store.go:372-378` |
-| `dolt.commit` | `commit_msg` | `store.go:913` |
-| `dolt.push` | `dolt.branch` | `store.go:1058, 1093` |
-| `dolt.pull` | `dolt.branch` | `store.go:1122` |
-| `dolt.merge` | `dolt.merge_branch` | `store.go:1216` |
-| `dolt.branch` | `dolt.branch` | `store.go:1184` |
-| `dolt.checkout` | `dolt.branch` | `store.go:1199` |
+| `dolt.query` | `db.operation="query"`, `db.statement`, `db.system="dolt"` | `store.go:400-405` |
+| `dolt.exec` | `db.operation="exec"`, `db.statement`, `db.system="dolt"` | `store.go:363-368` |
+| `dolt.query_row` | `db.operation="query_row"`, `db.statement`, `db.system="dolt"` | `store.go:429-434` |
+| `dolt.commit` | `commit_msg` | `store.go:1086` |
+| `dolt.push` | `dolt.branch` | `store.go:1231, 1266` |
+| `dolt.pull` | `dolt.branch` | `store.go:1295` |
+| `dolt.merge` | `dolt.merge_branch` | `store.go:1389` |
+| `dolt.branch` | `dolt.branch` | `store.go:1357` |
+| `dolt.checkout` | `dolt.branch` | `store.go:1372` |
 | `hook.exec` | `hook.event`, `hook.path`, `bd.issue_id` | `hooks_unix.go:31-36` |
-| `hook.exec` events | `hook.stdout` / `hook.stderr` with `output`, `bytes` | `hooks_otel.go:14-25` |
-| `anthropic.messages.new` | `bd.ai.model`, `bd.ai.operation` | `haiku.go:128-131` |
-| `anthropic.messages.new` | `bd.ai.input_tokens`, `bd.ai.output_tokens`, `bd.ai.attempts` | `haiku.go:164-168` |
+| `hook.exec` events | `hook.stdout` / `hook.stderr` with `output`, `bytes` | `hooks_otel.go:14, 20` |
+| `anthropic.messages.new` | `bd.ai.model`, `bd.ai.operation` | `haiku.go:129-130` |
+| `anthropic.messages.new` | `bd.ai.input_tokens`, `bd.ai.output_tokens`, `bd.ai.attempts` | `haiku.go:165-167` |
 | `anthropic.messages.new` | `bd.ai.batch_size` (find_duplicates only) | `find_duplicates.go:433` |
 
 ### Absent metrics (confirmed by grep)
