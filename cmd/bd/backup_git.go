@@ -55,13 +55,20 @@ func gitBackup(ctx context.Context) error {
 		gitDir = repoRoot
 	}
 
+	// Compute repo-relative path for git pathspecs — absolute paths can behave
+	// inconsistently across platforms and git versions.
+	relDir, relErr := filepath.Rel(gitDir, dir)
+	if relErr != nil {
+		relDir = dir // fall back to absolute if Rel fails
+	}
+
 	// git add -f backup/ (force-add past .gitignore)
-	if err := gitExecInDir(ctx, gitDir, "add", "-f", dir); err != nil {
+	if err := gitExecInDir(ctx, gitDir, "add", "-f", relDir); err != nil {
 		return fmt.Errorf("git add: %w", err)
 	}
 
 	// Check if there's anything to commit
-	diffCmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet", "--", dir)
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet", "--", relDir)
 	if gitDir != "" {
 		diffCmd.Dir = gitDir
 	}
@@ -75,7 +82,7 @@ func gitBackup(ctx context.Context) error {
 
 	// git commit
 	msg := fmt.Sprintf("bd: backup %s", time.Now().UTC().Format("2006-01-02 15:04"))
-	if err := gitExecInDir(ctx, gitDir, "commit", "-m", msg, "--", dir); err != nil {
+	if err := gitExecInDir(ctx, gitDir, "commit", "-m", msg, "--", relDir); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
 
