@@ -24,7 +24,7 @@ func (s *DoltStore) CreateIssue(ctx context.Context, issue *types.Issue, actor s
 	}
 
 	// Route ephemeral issues and infra types to wisps table
-	if issue.Ephemeral || IsInfraType(issue.IssueType) {
+	if issue.Ephemeral || s.IsInfraTypeCtx(ctx, issue.IssueType) {
 		issue.Ephemeral = true
 		return s.createWisp(ctx, issue, actor)
 	}

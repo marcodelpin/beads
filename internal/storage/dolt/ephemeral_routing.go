@@ -15,15 +15,30 @@ func IsEphemeralID(id string) bool {
 	return strings.Contains(id, "-wisp-")
 }
 
-// IsInfraType returns true if the issue type is infrastructure (agent, rig, role, message).
-// Infra types are routed to the wisps table automatically to keep the versioned
-// issues table clean for real work items.
-func IsInfraType(t types.IssueType) bool {
-	switch t {
-	case "agent", "rig", "role", "message":
-		return true
+// DefaultInfraTypes are the built-in infrastructure types routed to the wisps table.
+// Override via DB config "types.infra" or config.yaml types.infra.
+var DefaultInfraTypes = []string{"agent", "rig", "role", "message"}
+
+// defaultInfraSet is the set form of DefaultInfraTypes for IsInfraType lookups.
+var defaultInfraSet = func() map[string]bool {
+	m := make(map[string]bool, len(DefaultInfraTypes))
+	for _, t := range DefaultInfraTypes {
+		m[t] = true
 	}
-	return false
+	return m
+}()
+
+// IsInfraType returns true if the issue type is infrastructure.
+// Uses the hardcoded defaults (agent, rig, role, message).
+// Prefer IsInfraTypeCtx when a DoltStore is available for config-driven behavior.
+func IsInfraType(t types.IssueType) bool {
+	return defaultInfraSet[string(t)]
+}
+
+// IsInfraTypeCtx returns true if the issue type is infrastructure, using the
+// configured infra types from DB config / config.yaml / defaults.
+func (s *DoltStore) IsInfraTypeCtx(ctx context.Context, t types.IssueType) bool {
+	return s.GetInfraTypes(ctx)[string(t)]
 }
 
 // isActiveWisp checks if an issue ID exists in the wisps table.

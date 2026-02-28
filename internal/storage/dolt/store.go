@@ -81,6 +81,8 @@ type DoltStore struct {
 	customStatusCached bool     // true once customStatusCache has been populated
 	customTypeCache    []string // cached result of GetCustomTypes
 	customTypeCached   bool     // true once customTypeCache has been populated
+	infraTypeCache     map[string]bool // cached result of GetInfraTypes
+	infraTypeCached    bool            // true once infraTypeCache has been populated
 	blockedIDsCache    []string // cached result of computeBlockedIDs
 	blockedIDsCacheMap map[string]bool
 	blockedIDsCached   bool // true once blockedIDsCache has been populated
