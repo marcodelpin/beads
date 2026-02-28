@@ -230,7 +230,7 @@ If you installed via Homebrew, this shouldn't be necessary as the formula alread
 
 **Symptom:** All `bd` commands return empty results. `bd list` shows nothing.
 
-**Cause:** Your `bd` may be connecting to a different Dolt server or database than expected. Before this version, `bd` unconditionally ran `CREATE DATABASE IF NOT EXISTS` on every connection, which could create an empty shadow database on the wrong server.
+**Cause:** Your `bd` may be connecting to a different Dolt server or database than expected. Before the version including the shadow DB fix (see [CHANGELOG](../CHANGELOG.md)), `bd` unconditionally ran `CREATE DATABASE IF NOT EXISTS` on every connection, which could create an empty shadow database on the wrong server.
 
 **Diagnosis:**
 
@@ -251,7 +251,7 @@ bd doctor --server
 
 **Fix:**
 
-1. Upgrade to bd this version+ (prevents shadow database creation)
+1. Upgrade `bd` to a version including the shadow DB fix (see [CHANGELOG](../CHANGELOG.md))
 2. Ensure your Dolt server is running from the correct data directory
 3. Verify `metadata.json` points to the right server and port
 4. If a stale `.beads/dolt/` directory exists alongside server mode, remove it:
@@ -261,7 +261,7 @@ bd doctor --server
 
 ### Configured server unreachable (auto-start disabled)
 
-**Symptom (this version+):** `bd` returns "database not found on Dolt server" when the configured server is down.
+**Symptom (after shadow DB fix):** `bd` returns "database not found on Dolt server" when the configured server is down.
 
 **Cause:** When `metadata.json` has an explicit `dolt_server_port`, auto-start is intentionally disabled. Starting a different server would create a shadow database.
 

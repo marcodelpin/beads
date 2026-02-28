@@ -765,7 +765,7 @@ func openServerConnection(ctx context.Context, cfg *Config) (*sql.DB, string, er
 	// check on Scan provides defense-in-depth, but escaping is the correct fix.
 	escapedName := strings.NewReplacer("_", "\\_", "%", "\\%").Replace(cfg.Database)
 	var dbExists bool
-	row := initDB.QueryRowContext(ctx, fmt.Sprintf("SHOW DATABASES LIKE '%s'", escapedName)) //nolint:gosec // G201: cfg.Database validated by ValidateDatabaseName above (rejects quotes, backticks, wildcards)
+	row := initDB.QueryRowContext(ctx, fmt.Sprintf("SHOW DATABASES LIKE '%s'", escapedName)) //nolint:gosec // G201: cfg.Database validated by ValidateDatabaseName above (rejects quotes/backticks); LIKE wildcards escaped via escapedName
 	var existingName string
 	scanErr := row.Scan(&existingName)
 	if scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {

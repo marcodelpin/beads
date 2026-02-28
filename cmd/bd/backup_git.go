@@ -99,8 +99,11 @@ func gitBackup(ctx context.Context) error {
 }
 
 // findGitRoot finds the git repository root containing the given path.
+// Uses a 5-second timeout to avoid hanging on slow filesystems or credential prompts.
 func findGitRoot(path string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = path
 	// If path is a file, use its parent directory
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
@@ -108,6 +111,9 @@ func findGitRoot(path string) (string, error) {
 	}
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("git rev-parse timed out after 5s for path %s", path)
+		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
