@@ -1305,3 +1305,34 @@
 {"actor":"beads/refinery","comment":"","created_at":"2026-02-27T21:16:43Z","event_type":"closed","id":5118,"issue_id":"bd-wisp-z1v5h","new_value":"rejected: bd-1lc already merged to main (adb8e763). Polecat branch deleted. Closing stale MR.","old_value":""}
 {"actor":"beads/refinery","comment":"","created_at":"2026-02-27T21:16:47Z","event_type":"closed","id":5119,"issue_id":"bd-wisp-vzjrd","new_value":"rejected: Polecat branch polecat/obsidian/bd-019@mm5uzbcw was deleted (pruned from remote). MR has no branch to merge.","old_value":""}
 {"actor":"mayor","comment":"","created_at":"2026-02-27T21:17:03Z","event_type":"created","id":5120,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/refinery","comment":"","created_at":"2026-02-27T21:17:27Z","event_type":"closed","id":5121,"issue_id":"bd-wisp-eoxp4","new_value":"patrol cycle complete: Patrol cycle 1: Queue had 3 stale MRs (2 for already-merged bd-1lc, 1 for bd-019 with deleted branch). Rejected all 3, deleted stale recover/bd-1lc branch. 0 merges. Queue now empty.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:17:35Z","event_type":"created","id":5122,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/refinery","comment":"","created_at":"2026-02-27T21:17:42Z","event_type":"closed","id":5123,"issue_id":"bd-wisp-hgsvfh","new_value":"patrol cycle complete: Patrol cycle 2: Queue empty. No new mail. No work to process.","old_value":""}
+{"actor":"beads/refinery","comment":"","created_at":"2026-02-27T21:17:56Z","event_type":"closed","id":5124,"issue_id":"bd-wisp-3vnzkc","new_value":"patrol cycle complete: Patrol cycle 3: Queue empty. 3 consecutive empty cycles. Handing off.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:18:08Z","event_type":"created","id":5125,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:18:33Z","event_type":"created","id":5126,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:18:59Z","event_type":"closed","id":5127,"issue_id":"bd-wisp-y9524","new_value":"patrol cycle complete: Clean patrol: no active polecats, no mail, no cleanup wisps, no timer gates, no swarms. Refinery running (8h uptime), deacon alive.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:19:03Z","event_type":"created","id":5128,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:19:31Z","event_type":"closed","id":5129,"issue_id":"bd-wisp-mim9y3","new_value":"patrol cycle complete: Clean patrol: no active polecats (obsidian stale agent bead, no worktree). No mail, no cleanups, no gates, no swarms. Refinery+deacon healthy.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:19:33Z","event_type":"created","id":5130,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:20:03Z","event_type":"created","id":5131,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:20:18Z","event_type":"closed","id":5132,"issue_id":"bd-wisp-3ckk6s","new_value":"patrol cycle complete: Clean patrol cycle 3: no polecats, no mail, refinery+deacon healthy. Rig idle.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:20:33Z","event_type":"created","id":5133,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:21:03Z","event_type":"created","id":5134,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:21:29Z","event_type":"closed","id":5135,"issue_id":"bd-wisp-oijb8b","new_value":"patrol cycle complete: Clean patrol cycle 4: rig idle. No polecats, no mail, deacon alive.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:21:33Z","event_type":"created","id":5136,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:22:03Z","event_type":"created","id":5137,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:22:33Z","event_type":"created","id":5138,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:23:03Z","event_type":"created","id":5139,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:23:33Z","event_type":"created","id":5140,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:23:40Z","event_type":"closed","id":5141,"issue_id":"bd-wisp-e9dnas","new_value":"patrol cycle complete: Clean patrol cycle 5: rig idle, all healthy.","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:24:03Z","event_type":"created","id":5142,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"mayor","comment":"","created_at":"2026-02-27T21:24:33Z","event_type":"created","id":5143,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:25:04Z","event_type":"created","id":5144,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:29:48Z","event_type":"created","id":5145,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:30:05Z","event_type":"created","id":5146,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:30:14Z","event_type":"closed","id":5147,"issue_id":"bd-wisp-9d9l2v","new_value":"patrol cycle complete: Clean patrol cycle 6: rig idle, all healthy.","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:30:29Z","event_type":"created","id":5148,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:30:58Z","event_type":"created","id":5149,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:31:29Z","event_type":"created","id":5150,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
+{"actor":"dog","comment":"","created_at":"2026-02-27T21:31:59Z","event_type":"created","id":5151,"issue_id":"bd-beads-polecat-obsidian","new_value":"","old_value":""}
