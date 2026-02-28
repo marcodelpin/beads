@@ -1380,3 +1380,23 @@
 {"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:56:11Z","event_type":"closed","id":5193,"issue_id":"bd-wisp-apui26","new_value":"patrol cycle complete: Cycle 6: All quiet. Rig idle, deacon alive. Continuing patrol.","old_value":""}
 {"actor":"beads/witness","comment":"","created_at":"2026-02-27T21:58:54Z","event_type":"closed","id":5194,"issue_id":"bd-wisp-uqizsr","new_value":"patrol cycle complete: Cycle 7: All quiet. Rig idle, deacon alive.","old_value":""}
 {"actor":"beads/witness","comment":"","created_at":"2026-02-27T22:02:05Z","event_type":"closed","id":5195,"issue_id":"bd-wisp-7dmfaw","new_value":"patrol cycle complete: Cycle 8: All quiet. Rig idle, deacon alive.","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T22:06:15Z","event_type":"closed","id":5196,"issue_id":"bd-wisp-ur75x6","new_value":"patrol cycle complete: Cycle 9: All quiet. Rig idle, deacon alive.","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5197,"issue_id":"bd-wisp-7gu2y","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5198,"issue_id":"bd-wisp-famii","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5199,"issue_id":"bd-wisp-l5g51","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5200,"issue_id":"bd-wisp-p0u9z","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5201,"issue_id":"bd-wisp-rg0kc","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5202,"issue_id":"bd-wisp-rokmh","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:08:33Z","event_type":"closed","id":5203,"issue_id":"bd-wisp-uqhew","new_value":"Closed","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T22:11:28Z","event_type":"closed","id":5204,"issue_id":"bd-wisp-efnnw0","new_value":"patrol cycle complete: Cycle 10: All quiet. Health check received - responding OK. Rig idle, deacon alive.","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5205,"issue_id":"bd-wisp-7gu2y","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5206,"issue_id":"bd-wisp-famii","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5207,"issue_id":"bd-wisp-l5g51","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5208,"issue_id":"bd-wisp-p0u9z","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5209,"issue_id":"bd-wisp-rg0kc","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5210,"issue_id":"bd-wisp-uqhew","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5211,"issue_id":"bd-wisp-w4y0z","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5212,"issue_id":"bd-wisp-z191a","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5213,"issue_id":"bd-wisp-bbh41","new_value":"Closed","old_value":""}
+{"actor":"deacon","comment":"","created_at":"2026-02-27T22:11:50Z","event_type":"closed","id":5214,"issue_id":"bd-wisp-9jyej","new_value":"Closed","old_value":""}
+{"actor":"beads/witness","comment":"","created_at":"2026-02-27T22:16:39Z","event_type":"closed","id":5215,"issue_id":"bd-wisp-ybyxh3","new_value":"patrol cycle complete: Cycle 11: All quiet. Rig idle, deacon alive.","old_value":""}
