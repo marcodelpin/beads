@@ -89,7 +89,22 @@ func (s *DoltStore) partitionByWispStatus(ctx context.Context, ids []string) (wi
 	}
 
 	// Fast partition by ID pattern — handles -wisp- IDs correctly
-	wispIDs, permIDs = partitionIDs(ids)
+	var patternWispIDs []string
+	patternWispIDs, permIDs = partitionIDs(ids)
+
+	// Verify wisp-pattern IDs actually exist in the wisps table (bd-ftc).
+	// Promoted wisps have -wisp- in their ID but live in the issues table,
+	// so pattern-based routing alone misroutes them.
+	if len(patternWispIDs) > 0 {
+		activeSet := s.batchWispExists(ctx, patternWispIDs)
+		for _, id := range patternWispIDs {
+			if activeSet[id] {
+				wispIDs = append(wispIDs, id)
+			} else {
+				permIDs = append(permIDs, id)
+			}
+		}
+	}
 
 	// Check if any permanent IDs are actually explicit-ID wisps (GH#2053)
 	if len(permIDs) == 0 {
