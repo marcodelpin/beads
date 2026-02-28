@@ -605,6 +605,10 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Sync all state to CommandContext for unified access.
+		// Must happen before staleness check so isAllowStale() reads the flag value.
+		syncCommandContext()
+
 		// Staleness check: verify Dolt database is in sync with JSONL (bd-2q6d).
 		// Only check for read-only commands (write commands will update the DB).
 		// Skip if --allow-stale is set or if the command is exempt from checks.
@@ -616,9 +620,6 @@ var rootCmd = &cobra.Command{
 
 		// Tips (including sync conflict proactive checks) are shown via maybeShowTip()
 		// after successful command execution, not in PreRun
-
-		// Sync all state to CommandContext for unified access
-		syncCommandContext()
 	},
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {
 		// Dolt auto-commit: after a successful write command (and after final flush),
