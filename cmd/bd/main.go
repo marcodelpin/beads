@@ -113,7 +113,7 @@ var readOnlyCommands = map[string]bool{
 	"comments":   true, // list comments (not add)
 	"current":    true, // bd sync mode current
 	"backup":     true, // reads from Dolt, writes only to .beads/backup/
-	// NOTE: "export" is NOT read-only - it writes to clear dirty issues
+	"export":     true, // reads from Dolt, writes JSONL to file/stdout
 }
 
 // isReadOnlyCommand returns true if the command only reads from the database.
