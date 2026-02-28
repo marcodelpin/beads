@@ -97,7 +97,7 @@ func verifyServerTarget(expectedDBName string, port int) error {
 	}
 
 	host := "127.0.0.1"
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	// Check if anything is listening on the port
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
@@ -208,7 +208,7 @@ func verifyMigrationData(sourceData *migrationData, dbName string, host string, 
 		return nil
 	}
 
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", user, password, host, port, dbName)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s", user, password, net.JoinHostPort(host, fmt.Sprintf("%d", port)), dbName)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("connecting to Dolt for verification: %w", err)
