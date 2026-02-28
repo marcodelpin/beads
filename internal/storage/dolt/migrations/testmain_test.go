@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 }
 
 func testMainInner(m *testing.M) int {
-	srv, cleanup := testutil.StartTestDoltServer("migrations-test-*")
+	srv, cleanup := testutil.StartTestDoltServer("migrations-pkg-test-*")
 	defer cleanup()
 
 	os.Setenv("BEADS_TEST_MODE", "1")
@@ -33,7 +33,8 @@ func testMainInner(m *testing.M) int {
 		os.Setenv("BEADS_DOLT_PORT", fmt.Sprintf("%d", srv.Port))
 
 		// Set up shared database for branch-per-test isolation.
-		// No schema is committed — each test creates its own tables on its branch.
+		// The base schema (issues table) is committed to main so that
+		// branches inherit it via COW snapshots.
 		testSharedDB = "migrations_pkg_shared"
 		db, err := testutil.SetupSharedTestDB(srv.Port, testSharedDB)
 		if err != nil {
@@ -43,8 +44,9 @@ func testMainInner(m *testing.M) int {
 		testSharedConn = db
 		defer db.Close()
 
-		// Commit empty state to main so DOLT_BRANCH can create branches.
-		if err := initMigrationsSharedSchema(srv.Port); err != nil {
+		// Create minimal issues table and commit to main.
+		// Migration tests start from this base schema.
+		if err := initMigrationSharedSchema(srv.Port); err != nil {
 			fmt.Fprintf(os.Stderr, "FATAL: shared schema init failed: %v\n", err)
 			return 1
 		}
@@ -58,18 +60,35 @@ func testMainInner(m *testing.M) int {
 	return code
 }
 
-func initMigrationsSharedSchema(port int) error {
+// initMigrationSharedSchema creates the minimal issues table and commits it
+// to main so branches get a clean snapshot.
+func initMigrationSharedSchema(port int) error {
 	dsn := fmt.Sprintf("root@tcp(127.0.0.1:%d)/%s?parseTime=true&timeout=10s", port, testSharedDB)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("open: %w", err)
+		return fmt.Errorf("open connection: %w", err)
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 
-	// Commit an initial empty state so DOLT_BRANCH can create branches.
-	if _, err := db.Exec("CALL DOLT_COMMIT('--allow-empty', '-m', 'init: empty schema for migration tests')"); err != nil {
+	// Create the minimal issues table (simulating old schema for migration tests)
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS issues (
+		id VARCHAR(255) PRIMARY KEY,
+		title VARCHAR(500) NOT NULL,
+		status VARCHAR(32) NOT NULL DEFAULT 'open',
+		ephemeral TINYINT(1) DEFAULT 0,
+		pinned TINYINT(1) DEFAULT 0
+	)`)
+	if err != nil {
+		return fmt.Errorf("create issues table: %w", err)
+	}
+
+	// Commit schema to main so branches inherit it
+	if _, err := db.Exec("CALL DOLT_ADD('-A')"); err != nil {
+		return fmt.Errorf("DOLT_ADD: %w", err)
+	}
+	if _, err := db.Exec("CALL DOLT_COMMIT('--allow-empty', '-m', 'test: init migrations shared schema')"); err != nil {
 		return fmt.Errorf("DOLT_COMMIT: %w", err)
 	}
+
 	return nil
 }

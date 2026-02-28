@@ -10,12 +10,9 @@ import (
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
-// openTestDoltBranch returns a *sql.DB on an isolated branch of the shared test
-// database. Each test gets its own branch via COW snapshot, so schema and data
-// changes are fully isolated without the overhead of CREATE DATABASE per test.
-//
-// The branch starts empty (no tables). Tests create whatever old-schema tables
-// they need to exercise migrations against.
+// openTestDoltBranch returns a *sql.DB connected to an isolated branch on the
+// shared test database. The branch inherits the base issues table from main.
+// Each test gets COW isolation — schema/data changes are invisible to other tests.
 func openTestDoltBranch(t *testing.T) *sql.DB {
 	t.Helper()
 
@@ -45,28 +42,8 @@ func openTestDoltBranch(t *testing.T) *sql.DB {
 	return db
 }
 
-// openTestDoltBranchWithIssues returns a *sql.DB on an isolated branch with a
-// minimal issues table pre-created (simulating old schema without wisp_type).
-func openTestDoltBranchWithIssues(t *testing.T) *sql.DB {
-	t.Helper()
-	db := openTestDoltBranch(t)
-
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS issues (
-		id VARCHAR(255) PRIMARY KEY,
-		title VARCHAR(500) NOT NULL,
-		status VARCHAR(32) NOT NULL DEFAULT 'open',
-		ephemeral TINYINT(1) DEFAULT 0,
-		pinned TINYINT(1) DEFAULT 0
-	)`)
-	if err != nil {
-		t.Fatalf("failed to create issues table: %v", err)
-	}
-
-	return db
-}
-
 func TestMigrateWispTypeColumn(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	// Verify column doesn't exist yet
 	exists, err := columnExists(db, "issues", "wisp_type")
@@ -98,7 +75,7 @@ func TestMigrateWispTypeColumn(t *testing.T) {
 }
 
 func TestColumnExists(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	exists, err := columnExists(db, "issues", "id")
 	if err != nil {
@@ -118,7 +95,7 @@ func TestColumnExists(t *testing.T) {
 }
 
 func TestTableExists(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	exists, err := tableExists(db, "issues")
 	if err != nil {
@@ -138,7 +115,7 @@ func TestTableExists(t *testing.T) {
 }
 
 func TestDetectOrphanedChildren(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	// No orphans in empty database
 	if err := DetectOrphanedChildren(db); err != nil {
@@ -187,7 +164,7 @@ func TestDetectOrphanedChildren(t *testing.T) {
 }
 
 func TestMigrateWispsTable(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	// Verify wisps table doesn't exist yet
 	exists, err := tableExists(db, "wisps")
@@ -258,7 +235,7 @@ func TestMigrateWispsTable(t *testing.T) {
 }
 
 func TestMigrateIssueCounterTable(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	// Verify issue_counter table does not exist yet
 	exists, err := tableExists(db, "issue_counter")
@@ -319,7 +296,7 @@ func TestColumnExistsNoTable(t *testing.T) {
 }
 
 func TestColumnExistsWithPhantom(t *testing.T) {
-	db := openTestDoltBranchWithIssues(t)
+	db := openTestDoltBranch(t)
 
 	// Create a phantom-like database entry (simulates naming convention phantom).
 	// This is a server-level operation; cleaned up after the test.
@@ -382,7 +359,9 @@ func TestMigrateInfraToWisps_SchemaEvolution(t *testing.T) {
 	db := openTestDoltBranch(t)
 
 	// 1. Create older issues table WITH a column that wisps won't have (deleted_at)
-	// and WITHOUT a column that wisps will have (metadata)
+	// and WITHOUT a column that wisps will have (metadata).
+	// Branch isolation means this DROP/CREATE only affects this test's branch.
+	db.Exec("DROP TABLE IF EXISTS issues")
 	_, err := db.Exec(`
 		CREATE TABLE issues (
 			id VARCHAR(255) PRIMARY KEY,
