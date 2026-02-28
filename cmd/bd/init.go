@@ -869,7 +869,7 @@ func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 			location := doltPath
 			if cfg.IsDoltServerMode() {
 				host := cfg.GetDoltServerHost()
-				port := cfg.GetDoltServerPort()
+				port := doltserver.DefaultConfig(beadsDir).Port
 				location = fmt.Sprintf("dolt server at %s:%d", host, port)
 			}
 			return fmt.Errorf(`
