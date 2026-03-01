@@ -16,6 +16,13 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 )
 
+// dbQuerier abstracts query execution so callers can use a retry-wrapped
+// DoltStore.QueryContext instead of a raw *sql.DB.  Both *sql.DB and
+// *dolt.DoltStore satisfy this interface.
+type dbQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // backupState tracks watermarks for incremental backup.
 type backupState struct {
 	LastDoltCommit string    `json:"last_dolt_commit"`
@@ -119,7 +126,7 @@ func atomicWriteFile(path string, data []byte) error {
 }
 
 // runBackupExport exports all tables to JSONL files in .beads/backup/.
-// Returns the updated state. Events are exported incrementally using the high-water mark.
+// Returns the updated state.
 func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 	dir, err := backupDir()
 	if err != nil {
@@ -143,19 +150,18 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 		}
 	}
 
-	db := store.DB()
-	hasWisps := tableExistsCheck(ctx, db, "wisps")
+	hasWisps := tableExistsCheck(ctx, store, "wisps")
 
 	// Export issues + wisps. We avoid UNION ALL with SELECT * because issues and
 	// wisps may have different column counts (schema evolution), and Dolt's
 	// go-mysql-server panics on UNION with mismatched columns (set_op.go index
 	// out of range). Instead, export each table separately into the same file.
-	n, err := exportTable(ctx, db, dir, "issues.jsonl", "SELECT * FROM issues ORDER BY id")
+	n, err := exportTable(ctx, store, dir, "issues.jsonl", "SELECT * FROM issues ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("backup issues: %w", err)
 	}
 	if hasWisps {
-		nw, err := exportTableAppend(ctx, db, dir, "issues.jsonl", "SELECT * FROM wisps ORDER BY id")
+		nw, err := exportTableAppend(ctx, store, dir, "issues.jsonl", "SELECT * FROM wisps ORDER BY id")
 		if err != nil {
 			return nil, fmt.Errorf("backup wisps: %w", err)
 		}
@@ -163,12 +169,19 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 	}
 	state.Counts.Issues = n
 
-	// Events: incremental append
-	n, err = exportEventsIncremental(ctx, db, dir, state, hasWisps)
+	// Events: full export (same pattern as other tables)
+	eventsQuery := "SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at FROM events ORDER BY id ASC"
+	if hasWisps {
+		eventsQuery = "SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at FROM events " +
+			"UNION ALL " +
+			"SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at FROM wisp_events " +
+			"ORDER BY id ASC"
+	}
+	n, err = exportTable(ctx, store, dir, "events.jsonl", eventsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("backup events: %w", err)
 	}
-	state.Counts.Events += n
+	state.Counts.Events = n
 
 	// The remaining UNION queries use explicit column lists that match across
 	// both tables, so they are safe from the Dolt column-count mismatch panic.
@@ -179,7 +192,7 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 			"SELECT id, issue_id, author, text, created_at FROM wisp_comments " +
 			"ORDER BY id"
 	}
-	n, err = exportTable(ctx, db, dir, "comments.jsonl", commentsQuery)
+	n, err = exportTable(ctx, store, dir, "comments.jsonl", commentsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("backup comments: %w", err)
 	}
@@ -192,7 +205,7 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 			"SELECT issue_id, depends_on_id, type, created_at, created_by FROM wisp_dependencies " +
 			"ORDER BY issue_id, depends_on_id"
 	}
-	n, err = exportTable(ctx, db, dir, "dependencies.jsonl", depsQuery)
+	n, err = exportTable(ctx, store, dir, "dependencies.jsonl", depsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("backup dependencies: %w", err)
 	}
@@ -205,13 +218,13 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 			"SELECT issue_id, label FROM wisp_labels " +
 			"ORDER BY issue_id, label"
 	}
-	n, err = exportTable(ctx, db, dir, "labels.jsonl", labelsQuery)
+	n, err = exportTable(ctx, store, dir, "labels.jsonl", labelsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("backup labels: %w", err)
 	}
 	state.Counts.Labels = n
 
-	n, err = exportTable(ctx, db, dir, "config.jsonl",
+	n, err = exportTable(ctx, store, dir, "config.jsonl",
 		"SELECT `key`, value FROM config ORDER BY `key`")
 	if err != nil {
 		return nil, fmt.Errorf("backup config: %w", err)
@@ -234,10 +247,13 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 }
 
 // tableExistsCheck returns true if the named table exists in the database.
-func tableExistsCheck(ctx context.Context, db *sql.DB, table string) bool {
-	var name string
-	err := db.QueryRowContext(ctx, "SELECT TABLE_NAME FROM information_schema.tables WHERE TABLE_NAME = ?", table).Scan(&name)
-	return err == nil
+func tableExistsCheck(ctx context.Context, q dbQuerier, table string) bool {
+	rows, err := q.QueryContext(ctx, "SELECT TABLE_NAME FROM information_schema.tables WHERE TABLE_NAME = ?", table)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
 }
 
 // truncateHash returns the first 8 characters of a hash, or the full string if shorter.
@@ -250,8 +266,8 @@ func truncateHash(h string) string {
 
 // exportTable streams query results to a JSONL file using atomic write (temp file + rename).
 // Uses bounded memory regardless of result set size.
-func exportTable(ctx context.Context, db *sql.DB, dir, filename, query string) (int, error) {
-	rows, err := db.QueryContext(ctx, query)
+func exportTable(ctx context.Context, q dbQuerier, dir, filename, query string) (int, error) {
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return 0, fmt.Errorf("query failed: %w", err)
 	}
@@ -297,8 +313,8 @@ func exportTable(ctx context.Context, db *sql.DB, dir, filename, query string) (
 }
 
 // exportTableAppend streams query results and appends to an existing JSONL file.
-func exportTableAppend(ctx context.Context, db *sql.DB, dir, filename, query string) (int, error) {
-	rows, err := db.QueryContext(ctx, query)
+func exportTableAppend(ctx context.Context, q dbQuerier, dir, filename, query string) (int, error) {
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return 0, fmt.Errorf("query failed: %w", err)
 	}
@@ -359,131 +375,6 @@ func writeRows(rows *sql.Rows, cols []string, w *bufio.Writer) (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("row iteration failed: %w", err)
 	}
-	return count, nil
-}
-
-// exportEventsIncremental appends new events since the last high-water mark.
-// On first export (lastEventID=0), dumps all events as a full snapshot.
-func exportEventsIncremental(ctx context.Context, db *sql.DB, dir string, state *backupState, hasWisps bool) (int, error) {
-	query := "SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at " +
-		"FROM events WHERE id > ? ORDER BY id ASC"
-	args := []interface{}{state.LastEventID}
-
-	if hasWisps {
-		query = "SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at " +
-			"FROM events WHERE id > ? " +
-			"UNION ALL " +
-			"SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at " +
-			"FROM wisp_events WHERE id > ? " +
-			"ORDER BY id ASC"
-		args = []interface{}{state.LastEventID, state.LastEventID}
-	}
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("query failed: %w", err)
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	// Stream to temp file, then either rename (first export) or append (incremental).
-	eventsPath := filepath.Join(dir, "events.jsonl")
-	tmp, err := os.CreateTemp(dir, ".backup-tmp-*")
-	if err != nil {
-		return 0, fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	w := bufio.NewWriter(tmp)
-	values := make([]interface{}, len(cols))
-	ptrs := make([]interface{}, len(cols))
-	for i := range values {
-		ptrs[i] = &values[i]
-	}
-
-	count := 0
-	var maxID int64
-
-	for rows.Next() {
-		if err := rows.Scan(ptrs...); err != nil {
-			_ = tmp.Close()
-			return 0, fmt.Errorf("scan failed: %w", err)
-		}
-
-		row := make(map[string]interface{}, len(cols))
-		for i, col := range cols {
-			row[col] = normalizeValue(values[i])
-		}
-
-		// Track high-water mark
-		if id, ok := row["id"].(int64); ok && id > maxID {
-			maxID = id
-		}
-
-		data, err := json.Marshal(row)
-		if err != nil {
-			_ = tmp.Close()
-			return 0, fmt.Errorf("marshal failed: %w", err)
-		}
-		data = append(data, '\n')
-		if _, err := w.Write(data); err != nil {
-			_ = tmp.Close()
-			return 0, fmt.Errorf("write failed: %w", err)
-		}
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		_ = tmp.Close()
-		return 0, fmt.Errorf("row iteration failed: %w", err)
-	}
-
-	if count == 0 {
-		_ = tmp.Close()
-		return 0, nil
-	}
-
-	if err := w.Flush(); err != nil {
-		_ = tmp.Close()
-		return 0, fmt.Errorf("flush failed: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return 0, fmt.Errorf("sync failed: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return 0, fmt.Errorf("close failed: %w", err)
-	}
-
-	if state.LastEventID == 0 {
-		// First export: atomic rename
-		if err := os.Rename(tmpPath, eventsPath); err != nil {
-			return 0, fmt.Errorf("rename failed: %w", err)
-		}
-	} else {
-		// Incremental: append temp file contents to existing events file
-		tmpData, err := os.ReadFile(tmpPath) //nolint:gosec // path is constructed internally
-		if err != nil {
-			return 0, fmt.Errorf("failed to read temp events: %w", err)
-		}
-		f, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) //nolint:gosec // path is constructed internally
-		if err != nil {
-			return 0, fmt.Errorf("failed to open events file: %w", err)
-		}
-		if _, err := f.Write(tmpData); err != nil {
-			_ = f.Close()
-			return 0, fmt.Errorf("failed to append events: %w", err)
-		}
-		if err := f.Close(); err != nil {
-			return 0, fmt.Errorf("failed to close events file: %w", err)
-		}
-	}
-
-	state.LastEventID = maxID
 	return count, nil
 }
 

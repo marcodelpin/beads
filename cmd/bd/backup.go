@@ -121,7 +121,6 @@ var backupStatusCmd = &cobra.Command{
 				state.Timestamp.Format(time.RFC3339),
 				time.Since(state.Timestamp).Round(time.Second))
 			fmt.Printf("  Dolt commit: %s\n", state.LastDoltCommit)
-			fmt.Printf("  Event high-water mark: %d\n", state.LastEventID)
 			fmt.Printf("  Counts: %d issues, %d events, %d comments, %d deps, %d labels, %d config\n",
 				state.Counts.Issues, state.Counts.Events, state.Counts.Comments,
 				state.Counts.Dependencies, state.Counts.Labels, state.Counts.Config)
