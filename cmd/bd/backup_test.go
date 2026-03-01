@@ -182,9 +182,6 @@ func TestBackupExport(t *testing.T) {
 	if state.LastDoltCommit == "" {
 		t.Error("expected non-empty dolt commit")
 	}
-	if state.LastEventID == 0 {
-		t.Error("expected non-zero event ID")
-	}
 
 	// Verify files exist
 	backupPath := filepath.Join(beadsDir, "backup")
@@ -277,7 +274,6 @@ func TestBackupIncremental(t *testing.T) {
 	if state.Counts.Events != 1 {
 		t.Errorf("first export events = %d, want 1", state.Counts.Events)
 	}
-	firstEventID := state.LastEventID
 
 	// Add another event
 	if _, err := s.DB().ExecContext(ctx, `INSERT INTO events (issue_id, event_type, actor) VALUES (?, ?, ?)`,
@@ -288,16 +284,16 @@ func TestBackupIncremental(t *testing.T) {
 		t.Fatalf("dolt commit 2: %v", err)
 	}
 
-	// Second export should be incremental
+	// Second export should include all events (full re-export)
 	state2, err := runBackupExport(ctx, false)
 	if err != nil {
 		t.Fatalf("second export: %v", err)
 	}
-	if state2.LastEventID <= firstEventID {
-		t.Errorf("expected event ID > %d, got %d", firstEventID, state2.LastEventID)
+	if state2.Counts.Events != 2 {
+		t.Errorf("second export events = %d, want 2", state2.Counts.Events)
 	}
 
-	// Events file should have 2 lines total (1 from first + 1 incremental)
+	// Events file should have 2 lines total (full re-export)
 	eventsData, err := os.ReadFile(filepath.Join(beadsDir, "backup", "events.jsonl"))
 	if err != nil {
 		t.Fatalf("read events.jsonl: %v", err)
