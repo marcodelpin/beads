@@ -10,15 +10,6 @@
 {"issue_id":"bd-alx","label":"read"}
 {"issue_id":"bd-alx","label":"result:success"}
 {"issue_id":"bd-alx","label":"rig:gastown"}
-{"issue_id":"bd-beads-polecat-amber","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-garnet","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-jasper","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-obsidian","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-onyx","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-opal","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-quartz","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-ruby","label":"gt:agent"}
-{"issue_id":"bd-beads-polecat-topaz","label":"gt:agent"}
 {"issue_id":"bd-fhh","label":"dolt"}
 {"issue_id":"bd-fhh","label":"solo-ux"}
 {"issue_id":"bd-k8e","label":"delivery-acked-at:2026-02-28T04:56:43Z"}
@@ -43,7 +34,6 @@
 {"issue_id":"bd-tpv","label":"gt:message"}
 {"issue_id":"bd-tpv","label":"read"}
 {"issue_id":"bd-wisp-7c8g52","label":"gt:merge-request"}
-{"issue_id":"bd-wisp-i5ror","label":"gt:merge-request"}
 {"issue_id":"bd-x1e","label":"plugin:rebuild-gt"}
 {"issue_id":"bd-x1e","label":"result:success"}
 {"issue_id":"bd-x1e","label":"rig:gastown"}
@@ -53,7 +43,3 @@
 {"issue_id":"bd-xq2","label":"rig:gastown"}
 {"issue_id":"bd-xq2","label":"type:plugin-run"}
 {"issue_id":"bd-zfj","label":"pinned"}
-{"issue_id":"hq-x1fq","label":"plugin:rebuild-gt"}
-{"issue_id":"hq-x1fq","label":"result:success"}
-{"issue_id":"hq-x1fq","label":"rig:gastown"}
-{"issue_id":"hq-x1fq","label":"type:plugin-run"}
