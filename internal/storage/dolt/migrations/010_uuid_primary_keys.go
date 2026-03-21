@@ -44,18 +44,28 @@ func migrateTableToUUID(db *sql.DB, table string) error {
 		return nil // Table doesn't exist yet; schema.go will create it with UUID PKs
 	}
 
-	// Check if already migrated (column type is already CHAR)
-	var colType string
-	err = db.QueryRow(
-		"SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = 'id' AND TABLE_SCHEMA = DATABASE()",
-		table,
-	).Scan(&colType)
+	// Check if already migrated (column type is already CHAR).
+	// Uses SHOW COLUMNS instead of information_schema to avoid
+	// "no root value found in session" errors in Dolt server mode
+	// when the session working set is not fully initialized (GH#2051).
+	//nolint:gosec // G202: table is from hardcoded list, not user input
+	rows, err := db.Query("SHOW COLUMNS FROM `" + table + "` WHERE Field = 'id'")
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil // No id column — nothing to migrate
+		if isTableNotFoundError(err) {
+			return nil
 		}
 		return fmt.Errorf("check column type: %w", err)
 	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil // No id column — nothing to migrate
+	}
+	var field, colType, nullable, key string
+	var defaultVal, extra sql.NullString
+	if err := rows.Scan(&field, &colType, &nullable, &key, &defaultVal, &extra); err != nil {
+		return fmt.Errorf("scan column info: %w", err)
+	}
+	_ = rows.Close()
 
 	// If already char(36), migration was already applied
 	if colType == "char(36)" {
