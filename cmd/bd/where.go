@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/utils"
 )
 
@@ -69,10 +70,19 @@ Examples:
 			result.DatabasePath = dbPath
 		}
 
-		// Keep "where" on the same no-DB diagnostic path as "context".
-		// If the prefix is configured in YAML we can still surface it cheaply.
+		// Prefer YAML when available, otherwise do a scoped read-only reopen
+		// using the already-resolved dbPath so we can preserve prefix output
+		// without paying the old worktree-discovery cost.
 		if prefix := config.GetString("issue-prefix"); prefix != "" {
 			result.Prefix = prefix
+		} else if dbPath != "" {
+			_ = withStorage(getRootContext(), nil, dbPath, func(currentStore storage.DoltStorage) error {
+				prefix, err := currentStore.GetConfig(getRootContext(), "issue_prefix")
+				if err == nil && prefix != "" {
+					result.Prefix = prefix
+				}
+				return nil
+			})
 		}
 
 		// Output results
