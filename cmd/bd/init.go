@@ -443,13 +443,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if existingCfg, _ := configfile.Load(beadsDir); existingCfg != nil && existingCfg.DoltDatabase != "" {
 			dbName = existingCfg.DoltDatabase
 		} else if prefix != "" {
-			// Sanitize hyphens and dots to underscores for SQL-idiomatic database names.
-			// Dots are invalid in Dolt/MySQL identifiers (e.g. from ".claude" directories).
+			// Sanitize hyphens to underscores for SQL-idiomatic database names.
+			// Dots were already normalized in prefix above so issue_prefix and
+			// DoltDatabase stay in lockstep.
 			// Must match the sanitization applied to metadata.json DoltDatabase
 			// field (line below), otherwise init creates a database with one name
 			// but metadata.json records a different name, causing reopens to fail.
 			dbName = strings.ReplaceAll(prefix, "-", "_")
-			dbName = strings.ReplaceAll(dbName, ".", "_")
 		} else {
 			dbName = "beads"
 		}
@@ -706,12 +706,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if database != "" {
 					cfg.DoltDatabase = database
 				} else if cfg.DoltDatabase == "" && prefix != "" {
-					// Sanitize hyphens and dots to underscores for SQL-idiomatic names (GH#2142).
-					// Must match the sanitization applied to dbName above (lines 430-431),
+					// Sanitize hyphens to underscores for SQL-idiomatic names (GH#2142).
+					// Dots were already normalized in prefix above.
+					// Must match the sanitization applied to dbName above,
 					// otherwise init creates a database with one name but metadata.json
 					// records a different name, causing reopens to fail.
 					cfg.DoltDatabase = strings.ReplaceAll(prefix, "-", "_")
-					cfg.DoltDatabase = strings.ReplaceAll(cfg.DoltDatabase, ".", "_")
 				}
 
 				// Persist the connection mode matching this build.
