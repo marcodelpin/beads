@@ -32,7 +32,7 @@ import (
 //   - content: the actual memory text the user stored
 //   - created_at: wall-clock UTC timestamp when the memory was written
 //   - valid_until: UTC timestamp after which the memory is "expired"; empty
-//     string means no expiration (equivalent to legacy behaviour)
+//     string means no expiration (equivalent to legacy behavior)
 //   - expire_policy: what to do with expired memories on default queries:
 //     "hide"   (default) — filtered from `bd memories` unless --include-expired
 //     "notify" — shown in `bd memories` but marked EXPIRED
@@ -177,7 +177,7 @@ func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, 
 	}
 	data, err := json.Marshal(env)
 	if err != nil {
-		return "", fmt.Errorf("marshalling memory envelope: %w", err)
+		return "", fmt.Errorf("marshaling memory envelope: %w", err)
 	}
 	return string(data), nil
 }
