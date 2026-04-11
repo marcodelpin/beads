@@ -237,7 +237,7 @@ func isSelectedNoDBCommand(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
 	}
-	if cmd.Name() == "context" {
+	if cmd.Name() == "context" || cmd.Name() == "where" {
 		return true
 	}
 	if cmd.Parent() == nil || cmd.Parent().Name() != "dolt" {
