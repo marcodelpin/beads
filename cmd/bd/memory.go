@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -15,6 +16,19 @@ const memoryPrefix = "memory."
 
 // memoryKeyFlag allows explicit key override for bd remember.
 var memoryKeyFlag string
+
+// Fact validity window flags for `bd remember`.
+var (
+	memoryValidForFlag     string
+	memoryValidUntilFlag   string
+	memoryExpirePolicyFlag string
+)
+
+// Query/gc flags for `bd memories`.
+var (
+	memoriesIncludeExpired bool
+	memoriesGCFlag         bool
+)
 
 // slugify converts a string to a URL-friendly slug for use as a memory key.
 // Takes the first ~8 words, lowercases, replaces non-alphanumeric with hyphens.
@@ -50,10 +64,22 @@ var rememberCmd = &cobra.Command{
 Memories are injected at prime time (bd prime) so you have them
 in every session without manual loading.
 
+Fact validity windows (mempalace pattern):
+  --valid-for=<dur>       memory expires <dur> from now (e.g. 30d, 2w, 1y, 72h)
+  --valid-until=<date>    memory expires at absolute date (YYYY-MM-DD or RFC3339)
+  --expire-policy=<p>     what happens after expiry: hide|notify|delete (default: hide)
+
+  hide    — hidden from default 'bd memories' listings; use --include-expired to see
+  notify  — still listed, but marked EXPIRED next to the key
+  delete  — hidden from listings and removed by 'bd memories --gc'
+
 Examples:
   bd remember "always run tests with -race flag"
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
-  bd remember "auth module uses JWT not sessions" --key auth-jwt`,
+  bd remember "auth module uses JWT not sessions" --key auth-jwt
+  bd remember "feature flag X enabled for beta" --valid-for=30d
+  bd remember "TLS cert expires" --valid-until=2026-12-31 --expire-policy=notify
+  bd remember "temp workaround for upstream bug" --valid-for=2w --expire-policy=delete`,
 	GroupID: "setup",
 	Args:    cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -77,6 +103,44 @@ Examples:
 			FatalErrorRespectJSON("could not generate key from content; use --key to specify one")
 		}
 
+		// Parse fact-validity flags. Any flag set means we'll store an
+		// envelope instead of plain text. Mutually exclusive: --valid-for vs
+		// --valid-until.
+		var (
+			validFor   time.Duration
+			validUntil time.Time
+		)
+		if strings.TrimSpace(memoryValidForFlag) != "" {
+			d, err := parseValidFor(memoryValidForFlag)
+			if err != nil {
+				FatalErrorRespectJSON("invalid --valid-for: %v", err)
+			}
+			validFor = d
+		}
+		if strings.TrimSpace(memoryValidUntilFlag) != "" {
+			t, err := parseValidUntil(memoryValidUntilFlag)
+			if err != nil {
+				FatalErrorRespectJSON("invalid --valid-until: %v", err)
+			}
+			validUntil = t
+		}
+		if err := validatePolicy(memoryExpirePolicyFlag); err != nil {
+			FatalErrorRespectJSON("%v", err)
+		}
+
+		hasValidity := validFor > 0 || !validUntil.IsZero() || memoryExpirePolicyFlag != ""
+
+		// Default storage is plain text for backward compatibility — only
+		// build an envelope when the user has asked for validity semantics.
+		storedValue := insight
+		if hasValidity {
+			v, err := buildMemoryEnvelope(insight, time.Now(), validFor, validUntil, memoryExpirePolicyFlag)
+			if err != nil {
+				FatalErrorRespectJSON("%v", err)
+			}
+			storedValue = v
+		}
+
 		storageKey := kvPrefix + memoryPrefix + key
 
 		ctx := rootCtx
@@ -88,7 +152,7 @@ Examples:
 			verb = "Updated"
 		}
 
-		if err := store.SetConfig(ctx, storageKey, insight); err != nil {
+		if err := store.SetConfig(ctx, storageKey, storedValue); err != nil {
 			FatalErrorRespectJSON("storing memory: %v", err)
 		}
 		if _, err := store.CommitPending(ctx, getActor()); err != nil {
@@ -96,15 +160,42 @@ Examples:
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]string{
+			result := map[string]string{
 				"key":    key,
 				"value":  insight,
 				"action": strings.ToLower(verb),
-			})
+			}
+			if hasValidity {
+				env := parseStoredMemory(storedValue)
+				if env.ValidUntil != "" {
+					result["valid_until"] = env.ValidUntil
+				}
+				if env.ExpirePolicy != "" {
+					result["expire_policy"] = env.ExpirePolicy
+				}
+			}
+			outputJSON(result)
 		} else {
-			fmt.Printf("%s [%s]: %s\n", verb, key, truncateMemory(insight, 80))
+			suffix := ""
+			if hasValidity {
+				env := parseStoredMemory(storedValue)
+				if env.ValidUntil != "" {
+					suffix = fmt.Sprintf(" (valid until %s, policy=%s)", env.ValidUntil, env.effectivePolicy())
+				} else if env.ExpirePolicy != "" {
+					suffix = fmt.Sprintf(" (policy=%s)", env.effectivePolicy())
+				}
+			}
+			fmt.Printf("%s [%s]: %s%s\n", verb, key, truncateMemory(insight, 80), suffix)
 		}
 	},
+}
+
+// memoryDisplay is what we render per memory after envelope parsing.
+type memoryDisplay struct {
+	key      string
+	content  string
+	envelope memoryEnvelope
+	expired  bool
 }
 
 // memoriesCmd lists and searches memories.
@@ -113,13 +204,26 @@ var memoriesCmd = &cobra.Command{
 	Short: "List or search persistent memories",
 	Long: `List all memories, or search by keyword.
 
+By default, memories whose fact validity window has expired are hidden
+(policy=hide or policy=delete) or marked EXPIRED (policy=notify).
+
+Flags:
+  --include-expired   show every memory, including those past valid_until
+  --gc                garbage-collect: delete memories with expire-policy=delete
+                      whose valid_until is in the past
+
 Examples:
   bd memories              # list all memories
   bd memories dolt         # search for memories about dolt
-  bd memories "race flag"  # search for a phrase`,
+  bd memories "race flag"  # search for a phrase
+  bd memories --include-expired
+  bd memories --gc`,
 	GroupID: "setup",
 	Args:    cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if memoriesGCFlag {
+			CheckReadonly("memories --gc")
+		}
 		if err := ensureDirectMode("memories requires direct database access"); err != nil {
 			FatalError("%v", err)
 		}
@@ -130,63 +234,159 @@ Examples:
 			FatalErrorRespectJSON("listing memories: %v", err)
 		}
 
-		// Filter for kv.memory.* keys
+		// Filter for kv.memory.* keys and parse envelopes.
 		fullPrefix := kvPrefix + memoryPrefix
-		memories := make(map[string]string)
+		now := time.Now()
+		var all []memoryDisplay
 		for k, v := range allConfig {
-			if strings.HasPrefix(k, fullPrefix) {
-				userKey := strings.TrimPrefix(k, fullPrefix)
-				memories[userKey] = v
+			if !strings.HasPrefix(k, fullPrefix) {
+				continue
+			}
+			userKey := strings.TrimPrefix(k, fullPrefix)
+			env := parseStoredMemory(v)
+			all = append(all, memoryDisplay{
+				key:      userKey,
+				content:  env.Content,
+				envelope: env,
+				expired:  env.isExpired(now),
+			})
+		}
+
+		// Garbage-collect pass: delete expired memories with policy=delete,
+		// regardless of --include-expired. This is a destructive mode so we
+		// run it before any filtering/display so the summary reflects the
+		// new state.
+		var gcKeys []string
+		if memoriesGCFlag {
+			kept := all[:0]
+			for _, m := range all {
+				if m.expired && m.envelope.effectivePolicy() == policyDelete {
+					storageKey := fullPrefix + m.key
+					if err := store.DeleteConfig(ctx, storageKey); err != nil {
+						FatalErrorRespectJSON("deleting expired memory %q: %v", m.key, err)
+					}
+					gcKeys = append(gcKeys, m.key)
+					continue
+				}
+				kept = append(kept, m)
+			}
+			all = kept
+			if len(gcKeys) > 0 {
+				if _, err := store.CommitPending(ctx, getActor()); err != nil {
+					WarnError("failed to commit gc: %v", err)
+				}
 			}
 		}
 
-		// Apply search filter if provided
+		// Apply search filter (matches key and content).
 		var search string
 		if len(args) > 0 {
 			search = strings.ToLower(args[0])
 		}
 		if search != "" {
-			filtered := make(map[string]string)
-			for k, v := range memories {
-				if strings.Contains(strings.ToLower(k), search) ||
-					strings.Contains(strings.ToLower(v), search) {
-					filtered[k] = v
+			filtered := all[:0]
+			for _, m := range all {
+				if strings.Contains(strings.ToLower(m.key), search) ||
+					strings.Contains(strings.ToLower(m.content), search) {
+					filtered = append(filtered, m)
 				}
 			}
-			memories = filtered
+			all = filtered
 		}
+
+		// Apply default expiration filter. The rules are:
+		//   - --include-expired: show everything
+		//   - policy=notify: show even if expired, with EXPIRED marker
+		//   - policy=hide  : hide if expired
+		//   - policy=delete: hide if expired (gc will remove next run)
+		visible := all[:0]
+		hiddenExpired := 0
+		for _, m := range all {
+			if !m.expired {
+				visible = append(visible, m)
+				continue
+			}
+			if memoriesIncludeExpired {
+				visible = append(visible, m)
+				continue
+			}
+			if m.envelope.effectivePolicy() == policyNotify {
+				visible = append(visible, m)
+				continue
+			}
+			hiddenExpired++
+		}
+
+		// Sort by key for stable output.
+		sort.Slice(visible, func(i, j int) bool {
+			return visible[i].key < visible[j].key
+		})
 
 		if jsonOutput {
-			outputJSON(memories)
-			return
-		}
-
-		if len(memories) == 0 {
-			if search != "" {
-				fmt.Printf("No memories matching %q\n", search)
-			} else {
-				fmt.Println("No memories stored. Use 'bd remember \"insight\"' to add one.")
+			out := make([]map[string]interface{}, 0, len(visible))
+			for _, m := range visible {
+				entry := map[string]interface{}{
+					"key":     m.key,
+					"value":   m.content,
+					"expired": m.expired,
+				}
+				if m.envelope.ValidUntil != "" {
+					entry["valid_until"] = m.envelope.ValidUntil
+				}
+				if m.envelope.ExpirePolicy != "" {
+					entry["expire_policy"] = m.envelope.ExpirePolicy
+				}
+				if m.envelope.CreatedAt != "" {
+					entry["created_at"] = m.envelope.CreatedAt
+				}
+				out = append(out, entry)
 			}
+			payload := map[string]interface{}{
+				"memories":       out,
+				"hidden_expired": hiddenExpired,
+				"gc_deleted":     gcKeys,
+			}
+			outputJSON(payload)
 			return
 		}
 
-		// Sort keys for consistent output
-		keys := make([]string, 0, len(memories))
-		for k := range memories {
-			keys = append(keys, k)
+		if memoriesGCFlag && len(gcKeys) > 0 {
+			sort.Strings(gcKeys)
+			fmt.Printf("Garbage-collected %d expired memories (policy=delete): %s\n\n",
+				len(gcKeys), strings.Join(gcKeys, ", "))
 		}
-		sort.Strings(keys)
+
+		if len(visible) == 0 {
+			if search != "" {
+				fmt.Printf("No memories matching %q", search)
+			} else {
+				fmt.Print("No memories stored. Use 'bd remember \"insight\"' to add one.")
+			}
+			if hiddenExpired > 0 {
+				fmt.Printf(" (%d expired hidden — use --include-expired to show)", hiddenExpired)
+			}
+			fmt.Println()
+			return
+		}
 
 		if search != "" {
 			fmt.Printf("Memories matching %q:\n\n", search)
 		} else {
-			fmt.Printf("Memories (%d):\n\n", len(memories))
+			fmt.Printf("Memories (%d", len(visible))
+			if hiddenExpired > 0 {
+				fmt.Printf(", %d expired hidden", hiddenExpired)
+			}
+			fmt.Printf("):\n\n")
 		}
-		for _, k := range keys {
-			v := memories[k]
-			fmt.Printf("  %s\n", k)
-			// Indent the value, wrapping long lines
-			fmt.Printf("    %s\n\n", truncateMemory(v, 120))
+		for _, m := range visible {
+			marker := ""
+			if m.expired {
+				marker = " [EXPIRED]"
+			} else if m.envelope.ValidUntil != "" {
+				marker = fmt.Sprintf(" [valid until %s]", m.envelope.ValidUntil)
+			}
+			fmt.Printf("  %s%s\n", m.key, marker)
+			fmt.Printf("    %s\n\n", truncateMemory(m.content, 120))
 		}
 	},
 }
@@ -273,11 +473,39 @@ Examples:
 			FatalErrorRespectJSON("recalling memory: %v", err)
 		}
 
+		// Decode envelope so recall always returns the user-facing content
+		// and not the raw JSON wrapper.
+		var (
+			content      string
+			validUntil   string
+			expirePolicy string
+			createdAt    string
+			expired      bool
+		)
+		if value != "" {
+			env := parseStoredMemory(value)
+			content = env.Content
+			validUntil = env.ValidUntil
+			expirePolicy = env.ExpirePolicy
+			createdAt = env.CreatedAt
+			expired = env.isExpired(time.Now())
+		}
+
 		if jsonOutput {
 			result := map[string]interface{}{
 				"key":   key,
-				"value": value,
+				"value": content,
 				"found": value != "",
+			}
+			if validUntil != "" {
+				result["valid_until"] = validUntil
+				result["expired"] = expired
+			}
+			if expirePolicy != "" {
+				result["expire_policy"] = expirePolicy
+			}
+			if createdAt != "" {
+				result["created_at"] = createdAt
 			}
 			outputJSON(result)
 			if value == "" {
@@ -288,7 +516,7 @@ Examples:
 				fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
 				os.Exit(1)
 			}
-			fmt.Printf("%s\n", value)
+			fmt.Printf("%s\n", content)
 		}
 	},
 }
@@ -305,6 +533,12 @@ func truncateMemory(s string, maxLen int) string {
 
 func init() {
 	rememberCmd.Flags().StringVar(&memoryKeyFlag, "key", "", "Explicit key for the memory (auto-generated from content if not set). If a memory with this key already exists, it will be updated in place")
+	rememberCmd.Flags().StringVar(&memoryValidForFlag, "valid-for", "", "Relative validity window for this memory (e.g. 30d, 2w, 1y, 72h). Mutually exclusive with --valid-until.")
+	rememberCmd.Flags().StringVar(&memoryValidUntilFlag, "valid-until", "", "Absolute expiration timestamp (YYYY-MM-DD or RFC3339). Mutually exclusive with --valid-for.")
+	rememberCmd.Flags().StringVar(&memoryExpirePolicyFlag, "expire-policy", "", "What to do after expiration: hide (default), notify, delete")
+
+	memoriesCmd.Flags().BoolVar(&memoriesIncludeExpired, "include-expired", false, "Include memories whose fact validity window has expired")
+	memoriesCmd.Flags().BoolVar(&memoriesGCFlag, "gc", false, "Delete expired memories with expire-policy=delete")
 
 	rootCmd.AddCommand(rememberCmd)
 	rootCmd.AddCommand(memoriesCmd)
