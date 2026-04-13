@@ -673,6 +673,32 @@ func TestEmbeddedInit(t *testing.T) {
 			t.Errorf("issue_prefix: got %q, want %q", val, "GPUPolynomials_jl")
 		}
 	})
+
+	t.Run("config_dot_prefix_sanitized", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoAt(t, dir)
+		beadsDir := filepath.Join(dir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("issue-prefix: GPUPolynomials.jl\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		runBDInit(t, bd, dir)
+
+		cfg, err := configfile.Load(beadsDir)
+		if err != nil {
+			t.Fatalf("failed to load metadata.json: %v", err)
+		}
+		const want = "GPUPolynomials_jl"
+		if cfg.DoltDatabase != want {
+			t.Errorf("DoltDatabase: got %q, want %q", cfg.DoltDatabase, want)
+		}
+		if val := readBack(t, beadsDir, want, "issue_prefix", false); val != want {
+			t.Errorf("issue_prefix: got %q, want %q", val, want)
+		}
+	})
 }
 
 // TestEmbeddedInitConcurrent verifies the exclusive flock prevents concurrent
