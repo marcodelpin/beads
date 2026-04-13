@@ -96,3 +96,58 @@ func TestIsSelectedNoDBCommand_Where(t *testing.T) {
 		t.Fatal("isSelectedNoDBCommand(where) = false, want true")
 	}
 }
+
+func TestShouldReadWherePrefixFromStore(t *testing.T) {
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
+
+	t.Run("empty beads dir", func(t *testing.T) {
+		if got := shouldReadWherePrefixFromStore(""); got {
+			t.Fatal("shouldReadWherePrefixFromStore(\"\") = true, want false")
+		}
+	})
+
+	t.Run("missing metadata", func(t *testing.T) {
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+			t.Fatalf("mkdir beads dir: %v", err)
+		}
+		if got := shouldReadWherePrefixFromStore(beadsDir); !got {
+			t.Fatal("shouldReadWherePrefixFromStore(missing metadata) = false, want true")
+		}
+	})
+
+	t.Run("server mode metadata", func(t *testing.T) {
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+			t.Fatalf("mkdir beads dir: %v", err)
+		}
+		cfg := &configfile.Config{
+			Backend:  configfile.BackendDolt,
+			DoltMode: configfile.DoltModeServer,
+		}
+		if err := cfg.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata: %v", err)
+		}
+		if got := shouldReadWherePrefixFromStore(beadsDir); got {
+			t.Fatal("shouldReadWherePrefixFromStore(server mode) = true, want false")
+		}
+	})
+
+	t.Run("embedded mode metadata", func(t *testing.T) {
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+			t.Fatalf("mkdir beads dir: %v", err)
+		}
+		cfg := &configfile.Config{
+			Backend:  configfile.BackendDolt,
+			DoltMode: configfile.DoltModeEmbedded,
+		}
+		if err := cfg.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata: %v", err)
+		}
+		if got := shouldReadWherePrefixFromStore(beadsDir); !got {
+			t.Fatal("shouldReadWherePrefixFromStore(embedded mode) = false, want true")
+		}
+	})
+}
