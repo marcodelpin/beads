@@ -173,6 +173,36 @@ func runBDCommand(t *testing.T, binPath, dir string, extraEnv []string, args ...
 	return out
 }
 
+type whereExpectation struct {
+	beadsDir   string
+	database   string
+	prefix     string
+	omitPrefix bool
+}
+
+func assertWhereOutput(t *testing.T, out []byte, want whereExpectation) {
+	t.Helper()
+
+	var got map[string]any
+	decodeJSONOutput(t, out, &got)
+
+	if evalPath(t, got["path"].(string)) != evalPath(t, want.beadsDir) {
+		t.Fatalf("path = %v, want %s", got["path"], want.beadsDir)
+	}
+	if evalPath(t, got["database_path"].(string)) != evalPath(t, want.database) {
+		t.Fatalf("database_path = %v, want %s", got["database_path"], want.database)
+	}
+	if want.omitPrefix {
+		if _, ok := got["prefix"]; ok {
+			t.Fatalf("prefix = %v, want omitted when only server metadata is available", got["prefix"])
+		}
+		return
+	}
+	if got["prefix"] != want.prefix {
+		t.Fatalf("prefix = %v, want %s", got["prefix"], want.prefix)
+	}
+}
+
 func TestContextUsesExplicitDBFlagForNoDBCommand(t *testing.T) {
 	binPath := buildBDUnderTest(t)
 	root := t.TempDir()
@@ -210,18 +240,11 @@ func TestWhereUsesExplicitDBFlagForNoDBCommand(t *testing.T) {
 	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
 
 	out := runBDCommand(t, binPath, repoA, nil, "--db", filepath.Join(beadsDirB, "dolt"), "where", "--json")
-
-	var got map[string]any
-	decodeJSONOutput(t, out, &got)
-	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
-		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
-	}
-	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
-		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
-	}
-	if got["prefix"] != "repo-b" {
-		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
-	}
+	assertWhereOutput(t, out, whereExpectation{
+		beadsDir: beadsDirB,
+		database: filepath.Join(beadsDirB, "dolt"),
+		prefix:   "repo-b",
+	})
 }
 
 func TestDoltShowUsesExplicitDBFlagForNoDBCommand(t *testing.T) {
@@ -277,18 +300,11 @@ func TestWhereUsesBEADSDBForNoDBCommand(t *testing.T) {
 	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
 
 	out := runBDCommand(t, binPath, repoA, []string{"BEADS_DB=" + filepath.Join(beadsDirB, "dolt")}, "where", "--json")
-
-	var got map[string]any
-	decodeJSONOutput(t, out, &got)
-	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
-		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
-	}
-	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
-		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
-	}
-	if got["prefix"] != "repo-b" {
-		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
-	}
+	assertWhereOutput(t, out, whereExpectation{
+		beadsDir: beadsDirB,
+		database: filepath.Join(beadsDirB, "dolt"),
+		prefix:   "repo-b",
+	})
 }
 
 func TestContextUsesBEADSDBDirectoryForNoDBCommand(t *testing.T) {
@@ -344,18 +360,11 @@ func TestWhereUsesExplicitDBFlagForExternalDoltDataDir(t *testing.T) {
 	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
 
 	out := runBDCommand(t, binPath, repoA, nil, "--db", filepath.Join(beadsDirB, "../external-dolt"), "where", "--json")
-
-	var got map[string]any
-	decodeJSONOutput(t, out, &got)
-	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
-		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
-	}
-	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "../external-dolt")) {
-		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "../external-dolt"))
-	}
-	if got["prefix"] != "repo-b" {
-		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
-	}
+	assertWhereOutput(t, out, whereExpectation{
+		beadsDir: beadsDirB,
+		database: filepath.Join(beadsDirB, "../external-dolt"),
+		prefix:   "repo-b",
+	})
 }
 
 func TestContextExplicitDBFlagOverridesBEADSDBForNoDBCommand(t *testing.T) {
@@ -393,18 +402,11 @@ func TestWhereExplicitDBFlagOverridesBEADSDBForNoDBCommand(t *testing.T) {
 	writeIssuePrefixConfig(t, beadsDirC, "repo-c")
 
 	out := runBDCommand(t, binPath, repoA, []string{"BEADS_DB=" + filepath.Join(beadsDirC, "dolt")}, "--db", filepath.Join(beadsDirB, "dolt"), "where", "--json")
-
-	var got map[string]any
-	decodeJSONOutput(t, out, &got)
-	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
-		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
-	}
-	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
-		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
-	}
-	if got["prefix"] != "repo-b" {
-		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
-	}
+	assertWhereOutput(t, out, whereExpectation{
+		beadsDir: beadsDirB,
+		database: filepath.Join(beadsDirB, "dolt"),
+		prefix:   "repo-b",
+	})
 }
 
 func TestWhereUsesExplicitDBFlagForMetadataOnlyServerRepo(t *testing.T) {
@@ -416,18 +418,11 @@ func TestWhereUsesExplicitDBFlagForMetadataOnlyServerRepo(t *testing.T) {
 	beadsDirB := writeServerRepo(t, repoB, "repo_b_db", "10.0.0.2", "origin-b", 3312)
 
 	out := runBDCommand(t, binPath, repoA, nil, "--db", filepath.Join(beadsDirB, "dolt"), "where", "--json")
-
-	var got map[string]any
-	decodeJSONOutput(t, out, &got)
-	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
-		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
-	}
-	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
-		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
-	}
-	if _, ok := got["prefix"]; ok {
-		t.Fatalf("prefix = %v, want omitted when only server metadata is available", got["prefix"])
-	}
+	assertWhereOutput(t, out, whereExpectation{
+		beadsDir:   beadsDirB,
+		database:   filepath.Join(beadsDirB, "dolt"),
+		omitPrefix: true,
+	})
 }
 
 func TestWhereBEADSDBOverridesBDDBForNoDBCommand(t *testing.T) {
@@ -446,18 +441,11 @@ func TestWhereBEADSDBOverridesBDDBForNoDBCommand(t *testing.T) {
 		"BEADS_DB=" + filepath.Join(beadsDirB, "dolt"),
 		"BD_DB=" + filepath.Join(beadsDirC, "dolt"),
 	}, "where", "--json")
-
-	var got map[string]any
-	decodeJSONOutput(t, out, &got)
-	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
-		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
-	}
-	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
-		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
-	}
-	if got["prefix"] != "repo-b" {
-		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
-	}
+	assertWhereOutput(t, out, whereExpectation{
+		beadsDir: beadsDirB,
+		database: filepath.Join(beadsDirB, "dolt"),
+		prefix:   "repo-b",
+	})
 }
 
 func TestContextBEADSDBOverridesBDDBForNoDBCommand(t *testing.T) {
