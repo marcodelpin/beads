@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
 )
@@ -113,6 +115,11 @@ func writeProjectConfig(t *testing.T, beadsDir string, syncRemote string, port i
 	))
 }
 
+func writeIssuePrefixConfig(t *testing.T, beadsDir, prefix string) {
+	t.Helper()
+	writeFile(t, filepath.Join(beadsDir, "config.yaml"), []byte("issue-prefix: "+prefix+"\n"))
+}
+
 // evalPath resolves symlinks in a path for consistent comparison.
 // On macOS, t.TempDir() returns /var/folders/... but binaries resolve
 // it to /private/var/folders/..., causing string comparison failures.
@@ -139,7 +146,10 @@ func decodeJSONOutput(t *testing.T, out []byte, target any) {
 
 func runBDCommand(t *testing.T, binPath, dir string, extraEnv []string, args ...string) []byte {
 	t.Helper()
-	cmd := exec.Command(binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"HOME="+t.TempDir(),
@@ -155,6 +165,9 @@ func runBDCommand(t *testing.T, binPath, dir string, extraEnv []string, args ...
 	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("%v timed out after %s\n%s", args, 10*time.Second, out)
+		}
 		t.Fatalf("%v failed: %v\n%s", args, err, out)
 	}
 	return out
@@ -183,6 +196,31 @@ func TestContextUsesExplicitDBFlagForNoDBCommand(t *testing.T) {
 	}
 	if got["sync_git_remote"] != "origin-b" {
 		t.Fatalf("sync_git_remote = %v, want origin-b", got["sync_git_remote"])
+	}
+}
+
+func TestWhereUsesExplicitDBFlagForNoDBCommand(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	root := t.TempDir()
+	repoA := filepath.Join(root, "repo-a")
+	repoB := filepath.Join(root, "repo-b")
+	beadsDirA := writeServerRepo(t, repoA, "repo_a_db", "10.0.0.1", "origin-a", 3311)
+	beadsDirB := writeServerRepo(t, repoB, "repo_b_db", "10.0.0.2", "origin-b", 3312)
+	writeIssuePrefixConfig(t, beadsDirA, "repo-a")
+	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
+
+	out := runBDCommand(t, binPath, repoA, nil, "--db", filepath.Join(beadsDirB, "dolt"), "where", "--json")
+
+	var got map[string]any
+	decodeJSONOutput(t, out, &got)
+	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
+		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
+	}
+	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
+		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
+	}
+	if got["prefix"] != "repo-b" {
+		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
 	}
 }
 
@@ -229,6 +267,30 @@ func TestContextUsesBEADSDBForNoDBCommand(t *testing.T) {
 	}
 }
 
+func TestWhereUsesBEADSDBForNoDBCommand(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	root := t.TempDir()
+	repoA := filepath.Join(root, "repo-a")
+	repoB := filepath.Join(root, "repo-b")
+	writeServerRepo(t, repoA, "repo_a_db", "10.0.0.1", "origin-a", 3311)
+	beadsDirB := writeServerRepo(t, repoB, "repo_b_db", "10.0.0.2", "origin-b", 3312)
+	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
+
+	out := runBDCommand(t, binPath, repoA, []string{"BEADS_DB=" + filepath.Join(beadsDirB, "dolt")}, "where", "--json")
+
+	var got map[string]any
+	decodeJSONOutput(t, out, &got)
+	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
+		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
+	}
+	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
+		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
+	}
+	if got["prefix"] != "repo-b" {
+		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
+	}
+}
+
 func TestContextUsesBEADSDBDirectoryForNoDBCommand(t *testing.T) {
 	binPath := buildBDUnderTest(t)
 	root := t.TempDir()
@@ -272,6 +334,30 @@ func TestContextUsesExplicitDBFlagForExternalDoltDataDir(t *testing.T) {
 	}
 }
 
+func TestWhereUsesExplicitDBFlagForExternalDoltDataDir(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	root := t.TempDir()
+	repoA := filepath.Join(root, "repo-a")
+	repoB := filepath.Join(root, "repo-b")
+	writeServerRepo(t, repoA, "repo_a_db", "10.0.0.1", "origin-a", 3311)
+	beadsDirB := writeServerRepoWithDataDir(t, repoB, "repo_b_db", "10.0.0.2", "origin-b", 3312, "../external-dolt")
+	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
+
+	out := runBDCommand(t, binPath, repoA, nil, "--db", filepath.Join(beadsDirB, "../external-dolt"), "where", "--json")
+
+	var got map[string]any
+	decodeJSONOutput(t, out, &got)
+	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
+		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
+	}
+	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "../external-dolt")) {
+		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "../external-dolt"))
+	}
+	if got["prefix"] != "repo-b" {
+		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
+	}
+}
+
 func TestContextExplicitDBFlagOverridesBEADSDBForNoDBCommand(t *testing.T) {
 	binPath := buildBDUnderTest(t)
 	root := t.TempDir()
@@ -291,6 +377,56 @@ func TestContextExplicitDBFlagOverridesBEADSDBForNoDBCommand(t *testing.T) {
 	}
 	if got["database"] != "repo_b_db" {
 		t.Fatalf("database = %v, want repo_b_db", got["database"])
+	}
+}
+
+func TestWhereExplicitDBFlagOverridesBEADSDBForNoDBCommand(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	root := t.TempDir()
+	repoA := filepath.Join(root, "repo-a")
+	repoB := filepath.Join(root, "repo-b")
+	repoC := filepath.Join(root, "repo-c")
+	writeServerRepo(t, repoA, "repo_a_db", "10.0.0.1", "origin-a", 3311)
+	beadsDirB := writeServerRepo(t, repoB, "repo_b_db", "10.0.0.2", "origin-b", 3312)
+	beadsDirC := writeServerRepo(t, repoC, "repo_c_db", "10.0.0.3", "origin-c", 3313)
+	writeIssuePrefixConfig(t, beadsDirB, "repo-b")
+	writeIssuePrefixConfig(t, beadsDirC, "repo-c")
+
+	out := runBDCommand(t, binPath, repoA, []string{"BEADS_DB=" + filepath.Join(beadsDirC, "dolt")}, "--db", filepath.Join(beadsDirB, "dolt"), "where", "--json")
+
+	var got map[string]any
+	decodeJSONOutput(t, out, &got)
+	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
+		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
+	}
+	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
+		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
+	}
+	if got["prefix"] != "repo-b" {
+		t.Fatalf("prefix = %v, want repo-b", got["prefix"])
+	}
+}
+
+func TestWhereUsesExplicitDBFlagForMetadataOnlyServerRepo(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	root := t.TempDir()
+	repoA := filepath.Join(root, "repo-a")
+	repoB := filepath.Join(root, "repo-b")
+	writeServerRepo(t, repoA, "repo_a_db", "10.0.0.1", "origin-a", 3311)
+	beadsDirB := writeServerRepo(t, repoB, "repo_b_db", "10.0.0.2", "origin-b", 3312)
+
+	out := runBDCommand(t, binPath, repoA, nil, "--db", filepath.Join(beadsDirB, "dolt"), "where", "--json")
+
+	var got map[string]any
+	decodeJSONOutput(t, out, &got)
+	if evalPath(t, got["path"].(string)) != evalPath(t, beadsDirB) {
+		t.Fatalf("path = %v, want %s", got["path"], beadsDirB)
+	}
+	if evalPath(t, got["database_path"].(string)) != evalPath(t, filepath.Join(beadsDirB, "dolt")) {
+		t.Fatalf("database_path = %v, want %s", got["database_path"], filepath.Join(beadsDirB, "dolt"))
+	}
+	if _, ok := got["prefix"]; ok {
+		t.Fatalf("prefix = %v, want omitted when only server metadata is available", got["prefix"])
 	}
 }
 

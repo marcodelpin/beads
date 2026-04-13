@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/utils"
 )
@@ -75,7 +76,7 @@ Examples:
 		// without paying the old worktree-discovery cost.
 		if prefix := config.GetString("issue-prefix"); prefix != "" {
 			result.Prefix = prefix
-		} else if dbPath != "" {
+		} else if dbPath != "" && shouldReadWherePrefixFromStore(beadsDir) {
 			_ = withStorage(getRootContext(), nil, dbPath, func(currentStore storage.DoltStorage) error {
 				prefix, err := currentStore.GetConfig(getRootContext(), "issue_prefix")
 				if err == nil && prefix != "" {
@@ -113,6 +114,21 @@ func resolveWhereBeadsDir() string {
 
 func resolveWhereDatabasePath() string {
 	return beads.FindDatabasePath()
+}
+
+func shouldReadWherePrefixFromStore(beadsDir string) bool {
+	if beadsDir == "" {
+		return false
+	}
+
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil {
+		return true
+	}
+
+	// `bd where` should be able to report selected server-mode metadata without
+	// requiring a live Dolt server just to recover issue_prefix.
+	return !cfg.IsDoltServerMode()
 }
 
 // findOriginalBeadsDir walks up from cwd looking for a .beads directory with a redirect file
