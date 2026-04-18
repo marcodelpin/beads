@@ -37,11 +37,11 @@ Examples:
 	Run: func(cmd *cobra.Command, args []string) {
 		result := WhereResult{}
 
-		if selected := selectedNoDBBeadsDir(); selected != "" {
+		if selected := selectedNoDBBeadsDir(cmd); selected != "" {
 			prepareSelectedNoDBContext(selected)
 		}
 
-		beadsDir := resolveWhereBeadsDir()
+		beadsDir := resolveWhereBeadsDir(cmd)
 		if beadsDir == "" {
 			if jsonOutput {
 				outputJSON(map[string]string{
@@ -104,8 +104,8 @@ Examples:
 	},
 }
 
-func resolveWhereBeadsDir() string {
-	if selected := selectedNoDBBeadsDir(); selected != "" {
+func resolveWhereBeadsDir(cmd *cobra.Command) string {
+	if selected := selectedNoDBBeadsDir(cmd); selected != "" {
 		return selected
 	}
 

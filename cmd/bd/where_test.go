@@ -60,8 +60,8 @@ func TestResolveWhereBeadsDir_FallsBackToFindBeadsDir(t *testing.T) {
 		dbFlag.Changed = originalFlagChanged
 	})
 
-	if got := resolveWhereBeadsDir(); !utils.PathsEqual(got, beadsDir) {
-		t.Fatalf("resolveWhereBeadsDir() = %q, want %q", got, beadsDir)
+	if got := resolveWhereBeadsDir(nil); !utils.PathsEqual(got, beadsDir) {
+		t.Fatalf("resolveWhereBeadsDir(nil) = %q, want %q", got, beadsDir)
 	}
 }
 
@@ -105,8 +105,8 @@ func TestResolveWhereBeadsDir_ReturnsEmptyWithoutWorkspace(t *testing.T) {
 		dbFlag.Changed = originalFlagChanged
 	})
 
-	if got := resolveWhereBeadsDir(); got != "" {
-		t.Fatalf("resolveWhereBeadsDir() = %q, want empty", got)
+	if got := resolveWhereBeadsDir(nil); got != "" {
+		t.Fatalf("resolveWhereBeadsDir(nil) = %q, want empty", got)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestResolveWhereBeadsDir_UsesInitializedDBPath(t *testing.T) {
 
 	dbPath = dbDir
 
-	if got := resolveWhereBeadsDir(); !utils.PathsEqual(got, beadsDir) {
-		t.Fatalf("resolveWhereBeadsDir() = %q, want %q", got, beadsDir)
+	if got := resolveWhereBeadsDir(nil); !utils.PathsEqual(got, beadsDir) {
+		t.Fatalf("resolveWhereBeadsDir(nil) = %q, want %q", got, beadsDir)
 	}
 }
 
