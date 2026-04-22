@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -90,19 +91,28 @@ func parseValidFor(s string) (time.Duration, error) {
 		if n <= 0 {
 			return 0, fmt.Errorf("duration must be positive, got %q", s)
 		}
+		var unit time.Duration
 		switch m[2] {
 		case "s":
-			return time.Duration(n) * time.Second, nil
+			unit = time.Second
 		case "m":
-			return time.Duration(n) * time.Minute, nil
+			unit = time.Minute
 		case "h":
-			return time.Duration(n) * time.Hour, nil
+			unit = time.Hour
 		case "d":
-			return time.Duration(n) * 24 * time.Hour, nil
+			unit = 24 * time.Hour
 		case "w":
-			return time.Duration(n) * 7 * 24 * time.Hour, nil
+			unit = 7 * 24 * time.Hour
 		case "y":
-			return time.Duration(n) * 365 * 24 * time.Hour, nil
+			unit = 365 * 24 * time.Hour
+		}
+		if unit > 0 {
+			// Guard against int64 overflow when multiplying n by unit.
+			// time.Duration is int64 nanoseconds; ~292 years max.
+			if int64(n) > int64(math.MaxInt64)/int64(unit) {
+				return 0, fmt.Errorf("duration too large: %q", s)
+			}
+			return time.Duration(n) * unit, nil
 		}
 	}
 
@@ -161,6 +171,9 @@ func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, 
 	if err := validatePolicy(policy); err != nil {
 		return "", err
 	}
+	if validFor < 0 {
+		return "", fmt.Errorf("valid-for must be non-negative, got %v", validFor)
+	}
 	env := memoryEnvelope{
 		Version:      envelopeVersion,
 		Content:      content,
@@ -199,11 +212,16 @@ func parseStoredMemory(raw string) memoryEnvelope {
 		// Not a valid envelope; treat as opaque text.
 		return memoryEnvelope{Content: raw}
 	}
-	// A stored envelope must carry the version tag. Without it we are looking
-	// at arbitrary JSON that happens to decode into our struct (e.g. a user
-	// who happened to store a JSON object as their memory). Fall back to
-	// treating it as plain text.
-	if env.Version != envelopeVersion {
+	// A stored envelope must carry the version tag AND the mandatory metadata
+	// fields (content + created_at). Without these we are looking at arbitrary
+	// JSON that happens to decode into our struct (e.g. a user who stored a
+	// JSON object as their memory, or a different schema that collides on the
+	// `_bd_mem` field name). Fall back to treating it as plain text.
+	//
+	// Forward compat: envelopes with Version >= 1 are accepted. Future versions
+	// (>1) may add new fields; unknown fields are ignored by encoding/json.
+	// Version == 0 means no tag present → legacy plain text / arbitrary JSON.
+	if env.Version < envelopeVersion || env.Content == "" || env.CreatedAt == "" {
 		return memoryEnvelope{Content: raw}
 	}
 	return env
