@@ -47,6 +47,23 @@ func TestEmbeddedMemoryValidityWindows(t *testing.T) {
 		return string(out)
 	}
 
+	// stripBootstrap removes auto-import / dolt-commit chatter that the embedded
+	// Dolt runtime writes to stdout on first access to an empty DB. Callers that
+	// compare full output (exact string, or JSON parse) must drop this preamble.
+	stripBootstrap := func(s string) string {
+		var kept []string
+		for _, line := range strings.Split(s, "\n") {
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, "auto-importing ") ||
+				strings.HasPrefix(t, "warning: auto-import:") ||
+				strings.Contains(t, "Error 1105: nothing to commit") {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		return strings.Join(kept, "\n")
+	}
+
 	// ---- Relative validity via --valid-for ----
 
 	t.Run("remember_valid_for_visible_before_expiry", func(t *testing.T) {
@@ -182,7 +199,7 @@ func TestEmbeddedMemoryValidityWindows(t *testing.T) {
 	t.Run("recall_returns_content_not_envelope", func(t *testing.T) {
 		run("remember", "my insight", "--key", "recall-key", "--valid-for", "1h")
 		out := run("recall", "recall-key")
-		out = strings.TrimSpace(out)
+		out = strings.TrimSpace(stripBootstrap(out))
 		if out != "my insight" {
 			t.Errorf("expected plain content, got %q", out)
 		}
@@ -193,7 +210,7 @@ func TestEmbeddedMemoryValidityWindows(t *testing.T) {
 	t.Run("json_output_includes_metadata", func(t *testing.T) {
 		run("remember", "jsoninsight", "--key", "json-key", "--valid-for", "2d",
 			"--expire-policy", "notify")
-		out := run("memories", "--json", "json-key")
+		out := stripBootstrap(run("memories", "--json", "json-key"))
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 			t.Fatalf("failed to parse JSON output %q: %v", out, err)
