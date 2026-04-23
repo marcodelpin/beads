@@ -82,6 +82,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		initServerMode, _ := cmd.Flags().GetBool("server")
 		serverHost, _ := cmd.Flags().GetString("server-host")
 		serverPort, _ := cmd.Flags().GetInt("server-port")
+		serverSocket, _ := cmd.Flags().GetString("server-socket")
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
@@ -104,7 +105,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			FatalError("unknown backend %q: only \"dolt\" is supported", backendFlag)
 		}
 
-		// Validate --database early, before any side effects
+		// Validate --database format early, before any side effects.
 		if database != "" {
 			if err := dolt.ValidateDatabaseName(database); err != nil {
 				FatalError("invalid database name %q: %v", database, err)
@@ -162,6 +163,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// (before config.yaml exists). Safe: init runs once and exits.
 		if sharedServer {
 			_ = os.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+		}
+
+		// Reject hyphens in --database for embedded mode. Must run AFTER
+		// serverMode is set above — otherwise isEmbeddedMode() always returns
+		// true and incorrectly rejects server-mode names (GH#3231).
+		if database != "" && strings.ContainsRune(database, '-') && isEmbeddedMode() {
+			FatalError("database name %q contains hyphens which are invalid in embedded mode; use underscores instead (e.g. %q)",
+				database, sanitizeDBName(database))
 		}
 
 		// Initialize config (PersistentPreRun doesn't run for init command)
@@ -505,7 +514,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 		if syncFromRemote {
-			if err := cloneFromRemote(ctx, beadsDir, syncURL, dbName); err != nil {
+			if err := cloneFromRemote(ctx, beadsDir, syncURL, dbName, nil); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -550,6 +559,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 		if serverPort != 0 {
 			doltCfg.ServerPort = serverPort
+		}
+		if serverSocket != "" {
+			doltCfg.ServerSocket = serverSocket
 		}
 		if serverUser != "" {
 			doltCfg.ServerUser = serverUser
@@ -770,6 +782,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				}
 				if serverPort != 0 {
 					cfg.DoltServerPort = serverPort
+				}
+				if serverSocket != "" {
+					cfg.DoltServerSocket = serverSocket
 				}
 				if serverUser != "" {
 					cfg.DoltServerUser = serverUser
@@ -1140,7 +1155,11 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					giCmd := exec.Command("git", "add", ".gitignore")
 					_ = giCmd.Run()
 				}
-				commitCmd := exec.Command("git", "commit", "-m", "bd init: initialize beads issue tracking")
+				commitArgs := []string{"commit", "-m", "bd init: initialize beads issue tracking"}
+				if fromJSONL {
+					commitArgs = append(commitArgs, "--no-verify")
+				}
+				commitCmd := exec.Command("git", commitArgs...)
 				if commitOut, commitErr := commitCmd.CombinedOutput(); commitErr != nil {
 					if !quiet && !strings.Contains(string(commitOut), "nothing to commit") {
 						fmt.Fprintf(os.Stderr, "Warning: failed to commit beads files: %v\n", commitErr)
@@ -1269,6 +1288,7 @@ func init() {
 	initCmd.Flags().Bool("server", false, "Use external dolt sql-server instead of embedded engine")
 	initCmd.Flags().String("server-host", "", "Dolt server host (default: 127.0.0.1)")
 	initCmd.Flags().Int("server-port", 0, "Dolt server port (default: 3307)")
+	initCmd.Flags().String("server-socket", "", "Unix domain socket path (overrides host/port)")
 	initCmd.Flags().String("server-user", "", "Dolt server MySQL user (default: root)")
 	initCmd.Flags().String("database", "", "Use existing server database name (overrides prefix-based naming)")
 	initCmd.Flags().Bool("shared-server", false, "Enable shared Dolt server mode (all projects share one server at ~/.beads/shared-server/)")

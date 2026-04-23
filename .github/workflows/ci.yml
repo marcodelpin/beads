@@ -128,6 +128,7 @@ jobs:
       - name: Upload coverage to Codecov
         if: matrix.coverage && !cancelled()
         uses: codecov/codecov-action@v6
+        continue-on-error: true
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -136,6 +137,7 @@ jobs:
       - name: Upload test results to Codecov
         if: matrix.coverage && !cancelled()
         uses: codecov/codecov-action@v6
+        continue-on-error: true
         with:
           files: junit.xml
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -301,7 +303,7 @@ jobs:
     name: Test Nix Flake
     runs-on: ubuntu-latest
     # Allow failure until nixpkgs updates Go to 1.25.6+
-    # (dolthub/driver requires go 1.25.6, nixpkgs-unstable has go 1.25.1)
+    # (dolthub/driver requires go 1.26.2, nixpkgs-unstable may lag behind)
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
