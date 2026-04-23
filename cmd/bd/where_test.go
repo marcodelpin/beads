@@ -189,11 +189,78 @@ func TestResolveWhereDatabasePath_PrefersInitializedDBPath(t *testing.T) {
 	}
 }
 
-func TestIsSelectedNoDBCommand_Where(t *testing.T) {
-	cmd := &cobra.Command{Use: "where"}
+func TestIsSelectedNoDBCommand(t *testing.T) {
+	doltChild := func(name string) *cobra.Command {
+		parent := &cobra.Command{Use: "dolt"}
+		child := &cobra.Command{Use: name}
+		parent.AddCommand(child)
+		return child
+	}
+	parentedChild := func(parentName, name string) *cobra.Command {
+		parent := &cobra.Command{Use: parentName}
+		child := &cobra.Command{Use: name}
+		parent.AddCommand(child)
+		return child
+	}
 
-	if !isSelectedNoDBCommand(cmd) {
-		t.Fatal("isSelectedNoDBCommand(where) = false, want true")
+	tests := []struct {
+		name string
+		cmd  *cobra.Command
+		want bool
+	}{
+		{
+			name: "nil command",
+			cmd:  nil,
+			want: false,
+		},
+		{
+			name: "where",
+			cmd:  &cobra.Command{Use: "where"},
+			want: true,
+		},
+		{
+			name: "context",
+			cmd:  &cobra.Command{Use: "context"},
+			want: true,
+		},
+		{
+			name: "root command without dolt parent",
+			cmd:  &cobra.Command{Use: "status"},
+			want: false,
+		},
+		{
+			name: "child with non-dolt parent",
+			cmd:  parentedChild("config", "show"),
+			want: false,
+		},
+		{
+			name: "dolt status",
+			cmd:  doltChild("status"),
+			want: true,
+		},
+		{
+			name: "dolt push",
+			cmd:  doltChild("push"),
+			want: false,
+		},
+		{
+			name: "dolt pull",
+			cmd:  doltChild("pull"),
+			want: false,
+		},
+		{
+			name: "dolt commit",
+			cmd:  doltChild("commit"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSelectedNoDBCommand(tt.cmd); got != tt.want {
+				t.Fatalf("isSelectedNoDBCommand() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
