@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`bd init --force`** — deprecated alias for `--reinit-local`. Continues to work for ≥2 releases, emits a `DeprecationWarning`, routes internally to `--reinit-local`. Use `--reinit-local` going forward. CI and scripts are unaffected for the duration of the deprecation window.
 
+## [1.0.3] - 2026-04-24
+
+### Fixed
+
+- **`go install ...@latest` restored** — released a tag whose `go.mod` no longer contains local `replace` directives, fixing install failures from v1.0.1 and v1.0.2. Fixes [#3338](https://github.com/gastownhall/beads/issues/3338) and [#3312](https://github.com/gastownhall/beads/issues/3312).
+- **npm macOS archive layout** — macOS release archives are flat, matching the path expected by the npm postinstall script. Fixes [#3388](https://github.com/gastownhall/beads/issues/3388).
+- **Windows install cleanup** — `make install` on Windows removes stale extensionless `bd` files before installing `bd.exe`, avoiding PATH shadowing by older installs. Fixes [#3399](https://github.com/gastownhall/beads/issues/3399).
+- **Windows test portability** — fixed tests that hardcoded POSIX path or permission behavior. Fixes [#3404](https://github.com/gastownhall/beads/issues/3404).
+- **Embedded pre-commit hook cwd** — pre-commit export no longer prints "no beads database found" for embedded-mode repositories. Fixes [#3454](https://github.com/gastownhall/beads/issues/3454).
+
 ## [1.0.2] - 2026-04-15
 
 ### Fixed
