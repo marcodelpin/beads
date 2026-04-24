@@ -40,6 +40,7 @@ func snapshotBootstrapEnv(t *testing.T) func() {
 
 func TestDetectBootstrapAction_NoneWhenDatabaseExists(t *testing.T) {
 	t.Setenv("BEADS_DOLT_DATA_DIR", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
 	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
@@ -214,6 +215,7 @@ func TestDetectBootstrapAction_ServerModeMissingConfiguredDBDoesNotReturnNone(t 
 
 func TestDetectBootstrapAction_ServerModeProbeErrorStopsWithReason(t *testing.T) {
 	t.Setenv("BEADS_DOLT_DATA_DIR", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
 	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
@@ -968,6 +970,143 @@ func TestDetectBootstrapAction_SharedServerEnvUsesSharedPath(t *testing.T) {
 	}
 	if !plan.HasExisting {
 		t.Error("HasExisting = false, want true")
+	}
+}
+
+// TestDetectBootstrapAction_WorktreeSynthesizedDirPrefersSyncOverDefaultSharedDB
+// verifies that when bootstrap is running from a worktree whose fallback
+// .beads path lives under a bare/common git directory, remote recovery via
+// refs/dolt/data wins over an unrelated default "beads" database already
+// present on the shared server.
+func TestDetectBootstrapAction_WorktreeSynthesizedDirPrefersSyncOverDefaultSharedDB(t *testing.T) {
+	t.Setenv("BEADS_DOLT_DATA_DIR", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	originBare := filepath.Join(t.TempDir(), "origin.git")
+	runGitForBootstrapTest(t, "", "init", "--bare", "--initial-branch=main", originBare)
+
+	sourceDir := t.TempDir()
+	runGitForBootstrapTest(t, sourceDir, "init", "-b", "main")
+	runGitForBootstrapTest(t, sourceDir, "config", "user.email", "test@test.com")
+	runGitForBootstrapTest(t, sourceDir, "config", "user.name", "Test User")
+	runGitForBootstrapTest(t, sourceDir, "commit", "--allow-empty", "-m", "init")
+	runGitForBootstrapTest(t, sourceDir, "remote", "add", "origin", originBare)
+	runGitForBootstrapTest(t, sourceDir, "push", "origin", "main")
+	runGitForBootstrapTest(t, sourceDir, "push", "origin", "HEAD:refs/dolt/data")
+
+	localBare := filepath.Join(t.TempDir(), "local-bare.git")
+	runGitForBootstrapTest(t, "", "clone", "--bare", originBare, localBare)
+
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	runGitForBootstrapTest(t, "", "--git-dir="+localBare, "worktree", "add", worktreeDir, "main")
+
+	sharedDoltDir := filepath.Join(homeDir, ".beads", "shared-server", "dolt")
+	if err := os.MkdirAll(filepath.Join(sharedDoltDir, "beads"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+	if err := os.Chdir(worktreeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	synthesizedDir := filepath.Join(localBare, ".beads")
+	cfg, cfgErr := configfile.Load(synthesizedDir)
+	if cfgErr != nil || cfg == nil {
+		cfg = findParentConfig(synthesizedDir)
+	}
+	if cfg == nil {
+		cfg = configfile.DefaultConfig()
+	}
+
+	if got := cfg.GetDoltDatabase(); got != "beads" {
+		t.Fatalf("GetDoltDatabase() = %q, want %q (default expected without local metadata)", got, "beads")
+	}
+
+	origCheck := checkBootstrapServerDB
+	checkBootstrapServerDB = func(probeCfg bootstrapServerProbeConfig) bootstrapServerDBCheck {
+		if probeCfg.database != "beads" {
+			t.Fatalf("probeCfg.database = %q, want %q", probeCfg.database, "beads")
+		}
+		return bootstrapServerDBCheck{Exists: true, Reachable: true}
+	}
+	defer func() { checkBootstrapServerDB = origCheck }()
+
+	plan := detectBootstrapAction(synthesizedDir, cfg)
+
+	if plan.Action != "sync" {
+		t.Fatalf("expected action=%q, got %q: %s", "sync", plan.Action, plan.Reason)
+	}
+	if plan.SyncRemote == "" {
+		t.Fatal("expected SyncRemote to be populated from origin refs/dolt/data detection")
+	}
+	if plan.Database != "beads" {
+		t.Errorf("plan.Database = %q, want %q (default metadata-free value should still recover via sync)", plan.Database, "beads")
+	}
+}
+
+func TestDetectBootstrapAction_SynthesizedDirWithoutRecoveryStillUsesExistingSharedDB(t *testing.T) {
+	t.Setenv("BEADS_DOLT_DATA_DIR", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	if err := os.MkdirAll(worktreeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+	if err := os.Chdir(worktreeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	sharedDoltDir := filepath.Join(homeDir, ".beads", "shared-server", "dolt")
+	if err := os.MkdirAll(filepath.Join(sharedDoltDir, "project_existing"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	synthesizedDir := filepath.Join(worktreeDir, ".beads")
+	cfg := configfile.DefaultConfig()
+	cfg.DoltMode = configfile.DoltModeServer
+	cfg.DoltDatabase = "project_existing"
+
+	origCheck := checkBootstrapServerDB
+	checkBootstrapServerDB = func(probeCfg bootstrapServerProbeConfig) bootstrapServerDBCheck {
+		if probeCfg.database != "project_existing" {
+			t.Fatalf("probeCfg.database = %q, want %q", probeCfg.database, "project_existing")
+		}
+		return bootstrapServerDBCheck{Exists: true, Reachable: true}
+	}
+	defer func() { checkBootstrapServerDB = origCheck }()
+
+	plan := detectBootstrapAction(synthesizedDir, cfg)
+
+	if plan.Action != "none" {
+		t.Fatalf("expected action=%q, got %q: %s", "none", plan.Action, plan.Reason)
+	}
+	if !plan.HasExisting {
+		t.Fatal("expected HasExisting to be true when configured shared-server DB already exists")
 	}
 }
 
