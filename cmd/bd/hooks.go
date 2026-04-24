@@ -1175,12 +1175,11 @@ func exportJSONLForCommit() {
 	// gitAddFile as the parent, which relies on the inherited GIT_DIR to
 	// identify the hook's worktree and apply the cross-worktree staging
 	// guard (GH#3311 part 2). Scrubbing here would disable that guard.
-	// The theoretical downside is sync.Once-cached git.GetRepoRoot() in
-	// the subprocess being computed against cwd=.beads/; no current
-	// caller reads it on this path, so it is a latent hazard rather than
-	// a live bug.
+	// Run from the project root, not .beads/. Embedded Dolt discovery starts
+	// from cwd, so cwd=.beads/ can make the export subprocess look for a
+	// nested .beads/.beads workspace and warn on every commit (GH#3454).
 	cmd := exec.Command("bd", "export", "-o", fullPath)
-	cmd.Dir = beadsDir
+	cmd.Dir = exportSubprocessDir(beadsDir)
 	cmd.Env = filterEnv(os.Environ(), "BD_GIT_HOOK")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -1198,6 +1197,10 @@ func exportJSONLForCommit() {
 			debug.Logf("pre-commit: git add failed: %v\n", err)
 		}
 	}
+}
+
+func exportSubprocessDir(beadsDir string) string {
+	return filepath.Dir(beadsDir)
 }
 
 // filterEnv returns a copy of env with entries matching the given key removed.
