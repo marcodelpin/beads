@@ -22,6 +22,11 @@ type pushState struct {
 	LastCommit string `json:"last_commit"` // Dolt commit hash
 }
 
+type autoPushTarget interface {
+	GetCurrentCommit(ctx context.Context) (string, error)
+	Push(ctx context.Context) error
+}
+
 func pushStatePath() (string, error) {
 	beadsDir := beads.FindBeadsDir()
 	if beadsDir == "" {
@@ -77,6 +82,22 @@ const autoPushTimeout = 30 * time.Second
 // dolt.auto-push=true to restore the old behavior on single-writer setups.
 func isDoltAutoPushEnabled(_ context.Context) bool {
 	return config.GetBool("dolt.auto-push")
+}
+
+// pushWithContext is a caller-side guard. Push implementations should honor
+// ctx directly, but this keeps auto-push from blocking forever if one does not.
+func pushWithContext(ctx context.Context, target autoPushTarget) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- target.Push(ctx)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // maybeAutoPush pushes to the Dolt remote if enabled and the debounce interval has passed.
@@ -143,7 +164,7 @@ func maybeAutoPush(ctx context.Context) {
 	defer pushCancel()
 
 	debug.Logf("dolt auto-push: pushing to origin (timeout %s)...\n", pushTimeout)
-	if err := st.Push(pushCtx); err != nil {
+	if err := pushWithContext(pushCtx, st); err != nil {
 		if !isQuiet() && !jsonOutput {
 			if pushCtx.Err() == context.DeadlineExceeded {
 				fmt.Fprintf(os.Stderr, "Warning: dolt auto-push timed out after %s (remote may be unreachable)\n", pushTimeout)

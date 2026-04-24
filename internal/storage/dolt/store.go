@@ -1270,6 +1270,26 @@ func (s *DoltStore) execWithLongTimeout(ctx context.Context, query string, args 
 	return tx.Commit()
 }
 
+// execWithLongTimeoutNoTx executes a long-running Dolt stored procedure without
+// an explicit transaction. Push operations do not need the pull/merge conflict
+// handling above, and DOLT_PUSH has diverged from direct `dolt push` behavior
+// when wrapped in a SQL transaction.
+func (s *DoltStore) execWithLongTimeoutNoTx(ctx context.Context, query string, args ...any) error {
+	cfg, err := mysql.ParseDSN(s.connStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse DSN for long-timeout connection: %w", err)
+	}
+	cfg.ReadTimeout = 5 * time.Minute
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		return fmt.Errorf("failed to open long-timeout connection: %w", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	_, err = db.ExecContext(ctx, query, args...)
+	return err
+}
+
 // applyPoolLimits configures the pool on db using the sensible-default
 // connection pool limits, overridden by any non-zero Config fields.
 //
@@ -1921,6 +1941,9 @@ func (s *DoltStore) doltCLIPush(ctx context.Context, remote string, force bool, 
 	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command with validated remote/branch
 	cmd.Dir = s.CLIDir()
 	creds.applyToCmd(cmd)
+	if s.isS3Remote(ctx, remote) {
+		applyS3ChecksumEnvToCmd(cmd)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("dolt push failed: %s: %w", strings.TrimSpace(string(out)), err)
@@ -1937,6 +1960,9 @@ func (s *DoltStore) doltCLIPull(ctx context.Context, remote string, creds *remot
 	cmd := exec.CommandContext(ctx, "dolt", "pull", remote, s.branch) // #nosec G204 -- fixed command
 	cmd.Dir = s.CLIDir()
 	creds.applyToCmd(cmd)
+	if s.isS3Remote(ctx, remote) {
+		applyS3ChecksumEnvToCmd(cmd)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("dolt pull failed: %s: %w", strings.TrimSpace(string(out)), err)
@@ -2005,30 +2031,38 @@ func (s *DoltStore) pushToRemote(ctx context.Context, remote string, force bool)
 	if s.shouldUseCLIForCloudAuth(remote) {
 		return s.doltCLIPush(ctx, remote, force, creds)
 	}
+	// If the same remote exists in the local Dolt directory, prefer CLI push.
+	// This matches direct `dolt push` behavior and avoids sql-server mediated
+	// DOLT_PUSH failures for Hosted Dolt HTTPS remotes (GH#3358).
+	if s.shouldUseCLIForLocalRemote(ctx, remote) {
+		return s.doltCLIPush(ctx, remote, force, creds)
+	}
 	if s.remoteUser != "" && remote == s.remote {
-		return withEnvCredentials(creds, func() error {
+		return withRemoteOperationEnv(creds, s.isS3Remote(ctx, remote), func() error {
 			if force {
-				if err := s.execWithLongTimeout(ctx, "CALL DOLT_PUSH('--force', '--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
+				if err := s.execWithLongTimeoutNoTx(ctx, "CALL DOLT_PUSH('--force', '--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
 					return fmt.Errorf("failed to force push to %s/%s: %w", remote, s.branch, err)
 				}
 			} else {
-				if err := s.execWithLongTimeout(ctx, "CALL DOLT_PUSH('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
+				if err := s.execWithLongTimeoutNoTx(ctx, "CALL DOLT_PUSH('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
 					return fmt.Errorf("failed to push to %s/%s: %w", remote, s.branch, err)
 				}
 			}
 			return nil
 		})
 	}
-	if force {
-		if err := s.execWithLongTimeout(ctx, "CALL DOLT_PUSH('--force', ?, ?)", remote, s.branch); err != nil {
-			return fmt.Errorf("failed to force push to %s/%s: %w", remote, s.branch, err)
+	return withRemoteOperationEnv(nil, s.isS3Remote(ctx, remote), func() error {
+		if force {
+			if err := s.execWithLongTimeoutNoTx(ctx, "CALL DOLT_PUSH('--force', ?, ?)", remote, s.branch); err != nil {
+				return fmt.Errorf("failed to force push to %s/%s: %w", remote, s.branch, err)
+			}
+		} else {
+			if err := s.execWithLongTimeoutNoTx(ctx, "CALL DOLT_PUSH(?, ?)", remote, s.branch); err != nil {
+				return fmt.Errorf("failed to push to %s/%s: %w", remote, s.branch, err)
+			}
 		}
-	} else {
-		if err := s.execWithLongTimeout(ctx, "CALL DOLT_PUSH(?, ?)", remote, s.branch); err != nil {
-			return fmt.Errorf("failed to push to %s/%s: %w", remote, s.branch, err)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // Pull pulls changes from the remote.
@@ -2101,17 +2135,19 @@ func (s *DoltStore) pullFromRemote(ctx context.Context, remote string) (retErr e
 		return s.doltCLIPull(ctx, remote, creds)
 	}
 	if s.remoteUser != "" && remote == s.remote {
-		return withEnvCredentials(creds, func() error {
+		return withRemoteOperationEnv(creds, s.isS3Remote(ctx, remote), func() error {
 			if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
 				return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 			}
 			return nil
 		})
 	}
-	if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
-		return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
-	}
-	return nil
+	return withRemoteOperationEnv(nil, s.isS3Remote(ctx, remote), func() error {
+		if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
+			return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
+		}
+		return nil
+	})
 }
 
 // pullWithAutoResolve executes a DOLT_PULL query with long timeout and auto-resolves

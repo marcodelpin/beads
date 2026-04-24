@@ -811,6 +811,34 @@ func confirmOverwrite(surface, name, existingURL, newURL string) bool {
 	return response == "y" || response == "yes"
 }
 
+var listDoltCLIRemotes = doltutil.ListCLIRemotes
+
+func findRemoteURL(remotes []storage.RemoteInfo, name string) string {
+	for _, r := range remotes {
+		if r.Name == name {
+			return r.URL
+		}
+	}
+	return ""
+}
+
+func listRemoteSurfaces(ctx context.Context, st storage.RemoteStore, dbPath string, embedded bool) (
+	sqlRemotes []storage.RemoteInfo,
+	sqlErr error,
+	cliRemotes []storage.RemoteInfo,
+	cliErr error,
+) {
+	sqlRemotes, sqlErr = st.ListRemotes(ctx)
+	if embedded {
+		// Embedded mode holds an exclusive flock while the store is open. Running
+		// `dolt remote` as a subprocess against the same directory can block on
+		// that flock, so treat the SQL-visible remotes as the shared surface.
+		return sqlRemotes, sqlErr, sqlRemotes, nil
+	}
+	cliRemotes, cliErr = listDoltCLIRemotes(dbPath)
+	return sqlRemotes, sqlErr, cliRemotes, cliErr
+}
+
 // --- Dolt remote management commands ---
 
 var doltRemoteCmd = &cobra.Command{
@@ -842,17 +870,12 @@ var doltRemoteAddCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		dbPath := locator.CLIDir()
+		embedded := isEmbeddedMode()
 
 		// Check existing remotes on both surfaces
-		sqlRemotes, _ := st.ListRemotes(ctx)
-		var sqlURL string
-		for _, r := range sqlRemotes {
-			if r.Name == name {
-				sqlURL = r.URL
-				break
-			}
-		}
-		cliURL := doltutil.FindCLIRemote(dbPath, name)
+		sqlRemotes, _, cliRemotes, _ := listRemoteSurfaces(ctx, st, dbPath, embedded)
+		sqlURL := findRemoteURL(sqlRemotes, name)
+		cliURL := findRemoteURL(cliRemotes, name)
 
 		// Prompt for overwrite if either surface already has this remote.
 		// In embedded mode SQL and CLI share the same directory, so only
@@ -868,7 +891,7 @@ var doltRemoteAddCmd = &cobra.Command{
 				os.Exit(1)
 			}
 		}
-		if !isEmbeddedMode() && cliURL != "" && cliURL != url {
+		if !embedded && cliURL != "" && cliURL != url {
 			if !confirmOverwrite("CLI (filesystem)", name, cliURL, url) {
 				fmt.Println("Canceled.")
 				return
@@ -895,7 +918,7 @@ var doltRemoteAddCmd = &cobra.Command{
 		// In embedded mode, SQL and CLI operate on the same directory,
 		// so the SQL add already wrote the remote config — skip CLI.
 		cliFailed := false
-		if !isEmbeddedMode() && cliURL != url {
+		if !embedded && cliURL != url {
 			if err := doltutil.AddCLIRemote(dbPath, name, url); err != nil {
 				cliFailed = true
 				// Non-fatal: SQL remote was added successfully
@@ -949,8 +972,9 @@ var doltRemoteListCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		dbPath := locator.CLIDir()
+		embedded := isEmbeddedMode()
 
-		sqlRemotes, sqlErr := st.ListRemotes(ctx)
+		sqlRemotes, sqlErr, cliRemotes, cliErr := listRemoteSurfaces(ctx, st, dbPath, embedded)
 		if sqlErr != nil {
 			if jsonOutput {
 				outputJSONError(sqlErr, "remote_list_failed")
@@ -959,8 +983,6 @@ var doltRemoteListCmd = &cobra.Command{
 			}
 			os.Exit(1)
 		}
-
-		cliRemotes, cliErr := doltutil.ListCLIRemotes(dbPath)
 
 		// Build unified view
 		type unifiedRemote struct {
@@ -1042,7 +1064,7 @@ var doltRemoteListCmd = &cobra.Command{
 			fmt.Printf("\n%s Could not read CLI remotes: %v\n", ui.RenderWarn("⚠"), cliErr)
 		}
 		if hasDiscrepancy {
-			if isEmbeddedMode() {
+			if embedded {
 				fmt.Printf("\n%s Remote discrepancies detected.\n", ui.RenderWarn("⚠"))
 			} else {
 				fmt.Printf("\n%s Remote discrepancies detected. Run 'bd doctor --fix' to resolve.\n", ui.RenderWarn("⚠"))
@@ -1069,17 +1091,12 @@ var doltRemoteRemoveCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		dbPath := locator.CLIDir()
+		embedded := isEmbeddedMode()
 
 		// Check both surfaces for conflicts
-		sqlRemotes, _ := st.ListRemotes(ctx)
-		var sqlURL string
-		for _, r := range sqlRemotes {
-			if r.Name == name {
-				sqlURL = r.URL
-				break
-			}
-		}
-		cliURL := doltutil.FindCLIRemote(dbPath, name)
+		sqlRemotes, _, cliRemotes, _ := listRemoteSurfaces(ctx, st, dbPath, embedded)
+		sqlURL := findRemoteURL(sqlRemotes, name)
+		cliURL := findRemoteURL(cliRemotes, name)
 
 		// Refuse removal if URLs conflict — user must resolve first
 		forceRemove, _ := cmd.Flags().GetBool("force")
@@ -1107,7 +1124,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 		// In embedded mode, SQL and CLI operate on the same directory,
 		// so the SQL remove already cleared the remote config — skip CLI.
 		cliRemoveFailed := false
-		if !isEmbeddedMode() && cliURL != "" {
+		if !embedded && cliURL != "" {
 			if err := doltutil.RemoveCLIRemote(dbPath, name); err != nil {
 				cliRemoveFailed = true
 				fmt.Fprintf(os.Stderr, "Warning: SQL remote removed but CLI remote failed: %v\n", err)

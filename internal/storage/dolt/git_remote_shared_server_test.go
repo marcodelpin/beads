@@ -132,7 +132,7 @@ func TestCredentialCLIRoutingE2ESharedServer(t *testing.T) {
 	}
 
 	require.Equal(t, filepath.Join(sharedDoltDir, "testdb"), store.CLIDir(), "shared-server CLIDir should resolve to shared Dolt root")
-	require.True(t, store.shouldUseCLIForCredentials(ctx), "shared-server mode should route credentials via the shared CLI remote")
+	require.True(t, store.shouldUseCLIForCredentials(ctx, store.remote, store.mainRemoteCredentials()), "shared-server mode should route credentials via the shared CLI remote")
 
 	issue := &types.Issue{
 		ID:        "shared-route-001",

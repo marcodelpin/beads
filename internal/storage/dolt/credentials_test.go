@@ -39,6 +39,92 @@ func TestEncryptDecryptWithKey(t *testing.T) {
 	}
 }
 
+func TestApplyS3ChecksumEnvToCmd(t *testing.T) {
+	t.Setenv(awsResponseChecksumValidationEnv, "when_supported")
+
+	cmd := exec.Command("dolt", "push") // #nosec G204 -- test command is not executed
+	(&remoteCredentials{username: "user", password: "pass"}).applyToCmd(cmd)
+	applyS3ChecksumEnvToCmd(cmd)
+
+	var gotChecksum, gotUser, gotPassword string
+	for _, e := range cmd.Env {
+		switch {
+		case strings.HasPrefix(e, awsResponseChecksumValidationEnv+"="):
+			gotChecksum = strings.TrimPrefix(e, awsResponseChecksumValidationEnv+"=")
+		case strings.HasPrefix(e, "DOLT_REMOTE_USER="):
+			gotUser = strings.TrimPrefix(e, "DOLT_REMOTE_USER=")
+		case strings.HasPrefix(e, "DOLT_REMOTE_PASSWORD="):
+			gotPassword = strings.TrimPrefix(e, "DOLT_REMOTE_PASSWORD=")
+		}
+	}
+
+	if gotChecksum != "when_required" {
+		t.Fatalf("%s = %q, want when_required", awsResponseChecksumValidationEnv, gotChecksum)
+	}
+	if gotUser != "user" || gotPassword != "pass" {
+		t.Fatalf("credential env = user:%q password:%q", gotUser, gotPassword)
+	}
+}
+
+func TestWithRemoteOperationEnvRestoresS3ChecksumEnv(t *testing.T) {
+	t.Setenv(awsResponseChecksumValidationEnv, "when_supported")
+
+	err := withRemoteOperationEnv(nil, true, func() error {
+		if got := os.Getenv(awsResponseChecksumValidationEnv); got != "when_required" {
+			t.Fatalf("%s during operation = %q, want when_required", awsResponseChecksumValidationEnv, got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withRemoteOperationEnv returned error: %v", err)
+	}
+	if got := os.Getenv(awsResponseChecksumValidationEnv); got != "when_supported" {
+		t.Fatalf("%s after operation = %q, want restored when_supported", awsResponseChecksumValidationEnv, got)
+	}
+}
+
+func TestWithRemoteOperationEnvUnsetsS3ChecksumEnv(t *testing.T) {
+	t.Setenv(awsResponseChecksumValidationEnv, "")
+	if err := os.Unsetenv(awsResponseChecksumValidationEnv); err != nil {
+		t.Fatalf("unset %s: %v", awsResponseChecksumValidationEnv, err)
+	}
+
+	err := withRemoteOperationEnv(nil, true, func() error {
+		if got := os.Getenv(awsResponseChecksumValidationEnv); got != "when_required" {
+			t.Fatalf("%s during operation = %q, want when_required", awsResponseChecksumValidationEnv, got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withRemoteOperationEnv returned error: %v", err)
+	}
+	if _, ok := os.LookupEnv(awsResponseChecksumValidationEnv); ok {
+		t.Fatalf("%s should be unset after operation", awsResponseChecksumValidationEnv)
+	}
+}
+
+func TestIsS3RemoteURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "dolt aws", url: "aws://[table:bucket]/db", want: true},
+		{name: "s3", url: "s3://bucket/path", want: true},
+		{name: "gcs", url: "gs://bucket/path", want: false},
+		{name: "azure", url: "az://account.blob.core.windows.net/container", want: false},
+		{name: "empty", url: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isS3RemoteURL(tt.url); got != tt.want {
+				t.Fatalf("isS3RemoteURL(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEncryptDecryptWithWrongKey(t *testing.T) {
 	key1 := make([]byte, 32)
 	key2 := make([]byte, 32)
@@ -606,6 +692,53 @@ func TestCredentialCLIRoutingSharedServerUsesSharedDoltRoot(t *testing.T) {
 
 	if !store.shouldUseCLIForCredentials(context.Background(), store.remote, store.mainRemoteCredentials()) {
 		t.Fatalf("expected shared-server credential routing to resolve CLI remote via %q, got CLIDir %q", cliDir, store.CLIDir())
+	}
+}
+
+func TestMatchingLocalRemoteCLIRouting(t *testing.T) {
+	tests := []struct {
+		name    string
+		remotes []storage.RemoteInfo
+		cliURL  string
+		remote  string
+		want    bool
+	}{
+		{
+			name:    "matching remote and url",
+			remotes: []storage.RemoteInfo{{Name: "origin", URL: "https://doltremoteapi.dolthub.com/org/repo"}},
+			cliURL:  "https://doltremoteapi.dolthub.com/org/repo",
+			remote:  "origin",
+			want:    true,
+		},
+		{
+			name:    "different url",
+			remotes: []storage.RemoteInfo{{Name: "origin", URL: "https://server.example/repo"}},
+			cliURL:  "https://local.example/repo",
+			remote:  "origin",
+			want:    false,
+		},
+		{
+			name:    "different remote",
+			remotes: []storage.RemoteInfo{{Name: "backup", URL: "https://doltremoteapi.dolthub.com/org/repo"}},
+			cliURL:  "https://doltremoteapi.dolthub.com/org/repo",
+			remote:  "origin",
+			want:    false,
+		},
+		{
+			name:    "missing cli remote",
+			remotes: []storage.RemoteInfo{{Name: "origin", URL: "https://doltremoteapi.dolthub.com/org/repo"}},
+			remote:  "origin",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldUseCLIForMatchingLocalRemote(tt.remotes, tt.cliURL, tt.remote)
+			if got != tt.want {
+				t.Fatalf("shouldUseCLIForMatchingLocalRemote() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
