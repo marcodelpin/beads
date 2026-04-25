@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -1918,10 +1919,42 @@ func (s *DoltStore) prePushFSCK(ctx context.Context) error {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		output := strings.TrimSpace(string(out))
+		// Distinguish "fsck couldn't run the integrity check" (environmental /
+		// tooling issue) from "fsck ran and found integrity problems" (the actual
+		// concern of PR #3447). Wrapping an open-failure as ErrDanglingReference
+		// misleads users into thinking their db is corrupt.
+		//
+		// Concrete example: dolthub/dolt#10915 (Windows url.Parse bug, pre-v1.86.4)
+		// caused fsck to construct a malformed file path and fail to open; users
+		// running `bd dolt push` saw "dangling chunk reference" errors on perfectly
+		// healthy databases.
+		//
+		// The two known "couldn't open" signatures from dolt are covered below.
+		// Any other fsck failure still aborts the push so real dangling references
+		// continue to block propagation.
+		if fsckCouldNotOpen(output) {
+			log.Printf("pre-push fsck could not run, skipping integrity check: %s", output)
+			return nil
+		}
 		return fmt.Errorf("%w: aborting push to prevent propagating corrupt chunks: %s",
-			ErrDanglingReference, strings.TrimSpace(string(out)))
+			ErrDanglingReference, output)
 	}
 	return nil
+}
+
+// fsckCouldNotOpen reports whether dolt fsck output indicates the check
+// could not run at all (as opposed to finding integrity problems). Matches
+// the known error phrasings dolt emits before any integrity work begins.
+func fsckCouldNotOpen(output string) bool {
+	switch {
+	case strings.Contains(output, "Could not open dolt database"):
+		return true
+	case strings.Contains(output, "repository state is invalid"):
+		return true
+	default:
+		return false
+	}
 }
 
 // doltCLIPush shells out to `dolt push` from the database directory.
