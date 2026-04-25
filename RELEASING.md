@@ -38,6 +38,9 @@ A beads release involves multiple distribution channels:
 ### Required Access
 
 - GitHub: Write access to repository and ability to create releases
+- GitHub: Ability to create protected `v*` release tags. The repository should
+  restrict `refs/tags/v*` creation, updates, and deletion to trusted release
+  maintainers.
 - PyPI: Maintainer access to `beads-mcp` package
 - npm: Member of `@beads` organization
 
@@ -164,6 +167,10 @@ git tag -a v0.22.0 -m "Release v0.22.0"
 git push origin main
 git push origin v0.22.0
 ```
+
+The release workflow is intentionally gated to `refs/tags/v*`. A manual
+workflow dispatch from a branch will skip publishing jobs; manual reruns must
+select the release tag.
 
 **Alternative (step-by-step):**
 

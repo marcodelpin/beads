@@ -100,6 +100,11 @@ git push origin v0.9.X
 - GoReleaser builds and publishes binaries to GitHub Releases
 - PyPI publish job uploads the MCP server package to PyPI
 
+Release automation only runs for `v*` tags. Keep `refs/tags/v*` protected so
+only trusted release maintainers can create, update, or delete release tags.
+Manual workflow dispatch is for rerunning a release from the tag, not from a
+branch.
+
 ### 2. GitHub Secrets Setup (One-Time)
 
 The automation requires this secret to be configured:
