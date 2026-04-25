@@ -436,7 +436,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					fmt.Fprintf(os.Stderr, "Warning: could not fix .beads permissions: %v\n", err)
 				}
 			} else if fixed && !quiet {
-				fmt.Fprintf(os.Stderr, "→ Fixed .beads permissions to %04o\n", config.BeadsDirPerm)
+				fmt.Fprintf(os.Stderr, "→ Stripped world-accessible bits from .beads permissions\n")
 			}
 
 			// On Linux btrfs, disable transparent compression on .beads/ so that

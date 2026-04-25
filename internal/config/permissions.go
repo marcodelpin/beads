@@ -33,19 +33,22 @@ func CheckBeadsDirPermissions(path string) {
 	}
 }
 
-// FixBeadsDirPermissions sets the .beads directory to BeadsDirPerm if it
-// has overly permissive modes. Returns true if permissions were changed.
+// FixBeadsDirPermissions strips world-accessible bits from the .beads
+// directory. Group bits (0070) are left untouched — users may
+// intentionally set 0750 for shared access. Returns true if permissions
+// were changed.
 func FixBeadsDirPermissions(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false, nil // directory doesn't exist yet
 	}
 	perm := info.Mode().Perm()
-	if perm&0077 == 0 {
-		return false, nil // already secure
+	if perm&0007 == 0 {
+		return false, nil // no world-accessible bits
 	}
-	if err := os.Chmod(path, BeadsDirPerm); err != nil {
-		return false, fmt.Errorf("failed to chmod %s to %04o: %w", path, BeadsDirPerm, err)
+	fixed := perm &^ 0007 // strip other bits, preserve owner+group
+	if err := os.Chmod(path, fixed); err != nil {
+		return false, fmt.Errorf("failed to chmod %s to %04o: %w", path, fixed, err)
 	}
 	return true, nil
 }
