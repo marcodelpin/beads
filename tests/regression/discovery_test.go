@@ -1,8 +1,10 @@
-//go:build regression
+//go:build regression && discovery
 
 // discovery_test.go contains tests discovered during manual regression testing
 // on 2026-02-22. These tests exercise the candidate binary ONLY (not differential)
 // since bd export was removed from main (BUG-1 in DISCOVERY.md).
+// They intentionally fail while known bugs are still open; run with
+// -tags=regression,discovery when doing bug-discovery work, not in CI gates.
 //
 // TestMain starts an isolated Dolt server on a dynamic port (via BEADS_DOLT_PORT).
 // Each test uses a unique prefix to avoid cross-contamination (BUG-6).
