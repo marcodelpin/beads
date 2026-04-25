@@ -90,6 +90,14 @@ func GetReadyWorkInTx(
 			args = append(args, label)
 		}
 	}
+	if len(filter.ExcludeLabels) > 0 {
+		placeholders := make([]string, len(filter.ExcludeLabels))
+		for i, label := range filter.ExcludeLabels {
+			placeholders[i] = "?"
+			args = append(args, label)
+		}
+		whereClauses = append(whereClauses, fmt.Sprintf("id NOT IN (SELECT issue_id FROM labels WHERE label IN (%s))", strings.Join(placeholders, ", ")))
+	}
 	// Parent filtering.
 	if filter.ParentID != nil {
 		parentID := *filter.ParentID
@@ -200,7 +208,7 @@ func GetReadyWorkInTx(
 	}
 
 	// Batch-fetch full issues preserving order.
-	issues, err := GetIssuesByIDsInTx(ctx, tx, issueIDs)
+	issues, err := GetIssuesByIDsInTx(ctx, tx, issueIDs, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get ready work: fetch issues: %w", err)
 	}

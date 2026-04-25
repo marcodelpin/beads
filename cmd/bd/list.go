@@ -40,8 +40,9 @@ func withStorage(ctx context.Context, store storage.DoltStorage, dbPath string, 
 	return fmt.Errorf("no storage available")
 }
 
-// getHierarchicalChildren handles the --tree --parent combination logic
-func getHierarchicalChildren(ctx context.Context, store storage.DoltStorage, dbPath string, parentID string) ([]*types.Issue, error) {
+// getHierarchicalChildren handles the --tree --parent combination logic.
+// baseFilter carries CLI filters (--type, --status, etc.) through the recursive walk.
+func getHierarchicalChildren(ctx context.Context, store storage.DoltStorage, dbPath string, parentID string, baseFilter types.IssueFilter) ([]*types.Issue, error) {
 	// First verify that the parent issue exists
 	var parentIssue *types.Issue
 	err := withStorage(ctx, store, dbPath, func(s storage.DoltStorage) error {
@@ -61,7 +62,7 @@ func getHierarchicalChildren(ctx context.Context, store storage.DoltStorage, dbP
 	// their descendants. This matches the behavior of --json and --flat (GH#3349).
 	allDescendants := make(map[string]*types.Issue)
 
-	err = findAllDescendants(ctx, store, dbPath, parentID, allDescendants, 0, 10) // max depth 10
+	err = findAllDescendants(ctx, store, dbPath, parentID, baseFilter, allDescendants, 0, 10) // max depth 10
 	if err != nil {
 		return nil, fmt.Errorf("error finding descendants: %v", err)
 	}
@@ -82,18 +83,18 @@ func getHierarchicalChildren(ctx context.Context, store storage.DoltStorage, dbP
 	return treeIssues, nil
 }
 
-// findAllDescendants recursively finds all descendants using parent filtering
-func findAllDescendants(ctx context.Context, store storage.DoltStorage, dbPath string, parentID string, result map[string]*types.Issue, currentDepth, maxDepth int) error {
+// findAllDescendants recursively finds all descendants using parent filtering.
+// baseFilter carries CLI filters (--type, --status, etc.) so the tree respects them.
+func findAllDescendants(ctx context.Context, store storage.DoltStorage, dbPath string, parentID string, baseFilter types.IssueFilter, result map[string]*types.Issue, currentDepth, maxDepth int) error {
 	if currentDepth >= maxDepth {
 		return nil // Prevent infinite recursion
 	}
 
-	// Get direct children using the same filter logic as regular --parent
 	var children []*types.Issue
 	err := withStorage(ctx, store, dbPath, func(s storage.DoltStorage) error {
-		filter := types.IssueFilter{
-			ParentID: &parentID,
-		}
+		filter := baseFilter
+		filter.ParentID = &parentID
+		filter.Limit = 0 // unlimited per level to avoid truncating the tree walk
 		var err error
 		children, err = s.SearchIssues(ctx, "", filter)
 		return err
@@ -102,12 +103,10 @@ func findAllDescendants(ctx context.Context, store storage.DoltStorage, dbPath s
 		return err
 	}
 
-	// Add children and recursively find their descendants
 	for _, child := range children {
 		if _, exists := result[child.ID]; !exists {
 			result[child.ID] = child
-			// Recursively find this child's descendants
-			err = findAllDescendants(ctx, store, dbPath, child.ID, result, currentDepth+1, maxDepth)
+			err = findAllDescendants(ctx, store, dbPath, child.ID, baseFilter, result, currentDepth+1, maxDepth)
 			if err != nil {
 				return err
 			}
@@ -126,7 +125,7 @@ type watchListDependencyStore interface {
 
 func loadWatchedIssues(ctx context.Context, store storage.DoltStorage, filter types.IssueFilter, parentID string, sortBy string, reverse bool) ([]*types.Issue, error) {
 	if parentID != "" {
-		issues, err := getHierarchicalChildren(ctx, store, "", parentID)
+		issues, err := getHierarchicalChildren(ctx, store, "", parentID, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -320,6 +319,7 @@ var listCmd = &cobra.Command{
 		}
 		labels, _ := cmd.Flags().GetStringSlice("label")
 		labelsAny, _ := cmd.Flags().GetStringSlice("label-any")
+		excludeLabels, _ := cmd.Flags().GetStringSlice("exclude-label")
 		labelPattern, _ := cmd.Flags().GetString("label-pattern")
 		labelRegex, _ := cmd.Flags().GetString("label-regex")
 		titleSearch, _ := cmd.Flags().GetString("title")
@@ -432,6 +432,7 @@ var listCmd = &cobra.Command{
 		// Normalize labels: trim, dedupe, remove empty
 		labels = utils.NormalizeLabels(labels)
 		labelsAny = utils.NormalizeLabels(labelsAny)
+		excludeLabels = utils.NormalizeLabels(excludeLabels)
 
 		// Apply directory-aware label scoping if no labels explicitly provided (GH#541)
 		if len(labels) == 0 && len(labelsAny) == 0 {
@@ -580,6 +581,9 @@ var listCmd = &cobra.Command{
 		}
 		if len(labelsAny) > 0 {
 			filter.LabelsAny = labelsAny
+		}
+		if len(excludeLabels) > 0 {
+			filter.ExcludeLabels = excludeLabels
 		}
 		if labelPattern != "" {
 			filter.LabelPattern = labelPattern
@@ -872,7 +876,7 @@ var listCmd = &cobra.Command{
 		if prettyFormat && !jsonOutput {
 			// Special handling for --tree --parent combination (hierarchical descendants)
 			if parentID != "" {
-				treeIssues, err := getHierarchicalChildren(ctx, activeStore, "", parentID)
+				treeIssues, err := getHierarchicalChildren(ctx, activeStore, "", parentID, filter)
 				if err != nil {
 					FatalError("%v", err)
 				}
@@ -1018,6 +1022,7 @@ func init() {
 	listCmd.Flags().StringP("type", "t", "", "Filter by type (bug, feature, task, epic, chore, decision, merge-request, molecule, gate, convoy). Aliases: mr→merge-request, feat→feature, mol→molecule, dec/adr→decision")
 	listCmd.Flags().StringSliceP("label", "l", []string{}, "Filter by labels (AND: must have ALL). Can combine with --label-any")
 	listCmd.Flags().StringSlice("label-any", []string{}, "Filter by labels (OR: must have AT LEAST ONE). Can combine with --label")
+	listCmd.Flags().StringSlice("exclude-label", []string{}, "Exclude issues that have ANY of these labels")
 	listCmd.Flags().String("label-pattern", "", "Filter by label glob pattern (e.g., 'tech-*' matches tech-debt, tech-legacy)")
 	listCmd.Flags().String("label-regex", "", "Filter by label regex pattern (e.g., 'tech-(debt|legacy)')")
 	listCmd.Flags().String("title", "", "Filter by title text (case-insensitive substring match)")
