@@ -32,3 +32,20 @@ func CheckBeadsDirPermissions(path string) {
 		fmt.Fprintf(os.Stderr, "Warning: %s has permissions %04o (recommended: 0700). Run: chmod 700 %s\n", path, perm, path)
 	}
 }
+
+// FixBeadsDirPermissions sets the .beads directory to BeadsDirPerm if it
+// has overly permissive modes. Returns true if permissions were changed.
+func FixBeadsDirPermissions(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, nil // directory doesn't exist yet
+	}
+	perm := info.Mode().Perm()
+	if perm&0077 == 0 {
+		return false, nil // already secure
+	}
+	if err := os.Chmod(path, BeadsDirPerm); err != nil {
+		return false, fmt.Errorf("failed to chmod %s to %04o: %w", path, BeadsDirPerm, err)
+	}
+	return true, nil
+}
