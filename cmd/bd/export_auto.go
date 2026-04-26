@@ -279,7 +279,17 @@ func gitAddFile(path string) error {
 	cmd := exec.Command("git", "add", path)
 	cmd.Dir = filepath.Dir(path)
 	cmd.Env = scrubGitHookEnv(os.Environ())
-	return cmd.Run()
+	// Capture combined output so the caller's warning surfaces git's stderr
+	// (e.g. "paths are ignored", "Unable to create index.lock") instead of
+	// just the exit-status text.
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			return fmt.Errorf("%w: %s", err, trimmed)
+		}
+		return err
+	}
+	return nil
 }
 
 // scrubGitHookEnv returns env with the GIT_* variables that can poison
