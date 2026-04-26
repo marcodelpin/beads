@@ -199,6 +199,46 @@ func TestCheckBeadGate_TargetClosed(t *testing.T) {
 	t.Skip("SQLite-specific: created SQLite DB directly; full integration testing requires routes.jsonl + Dolt rig infrastructure")
 }
 
+func TestCheckGHPRUsesStateWithoutMergedField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh shell script uses POSIX sh")
+	}
+
+	binDir := t.TempDir()
+	fakeGH := filepath.Join(binDir, "gh")
+	script := `#!/bin/sh
+case "$*" in
+  *merged*)
+    echo "unexpected merged field" >&2
+    exit 9
+    ;;
+esac
+printf '{"state":"MERGED","title":"Fix gate"}'
+`
+	if err := os.WriteFile(fakeGH, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	resolved, escalated, reason, err := checkGHPR(&types.Issue{
+		IssueType: "gate",
+		AwaitType: "gh:pr",
+		AwaitID:   "3488",
+	})
+	if err != nil {
+		t.Fatalf("checkGHPR returned error: %v", err)
+	}
+	if !resolved {
+		t.Fatal("expected merged PR to resolve")
+	}
+	if escalated {
+		t.Fatal("did not expect merged PR to escalate")
+	}
+	if !gateTestContains(reason, "was merged") {
+		t.Fatalf("reason = %q, want merged message", reason)
+	}
+}
+
 func TestIsNumericID(t *testing.T) {
 	tests := []struct {
 		input string
