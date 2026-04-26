@@ -69,9 +69,14 @@ func TestConcurrencyMultiProcess(t *testing.T) {
 		t.Logf("using pre-built test binary: %s", testBin)
 	} else {
 		testBin = filepath.Join(t.TempDir(), "embeddeddolt.test")
-		t.Logf("building test binary: go test -c -o %s ./internal/storage/embeddeddolt/", testBin)
+		t.Logf("building test binary: go test -c -tags gms_pure_go -o %s ./internal/storage/embeddeddolt/", testBin)
+		// -tags gms_pure_go is mandatory project-wide (see CLAUDE.md). Without it
+		// the subprocess build pulls in the cgo-backed ICU regex package, which
+		// requires unicode/uregex.h headers that aren't present on Windows
+		// toolchains and breaks the subprocess compile before any assertions run.
 		build := exec.CommandContext(ctx, "go", "test",
 			"-c",
+			"-tags", "gms_pure_go",
 			"-o", testBin,
 			"./internal/storage/embeddeddolt/",
 		)
