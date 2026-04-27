@@ -1247,13 +1247,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			if resolvedAgentsFile == "" {
 				resolvedAgentsFile = config.SafeAgentsFile()
 			}
-			if isBareGitRepo() {
-				if !quiet {
-					fmt.Printf("  Skipping %s generation in bare repository\n", resolvedAgentsFile)
-				}
-			} else {
-				addAgentsInstructions(resolvedAgentsFile, !quiet, agentsTemplate, agentsProfile)
+		if isBareGitRepo() {
+			if !quiet {
+				fmt.Printf("  Skipping %s generation in bare repository\n", resolvedAgentsFile)
 			}
+		} else {
+			renderOpts := agents.RenderOpts{HasRemote: shouldWireInitRemote(syncURL, syncFromRemote, syncURLFromConfig)}
+			addAgentsInstructions(resolvedAgentsFile, !quiet, agentsTemplate, agentsProfile, renderOpts)
+		}
 		}
 
 		// Auto-setup Claude hooks for project (writes to .claude/settings.json)
