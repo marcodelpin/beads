@@ -133,6 +133,11 @@ func TestEmbeddedWhere(t *testing.T) {
 				t.Errorf("expected .beads in path: %v", path)
 			}
 		}
+		if prefix, ok := m["prefix"]; !ok {
+			t.Fatalf("expected prefix in where --json output: %s", out)
+		} else if p, ok := prefix.(string); !ok || p != "tw" {
+			t.Fatalf("expected prefix %q in where --json output, got %#v", "tw", prefix)
+		}
 	})
 }
 
