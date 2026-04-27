@@ -768,16 +768,16 @@ func getSwarmStatus(ctx context.Context, s SwarmStorage, epic *types.Issue) (*Sw
 
 	// Sort each category by ID for consistent output
 	sort.Slice(status.Completed, func(i, j int) bool {
-		return status.Completed[i].ID < status.Completed[j].ID
+		return utils.NaturalCompareIDs(status.Completed[i].ID, status.Completed[j].ID) < 0
 	})
 	sort.Slice(status.Active, func(i, j int) bool {
-		return status.Active[i].ID < status.Active[j].ID
+		return utils.NaturalCompareIDs(status.Active[i].ID, status.Active[j].ID) < 0
 	})
 	sort.Slice(status.Ready, func(i, j int) bool {
-		return status.Ready[i].ID < status.Ready[j].ID
+		return utils.NaturalCompareIDs(status.Ready[i].ID, status.Ready[j].ID) < 0
 	})
 	sort.Slice(status.Blocked, func(i, j int) bool {
-		return status.Blocked[i].ID < status.Blocked[j].ID
+		return utils.NaturalCompareIDs(status.Blocked[i].ID, status.Blocked[j].ID) < 0
 	})
 
 	// Compute counts and progress

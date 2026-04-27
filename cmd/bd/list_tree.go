@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 // buildIssueTree builds parent-child tree structure from issues
@@ -105,7 +106,7 @@ func compareIssuesByPriority(a, b *types.Issue) int {
 		return result
 	}
 	// Secondary: ID for deterministic order when priorities match
-	return cmp.Compare(a.ID, b.ID)
+	return utils.NaturalCompareIDs(a.ID, b.ID)
 }
 
 // printPrettyTree recursively prints the issue tree

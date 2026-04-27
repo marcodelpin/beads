@@ -768,7 +768,7 @@ func renderGraphCompact(layout *GraphLayout, subgraph *TemplateSubgraph) {
 			if nodeI.Issue.Priority != nodeJ.Issue.Priority {
 				return nodeI.Issue.Priority < nodeJ.Issue.Priority
 			}
-			return nodeI.Issue.ID < nodeJ.Issue.ID
+			return utils.NaturalCompareIDs(nodeI.Issue.ID, nodeJ.Issue.ID) < 0
 		})
 	}
 

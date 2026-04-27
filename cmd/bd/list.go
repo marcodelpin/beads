@@ -289,7 +289,7 @@ func sortIssues(issues []*types.Issue, sortBy string, reverse bool) {
 		case "status":
 			result = cmp.Compare(a.Status, b.Status)
 		case "id":
-			result = cmp.Compare(a.ID, b.ID)
+			result = utils.NaturalCompareIDs(a.ID, b.ID)
 		case "title":
 			result = cmp.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
 		case "type":
