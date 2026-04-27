@@ -70,6 +70,8 @@ Examples:
   bd linear sync --push         # Export issues to Linear
   bd linear sync                # Bidirectional sync (pull then push)
   bd linear sync --dry-run      # Preview sync without changes
+  bd create "Fix login" --external-ref https://linear.app/team/issue/TEAM-123
+                              # Link a local issue to an existing Linear issue
   bd linear status              # Show sync status`,
 }
 
@@ -231,7 +233,7 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 		CreateOnly: createOnly,
 		State:      state,
 	}
-	opts.DependencyTypes = linearPullDependencyTypes(relations)
+	opts.DependencySources = linearPullDependencySources(relations)
 
 	// Convert type filters
 	for _, t := range typeFilters {
@@ -298,11 +300,11 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	}
 }
 
-func linearPullDependencyTypes(includeRelations bool) []types.DependencyType {
+func linearPullDependencySources(includeRelations bool) []tracker.DependencySource {
 	if includeRelations {
 		return nil
 	}
-	return []types.DependencyType{types.DepParentChild}
+	return []tracker.DependencySource{tracker.DependencySourceParent}
 }
 
 // buildLinearPullHooks creates PullHooks for Linear-specific pull behavior.
