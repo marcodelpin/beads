@@ -554,6 +554,29 @@ func TestLoadMappingConfig(t *testing.T) {
 	}
 }
 
+func TestLoadMappingConfigDottedStateMapResolvesPushByName(t *testing.T) {
+	loader := &mockConfigLoader{
+		config: map[string]string{
+			"linear.state_map.done": "closed",
+		},
+	}
+	config := LoadMappingConfig(loader)
+	cache := &StateCache{
+		States: []State{
+			{ID: "state-done", Name: "Done", Type: "completed"},
+			{ID: "state-monitoring", Name: "Monitoring", Type: "completed"},
+		},
+	}
+
+	got, err := ResolveStateIDForBeadsStatus(cache, types.StatusClosed, config)
+	if err != nil {
+		t.Fatalf("ResolveStateIDForBeadsStatus() error = %v", err)
+	}
+	if got != "state-done" {
+		t.Fatalf("ResolveStateIDForBeadsStatus() = %q, want state-done", got)
+	}
+}
+
 func TestLoadMappingConfigNilLoader(t *testing.T) {
 	config := LoadMappingConfig(nil)
 
