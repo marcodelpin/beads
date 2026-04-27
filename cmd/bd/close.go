@@ -52,6 +52,14 @@ create, update, show, or close operation).`,
 			reason, _ = cmd.Flags().GetString("comment")
 		}
 
+		// --reason-file <path> (with - for stdin) mirrors `bd create --body-file`,
+		// so agents can pass structured close templates without shell-escaping hell (#3512).
+		if fileReason, ok, err := resolveReasonFile(cmd, reason); err != nil {
+			FatalErrorRespectJSON("%v", err)
+		} else if ok {
+			reason = fileReason
+		}
+
 		// Desire-path: "bd done <id> <message>" treats last positional arg as reason
 		// when no reason flag was explicitly provided (hq-pe8ce)
 		if reason == "" && cmd.CalledAs() == "done" && len(args) >= 2 {
@@ -284,6 +292,7 @@ func init() {
 	_ = closeCmd.Flags().MarkHidden("message") // Hidden alias for agent/CLI ergonomics
 	closeCmd.Flags().String("comment", "", "Alias for --reason")
 	_ = closeCmd.Flags().MarkHidden("comment") // Hidden alias for agent/CLI ergonomics
+	closeCmd.Flags().String("reason-file", "", "Read close reason from file (use - for stdin)")
 	closeCmd.Flags().BoolP("force", "f", false, "Force close pinned issues or unsatisfied gates")
 	closeCmd.Flags().Bool("continue", false, "Auto-advance to next step in molecule")
 	closeCmd.Flags().Bool("no-auto", false, "With --continue, show next step but don't claim it")
@@ -418,6 +427,30 @@ func shouldAutoCloseCompletedRoot(root *types.Issue) bool {
 	}
 
 	return false
+}
+
+// resolveReasonFile resolves the --reason-file flag for `bd close`.
+// Returns (content, true, nil) when --reason-file was set and read successfully.
+// Returns (_, false, nil) when --reason-file was not set.
+// Returns an error on conflict with an existing reason, file read failure, or empty content.
+// Mirrors the --body-file pattern from `bd create` so agents can pass structured close
+// templates without shell-escaping hell.
+func resolveReasonFile(cmd *cobra.Command, existingReason string) (string, bool, error) {
+	if !cmd.Flags().Changed("reason-file") {
+		return "", false, nil
+	}
+	if existingReason != "" {
+		return "", false, fmt.Errorf("cannot specify both --reason-file and --reason/--resolution/--message/--comment")
+	}
+	path, _ := cmd.Flags().GetString("reason-file")
+	content, err := readBodyFile(path)
+	if err != nil {
+		return "", false, fmt.Errorf("reading reason file %q: %w", path, err)
+	}
+	if strings.TrimSpace(content) == "" {
+		return "", false, fmt.Errorf("--reason-file %q is empty; close reason is required", path)
+	}
+	return content, true, nil
 }
 
 // countEpicOpenChildren returns the number of open (non-closed) children for an epic.
