@@ -56,6 +56,25 @@ func Initialize() error {
 		}
 	}
 
+	// Also check ~/.config/bd/config.yaml explicitly. On macOS,
+	// os.UserConfigDir() returns ~/Library/Application Support, not ~/.config.
+	// This ensures the documented path works on all platforms.
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		xdgPath := filepath.Join(homeDir, ".config", "bd", "config.yaml")
+		alreadyAdded := false
+		for _, existing := range configPaths {
+			if filepath.Clean(existing) == filepath.Clean(xdgPath) {
+				alreadyAdded = true
+				break
+			}
+		}
+		if !alreadyAdded {
+			if _, err := os.Stat(xdgPath); err == nil {
+				configPaths = append(configPaths, xdgPath)
+			}
+		}
+	}
+
 	// 1. Project: walk up from CWD to find .beads/config.yaml
 	beadsDirEnv := strings.TrimSpace(os.Getenv("BEADS_DIR"))
 	beadsEnvConfigPath := ""
