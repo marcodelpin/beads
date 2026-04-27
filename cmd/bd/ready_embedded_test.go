@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,11 +22,11 @@ func TestEmbeddedReady(t *testing.T) {
 
 	bd := buildEmbeddedBD(t)
 	dir, _, _ := bdInit(t, bd, "--prefix", "rd")
+	bdCreate(t, bd, dir, "Ready test issue", "--type", "task")
 
 	// ===== Default =====
 
 	t.Run("ready_default", func(t *testing.T) {
-		bdCreate(t, bd, dir, "Ready test issue", "--type", "task")
 		cmd := exec.Command(bd, "ready")
 		cmd.Dir = dir
 		cmd.Env = bdEnv(dir)
@@ -125,6 +126,61 @@ func TestEmbeddedReady(t *testing.T) {
 		}
 		if !strings.Contains(string(out), "Normal ready item") {
 			t.Errorf("normal issue should still appear with --exclude-label: %s", out)
+		}
+	})
+
+	// ===== -C flag =====
+
+	t.Run("ready_with_C_flag", func(t *testing.T) {
+		// Run bd ready from a different directory using -C to point at the beads project
+		tmpDir := t.TempDir()
+		cmd := exec.Command(bd, "-C", dir, "ready")
+		cmd.Dir = tmpDir // Run from a directory with no .beads/
+		cmd.Env = bdEnv(dir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("bd -C %s ready failed: %v\n%s", dir, err, out)
+		}
+		if !strings.Contains(string(out), "Ready test issue") {
+			t.Errorf("expected issue in ready -C output: %s", out)
+		}
+	})
+
+	t.Run("ready_with_C_flag_invalid_path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cmd := exec.Command(bd, "-C", filepath.Join(tmpDir, "missing"), "ready")
+		cmd.Dir = tmpDir
+		cmd.Env = bdEnv(dir)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("bd -C missing ready succeeded unexpectedly:\n%s", out)
+		}
+		if !strings.Contains(string(out), "cannot use -C directory") {
+			t.Errorf("expected invalid -C path error, got: %s", out)
+		}
+	})
+
+	t.Run("ready_with_C_flag_does_not_leak_cwd", func(t *testing.T) {
+		// Verify that -C does not permanently mutate the process cwd.
+		// Two sequential invocations from the same tmpDir: the first uses -C to
+		// reach the project; the second omits -C and must fail (no .beads/ in tmpDir),
+		// proving BEADS_DIR was not leaked into the test process environment.
+		tmpDir := t.TempDir()
+		env := bdEnv(dir) // strips all BEADS_* vars
+
+		cmd1 := exec.Command(bd, "-C", dir, "ready")
+		cmd1.Dir = tmpDir
+		cmd1.Env = env
+		if out, err := cmd1.CombinedOutput(); err != nil {
+			t.Fatalf("first bd -C ready failed: %v\n%s", err, out)
+		}
+
+		cmd2 := exec.Command(bd, "ready")
+		cmd2.Dir = tmpDir
+		cmd2.Env = env // same env — BEADS_DIR must not have leaked
+		out2, err2 := cmd2.CombinedOutput()
+		if err2 == nil {
+			t.Fatalf("second bd ready (no -C) should have failed in tmpDir, got: %s", out2)
 		}
 	})
 }
