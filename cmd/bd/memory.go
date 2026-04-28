@@ -17,6 +17,13 @@ const memoryPrefix = "memory."
 // memoryKeyFlag allows explicit key override for bd remember.
 var memoryKeyFlag string
 
+// memoryNoDedupFlag opts out of fork-only auto-key dedup on bd remember.
+// When auto-key generation is in effect (no --key passed) and the new
+// insight has the same normalized fingerprint as an existing memory's
+// content, we reuse that memory's key instead of creating a sibling
+// entry under a slightly different slug. --no-dedup forces a new key.
+var memoryNoDedupFlag bool
+
 // Fact validity window flags for `bd remember`.
 var (
 	memoryValidForFlag     string
@@ -29,6 +36,63 @@ var (
 	memoriesIncludeExpired bool
 	memoriesGCFlag         bool
 )
+
+// memoryFingerprintWS collapses runs of whitespace into a single space.
+var memoryFingerprintWS = regexp.MustCompile(`\s+`)
+
+// memoryFingerprintNonAlnum strips characters that are not lowercase
+// alphanumeric or space. Applied AFTER whitespace collapse so tabs and
+// newlines have already been turned into spaces.
+var memoryFingerprintNonAlnum = regexp.MustCompile(`[^a-z0-9 ]+`)
+
+// memoryFingerprint normalizes a memory string for dedup comparison.
+// Pipeline:
+//
+//  1. lowercase
+//  2. collapse all whitespace runs (spaces, tabs, newlines, CRs) to a
+//     single ASCII space
+//  3. strip every character that is not lowercase alphanumeric or space
+//  4. trim leading/trailing space
+//
+// Two strings that differ only in case, punctuation, or whitespace
+// produce the same fingerprint. Fork-only — used by bd remember to
+// detect content-equal memories that would otherwise live under
+// sibling keys produced by slugify().
+func memoryFingerprint(s string) string {
+	s = strings.ToLower(s)
+	s = memoryFingerprintWS.ReplaceAllString(s, " ")
+	s = memoryFingerprintNonAlnum.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
+// findDuplicateMemoryKey scans existing memories for one whose CONTENT (after
+// envelope unwrap) has the same fingerprint as the new insight. Returns the
+// matching key (without the kv.memory. prefix) and true on hit.
+//
+// Fork-only — invoked from rememberCmd when auto-key generation is in effect
+// and --no-dedup is not set.
+func findDuplicateMemoryKey(allConfig map[string]string, insight string) (string, bool) {
+	target := memoryFingerprint(insight)
+	if target == "" {
+		return "", false
+	}
+	fullPrefix := kvPrefix + memoryPrefix
+	for k, v := range allConfig {
+		if !strings.HasPrefix(k, fullPrefix) {
+			continue
+		}
+		// Unwrap envelope so plain-text and validity-windowed memories
+		// can dedup against each other.
+		existingContent := parseStoredMemory(v).Content
+		if existingContent == "" {
+			existingContent = v
+		}
+		if memoryFingerprint(existingContent) == target {
+			return strings.TrimPrefix(k, fullPrefix), true
+		}
+	}
+	return "", false
+}
 
 // slugify converts a string to a URL-friendly slug for use as a memory key.
 // Takes the first ~8 words, lowercases, replaces non-alphanumeric with hyphens.
@@ -73,13 +137,23 @@ Fact validity windows (mempalace pattern):
   notify  — still listed, but marked EXPIRED next to the key
   delete  — hidden from listings and removed by 'bd memories --gc'
 
+Auto-key dedup (fork-only, on by default):
+  When --key is NOT given, the new insight is fingerprinted (lowercase,
+  punctuation-stripped, whitespace-collapsed) and compared against every
+  existing memory. If a fingerprint match is found, the existing key is
+  reused — preventing sibling keys for content that differs only in
+  punctuation, case, or wording-equivalent rephrasing. Pass --no-dedup
+  to disable and always create a new key from slugify.
+
 Examples:
   bd remember "always run tests with -race flag"
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
   bd remember "auth module uses JWT not sessions" --key auth-jwt
   bd remember "feature flag X enabled for beta" --valid-for=30d
   bd remember "TLS cert expires" --valid-until=2026-12-31 --expire-policy=notify
-  bd remember "temp workaround for upstream bug" --valid-for=2w --expire-policy=delete`,
+  bd remember "temp workaround for upstream bug" --valid-for=2w --expire-policy=delete
+  bd remember "always run tests with -race"            # deduped onto first entry
+  bd remember "always run tests with -race"  --no-dedup  # creates a sibling key`,
 	GroupID: "setup",
 	Args:    cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -94,10 +168,25 @@ Examples:
 			FatalErrorRespectJSON("memory content cannot be empty")
 		}
 
-		// Generate or use provided key
+		// Generate or use provided key.
+		// Fork-only dedup: when no --key is provided and --no-dedup is not set,
+		// look for an existing memory whose normalized content matches the new
+		// insight. If found, reuse its key so we update in place instead of
+		// creating a sibling entry under a new slug.
 		key := memoryKeyFlag
+		dedupHit := false
 		if key == "" {
-			key = slugify(insight)
+			if !memoryNoDedupFlag {
+				if all, err := store.GetAllConfig(rootCtx); err == nil {
+					if existingKey, ok := findDuplicateMemoryKey(all, insight); ok {
+						key = existingKey
+						dedupHit = true
+					}
+				}
+			}
+			if key == "" {
+				key = slugify(insight)
+			}
 		}
 		if key == "" {
 			FatalErrorRespectJSON("could not generate key from content; use --key to specify one")
@@ -151,6 +240,9 @@ Examples:
 		if existing != "" {
 			verb = "Updated"
 		}
+		if dedupHit {
+			verb = "Deduped (updated)"
+		}
 
 		if err := store.SetConfig(ctx, storageKey, storedValue); err != nil {
 			FatalErrorRespectJSON("storing memory: %v", err)
@@ -160,10 +252,16 @@ Examples:
 		}
 
 		if jsonOutput {
+			action := "remembered"
+			if dedupHit {
+				action = "deduped"
+			} else if existing != "" {
+				action = "updated"
+			}
 			result := map[string]string{
 				"key":    key,
 				"value":  insight,
-				"action": strings.ToLower(verb),
+				"action": action,
 			}
 			if hasValidity {
 				env := parseStoredMemory(storedValue)
@@ -533,6 +631,7 @@ func truncateMemory(s string, maxLen int) string {
 
 func init() {
 	rememberCmd.Flags().StringVar(&memoryKeyFlag, "key", "", "Explicit key for the memory (auto-generated from content if not set). If a memory with this key already exists, it will be updated in place")
+	rememberCmd.Flags().BoolVar(&memoryNoDedupFlag, "no-dedup", false, "Disable fork-only auto-key content dedup (always create a new key from slugify even if normalized content matches an existing memory)")
 	rememberCmd.Flags().StringVar(&memoryValidForFlag, "valid-for", "", "Relative validity window for this memory (e.g. 30d, 2w, 1y, 72h). Mutually exclusive with --valid-until.")
 	rememberCmd.Flags().StringVar(&memoryValidUntilFlag, "valid-until", "", "Absolute expiration timestamp (YYYY-MM-DD or RFC3339). Mutually exclusive with --valid-for.")
 	rememberCmd.Flags().StringVar(&memoryExpirePolicyFlag, "expire-policy", "", "What to do after expiration: hide (default), notify, delete")
