@@ -414,13 +414,13 @@ type gcPlanIssue struct {
 
 // gcPlanOutput is the top-level JSON shape returned by `bd gc --plan`.
 type gcPlanOutput struct {
-	OlderThanDays  int                      `json:"older_than_days"`
-	Now            string                   `json:"now"`
-	Issues         []gcPlanIssue            `json:"issues"`
-	Memories       []expiredMemoryCandidate `json:"memories"`
-	IssueCount     int                      `json:"issue_count"`
-	MemoryCount    int                      `json:"memory_count"`
-	HintNextStep   string                   `json:"hint_next_step,omitempty"`
+	OlderThanDays int                      `json:"older_than_days"`
+	Now           string                   `json:"now"`
+	Issues        []gcPlanIssue            `json:"issues"`
+	Memories      []expiredMemoryCandidate `json:"memories"`
+	IssueCount    int                      `json:"issue_count"`
+	MemoryCount   int                      `json:"memory_count"`
+	HintNextStep  string                   `json:"hint_next_step,omitempty"`
 }
 
 // runGCPlan implements `bd gc --plan`. It reads the same candidate set that
