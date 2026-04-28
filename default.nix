@@ -19,18 +19,17 @@ buildGoModule {
   # proxyVendor avoids vendor/modules.txt consistency checks when the vendored
   # tree lags go.mod/go.sum.
   proxyVendor = true;
-  vendorHash = "sha256-S/NavjGH6VSPU+rCtqtviOcGhgXc6VZUXCUhasSdUGU=";
+  vendorHash = "sha256-FjO7mUTB9FJL5ShVzEj+dEr1Hpzb23JO5QjNLPc5sLQ=";
 
-  # Relax go.mod version for Nix: nixpkgs Go may lag behind the latest
-  # patch release, and GOTOOLCHAIN=auto can't download in the Nix sandbox.
+  # Match go.mod to the selected Nix Go toolchain. buildGoModule also builds
+  # vendored dependencies in the Nix sandbox, where toolchain downloads are not
+  # available.
   postPatch = ''
     goVer="$(go env GOVERSION | sed 's/^go//')"
     go mod edit -go="$goVer"
   '';
 
-  # Allow patch-level toolchain upgrades when a dependency's minimum Go patch
-  # version is newer than nixpkgs' bundled patch version.
-  env.GOTOOLCHAIN = "auto";
+  env.GOTOOLCHAIN = "local";
 
   # Git is required for tests
   nativeBuildInputs = [ git ];
