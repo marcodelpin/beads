@@ -35,6 +35,8 @@ var (
 var (
 	memoriesIncludeExpired bool
 	memoriesGCFlag         bool
+	memoriesGCPlan         bool
+	memoriesGCOnly         string
 )
 
 // memoryFingerprintWS collapses runs of whitespace into a single space.
@@ -381,13 +383,21 @@ Flags:
   --include-expired   show every memory, including those past valid_until
   --gc                garbage-collect: delete memories with expire-policy=delete
                       whose valid_until is in the past
+  --gc-plan           emit a JSON plan of GC candidates without deleting (mutex with --gc)
+  --gc-only=CSV       allowlist of keys to delete with --gc (skip everything else)
+
+Consent flow (recommended):
+  bd memories --gc-plan                       # JSON of expired/policy=delete memories
+  # orchestrator (e.g. Claude AskUserQuestion) curates the keys
+  bd memories --gc --gc-only=key1,key2        # delete ONLY the curated subset
 
 Examples:
   bd memories              # list all memories
   bd memories dolt         # search for memories about dolt
   bd memories "race flag"  # search for a phrase
   bd memories --include-expired
-  bd memories --gc`,
+  bd memories --gc-plan
+  bd memories --gc --gc-only=stale-1,stale-2`,
 	GroupID: "setup",
 	Args:    cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -428,8 +438,43 @@ Examples:
 		// new state. The actual deletion logic lives in pruneExpiredMemories
 		// so bd gc (decay phase) can call it too.
 		var gcKeys []string
+		// --gc-plan: JSON list of expired memory candidates, no DB changes.
+		// Mutually exclusive with --gc.
+		if memoriesGCPlan {
+			if memoriesGCFlag {
+				FatalErrorRespectJSON("--gc-plan and --gc are mutually exclusive (use --gc-plan first to inspect, then --gc --gc-only=<csv> to delete)")
+			}
+			cands, err := listExpiredMemoryCandidates(now)
+			if err != nil {
+				FatalErrorRespectJSON("%v", err)
+			}
+			plan := map[string]interface{}{
+				"now":          now.UTC().Format(time.RFC3339),
+				"memories":     cands,
+				"memory_count": len(cands),
+			}
+			if len(cands) == 0 {
+				plan["hint_next_step"] = "Nothing to do (no expired memories with policy=delete)."
+			} else {
+				plan["hint_next_step"] = "Pass approved keys via 'bd memories --gc --gc-only=<csv>' to delete only the curated subset."
+			}
+			outputJSON(plan)
+			return
+		}
+
 		if memoriesGCFlag {
-			deleted, err := pruneExpiredMemories(now, nil)
+			// Parse --gc-only allowlist if set.
+			var allowlist map[string]bool
+			if strings.TrimSpace(memoriesGCOnly) != "" {
+				allowlist = make(map[string]bool)
+				for _, s := range strings.Split(memoriesGCOnly, ",") {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						allowlist[s] = true
+					}
+				}
+			}
+			deleted, err := pruneExpiredMemories(now, allowlist)
 			if err != nil {
 				FatalErrorRespectJSON("%v", err)
 			}
@@ -715,7 +760,9 @@ func init() {
 	rememberCmd.Flags().StringVar(&memoryExpirePolicyFlag, "expire-policy", "", "What to do after expiration: hide (default), notify, delete")
 
 	memoriesCmd.Flags().BoolVar(&memoriesIncludeExpired, "include-expired", false, "Include memories whose fact validity window has expired")
-	memoriesCmd.Flags().BoolVar(&memoriesGCFlag, "gc", false, "Delete expired memories with expire-policy=delete")
+	memoriesCmd.Flags().BoolVar(&memoriesGCFlag, "gc", false, "Delete expired memories with expire-policy=delete (combine with --gc-only to curate)")
+	memoriesCmd.Flags().BoolVar(&memoriesGCPlan, "gc-plan", false, "Emit a JSON plan of the expired memories that --gc WOULD delete, without modifying anything (mutex with --gc, fork-only)")
+	memoriesCmd.Flags().StringVar(&memoriesGCOnly, "gc-only", "", "Comma-separated allowlist of memory keys; when combined with --gc, deletes ONLY items in this list (fork-only)")
 
 	rootCmd.AddCommand(rememberCmd)
 	rootCmd.AddCommand(memoriesCmd)
