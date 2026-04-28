@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,7 +35,11 @@ var (
 	// (backup ON, mirroring gcNoBackup for the issue-decay path).
 	gcSkipMemoryBackup bool
 	gcPlan             bool
-	gcOnly             string
+	// gcPlanSummary emits a human-readable tabular view of GC candidates
+	// instead of the JSON form. Mutually exclusive with --plan and --force.
+	// Mirrors --plan's read-only contract (zero writes).
+	gcPlanSummary bool
+	gcOnly        string
 )
 
 var gcCmd = &cobra.Command{
@@ -75,7 +80,7 @@ Consent flow (recommended):
   bd gc --force --only=sys-1234,old-fact-key,...     # delete ONLY the curated subset
   Use 'bd gc --force' alone for the legacy wholesale path (warns when N>5).`,
 	Run: func(cmd *cobra.Command, _ []string) {
-		if !gcDryRun && !gcPlan {
+		if !gcDryRun && !gcPlan && !gcPlanSummary {
 			CheckReadonly("gc")
 		}
 		ctx := rootCtx
@@ -87,6 +92,9 @@ Consent flow (recommended):
 
 		if gcPlan && gcForce {
 			FatalError("--plan and --force are mutually exclusive (use --plan first to inspect, then --force --only=... to delete)")
+		}
+		if gcPlanSummary && (gcPlan || gcForce) {
+			FatalError("--plan-summary is read-only and mutually exclusive with --plan and --force (use --plan-summary alone to eyeball candidates, --plan for JSON)")
 		}
 
 		// Parse --only allowlist (set of issue IDs and/or memory keys).
@@ -105,6 +113,11 @@ Consent flow (recommended):
 		// --plan mode: collect candidates and emit plan, exit early without modifying anything.
 		if gcPlan {
 			runGCPlan(gcOlderThan)
+			return
+		}
+		// --plan-summary mode: same data as --plan, but tabular human view.
+		if gcPlanSummary {
+			runGCPlanSummary(gcOlderThan)
 			return
 		}
 
@@ -396,6 +409,7 @@ func init() {
 	gcCmd.Flags().BoolVar(&gcSkipMemoryPrune, "skip-memory-prune", false, "Skip memory prune sub-phase (fork-only — by default decay also hard-deletes expired memories with expire-policy=delete, same as 'bd memories --gc')")
 	gcCmd.Flags().BoolVar(&gcSkipMemoryBackup, "skip-memory-backup", false, "Skip pre-delete JSONL backup written to .beads/.gc-memory-backup-<unix>.jsonl during the memory prune sub-phase (fork-only — backup is on by default, mirrors --no-backup for issue decay)")
 	gcCmd.Flags().BoolVar(&gcPlan, "plan", false, "Emit a JSON plan of the candidates that WOULD be deleted (closed issues + expired memories) without modifying anything. Mutually exclusive with --force. Use the plan to drive a per-item consent flow, then re-invoke with --force --only=ID1,key2,ID3.")
+	gcCmd.Flags().BoolVar(&gcPlanSummary, "plan-summary", false, "Emit a human-readable tabular view of GC candidates instead of JSON (fork-only, read-only, mutex with --plan/--force). Sorted by age desc.")
 	gcCmd.Flags().StringVar(&gcOnly, "only", "", "Comma-separated allowlist of issue IDs and/or memory keys. When set, gc deletes ONLY items in this list. Use after `bd gc --plan` to commit a curated subset.")
 
 	rootCmd.AddCommand(gcCmd)
@@ -485,6 +499,118 @@ func runGCPlan(olderThanDays int) {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(plan); err != nil {
 		FatalError("plan: encode JSON: %v", err)
+	}
+}
+
+// runGCPlanSummary implements `bd gc --plan-summary`. Same candidate set as
+// runGCPlan, but emits a human-readable tabular view (sorted by age desc)
+// instead of JSON. Fork-only — for eyeballing the GC backlog without piping
+// to jq. The JSON contract via --plan stays untouched.
+func runGCPlanSummary(olderThanDays int) {
+	now := time.Now()
+	cutoff := now.AddDate(0, 0, -olderThanDays)
+	statusClosed := types.StatusClosed
+
+	closedIssues, err := store.SearchIssues(rootCtx, "", types.IssueFilter{
+		Status:       &statusClosed,
+		ClosedBefore: &cutoff,
+	})
+	if err != nil {
+		FatalError("plan-summary: searching closed issues: %v", err)
+	}
+
+	type issueRow struct {
+		ID       string
+		Title    string
+		AgeDays  int
+		Priority int
+		ClosedAt time.Time
+	}
+	var rows []issueRow
+	for _, issue := range closedIssues {
+		if issue.Pinned {
+			continue
+		}
+		if issue.ClosedAt == nil || issue.ClosedAt.IsZero() {
+			continue
+		}
+		closedAt := *issue.ClosedAt
+		rows = append(rows, issueRow{
+			ID:       issue.ID,
+			Title:    issue.Title,
+			AgeDays:  int(now.Sub(closedAt).Hours() / 24),
+			Priority: int(issue.Priority),
+			ClosedAt: closedAt,
+		})
+	}
+	// Sort by age desc (oldest first).
+	sort.Slice(rows, func(i, j int) bool { return rows[i].AgeDays > rows[j].AgeDays })
+
+	memCands, err := listExpiredMemoryCandidates(now)
+	if err != nil {
+		FatalError("plan-summary: listing expired memories: %v", err)
+	}
+
+	fmt.Printf("GC candidates (older-than %dd, %d issues + %d memories):\n\n",
+		olderThanDays, len(rows), len(memCands))
+
+	if len(rows) > 0 {
+		fmt.Println("ISSUES:")
+		// Compute column widths from data.
+		idW, ageW := 8, 4
+		for _, r := range rows {
+			if len(r.ID) > idW {
+				idW = len(r.ID)
+			}
+			ageStr := fmt.Sprintf("%dd", r.AgeDays)
+			if len(ageStr) > ageW {
+				ageW = len(ageStr)
+			}
+		}
+		const titleMax = 60
+		for _, r := range rows {
+			title := r.Title
+			if len(title) > titleMax {
+				title = title[:titleMax-1] + "…"
+			}
+			fmt.Printf("  %-*s  %*dd  P%d  %s\n",
+				idW, r.ID, ageW-1, r.AgeDays, r.Priority, title)
+		}
+	} else {
+		fmt.Println("ISSUES:\n  (none older than cutoff)")
+	}
+
+	fmt.Println()
+	if len(memCands) > 0 {
+		fmt.Println("MEMORIES:")
+		keyW := 12
+		for _, m := range memCands {
+			if len(m.Key) > keyW {
+				keyW = len(m.Key)
+			}
+		}
+		const contentMax = 60
+		for _, m := range memCands {
+			content := strings.ReplaceAll(m.Content, "\n", " ")
+			if len(content) > contentMax {
+				content = content[:contentMax-1] + "…"
+			}
+			validUntil := m.ValidUntil
+			if len(validUntil) > 10 {
+				validUntil = validUntil[:10]
+			}
+			fmt.Printf("  %-*s  expired %s  %s\n", keyW, m.Key, validUntil, content)
+		}
+	} else {
+		fmt.Println("MEMORIES:\n  (none expired with policy=delete)")
+	}
+
+	fmt.Println()
+	if len(rows)+len(memCands) > 0 {
+		fmt.Println("Run 'bd gc --plan' for the JSON form (orchestration-friendly),")
+		fmt.Println("or 'bd gc --force --only=ID1,key2,...' to delete the curated subset.")
+	} else {
+		fmt.Println("Nothing to do.")
 	}
 }
 
