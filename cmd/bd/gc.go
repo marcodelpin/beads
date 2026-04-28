@@ -29,8 +29,12 @@ var (
 	gcAllowRecent     bool
 	gcNoBackup        bool
 	gcSkipMemoryPrune bool
-	gcPlan            bool
-	gcOnly            string
+	// gcSkipMemoryBackup disables the pre-delete JSONL backup written by
+	// pruneExpiredMemories during the gc decay sub-phase. Default false
+	// (backup ON, mirroring gcNoBackup for the issue-decay path).
+	gcSkipMemoryBackup bool
+	gcPlan             bool
+	gcOnly             string
 )
 
 var gcCmd = &cobra.Command{
@@ -245,7 +249,7 @@ Consent flow (recommended):
 						fmt.Println("  Memory prune: dry-run (use bd memories --include-expired to inspect)")
 					}
 				} else {
-					deleted, err := pruneExpiredMemories(time.Now(), onlySet)
+					deleted, err := pruneExpiredMemories(time.Now(), onlySet, gcSkipMemoryBackup)
 					if err != nil {
 						WarnError("memory prune failed: %v", err)
 					} else if len(deleted) > 0 {
@@ -390,6 +394,7 @@ func init() {
 	gcCmd.Flags().BoolVar(&gcAllowRecent, "allow-recent", false, fmt.Sprintf("Bypass the --older-than safety floor of %d days (fork-only)", gcMinOlderThanFloor))
 	gcCmd.Flags().BoolVar(&gcNoBackup, "no-backup", false, "Skip pre-delete backup JSONL (fork-only — backup is on by default)")
 	gcCmd.Flags().BoolVar(&gcSkipMemoryPrune, "skip-memory-prune", false, "Skip memory prune sub-phase (fork-only — by default decay also hard-deletes expired memories with expire-policy=delete, same as 'bd memories --gc')")
+	gcCmd.Flags().BoolVar(&gcSkipMemoryBackup, "skip-memory-backup", false, "Skip pre-delete JSONL backup written to .beads/.gc-memory-backup-<unix>.jsonl during the memory prune sub-phase (fork-only — backup is on by default, mirrors --no-backup for issue decay)")
 	gcCmd.Flags().BoolVar(&gcPlan, "plan", false, "Emit a JSON plan of the candidates that WOULD be deleted (closed issues + expired memories) without modifying anything. Mutually exclusive with --force. Use the plan to drive a per-item consent flow, then re-invoke with --force --only=ID1,key2,ID3.")
 	gcCmd.Flags().StringVar(&gcOnly, "only", "", "Comma-separated allowlist of issue IDs and/or memory keys. When set, gc deletes ONLY items in this list. Use after `bd gc --plan` to commit a curated subset.")
 
