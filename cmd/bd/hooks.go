@@ -267,6 +267,67 @@ func removeHookSection(content string) (string, bool) {
 	return result, true
 }
 
+// isOnlyShebangOrEmpty reports whether the given hook content consists of
+// nothing meaningful — only an optional shebang line plus blank lines and
+// comments. Used by shouldPreserveHookContent to decide, after stripping a
+// BEADS INTEGRATION block, whether anything user-owned remains worth
+// preserving.
+//
+// Note: non-shebang comment lines (e.g. `# preamble`) are intentionally
+// treated as non-content. A file that's only a shebang plus a comment is
+// classified empty and skipped — comments alone aren't user logic worth
+// carrying forward to .beads/hooks/<name>. (GH#3536)
+func isOnlyShebangOrEmpty(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#!") || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// shouldPreserveHookContent decides what preservePreexistingHooks should do
+// with one hook file's content. Returns (transformedContent, true) when the
+// file should be preserved into the target directory (possibly with the bd
+// section stripped or the husky helper-layout sanitized); returns
+// ("", false) when preservation should skip this file because it's wholly
+// bd-managed and contains nothing user-owned worth keeping.
+//
+// Decision rules (GH#3536):
+//   - inlineHookMarker (the "# bd (beads)" tag from GH#1120) marks files
+//     that were always wholly bd-owned one-liners — skip.
+//   - hookSectionBeginPrefix marks files that were *user-owned* with bd's
+//     block injected into them (the v0.49+ section-marker model). Strip
+//     the bd block and preserve the remaining user content. If only a
+//     shebang/blank/comments remain, treat as wholly bd-owned and skip.
+//   - When fromHusky is true, sanitize the (possibly stripped) content so
+//     it doesn't depend on husky's helper-layout being mirrored into the
+//     target directory (GH#3132).
+//
+// The function is pure: no I/O, no global state.
+func shouldPreserveHookContent(content string, fromHusky bool) (string, bool) {
+	if strings.Contains(content, inlineHookMarker) {
+		return "", false
+	}
+	if strings.Contains(content, hookSectionBeginPrefix) {
+		stripped, _ := removeHookSection(content)
+		if isOnlyShebangOrEmpty(stripped) {
+			return "", false
+		}
+		// Normalize CRLF → LF on the preserved-and-stripped content so
+		// Windows / autocrlf=true repos don't end up with `\r\n` line
+		// endings in .beads/hooks/<name>. Mirrors the normalization that
+		// injectHookSection does on its output (`hooks.go` ~line 622).
+		content = strings.ReplaceAll(stripped, "\r\n", "\n")
+	}
+	if fromHusky {
+		content = sanitizeHuskyHook(content)
+	}
+	return content, true
+}
+
 // HookStatus represents the status of a single git hook
 type HookStatus struct {
 	Name      string
@@ -720,19 +781,11 @@ func preservePreexistingHooks(targetDir string) {
 			continue
 		}
 
-		contentStr := string(content)
-		// Skip if it's already a beads hook
-		if strings.Contains(contentStr, hookSectionBeginPrefix) ||
-			strings.Contains(contentStr, inlineHookMarker) {
+		newContent, keep := shouldPreserveHookContent(string(content), fromHusky)
+		if !keep {
 			continue
 		}
-
-		// If this came from a husky directory, rewrite the hook so it no
-		// longer depends on husky's helper layout being mirrored into the
-		// target directory. See sanitizeHuskyHook below for details.
-		if fromHusky {
-			contentStr = sanitizeHuskyHook(contentStr)
-		}
+		contentStr := newContent
 
 		// Don't overwrite existing files in target
 		dstPath := filepath.Join(targetDir, entry.Name())
