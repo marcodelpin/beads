@@ -288,21 +288,26 @@ Examples:
 	},
 }
 
-// pruneExpiredMemories deletes every memory whose envelope has policy=delete
-// and a valid_until in the past relative to `now`. Returns the list of keys
-// that were removed (without the kv.memory. prefix).
-//
-// Fork-only — extracted from bd memories --gc so that bd gc (the global
-// maintenance command) can prune stale facts in its decay phase as well.
-// Caller is responsible for CommitPending() on the store after a non-empty
-// return.
-func pruneExpiredMemories(now time.Time) ([]string, error) {
+// expiredMemoryCandidate describes a memory that is eligible for deletion
+// by the prune flow. Used by --plan mode to surface candidates without
+// modifying anything.
+type expiredMemoryCandidate struct {
+	Key          string `json:"key"`
+	Content      string `json:"content"`
+	ValidUntil   string `json:"valid_until,omitempty"`
+	ExpirePolicy string `json:"expire_policy,omitempty"`
+}
+
+// listExpiredMemoryCandidates returns the set of memories that the prune
+// flow WOULD delete (expired + effective policy == delete). Read-only;
+// safe to call from --plan mode.
+func listExpiredMemoryCandidates(now time.Time) ([]expiredMemoryCandidate, error) {
 	allConfig, err := store.GetAllConfig(rootCtx)
 	if err != nil {
 		return nil, fmt.Errorf("listing memories: %w", err)
 	}
 	fullPrefix := kvPrefix + memoryPrefix
-	var deleted []string
+	var out []expiredMemoryCandidate
 	for k, v := range allConfig {
 		if !strings.HasPrefix(k, fullPrefix) {
 			continue
@@ -314,11 +319,43 @@ func pruneExpiredMemories(now time.Time) ([]string, error) {
 		if env.effectivePolicy() != policyDelete {
 			continue
 		}
-		if err := store.DeleteConfig(rootCtx, k); err != nil {
-			return deleted, fmt.Errorf("deleting expired memory %q: %w",
-				strings.TrimPrefix(k, fullPrefix), err)
+		out = append(out, expiredMemoryCandidate{
+			Key:          strings.TrimPrefix(k, fullPrefix),
+			Content:      env.Content,
+			ValidUntil:   env.ValidUntil,
+			ExpirePolicy: env.effectivePolicy(),
+		})
+	}
+	return out, nil
+}
+
+// pruneExpiredMemories deletes every memory whose envelope has policy=delete
+// and a valid_until in the past relative to `now`. If allowlist is non-nil,
+// only entries whose key appears in the allowlist are deleted (others are
+// skipped silently). Pass nil to delete every eligible candidate (legacy
+// `bd memories --gc` behavior).
+//
+// Returns the list of keys that were removed (without the kv.memory. prefix).
+//
+// Fork-only — extracted from bd memories --gc so that bd gc (the global
+// maintenance command) can prune stale facts in its decay phase as well.
+// Caller is responsible for CommitPending() on the store after a non-empty
+// return.
+func pruneExpiredMemories(now time.Time, allowlist map[string]bool) ([]string, error) {
+	candidates, err := listExpiredMemoryCandidates(now)
+	if err != nil {
+		return nil, err
+	}
+	fullPrefix := kvPrefix + memoryPrefix
+	var deleted []string
+	for _, c := range candidates {
+		if allowlist != nil && !allowlist[c.Key] {
+			continue
 		}
-		deleted = append(deleted, strings.TrimPrefix(k, fullPrefix))
+		if err := store.DeleteConfig(rootCtx, fullPrefix+c.Key); err != nil {
+			return deleted, fmt.Errorf("deleting expired memory %q: %w", c.Key, err)
+		}
+		deleted = append(deleted, c.Key)
 	}
 	return deleted, nil
 }
@@ -392,7 +429,7 @@ Examples:
 		// so bd gc (decay phase) can call it too.
 		var gcKeys []string
 		if memoriesGCFlag {
-			deleted, err := pruneExpiredMemories(now)
+			deleted, err := pruneExpiredMemories(now, nil)
 			if err != nil {
 				FatalErrorRespectJSON("%v", err)
 			}

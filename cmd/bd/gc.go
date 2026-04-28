@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,14 +21,16 @@ import (
 const gcMinOlderThanFloor = 7
 
 var (
-	gcDryRun           bool
-	gcForce            bool
-	gcOlderThan        int
-	gcSkipDecay        bool
-	gcSkipDolt         bool
-	gcAllowRecent      bool
-	gcNoBackup         bool
-	gcSkipMemoryPrune  bool
+	gcDryRun          bool
+	gcForce           bool
+	gcOlderThan       int
+	gcSkipDecay       bool
+	gcSkipDolt        bool
+	gcAllowRecent     bool
+	gcNoBackup        bool
+	gcSkipMemoryPrune bool
+	gcPlan            bool
+	gcOnly            string
 )
 
 var gcCmd = &cobra.Command{
@@ -60,9 +63,15 @@ Fork safety net (mitigates upstream gastownhall/beads#3543):
 
 Fork extras (memory prune):
   - Decay phase also hard-deletes expired memories with expire-policy=delete,
-    same logic as 'bd memories --gc'. Skip with --skip-memory-prune.`,
+    same logic as 'bd memories --gc'. Skip with --skip-memory-prune.
+
+Consent flow (recommended):
+  bd gc --plan                                       # JSON list of candidates, no changes
+  # orchestrator (e.g. Claude AskUserQuestion) curates the IDs/keys
+  bd gc --force --only=sys-1234,old-fact-key,...     # delete ONLY the curated subset
+  Use 'bd gc --force' alone for the legacy wholesale path (warns when N>5).`,
 	Run: func(cmd *cobra.Command, _ []string) {
-		if !gcDryRun {
+		if !gcDryRun && !gcPlan {
 			CheckReadonly("gc")
 		}
 		ctx := rootCtx
@@ -70,6 +79,29 @@ Fork extras (memory prune):
 
 		if gcOlderThan < 0 {
 			FatalError("--older-than must be non-negative")
+		}
+
+		if gcPlan && gcForce {
+			FatalError("--plan and --force are mutually exclusive (use --plan first to inspect, then --force --only=... to delete)")
+		}
+
+		// Parse --only allowlist (set of issue IDs and/or memory keys).
+		// nil means "no allowlist; legacy behavior (delete every candidate)".
+		var onlySet map[string]bool
+		if strings.TrimSpace(gcOnly) != "" {
+			onlySet = make(map[string]bool)
+			for _, s := range strings.Split(gcOnly, ",") {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					onlySet[s] = true
+				}
+			}
+		}
+
+		// --plan mode: collect candidates and emit plan, exit early without modifying anything.
+		if gcPlan {
+			runGCPlan(gcOlderThan)
+			return
 		}
 
 		// Fork safety net: refuse very small --older-than values unless explicitly allowed.
@@ -131,6 +163,17 @@ Fork extras (memory prune):
 				fmt.Printf("  Skipped %d issue(s) with null/zero closed_at (fork safety net)\n", skippedNullClosedAt)
 			}
 
+			// Apply --only allowlist if set: keep only issues whose ID is in the set.
+			if onlySet != nil {
+				keep := closedIssues[:0]
+				for _, issue := range closedIssues {
+					if onlySet[issue.ID] {
+						keep = append(keep, issue)
+					}
+				}
+				closedIssues = keep
+			}
+
 			if len(closedIssues) == 0 {
 				detail := fmt.Sprintf("  No closed issues older than %d days", cutoffDays)
 				if !jsonOutput {
@@ -148,7 +191,13 @@ Fork extras (memory prune):
 					if !gcForce {
 						FatalErrorWithHint(
 							fmt.Sprintf("would delete %d closed issue(s) older than %d days", len(closedIssues), cutoffDays),
-							"Use --force to confirm or --dry-run to preview.")
+							"Run 'bd gc --plan' to inspect candidates as JSON, then 'bd gc --force --only=ID1,ID2,...' to delete only the curated subset. Or 'bd gc --force' to delete all (legacy).")
+					}
+					// Suggest the consent flow when --force is used wholesale without --only.
+					if onlySet == nil && len(closedIssues) > 5 && !jsonOutput {
+						fmt.Printf("  WARNING: --force without --only will delete all %d issue candidates autonomously.\n",
+							len(closedIssues))
+						fmt.Println("           Consider 'bd gc --plan' + AskUserQuestion + --only=... for per-item consent.")
 					}
 
 					// Pre-delete backup (fork-only safety net for upstream #3543).
@@ -196,7 +245,7 @@ Fork extras (memory prune):
 						fmt.Println("  Memory prune: dry-run (use bd memories --include-expired to inspect)")
 					}
 				} else {
-					deleted, err := pruneExpiredMemories(time.Now())
+					deleted, err := pruneExpiredMemories(time.Now(), onlySet)
 					if err != nil {
 						WarnError("memory prune failed: %v", err)
 					} else if len(deleted) > 0 {
@@ -341,8 +390,97 @@ func init() {
 	gcCmd.Flags().BoolVar(&gcAllowRecent, "allow-recent", false, fmt.Sprintf("Bypass the --older-than safety floor of %d days (fork-only)", gcMinOlderThanFloor))
 	gcCmd.Flags().BoolVar(&gcNoBackup, "no-backup", false, "Skip pre-delete backup JSONL (fork-only — backup is on by default)")
 	gcCmd.Flags().BoolVar(&gcSkipMemoryPrune, "skip-memory-prune", false, "Skip memory prune sub-phase (fork-only — by default decay also hard-deletes expired memories with expire-policy=delete, same as 'bd memories --gc')")
+	gcCmd.Flags().BoolVar(&gcPlan, "plan", false, "Emit a JSON plan of the candidates that WOULD be deleted (closed issues + expired memories) without modifying anything. Mutually exclusive with --force. Use the plan to drive a per-item consent flow, then re-invoke with --force --only=ID1,key2,ID3.")
+	gcCmd.Flags().StringVar(&gcOnly, "only", "", "Comma-separated allowlist of issue IDs and/or memory keys. When set, gc deletes ONLY items in this list. Use after `bd gc --plan` to commit a curated subset.")
 
 	rootCmd.AddCommand(gcCmd)
+}
+
+// gcPlanIssue is the wire shape of an issue candidate inside the JSON plan
+// emitted by `bd gc --plan`. It surfaces just enough to let an orchestrator
+// (Claude, a CI gate, an interactive UI) decide per-item whether to keep
+// or delete each candidate.
+type gcPlanIssue struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	ClosedAt string `json:"closed_at,omitempty"`
+	AgeDays  int    `json:"age_days"`
+}
+
+// gcPlanOutput is the top-level JSON shape returned by `bd gc --plan`.
+type gcPlanOutput struct {
+	OlderThanDays  int                      `json:"older_than_days"`
+	Now            string                   `json:"now"`
+	Issues         []gcPlanIssue            `json:"issues"`
+	Memories       []expiredMemoryCandidate `json:"memories"`
+	IssueCount     int                      `json:"issue_count"`
+	MemoryCount    int                      `json:"memory_count"`
+	HintNextStep   string                   `json:"hint_next_step,omitempty"`
+}
+
+// runGCPlan implements `bd gc --plan`. It reads the same candidate set that
+// the decay + prune phases would touch, but performs ZERO writes. Output is
+// always JSON (regardless of --json) so downstream tooling (Claude's
+// AskUserQuestion, scripts, CI gates) has a stable contract.
+//
+// Fork-only — implements the user-consent flow requested by the bd owner:
+// "non mi va bene che bd cancelli le cose vecchie senza chiedere".
+func runGCPlan(olderThanDays int) {
+	now := time.Now()
+	cutoff := now.AddDate(0, 0, -olderThanDays)
+	statusClosed := types.StatusClosed
+
+	closedIssues, err := store.SearchIssues(rootCtx, "", types.IssueFilter{
+		Status:       &statusClosed,
+		ClosedBefore: &cutoff,
+	})
+	if err != nil {
+		FatalError("plan: searching closed issues: %v", err)
+	}
+
+	plan := gcPlanOutput{
+		OlderThanDays: olderThanDays,
+		Now:           now.UTC().Format(time.RFC3339),
+		Issues:        []gcPlanIssue{},
+		Memories:      []expiredMemoryCandidate{},
+	}
+	for _, issue := range closedIssues {
+		if issue.Pinned {
+			continue
+		}
+		if issue.ClosedAt == nil || issue.ClosedAt.IsZero() {
+			continue
+		}
+		closedAt := *issue.ClosedAt
+		plan.Issues = append(plan.Issues, gcPlanIssue{
+			ID:       issue.ID,
+			Title:    issue.Title,
+			ClosedAt: closedAt.UTC().Format(time.RFC3339),
+			AgeDays:  int(now.Sub(closedAt).Hours() / 24),
+		})
+	}
+
+	memCands, err := listExpiredMemoryCandidates(now)
+	if err != nil {
+		FatalError("plan: listing expired memories: %v", err)
+	}
+	if memCands != nil {
+		plan.Memories = memCands
+	}
+	plan.IssueCount = len(plan.Issues)
+	plan.MemoryCount = len(plan.Memories)
+	if plan.IssueCount+plan.MemoryCount > 0 {
+		plan.HintNextStep = "Pass approved IDs/keys via 'bd gc --force --only=<csv>' to delete only the curated subset."
+	} else {
+		plan.HintNextStep = "Nothing to do (no closed issues older than cutoff, no expired memories with policy=delete)."
+	}
+
+	// Always JSON for --plan. The contract is the JSON; bypass jsonOutput flag.
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(plan); err != nil {
+		FatalError("plan: encode JSON: %v", err)
+	}
 }
 
 // writeGCBackup serializes the given issues to a JSONL file inside .beads/
