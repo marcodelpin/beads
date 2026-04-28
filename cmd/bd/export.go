@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -187,10 +188,16 @@ func runExport(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to read config for memories: %w", err)
 		}
 		fullPrefix := kvPrefix + memoryPrefix
-		for k, v := range allConfig {
-			if !strings.HasPrefix(k, fullPrefix) {
-				continue
+		// Sort keys for deterministic output order (GH#3474).
+		var memKeys []string
+		for k := range allConfig {
+			if strings.HasPrefix(k, fullPrefix) {
+				memKeys = append(memKeys, k)
 			}
+		}
+		sort.Strings(memKeys)
+		for _, k := range memKeys {
+			v := allConfig[k]
 			userKey := strings.TrimPrefix(k, fullPrefix)
 			record := map[string]string{
 				"_type": "memory",
