@@ -91,7 +91,8 @@ func TestEmbeddedGC(t *testing.T) {
 	// ===== Older Than =====
 
 	t.Run("gc_older_than", func(t *testing.T) {
-		out := bdGC(t, bd, dir, "--dry-run", "--older-than", "0")
+		// --older-than 0 is below the fork safety floor; --allow-recent opts in.
+		out := bdGC(t, bd, dir, "--dry-run", "--older-than", "0", "--allow-recent")
 		// With --older-than 0, all closed issues would be candidates
 		if !strings.Contains(out, "Phase 1/3") {
 			t.Errorf("expected phase output: %s", out)
@@ -114,9 +115,10 @@ func TestEmbeddedGC(t *testing.T) {
 			}
 		}
 
-		// GC with force and older-than 0 (all closed issues eligible)
-		// --skip-dolt to avoid slow GC in tests
-		out := bdGC(t, bd, gcDir, "--force", "--older-than", "0", "--skip-dolt")
+		// GC with force and older-than 0 (all closed issues eligible).
+		// --skip-dolt to avoid slow GC in tests.
+		// --allow-recent because 0 is below the fork safety floor.
+		out := bdGC(t, bd, gcDir, "--force", "--older-than", "0", "--allow-recent", "--skip-dolt")
 		if !strings.Contains(out, "Deleted") && !strings.Contains(out, "deleted") {
 			// If no issues match (e.g., closed_at is too recent for the filter),
 			// at minimum verify the command completed.
@@ -140,7 +142,8 @@ func TestEmbeddedGC(t *testing.T) {
 
 		// Without --force but with closed issues, should fail with hint.
 		// If no closed issues match the age filter, it may succeed (0 candidates).
-		cmd = exec.Command(bd, "gc", "--older-than", "0")
+		// --allow-recent because 0 is below the fork safety floor.
+		cmd = exec.Command(bd, "gc", "--older-than", "0", "--allow-recent")
 		cmd.Dir = gcDir
 		cmd.Env = bdEnv(gcDir)
 		out, err := cmd.CombinedOutput()

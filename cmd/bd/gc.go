@@ -1,20 +1,32 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
+// gcMinOlderThanFloor is the minimum value for --older-than unless --allow-recent is set.
+// Defends against accidental same-day or recent-day deletions (fork-only safety net,
+// motivated by upstream gastownhall/beads issue #3543: bd gc --older-than 30 deleted
+// 82 same-day-closed beads in production with no sandbox repro).
+const gcMinOlderThanFloor = 7
+
 var (
-	gcDryRun    bool
-	gcForce     bool
-	gcOlderThan int
-	gcSkipDecay bool
-	gcSkipDolt  bool
+	gcDryRun       bool
+	gcForce        bool
+	gcOlderThan    int
+	gcSkipDecay    bool
+	gcSkipDolt     bool
+	gcAllowRecent  bool
+	gcNoBackup     bool
 )
 
 var gcCmd = &cobra.Command{
@@ -37,7 +49,13 @@ Examples:
   bd gc --older-than 30              # Decay issues closed 30+ days ago
   bd gc --skip-decay                 # Skip issue deletion, just compact+GC
   bd gc --skip-dolt                  # Skip Dolt GC, just decay+compact
-  bd gc --force                      # Skip confirmation prompt`,
+  bd gc --force                      # Skip confirmation prompt
+
+Fork safety net (mitigates upstream gastownhall/beads#3543):
+  - Refuses --older-than below 7 unless --allow-recent is also set.
+  - Skips any candidate whose closed_at is null/zero (logs a warning).
+  - Writes a .gc-backup-<unix>.jsonl inside .beads/ BEFORE any delete,
+    unless --no-backup is set. Restore manually with bd import on the JSONL.`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		if !gcDryRun {
 			CheckReadonly("gc")
@@ -47,6 +65,15 @@ Examples:
 
 		if gcOlderThan < 0 {
 			FatalError("--older-than must be non-negative")
+		}
+
+		// Fork safety net: refuse very small --older-than values unless explicitly allowed.
+		// Defends against accidental destructive runs and the unresolved upstream issue
+		// gastownhall/beads#3543 (same-day-closed beads deleted by --older-than 30).
+		if !gcSkipDecay && !gcAllowRecent && gcOlderThan < gcMinOlderThanFloor {
+			FatalErrorWithHint(
+				fmt.Sprintf("--older-than %d is below the safety floor of %d days", gcOlderThan, gcMinOlderThanFloor),
+				"Pass --allow-recent to bypass the floor (only after auditing what will be deleted with --dry-run).")
 		}
 
 		// Phase tracking for summary
@@ -78,14 +105,26 @@ Examples:
 				FatalError("searching closed issues: %v", err)
 			}
 
-			// Filter out pinned issues
+			// Filter out pinned issues AND issues with missing/zero closed_at.
+			// The null-safe ClosedAt check is a fork-only defense against upstream #3543:
+			// any candidate without a real ClosedAt should never be treated as "old".
 			filtered := make([]*types.Issue, 0, len(closedIssues))
+			skippedNullClosedAt := 0
 			for _, issue := range closedIssues {
-				if !issue.Pinned {
-					filtered = append(filtered, issue)
+				if issue.Pinned {
+					continue
 				}
+				if issue.ClosedAt == nil || issue.ClosedAt.IsZero() {
+					skippedNullClosedAt++
+					WarnError("skipping %s: closed_at is null/zero (refusing to treat as old)", issue.ID)
+					continue
+				}
+				filtered = append(filtered, issue)
 			}
 			closedIssues = filtered
+			if skippedNullClosedAt > 0 && !jsonOutput {
+				fmt.Printf("  Skipped %d issue(s) with null/zero closed_at (fork safety net)\n", skippedNullClosedAt)
+			}
 
 			if len(closedIssues) == 0 {
 				detail := fmt.Sprintf("  No closed issues older than %d days", cutoffDays)
@@ -105,6 +144,19 @@ Examples:
 						FatalErrorWithHint(
 							fmt.Sprintf("would delete %d closed issue(s) older than %d days", len(closedIssues), cutoffDays),
 							"Use --force to confirm or --dry-run to preview.")
+					}
+
+					// Pre-delete backup (fork-only safety net for upstream #3543).
+					// Writes the full content of every candidate to a JSONL file inside
+					// .beads/ before any DeleteIssue call. Skipped only with --no-backup.
+					if !gcNoBackup {
+						backupPath, err := writeGCBackup(closedIssues)
+						if err != nil {
+							FatalError("failed to write GC backup: %v (refusing to delete)", err)
+						}
+						if !jsonOutput {
+							fmt.Printf("  Backup: %s (%d issue(s))\n", backupPath, len(closedIssues))
+						}
 					}
 
 					deleted := 0
@@ -247,6 +299,42 @@ func init() {
 	gcCmd.Flags().IntVar(&gcOlderThan, "older-than", 90, "Delete closed issues older than N days")
 	gcCmd.Flags().BoolVar(&gcSkipDecay, "skip-decay", false, "Skip issue deletion phase")
 	gcCmd.Flags().BoolVar(&gcSkipDolt, "skip-dolt", false, "Skip Dolt garbage collection phase")
+	gcCmd.Flags().BoolVar(&gcAllowRecent, "allow-recent", false, fmt.Sprintf("Bypass the --older-than safety floor of %d days (fork-only)", gcMinOlderThanFloor))
+	gcCmd.Flags().BoolVar(&gcNoBackup, "no-backup", false, "Skip pre-delete backup JSONL (fork-only — backup is on by default)")
 
 	rootCmd.AddCommand(gcCmd)
+}
+
+// writeGCBackup serializes the given issues to a JSONL file inside .beads/
+// before any DeleteIssue call. Returns the absolute path of the backup on success.
+// Fork-only safeguard motivated by upstream gastownhall/beads#3543.
+func writeGCBackup(issues []*types.Issue) (string, error) {
+	beadsDir := beads.FindBeadsDir()
+	if beadsDir == "" {
+		// Fall back to current working directory if .beads/ can't be located.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("locate beads dir or cwd: %w", err)
+		}
+		beadsDir = cwd
+	}
+	name := fmt.Sprintf(".gc-backup-%d.jsonl", time.Now().Unix())
+	path := filepath.Join(beadsDir, name)
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // contains no secrets, only issue content
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", path, err)
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, issue := range issues {
+		if err := enc.Encode(issue); err != nil {
+			return "", fmt.Errorf("encode %s: %w", issue.ID, err)
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("fsync %s: %w", path, err)
+	}
+	return path, nil
 }
