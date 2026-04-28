@@ -52,6 +52,7 @@ func TestEmbeddedGCMemoryPrune(t *testing.T) {
 	// decay pre-check 'no closed issues' path runs and the memory
 	// prune sub-phase ALWAYS runs after it.
 	out := bdGC(t, bd, dir, "--force", "--older-than", "0", "--allow-recent", "--skip-dolt")
+	t.Logf("bd gc output:\n%s", out)
 
 	if !strings.Contains(out, "Memory prune") {
 		t.Errorf("expected 'Memory prune' line in output, got: %s", out)
