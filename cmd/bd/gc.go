@@ -20,13 +20,14 @@ import (
 const gcMinOlderThanFloor = 7
 
 var (
-	gcDryRun       bool
-	gcForce        bool
-	gcOlderThan    int
-	gcSkipDecay    bool
-	gcSkipDolt     bool
-	gcAllowRecent  bool
-	gcNoBackup     bool
+	gcDryRun           bool
+	gcForce            bool
+	gcOlderThan        int
+	gcSkipDecay        bool
+	gcSkipDolt         bool
+	gcAllowRecent      bool
+	gcNoBackup         bool
+	gcSkipMemoryPrune  bool
 )
 
 var gcCmd = &cobra.Command{
@@ -55,7 +56,11 @@ Fork safety net (mitigates upstream gastownhall/beads#3543):
   - Refuses --older-than below 7 unless --allow-recent is also set.
   - Skips any candidate whose closed_at is null/zero (logs a warning).
   - Writes a .gc-backup-<unix>.jsonl inside .beads/ BEFORE any delete,
-    unless --no-backup is set. Restore manually with bd import on the JSONL.`,
+    unless --no-backup is set. Restore manually with bd import on the JSONL.
+
+Fork extras (memory prune):
+  - Decay phase also hard-deletes expired memories with expire-policy=delete,
+    same logic as 'bd memories --gc'. Skip with --skip-memory-prune.`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		if !gcDryRun {
 			CheckReadonly("gc")
@@ -182,6 +187,40 @@ Fork safety net (mitigates upstream gastownhall/beads#3543):
 					}
 				}
 			}
+			// Memory prune sub-phase: hard-delete expired memories with
+			// expire-policy=delete. Same logic as `bd memories --gc`.
+			// Skipped with --skip-memory-prune.
+			if !gcSkipMemoryPrune {
+				if gcDryRun {
+					if !jsonOutput {
+						fmt.Println("  Memory prune: dry-run (use bd memories --include-expired to inspect)")
+					}
+				} else {
+					deleted, err := pruneExpiredMemories(time.Now())
+					if err != nil {
+						WarnError("memory prune failed: %v", err)
+					} else if len(deleted) > 0 {
+						commandDidWrite.Store(true)
+						if !jsonOutput {
+							fmt.Printf("  Memory prune: deleted %d expired memor(y/ies) with policy=delete\n", len(deleted))
+						}
+						if isEmbeddedMode() && store != nil {
+							if _, err := store.CommitPending(ctx, actor); err != nil {
+								WarnError("failed to commit after memory prune: %v", err)
+							}
+						}
+						results = append(results, phaseResult{
+							name:   "Memory prune",
+							detail: fmt.Sprintf("%d memor(y/ies) deleted", len(deleted)),
+						})
+					} else {
+						if !jsonOutput {
+							fmt.Println("  Memory prune: no expired memories with policy=delete")
+						}
+					}
+				}
+			}
+
 			if !jsonOutput {
 				fmt.Println()
 			}
@@ -301,6 +340,7 @@ func init() {
 	gcCmd.Flags().BoolVar(&gcSkipDolt, "skip-dolt", false, "Skip Dolt garbage collection phase")
 	gcCmd.Flags().BoolVar(&gcAllowRecent, "allow-recent", false, fmt.Sprintf("Bypass the --older-than safety floor of %d days (fork-only)", gcMinOlderThanFloor))
 	gcCmd.Flags().BoolVar(&gcNoBackup, "no-backup", false, "Skip pre-delete backup JSONL (fork-only — backup is on by default)")
+	gcCmd.Flags().BoolVar(&gcSkipMemoryPrune, "skip-memory-prune", false, "Skip memory prune sub-phase (fork-only — by default decay also hard-deletes expired memories with expire-policy=delete, same as 'bd memories --gc')")
 
 	rootCmd.AddCommand(gcCmd)
 }

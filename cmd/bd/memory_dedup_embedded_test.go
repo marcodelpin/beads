@@ -40,13 +40,14 @@ func TestEmbeddedMemoryDedup(t *testing.T) {
 			t.Errorf("expected dedup hit on variation 2, got: %s", out)
 		}
 
-		// Confirm exactly one memory exists for this insight.
+		// Confirm exactly one memory exists for this insight. The dedup
+		// feature collapsed 3 cosmetic variants onto a single key, so
+		// 'bd memories' should report 'Memories (1)'. We assert on the
+		// header rather than substring-match the content (which is the
+		// LATEST variant after each Update and may carry double-spaces).
 		mems := bdMemories(t, bd, dir)
-		count := strings.Count(strings.ToLower(mems), "always run tests with -race")
-		// At least one mention; we don't try to count occurrences strictly because
-		// 'bd memories' formats with truncation. The key observation: only ONE key.
-		if count < 1 {
-			t.Errorf("expected at least one mention of the insight, got: %s", mems)
+		if !strings.Contains(mems, "Memories (1)") {
+			t.Errorf("expected Memories (1) (single deduped entry), got: %s", mems)
 		}
 	})
 
