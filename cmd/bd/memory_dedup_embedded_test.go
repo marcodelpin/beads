@@ -50,26 +50,26 @@ func TestEmbeddedMemoryDedup(t *testing.T) {
 		}
 	})
 
-	t.Run("no_dedup_creates_sibling_key", func(t *testing.T) {
-		// Use a fresh insight so we don't collide with the previous test run.
-		out := bdRemember(t, bd, dir, "Use Dolt 1.0.3 not 1.0.2")
+	t.Run("no_dedup_suppresses_dedup_verb", func(t *testing.T) {
+		// Seed canonical wording.
+		out := bdRemember(t, bd, dir, "Use Dolt 1.0.3 not 1.0.2 (regression alert)")
 		if !strings.Contains(out, "Remembered") {
 			t.Fatalf("expected Remembered on first insert, got: %s", out)
 		}
 
-		// Same content, --no-dedup, but slugify is deterministic so the auto
-		// key collides AS A KEY. The "Updated" verb confirms key collision.
-		out = bdRemember(t, bd, dir, "Use Dolt 1.0.3 not 1.0.2", "--no-dedup")
-		if !strings.Contains(out, "Updated") {
-			t.Errorf("expected Updated (same auto-key), got: %s", out)
+		// Without --no-dedup, a punctuation variation MUST dedup.
+		out = bdRemember(t, bd, dir, "use dolt 1.0.3 not 1.0.2 regression alert!")
+		if !strings.Contains(out, "Deduped") {
+			t.Errorf("expected Deduped without --no-dedup, got: %s", out)
 		}
 
-		// Now make the variation that WOULD have deduped — punctuation
-		// difference produces a different slug. With --no-dedup, we must
-		// see Remembered (sibling key created).
-		out = bdRemember(t, bd, dir, "Use Dolt 1.0.3, not 1.0.2.", "--no-dedup")
-		if !strings.Contains(out, "Remembered") {
-			t.Errorf("expected Remembered (sibling) under --no-dedup, got: %s", out)
+		// With --no-dedup, the same variation MUST NOT show the Deduped verb.
+		// The auto-key may or may not collide with the existing slug (depends
+		// on slugify), but the dedup pathway must be inactive.
+		out = bdRemember(t, bd, dir, "USE Dolt 1.0.3, not 1.0.2 (regression alert).",
+			"--no-dedup")
+		if strings.Contains(out, "Deduped") {
+			t.Errorf("--no-dedup must suppress Deduped verb, got: %s", out)
 		}
 	})
 

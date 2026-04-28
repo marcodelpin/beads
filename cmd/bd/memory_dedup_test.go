@@ -61,7 +61,7 @@ func TestFindDuplicateMemoryKey(t *testing.T) {
 		"unrelated.config":       "ignored",
 		full("first-fact"):       "Always run tests with -race flag",
 		full("second-fact"):      "Use Dolt 1.0.3 not 1.0.2 (regression in v1.0.3)",
-		full("envelope-fact"):    `{"v":1,"content":"auth module uses JWT not sessions","created_at":"2026-04-28T07:00:00Z"}`,
+		full("envelope-fact"):    `{"_bd_mem":1,"content":"auth module uses JWT not sessions","created_at":"2026-04-28T07:00:00Z"}`,
 	}
 
 	t.Run("hits_plain_text", func(t *testing.T) {

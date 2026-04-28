@@ -37,24 +37,31 @@ var (
 	memoriesGCFlag         bool
 )
 
-// memoryFingerprintRe matches characters that should be stripped when
-// computing a memory's content fingerprint for fork-only dedup.
-var memoryFingerprintRe = regexp.MustCompile(`[^a-z0-9 ]+`)
-
 // memoryFingerprintWS collapses runs of whitespace into a single space.
 var memoryFingerprintWS = regexp.MustCompile(`\s+`)
 
+// memoryFingerprintNonAlnum strips characters that are not lowercase
+// alphanumeric or space. Applied AFTER whitespace collapse so tabs and
+// newlines have already been turned into spaces.
+var memoryFingerprintNonAlnum = regexp.MustCompile(`[^a-z0-9 ]+`)
+
 // memoryFingerprint normalizes a memory string for dedup comparison.
-// It lowercases, strips non-alphanumeric except spaces, and collapses
-// whitespace. Two strings that differ only in case, punctuation, or
-// whitespace produce the same fingerprint.
+// Pipeline:
 //
-// Fork-only — used by bd remember to detect content-equal memories that
-// would otherwise live under sibling keys produced by slugify().
+//  1. lowercase
+//  2. collapse all whitespace runs (spaces, tabs, newlines, CRs) to a
+//     single ASCII space
+//  3. strip every character that is not lowercase alphanumeric or space
+//  4. trim leading/trailing space
+//
+// Two strings that differ only in case, punctuation, or whitespace
+// produce the same fingerprint. Fork-only — used by bd remember to
+// detect content-equal memories that would otherwise live under
+// sibling keys produced by slugify().
 func memoryFingerprint(s string) string {
 	s = strings.ToLower(s)
-	s = memoryFingerprintRe.ReplaceAllString(s, "")
 	s = memoryFingerprintWS.ReplaceAllString(s, " ")
+	s = memoryFingerprintNonAlnum.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
 
