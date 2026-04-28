@@ -37,6 +37,7 @@ bd info --json
 bd ready --json
 
 # Atomically claim an issue from the ready queue
+bd ready --claim --json                     # Finds and claims one ready issue
 bd update <id> --claim --json               # Fails if already claimed
 
 # Find stale issues (not updated recently)
