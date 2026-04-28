@@ -7,6 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/utils"
 )
 
@@ -34,8 +37,11 @@ Examples:
 	Run: func(cmd *cobra.Command, args []string) {
 		result := WhereResult{}
 
-		// Find the beads directory (this follows redirects)
-		beadsDir := beads.FindBeadsDir()
+		if selected := selectedNoDBBeadsDir(cmd); selected != "" {
+			prepareSelectedNoDBContext(selected)
+		}
+
+		beadsDir := resolveWhereBeadsDir(cmd)
 		if beadsDir == "" {
 			if jsonOutput {
 				outputJSON(map[string]string{
@@ -60,22 +66,24 @@ Examples:
 		}
 
 		// Find the database path
-		dbPath := beads.FindDatabasePath()
+		dbPath := resolveWhereDatabasePath()
 		if dbPath != "" {
 			result.DatabasePath = dbPath
-
-			// Try to get the prefix from the database if we have a store
-			if store != nil {
-				ctx := rootCtx
-				if prefix, err := store.GetConfig(ctx, "issue_prefix"); err == nil && prefix != "" {
-					result.Prefix = prefix
-				}
-			}
 		}
 
-		// If we don't have the prefix from DB, try to detect it from JSONL
-		if result.Prefix == "" {
-			result.Prefix = detectPrefixFromDir(beadsDir)
+		// Prefer YAML when available, otherwise do a scoped read-only reopen
+		// using the already-resolved dbPath so we can preserve prefix output
+		// without paying the old worktree-discovery cost.
+		if prefix := config.GetString("issue-prefix"); prefix != "" {
+			result.Prefix = prefix
+		} else if dbPath != "" && shouldReadWherePrefixFromStore(beadsDir) {
+			_ = withStorage(getRootContext(), nil, dbPath, func(currentStore storage.DoltStorage) error {
+				prefix, err := currentStore.GetConfig(getRootContext(), "issue_prefix")
+				if err == nil && prefix != "" {
+					result.Prefix = prefix
+				}
+				return nil
+			})
 		}
 
 		// Output results
@@ -94,6 +102,33 @@ Examples:
 			}
 		}
 	},
+}
+
+func resolveWhereBeadsDir(cmd *cobra.Command) string {
+	if selected := selectedNoDBBeadsDir(cmd); selected != "" {
+		return selected
+	}
+
+	return beads.FindBeadsDir()
+}
+
+func resolveWhereDatabasePath() string {
+	return beads.FindDatabasePath()
+}
+
+func shouldReadWherePrefixFromStore(beadsDir string) bool {
+	if beadsDir == "" {
+		return false
+	}
+
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil {
+		return true
+	}
+
+	// `bd where` should be able to report selected server-mode metadata without
+	// requiring a live Dolt server just to recover issue_prefix.
+	return !cfg.IsDoltServerMode()
 }
 
 // findOriginalBeadsDir walks up from cwd looking for a .beads directory with a redirect file
@@ -146,12 +181,6 @@ func findOriginalBeadsDir() string {
 		dir = parent
 	}
 
-	return ""
-}
-
-// detectPrefixFromDir tries to detect the issue prefix from files in the beads directory.
-// Returns empty string if prefix cannot be determined.
-func detectPrefixFromDir(_ string) string {
 	return ""
 }
 

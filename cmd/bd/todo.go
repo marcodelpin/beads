@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 var todoCmd = &cobra.Command{
@@ -229,6 +230,6 @@ func todoSortIssues(issues []*types.Issue) {
 		if a.Priority != b.Priority {
 			return a.Priority - b.Priority
 		}
-		return strings.Compare(a.ID, b.ID)
+		return utils.NaturalCompareIDs(a.ID, b.ID)
 	})
 }

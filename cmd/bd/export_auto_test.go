@@ -356,6 +356,73 @@ func TestGitAddFile_NonHookContext_GuardDoesNotFire(t *testing.T) {
 	}
 }
 
+// TestGitAddFile_CapturesStderrOnFailure verifies that when `git add` fails,
+// the returned error wraps git's stderr text instead of just the bare exit
+// status. Regression guard for the silent "Warning: auto-export: git add
+// failed: exit status 1" noise where the user has no signal as to why.
+func TestGitAddFile_CapturesStderrOnFailure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "bd-stderr-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := filepath.Join(tmpDir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", "-q")
+	runGit("config", "user.email", "t@t")
+	runGit("config", "user.name", "t")
+
+	// Force git add to fail by gitignoring the target. Common real-world
+	// trigger: a parent .gitignore excluding .beads/ that the user is
+	// unaware of.
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".beads/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(repo, ".beads", "issues.jsonl")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(`{"id":"x"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Unsetenv("GIT_DIR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	err = gitAddFile(target)
+	if err == nil {
+		t.Fatal("expected gitAddFile to fail on gitignored target, got nil")
+	}
+	msg := err.Error()
+	// Bare-exit-status regression guard: pre-fix message was just "exit
+	// status 1" with nothing else. Post-fix must include git's stderr.
+	if !strings.Contains(strings.ToLower(msg), "ignored") {
+		t.Errorf("expected error to surface git's stderr (containing 'ignored'), got: %q", msg)
+	}
+}
+
 // TestGitAddFile_RedirectCase_DoesNotStageInMainRepo regresses the
 // silent-stage-in-main follow-up from the GH#3311 review: when a worktree
 // has .beads/redirect -> main/.beads, the worktree's pre-commit hook must

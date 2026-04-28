@@ -3,7 +3,7 @@
 # On Windows, GNU Make defaults to cmd.exe which doesn't support POSIX
 # shell syntax used throughout this Makefile. Use Git for Windows' bash.
 ifeq ($(OS),Windows_NT)
-GIT_BASH := $(shell where git 2>nul)
+GIT_BASH := $(shell where git 2>/dev/null)
 ifneq ($(GIT_BASH),)
 SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif

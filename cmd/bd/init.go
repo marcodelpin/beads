@@ -79,6 +79,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		nonInteractiveFlag, _ := cmd.Flags().GetBool("non-interactive")
 		roleFlag, _ := cmd.Flags().GetString("role")
 		fromJSONL, _ := cmd.Flags().GetBool("from-jsonl")
+		initRemote, _ := cmd.Flags().GetString("remote")
+		initRemoteChanged := cmd.Flags().Changed("remote")
 		// Dolt server connection flags
 		backendFlag, _ := cmd.Flags().GetString("backend")
 		initServerMode, _ := cmd.Flags().GetBool("server")
@@ -302,11 +304,18 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// beadsDir is computed. See CheckRemoteSafety in init_safety.go.
 		{
 			var earlySyncURL string
+			earlyRemoteSource := initSyncRemoteNone
 			earlyRemoteHasDoltData := false
-			if s := resolveSyncRemote(); s != "" {
-				earlySyncURL = s
+			earlySyncURL, earlyRemoteSource = resolveInitConfiguredSyncRemote(initRemote, initRemoteChanged, resolveSyncRemote)
+			if earlyRemoteSource == initSyncRemoteExplicit {
+				// An explicit --remote is intent to bootstrap or wire that URL,
+				// but it is not proof that the remote already contains Dolt
+				// history. Let the clone attempt below distinguish populated
+				// remotes from empty remotes so --reinit-local can still fall
+				// back to a fresh local init against a new remote.
+			} else if earlyRemoteSource == initSyncRemoteConfigured {
 				earlyRemoteHasDoltData = true // sync.remote configured = user intends bootstrap
-			} else if isGitRepo() && !isBareGitRepo() {
+			} else if earlyRemoteSource == initSyncRemoteNone && isGitRepo() && !isBareGitRepo() {
 				if originURL, err := gitOriginGetURL(); err == nil && originURL != "" {
 					earlySyncURL = normalizeRemoteURL(originURL)
 					earlyRemoteHasDoltData = gitOriginHasDoltDataRef()
@@ -512,13 +521,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if existingCfg, _ := configfile.Load(beadsDir); existingCfg != nil && existingCfg.DoltDatabase != "" {
 			dbName = existingCfg.DoltDatabase
 		} else if prefix != "" {
-			// Sanitize hyphens and dots to underscores for SQL-idiomatic database names.
-			// Dots are invalid in Dolt/MySQL identifiers (e.g. from ".claude" directories).
+			// Sanitize hyphens to underscores for SQL-idiomatic database names.
+			// Dots were already normalized in prefix above so issue_prefix and
+			// DoltDatabase stay in lockstep.
 			// Must match the sanitization applied to metadata.json DoltDatabase
 			// field (line below), otherwise init creates a database with one name
 			// but metadata.json records a different name, causing reopens to fail.
 			dbName = strings.ReplaceAll(prefix, "-", "_")
-			dbName = strings.ReplaceAll(dbName, ".", "_")
 		} else {
 			dbName = "beads"
 		}
@@ -559,8 +568,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// CheckRemoteSafety chokepoint encodes this invariant; any future
 		// flag that can interact with remote history must route through
 		// it rather than adding another `&& !someFlag` here.
-		syncURL := resolveSyncRemote()
-		syncURLFromConfig := syncURL != "" // true when URL came from explicit user config
+		syncResolutionURL, syncRemoteSource := resolveInitConfiguredSyncRemote(initRemote, initRemoteChanged, resolveSyncRemote)
+		syncURL := syncResolutionURL
+		syncURLFromConfig := syncURL != "" && syncRemoteSource != initSyncRemoteNone // true when URL came from explicit user config
 		bootstrappedFromRemote := false
 		syncFromRemote := false
 		remoteHasDoltData := false
@@ -573,7 +583,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// http:// to git+http:// and break Dolt remotesapi endpoints
 			// configured explicitly by the user (GH#3339).
 			syncFromRemote = true
-		} else if isGitRepo() && !isBareGitRepo() {
+		} else if syncRemoteSource == initSyncRemoteNone && isGitRepo() && !isBareGitRepo() {
 			if originURL, err := gitOriginGetURL(); err == nil && originURL != "" {
 				syncURL = normalizeRemoteURL(originURL)
 				remoteHasDoltData = gitOriginHasDoltDataRef()
@@ -626,13 +636,24 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 		if syncFromRemote {
-			if err := cloneFromRemote(ctx, beadsDir, syncURL, dbName, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			bootstrappedFromRemote = true
-			if !quiet {
-				fmt.Printf("  %s Bootstrapped from remote: %s\n", ui.RenderPass("✓"), syncURL)
+			var err error
+			cloneCfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
+			err = cloneFromRemoteWithMode(ctx, beadsDir, syncURL, dbName, cloneCfg, initRemoteCloneMode(initServerMode, externalServer))
+			if err != nil {
+				if isEmptyRemoteCloneError(err) {
+					if !quiet {
+						fmt.Printf("  %s Remote has no Dolt data yet; initialized a fresh local database\n", ui.RenderWarn("!"))
+					}
+					syncFromRemote = false
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			} else {
+				bootstrappedFromRemote = true
+				if !quiet {
+					fmt.Printf("  %s Bootstrapped from remote: %s\n", ui.RenderPass("✓"), syncURL)
+				}
 			}
 		}
 
@@ -838,12 +859,17 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// This UUID is stored in both metadata.json and the database,
 			// and verified on every connection to detect cross-project leakage.
 			//
-			// When --database is specified and the database already exists on the
-			// server, adopt the existing project_id instead of generating a new
-			// one. This prevents identity mismatch when a second user joins a
-			// shared remote Dolt server. (GH#2922)
+			// Adopt the existing _project_id from the database when:
+			//   - --database is set and the database already exists on a
+			//     shared remote Dolt server (GH#2922), or
+			//   - we just bootstrapped from a remote whose Dolt history
+			//     already carried a _project_id.
+			// In both cases another rig has already chosen an identity;
+			// minting a new one and writing it back would overwrite the
+			// source identity and cause cross-project verification to
+			// fail on subsequent pulls.
 			if cfg.ProjectID == "" {
-				if database != "" && store != nil {
+				if store != nil && (database != "" || bootstrappedFromRemote) {
 					if existingID, err := store.GetMetadata(ctx, "_project_id"); err == nil && existingID != "" {
 						cfg.ProjectID = existingID
 						if !quiet {
@@ -872,12 +898,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if database != "" {
 					cfg.DoltDatabase = database
 				} else if cfg.DoltDatabase == "" && prefix != "" {
-					// Sanitize hyphens and dots to underscores for SQL-idiomatic names (GH#2142).
-					// Must match the sanitization applied to dbName above (lines 430-431),
+					// Sanitize hyphens to underscores for SQL-idiomatic names (GH#2142).
+					// Dots were already normalized in prefix above.
+					// Must match the sanitization applied to dbName above,
 					// otherwise init creates a database with one name but metadata.json
 					// records a different name, causing reopens to fail.
 					cfg.DoltDatabase = strings.ReplaceAll(prefix, "-", "_")
-					cfg.DoltDatabase = strings.ReplaceAll(cfg.DoltDatabase, ".", "_")
 				}
 
 				// Set global database name for shared-server mode projects.
@@ -930,12 +956,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// Only persist when the URL is from explicit config or a
 			// confirmed Dolt remote — not an auto-detected git origin
 			// for a plain source repo (GH#3356).
-			if shouldWireInitRemote(syncURL, syncFromRemote, syncURLFromConfig) {
-				if existing := config.GetYamlConfig("sync.remote"); existing == "" {
-					if err := config.SetYamlConfig("sync.remote", syncURL); err != nil {
-						FatalError("failed to persist sync.remote to config.yaml: %v", err)
-					}
-				}
+			if err := persistInitSyncRemote(beadsDir, initRemote, syncURL, syncFromRemote, syncURLFromConfig); err != nil {
+				FatalError("failed to persist sync.remote to config.yaml: %v", err)
 			}
 
 			// Enable shared server mode if requested via flag OR env var (GH#2377).
@@ -1396,6 +1418,7 @@ func init() {
 	initCmd.Flags().String("agents-template", "", "Path to custom AGENTS.md template (overrides embedded default)")
 	initCmd.Flags().String("agents-profile", "", "AGENTS.md profile: 'minimal' (default, pointer to bd prime) or 'full' (complete command reference)")
 	initCmd.Flags().String("agents-file", "", "Custom filename for agent instructions (default: AGENTS.md)")
+	initCmd.Flags().String("remote", "", "Dolt remote URL to clone from and persist as sync.remote")
 
 	// Non-interactive mode for CI/cloud agents
 	initCmd.Flags().Bool("non-interactive", false, "Skip all interactive prompts (auto-detected in CI or non-TTY environments)")
@@ -1837,6 +1860,81 @@ func shouldWireInitRemote(syncURL string, syncFromRemote, syncURLFromConfig bool
 	// Auto-detected plain git origins are not Dolt remotes. Only wire origin
 	// when it was explicitly configured or proven to carry refs/dolt/data.
 	return syncURL != "" && (syncFromRemote || syncURLFromConfig)
+}
+
+type initSyncRemoteSource int
+
+const (
+	initSyncRemoteNone initSyncRemoteSource = iota
+	initSyncRemoteExplicit
+	initSyncRemoteConfigured
+)
+
+func resolveInitConfiguredSyncRemote(initRemote string, initRemoteChanged bool, resolveConfiguredRemote func() string) (string, initSyncRemoteSource) {
+	if initRemoteChanged {
+		return initRemote, initSyncRemoteExplicit
+	}
+	if syncURL := resolveConfiguredRemote(); syncURL != "" {
+		return syncURL, initSyncRemoteConfigured
+	}
+	return "", initSyncRemoteNone
+}
+
+func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
+	if !initServerMode {
+		return remoteCloneEmbedded
+	}
+	if externalServer {
+		return remoteCloneExternalServer
+	}
+	return remoteCloneCLI
+}
+
+func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, serverSocket, serverUser, dbName string) *configfile.Config {
+	cfg := configfile.DefaultConfig()
+	cfg.Backend = configfile.BackendDolt
+	cfg.DoltDatabase = dbName
+	if serverMode {
+		cfg.DoltMode = configfile.DoltModeServer
+		cfg.DoltServerHost = configfile.DefaultDoltServerHost
+		cfg.DoltServerUser = configfile.DefaultDoltServerUser
+	} else {
+		cfg.DoltMode = configfile.DoltModeEmbedded
+	}
+	if serverHost != "" {
+		cfg.DoltServerHost = serverHost
+	}
+	if serverPort != 0 {
+		cfg.DoltServerPort = serverPort
+	}
+	if serverSocket != "" {
+		cfg.DoltServerSocket = serverSocket
+	}
+	if serverUser != "" {
+		cfg.DoltServerUser = serverUser
+	}
+	return cfg
+}
+
+func persistInitSyncRemote(beadsDir, initRemote, syncURL string, syncFromRemote, syncURLFromConfig bool) error {
+	if initRemote != "" {
+		return config.SetYamlConfigInDir(beadsDir, "sync.remote", initRemote)
+	}
+	if !shouldWireInitRemote(syncURL, syncFromRemote, syncURLFromConfig) {
+		return nil
+	}
+	if existing := config.GetStringFromDir(beadsDir, "sync.remote"); existing != "" {
+		return nil
+	}
+	return config.SetYamlConfigInDir(beadsDir, "sync.remote", syncURL)
+}
+
+func isEmptyRemoteCloneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "contains no dolt data")
 }
 
 // verifyMetadata writes a metadata field and verifies the write succeeded.

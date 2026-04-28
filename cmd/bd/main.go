@@ -35,6 +35,7 @@ import (
 )
 
 var (
+	changeDir  string
 	dbPath     string
 	actor      string
 	store      storage.DoltStorage
@@ -56,6 +57,14 @@ var (
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)
 	upgradeAcknowledged    = false // Set to true after showing upgrade notification once per session
 )
+
+type envSnapshotValue struct {
+	value string
+	ok    bool
+}
+
+var changeDirEnvSnapshot map[string]envSnapshotValue
+
 var (
 	sandboxMode     bool
 	globalFlag      bool               // Use the global shared-server database (beads_global)
@@ -289,6 +298,24 @@ func selectedNoDBBeadsDir(cmd *cobra.Command) string {
 	return beads.FindBeadsDir()
 }
 
+func isSelectedNoDBCommand(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	if cmd.Name() == "context" || cmd.Name() == "where" {
+		return true
+	}
+	if cmd.Parent() == nil || cmd.Parent().Name() != "dolt" {
+		return false
+	}
+	switch cmd.Name() {
+	case "push", "pull", "commit":
+		return false
+	default:
+		return true
+	}
+}
+
 // configCommandCanRunWithoutStore returns true for config subcommands whose Run
 // path can execute without an opened Dolt store. This lets no-workspace calls
 // fail or degrade in the command itself instead of tripping low-level DB init.
@@ -463,6 +490,7 @@ func init() {
 	}
 
 	// Register persistent flags
+	rootCmd.PersistentFlags().StringVarP(&changeDir, "directory", "C", "", "Change to this directory before running the command (like git -C)")
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Database path (default: auto-discover .beads/*.db)")
 	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
@@ -494,6 +522,58 @@ func init() {
 	// Custom help function with semantic coloring (Tufte-inspired)
 	// Note: Usage output (shown on errors) is not styled to avoid recursion issues
 	rootCmd.SetHelpFunc(colorizedHelpFunc)
+}
+
+func resolveChangeDirBeadsDir(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve -C directory %q: %w", path, err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("cannot use -C directory %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("cannot use -C directory %q: not a directory", path)
+	}
+	beadsDir := beads.FindBeadsDirFrom(absPath)
+	if beadsDir == "" {
+		return "", fmt.Errorf("cannot use -C directory %q: no beads project found", path)
+	}
+	return beadsDir, nil
+}
+
+func applyChangeDirSelection() {
+	if strings.TrimSpace(changeDir) == "" {
+		return
+	}
+	beadsDir, err := resolveChangeDirBeadsDir(changeDir)
+	if err != nil {
+		FatalError("%v", err)
+	}
+	changeDirEnvSnapshot = make(map[string]envSnapshotValue, 3)
+	for _, key := range []string{"BEADS_DIR", "BEADS_DB", "BD_DB"} {
+		value, ok := os.LookupEnv(key)
+		changeDirEnvSnapshot[key] = envSnapshotValue{value: value, ok: ok}
+	}
+	_ = os.Setenv("BEADS_DIR", beadsDir)
+}
+
+func restoreChangeDirSelection() {
+	if changeDirEnvSnapshot == nil {
+		return
+	}
+	for key, snapshot := range changeDirEnvSnapshot {
+		if snapshot.ok {
+			_ = os.Setenv(key, snapshot.value)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	}
+	changeDirEnvSnapshot = nil
 }
 
 var rootCmd = &cobra.Command{
@@ -543,6 +623,8 @@ var rootCmd = &cobra.Command{
 		// Apply verbosity flags early (before any output)
 		debug.SetVerbose(verboseFlag)
 		debug.SetQuiet(quietFlag)
+
+		applyChangeDirSelection()
 
 		// Block dangerous env var overrides that could cause data fragmentation (bd-hevyw).
 		if err := checkBlockedEnvVars(); err != nil {
@@ -978,6 +1060,8 @@ var rootCmd = &cobra.Command{
 		// after successful command execution, not in PreRun
 	},
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		defer restoreChangeDirSelection()
+
 		// Dolt auto-commit: after a successful write command (and after final flush),
 		// create a Dolt commit so changes don't remain only in the working set.
 		if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
