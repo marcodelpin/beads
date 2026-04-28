@@ -1,14 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/steveyegge/beads/internal/beads"
 )
 
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
@@ -37,6 +41,9 @@ var (
 	memoriesGCFlag         bool
 	memoriesGCPlan         bool
 	memoriesGCOnly         string
+	// memoriesNoMemoryBackup disables the fork-only pre-delete JSONL backup
+	// written by pruneExpiredMemories. Default false (backup ON).
+	memoriesNoMemoryBackup bool
 )
 
 // memoryFingerprintWS collapses runs of whitespace into a single space.
@@ -343,23 +350,81 @@ func listExpiredMemoryCandidates(now time.Time) ([]expiredMemoryCandidate, error
 // maintenance command) can prune stale facts in its decay phase as well.
 // Caller is responsible for CommitPending() on the store after a non-empty
 // return.
-func pruneExpiredMemories(now time.Time, allowlist map[string]bool) ([]string, error) {
+//
+// skipBackup disables the pre-delete JSONL backup (.beads/.gc-memory-backup-<unix>.jsonl).
+// Mirrors writeGCBackup in cmd/bd/gc.go for closed-issue decay (sys-979he / bda-td3).
+func pruneExpiredMemories(now time.Time, allowlist map[string]bool, skipBackup bool) ([]string, error) {
 	candidates, err := listExpiredMemoryCandidates(now)
 	if err != nil {
 		return nil, err
 	}
-	fullPrefix := kvPrefix + memoryPrefix
-	var deleted []string
+
+	// Build the to-delete set up-front so we can write a backup that
+	// reflects exactly what is about to be removed (after allowlist filter).
+	var toDelete []expiredMemoryCandidate
 	for _, c := range candidates {
 		if allowlist != nil && !allowlist[c.Key] {
 			continue
 		}
+		toDelete = append(toDelete, c)
+	}
+
+	// Pre-delete backup (default ON, fork-only safeguard).
+	if !skipBackup && len(toDelete) > 0 {
+		path, err := writeMemoryGCBackup(toDelete)
+		if err != nil {
+			return nil, fmt.Errorf("writing memory gc backup: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "memory gc: pre-delete backup written to %s (%d candidates)\n", path, len(toDelete))
+	}
+
+	fullPrefix := kvPrefix + memoryPrefix
+	var deleted []string
+	for _, c := range toDelete {
 		if err := store.DeleteConfig(rootCtx, fullPrefix+c.Key); err != nil {
 			return deleted, fmt.Errorf("deleting expired memory %q: %w", c.Key, err)
 		}
 		deleted = append(deleted, c.Key)
 	}
 	return deleted, nil
+}
+
+// writeMemoryGCBackup serializes the given memory candidates to a JSONL file
+// inside .beads/ before any DeleteConfig call. Returns the absolute path of
+// the backup on success. Mirrors writeGCBackup in cmd/bd/gc.go (issue decay).
+//
+// File: .beads/.gc-memory-backup-<unix>.jsonl   mode 0o600   fsync'd
+//
+// Fork-only safeguard motivated by upstream gastownhall/beads#3543 (closed-issue
+// decay data loss); bda-3vg extends parity to memory prune.
+func writeMemoryGCBackup(candidates []expiredMemoryCandidate) (string, error) {
+	beadsDir := beads.FindBeadsDir()
+	if beadsDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("locate beads dir or cwd: %w", err)
+		}
+		beadsDir = cwd
+	}
+	name := fmt.Sprintf(".gc-memory-backup-%d.jsonl", time.Now().Unix())
+	path := filepath.Join(beadsDir, name)
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // contains no secrets, only memory content
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", path, err)
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, c := range candidates {
+		if err := enc.Encode(c); err != nil {
+			return "", fmt.Errorf("encode memory %q: %w", c.Key, err)
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("fsync %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // memoryDisplay is what we render per memory after envelope parsing.
@@ -474,7 +539,7 @@ Examples:
 					}
 				}
 			}
-			deleted, err := pruneExpiredMemories(now, allowlist)
+			deleted, err := pruneExpiredMemories(now, allowlist, memoriesNoMemoryBackup)
 			if err != nil {
 				FatalErrorRespectJSON("%v", err)
 			}
@@ -763,6 +828,7 @@ func init() {
 	memoriesCmd.Flags().BoolVar(&memoriesGCFlag, "gc", false, "Delete expired memories with expire-policy=delete (combine with --gc-only to curate)")
 	memoriesCmd.Flags().BoolVar(&memoriesGCPlan, "gc-plan", false, "Emit a JSON plan of the expired memories that --gc WOULD delete, without modifying anything (mutex with --gc, fork-only)")
 	memoriesCmd.Flags().StringVar(&memoriesGCOnly, "gc-only", "", "Comma-separated allowlist of memory keys; when combined with --gc, deletes ONLY items in this list (fork-only)")
+	memoriesCmd.Flags().BoolVar(&memoriesNoMemoryBackup, "no-memory-backup", false, "Skip pre-delete JSONL backup written to .beads/.gc-memory-backup-<unix>.jsonl (fork-only — backup is on by default)")
 
 	rootCmd.AddCommand(rememberCmd)
 	rootCmd.AddCommand(memoriesCmd)
