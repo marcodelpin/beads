@@ -288,6 +288,41 @@ Examples:
 	},
 }
 
+// pruneExpiredMemories deletes every memory whose envelope has policy=delete
+// and a valid_until in the past relative to `now`. Returns the list of keys
+// that were removed (without the kv.memory. prefix).
+//
+// Fork-only — extracted from bd memories --gc so that bd gc (the global
+// maintenance command) can prune stale facts in its decay phase as well.
+// Caller is responsible for CommitPending() on the store after a non-empty
+// return.
+func pruneExpiredMemories(now time.Time) ([]string, error) {
+	allConfig, err := store.GetAllConfig(rootCtx)
+	if err != nil {
+		return nil, fmt.Errorf("listing memories: %w", err)
+	}
+	fullPrefix := kvPrefix + memoryPrefix
+	var deleted []string
+	for k, v := range allConfig {
+		if !strings.HasPrefix(k, fullPrefix) {
+			continue
+		}
+		env := parseStoredMemory(v)
+		if !env.isExpired(now) {
+			continue
+		}
+		if env.effectivePolicy() != policyDelete {
+			continue
+		}
+		if err := store.DeleteConfig(rootCtx, k); err != nil {
+			return deleted, fmt.Errorf("deleting expired memory %q: %w",
+				strings.TrimPrefix(k, fullPrefix), err)
+		}
+		deleted = append(deleted, strings.TrimPrefix(k, fullPrefix))
+	}
+	return deleted, nil
+}
+
 // memoryDisplay is what we render per memory after envelope parsing.
 type memoryDisplay struct {
 	key      string
@@ -353,26 +388,32 @@ Examples:
 		// Garbage-collect pass: delete expired memories with policy=delete,
 		// regardless of --include-expired. This is a destructive mode so we
 		// run it before any filtering/display so the summary reflects the
-		// new state.
+		// new state. The actual deletion logic lives in pruneExpiredMemories
+		// so bd gc (decay phase) can call it too.
 		var gcKeys []string
 		if memoriesGCFlag {
-			kept := all[:0]
-			for _, m := range all {
-				if m.expired && m.envelope.effectivePolicy() == policyDelete {
-					storageKey := fullPrefix + m.key
-					if err := store.DeleteConfig(ctx, storageKey); err != nil {
-						FatalErrorRespectJSON("deleting expired memory %q: %v", m.key, err)
-					}
-					gcKeys = append(gcKeys, m.key)
-					continue
-				}
-				kept = append(kept, m)
+			deleted, err := pruneExpiredMemories(now)
+			if err != nil {
+				FatalErrorRespectJSON("%v", err)
 			}
-			all = kept
+			gcKeys = deleted
 			if len(gcKeys) > 0 {
 				if _, err := store.CommitPending(ctx, getActor()); err != nil {
 					WarnError("failed to commit gc: %v", err)
 				}
+				// Drop deleted entries from the in-memory display list.
+				deletedSet := make(map[string]struct{}, len(gcKeys))
+				for _, k := range gcKeys {
+					deletedSet[k] = struct{}{}
+				}
+				kept := all[:0]
+				for _, m := range all {
+					if _, dropped := deletedSet[m.key]; dropped {
+						continue
+					}
+					kept = append(kept, m)
+				}
+				all = kept
 			}
 		}
 
