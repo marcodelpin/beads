@@ -341,12 +341,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: DeterminateSystems/determinate-nix-action@92ffb5400c3776307a27a1727d7e2ac3dcd9f844 # v3
       - name: Run bd help via Nix
+        id: nix_help
         run: |
-          export BEADS_DB="$PWD/.ci-beads/beads.db"
-          mkdir -p "$(dirname "$BEADS_DB")"
-          rm -rf .beads
-          nix run .#default -- --db "$BEADS_DB" init --quiet --prefix ci
-          nix run .#default -- --db "$BEADS_DB" > help.txt
+          nix run .#default -- --help > help.txt
       - name: Verify help text
         if: steps.nix_help.outcome == 'success'
         run: |
