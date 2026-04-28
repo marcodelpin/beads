@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -27,6 +28,11 @@ var memoryKeyFlag string
 // content, we reuse that memory's key instead of creating a sibling
 // entry under a slightly different slug. --no-dedup forces a new key.
 var memoryNoDedupFlag bool
+
+// memoryNoProvenanceFlag opts out of fork-only provenance capture on
+// bd remember (bda-97j). Default false (capture ON when CLAUDE_SESSION_ID
+// is set or cwd is a git repo).
+var memoryNoProvenanceFlag bool
 
 // Fact validity window flags for `bd remember`.
 var (
@@ -228,11 +234,21 @@ Examples:
 
 		hasValidity := validFor > 0 || !validUntil.IsZero() || memoryExpirePolicyFlag != ""
 
+		// Capture fork-only provenance (bda-97j): session_id from env, git
+		// HEAD if cwd is a repo, and the cwd itself. All best-effort —
+		// missing fields stay empty.
+		var prov memoryProvenance
+		if !memoryNoProvenanceFlag {
+			prov = captureMemoryProvenance()
+		}
+		hasProvenance := prov.SessionID != "" || prov.Commit != "" || prov.Path != ""
+
 		// Default storage is plain text for backward compatibility — only
-		// build an envelope when the user has asked for validity semantics.
+		// build an envelope when the user has asked for validity semantics
+		// OR when fork-only provenance was captured.
 		storedValue := insight
-		if hasValidity {
-			v, err := buildMemoryEnvelope(insight, time.Now(), validFor, validUntil, memoryExpirePolicyFlag)
+		if hasValidity || hasProvenance {
+			v, err := buildMemoryEnvelope(insight, time.Now(), validFor, validUntil, memoryExpirePolicyFlag, prov)
 			if err != nil {
 				FatalErrorRespectJSON("%v", err)
 			}
@@ -820,6 +836,7 @@ func truncateMemory(s string, maxLen int) string {
 func init() {
 	rememberCmd.Flags().StringVar(&memoryKeyFlag, "key", "", "Explicit key for the memory (auto-generated from content if not set). If a memory with this key already exists, it will be updated in place")
 	rememberCmd.Flags().BoolVar(&memoryNoDedupFlag, "no-dedup", false, "Disable fork-only auto-key content dedup (always create a new key from slugify even if normalized content matches an existing memory)")
+	rememberCmd.Flags().BoolVar(&memoryNoProvenanceFlag, "no-provenance", false, "Disable fork-only provenance capture (CLAUDE_SESSION_ID + git HEAD + cwd) on bd remember")
 	rememberCmd.Flags().StringVar(&memoryValidForFlag, "valid-for", "", "Relative validity window for this memory (e.g. 30d, 2w, 1y, 72h). Mutually exclusive with --valid-until.")
 	rememberCmd.Flags().StringVar(&memoryValidUntilFlag, "valid-until", "", "Absolute expiration timestamp (YYYY-MM-DD or RFC3339). Mutually exclusive with --valid-for.")
 	rememberCmd.Flags().StringVar(&memoryExpirePolicyFlag, "expire-policy", "", "What to do after expiration: hide (default), notify, delete")
@@ -834,4 +851,25 @@ func init() {
 	rootCmd.AddCommand(memoriesCmd)
 	rootCmd.AddCommand(forgetCmd)
 	rootCmd.AddCommand(recallCmd)
+}
+
+// captureMemoryProvenance returns best-effort provenance for the
+// current `bd remember` invocation (bda-97j). All fields are optional;
+// missing data stays empty and is omitted from the envelope.
+//
+// Captures:
+//   - SessionID: from $CLAUDE_SESSION_ID env (set by Claude Code harness)
+//   - Commit:    git rev-parse HEAD in cwd, if cwd is in a git repo
+//   - Path:      os.Getwd()
+func captureMemoryProvenance() memoryProvenance {
+	var prov memoryProvenance
+	prov.SessionID = strings.TrimSpace(os.Getenv("CLAUDE_SESSION_ID"))
+	if cwd, err := os.Getwd(); err == nil {
+		prov.Path = cwd
+	}
+	// Best-effort git HEAD; ignore errors (not in a repo, git missing, etc.)
+	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+		prov.Commit = strings.TrimSpace(string(out))
+	}
+	return prov
 }

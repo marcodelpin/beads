@@ -50,12 +50,20 @@ const (
 // memoryEnvelope is the on-disk shape for a memory with validity metadata.
 // JSON field names are stable across versions; new optional fields may be
 // added in future versions but must remain backward-compatible with v1.
+//
+// Fork-only provenance fields (bda-97j) are all optional and absent on
+// legacy memories; they surface session_id/commit/path when the
+// orchestrator (Claude Code) had that context at remember-time.
 type memoryEnvelope struct {
 	Version      int    `json:"_bd_mem"`
 	Content      string `json:"content"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	ValidUntil   string `json:"valid_until,omitempty"`
 	ExpirePolicy string `json:"expire_policy,omitempty"`
+	// Fork-only provenance (bda-97j).
+	SessionID       string `json:"session_id,omitempty"`        // CLAUDE_SESSION_ID env at remember time
+	AddedFromCommit string `json:"added_from_commit,omitempty"` // git rev-parse HEAD in cwd, if available
+	AddedFromPath   string `json:"added_from_path,omitempty"`   // os.Getwd() at remember time
 }
 
 // validPolicies is the set of accepted expire-policy strings.
@@ -161,13 +169,23 @@ func validatePolicy(p string) error {
 	return nil
 }
 
+// memoryProvenance is the optional fork-only context captured at
+// `bd remember` time (bda-97j). All fields are best-effort; a missing
+// field stays empty and is omitted from JSON.
+type memoryProvenance struct {
+	SessionID string // CLAUDE_SESSION_ID env (Claude Code orchestrator)
+	Commit    string // git rev-parse HEAD in cwd, if cwd is a repo
+	Path      string // os.Getwd() at remember time
+}
+
 // buildMemoryEnvelope constructs and serializes a memory envelope. It is used
-// by `bd remember` when any validity flag is set (or, optionally, always — we
-// only create envelopes when needed so legacy values stay plain text).
+// by `bd remember` when any validity flag is set OR when fork-only provenance
+// is being captured.
 //
 // now is injected to make tests deterministic. Callers should pass time.Now()
-// in production code.
-func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, validUntil time.Time, policy string) (string, error) {
+// in production code. Pass an empty memoryProvenance{} when provenance
+// capture is disabled (--no-provenance) or unavailable (legacy callers).
+func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, validUntil time.Time, policy string, prov memoryProvenance) (string, error) {
 	if err := validatePolicy(policy); err != nil {
 		return "", err
 	}
@@ -175,10 +193,13 @@ func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, 
 		return "", fmt.Errorf("valid-for must be non-negative, got %v", validFor)
 	}
 	env := memoryEnvelope{
-		Version:      envelopeVersion,
-		Content:      content,
-		CreatedAt:    now.UTC().Format(time.RFC3339),
-		ExpirePolicy: policy,
+		Version:         envelopeVersion,
+		Content:         content,
+		CreatedAt:       now.UTC().Format(time.RFC3339),
+		ExpirePolicy:    policy,
+		SessionID:       prov.SessionID,
+		AddedFromCommit: prov.Commit,
+		AddedFromPath:   prov.Path,
 	}
 	switch {
 	case validFor > 0 && !validUntil.IsZero():
