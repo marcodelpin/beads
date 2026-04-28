@@ -102,7 +102,7 @@ func TestBuildMemoryEnvelope(t *testing.T) {
 	now := time.Date(2026, 4, 8, 9, 0, 0, 0, time.UTC)
 
 	t.Run("valid_for", func(t *testing.T) {
-		raw, err := buildMemoryEnvelope("hello world", now, 30*24*time.Hour, time.Time{}, "hide")
+		raw, err := buildMemoryEnvelope("hello world", now, 30*24*time.Hour, time.Time{}, "hide", memoryProvenance{}, nil, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -126,7 +126,7 @@ func TestBuildMemoryEnvelope(t *testing.T) {
 
 	t.Run("valid_until_absolute", func(t *testing.T) {
 		target := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
-		raw, err := buildMemoryEnvelope("fact", now, 0, target, "notify")
+		raw, err := buildMemoryEnvelope("fact", now, 0, target, "notify", memoryProvenance{}, nil, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -140,14 +140,14 @@ func TestBuildMemoryEnvelope(t *testing.T) {
 	})
 
 	t.Run("conflict_both_flags", func(t *testing.T) {
-		_, err := buildMemoryEnvelope("x", now, 1*time.Hour, now.Add(24*time.Hour), "")
+		_, err := buildMemoryEnvelope("x", now, 1*time.Hour, now.Add(24*time.Hour), "", memoryProvenance{}, nil, "")
 		if err == nil {
 			t.Error("expected error when both validFor and validUntil set")
 		}
 	})
 
 	t.Run("bad_policy", func(t *testing.T) {
-		_, err := buildMemoryEnvelope("x", now, 0, time.Time{}, "nuke")
+		_, err := buildMemoryEnvelope("x", now, 0, time.Time{}, "nuke", memoryProvenance{}, nil, "")
 		if err == nil {
 			t.Error("expected error for bad policy")
 		}
@@ -156,7 +156,7 @@ func TestBuildMemoryEnvelope(t *testing.T) {
 	t.Run("no_validity_still_envelopes", func(t *testing.T) {
 		// If caller passes no validity at all but a policy is set, the
 		// envelope must still be serializable.
-		raw, err := buildMemoryEnvelope("fact", now, 0, time.Time{}, "hide")
+		raw, err := buildMemoryEnvelope("fact", now, 0, time.Time{}, "hide", memoryProvenance{}, nil, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -204,7 +204,7 @@ func TestParseStoredMemoryLegacy(t *testing.T) {
 
 	t.Run("valid_envelope_roundtrip", func(t *testing.T) {
 		now := time.Date(2026, 4, 8, 9, 0, 0, 0, time.UTC)
-		raw, err := buildMemoryEnvelope("insight", now, 24*time.Hour, time.Time{}, "delete")
+		raw, err := buildMemoryEnvelope("insight", now, 24*time.Hour, time.Time{}, "delete", memoryProvenance{}, nil, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -290,6 +290,9 @@ func TestEnvelopeEndToEndSerialization(t *testing.T) {
 		0,
 		time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
 		"notify",
+		memoryProvenance{},
+		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("build: %v", err)

@@ -539,7 +539,7 @@ func runGCPlanSummary(olderThanDays int) {
 			ID:       issue.ID,
 			Title:    issue.Title,
 			AgeDays:  int(now.Sub(closedAt).Hours() / 24),
-			Priority: int(issue.Priority),
+			Priority: issue.Priority,
 			ClosedAt: closedAt,
 		})
 	}
