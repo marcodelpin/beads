@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
@@ -244,14 +245,34 @@ func formatMemoriesForPrime(compact bool) string {
 	}
 
 	fullPrefix := kvPrefix + memoryPrefix
+	now := time.Now()
+	type primedMemory struct {
+		content string
+		marker  string
+	}
 	var keys []string
-	memories := make(map[string]string)
+	memories := make(map[string]primedMemory)
 	for k, v := range allConfig {
-		if strings.HasPrefix(k, fullPrefix) {
-			userKey := strings.TrimPrefix(k, fullPrefix)
-			memories[userKey] = v
-			keys = append(keys, userKey)
+		if !strings.HasPrefix(k, fullPrefix) {
+			continue
 		}
+		userKey := strings.TrimPrefix(k, fullPrefix)
+		env := parseStoredMemory(v)
+		expired := env.isExpired(now)
+		// Hide expired memories unless the user asked to be notified: hide
+		// and delete policies are silently dropped from the prime output so
+		// the model doesn't waste context on stale facts.
+		if expired && env.effectivePolicy() != policyNotify {
+			continue
+		}
+		marker := ""
+		if expired {
+			marker = " [EXPIRED]"
+		} else if env.ValidUntil != "" {
+			marker = fmt.Sprintf(" [valid until %s]", env.ValidUntil)
+		}
+		memories[userKey] = primedMemory{content: env.Content, marker: marker}
+		keys = append(keys, userKey)
 	}
 	if len(memories) == 0 {
 		return ""
@@ -263,17 +284,19 @@ func formatMemoriesForPrime(compact bool) string {
 		sb.WriteString("\n## Memories\n")
 		for _, k := range keys {
 			// Compact: one line per memory
-			v := strings.ReplaceAll(memories[k], "\n", " ")
+			m := memories[k]
+			v := strings.ReplaceAll(m.content, "\n", " ")
 			if len(v) > 150 {
 				v = v[:147] + "..."
 			}
-			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", k, v))
+			sb.WriteString(fmt.Sprintf("- **%s**%s: %s\n", k, m.marker, v))
 		}
 	} else {
 		sb.WriteString(fmt.Sprintf("\n## Persistent Memories (%d)\n\n", len(memories)))
 		sb.WriteString("Stored via `bd remember`. Update in place with `bd remember --key <key> \"new content\"`. Search with `bd memories <keyword>`. Remove with `bd forget <key>`.\n\n")
 		for _, k := range keys {
-			sb.WriteString(fmt.Sprintf("### %s\n%s\n\n", k, memories[k]))
+			m := memories[k]
+			sb.WriteString(fmt.Sprintf("### %s%s\n%s\n\n", k, m.marker, m.content))
 		}
 	}
 	return sb.String()
