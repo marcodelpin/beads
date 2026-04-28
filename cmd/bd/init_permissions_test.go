@@ -4,24 +4,52 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
+var (
+	initPermissionTestBD     string
+	initPermissionTestBDOnce sync.Once
+	initPermissionTestBDErr  error
+)
+
+func buildBDForInitPermissionTests(t *testing.T) string {
+	t.Helper()
+	initPermissionTestBDOnce.Do(func() {
+		tmpDir, err := os.MkdirTemp("", "bd-init-permissions-test-*")
+		if err != nil {
+			initPermissionTestBDErr = fmt.Errorf("failed to create temp dir: %w", err)
+			return
+		}
+		initPermissionTestBD = filepath.Join(tmpDir, "bd")
+		cmd := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", initPermissionTestBD, ".")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			initPermissionTestBDErr = fmt.Errorf("go build failed: %v\n%s", err, out)
+		}
+	})
+	if initPermissionTestBDErr != nil {
+		t.Fatalf("failed to build bd binary: %v", initPermissionTestBDErr)
+	}
+	return initPermissionTestBD
+}
+
 // TestInitRepairsPermissiveBeadsDir is the init-path regression test for
-// GH#3391: a pre-existing .beads/ directory with world-accessible bits
-// (e.g. 0755 from a permissive umask) must be repaired to strip those
-// bits during bd init.
+// GH#3391: a pre-existing .beads/ directory with permissive bits
+// (e.g. 0755 from a permissive umask) must be repaired to 0700 during
+// bd init.
 //
 // The test creates a real git repo with a pre-existing .beads/ at 0755,
-// runs bd init, and asserts that world bits are stripped. The init may
+// runs bd init, and asserts that permissions are repaired. The init may
 // fail later (e.g. no Dolt server), but the permission fix happens early
 // enough that the assertion is valid regardless of exit code.
 func TestInitRepairsPermissiveBeadsDir(t *testing.T) {
-	bdBin := buildBDForInitTests(t)
+	bdBin := buildBDForInitPermissionTests(t)
 
 	repoDir := newGitRepo(t)
 
@@ -53,18 +81,19 @@ func TestInitRepairsPermissiveBeadsDir(t *testing.T) {
 	// before database creation.
 	_ = cmd.Run()
 
-	// Assert: world-accessible bits must be stripped.
+	// Assert: permissions must be repaired to the same mode bd uses when
+	// creating .beads/ itself.
 	info, err = os.Stat(beadsDir)
 	if err != nil {
 		t.Fatalf("Stat(.beads) after init: %v", err)
 	}
 	perm := info.Mode().Perm()
-	if perm&0007 != 0 {
-		t.Errorf(".beads permissions after init = %04o; world bits should have been stripped", perm)
+	if perm != 0700 {
+		t.Errorf(".beads permissions after init = %04o, want 0700", perm)
 	}
 
 	// Assert: the fix was announced on stderr.
-	if !strings.Contains(stderr.String(), "Stripped world-accessible bits") {
+	if !strings.Contains(stderr.String(), "Fixed .beads permissions to 0700") {
 		t.Errorf("expected permission-fix message on stderr, got:\n%s", stderr.String())
 	}
 }
@@ -72,7 +101,7 @@ func TestInitRepairsPermissiveBeadsDir(t *testing.T) {
 // TestInitPreservesSecureBeadsDir verifies that bd init does NOT touch a
 // .beads/ directory that already has secure permissions (0700).
 func TestInitPreservesSecureBeadsDir(t *testing.T) {
-	bdBin := buildBDForInitTests(t)
+	bdBin := buildBDForInitPermissionTests(t)
 
 	repoDir := newGitRepo(t)
 
@@ -99,7 +128,7 @@ func TestInitPreservesSecureBeadsDir(t *testing.T) {
 	}
 
 	// No fix message expected.
-	if strings.Contains(stderr.String(), "Stripped world-accessible bits") {
+	if strings.Contains(stderr.String(), "Fixed .beads permissions") {
 		t.Errorf("unexpected permission-fix message for already-secure .beads/:\n%s", stderr.String())
 	}
 }
