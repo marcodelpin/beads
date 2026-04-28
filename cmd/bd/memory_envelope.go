@@ -64,6 +64,12 @@ type memoryEnvelope struct {
 	SessionID       string `json:"session_id,omitempty"`        // CLAUDE_SESSION_ID env at remember time
 	AddedFromCommit string `json:"added_from_commit,omitempty"` // git rev-parse HEAD in cwd, if available
 	AddedFromPath   string `json:"added_from_path,omitempty"`   // os.Getwd() at remember time
+	// Fork-only user-facing classification (bda-5to). Tags are arbitrary
+	// labels (e.g. ["machine:mdp-home", "project:beads"]); Scope is a
+	// short string (commonly "machine", "project", "global") used for
+	// coarse-grained filtering. Both are absent on legacy/unscoped memories.
+	Tags  []string `json:"tags,omitempty"`
+	Scope string   `json:"scope,omitempty"`
 }
 
 // validPolicies is the set of accepted expire-policy strings.
@@ -180,12 +186,13 @@ type memoryProvenance struct {
 
 // buildMemoryEnvelope constructs and serializes a memory envelope. It is used
 // by `bd remember` when any validity flag is set OR when fork-only provenance
-// is being captured.
+// is being captured OR when tags/scope are set.
 //
 // now is injected to make tests deterministic. Callers should pass time.Now()
 // in production code. Pass an empty memoryProvenance{} when provenance
 // capture is disabled (--no-provenance) or unavailable (legacy callers).
-func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, validUntil time.Time, policy string, prov memoryProvenance) (string, error) {
+// Pass nil tags / empty scope to omit those classification fields.
+func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, validUntil time.Time, policy string, prov memoryProvenance, tags []string, scope string) (string, error) {
 	if err := validatePolicy(policy); err != nil {
 		return "", err
 	}
@@ -200,6 +207,8 @@ func buildMemoryEnvelope(content string, now time.Time, validFor time.Duration, 
 		SessionID:       prov.SessionID,
 		AddedFromCommit: prov.Commit,
 		AddedFromPath:   prov.Path,
+		Tags:            tags,
+		Scope:           scope,
 	}
 	switch {
 	case validFor > 0 && !validUntil.IsZero():

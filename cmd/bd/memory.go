@@ -34,6 +34,23 @@ var memoryNoDedupFlag bool
 // is set or cwd is a git repo).
 var memoryNoProvenanceFlag bool
 
+// memoryTagsFlag is the fork-only --tag flag (repeatable) on bd remember.
+// Tags are arbitrary classification labels, stored as the envelope's Tags
+// field (bda-5to). Use --tag multiple times for multi-tag entries.
+var memoryTagsFlag []string
+
+// memoryScopeFlag is the fork-only --scope flag on bd remember (bda-5to).
+// Stored as the envelope's Scope field (e.g. "machine", "project", "global").
+var memoryScopeFlag string
+
+// memoriesTagsFilter is the fork-only --tag flag on bd memories (bda-5to).
+// AND-semantics: a memory must have all listed tags to match.
+var memoriesTagsFilter []string
+
+// memoriesScopeFilter is the fork-only --scope flag on bd memories
+// (bda-5to). Exact-match on the envelope's Scope field.
+var memoriesScopeFilter string
+
 // Fact validity window flags for `bd remember`.
 var (
 	memoryValidForFlag     string
@@ -243,12 +260,23 @@ Examples:
 		}
 		hasProvenance := prov.SessionID != "" || prov.Commit != "" || prov.Path != ""
 
+		// Fork-only classification (bda-5to): trim tags/scope; empties drop.
+		var tagsClean []string
+		for _, t := range memoryTagsFlag {
+			if s := strings.TrimSpace(t); s != "" {
+				tagsClean = append(tagsClean, s)
+			}
+		}
+		scopeClean := strings.TrimSpace(memoryScopeFlag)
+		hasTags := len(tagsClean) > 0
+		hasScope := scopeClean != ""
+
 		// Default storage is plain text for backward compatibility — only
 		// build an envelope when the user has asked for validity semantics
-		// OR when fork-only provenance was captured.
+		// OR when fork-only provenance was captured OR tags/scope are set.
 		storedValue := insight
-		if hasValidity || hasProvenance {
-			v, err := buildMemoryEnvelope(insight, time.Now(), validFor, validUntil, memoryExpirePolicyFlag, prov)
+		if hasValidity || hasProvenance || hasTags || hasScope {
+			v, err := buildMemoryEnvelope(insight, time.Now(), validFor, validUntil, memoryExpirePolicyFlag, prov, tagsClean, scopeClean)
 			if err != nil {
 				FatalErrorRespectJSON("%v", err)
 			}
@@ -498,6 +526,34 @@ Examples:
 		// Filter for kv.memory.* keys and parse envelopes.
 		fullPrefix := kvPrefix + memoryPrefix
 		now := time.Now()
+
+		// Fork-only classification filters (bda-5to). Cleaned up-front so
+		// the loop body stays a tight predicate.
+		var tagFilter []string
+		for _, t := range memoriesTagsFilter {
+			if s := strings.TrimSpace(t); s != "" {
+				tagFilter = append(tagFilter, s)
+			}
+		}
+		scopeFilter := strings.TrimSpace(memoriesScopeFilter)
+
+		// hasAllTags: every wanted tag is present in have (AND-semantic).
+		hasAllTags := func(have []string) bool {
+			if len(tagFilter) == 0 {
+				return true
+			}
+			set := make(map[string]struct{}, len(have))
+			for _, t := range have {
+				set[t] = struct{}{}
+			}
+			for _, want := range tagFilter {
+				if _, ok := set[want]; !ok {
+					return false
+				}
+			}
+			return true
+		}
+
 		var all []memoryDisplay
 		for k, v := range allConfig {
 			if !strings.HasPrefix(k, fullPrefix) {
@@ -505,6 +561,13 @@ Examples:
 			}
 			userKey := strings.TrimPrefix(k, fullPrefix)
 			env := parseStoredMemory(v)
+			// Apply fork-only tag/scope filters.
+			if !hasAllTags(env.Tags) {
+				continue
+			}
+			if scopeFilter != "" && env.Scope != scopeFilter {
+				continue
+			}
 			all = append(all, memoryDisplay{
 				key:      userKey,
 				content:  env.Content,
@@ -837,6 +900,8 @@ func init() {
 	rememberCmd.Flags().StringVar(&memoryKeyFlag, "key", "", "Explicit key for the memory (auto-generated from content if not set). If a memory with this key already exists, it will be updated in place")
 	rememberCmd.Flags().BoolVar(&memoryNoDedupFlag, "no-dedup", false, "Disable fork-only auto-key content dedup (always create a new key from slugify even if normalized content matches an existing memory)")
 	rememberCmd.Flags().BoolVar(&memoryNoProvenanceFlag, "no-provenance", false, "Disable fork-only provenance capture (CLAUDE_SESSION_ID + git HEAD + cwd) on bd remember")
+	rememberCmd.Flags().StringSliceVar(&memoryTagsFlag, "tag", nil, "Tag the memory (repeatable; fork-only). Example: --tag=machine:mdp-home --tag=project:beads")
+	rememberCmd.Flags().StringVar(&memoryScopeFlag, "scope", "", "Scope label for the memory (fork-only). Common values: machine, project, global")
 	rememberCmd.Flags().StringVar(&memoryValidForFlag, "valid-for", "", "Relative validity window for this memory (e.g. 30d, 2w, 1y, 72h). Mutually exclusive with --valid-until.")
 	rememberCmd.Flags().StringVar(&memoryValidUntilFlag, "valid-until", "", "Absolute expiration timestamp (YYYY-MM-DD or RFC3339). Mutually exclusive with --valid-for.")
 	rememberCmd.Flags().StringVar(&memoryExpirePolicyFlag, "expire-policy", "", "What to do after expiration: hide (default), notify, delete")
@@ -846,6 +911,8 @@ func init() {
 	memoriesCmd.Flags().BoolVar(&memoriesGCPlan, "gc-plan", false, "Emit a JSON plan of the expired memories that --gc WOULD delete, without modifying anything (mutex with --gc, fork-only)")
 	memoriesCmd.Flags().StringVar(&memoriesGCOnly, "gc-only", "", "Comma-separated allowlist of memory keys; when combined with --gc, deletes ONLY items in this list (fork-only)")
 	memoriesCmd.Flags().BoolVar(&memoriesNoMemoryBackup, "no-memory-backup", false, "Skip pre-delete JSONL backup written to .beads/.gc-memory-backup-<unix>.jsonl (fork-only — backup is on by default)")
+	memoriesCmd.Flags().StringSliceVar(&memoriesTagsFilter, "tag", nil, "Filter memories by tag (repeatable; AND-semantic — memory must have ALL listed tags). Fork-only.")
+	memoriesCmd.Flags().StringVar(&memoriesScopeFilter, "scope", "", "Filter memories by scope (exact match on Scope field). Fork-only.")
 
 	rootCmd.AddCommand(rememberCmd)
 	rootCmd.AddCommand(memoriesCmd)
