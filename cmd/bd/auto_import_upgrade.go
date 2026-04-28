@@ -5,9 +5,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/storage"
 )
+
+// countMemoriesInStore returns the number of kv.memory.* entries in the
+// store's config. Used by the fork-only auto-import guard to avoid
+// resurrecting deleted memories when the issues table is empty.
+func countMemoriesInStore(ctx context.Context, s storage.DoltStorage) (int, error) {
+	all, err := s.GetAllConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	prefix := kvPrefix + memoryPrefix
+	n := 0
+	for k := range all {
+		if strings.HasPrefix(k, prefix) {
+			n++
+		}
+	}
+	return n, nil
+}
 
 // maybeAutoImportJSONL checks whether the database is empty and a
 // issues.jsonl file exists in beadsDir. When both conditions are true it
@@ -33,6 +52,14 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 	}
 	if stats.TotalIssues > 0 {
 		return // database is not empty — nothing to do
+	}
+
+	// Fork-only guard: TotalIssues==0 is not enough — a database with 0
+	// issues but >=1 memory IS populated, and re-importing the JSONL on
+	// every invocation will resurrect memories that were intentionally
+	// deleted (e.g. by 'bd memories --gc' or 'bd gc' memory prune).
+	if memCount, err := countMemoriesInStore(ctx, s); err == nil && memCount > 0 {
+		return
 	}
 
 	// Database is empty but JSONL has data — auto-import.

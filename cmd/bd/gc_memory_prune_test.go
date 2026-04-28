@@ -20,6 +20,11 @@ func TestEmbeddedGCMemoryPrune(t *testing.T) {
 	bd := buildEmbeddedBD(t)
 	dir, _, _ := bdInit(t, bd, "--prefix", "gp")
 
+	// Create a dummy issue so TotalIssues > 0 — otherwise auto-import on
+	// every bd invocation resurrects deleted memories from issues.jsonl,
+	// which is an upstream behavior unrelated to the fork prune logic.
+	bdCreate(t, bd, dir, "anchor issue (prevents auto-import resurrection)", "--type", "task")
+
 	// Seed three memories:
 	//   1. expired with policy=delete  -> must be pruned by 'bd gc'
 	//   2. expired with policy=hide    -> NOT pruned (only delete policy is purged)
@@ -86,6 +91,9 @@ func TestEmbeddedGCMemoryPruneSkipFlag(t *testing.T) {
 
 	bd := buildEmbeddedBD(t)
 	dir, _, _ := bdInit(t, bd, "--prefix", "gs")
+
+	// Anchor issue to keep TotalIssues > 0 (avoid auto-import resurrection).
+	bdCreate(t, bd, dir, "anchor issue", "--type", "task")
 
 	bdRemember(t, bd, dir,
 		"skip-target stale fact",
