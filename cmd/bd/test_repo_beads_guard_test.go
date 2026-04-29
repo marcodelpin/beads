@@ -8,8 +8,42 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/steveyegge/beads/internal/config"
 )
+
+// warmupCobraFlags forces cobra/pflag's lazy mergePersistentFlags() to run once,
+// single-threaded, before any parallel tests fire.
+//
+// Background: cobra v1.10.x mutates a Command's parent *pflag.FlagSet lazily
+// the first time something calls Find(), InheritedFlags(), or HasAvailableFlags().
+// When TWO parallel tests call Find/InheritedFlags on different sibling commands
+// at nearly the same moment, both goroutines race on the SHARED parent FlagSet
+// via FlagSet.AddFlag()/VisitAll() — pflag is not safe for concurrent mutation.
+//
+// On GHA Ubuntu (fewer cores than build-server, higher -parallel pressure)
+// this surfaces as a -race-detector failure pair like:
+//
+//	WARNING: DATA RACE
+//	Read at 0x... by goroutine X (TestNotionCommandsRegistered → cobra.Find)
+//	Previous write at 0x... by goroutine Y (TestStaleCommandInit → cobra.InheritedFlags)
+//
+// Run 25062508208 on commit 93e685c5 (bda-v3n) captured the racing pair above.
+//
+// Walking the entire command tree once and calling InheritedFlags() on each node
+// completes the lazy merges deterministically before m.Run(), eliminating the race
+// without losing any race-detector coverage on our own code.
+func warmupCobraFlags() {
+	var visit func(*cobra.Command)
+	visit = func(c *cobra.Command) {
+		_ = c.InheritedFlags() // forces parent mergePersistentFlags() — single-threaded here
+		for _, child := range c.Commands() {
+			visit(child)
+		}
+	}
+	visit(rootCmd)
+}
 
 // beforeTestsHook is set by CGO-tagged test files to perform setup before tests run
 // (e.g., starting a shared test Dolt server). Returns a cleanup function.
@@ -82,6 +116,10 @@ func testMainInner(m *testing.M) int {
 		cleanup := beforeTestsHook()
 		defer cleanup()
 	}
+
+	// Warm up cobra/pflag lazy persistent-flag merge BEFORE any parallel tests fire.
+	// Eliminates the race captured in bda-v3n (run 25062508208 on 93e685c5).
+	warmupCobraFlags()
 
 	if os.Getenv("BEADS_TEST_GUARD_DISABLE") != "" {
 		return m.Run()
