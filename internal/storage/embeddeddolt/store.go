@@ -53,6 +53,13 @@ type EmbeddedDoltStore struct {
 // errClosed is returned when a method is called after Close.
 var errClosed = errors.New("embeddeddolt: store is closed")
 
+// IsClosed reports whether the store has been closed. Implements
+// storage.LifecycleManager so that callers (e.g., maybeAutoCommit) can
+// skip operations on a closed store without triggering errClosed.
+func (s *EmbeddedDoltStore) IsClosed() bool {
+	return s.closed.Load()
+}
+
 // Option configures optional behavior for New.
 type Option func(*options)
 
