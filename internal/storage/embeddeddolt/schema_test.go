@@ -23,7 +23,7 @@ func TestSchemaAfterInit(t *testing.T) {
 	dataDir := filepath.Join(beadsDir, "embeddeddolt")
 
 	// Initialize store — creates database and runs all migrations.
-	store, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main")
+	store, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSchemaAfterInit(t *testing.T) {
 
 	// --- Verify idempotency: New on same dir succeeds ---
 
-	store2, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main")
+	store2, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
 		t.Fatalf("second New (idempotency): %v", err)
 	}
@@ -211,7 +211,7 @@ func TestBackfillCreatesWispTables(t *testing.T) {
 	dataDir := filepath.Join(beadsDir, "embeddeddolt")
 
 	// Step 1: Normal init — creates everything including wisp tables.
-	store, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main")
+	store, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestBackfillCreatesWispTables(t *testing.T) {
 	// Step 3: Re-open. This triggers the backfill path (schema_migrations
 	// empty, issues table exists). The old code would mark all migrations
 	// as applied without executing them, leaving wisp tables missing.
-	store2, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main")
+	store2, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
 		t.Fatalf("New after backfill: %v", err)
 	}

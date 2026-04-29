@@ -28,7 +28,7 @@ func newTestEnv(t *testing.T, prefix string) *testEnv {
 	t.Helper()
 	ctx := t.Context()
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
-	store, err := embeddeddolt.New(ctx, beadsDir, prefix, "main")
+	store, err := embeddeddolt.Open(ctx, beadsDir, prefix, "main")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestCreateIssue(t *testing.T) {
 	t.Run("missing_prefix_errors", func(t *testing.T) {
 		ctx := t.Context()
 		beadsDir := filepath.Join(t.TempDir(), ".beads")
-		store, err := embeddeddolt.New(ctx, beadsDir, "noprefix", "main")
+		store, err := embeddeddolt.Open(ctx, beadsDir, "noprefix", "main")
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

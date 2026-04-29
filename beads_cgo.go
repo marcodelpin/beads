@@ -51,7 +51,7 @@ func OpenBestAvailable(ctx context.Context, beadsDir string) (Storage, embeddedd
 	if cfg != nil {
 		database = cfg.GetDoltDatabase()
 	}
-	store, err := embeddeddolt.New(ctx, beadsDir, database, "main", embeddeddolt.WithLock(lock))
+	store, err := embeddeddolt.Open(ctx, beadsDir, database, "main", embeddeddolt.WithLock(lock))
 	if err != nil {
 		lock.Unlock()
 		return nil, nil, err
