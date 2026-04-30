@@ -65,10 +65,10 @@ func Open(ctx context.Context, beadsDir, database, branch string, opts ...Option
 	return s, nil
 }
 
-// closeCached decrements the reference count for a cached store and removes it
-// from the cache when the count reaches zero, running the real close logic.
-// Returns true if this store was managed by the cache (caller should not close
-// it directly), false if the store was not in the cache (caller owns cleanup).
+// closeCached decrements the reference count for a cached store.
+// Returns true when the cache absorbed the close (refs remain, suppress real
+// close). Returns false when the caller must run closeUnderlying — either the
+// entry was evicted (last ref) or the store was never cached.
 func closeCached(s *EmbeddedDoltStore) bool {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
@@ -96,13 +96,4 @@ func cacheKey(beadsDir string) (string, error) {
 		return "", fmt.Errorf("embeddeddolt: resolving beads dir for cache key: %w", err)
 	}
 	return filepath.Join(absBeadsDir, "embeddeddolt"), nil
-}
-
-// ResetCache removes all entries from the store cache without closing any
-// stores. This is intended for use in tests only, to prevent cross-test
-// cache pollution.
-func ResetCache() {
-	cacheMu.Lock()
-	clear(cache)
-	cacheMu.Unlock()
 }

@@ -30,7 +30,7 @@ func newTestEnv(t *testing.T, prefix string) *testEnv {
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 	store, err := embeddeddolt.Open(ctx, beadsDir, prefix, "main")
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
 
@@ -216,7 +216,7 @@ func TestCreateIssue(t *testing.T) {
 		beadsDir := filepath.Join(t.TempDir(), ".beads")
 		store, err := embeddeddolt.Open(ctx, beadsDir, "noprefix", "main")
 		if err != nil {
-			t.Fatalf("New: %v", err)
+			t.Fatalf("Open: %v", err)
 		}
 		t.Cleanup(func() { store.Close() })
 

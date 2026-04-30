@@ -28,6 +28,3 @@ var errNoCGO = errors.New("embeddeddolt: requires CGO (build with CGO_ENABLED=1)
 func Open(_ context.Context, _, _, _ string, _ ...Option) (*EmbeddedDoltStore, error) {
 	return nil, errNoCGO
 }
-
-// ResetCache is a no-op in non-CGO builds.
-func ResetCache() {}

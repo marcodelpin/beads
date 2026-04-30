@@ -14,8 +14,6 @@ func TestOpenReturnsCachedStore(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt tests")
 	}
-	t.Cleanup(embeddeddolt.ResetCache)
-
 	ctx := t.Context()
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 
@@ -56,8 +54,6 @@ func TestOpenDifferentDirsReturnsDifferentStores(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt tests")
 	}
-	t.Cleanup(embeddeddolt.ResetCache)
-
 	ctx := t.Context()
 	beadsDir1 := filepath.Join(t.TempDir(), ".beads")
 	beadsDir2 := filepath.Join(t.TempDir(), ".beads")
@@ -83,8 +79,6 @@ func TestOpenAfterCloseCreatesNewStore(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt tests")
 	}
-	t.Cleanup(embeddeddolt.ResetCache)
-
 	ctx := t.Context()
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 

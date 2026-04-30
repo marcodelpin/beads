@@ -224,8 +224,6 @@ func TestConcurrentOpenReturnsCached(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt concurrency tests")
 	}
-	t.Cleanup(embeddeddolt.ResetCache)
-
 	ctx := t.Context()
 	beadsDir := t.TempDir()
 

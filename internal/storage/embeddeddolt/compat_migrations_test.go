@@ -39,7 +39,7 @@ func TestEmbeddedOpenRunsCompatMigrations(t *testing.T) {
 	// Step 1: fresh init — schema.MigrateUp adds all columns including started_at.
 	store, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
-		t.Fatalf("initial New: %v", err)
+		t.Fatalf("initial Open: %v", err)
 	}
 
 	// Step 2: drop issues.started_at to simulate a DB that predates (or was
@@ -64,7 +64,7 @@ func TestEmbeddedOpenRunsCompatMigrations(t *testing.T) {
 	// column via MigrateAddStartedAtColumn.
 	store2, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
-		t.Fatalf("reopen New: %v", err)
+		t.Fatalf("reopen Open: %v", err)
 	}
 	defer store2.Close()
 

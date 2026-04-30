@@ -25,7 +25,7 @@ func TestSchemaAfterInit(t *testing.T) {
 	// Initialize store — creates database and runs all migrations.
 	store, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 
 	// Open a verification connection.
@@ -213,7 +213,7 @@ func TestBackfillCreatesWispTables(t *testing.T) {
 	// Step 1: Normal init — creates everything including wisp tables.
 	store, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 
 	// Step 2: Drop wisp tables and clear schema_migrations to simulate
