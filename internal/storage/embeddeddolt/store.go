@@ -53,6 +53,13 @@ type EmbeddedDoltStore struct {
 // errClosed is returned when a method is called after Close.
 var errClosed = errors.New("embeddeddolt: store is closed")
 
+// IsClosed reports whether the store has been closed. Implements
+// storage.LifecycleManager so that callers (e.g., maybeAutoCommit) can
+// skip operations on a closed store without triggering errClosed.
+func (s *EmbeddedDoltStore) IsClosed() bool {
+	return s.closed.Load()
+}
+
 // Option configures optional behavior for New.
 type Option func(*options)
 
@@ -68,17 +75,20 @@ func WithLock(lock Unlocker) Option {
 	return func(o *options) { o.lock = lock }
 }
 
-// New creates an EmbeddedDoltStore using the embedded Dolt engine.
+// newStore creates an EmbeddedDoltStore using the embedded Dolt engine.
 // beadsDir is the .beads/ root; the data directory is derived as <beadsDir>/embeddeddolt/.
 // The database is created automatically if it doesn't exist (initSchema handles this).
 //
 // An exclusive flock is held on the data directory for the store's entire
-// lifetime. If another process already holds the lock, New queues with
+// lifetime. If another process already holds the lock, newStore queues with
 // exponential backoff until the lock becomes available or the context is
 // canceled, instead of panicking during concurrent engine initialization
 // (GH#2571). The lock is released when Close is called, unless a pre-acquired
 // lock was supplied via WithLock (in which case the caller is responsible for it).
-func New(ctx context.Context, beadsDir, database, branch string, opts ...Option) (*EmbeddedDoltStore, error) {
+//
+// Production code should use Open, which routes through a process-scoped cache
+// to prevent same-process deadlocks from the driver's infinite backoff.
+func newStore(ctx context.Context, beadsDir, database, branch string, opts ...Option) (*EmbeddedDoltStore, error) {
 	if database == "" {
 		return nil, fmt.Errorf("embeddeddolt: database name must not be empty (caller should default to %q)", "beads")
 	}
@@ -463,12 +473,26 @@ func (s *EmbeddedDoltStore) GetAllEventsSince(ctx context.Context, since time.Ti
 
 // RunInTransaction is implemented in transaction.go.
 
-// Close marks the store as closed, cleans up orphaned git-remote-cache
-// garbage, and releases the exclusive flock on the data directory (if the
-// store owns it). Subsequent method calls will return errClosed.
+// Close decrements the reference count if this store was opened via Open (the
+// process-scoped cache). When other references remain, Close is a no-op — the
+// store stays alive for the remaining callers. When the last reference calls
+// Close (or if the store was created directly via New), the underlying
+// resources are released: orphaned git-remote-cache garbage is cleaned up and
+// the exclusive flock on the data directory is released (if the store owns it).
+//
 // It is safe to call multiple times. When the lock was supplied by the caller
 // via WithLock, Close does NOT release it — the caller retains ownership.
 func (s *EmbeddedDoltStore) Close() error {
+	if closeCached(s) {
+		// Other references remain — suppress the real close.
+		return nil
+	}
+	return s.closeUnderlying()
+}
+
+// closeUnderlying performs the actual close: marks the store as closed,
+// cleans up orphaned garbage, and releases the flock.
+func (s *EmbeddedDoltStore) closeUnderlying() error {
 	// Use CompareAndSwap so we only unlock once even if Close is called
 	// multiple times (the Lock.Unlock method panics on double-unlock).
 	if s.closed.CompareAndSwap(false, true) {

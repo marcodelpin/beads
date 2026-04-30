@@ -216,59 +216,34 @@ func mustQueryRow(t *testing.T, db *sql.DB, ctx context.Context, query string, a
 	return row
 }
 
-// TestConcurrentNewQueues verifies that opening a second EmbeddedDoltStore
-// on the same data directory blocks until the first is closed, rather than
-// failing immediately or panicking (GH#2571).
-func TestConcurrentNewQueues(t *testing.T) {
+// TestConcurrentOpenReturnsCached verifies that opening a second store on
+// the same data directory returns the cached instance immediately rather than
+// blocking on the flock (the cache prevents same-process deadlock from the
+// driver's infinite backoff — GH#2571).
+func TestConcurrentOpenReturnsCached(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt concurrency tests")
 	}
-
 	ctx := t.Context()
 	beadsDir := t.TempDir()
 
-	// First store opens successfully and holds the exclusive flock.
-	store1, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main")
+	store1, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
 	if err != nil {
-		t.Fatalf("first New: %v", err)
+		t.Fatalf("first Open: %v", err)
 	}
 
-	// Launch second New in a goroutine — it should block on the lock.
-	type result struct {
-		store *embeddeddolt.EmbeddedDoltStore
-		err   error
+	// Second Open should return immediately with the same cached store.
+	store2, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main")
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
 	}
-	ch := make(chan result, 1)
-	go func() {
-		s, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main")
-		ch <- result{s, err}
-	}()
 
-	// Give the goroutine time to start waiting, then release the first store.
-	time.Sleep(200 * time.Millisecond)
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("second New returned early with error: %v", r.err)
-		}
-		t.Fatal("second New returned before first store was closed")
-	default:
-		// Good — still blocking.
+	if store1 != store2 {
+		t.Fatal("expected second Open to return the cached store")
 	}
 
 	store1.Close()
-
-	// The second New should now succeed.
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("second New failed after first close: %v", r.err)
-		}
-		r.store.Close()
-		t.Log("second New succeeded after first store closed")
-	case <-time.After(10 * time.Second):
-		t.Fatal("second New did not complete within 10s after first store closed")
-	}
+	store2.Close()
 }
 
 // TestWaitLockBlocksAndSucceeds verifies that WaitLock blocks until the lock
@@ -373,7 +348,7 @@ func TestWithLockBypassesDoubleLock(t *testing.T) {
 	defer lock.Unlock()
 
 	// New with WithLock must succeed without double-locking.
-	store, err := embeddeddolt.New(ctx, beadsDir, "testdb", "main", embeddeddolt.WithLock(lock))
+	store, err := embeddeddolt.Open(ctx, beadsDir, "testdb", "main", embeddeddolt.WithLock(lock))
 	if err != nil {
 		t.Fatalf("New with WithLock: %v", err)
 	}

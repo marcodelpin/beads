@@ -393,8 +393,11 @@ var createCmd = &cobra.Command{
 				_ = store.Close() // Best effort cleanup on error path
 			}
 
-			// Replace store for remainder of create operation
-			store = targetStore
+			// Replace store for remainder of create operation.
+			// Must use setStore to sync cmdCtx.Store — a bare `store = targetStore`
+			// leaves cmdCtx.Store pointing at the closed original, which causes
+			// "store is closed" in PostRun tip auto-commit (GH#tip-closed-bug).
+			setStore(targetStore)
 		}
 
 		// Check for conflicting flags
