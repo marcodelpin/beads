@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 // Compile-time interface checks.
@@ -509,6 +510,63 @@ func (s *EmbeddedDoltStore) DoltGC(ctx context.Context) error {
 	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.DoltGC(ctx, db)
 	})
+}
+
+// ImportJSONLData atomically checks if the database is empty and, if so,
+// imports parsed issues and config key/value pairs in a single transaction.
+// Returns the count of issues imported, or 0 if the database was not empty.
+// Does NOT issue DOLT_COMMIT — the caller is responsible for committing
+// (e.g. via the PersistentPostRun auto-commit hook).
+func (s *EmbeddedDoltStore) ImportJSONLData(
+	ctx context.Context,
+	issues []*types.Issue,
+	configEntries map[string]string,
+	actor string,
+) (int, error) {
+	var imported int
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
+		// Atomically check: is the database empty?
+		stats := &types.Statistics{}
+		if err := issueops.ScanIssueCountsInTx(ctx, tx, stats); err != nil {
+			return fmt.Errorf("checking issue count: %w", err)
+		}
+		if stats.TotalIssues > 0 {
+			return nil // database is not empty — skip import
+		}
+
+		// Import config entries (memories, etc.)
+		for key, value := range configEntries {
+			if err := issueops.SetConfigInTx(ctx, tx, key, value); err != nil {
+				return fmt.Errorf("importing config %q: %w", key, err)
+			}
+		}
+
+		if len(issues) == 0 {
+			return nil
+		}
+
+		// Auto-detect prefix from first issue if not already provided
+		if _, hasPrefix := configEntries["issue_prefix"]; !hasPrefix {
+			firstPrefix := utils.ExtractIssuePrefix(issues[0].ID)
+			if firstPrefix != "" {
+				if err := issueops.SetConfigInTx(ctx, tx, "issue_prefix", firstPrefix); err != nil {
+					return fmt.Errorf("setting issue_prefix: %w", err)
+				}
+			}
+		}
+
+		// Create all issues in the same transaction
+		if err := issueops.CreateIssuesInTx(ctx, tx, issues, actor, storage.BatchCreateOptions{
+			OrphanHandling:       storage.OrphanAllow,
+			SkipPrefixValidation: true,
+		}); err != nil {
+			return err
+		}
+
+		imported = len(issues)
+		return nil
+	})
+	return imported, err
 }
 
 // Flatten squashes all Dolt commit history into a single commit.
