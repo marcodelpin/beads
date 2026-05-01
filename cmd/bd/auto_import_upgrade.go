@@ -92,8 +92,6 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 		return
 	}
 
-	commandDidWrite.Store(true)
-
 	if result.Memories > 0 {
 		fmt.Fprintf(os.Stderr, "auto-imported %d issues and %d memories from %s\n", result.Issues, result.Memories, jsonlPath)
 	} else {
