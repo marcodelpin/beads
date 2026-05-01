@@ -159,12 +159,7 @@ Examples:
 			FatalErrorRespectJSON("adding comment: %v", err)
 		}
 
-		// Embedded mode: flush Dolt commit.
-		if isEmbeddedMode() {
-			if _, err := store.CommitPending(ctx, author); err != nil {
-				FatalErrorRespectJSON("failed to commit: %v", err)
-			}
-		}
+		commandDidWrite.Store(true)
 
 		if jsonOutput {
 			outputJSON(comment)
