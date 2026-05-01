@@ -340,8 +340,7 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 		}
 		msg, _ := cmd.Flags().GetString("message")
 		if msg == "" {
-			fmt.Fprintf(os.Stderr, "Error: commit message is required (use -m)\n")
-			os.Exit(1)
+			msg = fmt.Sprintf("bd: dolt commit (auto-commit) by %s", getActor())
 		}
 		if err := st.Commit(ctx, msg); err != nil {
 			if isDoltNothingToCommit(err) {
