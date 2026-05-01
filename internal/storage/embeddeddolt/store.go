@@ -567,26 +567,7 @@ func (s *EmbeddedDoltStore) CLIDir() string {
 // implemented in version_control.go via versioncontrolops.
 
 func (s *EmbeddedDoltStore) CommitPending(ctx context.Context, actor string) (bool, error) {
-	var hasPending bool
-	var msg string
-	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
-		var err error
-		hasPending, err = issueops.HasPendingChanges(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if hasPending {
-			msg = issueops.BuildBatchCommitMessage(ctx, tx, actor)
-		}
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-	if !hasPending {
-		return false, nil
-	}
-
+	msg := fmt.Sprintf("bd: commit pending changes by %s", actor)
 	if err := s.Commit(ctx, msg); err != nil {
 		if issueops.IsNothingToCommitError(err) {
 			return false, nil
