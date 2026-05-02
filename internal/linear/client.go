@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -177,8 +178,12 @@ func (c *Client) rateLimitFloor() int {
 }
 
 // parseRetryAfter parses the Retry-After header value, which may be an
-// integer number of seconds or an HTTP-date (RFC 1123). Returns zero
-// duration if the header is absent or unparseable.
+// integer number of seconds or an HTTP-date. Returns zero duration if
+// the header is absent or unparseable.
+//
+// The integer form ("120") is tried first. For the HTTP-date form,
+// http.ParseTime is used, which covers RFC 1123, RFC 850, and ANSI C
+// formats as required by RFC 9110 §10.2.3.
 func parseRetryAfter(value string) time.Duration {
 	if value == "" {
 		return 0
@@ -186,7 +191,7 @@ func parseRetryAfter(value string) time.Duration {
 	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}
-	if t, err := time.Parse(time.RFC1123, value); err == nil {
+	if t, err := http.ParseTime(value); err == nil {
 		if delay := time.Until(t); delay > 0 {
 			return delay
 		}
@@ -263,6 +268,9 @@ func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMess
 				if half := int64(delay / 2); half > 0 {
 					delay += time.Duration(rand.Int64N(half)) //nolint:gosec // G404: jitter for retry backoff does not need crypto rand
 				}
+			} else if delay > MaxRetryAfterDelay {
+				fmt.Fprintf(os.Stderr, "linear: Retry-After %v exceeds cap %v; using cap\n", delay, MaxRetryAfterDelay)
+				delay = MaxRetryAfterDelay
 			}
 			lastErr = fmt.Errorf("rate limited (attempt %d/%d), retrying after %v", attempt+1, MaxRetries+1, delay)
 			select {

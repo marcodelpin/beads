@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,14 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 		}
 	}
 
+	// Read optional rate-limit floor (LINEAR_RATE_LIMIT_FLOOR env or linear.rate_limit_floor config).
+	var rateLimitFloor int
+	if floorStr, _ := t.getConfig(ctx, "linear.rate_limit_floor", "LINEAR_RATE_LIMIT_FLOOR"); floorStr != "" {
+		if v, err := strconv.Atoi(strings.TrimSpace(floorStr)); err == nil && v >= 0 {
+			rateLimitFloor = v
+		}
+	}
+
 	// Create per-team clients upfront for O(1) routing.
 	t.clients = make(map[string]*Client, len(t.teamIDs))
 	for _, teamID := range t.teamIDs {
@@ -75,6 +84,9 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 		}
 		if projectID != "" {
 			client = client.WithProjectID(projectID)
+		}
+		if rateLimitFloor > 0 {
+			client = client.WithRateLimitFloor(rateLimitFloor)
 		}
 		t.clients[teamID] = client
 	}
