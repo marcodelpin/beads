@@ -35,13 +35,23 @@ const (
 	MaxResponseSize = 50 * 1024 * 1024
 )
 
+// AuthMode indicates which authentication method the client uses.
+type AuthMode int
+
+const (
+	AuthModeAPIKey AuthMode = iota
+	AuthModeOAuth
+)
+
 // Client provides methods to interact with the Linear GraphQL API.
 type Client struct {
-	APIKey     string
-	TeamID     string
-	ProjectID  string // Optional: filter issues to a specific project
-	Endpoint   string // GraphQL endpoint URL (defaults to DefaultAPIEndpoint)
-	HTTPClient *http.Client
+	APIKey       string
+	TeamID       string
+	ProjectID    string // Optional: filter issues to a specific project
+	Endpoint     string // GraphQL endpoint URL (defaults to DefaultAPIEndpoint)
+	HTTPClient   *http.Client
+	AuthMode     AuthMode
+	TokenManager *OAuthTokenManager
 }
 
 // GraphQLRequest represents a GraphQL request payload.

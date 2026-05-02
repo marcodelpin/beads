@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -109,6 +110,21 @@ func NewClient(apiKey, teamID string) *Client {
 		APIKey:   apiKey,
 		TeamID:   teamID,
 		Endpoint: DefaultAPIEndpoint,
+		AuthMode: AuthModeAPIKey,
+		HTTPClient: &http.Client{
+			Timeout: DefaultTimeout,
+		},
+	}
+}
+
+// NewOAuthClient creates a new Linear client that authenticates via OAuth
+// client_credentials flow instead of a static API key.
+func NewOAuthClient(oauthConfig OAuthConfig, teamID string) *Client {
+	return &Client{
+		TeamID:       teamID,
+		Endpoint:     DefaultAPIEndpoint,
+		AuthMode:     AuthModeOAuth,
+		TokenManager: NewOAuthTokenManager(oauthConfig),
 		HTTPClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},
@@ -119,11 +135,13 @@ func NewClient(apiKey, teamID string) *Client {
 // This is useful for testing with mock servers or connecting to self-hosted instances.
 func (c *Client) WithEndpoint(endpoint string) *Client {
 	return &Client{
-		APIKey:     c.APIKey,
-		TeamID:     c.TeamID,
-		ProjectID:  c.ProjectID,
-		Endpoint:   endpoint,
-		HTTPClient: c.HTTPClient,
+		APIKey:       c.APIKey,
+		TeamID:       c.TeamID,
+		ProjectID:    c.ProjectID,
+		Endpoint:     endpoint,
+		HTTPClient:   c.HTTPClient,
+		AuthMode:     c.AuthMode,
+		TokenManager: c.TokenManager,
 	}
 }
 
@@ -131,11 +149,13 @@ func (c *Client) WithEndpoint(endpoint string) *Client {
 // This is useful for testing or customizing timeouts and transport settings.
 func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 	return &Client{
-		APIKey:     c.APIKey,
-		TeamID:     c.TeamID,
-		ProjectID:  c.ProjectID,
-		Endpoint:   c.Endpoint,
-		HTTPClient: httpClient,
+		APIKey:       c.APIKey,
+		TeamID:       c.TeamID,
+		ProjectID:    c.ProjectID,
+		Endpoint:     c.Endpoint,
+		HTTPClient:   httpClient,
+		AuthMode:     c.AuthMode,
+		TokenManager: c.TokenManager,
 	}
 }
 
@@ -143,31 +163,74 @@ func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 // When set, FetchIssues and FetchIssuesSince will only return issues belonging to this project.
 func (c *Client) WithProjectID(projectID string) *Client {
 	return &Client{
-		APIKey:     c.APIKey,
-		TeamID:     c.TeamID,
-		ProjectID:  projectID,
-		Endpoint:   c.Endpoint,
-		HTTPClient: c.HTTPClient,
+		APIKey:       c.APIKey,
+		TeamID:       c.TeamID,
+		ProjectID:    projectID,
+		Endpoint:     c.Endpoint,
+		HTTPClient:   c.HTTPClient,
+		AuthMode:     c.AuthMode,
+		TokenManager: c.TokenManager,
+	}
+}
+
+// authHeader returns the Authorization header value for this client.
+func (c *Client) authHeader() (string, error) {
+	switch c.AuthMode {
+	case AuthModeOAuth:
+		token, err := c.TokenManager.Token()
+		if err != nil {
+			return "", fmt.Errorf("failed to get OAuth token: %w", err)
+		}
+		return "Bearer " + token, nil
+	default:
+		return c.APIKey, nil
 	}
 }
 
 // Execute sends a GraphQL request to the Linear API.
-// Handles rate limiting with exponential backoff.
+// Handles rate limiting with exponential backoff and OAuth 401 retry.
 func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMessage, error) {
+	data, statusCode, err := c.executeOnce(ctx, req)
+	if err == nil {
+		return data, nil
+	}
+
+	// On 401 with OAuth, invalidate token and retry once.
+	if statusCode == http.StatusUnauthorized && c.AuthMode == AuthModeOAuth {
+		debug.Logf("oauth: received 401, invalidating token and retrying")
+		c.TokenManager.Invalidate()
+		data, _, retryErr := c.executeOnce(ctx, req)
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		return data, nil
+	}
+
+	return nil, err
+}
+
+// executeOnce performs the actual HTTP request loop with rate-limit retries.
+// Returns the response data, the last HTTP status code encountered, and any error.
+func (c *Client) executeOnce(ctx context.Context, req *GraphQLRequest) (json.RawMessage, int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, 0, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	var lastErr error
+	var lastStatus int
 	for attempt := 0; attempt <= MaxRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Endpoint, bytes.NewReader(body))
 		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
+			return nil, 0, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", c.APIKey)
+		authValue, err := c.authHeader()
+		if err != nil {
+			return nil, 0, err
+		}
+		httpReq.Header.Set("Authorization", authValue)
 
 		resp, err := c.HTTPClient.Do(httpReq)
 		if err != nil {
@@ -182,6 +245,8 @@ func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMess
 			continue
 		}
 
+		lastStatus = resp.StatusCode
+
 		if resp.StatusCode == http.StatusTooManyRequests {
 			delay := RetryDelay * time.Duration(1<<attempt) // Exponential backoff
 			if half := int64(delay / 2); half > 0 {
@@ -190,14 +255,14 @@ func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMess
 			lastErr = fmt.Errorf("rate limited (attempt %d/%d), retrying after %v", attempt+1, MaxRetries+1, delay)
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, lastStatus, ctx.Err()
 			case <-time.After(delay):
 				continue
 			}
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("API error: %s (status %d)", string(respBody), resp.StatusCode)
+			return nil, lastStatus, fmt.Errorf("API error: %s (status %d)", string(respBody), resp.StatusCode)
 		}
 
 		var gqlResp struct {
@@ -205,7 +270,7 @@ func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMess
 			Errors []GraphQLError  `json:"errors,omitempty"`
 		}
 		if err := json.Unmarshal(respBody, &gqlResp); err != nil {
-			return nil, fmt.Errorf("failed to parse response: %w (body: %s)", err, string(respBody))
+			return nil, lastStatus, fmt.Errorf("failed to parse response: %w (body: %s)", err, string(respBody))
 		}
 
 		if len(gqlResp.Errors) > 0 {
@@ -213,13 +278,13 @@ func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMess
 			for i, e := range gqlResp.Errors {
 				errMsgs[i] = e.Message
 			}
-			return nil, fmt.Errorf("GraphQL errors: %s", strings.Join(errMsgs, "; "))
+			return nil, lastStatus, fmt.Errorf("GraphQL errors: %s", strings.Join(errMsgs, "; "))
 		}
 
-		return gqlResp.Data, nil
+		return gqlResp.Data, lastStatus, nil
 	}
 
-	return nil, fmt.Errorf("max retries (%d) exceeded: %w", MaxRetries+1, lastErr)
+	return nil, lastStatus, fmt.Errorf("max retries (%d) exceeded: %w", MaxRetries+1, lastErr)
 }
 
 // FetchIssues retrieves issues from Linear with optional filtering by state.

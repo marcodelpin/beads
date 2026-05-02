@@ -30,9 +30,18 @@ Configuration:
   bd config set linear.project_id "PROJECT_ID"  # Optional: sync only this project
 
 Environment variables (alternative to config):
-  LINEAR_API_KEY  - Linear API key
+  LINEAR_API_KEY  - Linear API key (for individual developers)
   LINEAR_TEAM_ID  - Linear team ID (UUID, singular)
   LINEAR_TEAM_IDS - Linear team IDs (comma-separated UUIDs)
+
+OAuth (for CI workers / automated sync):
+  LINEAR_OAUTH_CLIENT_ID     - OAuth app client ID
+  LINEAR_OAUTH_CLIENT_SECRET - OAuth app client secret
+
+  When both OAuth env vars are set, OAuth client_credentials flow is used
+  instead of the API key. This allows CI workers to authenticate as an
+  application (actor=application) rather than impersonating a user.
+  Precedence: OAuth > LINEAR_API_KEY > config file.
 
 Data Mapping (optional, sensible defaults provided):
   Priority mapping (Linear 0-4 to Beads 0-4):
@@ -419,10 +428,13 @@ func runLinearStatus(cmd *cobra.Command, args []string) {
 	}
 
 	apiKey, _ := getLinearConfig(ctx, "linear.api_key")
+	oauthClientID, _ := getLinearConfig(ctx, "linear.oauth_client_id")
+	oauthClientSecret, _ := getLinearConfig(ctx, "linear.oauth_client_secret")
 	teamIDs := getLinearTeamIDs(ctx, nil)
 	lastSync, _ := store.GetConfig(ctx, "linear.last_sync")
 
-	configured := apiKey != "" && len(teamIDs) > 0
+	hasOAuth := oauthClientID != "" && oauthClientSecret != ""
+	configured := (apiKey != "" || hasOAuth) && len(teamIDs) > 0
 
 	allIssues, err := store.SearchIssues(ctx, "", types.IssueFilter{})
 	if err != nil {
@@ -446,9 +458,17 @@ func runLinearStatus(cmd *cobra.Command, args []string) {
 		if len(teamIDs) > 0 {
 			teamID = teamIDs[0]
 		}
+		authMode := "none"
+		if hasOAuth {
+			authMode = "oauth"
+		} else if hasAPIKey {
+			authMode = "api_key"
+		}
 		outputJSON(map[string]interface{}{
 			"configured":      configured,
 			"has_api_key":     hasAPIKey,
+			"has_oauth":       hasOAuth,
+			"auth_mode":       authMode,
 			"team_id":         teamID,
 			"team_ids":        teamIDs,
 			"last_sync":       lastSync,
@@ -474,6 +494,10 @@ func runLinearStatus(cmd *cobra.Command, args []string) {
 		fmt.Println("Or use environment variables:")
 		fmt.Println("  export LINEAR_API_KEY=\"YOUR_API_KEY\"")
 		fmt.Println("  export LINEAR_TEAM_ID=\"TEAM_ID\"")
+		fmt.Println()
+		fmt.Println("For CI/OAuth authentication:")
+		fmt.Println("  export LINEAR_OAUTH_CLIENT_ID=\"...\"")
+		fmt.Println("  export LINEAR_OAUTH_CLIENT_SECRET=\"...\"")
 		return
 	}
 
@@ -482,7 +506,11 @@ func runLinearStatus(cmd *cobra.Command, args []string) {
 	} else {
 		fmt.Printf("Team IDs:     %s (%d teams)\n", strings.Join(teamIDs, ", "), len(teamIDs))
 	}
-	fmt.Printf("API Key:      %s\n", maskAPIKey(apiKey))
+	if hasOAuth {
+		fmt.Printf("Auth:         OAuth (client_credentials)\n")
+	} else {
+		fmt.Printf("API Key:      %s\n", maskAPIKey(apiKey))
+	}
 	if lastSync != "" {
 		fmt.Printf("Last Sync:    %s\n", lastSync)
 	} else {
@@ -502,17 +530,11 @@ func runLinearStatus(cmd *cobra.Command, args []string) {
 func runLinearTeams(cmd *cobra.Command, args []string) {
 	ctx := rootCtx
 
-	apiKey, apiKeySource := getLinearConfig(ctx, "linear.api_key")
-	if apiKey == "" {
-		fmt.Fprintf(os.Stderr, "Error: Linear API key not configured\n")
-		fmt.Fprintf(os.Stderr, "Run: bd config set linear.api_key \"YOUR_API_KEY\"\n")
-		fmt.Fprintf(os.Stderr, "Or:  export LINEAR_API_KEY=YOUR_API_KEY\n")
+	client, err := buildLinearClient(ctx, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-
-	debug.Logf("Using API key from %s", apiKeySource)
-
-	client := linear.NewClient(apiKey, "")
 
 	teams, err := client.FetchTeams(ctx)
 	if err != nil {
@@ -559,9 +581,19 @@ func validateLinearConfig(cliTeams []string) error {
 
 	ctx := rootCtx
 
-	apiKey, _ := getLinearConfig(ctx, "linear.api_key")
-	if apiKey == "" {
-		return fmt.Errorf("Linear API key not configured\nRun: bd config set linear.api_key \"YOUR_API_KEY\"\nOr: export LINEAR_API_KEY=YOUR_API_KEY")
+	// Accept either OAuth credentials or API key.
+	oauthClientID, _ := getLinearConfig(ctx, "linear.oauth_client_id")
+	oauthClientSecret, _ := getLinearConfig(ctx, "linear.oauth_client_secret")
+	hasOAuth := oauthClientID != "" && oauthClientSecret != ""
+
+	if !hasOAuth {
+		apiKey, _ := getLinearConfig(ctx, "linear.api_key")
+		if apiKey == "" {
+			return fmt.Errorf("Linear authentication not configured\n" +
+				"Options:\n" +
+				"  OAuth (for CI):  export LINEAR_OAUTH_CLIENT_ID=... LINEAR_OAUTH_CLIENT_SECRET=...\n" +
+				"  API key (devs):  export LINEAR_API_KEY=... or bd config set linear.api_key \"YOUR_API_KEY\"")
+		}
 	}
 
 	teamIDs := getLinearTeamIDs(ctx, cliTeams)
@@ -643,6 +675,10 @@ func linearConfigToEnvVar(key string) string {
 		return "LINEAR_TEAM_ID"
 	case "linear.team_ids":
 		return "LINEAR_TEAM_IDS"
+	case "linear.oauth_client_id":
+		return "LINEAR_OAUTH_CLIENT_ID"
+	case "linear.oauth_client_secret":
+		return "LINEAR_OAUTH_CLIENT_SECRET"
 	default:
 		return ""
 	}
@@ -658,30 +694,59 @@ func getLinearTeamIDs(ctx context.Context, cliTeams []string) []string {
 
 // getLinearClient creates a configured Linear client from beads config.
 // Uses the first configured team ID for operations that require a single team.
+//
+// Auth precedence:
+//  1. OAuth env vars (LINEAR_OAUTH_CLIENT_ID + LINEAR_OAUTH_CLIENT_SECRET)
+//  2. LINEAR_API_KEY env var
+//  3. linear.oauth_client_id + linear.oauth_client_secret in config
+//  4. linear.api_key in config
 func getLinearClient(ctx context.Context) (*linear.Client, error) {
-	apiKey, _ := getLinearConfig(ctx, "linear.api_key")
-	if apiKey == "" {
-		return nil, fmt.Errorf("Linear API key not configured")
-	}
-
 	teamIDs := getLinearTeamIDs(ctx, nil)
 	if len(teamIDs) == 0 {
 		return nil, fmt.Errorf("Linear team ID not configured")
 	}
 
-	client := linear.NewClient(apiKey, teamIDs[0])
+	client, err := buildLinearClient(ctx, teamIDs[0])
+	if err != nil {
+		return nil, err
+	}
 
 	if store != nil {
 		if endpoint, _ := store.GetConfig(ctx, "linear.api_endpoint"); endpoint != "" {
 			client = client.WithEndpoint(endpoint)
 		}
-		// Filter to specific project if configured
 		if projectID, _ := store.GetConfig(ctx, "linear.project_id"); projectID != "" {
 			client = client.WithProjectID(projectID)
 		}
 	}
 
 	return client, nil
+}
+
+// buildLinearClient resolves auth credentials and returns an appropriately
+// configured Linear client. OAuth takes precedence over API key.
+func buildLinearClient(ctx context.Context, teamID string) (*linear.Client, error) {
+	oauthClientID, _ := getLinearConfig(ctx, "linear.oauth_client_id")
+	oauthClientSecret, _ := getLinearConfig(ctx, "linear.oauth_client_secret")
+
+	if oauthClientID != "" && oauthClientSecret != "" {
+		debug.Logf("Linear: using OAuth client-credentials authentication")
+		oauthCfg := linear.OAuthConfig{
+			ClientID:     oauthClientID,
+			ClientSecret: oauthClientSecret,
+		}
+		return linear.NewOAuthClient(oauthCfg, teamID), nil
+	}
+
+	apiKey, _ := getLinearConfig(ctx, "linear.api_key")
+	if apiKey == "" {
+		return nil, fmt.Errorf("Linear authentication not configured\n" +
+			"Options:\n" +
+			"  OAuth (for CI):  export LINEAR_OAUTH_CLIENT_ID=... LINEAR_OAUTH_CLIENT_SECRET=...\n" +
+			"  API key (devs):  export LINEAR_API_KEY=... or bd config set linear.api_key \"...\"")
+	}
+
+	return linear.NewClient(apiKey, teamID), nil
 }
 
 // storeConfigLoader adapts the store to the linear.ConfigLoader interface.
