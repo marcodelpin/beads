@@ -88,8 +88,9 @@ func maybeAutoExport(ctx context.Context) {
 	}
 	fullPath := filepath.Join(beadsDir, exportPath)
 
-	// Run the export
-	issueCount, memoryCount, err := exportToFile(ctx, fullPath, true)
+	// Run the export — memories are excluded from auto-export because they
+	// contain private agent context that must not reach git history (GH#3650).
+	issueCount, memoryCount, err := exportToFile(ctx, fullPath, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export failed: %v\n", err)
 		return
