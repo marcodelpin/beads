@@ -7,19 +7,22 @@
 package atomicfile
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 // WriteFile atomically writes data to path with the given permissions.
-// It writes to a temp file in the same directory, fsyncs, then renames.
+// It creates an atomic Writer, copies data in via io.Copy, then
+// fsyncs and renames into place.
 func WriteFile(path string, data []byte, perm os.FileMode) error {
 	w, err := Create(path, perm)
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(data); err != nil {
+	if _, err := io.Copy(w, bytes.NewReader(data)); err != nil {
 		_ = w.Abort()
 		return err
 	}
