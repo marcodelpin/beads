@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/linear"
@@ -157,6 +158,7 @@ func init() {
 	linearSyncCmd.Flags().String("parent", "", "Limit push to this beads ticket and its descendants")
 	linearSyncCmd.Flags().StringSlice("team", nil, "Team ID(s) to sync (overrides configured team_id/team_ids)")
 	linearSyncCmd.Flags().Bool("relations", false, "Import Linear relations as bd dependencies when pulling")
+	linearSyncCmd.Flags().Bool("no-wait", false, "Fail immediately if another sync is running instead of waiting")
 	registerSelectiveSyncFlags(linearSyncCmd)
 
 	linearCmd.AddCommand(linearSyncCmd)
@@ -178,6 +180,29 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	includeEphemeral, _ := cmd.Flags().GetBool("include-ephemeral")
 	cliTeams, _ := cmd.Flags().GetStringSlice("team")
 	relations, _ := cmd.Flags().GetBool("relations")
+	noWait, _ := cmd.Flags().GetBool("no-wait")
+
+	// Acquire per-workspace concurrency lock to serialize sync invocations.
+	if lockDir := beads.FindBeadsDir(); lockDir != "" {
+		wait := !noWait
+		if !wait {
+			fmt.Fprintln(os.Stderr, "Acquiring sync lock (non-blocking)...")
+		} else {
+			fmt.Fprintln(os.Stderr, "Acquiring sync lock...")
+		}
+		syncLock, err := linear.AcquireSyncLock(lockDir, wait)
+		if err != nil {
+			if held, ok := err.(*linear.SyncLockHeldError); ok {
+				if held.Info != nil {
+					FatalError("another bd linear sync is already running (PID %d, started %s)",
+						held.Info.PID, held.Info.Started.Format("15:04:05"))
+				}
+				FatalError("another bd linear sync is already running")
+			}
+			FatalError("acquiring sync lock: %v", err)
+		}
+		defer syncLock.Release()
+	}
 
 	if !dryRun {
 		CheckReadonly("linear sync")

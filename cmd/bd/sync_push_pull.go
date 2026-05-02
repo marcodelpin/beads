@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/ado"
+	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/github"
 	"github.com/steveyegge/beads/internal/gitlab"
 	"github.com/steveyegge/beads/internal/jira"
@@ -387,6 +388,14 @@ func runLinearPush(cmd *cobra.Command, args []string) {
 		CheckReadonly("linear push")
 	}
 
+	if lockDir := beads.FindBeadsDir(); lockDir != "" {
+		syncLock, err := linear.AcquireSyncLock(lockDir, true)
+		if err != nil {
+			FatalError("acquiring sync lock: %v", err)
+		}
+		defer syncLock.Release()
+	}
+
 	if err := ensureStoreActive(); err != nil {
 		FatalError("database not available: %v", err)
 	}
@@ -435,6 +444,14 @@ func runLinearPull(cmd *cobra.Command, args []string) {
 	relations, _ := cmd.Flags().GetBool("relations")
 	if !dryRun {
 		CheckReadonly("linear pull")
+	}
+
+	if lockDir := beads.FindBeadsDir(); lockDir != "" {
+		syncLock, err := linear.AcquireSyncLock(lockDir, true)
+		if err != nil {
+			FatalError("acquiring sync lock: %v", err)
+		}
+		defer syncLock.Release()
 	}
 
 	if err := ensureStoreActive(); err != nil {
