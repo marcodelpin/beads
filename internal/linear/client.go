@@ -504,59 +504,57 @@ func (c *Client) FindIssueByDescriptionContains(ctx context.Context, text string
 	return nil, nil
 }
 
-// CreateIssue creates a new issue in Linear.
-func (c *Client) CreateIssue(ctx context.Context, title, description string, priority int, stateID string, labelIDs []string) (*Issue, error) {
-	query := `
-		mutation CreateIssue($input: IssueCreateInput!) {
-			issueCreate(input: $input) {
-				success
-				issue {
+// issueCreateMutation is the GraphQL mutation for creating a Linear issue.
+const issueCreateMutation = `
+	mutation CreateIssue($input: IssueCreateInput!) {
+		issueCreate(input: $input) {
+			success
+			issue {
+				id
+				identifier
+				title
+				description
+				url
+				priority
+				state {
 					id
-					identifier
-					title
-					description
-					url
-					priority
-					state {
-						id
-						name
-						type
-					}
-					createdAt
-					updatedAt
+					name
+					type
 				}
+				createdAt
+				updatedAt
 			}
 		}
-	`
+	}
+`
 
+// buildIssueCreateInput constructs the GraphQL input map for an issueCreate mutation.
+func (c *Client) buildIssueCreateInput(title, description string, priority int, stateID string, labelIDs []string) map[string]interface{} {
 	input := map[string]interface{}{
 		"teamId":      c.TeamID,
 		"title":       title,
 		"description": description,
 	}
-
-	// Include project if configured
 	if c.ProjectID != "" {
 		input["projectId"] = c.ProjectID
 	}
-
 	if priority > 0 {
 		input["priority"] = priority
 	}
-
 	if stateID != "" {
 		input["stateId"] = stateID
 	}
-
 	if len(labelIDs) > 0 {
 		input["labelIds"] = labelIDs
 	}
+	return input
+}
 
+// CreateIssue creates a new issue in Linear.
+func (c *Client) CreateIssue(ctx context.Context, title, description string, priority int, stateID string, labelIDs []string) (*Issue, error) {
 	req := &GraphQLRequest{
-		Query: query,
-		Variables: map[string]interface{}{
-			"input": input,
-		},
+		Query:     issueCreateMutation,
+		Variables: map[string]interface{}{"input": c.buildIssueCreateInput(title, description, priority, stateID, labelIDs)},
 	}
 
 	data, err := c.Execute(ctx, req)
@@ -576,11 +574,90 @@ func (c *Client) CreateIssue(ctx context.Context, title, description string, pri
 	return &createResp.IssueCreate.Issue, nil
 }
 
+// createIssueSingleAttempt executes the issueCreate mutation exactly once,
+// without the retry loop used by Execute. This is intentional: retrying a
+// mutation that may have already reached Linear risks creating a duplicate.
+// The caller (CreateIssueIdempotent) handles retry safety by re-searching for
+// the idempotency marker after any failure.
+func (c *Client) createIssueSingleAttempt(ctx context.Context, title, description string, priority int, stateID string, labelIDs []string) (*Issue, error) {
+	req := &GraphQLRequest{
+		Query:     issueCreateMutation,
+		Variables: map[string]interface{}{"input": c.buildIssueCreateInput(title, description, priority, stateID, labelIDs)},
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseSize))
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("API error: %s (status %d)", string(respBody), resp.StatusCode)
+	}
+
+	var gqlResp struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []GraphQLError  `json:"errors,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w (body: %s)", err, string(respBody))
+	}
+
+	if len(gqlResp.Errors) > 0 {
+		errMsgs := make([]string, len(gqlResp.Errors))
+		for i, e := range gqlResp.Errors {
+			errMsgs[i] = e.Message
+		}
+		return nil, fmt.Errorf("GraphQL errors: %s", strings.Join(errMsgs, "; "))
+	}
+
+	var createResp IssueCreateResponse
+	if err := json.Unmarshal(gqlResp.Data, &createResp); err != nil {
+		return nil, fmt.Errorf("failed to parse create response: %w", err)
+	}
+
+	if !createResp.IssueCreate.Success {
+		return nil, fmt.Errorf("issue creation reported as unsuccessful")
+	}
+
+	return &createResp.IssueCreate.Issue, nil
+}
+
 // CreateIssueIdempotent creates a new Linear issue with dedup protection.
 // It embeds the given idempotency marker in the description and, before
 // creating, queries Linear to see if an issue with that marker already exists.
 // If a match is found (e.g., from a prior interrupted sync), the existing
 // issue is returned without creating a duplicate.
+//
+// The create is performed as a single attempt (no internal retry) to avoid the
+// following race: if issueCreate reaches Linear but the HTTP response is lost
+// (network timeout, connection drop), a blind retry would create a second issue
+// with the same marker. Instead, after any create failure, this function
+// re-searches for the marker so that the caller can safely retry the entire
+// CreateIssueIdempotent call and get a consistent result.
+//
+// Note: concurrent creates from multiple sources (e.g., two sync processes
+// running simultaneously) cannot be made fully atomic without server-side
+// uniqueness enforcement, which Linear does not provide. The dedup window is
+// bounded by Linear's search-index propagation delay.
 func (c *Client) CreateIssueIdempotent(ctx context.Context, title, description string, priority int, stateID string, labelIDs []string, marker string) (*Issue, bool, error) {
 	existing, err := c.FindIssueByDescriptionContains(ctx, marker)
 	if err != nil {
@@ -591,8 +668,14 @@ func (c *Client) CreateIssueIdempotent(ctx context.Context, title, description s
 	}
 
 	description = AppendIdempotencyMarker(description, marker)
-	issue, err := c.CreateIssue(ctx, title, description, priority, stateID, labelIDs)
+	issue, err := c.createIssueSingleAttempt(ctx, title, description, priority, stateID, labelIDs)
 	if err != nil {
+		// The mutation may have reached Linear despite the error. Re-check for
+		// the marker so callers retrying CreateIssueIdempotent get a consistent
+		// result rather than creating a duplicate.
+		if found, searchErr := c.FindIssueByDescriptionContains(ctx, marker); searchErr == nil && found != nil {
+			return found, true, nil
+		}
 		return nil, false, err
 	}
 	return issue, false, nil

@@ -162,7 +162,11 @@ func (t *Tracker) CreateIssue(ctx context.Context, issue *types.Issue) (*tracker
 		return nil, fmt.Errorf("finding state for status %s: %w", issue.Status, err)
 	}
 
-	description := BuildLinearDescription(issue)
+	// Use issue.Description as-is: the sync engine's FormatDescription hook
+	// (BuildLinearDescription) has already merged AcceptanceCriteria/Design/Notes
+	// into the description before calling CreateIssue. Calling BuildLinearDescription
+	// here a second time would duplicate those sections for issues with structured fields.
+	description := issue.Description
 
 	// Use idempotent creation when we have enough bead metadata to generate
 	// a stable marker. This prevents duplicate Linear issues when sync is

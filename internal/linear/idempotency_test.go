@@ -287,3 +287,92 @@ func TestCreateIssueIdempotentEmptyDescription(t *testing.T) {
 		t.Errorf("description = %q, want just marker %q", issue.Description, marker)
 	}
 }
+
+// recoveryHandler simulates an ambiguous create failure followed by a
+// successful dedup search. It models the scenario where issueCreate reaches
+// Linear (the issue is created) but the HTTP response is lost, so the next
+// call to FindIssueByDescriptionContains finds the already-created issue.
+type recoveryHandler struct {
+	t             *testing.T
+	createdIssue  Issue
+	findCallCount int
+	createCalls   int
+}
+
+func (h *recoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req GraphQLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.t.Fatalf("failed to decode request: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if strings.Contains(req.Query, "FindByDescription") {
+		h.findCallCount++
+		var nodes []Issue
+		if h.findCallCount >= 2 {
+			// Recovery search: return the issue that was created despite the error.
+			nodes = []Issue{h.createdIssue}
+		}
+		resp := map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes":    nodes,
+					"pageInfo": map[string]interface{}{"hasNextPage": false, "endCursor": ""},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	if strings.Contains(req.Query, "issueCreate") {
+		h.createCalls++
+		// Simulate: mutation reached Linear (issue created) but response was lost.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("service unavailable"))
+		return
+	}
+
+	h.t.Fatalf("unexpected query: %s", req.Query)
+}
+
+func TestCreateIssueIdempotentRecoverAfterAmbiguousFailure(t *testing.T) {
+	recovered := Issue{
+		ID:         "recovered-uuid",
+		Identifier: "TEAM-77",
+		Title:      "Network Failure Issue",
+		URL:        "https://linear.app/team/issue/TEAM-77",
+	}
+
+	handler := &recoveryHandler{t: t, createdIssue: recovered}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := NewClient("test-key", "team-1").WithEndpoint(server.URL)
+
+	marker := GenerateIdempotencyMarker("bead-net", "dev@test.com", 42)
+	issue, deduped, err := client.CreateIssueIdempotent(
+		context.Background(),
+		"Network Failure Issue",
+		"some description",
+		3, "", nil,
+		marker,
+	)
+	if err != nil {
+		t.Fatalf("CreateIssueIdempotent should recover after ambiguous failure, got: %v", err)
+	}
+	if !deduped {
+		t.Error("expected deduped=true on recovery (issue was created despite the error)")
+	}
+	if issue == nil || issue.Identifier != "TEAM-77" {
+		t.Errorf("expected recovered issue TEAM-77, got %v", issue)
+	}
+
+	if handler.createCalls != 1 {
+		t.Errorf("create calls = %d, want 1 (no retry of the mutation)", handler.createCalls)
+	}
+	if handler.findCallCount != 2 {
+		t.Errorf("find calls = %d, want 2 (initial check + recovery check)", handler.findCallCount)
+	}
+}
