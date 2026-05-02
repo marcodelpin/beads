@@ -157,7 +157,7 @@ Run `bd stats` to see overall progress.
 - **Examples**: Growing collection of agent integrations
 - **Documentation**: Comprehensive but can always improve
 - **MCP Server**: Available at `integrations/beads-mcp/`
-- **Claude Plugin**: Skills and hooks at `claude-plugin/`
+- **Claude/Codex Plugin**: Shared plugin package at `plugins/beads/`
 
 ## Common Tasks
 
