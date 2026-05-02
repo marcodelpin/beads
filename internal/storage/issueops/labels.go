@@ -41,14 +41,23 @@ func GetLabelsInTx(ctx context.Context, tx *sql.Tx, table, issueID string) ([]st
 // table, so the number of round-trips is O(1 + N/queryBatchSize) rather than
 // O(N). This matters on remote backends (Dolt) where per-ID round-trips would
 // otherwise blow past the context deadline — see GH#3414.
-func GetLabelsForIssuesInTx(ctx context.Context, tx *sql.Tx, issueIDs []string) (map[string][]string, error) {
+//
+// Callers hydrating multiple batches inside one tx may pass a precomputed
+// active-wisp set scoped to issueIDs to avoid rebuilding it.
+func GetLabelsForIssuesInTx(ctx context.Context, tx *sql.Tx, issueIDs []string, wispSetOpt ...map[string]struct{}) (map[string][]string, error) {
 	if len(issueIDs) == 0 {
 		return make(map[string][]string), nil
 	}
 
-	wispIDs, permIDs, err := PartitionWispIDsInTx(ctx, tx, issueIDs)
-	if err != nil {
-		return nil, err
+	var wispIDs, permIDs []string
+	if len(wispSetOpt) > 0 && wispSetOpt[0] != nil {
+		wispIDs, permIDs = partitionByWispSet(issueIDs, wispSetOpt[0])
+	} else {
+		var err error
+		wispIDs, permIDs, err = PartitionWispIDsInTx(ctx, tx, issueIDs)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	result := make(map[string][]string)
