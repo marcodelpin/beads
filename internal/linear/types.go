@@ -6,6 +6,7 @@
 package linear
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -33,15 +34,43 @@ const (
 
 	// MaxResponseSize is the maximum allowed HTTP response body size (50MB).
 	MaxResponseSize = 50 * 1024 * 1024
+
+	// DefaultRateLimitFloor is the minimum remaining API quota before the
+	// circuit breaker pauses sync. Configurable via linear.rate_limit_floor.
+	DefaultRateLimitFloor = 100
 )
 
 // Client provides methods to interact with the Linear GraphQL API.
 type Client struct {
-	APIKey     string
-	TeamID     string
-	ProjectID  string // Optional: filter issues to a specific project
-	Endpoint   string // GraphQL endpoint URL (defaults to DefaultAPIEndpoint)
-	HTTPClient *http.Client
+	APIKey         string
+	TeamID         string
+	ProjectID      string // Optional: filter issues to a specific project
+	Endpoint       string // GraphQL endpoint URL (defaults to DefaultAPIEndpoint)
+	HTTPClient     *http.Client
+	RateLimitFloor int // Minimum remaining quota before circuit breaker trips (0 = use DefaultRateLimitFloor)
+}
+
+// RateLimitInfo captures rate-limit state from Linear API response headers.
+type RateLimitInfo struct {
+	RetryAfter         time.Duration // Parsed Retry-After delay (zero if header absent)
+	RequestsRemaining  int           // X-RateLimit-Requests-Remaining (-1 if absent)
+	RequestsReset      time.Time     // X-RateLimit-Requests-Reset (zero if absent)
+}
+
+// ErrRateLimitExhausted is returned when the circuit breaker trips because
+// the remaining API quota dropped below the configured floor.
+type ErrRateLimitExhausted struct {
+	Remaining int
+	Floor     int
+	ResetsAt  time.Time
+}
+
+func (e *ErrRateLimitExhausted) Error() string {
+	msg := fmt.Sprintf("rate limit circuit breaker: %d requests remaining (floor: %d)", e.Remaining, e.Floor)
+	if !e.ResetsAt.IsZero() {
+		msg += fmt.Sprintf(", resets at %s", e.ResetsAt.UTC().Format(time.RFC3339))
+	}
+	return msg
 }
 
 // GraphQLRequest represents a GraphQL request payload.
