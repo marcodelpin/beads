@@ -26,8 +26,19 @@ func TestAcquireSyncLock(t *testing.T) {
 			t.Fatalf("failed to release lock: %v", err)
 		}
 
-		if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-			t.Error("lock file should be removed after release")
+		// Lock file must persist after release — removing it after unlock creates a
+		// race where a blocked waiter holds the old inode while a new process opens a
+		// fresh file at the same path, splitting lock identity.
+		if _, err := os.Stat(lockPath); err != nil {
+			t.Errorf("lock file should persist after release (stable path): %v", err)
+		}
+		// Content should be truncated (empty) after release.
+		data, err := os.ReadFile(lockPath)
+		if err != nil {
+			t.Fatalf("could not read lock file after release: %v", err)
+		}
+		if len(data) != 0 {
+			t.Errorf("lock file should be empty after release, got %q", string(data))
 		}
 	})
 

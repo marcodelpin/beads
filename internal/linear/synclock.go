@@ -67,23 +67,35 @@ func AcquireSyncLock(beadsDir string, wait bool) (*SyncLock, error) {
 	return &SyncLock{path: lockPath, file: f}, nil
 }
 
-// Release releases the sync lock and removes the lock file.
+// Release releases the sync lock. The lock file is NOT removed — removing it
+// after unlocking creates a race where a blocked waiter acquires the old inode
+// while a new process creates a fresh file at the same path, splitting lock
+// identity. Instead the file is truncated while still holding the flock, then
+// the flock is released. The stable path is reused by subsequent Acquire calls.
 func (l *SyncLock) Release() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
 
-	// Truncate the file before unlocking so other processes don't read stale PID info
-	_ = l.file.Truncate(0)
-	err := lockfile.FlockUnlock(l.file)
-	closeErr := l.file.Close()
-	_ = os.Remove(l.path)
-
-	l.file = nil
-	if err != nil {
-		return err
+	// Clear diagnostic metadata while still holding the flock so no reader
+	// observes a stale PID after we unlock. Truncate failure is non-fatal
+	// (metadata-only), but we capture it to surface if unlock/close succeed.
+	var truncErr error
+	if err := l.file.Truncate(0); err != nil {
+		truncErr = fmt.Errorf("clearing lock metadata: %w", err)
 	}
-	return closeErr
+
+	unlockErr := lockfile.FlockUnlock(l.file)
+	closeErr := l.file.Close()
+	l.file = nil
+
+	if unlockErr != nil {
+		return unlockErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return truncErr
 }
 
 // SyncLockHeldError is returned when the lock is held by another process.
@@ -100,18 +112,19 @@ func (e *SyncLockHeldError) Error() string {
 }
 
 func writeLockInfo(f *os.File) error {
-	_ = f.Truncate(0)
-	_, err := f.Seek(0, 0)
-	if err != nil {
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncating lock file: %w", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
 		return err
 	}
 	info := fmt.Sprintf("pid=%d\nstarted=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
-	_, err = f.WriteString(info)
+	_, err := f.WriteString(info)
 	return err
 }
 
 func readLockInfo(path string) *SyncLockInfo {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is constructed from beadsDir, not user input
 	if err != nil {
 		return nil
 	}
