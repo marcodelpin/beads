@@ -620,19 +620,22 @@ func maskAPIKey(key string) string {
 }
 
 // getLinearConfig reads a Linear configuration value. Returns the value and its source.
-// Priority: project config > environment variable.
+// Priority: environment variable > project config.
+// Env vars take precedence so CI workers can override config without modifying config.yaml.
 func getLinearConfig(ctx context.Context, key string) (value string, source string) {
 	// Secret keys (e.g. linear.api_key) are stored in config.yaml, not the
 	// Dolt database, to avoid leaking secrets when pushing to remotes.
+	// Env vars are checked first so that LINEAR_OAUTH_CLIENT_ID/SECRET etc.
+	// override whatever is in config.yaml.
 	if config.IsYamlOnlyKey(key) {
-		if value := config.GetString(key); value != "" {
-			return value, "project config (config.yaml)"
-		}
 		envKey := linearConfigToEnvVar(key)
 		if envKey != "" {
 			if value := os.Getenv(envKey); value != "" {
 				return value, fmt.Sprintf("environment variable (%s)", envKey)
 			}
+		}
+		if value := config.GetString(key); value != "" {
+			return value, "project config (config.yaml)"
 		}
 		return "", ""
 	}

@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	DefaultOAuthTokenURL = "https://api.linear.app/oauth/token"
+	// DefaultOAuthTokenURL is the Linear OAuth 2.0 token endpoint.
+	DefaultOAuthTokenURL = "https://api.linear.app/oauth/token" //nolint:gosec // G101 false positive: URL path component, not a credential
 	DefaultOAuthScopes   = "read,write"
 	DefaultOAuthActor    = "application"
 
@@ -69,8 +70,8 @@ func NewOAuthTokenManager(config OAuthConfig) *OAuthTokenManager {
 		config.Actor = DefaultOAuthActor
 	}
 	return &OAuthTokenManager{
-		config: config,
-		client: &http.Client{Timeout: 30 * time.Second},
+		config:  config,
+		client:  &http.Client{Timeout: 30 * time.Second},
 		nowFunc: time.Now,
 	}
 }
@@ -129,7 +130,7 @@ func (m *OAuthTokenManager) acquireToken() error {
 	if err != nil {
 		return fmt.Errorf("oauth: token request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
 	if err != nil {
