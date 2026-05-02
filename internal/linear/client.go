@@ -443,6 +443,67 @@ func (c *Client) GetTeamStates(ctx context.Context) ([]State, error) {
 	return teamResp.Team.States.Nodes, nil
 }
 
+// FindIssueByDescriptionContains searches for an issue whose description
+// contains the given text. This powers idempotency dedup: we embed a
+// deterministic marker in the description and search for it before creating.
+// Returns nil (no error) when no match is found.
+func (c *Client) FindIssueByDescriptionContains(ctx context.Context, text string) (*Issue, error) {
+	query := `
+		query FindByDescription($filter: IssueFilter!) {
+			issues(filter: $filter, first: 1) {
+				nodes {
+					id
+					identifier
+					title
+					description
+					url
+					priority
+					state {
+						id
+						name
+						type
+					}
+					createdAt
+					updatedAt
+				}
+			}
+		}
+	`
+
+	filter := map[string]interface{}{
+		"team": map[string]interface{}{
+			"id": map[string]interface{}{
+				"eq": c.TeamID,
+			},
+		},
+		"description": map[string]interface{}{
+			"contains": text,
+		},
+	}
+
+	req := &GraphQLRequest{
+		Query: query,
+		Variables: map[string]interface{}{
+			"filter": filter,
+		},
+	}
+
+	data, err := c.Execute(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search issues by description: %w", err)
+	}
+
+	var issuesResp IssuesResponse
+	if err := json.Unmarshal(data, &issuesResp); err != nil {
+		return nil, fmt.Errorf("failed to parse description search response: %w", err)
+	}
+
+	if len(issuesResp.Issues.Nodes) > 0 {
+		return &issuesResp.Issues.Nodes[0], nil
+	}
+	return nil, nil
+}
+
 // CreateIssue creates a new issue in Linear.
 func (c *Client) CreateIssue(ctx context.Context, title, description string, priority int, stateID string, labelIDs []string) (*Issue, error) {
 	query := `
@@ -513,6 +574,28 @@ func (c *Client) CreateIssue(ctx context.Context, title, description string, pri
 	}
 
 	return &createResp.IssueCreate.Issue, nil
+}
+
+// CreateIssueIdempotent creates a new Linear issue with dedup protection.
+// It embeds the given idempotency marker in the description and, before
+// creating, queries Linear to see if an issue with that marker already exists.
+// If a match is found (e.g., from a prior interrupted sync), the existing
+// issue is returned without creating a duplicate.
+func (c *Client) CreateIssueIdempotent(ctx context.Context, title, description string, priority int, stateID string, labelIDs []string, marker string) (*Issue, bool, error) {
+	existing, err := c.FindIssueByDescriptionContains(ctx, marker)
+	if err != nil {
+		return nil, false, fmt.Errorf("idempotency check failed: %w", err)
+	}
+	if existing != nil {
+		return existing, true, nil
+	}
+
+	description = AppendIdempotencyMarker(description, marker)
+	issue, err := c.CreateIssue(ctx, title, description, priority, stateID, labelIDs)
+	if err != nil {
+		return nil, false, err
+	}
+	return issue, false, nil
 }
 
 // UpdateIssue updates an existing issue in Linear.
