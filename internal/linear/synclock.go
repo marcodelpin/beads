@@ -36,31 +36,31 @@ func AcquireSyncLock(beadsDir string, wait bool) (*SyncLock, error) {
 		return nil, fmt.Errorf("creating beads directory: %w", err)
 	}
 
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600) // #nosec G304 -- lockPath is constrained to the beads directory.
 	if err != nil {
 		return nil, fmt.Errorf("opening lock file: %w", err)
 	}
 
 	if wait {
 		if err := lockfile.FlockExclusiveBlocking(f); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("acquiring lock (blocking): %w", err)
 		}
 	} else {
 		if err := lockfile.FlockExclusiveNonBlocking(f); err != nil {
 			if lockfile.IsLocked(err) || err == lockfile.ErrLockBusy {
 				info := readLockInfo(lockPath)
-				f.Close()
+				_ = f.Close()
 				return nil, &SyncLockHeldError{Info: info}
 			}
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("acquiring lock (non-blocking): %w", err)
 		}
 	}
 
 	if err := writeLockInfo(f); err != nil {
-		lockfile.FlockUnlock(f)
-		f.Close()
+		_ = lockfile.FlockUnlock(f)
+		_ = f.Close()
 		return nil, fmt.Errorf("writing lock info: %w", err)
 	}
 

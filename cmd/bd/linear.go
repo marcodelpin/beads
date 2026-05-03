@@ -201,7 +201,11 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 			}
 			FatalError("acquiring sync lock: %v", err)
 		}
-		defer syncLock.Release()
+		defer func() {
+			if err := syncLock.Release(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to release sync lock: %v\n", err)
+			}
+		}()
 	}
 
 	if !dryRun {

@@ -393,7 +393,11 @@ func runLinearPush(cmd *cobra.Command, args []string) {
 		if err != nil {
 			FatalError("acquiring sync lock: %v", err)
 		}
-		defer syncLock.Release()
+		defer func() {
+			if err := syncLock.Release(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to release sync lock: %v\n", err)
+			}
+		}()
 	}
 
 	if err := ensureStoreActive(); err != nil {
@@ -451,7 +455,11 @@ func runLinearPull(cmd *cobra.Command, args []string) {
 		if err != nil {
 			FatalError("acquiring sync lock: %v", err)
 		}
-		defer syncLock.Release()
+		defer func() {
+			if err := syncLock.Release(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to release sync lock: %v\n", err)
+			}
+		}()
 	}
 
 	if err := ensureStoreActive(); err != nil {
