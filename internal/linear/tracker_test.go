@@ -1,6 +1,7 @@
 package linear
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -198,6 +199,67 @@ func TestLinearToTrackerIssue(t *testing.T) {
 	}
 	if ti.Raw != li {
 		t.Error("Raw should reference original linear.Issue")
+	}
+}
+
+// TestTrackerInitOAuthOnly verifies that Init() succeeds with only OAuth credentials
+// and no API key. This is the CI worker use case.
+func TestTrackerInitOAuthOnly(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"tok","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+
+	t.Setenv("LINEAR_OAUTH_CLIENT_ID", "test-client-id")
+	t.Setenv("LINEAR_OAUTH_CLIENT_SECRET", "test-client-secret")
+	// No LINEAR_API_KEY set — OAuth-only path.
+
+	tr := &Tracker{}
+	tr.SetTeamIDs([]string{"team-uuid-1"})
+	// Inject the test token server so we don't hit production.
+	oauthClient := NewOAuthClient(OAuthConfig{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		TokenURL:     tokenServer.URL,
+	}, "team-uuid-1")
+	tr.clients = map[string]*Client{"team-uuid-1": oauthClient}
+	tr.config = DefaultMappingConfig()
+
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (OAuth-only tracker should be valid)", err)
+	}
+
+	client := tr.PrimaryClient()
+	if client == nil {
+		t.Fatal("PrimaryClient() returned nil")
+	}
+	if client.AuthMode != AuthModeOAuth {
+		t.Errorf("AuthMode = %v, want AuthModeOAuth", client.AuthMode)
+	}
+}
+
+// TestTrackerInitNoAuthFails verifies that Init() returns a clear error when neither
+// OAuth credentials nor an API key are present.
+func TestTrackerInitNoAuthFails(t *testing.T) {
+	// Ensure no credentials leak from environment or config.
+	t.Setenv("LINEAR_OAUTH_CLIENT_ID", "")
+	t.Setenv("LINEAR_OAUTH_CLIENT_SECRET", "")
+	t.Setenv("LINEAR_API_KEY", "")
+
+	tr := &Tracker{}
+	tr.SetTeamIDs([]string{"team-uuid-1"})
+
+	err := tr.Init(context.Background(), nil)
+	if err == nil {
+		t.Fatal("Init() should fail when no auth credentials are configured")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "LINEAR_OAUTH_CLIENT_ID") {
+		t.Errorf("error should mention LINEAR_OAUTH_CLIENT_ID; got: %s", msg)
+	}
+	if !strings.Contains(msg, "LINEAR_API_KEY") {
+		t.Errorf("error should mention LINEAR_API_KEY; got: %s", msg)
 	}
 }
 

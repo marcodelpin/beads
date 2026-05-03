@@ -45,6 +45,14 @@ const (
 	MaxRetryAfterDelay = 300 * time.Second
 )
 
+// AuthMode indicates which authentication method the client uses.
+type AuthMode int
+
+const (
+	AuthModeAPIKey AuthMode = iota
+	AuthModeOAuth
+)
+
 // Client provides methods to interact with the Linear GraphQL API.
 type Client struct {
 	APIKey         string
@@ -52,6 +60,8 @@ type Client struct {
 	ProjectID      string // Optional: filter issues to a specific project
 	Endpoint       string // GraphQL endpoint URL (defaults to DefaultAPIEndpoint)
 	HTTPClient     *http.Client
+	AuthMode       AuthMode
+	TokenManager   *OAuthTokenManager
 	RateLimitFloor int // Minimum remaining quota before circuit breaker trips (0 = use DefaultRateLimitFloor)
 }
 

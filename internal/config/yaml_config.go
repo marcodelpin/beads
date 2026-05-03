@@ -72,8 +72,10 @@ var YamlOnlyKeys = map[string]bool{
 	// Secrets: tokens and API keys must NOT be stored in the Dolt database
 	// because that data is pushed to remotes, triggering secret-scanning
 	// blocks on GitHub. Store them in local config.yaml instead.
-	"github.token":   true,
-	"linear.api_key": true,
+	"github.token":               true,
+	"linear.api_key":             true,
+	"linear.oauth_client_id":     true,
+	"linear.oauth_client_secret": true,
 }
 
 // IsYamlOnlyKey returns true if the given key should be stored in config.yaml
