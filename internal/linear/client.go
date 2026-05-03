@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -119,11 +120,12 @@ func NewClient(apiKey, teamID string) *Client {
 // This is useful for testing with mock servers or connecting to self-hosted instances.
 func (c *Client) WithEndpoint(endpoint string) *Client {
 	return &Client{
-		APIKey:     c.APIKey,
-		TeamID:     c.TeamID,
-		ProjectID:  c.ProjectID,
-		Endpoint:   endpoint,
-		HTTPClient: c.HTTPClient,
+		APIKey:         c.APIKey,
+		TeamID:         c.TeamID,
+		ProjectID:      c.ProjectID,
+		Endpoint:       endpoint,
+		HTTPClient:     c.HTTPClient,
+		RateLimitFloor: c.RateLimitFloor,
 	}
 }
 
@@ -131,11 +133,12 @@ func (c *Client) WithEndpoint(endpoint string) *Client {
 // This is useful for testing or customizing timeouts and transport settings.
 func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 	return &Client{
-		APIKey:     c.APIKey,
-		TeamID:     c.TeamID,
-		ProjectID:  c.ProjectID,
-		Endpoint:   c.Endpoint,
-		HTTPClient: httpClient,
+		APIKey:         c.APIKey,
+		TeamID:         c.TeamID,
+		ProjectID:      c.ProjectID,
+		Endpoint:       c.Endpoint,
+		HTTPClient:     httpClient,
+		RateLimitFloor: c.RateLimitFloor,
 	}
 }
 
@@ -143,16 +146,81 @@ func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 // When set, FetchIssues and FetchIssuesSince will only return issues belonging to this project.
 func (c *Client) WithProjectID(projectID string) *Client {
 	return &Client{
-		APIKey:     c.APIKey,
-		TeamID:     c.TeamID,
-		ProjectID:  projectID,
-		Endpoint:   c.Endpoint,
-		HTTPClient: c.HTTPClient,
+		APIKey:         c.APIKey,
+		TeamID:         c.TeamID,
+		ProjectID:      projectID,
+		Endpoint:       c.Endpoint,
+		HTTPClient:     c.HTTPClient,
+		RateLimitFloor: c.RateLimitFloor,
 	}
 }
 
+// WithRateLimitFloor returns a new client with the specified rate-limit circuit-breaker floor.
+// When remaining API quota drops below this value, Execute returns ErrRateLimitExhausted.
+func (c *Client) WithRateLimitFloor(floor int) *Client {
+	return &Client{
+		APIKey:         c.APIKey,
+		TeamID:         c.TeamID,
+		ProjectID:      c.ProjectID,
+		Endpoint:       c.Endpoint,
+		HTTPClient:     c.HTTPClient,
+		RateLimitFloor: floor,
+	}
+}
+
+// rateLimitFloor returns the effective circuit-breaker floor, using the
+// default when the client has no explicit override.
+func (c *Client) rateLimitFloor() int {
+	if c.RateLimitFloor > 0 {
+		return c.RateLimitFloor
+	}
+	return DefaultRateLimitFloor
+}
+
+// parseRetryAfter parses the Retry-After header value, which may be an
+// integer number of seconds or an HTTP-date. Returns zero duration if
+// the header is absent or unparseable.
+//
+// The integer form ("120") is tried first. For the HTTP-date form,
+// http.ParseTime is used, which covers RFC 1123, RFC 850, and ANSI C
+// formats as required by RFC 9110 §10.2.3.
+func parseRetryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(t); delay > 0 {
+			return delay
+		}
+	}
+	return 0
+}
+
+// parseRateLimitHeaders extracts rate-limit metadata from HTTP response headers.
+func parseRateLimitHeaders(h http.Header) RateLimitInfo {
+	info := RateLimitInfo{RequestsRemaining: -1}
+	info.RetryAfter = parseRetryAfter(h.Get("Retry-After"))
+	if v := h.Get("X-RateLimit-Requests-Remaining"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			info.RequestsRemaining = n
+		}
+	}
+	if v := h.Get("X-RateLimit-Requests-Reset"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			info.RequestsReset = t
+		}
+	}
+	return info
+}
+
 // Execute sends a GraphQL request to the Linear API.
-// Handles rate limiting with exponential backoff.
+// Handles rate limiting with server-hint-aware backoff: when a 429 response
+// includes a Retry-After header, that delay is preferred over the computed
+// exponential backoff. A circuit breaker returns ErrRateLimitExhausted when
+// remaining quota drops below the configured floor (linear.rate_limit_floor).
 func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMessage, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -182,10 +250,27 @@ func (c *Client) Execute(ctx context.Context, req *GraphQLRequest) (json.RawMess
 			continue
 		}
 
+		rl := parseRateLimitHeaders(resp.Header)
+
+		// Circuit breaker: stop early when remaining quota is critically low.
+		if rl.RequestsRemaining >= 0 && rl.RequestsRemaining < c.rateLimitFloor() {
+			return nil, &ErrRateLimitExhausted{
+				Remaining: rl.RequestsRemaining,
+				Floor:     c.rateLimitFloor(),
+				ResetsAt:  rl.RequestsReset,
+			}
+		}
+
 		if resp.StatusCode == http.StatusTooManyRequests {
-			delay := RetryDelay * time.Duration(1<<attempt) // Exponential backoff
-			if half := int64(delay / 2); half > 0 {
-				delay += time.Duration(rand.Int64N(half)) //nolint:gosec // G404: jitter for retry backoff does not need crypto rand
+			delay := rl.RetryAfter
+			if delay == 0 {
+				delay = RetryDelay * time.Duration(1<<attempt) // Exponential backoff
+				if half := int64(delay / 2); half > 0 {
+					delay += time.Duration(rand.Int64N(half)) //nolint:gosec // G404: jitter for retry backoff does not need crypto rand
+				}
+			} else if delay > MaxRetryAfterDelay {
+				fmt.Fprintf(os.Stderr, "linear: Retry-After %v exceeds cap %v; using cap\n", delay, MaxRetryAfterDelay)
+				delay = MaxRetryAfterDelay
 			}
 			lastErr = fmt.Errorf("rate limited (attempt %d/%d), retrying after %v", attempt+1, MaxRetries+1, delay)
 			select {

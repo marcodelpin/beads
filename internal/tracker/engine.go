@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,6 +22,21 @@ import (
 
 // syncTracer is the OTel tracer for tracker sync spans.
 var syncTracer = otel.Tracer("github.com/steveyegge/beads/tracker")
+
+// rateLimitExhaustedError is implemented by tracker errors (e.g.
+// linear.ErrRateLimitExhausted) that signal the API quota floor has been
+// hit and the sync loop should abort immediately rather than cascade the
+// error across every remaining issue.
+type rateLimitExhaustedError interface {
+	RateLimitExhausted() bool
+}
+
+// isRateLimitExhausted reports whether err (or any error it wraps) signals
+// that the API rate-limit circuit breaker has tripped.
+func isRateLimitExhausted(err error) bool {
+	var rle rateLimitExhaustedError
+	return errors.As(err, &rle) && rle.RateLimitExhausted()
+}
 
 // PullHooks contains optional callbacks that customize pull (import) behavior.
 // Trackers opt into behaviors by setting the hooks they need.
@@ -903,6 +919,9 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 			// Create in external tracker
 			created, err := e.Tracker.CreateIssue(ctx, pushIssue)
 			if err != nil {
+				if isRateLimitExhausted(err) {
+					return stats, fmt.Errorf("sync aborted: %w", err)
+				}
 				e.warn("Failed to create %s in %s: %v", issue.ID, e.Tracker.DisplayName(), err)
 				stats.Errors++
 				if isRateLimitedErr(err) {
@@ -933,6 +952,9 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 			// Check if update is needed
 			if !forceIDs[issue.ID] {
 				extIssue, err := e.Tracker.FetchIssue(ctx, extID)
+				if isRateLimitExhausted(err) {
+					return stats, fmt.Errorf("sync aborted: %w", err)
+				}
 				if err == nil && extIssue != nil {
 					// ContentEqual hook: content-hash dedup to skip unnecessary API calls
 					if e.PushHooks != nil && e.PushHooks.ContentEqual != nil {
@@ -948,6 +970,9 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 			}
 
 			if _, err := e.Tracker.UpdateIssue(ctx, extID, pushIssue); err != nil {
+				if isRateLimitExhausted(err) {
+					return stats, fmt.Errorf("sync aborted: %w", err)
+				}
 				e.warn("Failed to update %s in %s: %v", issue.ID, e.Tracker.DisplayName(), err)
 				stats.Errors++
 				if isRateLimitedErr(err) {
