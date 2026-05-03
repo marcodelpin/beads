@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/steveyegge/beads"
 	internalbeads "github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/linear"
 )
 
 var (
@@ -73,6 +75,10 @@ Config options:
 			// This enables cross-platform hook integration
 			os.Exit(0)
 		}
+
+		// Auto-pull from Linear if data is stale and LINEAR_API_KEY is set.
+		// Runs before orientation output so agents start with fresh data.
+		maybePullStaleLinearData(beadsDir)
 
 		// Detect MCP mode (unless overridden by flags)
 		mcpMode := isMCPActive()
@@ -277,6 +283,53 @@ func formatMemoriesForPrime(compact bool) string {
 		}
 	}
 	return sb.String()
+}
+
+// maybePullStaleLinearData checks if Linear data is stale and auto-pulls
+// if LINEAR_API_KEY is available. Called during prime before orientation output.
+func maybePullStaleLinearData(beadsDir string) {
+	apiKey := os.Getenv("LINEAR_API_KEY")
+	if apiKey == "" {
+		if yamlKey := config.GetString("linear.api_key"); yamlKey == "" {
+			return
+		}
+	}
+
+	if !linear.IsPullStale(beadsDir, linear.DefaultStaleThreshold) {
+		return
+	}
+
+	info := linear.GetStalenessInfo(beadsDir, linear.DefaultStaleThreshold)
+	ageStr := "unknown"
+	if !info.NeverPulled {
+		ageStr = linear.FormatAge(info.Age)
+	}
+
+	// Shell out to bd linear sync --pull --json to perform the pull.
+	// Prime skips DB init, so we can't use the store directly.
+	syncCmd := exec.Command("bd", "linear", "sync", "--pull", "--json")
+	syncCmd.Env = os.Environ()
+	output, err := syncCmd.Output()
+	if err != nil {
+		return
+	}
+
+	var result struct {
+		Stats struct {
+			Pulled int `json:"pulled"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return
+	}
+
+	if result.Stats.Pulled > 0 {
+		if info.NeverPulled {
+			fmt.Fprintf(os.Stderr, "↻ Pulled %d updates from Linear (first pull)\n", result.Stats.Pulled)
+		} else {
+			fmt.Fprintf(os.Stderr, "↻ Pulled %d updates from Linear (data was %s stale)\n", result.Stats.Pulled, ageStr)
+		}
+	}
 }
 
 // outputMCPContext outputs minimal context for MCP users

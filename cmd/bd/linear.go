@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
@@ -83,9 +84,15 @@ var linearSyncCmd = &cobra.Command{
 	Long: `Synchronize issues between beads and Linear.
 
 Modes:
-  --pull         Import issues from Linear into beads
-  --push         Export issues from beads to Linear
-  (no flags)     Bidirectional sync: pull then push, with conflict resolution
+  --pull              Import issues from Linear into beads
+  --push              Export issues from beads to Linear
+  --pull-if-stale     Pull only if data is stale (skip if fresh)
+  (no flags)          Bidirectional sync: pull then push, with conflict resolution
+
+Staleness (--pull-if-stale):
+  --threshold 20m     How old data must be before pulling (default 20m)
+  A 5-minute debounce prevents agent loops: if a pull completed within 5 minutes,
+  data is always treated as fresh regardless of the threshold.
 
 Team Selection:
   --team ID1,ID2  Override configured team IDs for this sync
@@ -107,6 +114,8 @@ Conflict Resolution:
 
 Examples:
   bd linear sync --pull                         # Import from Linear
+  bd linear sync --pull-if-stale                # Pull only if data is stale
+  bd linear sync --pull-if-stale --threshold 5m # Pull if older than 5 minutes
   bd linear sync --pull --relations             # Import Linear blocking relations as bd deps
   bd linear sync --push --create-only           # Push new issues only
   bd linear sync --push --type=task,feature     # Push only tasks and features
@@ -158,6 +167,8 @@ func init() {
 	linearSyncCmd.Flags().String("parent", "", "Limit push to this beads ticket and its descendants")
 	linearSyncCmd.Flags().StringSlice("team", nil, "Team ID(s) to sync (overrides configured team_id/team_ids)")
 	linearSyncCmd.Flags().Bool("relations", false, "Import Linear relations as bd dependencies when pulling")
+	linearSyncCmd.Flags().Bool("pull-if-stale", false, "Pull only if Linear data is stale (skip if fresh)")
+	linearSyncCmd.Flags().Duration("threshold", linear.DefaultStaleThreshold, "Staleness threshold for --pull-if-stale (default 20m)")
 	linearSyncCmd.Flags().Bool("no-wait", false, "Fail immediately if another sync is running instead of waiting")
 	registerSelectiveSyncFlags(linearSyncCmd)
 
@@ -180,7 +191,48 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	includeEphemeral, _ := cmd.Flags().GetBool("include-ephemeral")
 	cliTeams, _ := cmd.Flags().GetStringSlice("team")
 	relations, _ := cmd.Flags().GetBool("relations")
+	pullIfStale, _ := cmd.Flags().GetBool("pull-if-stale")
+	threshold, _ := cmd.Flags().GetDuration("threshold")
 	noWait, _ := cmd.Flags().GetBool("no-wait")
+
+	// Handle --pull-if-stale: skip pull if data is fresh
+	if pullIfStale {
+		beadsDir := resolveBeadsDirForStaleness()
+		if beadsDir != "" {
+			// Debounce: if a pull completed within 5 minutes, always fresh
+			if linear.IsWithinDebounce(beadsDir) {
+				info := linear.GetStalenessInfo(beadsDir, threshold)
+				if jsonOutput {
+					outputJSON(map[string]interface{}{
+						"is_fresh":  true,
+						"last_pull": info.LastPull.Format(time.RFC3339),
+						"age":       linear.FormatAge(info.Age),
+						"skipped":   true,
+					})
+				} else {
+					fmt.Printf("Linear data is fresh (last pull %s ago, within debounce)\n", linear.FormatAge(info.Age))
+				}
+				return
+			}
+
+			if !linear.IsPullStale(beadsDir, threshold) {
+				info := linear.GetStalenessInfo(beadsDir, threshold)
+				if jsonOutput {
+					outputJSON(map[string]interface{}{
+						"is_fresh":  true,
+						"last_pull": info.LastPull.Format(time.RFC3339),
+						"age":       linear.FormatAge(info.Age),
+						"skipped":   true,
+					})
+				} else {
+					fmt.Printf("Linear data is fresh (last pull %s ago)\n", linear.FormatAge(info.Age))
+				}
+				return
+			}
+		}
+		// Data is stale — proceed with pull
+		pull = true
+	}
 
 	// Acquire per-workspace concurrency lock to serialize sync invocations.
 	if lockDir := beads.FindBeadsDir(); lockDir != "" {
@@ -303,9 +355,27 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Record successful pull timestamp
+	if (pull || !push) && !dryRun {
+		if beadsDir := resolveBeadsDirForStaleness(); beadsDir != "" {
+			_ = linear.WriteLastPullTimestamp(beadsDir)
+		}
+	}
+
 	// Output results
 	if jsonOutput {
-		outputJSON(result)
+		if pullIfStale {
+			// Augment JSON output with staleness info
+			resultMap := map[string]interface{}{
+				"stats":    result.Stats,
+				"warnings": result.Warnings,
+				"is_fresh": true,
+				"skipped":  false,
+			}
+			outputJSON(resultMap)
+		} else {
+			outputJSON(result)
+		}
 	} else if dryRun {
 		fmt.Println("\n✓ Dry run complete (no changes made)")
 	} else {
@@ -570,6 +640,18 @@ func runLinearTeams(cmd *cobra.Command, args []string) {
 	fmt.Println("To configure:")
 	fmt.Println("  bd config set linear.team_id \"<ID>\"")
 	fmt.Println("  bd config set linear.team_ids \"<ID1>,<ID2>\"  # multiple teams")
+}
+
+// resolveBeadsDirForStaleness returns the active beads directory for
+// staleness tracking. Falls back to BEADS_DIR env, then dbPath resolution.
+func resolveBeadsDirForStaleness() string {
+	if dir := os.Getenv("BEADS_DIR"); dir != "" {
+		return dir
+	}
+	if dbPath != "" {
+		return resolveCommandBeadsDir(dbPath)
+	}
+	return ""
 }
 
 // uuidRegex matches valid UUID format (with or without hyphens).
