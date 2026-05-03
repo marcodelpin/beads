@@ -786,6 +786,10 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Ambient staleness warning: if Linear data is stale, warn once per
+		// shell session on stderr. Only fires when LINEAR_API_KEY is set.
+		maybeWarnLinearStaleness(cmd)
+
 		if skipsStoreInit {
 			return
 		}
