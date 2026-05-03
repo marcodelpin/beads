@@ -681,7 +681,7 @@ func getLinearClient(ctx context.Context) (*linear.Client, error) {
 		}
 		// Apply optional rate-limit circuit-breaker floor.
 		// Readable/settable via `bd config get/set linear.rate_limit_floor`.
-		// Also honoured via the LINEAR_RATE_LIMIT_FLOOR environment variable.
+		// Also honored via the LINEAR_RATE_LIMIT_FLOOR environment variable.
 		floorStr, _ := getLinearConfig(ctx, "linear.rate_limit_floor")
 		if floorStr == "" {
 			floorStr = os.Getenv("LINEAR_RATE_LIMIT_FLOOR")
