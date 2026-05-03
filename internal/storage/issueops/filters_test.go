@@ -240,7 +240,6 @@ func TestBuildIssueFilterClauses_DateFilters(t *testing.T) {
 	}
 }
 
-
 func TestBuildIssueFilterClauses_DeferredIncludesStatus(t *testing.T) {
 	t.Parallel()
 	clauses, args, err := BuildIssueFilterClauses("", types.IssueFilter{Deferred: true}, IssuesFilterTables)
