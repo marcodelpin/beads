@@ -669,6 +669,8 @@ func TestInstallClaudeErrors(t *testing.T) {
 }
 
 func TestCheckClaudeScenarios(t *testing.T) {
+	stubDetectRenderOpts(t)
+
 	t.Run("global hooks", func(t *testing.T) {
 		env, stdout, _ := newClaudeTestEnv(t)
 		writeSettings(t, globalSettingsPath(env.homeDir), map[string]interface{}{
@@ -985,6 +987,7 @@ func TestInstallClaudeWritesHooksWithoutPlugin(t *testing.T) {
 }
 
 func TestCheckClaudePluginManaged(t *testing.T) {
+	stubDetectRenderOpts(t)
 	env, stdout, _ := newClaudeTestEnv(t)
 
 	// Plugin enabled but no hooks in settings files

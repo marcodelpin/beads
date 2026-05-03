@@ -1249,7 +1249,7 @@ type IssueFilter struct {
 	ExcludeTypes []IssueType // Exclude issues with these types
 
 	// Time-based scheduling filters (GH#820)
-	Deferred    bool       // Filter issues with defer_until set (any value)
+	Deferred    bool       // Filter issues that are scheduled later: defer_until set OR status is deferred
 	DeferAfter  *time.Time // Filter issues with defer_until > this time
 	DeferBefore *time.Time // Filter issues with defer_until < this time
 	DueAfter    *time.Time // Filter issues with due_at > this time
