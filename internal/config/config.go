@@ -195,6 +195,7 @@ func Initialize() error {
 	v.SetDefault("federation.remote", "")                          // e.g., dolthub://org/beads, gs://bucket/beads, s3://bucket/beads, az://account.blob.core.windows.net/container/beads
 	v.SetDefault("federation.sovereignty", "")                     // T1 | T2 | T3 | T4 (empty = no restriction)
 	v.SetDefault("federation.allowed-remote-patterns", []string{}) // glob patterns restricting allowed remote URLs (enterprise lockdown)
+	v.SetDefault("federation.exclude_types", []string{"wisp"})     // issue types excluded from federation push (privacy filter)
 
 	// Push configuration defaults
 	v.SetDefault("no-push", false)
@@ -861,15 +862,17 @@ func GetIdentity(flagValue string) string {
 
 // FederationConfig holds the federation (Dolt remote) configuration.
 type FederationConfig struct {
-	Remote      string      // dolthub://org/beads, gs://bucket/beads, s3://bucket/beads
-	Sovereignty Sovereignty // T1, T2, T3, T4
+	Remote       string      // dolthub://org/beads, gs://bucket/beads, s3://bucket/beads
+	Sovereignty  Sovereignty // T1, T2, T3, T4
+	ExcludeTypes []string    // issue types excluded from federation push (e.g. ["wisp"])
 }
 
 // GetFederationConfig returns the current federation configuration.
 func GetFederationConfig() FederationConfig {
 	return FederationConfig{
-		Remote:      GetString("federation.remote"),
-		Sovereignty: GetSovereignty(),
+		Remote:       GetString("federation.remote"),
+		Sovereignty:  GetSovereignty(),
+		ExcludeTypes: GetStringSlice("federation.exclude_types"),
 	}
 }
 
