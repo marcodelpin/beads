@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	lastPullFileName     = "last_pull"
+	lastPullFileName      = "last_pull"
 	DefaultStaleThreshold = 20 * time.Minute
-	debounceThreshold    = 5 * time.Minute
+	debounceThreshold     = 5 * time.Minute
 )
 
 // WriteLastPullTimestamp writes the current time as ISO 8601 to .beads/last_pull.
@@ -21,7 +21,7 @@ func WriteLastPullTimestamp(beadsDir string) error {
 	}
 	path := filepath.Join(beadsDir, lastPullFileName)
 	ts := time.Now().UTC().Format(time.RFC3339)
-	return os.WriteFile(path, []byte(ts+"\n"), 0644)
+	return os.WriteFile(path, []byte(ts+"\n"), 0600)
 }
 
 // ReadLastPullTimestamp reads the last pull timestamp from .beads/last_pull.
@@ -31,7 +31,7 @@ func ReadLastPullTimestamp(beadsDir string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("beadsDir must not be empty")
 	}
 	path := filepath.Join(beadsDir, lastPullFileName)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is constrained to the beads directory.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return time.Time{}, nil
@@ -61,10 +61,10 @@ func IsPullStale(beadsDir string, threshold time.Duration) bool {
 
 // StalenessInfo holds computed staleness details for display purposes.
 type StalenessInfo struct {
-	LastPull  time.Time
-	Age       time.Duration
-	IsFresh   bool
-	IsStale   bool
+	LastPull    time.Time
+	Age         time.Duration
+	IsFresh     bool
+	IsStale     bool
 	NeverPulled bool
 }
 
@@ -77,9 +77,9 @@ func GetStalenessInfo(beadsDir string, threshold time.Duration) StalenessInfo {
 	age := time.Since(lastPull)
 	return StalenessInfo{
 		LastPull: lastPull,
-		Age:     age,
-		IsFresh: age <= threshold,
-		IsStale: age > threshold,
+		Age:      age,
+		IsFresh:  age <= threshold,
+		IsStale:  age > threshold,
 	}
 }
 

@@ -57,5 +57,5 @@ func maybeWarnLinearStaleness(cmd *cobra.Command) {
 	}
 
 	// Write session marker to suppress future warnings in this shell
-	_ = os.WriteFile(markerPath, []byte("1"), 0644)
+	_ = os.WriteFile(markerPath, []byte("1"), 0600)
 }
