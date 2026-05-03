@@ -259,7 +259,8 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 	}
 
 	if filter.Deferred {
-		whereClauses = append(whereClauses, "defer_until IS NOT NULL")
+		whereClauses = append(whereClauses, "(defer_until IS NOT NULL OR status = ?)")
+		args = append(args, types.StatusDeferred)
 	}
 	if filter.Overdue {
 		whereClauses = append(whereClauses, "due_at IS NOT NULL AND due_at < ? AND status != ?")
