@@ -857,11 +857,6 @@ func TestExportExcludesMemoriesByDefault(t *testing.T) {
 	exportScrub = false
 	exportNoMemories = false
 	exportIncludeMemories = false
-	t.Cleanup(func() {
-		exportOutput = ""
-		exportAll = false
-		exportIncludeMemories = false
-	})
 
 	if err := runExport(nil, nil); err != nil {
 		t.Fatalf("runExport (default): %v", err)
@@ -903,5 +898,126 @@ func TestExportExcludesMemoriesByDefault(t *testing.T) {
 	}
 	if n := countMemoryLines(allData); n != 2 {
 		t.Errorf("--all export: expected 2 memory lines, got %d", n)
+	}
+}
+
+func TestExportExcludesWispsByDefault(t *testing.T) {
+	// GH#3649: bd export must exclude ephemeral wisps by default.
+	// Wisps are private/transient and must not reach git history.
+	// Only --all should include them.
+	if testDoltServerPort == 0 {
+		t.Skip("Dolt test server not available")
+	}
+	if testutil.DoltContainerCrashed() {
+		t.Skipf("Dolt test server crashed: %v", testutil.DoltContainerCrashError())
+	}
+
+	ensureTestMode(t)
+	saved := saveAndRestoreGlobals(t)
+	_ = saved
+
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	dbName := uniqueTestDBName(t)
+	testDBPath := filepath.Join(beadsDir, "dolt")
+	writeTestMetadata(t, testDBPath, dbName)
+	s := newTestStore(t, testDBPath)
+	store = s
+	storeMutex.Lock()
+	storeActive = true
+	storeMutex.Unlock()
+	t.Cleanup(func() {
+		store = nil
+		storeMutex.Lock()
+		storeActive = false
+		storeMutex.Unlock()
+	})
+
+	ctx := context.Background()
+	rootCtx = ctx
+
+	// Create persistent issues.
+	for i := 1; i <= 2; i++ {
+		id := fmt.Sprintf("wispexcl-regular-%d", i)
+		if _, err := s.DB().ExecContext(ctx,
+			`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, fmt.Sprintf("Persistent issue %d", i), "", "", "", "", "open", 2, "task"); err != nil {
+			t.Fatalf("insert persistent issue %d: %v", i, err)
+		}
+	}
+
+	// Create ephemeral wisps via the store API (routes to wisps table).
+	for i := 1; i <= 3; i++ {
+		wisp := &types.Issue{
+			Title:     fmt.Sprintf("Private wisp %d", i),
+			Status:    types.StatusOpen,
+			Priority:  2,
+			IssueType: types.TypeTask,
+			Ephemeral: true,
+		}
+		if err := s.CreateIssue(ctx, wisp, "test"); err != nil {
+			t.Fatalf("CreateIssue (wisp %d): %v", i, err)
+		}
+	}
+
+	// Default export (no --all): wisps must be excluded.
+	exportFile := filepath.Join(tmpDir, "default_export.jsonl")
+	exportOutput = exportFile
+	exportAll = false
+	exportIncludeInfra = false
+	exportScrub = false
+	exportNoMemories = true
+	t.Cleanup(func() {
+		exportOutput = ""
+		exportAll = false
+		exportNoMemories = false
+	})
+
+	if err := runExport(nil, nil); err != nil {
+		t.Fatalf("runExport (default): %v", err)
+	}
+
+	data, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read default export: %v", err)
+	}
+	defaultLines := splitJSONL(data)
+	for _, line := range defaultLines {
+		var rec map[string]interface{}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if ephemeral, ok := rec["ephemeral"].(bool); ok && ephemeral {
+			t.Errorf("default export contains ephemeral wisp: %s", rec["id"])
+		}
+	}
+	if len(defaultLines) != 2 {
+		t.Errorf("default export: expected 2 persistent issues, got %d lines", len(defaultLines))
+	}
+
+	// --all export: wisps must be included.
+	allFile := filepath.Join(tmpDir, "all_export.jsonl")
+	exportOutput = allFile
+	exportAll = true
+	if err := runExport(nil, nil); err != nil {
+		t.Fatalf("runExport (--all): %v", err)
+	}
+	allData, err := os.ReadFile(allFile)
+	if err != nil {
+		t.Fatalf("read --all export: %v", err)
+	}
+	allLines := splitJSONL(allData)
+	if len(allLines) != 5 {
+		t.Errorf("--all export: expected 5 issues (2 persistent + 3 wisps), got %d", len(allLines))
 	}
 }

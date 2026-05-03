@@ -161,8 +161,11 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 	isTemplate := false
 	filter.IsTemplate = &isTemplate
 
-	// Fetch all issues (persistent + wisps). SearchIssues with Ephemeral=nil
-	// already includes wisps via ID-based dedup (GH#3352).
+	// Exclude ephemeral wisps — they are private/transient and must not
+	// reach git history or external integrations (GH#3649).
+	persistentOnly := false
+	filter.Ephemeral = &persistentOnly
+
 	issues, err := store.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to search issues: %w", err)

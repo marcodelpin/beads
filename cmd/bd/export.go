@@ -116,10 +116,14 @@ func runExport(cmd *cobra.Command, args []string) error {
 		filter.IsTemplate = &isTemplate
 	}
 
-	// Fetch all issues (persistent + wisps). SearchIssues with Ephemeral=nil
-	// already queries both the issues and wisps tables with ID-based dedup
-	// (see issueops/search.go). A separate Ephemeral=true query would cause
-	// every wisp to appear twice in the output (GH#3352).
+	// Exclude ephemeral wisps by default — they are private/transient and
+	// must not reach git history or external integrations (GH#3649).
+	// --all overrides to include everything.
+	if !exportAll {
+		persistentOnly := false
+		filter.Ephemeral = &persistentOnly
+	}
+
 	issues, err := store.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return fmt.Errorf("failed to search issues: %w", err)
