@@ -598,6 +598,7 @@ func TestExportMemoryDeterminism(t *testing.T) {
 		exportIncludeInfra = false
 		exportScrub = false
 		exportNoMemories = false
+		exportIncludeMemories = true
 		if err := runExport(nil, nil); err != nil {
 			t.Fatalf("runExport(%s): %v", path, err)
 		}
@@ -770,6 +771,133 @@ func TestExportNoDuplicateWisps(t *testing.T) {
 	expectedTotal := 6
 	if len(seenIDs) != expectedTotal {
 		t.Errorf("expected %d unique issues in export, got %d", expectedTotal, len(seenIDs))
+	}
+}
+
+func TestExportExcludesMemoriesByDefault(t *testing.T) {
+	// GH#3650: bd export must exclude memories by default because they may
+	// contain sensitive agent context. Only --include-memories or --all
+	// should include them.
+	if testDoltServerPort == 0 {
+		t.Skip("Dolt test server not available")
+	}
+	if testutil.DoltContainerCrashed() {
+		t.Skipf("Dolt test server crashed: %v", testutil.DoltContainerCrashError())
+	}
+
+	ensureTestMode(t)
+	saved := saveAndRestoreGlobals(t)
+	_ = saved
+
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	dbName := uniqueTestDBName(t)
+	testDBPath := filepath.Join(beadsDir, "dolt")
+	writeTestMetadata(t, testDBPath, dbName)
+	s := newTestStore(t, testDBPath)
+	store = s
+	storeMutex.Lock()
+	storeActive = true
+	storeMutex.Unlock()
+	t.Cleanup(func() {
+		store = nil
+		storeMutex.Lock()
+		storeActive = false
+		storeMutex.Unlock()
+	})
+
+	ctx := context.Background()
+	rootCtx = ctx
+
+	// Create a persistent issue.
+	if _, err := s.DB().ExecContext(ctx,
+		`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"memexcl-1", "Regular issue", "", "", "", "", "open", 2, "task"); err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+
+	// Seed memories.
+	for _, mk := range []string{"secret-api-pattern", "debug-session-notes"} {
+		storageKey := "kv.memory." + mk
+		if err := s.SetConfig(ctx, storageKey, "sensitive-value-for-"+mk); err != nil {
+			t.Fatalf("SetConfig(%s): %v", storageKey, err)
+		}
+	}
+
+	countMemoryLines := func(data []byte) int {
+		count := 0
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		for scanner.Scan() {
+			var rec map[string]interface{}
+			if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+				continue
+			}
+			if rec["_type"] == "memory" {
+				count++
+			}
+		}
+		return count
+	}
+
+	// Default export: memories must be excluded.
+	defaultFile := filepath.Join(tmpDir, "default_export.jsonl")
+	exportOutput = defaultFile
+	exportAll = false
+	exportIncludeInfra = false
+	exportScrub = false
+	exportNoMemories = false
+	exportIncludeMemories = false
+
+	if err := runExport(nil, nil); err != nil {
+		t.Fatalf("runExport (default): %v", err)
+	}
+	defaultData, err := os.ReadFile(defaultFile)
+	if err != nil {
+		t.Fatalf("read default export: %v", err)
+	}
+	if n := countMemoryLines(defaultData); n != 0 {
+		t.Errorf("default export: expected 0 memory lines, got %d", n)
+	}
+
+	// --include-memories: memories must appear.
+	includeFile := filepath.Join(tmpDir, "include_export.jsonl")
+	exportOutput = includeFile
+	exportIncludeMemories = true
+	if err := runExport(nil, nil); err != nil {
+		t.Fatalf("runExport (--include-memories): %v", err)
+	}
+	includeData, err := os.ReadFile(includeFile)
+	if err != nil {
+		t.Fatalf("read --include-memories export: %v", err)
+	}
+	if n := countMemoryLines(includeData); n != 2 {
+		t.Errorf("--include-memories export: expected 2 memory lines, got %d", n)
+	}
+
+	// --all: memories must also appear.
+	allFile := filepath.Join(tmpDir, "all_export.jsonl")
+	exportOutput = allFile
+	exportAll = true
+	exportIncludeMemories = false
+	if err := runExport(nil, nil); err != nil {
+		t.Fatalf("runExport (--all): %v", err)
+	}
+	allData, err := os.ReadFile(allFile)
+	if err != nil {
+		t.Fatalf("read --all export: %v", err)
+	}
+	if n := countMemoryLines(allData); n != 2 {
+		t.Errorf("--all export: expected 2 memory lines, got %d", n)
 	}
 }
 
