@@ -811,15 +811,24 @@ func (d DependencyType) IsValid() bool {
 	return len(d) > 0 && len(d) <= 50
 }
 
+// WellKnownDependencyTypes returns the built-in dependency types accepted by
+// user-facing commands that intentionally reject custom dependency types.
+func WellKnownDependencyTypes() []DependencyType {
+	return []DependencyType{
+		DepBlocks, DepParentChild, DepConditionalBlocks, DepWaitsFor, DepRelated, DepDiscoveredFrom,
+		DepRepliesTo, DepRelatesTo, DepDuplicates, DepSupersedes,
+		DepAuthoredBy, DepAssignedTo, DepApprovedBy, DepAttests, DepTracks,
+		DepUntil, DepCausedBy, DepValidates, DepDelegatedFrom,
+	}
+}
+
 // IsWellKnown checks if the dependency type is a well-known constant.
 // Returns false for custom/user-defined types (which are still valid).
 func (d DependencyType) IsWellKnown() bool {
-	switch d {
-	case DepBlocks, DepParentChild, DepConditionalBlocks, DepWaitsFor, DepRelated, DepDiscoveredFrom,
-		DepRepliesTo, DepRelatesTo, DepDuplicates, DepSupersedes,
-		DepAuthoredBy, DepAssignedTo, DepApprovedBy, DepAttests, DepTracks,
-		DepUntil, DepCausedBy, DepValidates, DepDelegatedFrom:
-		return true
+	for _, wellKnown := range WellKnownDependencyTypes() {
+		if d == wellKnown {
+			return true
+		}
 	}
 	return false
 }
@@ -1127,9 +1136,10 @@ func BuildReadyExplanation(
 // TreeNode represents a node in a dependency tree
 type TreeNode struct {
 	Issue
-	Depth     int    `json:"depth"`
-	ParentID  string `json:"parent_id"`
-	Truncated bool   `json:"truncated"`
+	Depth          int            `json:"depth"`
+	ParentID       string         `json:"parent_id"`
+	EdgeFromParent DependencyType `json:"edge_from_parent,omitempty"`
+	Truncated      bool           `json:"truncated"`
 }
 
 // MoleculeProgressStats provides efficient progress info for large molecules.

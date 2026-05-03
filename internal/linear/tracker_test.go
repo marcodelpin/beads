@@ -2,10 +2,12 @@ package linear
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
@@ -258,5 +260,127 @@ func TestTrackerInitNoAuthFails(t *testing.T) {
 	}
 	if !strings.Contains(msg, "LINEAR_API_KEY") {
 		t.Errorf("error should mention LINEAR_API_KEY; got: %s", msg)
+	}
+}
+
+// TestCreateIssueNoDoubleFormatDescription verifies that Tracker.CreateIssue passes
+// issue.Description directly to Linear without calling BuildLinearDescription a
+// second time. The sync engine's FormatDescription hook already builds the full
+// description (merging AcceptanceCriteria/Design/Notes) before calling CreateIssue;
+// calling BuildLinearDescription inside CreateIssue would duplicate those sections.
+func TestCreateIssueNoDoubleFormatDescription(t *testing.T) {
+	var capturedDescription string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req GraphQLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(req.Query, "TeamStates") || strings.Contains(req.Query, "team(") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"team": map[string]interface{}{
+						"id": "team-1",
+						"states": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{"id": "state-open", "name": "Todo", "type": "unstarted"},
+							},
+						},
+					},
+				},
+			})
+			return
+		}
+
+		if strings.Contains(req.Query, "issueCreate") {
+			input, _ := req.Variables["input"].(map[string]interface{})
+			capturedDescription, _ = input["description"].(string)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issueCreate": map[string]interface{}{
+						"success": true,
+						"issue": map[string]interface{}{
+							"id":          "new-id",
+							"identifier":  "TEAM-1",
+							"title":       "Test",
+							"description": capturedDescription,
+							"url":         "https://linear.app/team/issue/TEAM-1",
+							"state":       map[string]interface{}{"id": "state-open", "name": "Todo", "type": "unstarted"},
+							"createdAt":   "2026-05-02T00:00:00Z",
+							"updatedAt":   "2026-05-02T00:00:00Z",
+						},
+					},
+				},
+			})
+			return
+		}
+
+		if strings.Contains(req.Query, "FindByDescription") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"issues": map[string]interface{}{
+						"nodes":    []interface{}{},
+						"pageInfo": map[string]interface{}{"hasNextPage": false, "endCursor": ""},
+					},
+				},
+			})
+			return
+		}
+
+		t.Logf("unhandled query: %s", req.Query)
+		http.Error(w, "unexpected query", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	tr := &Tracker{
+		teamIDs: []string{"team-1"},
+		clients: map[string]*Client{
+			"team-1": NewClient("key", "team-1").WithEndpoint(server.URL),
+		},
+		config: func() *MappingConfig {
+			cfg := DefaultMappingConfig()
+			cfg.ExplicitStateMap["todo"] = "open"
+			return cfg
+		}(),
+	}
+
+	createdAt := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+
+	// Simulate what the sync engine does: Description is already the fully
+	// formatted output of BuildLinearDescription (base + AC/Design/Notes merged in).
+	formattedDesc := "base description\n\n## Acceptance Criteria\ncriteria here\n\n## Design\ndesign here"
+	issue := &types.Issue{
+		ID:                 "bead-1",
+		Title:              "Test",
+		Description:        formattedDesc, // pre-formatted by sync engine
+		AcceptanceCriteria: "criteria here",
+		Design:             "design here",
+		Status:             types.StatusOpen,
+		CreatedBy:          "dev@test.com",
+		CreatedAt:          createdAt,
+	}
+
+	_, err := tr.CreateIssue(t.Context(), issue)
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	// The description sent to Linear must be exactly the pre-formatted one.
+	// If BuildLinearDescription were called inside CreateIssue, the AC and Design
+	// sections would be appended a second time.
+	if strings.Count(capturedDescription, "## Acceptance Criteria") != 1 {
+		t.Errorf("description has %d '## Acceptance Criteria' sections, want 1 (double-format bug)\ndesc: %q",
+			strings.Count(capturedDescription, "## Acceptance Criteria"), capturedDescription)
+	}
+	if strings.Count(capturedDescription, "## Design") != 1 {
+		t.Errorf("description has %d '## Design' sections, want 1 (double-format bug)\ndesc: %q",
+			strings.Count(capturedDescription, "## Design"), capturedDescription)
+	}
+	if !strings.Contains(capturedDescription, formattedDesc) {
+		t.Errorf("description does not contain expected formatted content\ngot:  %q\nwant: %q",
+			capturedDescription, formattedDesc)
 	}
 }

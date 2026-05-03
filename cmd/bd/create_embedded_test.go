@@ -125,6 +125,27 @@ func assertDepExists(t *testing.T, beadsDir, database, issueID, dependsOnID stri
 	}
 }
 
+func assertDepExistsWithType(t *testing.T, beadsDir, database, issueID, dependsOnID, expectedType string) {
+	t.Helper()
+	dataDir := filepath.Join(beadsDir, "embeddeddolt")
+	db, cleanup, err := embeddeddolt.OpenSQL(t.Context(), dataDir, database, "main")
+	if err != nil {
+		t.Fatalf("OpenSQL: %v", err)
+	}
+	defer cleanup()
+
+	var depType string
+	err = db.QueryRowContext(t.Context(),
+		"SELECT type FROM dependencies WHERE issue_id = ? AND depends_on_id = ?",
+		issueID, dependsOnID).Scan(&depType)
+	if err != nil {
+		t.Fatalf("query dependencies for %s -> %s: %v", issueID, dependsOnID, err)
+	}
+	if depType != expectedType {
+		t.Errorf("dependency %s -> %s: got type %q, want %q", issueID, dependsOnID, depType, expectedType)
+	}
+}
+
 func TestEmbeddedCreate(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt create tests")
@@ -270,6 +291,34 @@ func TestEmbeddedCreate(t *testing.T) {
 
 		// "blocks:X" reverses direction: X depends on new issue (parent.ID -> child.ID)
 		assertDepExists(t, beadsDir, "dp", parent.ID, child.ID)
+	})
+
+	t.Run("blocked_by_alias", func(t *testing.T) {
+		dir, beadsDir, _ := bdInit(t, bd, "--prefix", "bb")
+		blocker := bdCreate(t, bd, dir, "Blocker issue")
+		blocked := bdCreate(t, bd, dir, "Blocked issue", "--deps", "blocked-by:"+blocker.ID)
+
+		assertDepExistsWithType(t, beadsDir, "bb", blocked.ID, blocker.ID, "blocks")
+	})
+
+	t.Run("depends_on_alias", func(t *testing.T) {
+		dir, beadsDir, _ := bdInit(t, bd, "--prefix", "do")
+		prereq := bdCreate(t, bd, dir, "Prerequisite")
+		dependent := bdCreate(t, bd, dir, "Dependent issue", "--deps", "depends-on:"+prereq.ID)
+
+		assertDepExistsWithType(t, beadsDir, "do", dependent.ID, prereq.ID, "blocks")
+	})
+
+	t.Run("unknown_dep_type_rejected", func(t *testing.T) {
+		dir, _, _ := bdInit(t, bd, "--prefix", "ud")
+		blocker := bdCreate(t, bd, dir, "Blocker")
+		out := bdCreateFail(t, bd, dir, "Bad dep type", "--deps", "bogus-type:"+blocker.ID)
+		if !strings.Contains(out, "unknown dependency type") {
+			t.Errorf("expected 'unknown dependency type' error, got:\n%s", out)
+		}
+		if !strings.Contains(out, "blocked-by") || !strings.Contains(out, "depends-on") {
+			t.Errorf("expected accepted dependency aliases in error, got:\n%s", out)
+		}
 	})
 
 	t.Run("multiple_dependencies", func(t *testing.T) {
