@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/linear"
@@ -168,6 +169,7 @@ func init() {
 	linearSyncCmd.Flags().Bool("relations", false, "Import Linear relations as bd dependencies when pulling")
 	linearSyncCmd.Flags().Bool("pull-if-stale", false, "Pull only if Linear data is stale (skip if fresh)")
 	linearSyncCmd.Flags().Duration("threshold", linear.DefaultStaleThreshold, "Staleness threshold for --pull-if-stale (default 20m)")
+	linearSyncCmd.Flags().Bool("no-wait", false, "Fail immediately if another sync is running instead of waiting")
 	registerSelectiveSyncFlags(linearSyncCmd)
 
 	linearCmd.AddCommand(linearSyncCmd)
@@ -191,6 +193,7 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	relations, _ := cmd.Flags().GetBool("relations")
 	pullIfStale, _ := cmd.Flags().GetBool("pull-if-stale")
 	threshold, _ := cmd.Flags().GetDuration("threshold")
+	noWait, _ := cmd.Flags().GetBool("no-wait")
 
 	// Handle --pull-if-stale: skip pull if data is fresh
 	if pullIfStale {
@@ -229,6 +232,32 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 		}
 		// Data is stale — proceed with pull
 		pull = true
+	}
+
+	// Acquire per-workspace concurrency lock to serialize sync invocations.
+	if lockDir := beads.FindBeadsDir(); lockDir != "" {
+		wait := !noWait
+		if !wait {
+			fmt.Fprintln(os.Stderr, "Acquiring sync lock (non-blocking)...")
+		} else {
+			fmt.Fprintln(os.Stderr, "Acquiring sync lock...")
+		}
+		syncLock, err := linear.AcquireSyncLock(lockDir, wait)
+		if err != nil {
+			if held, ok := err.(*linear.SyncLockHeldError); ok {
+				if held.Info != nil {
+					FatalError("another bd linear sync is already running (PID %d, started %s)",
+						held.Info.PID, held.Info.Started.Format("15:04:05"))
+				}
+				FatalError("another bd linear sync is already running")
+			}
+			FatalError("acquiring sync lock: %v", err)
+		}
+		defer func() {
+			if err := syncLock.Release(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to release sync lock: %v\n", err)
+			}
+		}()
 	}
 
 	if !dryRun {
@@ -760,6 +789,18 @@ func getLinearClient(ctx context.Context) (*linear.Client, error) {
 		// Filter to specific project if configured
 		if projectID, _ := store.GetConfig(ctx, "linear.project_id"); projectID != "" {
 			client = client.WithProjectID(projectID)
+		}
+		// Apply optional rate-limit circuit-breaker floor.
+		// Readable/settable via `bd config get/set linear.rate_limit_floor`.
+		// Also honored via the LINEAR_RATE_LIMIT_FLOOR environment variable.
+		floorStr, _ := getLinearConfig(ctx, "linear.rate_limit_floor")
+		if floorStr == "" {
+			floorStr = os.Getenv("LINEAR_RATE_LIMIT_FLOOR")
+		}
+		if floorStr != "" {
+			if v, err := strconv.Atoi(strings.TrimSpace(floorStr)); err == nil && v >= 0 {
+				client = client.WithRateLimitFloor(v)
+			}
 		}
 	}
 

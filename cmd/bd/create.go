@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -575,7 +576,6 @@ var createCmd = &cobra.Command{
 
 		// Add dependencies if specified (format: type:id or just id for default "blocks" type)
 		for _, depSpec := range deps {
-			// Skip empty specs (e.g., from trailing commas)
 			depSpec = strings.TrimSpace(depSpec)
 			if depSpec == "" {
 				continue
@@ -583,41 +583,46 @@ var createCmd = &cobra.Command{
 
 			var depType types.DependencyType
 			var dependsOnID string
+			swapDirection := false
 
-			// Parse format: "type:id" or just "id" (defaults to "blocks")
 			if strings.Contains(depSpec, ":") {
 				parts := strings.SplitN(depSpec, ":", 2)
 				if len(parts) != 2 {
 					WarnError("invalid dependency format '%s', expected 'type:id' or 'id'", depSpec)
 					continue
 				}
-				depType = types.DependencyType(strings.TrimSpace(parts[0]))
-				// "depends-on" is an alias — keep default direction (new issue depends on target)
-				if depType == "depends-on" {
-					depType = types.DepBlocks
-				}
+				rawType := types.DependencyType(strings.TrimSpace(parts[0]))
 				dependsOnID = strings.TrimSpace(parts[1])
+
+				switch rawType {
+				case "depends-on", "blocked-by":
+					// Alias: the new issue depends on the target. Store as a blocks edge.
+					depType = types.DepBlocks
+				case types.DepBlocks:
+					// Explicit "blocks:X" means the new issue blocks X, so store X -> new issue.
+					depType = types.DepBlocks
+					swapDirection = true
+				default:
+					depType = rawType
+				}
 			} else {
-				// Default to "blocks" if no type specified
 				depType = types.DepBlocks
 				dependsOnID = depSpec
 			}
 
-			// Validate dependency type
 			if !depType.IsValid() {
-				WarnError("invalid dependency type '%s' (valid: blocks, related, parent-child, discovered-from)", depType)
-				continue
+				FatalErrorRespectJSON("invalid dependency type %q (must be non-empty, max 50 chars); valid types: %s", depType, createDepsAcceptedTypeList())
+			}
+			if !depType.IsWellKnown() {
+				FatalErrorRespectJSON("unknown dependency type %q; valid types: %s", depType, createDepsAcceptedTypeList())
 			}
 
-			// Add the dependency
 			dep := &types.Dependency{
 				IssueID:     issue.ID,
 				DependsOnID: dependsOnID,
 				Type:        depType,
 			}
-			// When user explicitly says "blocks:X", they mean "new issue blocks X"
-			// So X depends on the new issue — swap direction
-			if depType == types.DepBlocks && strings.Contains(depSpec, ":") {
+			if swapDirection {
 				dep.IssueID = dependsOnID
 				dep.DependsOnID = issue.ID
 			}
@@ -800,6 +805,15 @@ func renderCreateDryRunPreview(issue *types.Issue, labels, deps []string) {
 	if issue.EventKind != "" {
 		fmt.Printf("  Event category: %s\n", issue.EventKind)
 	}
+}
+
+func createDepsAcceptedTypeList() string {
+	names := []string{"blocked-by", "depends-on"}
+	for _, depType := range types.WellKnownDependencyTypes() {
+		names = append(names, string(depType))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func init() {

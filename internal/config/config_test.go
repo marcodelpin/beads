@@ -1182,6 +1182,10 @@ func TestFederationConfigDefaults(t *testing.T) {
 	if cfg.Sovereignty != SovereigntyNone {
 		t.Errorf("GetFederationConfig().Sovereignty = %q, want %q (no restriction)", cfg.Sovereignty, SovereigntyNone)
 	}
+	// Default exclude_types should contain "wisp"
+	if len(cfg.ExcludeTypes) != 1 || cfg.ExcludeTypes[0] != "wisp" {
+		t.Errorf("GetFederationConfig().ExcludeTypes = %v, want [\"wisp\"]", cfg.ExcludeTypes)
+	}
 }
 
 func TestFederationConfigFromFile(t *testing.T) {
@@ -1219,6 +1223,29 @@ federation:
 	}
 	if fedCfg.Sovereignty != SovereigntyT2 {
 		t.Errorf("GetFederationConfig().Sovereignty = %q, want %q", fedCfg.Sovereignty, SovereigntyT2)
+	}
+}
+
+func TestFederationExcludeTypesOptOut(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configContent := `
+federation:
+  exclude_types: []
+`
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Chdir(tmpDir)
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	cfg := GetFederationConfig()
+	if len(cfg.ExcludeTypes) != 0 {
+		t.Errorf("ExcludeTypes = %v, want empty (opt-out)", cfg.ExcludeTypes)
 	}
 }
 

@@ -240,6 +240,28 @@ func TestBuildIssueFilterClauses_DateFilters(t *testing.T) {
 	}
 }
 
+func TestBuildIssueFilterClauses_DeferredIncludesStatus(t *testing.T) {
+	t.Parallel()
+	clauses, args, err := BuildIssueFilterClauses("", types.IssueFilter{Deferred: true}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "(defer_until IS NOT NULL OR status = ?)"
+	var found bool
+	for _, c := range clauses {
+		if c == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected deferred clause %q in %v", want, clauses)
+	}
+	if len(args) != 1 || args[0] != types.StatusDeferred {
+		t.Fatalf("args = %v, want [%q]", args, types.StatusDeferred)
+	}
+}
+
 func TestBuildIssueFilterClauses_BooleanFilters(t *testing.T) {
 	t.Parallel()
 

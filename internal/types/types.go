@@ -811,15 +811,24 @@ func (d DependencyType) IsValid() bool {
 	return len(d) > 0 && len(d) <= 50
 }
 
+// WellKnownDependencyTypes returns the built-in dependency types accepted by
+// user-facing commands that intentionally reject custom dependency types.
+func WellKnownDependencyTypes() []DependencyType {
+	return []DependencyType{
+		DepBlocks, DepParentChild, DepConditionalBlocks, DepWaitsFor, DepRelated, DepDiscoveredFrom,
+		DepRepliesTo, DepRelatesTo, DepDuplicates, DepSupersedes,
+		DepAuthoredBy, DepAssignedTo, DepApprovedBy, DepAttests, DepTracks,
+		DepUntil, DepCausedBy, DepValidates, DepDelegatedFrom,
+	}
+}
+
 // IsWellKnown checks if the dependency type is a well-known constant.
 // Returns false for custom/user-defined types (which are still valid).
 func (d DependencyType) IsWellKnown() bool {
-	switch d {
-	case DepBlocks, DepParentChild, DepConditionalBlocks, DepWaitsFor, DepRelated, DepDiscoveredFrom,
-		DepRepliesTo, DepRelatesTo, DepDuplicates, DepSupersedes,
-		DepAuthoredBy, DepAssignedTo, DepApprovedBy, DepAttests, DepTracks,
-		DepUntil, DepCausedBy, DepValidates, DepDelegatedFrom:
-		return true
+	for _, wellKnown := range WellKnownDependencyTypes() {
+		if d == wellKnown {
+			return true
+		}
 	}
 	return false
 }
@@ -1240,7 +1249,7 @@ type IssueFilter struct {
 	ExcludeTypes []IssueType // Exclude issues with these types
 
 	// Time-based scheduling filters (GH#820)
-	Deferred    bool       // Filter issues with defer_until set (any value)
+	Deferred    bool       // Filter issues that are scheduled later: defer_until set OR status is deferred
 	DeferAfter  *time.Time // Filter issues with defer_until > this time
 	DeferBefore *time.Time // Filter issues with defer_until < this time
 	DueAfter    *time.Time // Filter issues with due_at > this time

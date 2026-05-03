@@ -88,8 +88,9 @@ func maybeAutoExport(ctx context.Context) {
 	}
 	fullPath := filepath.Join(beadsDir, exportPath)
 
-	// Run the export
-	issueCount, memoryCount, err := exportToFile(ctx, fullPath, true)
+	// Run the export — memories are excluded from auto-export because they
+	// contain private agent context that must not reach git history (GH#3650).
+	issueCount, memoryCount, err := exportToFile(ctx, fullPath, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export failed: %v\n", err)
 		return
@@ -160,8 +161,11 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 	isTemplate := false
 	filter.IsTemplate = &isTemplate
 
-	// Fetch all issues (persistent + wisps). SearchIssues with Ephemeral=nil
-	// already includes wisps via ID-based dedup (GH#3352).
+	// Exclude ephemeral wisps — they are private/transient and must not
+	// reach git history or external integrations (GH#3649).
+	persistentOnly := false
+	filter.Ephemeral = &persistentOnly
+
 	issues, err := store.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to search issues: %w", err)

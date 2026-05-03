@@ -30,9 +30,14 @@ func SearchIssuesInTx(ctx context.Context, tx *sql.Tx, query string, filter type
 		return nil, fmt.Errorf("search issues: %w", err)
 	}
 
-	// When filter.Ephemeral is nil (search everything), also search the wisps
-	// table and merge results.
-	if filter.Ephemeral == nil {
+	// When filter.Ephemeral is nil (search everything) or false (non-ephemeral
+	// only), also search the wisps table and merge results. NoHistory beads are
+	// stored in the wisps table with ephemeral=0, so they must survive an
+	// Ephemeral=&false filter (GH#3649). The WHERE clause added by
+	// BuildIssueFilterClauses handles the per-row ephemeral column check, so
+	// querying wisps here with Ephemeral=&false returns only NoHistory beads
+	// while correctly excluding true ephemeral wisps. (GH#3659)
+	if filter.Ephemeral == nil || !*filter.Ephemeral {
 		wispResults, wispErr := searchTableInTx(ctx, tx, query, filter, WispsFilterTables)
 		if wispErr != nil && !isTableNotExistError(wispErr) {
 			return nil, fmt.Errorf("search wisps (merge): %w", wispErr)
@@ -100,7 +105,11 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 		for i, issue := range issues {
 			ids[i] = issue.ID
 		}
-		labelMap, labelErr := GetLabelsForIssuesInTx(ctx, tx, ids, nil)
+		// Fast path: searchTableInTx queries exclusively either the issues
+		// or wisps table, so every ID in `ids` belongs to tables.Labels.
+		// Skip the per-batch wisp-partition round-trip that the generic
+		// GetLabelsForIssuesInTx performs (GH#3414).
+		labelMap, labelErr := GetLabelsForIssuesFromTableInTx(ctx, tx, tables.Labels, ids)
 		if labelErr != nil {
 			return nil, fmt.Errorf("search %s: hydrate labels: %w", tables.Main, labelErr)
 		}
@@ -112,7 +121,7 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 
 		// Optionally hydrate dependencies in bulk (same batched pattern as labels).
 		if filter.IncludeDependencies {
-			depMap, depErr := GetDependencyRecordsForIssuesInTx(ctx, tx, ids)
+			depMap, depErr := GetDependencyRecordsForIssuesFromTableInTx(ctx, tx, tables.Dependencies, ids)
 			if depErr != nil {
 				return nil, fmt.Errorf("search %s: hydrate dependencies: %w", tables.Main, depErr)
 			}
