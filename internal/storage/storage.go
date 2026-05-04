@@ -18,6 +18,11 @@ import (
 // claimed by another user. The error message contains the current assignee.
 var ErrAlreadyClaimed = errors.New("issue already claimed")
 
+// ErrNotClaimable is returned when attempting to claim an issue that is not in a
+// claimable state, such as closed, deferred, or already in progress without the
+// same actor owning the claim.
+var ErrNotClaimable = errors.New("issue not claimable")
+
 // ErrNotFound is returned when a requested entity does not exist in the database.
 var ErrNotFound = errors.New("not found")
 

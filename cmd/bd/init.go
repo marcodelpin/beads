@@ -22,7 +22,6 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 	"github.com/steveyegge/beads/internal/templates/agents"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -429,6 +428,16 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				FatalError("failed to create .beads directory: %v", err)
 			}
 
+			// Fix permissions on pre-existing .beads/ directories that may
+			// have been created with a permissive umask (GH#3391).
+			if fixed, err := config.FixBeadsDirPermissions(beadsDir); err != nil {
+				if !quiet {
+					fmt.Fprintf(os.Stderr, "Warning: could not fix .beads permissions: %v\n", err)
+				}
+			} else if fixed && !quiet {
+				fmt.Fprintf(os.Stderr, "Fixed .beads permissions to %04o\n", config.BeadsDirPerm)
+			}
+
 			// On Linux btrfs, disable transparent compression on .beads/ so that
 			// dolt's hot append-only write path (under .beads/dolt/ or
 			// .beads/embeddeddolt/) does not trigger kworker thrashing from
@@ -646,7 +655,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					}
 					syncFromRemote = false
 				} else {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Error: failed to clone remote %q: %v\n", syncURL, err)
+					fmt.Fprintf(os.Stderr, "Hint: verify the URL is reachable and any credentials are valid, or omit --remote to initialize a fresh local database.\n")
 					os.Exit(1)
 				}
 			} else {
@@ -755,7 +765,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 
-		store, err := newDoltStore(ctx, doltCfg, embeddeddolt.WithLock(initLock))
+		store, err := newDoltStore(ctx, doltCfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to open Dolt store: %v\n", err)
 			os.Exit(1)
@@ -1252,7 +1262,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					fmt.Printf("  Skipping %s generation in bare repository\n", resolvedAgentsFile)
 				}
 			} else {
-				addAgentsInstructions(resolvedAgentsFile, !quiet, agentsTemplate, agentsProfile)
+				renderOpts := agents.RenderOpts{HasRemote: shouldWireInitRemote(syncURL, syncFromRemote, syncURLFromConfig)}
+				addAgentsInstructions(resolvedAgentsFile, !quiet, agentsTemplate, agentsProfile, renderOpts)
 			}
 		}
 

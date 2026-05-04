@@ -786,6 +786,10 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Ambient staleness warning: if Linear data is stale, warn once per
+		// shell session on stderr. Only fires when LINEAR_API_KEY is set.
+		maybeWarnLinearStaleness(cmd)
+
 		if skipsStoreInit {
 			return
 		}
@@ -970,11 +974,18 @@ var rootCmd = &cobra.Command{
 		// other helper paths stay in lockstep with the main command path.
 		dolt.ApplyCLIAutoStart(beadsDir, doltCfg)
 
-		// Server mode defaults auto-commit to OFF because the server handles
-		// commits via its own transaction lifecycle; firing DOLT_COMMIT after
-		// every write under concurrent load causes 'database is read only' errors.
+		// Default auto-commit based on mode when the user hasn't set a value:
+		// - Server mode: OFF — the server handles commits via its own transaction
+		//   lifecycle; firing DOLT_COMMIT after every write under concurrent load
+		//   causes 'database is read only' errors.
+		// - Embedded mode: ON — each command writes to the working set and needs
+		//   a Dolt commit in PersistentPostRun to persist changes to history.
 		if strings.TrimSpace(doltAutoCommit) == "" {
-			doltAutoCommit = string(doltAutoCommitOff)
+			if isEmbeddedMode() {
+				doltAutoCommit = string(doltAutoCommitOn)
+			} else {
+				doltAutoCommit = string(doltAutoCommitOff)
+			}
 		}
 
 		doltCfg.Path = doltPath
@@ -1207,10 +1218,11 @@ func flushBatchCommitOnShutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	committed, commitErr := st.CommitPending(ctx, getActor())
-	if commitErr != nil {
-		fmt.Fprintf(os.Stderr, "\nWarning: failed to flush batch commit on shutdown: %v\n", commitErr)
-	} else if committed {
+	if err := st.Commit(ctx, "bd: flush pending changes on shutdown"); err != nil {
+		if !isDoltNothingToCommit(err) {
+			fmt.Fprintf(os.Stderr, "\nWarning: failed to flush batch commit on shutdown: %v\n", err)
+		}
+	} else {
 		fmt.Fprintf(os.Stderr, "\nFlushed pending batch commit on shutdown\n")
 	}
 }
@@ -1254,6 +1266,7 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 		fmt.Fprintf(os.Stderr, "  • BEADS_DIR points to a different project's .beads/\n")
 		fmt.Fprintf(os.Stderr, "  • Dolt server endpoint changed and now serves a different database\n")
 		fmt.Fprintf(os.Stderr, "  • metadata.json was copied from another project\n\n")
+		fmt.Fprintf(os.Stderr, "Recovery: run 'bd doctor --fix' or 'bd bootstrap' to reconcile workspace metadata with the authoritative database when shared-server metadata drifted.\n")
 		fmt.Fprintf(os.Stderr, "To diagnose: bd context --json\n")
 		fmt.Fprintf(os.Stderr, "To override: set BEADS_SKIP_IDENTITY_CHECK=1\n")
 		os.Exit(1)

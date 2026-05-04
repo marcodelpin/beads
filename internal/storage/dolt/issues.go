@@ -229,6 +229,41 @@ func (s *DoltStore) ClaimIssue(ctx context.Context, id string, actor string) err
 	return nil
 }
 
+// ClaimReadyIssue atomically claims the first ready issue matching filter.
+func (s *DoltStore) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	claimed, err := issueops.ClaimReadyIssueInTx(ctx, tx, filter, actor, func(ctx context.Context, tx *sql.Tx, includeWisps bool) ([]string, error) {
+		ids, _, err := issueops.ComputeBlockedIDsInTx(ctx, tx, includeWisps)
+		return ids, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if claimed == nil {
+		return nil, nil
+	}
+
+	for _, table := range []string{"issues", "events"} {
+		_, _ = tx.ExecContext(ctx, "CALL DOLT_ADD(?)", table)
+	}
+	commitMsg := fmt.Sprintf("bd: claim ready %s", claimed.ID)
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return nil, fmt.Errorf("dolt commit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, wrapTransactionError("commit claim ready issue", err)
+	}
+	s.invalidateBlockedIDsCache()
+	return claimed, nil
+}
+
 // ReopenIssue reopens a closed issue, setting status to open and clearing
 // closed_at and defer_until. If reason is non-empty, it is recorded as a comment.
 // Wraps UpdateIssue for Dolt-specific concerns (wisp routing, DOLT_COMMIT, etc.).

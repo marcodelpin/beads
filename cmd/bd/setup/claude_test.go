@@ -372,6 +372,36 @@ func TestInstallClaudeCleanupNullHooks(t *testing.T) {
 	}
 }
 
+func TestInstallClaudeUsesPrimeForClaudeHooks(t *testing.T) {
+	env, _, _ := newClaudeTestEnv(t)
+
+	if err := installClaude(env, false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	data, err := env.readFile(projectSettingsPath(env.projectDir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	settingsJSON := string(data)
+
+	for _, want := range []string{
+		`"command": "bd prime"`,
+		`"SessionStart"`,
+		`"PreCompact"`,
+	} {
+		if !strings.Contains(settingsJSON, want) {
+			t.Fatalf("settings missing %q:\n%s", want, settingsJSON)
+		}
+	}
+
+	for _, stale := range []string{"bd sync", "bd dolt push"} {
+		if strings.Contains(settingsJSON, stale) {
+			t.Fatalf("settings contain stale Claude hook command %q:\n%s", stale, settingsJSON)
+		}
+	}
+}
+
 func TestHasBeadsHooks(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -639,6 +669,8 @@ func TestInstallClaudeErrors(t *testing.T) {
 }
 
 func TestCheckClaudeScenarios(t *testing.T) {
+	stubDetectRenderOpts(t)
+
 	t.Run("global hooks", func(t *testing.T) {
 		env, stdout, _ := newClaudeTestEnv(t)
 		writeSettings(t, globalSettingsPath(env.homeDir), map[string]interface{}{
@@ -955,6 +987,7 @@ func TestInstallClaudeWritesHooksWithoutPlugin(t *testing.T) {
 }
 
 func TestCheckClaudePluginManaged(t *testing.T) {
+	stubDetectRenderOpts(t)
 	env, stdout, _ := newClaudeTestEnv(t)
 
 	// Plugin enabled but no hooks in settings files

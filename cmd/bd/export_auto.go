@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/atomicfile"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
@@ -86,8 +88,9 @@ func maybeAutoExport(ctx context.Context) {
 	}
 	fullPath := filepath.Join(beadsDir, exportPath)
 
-	// Run the export
-	issueCount, memoryCount, err := exportToFile(ctx, fullPath, true)
+	// Run the export — memories are excluded from auto-export because they
+	// contain private agent context that must not reach git history (GH#3650).
+	issueCount, memoryCount, err := exportToFile(ctx, fullPath, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export failed: %v\n", err)
 		return
@@ -124,14 +127,19 @@ func maybeAutoExport(ctx context.Context) {
 	saveExportAutoState(beadsDir, &newState)
 }
 
-// exportToFile exports issues + memories to the given file path.
-// Used by both `bd export -o` and auto-export.
+// exportToFile atomically exports issues + memories to the given file path.
+// Writes to a temp file first, then renames into place so readers never see
+// a partial or truncated export. Used by both `bd export -o` and auto-export.
 func exportToFile(ctx context.Context, path string, includeMemories bool) (issueCount, memoryCount int, err error) {
-	f, err := os.Create(path) //nolint:gosec // user-configured output path
+	w, err := atomicfile.Create(path, 0o644)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to create export file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err != nil {
+			_ = w.Abort()
+		}
+	}()
 
 	// Build filter: exclude infra types and templates
 	filter := types.IssueFilter{Limit: 0}
@@ -153,8 +161,11 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 	isTemplate := false
 	filter.IsTemplate = &isTemplate
 
-	// Fetch all issues (persistent + wisps). SearchIssues with Ephemeral=nil
-	// already includes wisps via ID-based dedup (GH#3352).
+	// Exclude ephemeral wisps — they are private/transient and must not
+	// reach git history or external integrations (GH#3649).
+	persistentOnly := false
+	filter.Ephemeral = &persistentOnly
+
 	issues, err := store.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to search issues: %w", err)
@@ -179,7 +190,7 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 		}
 
 		// Write issues
-		enc := json.NewEncoder(f)
+		enc := json.NewEncoder(w)
 		for _, issue := range issues {
 			counts := depCounts[issue.ID]
 			if counts == nil {
@@ -207,10 +218,16 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 		allConfig, err := store.GetAllConfig(ctx)
 		if err == nil {
 			fullPrefix := kvPrefix + memoryPrefix
-			for k, v := range allConfig {
-				if !strings.HasPrefix(k, fullPrefix) {
-					continue
+			// Sort keys for deterministic output order (GH#3474).
+			var memKeys []string
+			for k := range allConfig {
+				if strings.HasPrefix(k, fullPrefix) {
+					memKeys = append(memKeys, k)
 				}
+			}
+			sort.Strings(memKeys)
+			for _, k := range memKeys {
+				v := allConfig[k]
 				userKey := strings.TrimPrefix(k, fullPrefix)
 				record := map[string]string{
 					"_type": "memory",
@@ -219,12 +236,12 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 				}
 				data, err := json.Marshal(record)
 				if err != nil {
-					continue
+					return issueCount, memoryCount, fmt.Errorf("failed to marshal memory %s: %w", userKey, err)
 				}
-				if _, err := f.Write(data); err != nil {
+				if _, err := w.Write(data); err != nil {
 					return issueCount, memoryCount, fmt.Errorf("failed to write memory: %w", err)
 				}
-				if _, err := f.Write([]byte{'\n'}); err != nil {
+				if _, err := w.Write([]byte{'\n'}); err != nil {
 					return issueCount, memoryCount, fmt.Errorf("failed to write newline: %w", err)
 				}
 				memoryCount++
@@ -232,8 +249,8 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 		}
 	}
 
-	if err := f.Sync(); err != nil {
-		return issueCount, memoryCount, fmt.Errorf("failed to sync: %w", err)
+	if err := w.Close(); err != nil {
+		return issueCount, memoryCount, fmt.Errorf("failed to finalize export: %w", err)
 	}
 
 	return issueCount, memoryCount, nil
@@ -259,7 +276,7 @@ func saveExportAutoState(beadsDir string, state *exportAutoState) {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export: failed to marshal state: %v\n", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, data, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export: failed to save state: %v\n", err)
 	}
 }

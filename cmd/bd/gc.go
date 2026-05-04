@@ -245,11 +245,8 @@ Consent flow (recommended):
 					}
 					results = append(results, phaseResult{name: "Decay", detail: fmt.Sprintf("%d issues deleted", deleted)})
 
-					// Embedded mode: flush Dolt commit after deletes.
-					if isEmbeddedMode() && deleted > 0 && store != nil {
-						if _, err := store.CommitPending(ctx, actor); err != nil {
-							WarnError("failed to commit after decay: %v", err)
-						}
+					if deleted > 0 {
+						commandDidWrite.Store(true)
 					}
 				}
 			}

@@ -989,12 +989,24 @@ func findDatabaseInTree() string {
 
 	// Check cwd first — a rig subdirectory with its own .beads/ takes
 	// priority over the git root's .beads/ (same fix as FindBeadsDir step 1b).
+	//
+	// In a worktree, skip the CWD check at the worktree root. The worktree
+	// root's .beads/ may contain git-tracked metadata (metadata.json with
+	// dolt_mode=server) inherited from the parent repo checkout, but NOT the
+	// gitignored dolt/ data directory. In server mode, findDatabaseInBeadsDir
+	// returns a path regardless of whether the data dir exists, which would
+	// short-circuit the worktree-aware fallback below — causing each worktree
+	// to spawn its own dolt server against an empty data directory.
+	// The worktree-specific code (below) handles this correctly.
 	{
-		cwdBeadsDir := filepath.Join(dir, ".beads")
-		if info, err := os.Stat(cwdBeadsDir); err == nil && info.IsDir() {
-			cwdBeadsDir = FollowRedirect(cwdBeadsDir)
-			if dbPath := findDatabaseInBeadsDir(cwdBeadsDir, true); dbPath != "" {
-				return dbPath
+		skipCwdCheck := git.IsWorktree() && dir == utils.CanonicalizePath(git.GetRepoRoot())
+		if !skipCwdCheck {
+			cwdBeadsDir := filepath.Join(dir, ".beads")
+			if info, err := os.Stat(cwdBeadsDir); err == nil && info.IsDir() {
+				cwdBeadsDir = FollowRedirect(cwdBeadsDir)
+				if dbPath := findDatabaseInBeadsDir(cwdBeadsDir, true); dbPath != "" {
+					return dbPath
+				}
 			}
 		}
 	}
@@ -1009,12 +1021,19 @@ func findDatabaseInTree() string {
 			}
 		}
 
-		// Worktree's own .beads (separate-DB mode, no redirect)
+		// Worktree's own .beads (separate-DB mode, no redirect).
+		// Only use it if the worktree has an actual database (dolt/, embeddeddolt/,
+		// or *.db). A worktree that only has git-tracked metadata (metadata.json
+		// with dolt_mode=server, config.yaml, etc.) should fall through to the
+		// shared fallback below. This mirrors FindBeadsDir step 3b's
+		// hasBeadsDatabase guard and prevents duplicate server spawns.
 		if worktreeRoot := git.GetRepoRoot(); worktreeRoot != "" {
 			worktreeBeadsDir := filepath.Join(worktreeRoot, ".beads")
 			if info, err := os.Stat(worktreeBeadsDir); err == nil && info.IsDir() {
-				if dbPath := findDatabaseInBeadsDir(worktreeBeadsDir, true); dbPath != "" {
-					return dbPath
+				if hasBeadsDatabase(worktreeBeadsDir) {
+					if dbPath := findDatabaseInBeadsDir(worktreeBeadsDir, true); dbPath != "" {
+						return dbPath
+					}
 				}
 			}
 		}

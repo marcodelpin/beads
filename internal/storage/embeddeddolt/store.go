@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 // Compile-time interface checks.
@@ -35,10 +36,8 @@ var _ storage.Compactor = (*EmbeddedDoltStore)(nil)
 // time the embedded engine's write lock is held, reducing contention when
 // multiple processes access the same database concurrently.
 //
-// The store holds an exclusive flock on the data directory for its entire
-// lifetime. This prevents concurrent processes from initializing the embedded
-// Dolt engine on the same directory, which causes a nil-pointer panic in
-// DoltDB.SetCrashOnFatalError (GH#2571).
+// The dolthub/driver handles its own concurrency internally. File-level locking
+// is only used during bd init to protect one-time initialization steps.
 type EmbeddedDoltStore struct {
 	dataDir       string
 	beadsDir      string
@@ -46,46 +45,28 @@ type EmbeddedDoltStore struct {
 	branch        string
 	credentialKey []byte
 	closed        atomic.Bool
-	lock          Unlocker // exclusive flock held for the store's lifetime
-	ownsLock      bool     // true when New acquired the lock (false when caller supplied it via WithLock)
 }
 
 // errClosed is returned when a method is called after Close.
 var errClosed = errors.New("embeddeddolt: store is closed")
 
-// Option configures optional behavior for New.
-type Option func(*options)
-
-type options struct {
-	lock Unlocker // pre-acquired lock; nil means New acquires its own
+// IsClosed reports whether the store has been closed. Implements
+// storage.LifecycleManager so that callers (e.g., maybeAutoCommit) can
+// skip operations on a closed store without triggering errClosed.
+func (s *EmbeddedDoltStore) IsClosed() bool {
+	return s.closed.Load()
 }
 
-// WithLock passes a pre-acquired exclusive lock to New so it does not attempt
-// to acquire a second one. The caller retains ownership — Close will NOT
-// release a caller-supplied lock. This is used by bd init, which acquires the
-// lock earlier to protect pre-initialization steps.
-func WithLock(lock Unlocker) Option {
-	return func(o *options) { o.lock = lock }
-}
-
-// New creates an EmbeddedDoltStore using the embedded Dolt engine.
+// newStore creates an EmbeddedDoltStore using the embedded Dolt engine.
 // beadsDir is the .beads/ root; the data directory is derived as <beadsDir>/embeddeddolt/.
 // The database is created automatically if it doesn't exist (initSchema handles this).
 //
-// An exclusive flock is held on the data directory for the store's entire
-// lifetime. If another process already holds the lock, New queues with
-// exponential backoff until the lock becomes available or the context is
-// canceled, instead of panicking during concurrent engine initialization
-// (GH#2571). The lock is released when Close is called, unless a pre-acquired
-// lock was supplied via WithLock (in which case the caller is responsible for it).
-func New(ctx context.Context, beadsDir, database, branch string, opts ...Option) (*EmbeddedDoltStore, error) {
+// The dolthub/driver handles its own concurrency internally. File-level locking
+// is only used during bd init (via TryLock in the init command) to protect
+// one-time initialization steps — the store itself does not hold any lock.
+func newStore(ctx context.Context, beadsDir, database, branch string) (*EmbeddedDoltStore, error) {
 	if database == "" {
 		return nil, fmt.Errorf("embeddeddolt: database name must not be empty (caller should default to %q)", "beads")
-	}
-
-	var o options
-	for _, fn := range opts {
-		fn(&o)
 	}
 
 	// Resolve to absolute path — the embedded dolt driver resolves file://
@@ -100,32 +81,14 @@ func New(ctx context.Context, beadsDir, database, branch string, opts ...Option)
 		return nil, fmt.Errorf("embeddeddolt: creating data directory: %w", err)
 	}
 
-	// Acquire an exclusive flock before initializing the embedded engine.
-	// Without this, concurrent processes race through NewConnector →
-	// DoltDB.SetCrashOnFatalError → newDatabase → CollectDBs and one of
-	// them panics with a nil-pointer dereference (GH#2571).
-	lock := o.lock
-	ownsLock := lock == nil
-	if ownsLock {
-		lock, err = WaitLock(ctx, dataDir)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	s := &EmbeddedDoltStore{
 		dataDir:  dataDir,
 		beadsDir: absBeadsDir,
 		database: database,
 		branch:   branch,
-		lock:     lock,
-		ownsLock: ownsLock,
 	}
 
 	if err := s.initSchema(ctx); err != nil {
-		if ownsLock {
-			lock.Unlock()
-		}
 		return nil, fmt.Errorf("embeddeddolt: init schema: %w", err)
 	}
 
@@ -134,9 +97,6 @@ func New(ctx context.Context, beadsDir, database, branch string, opts ...Option)
 	// dolt_ignore prevents them from being committed. Server mode handles
 	// this in newServerMode(); embedded mode must do it here. (GH#3270)
 	if err := s.ensureIgnoredTables(ctx); err != nil {
-		if ownsLock {
-			lock.Unlock()
-		}
 		return nil, fmt.Errorf("embeddeddolt: ensure ignored tables: %w", err)
 	}
 
@@ -463,19 +423,19 @@ func (s *EmbeddedDoltStore) GetAllEventsSince(ctx context.Context, since time.Ti
 
 // RunInTransaction is implemented in transaction.go.
 
-// Close marks the store as closed, cleans up orphaned git-remote-cache
-// garbage, and releases the exclusive flock on the data directory (if the
-// store owns it). Subsequent method calls will return errClosed.
-// It is safe to call multiple times. When the lock was supplied by the caller
-// via WithLock, Close does NOT release it — the caller retains ownership.
+// Close decrements the reference count if this store was opened via Open (the
+// process-scoped cache). When other references remain, Close is a no-op — the
+// store stays alive for the remaining callers. When the last reference calls
+// Close (or if the store was created directly via newStore), the underlying
+// resources are released.
+//
+// It is safe to call multiple times.
 func (s *EmbeddedDoltStore) Close() error {
-	// Use CompareAndSwap so we only unlock once even if Close is called
-	// multiple times (the Lock.Unlock method panics on double-unlock).
+	if closeCached(s) {
+		return nil
+	}
 	if s.closed.CompareAndSwap(false, true) {
 		s.cleanGitRemoteCacheGarbage()
-		if s.lock != nil && s.ownsLock {
-			s.lock.Unlock()
-		}
 	}
 	return nil
 }
@@ -485,6 +445,63 @@ func (s *EmbeddedDoltStore) DoltGC(ctx context.Context) error {
 	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.DoltGC(ctx, db)
 	})
+}
+
+// ImportJSONLData atomically checks if the database is empty and, if so,
+// imports parsed issues and config key/value pairs in a single transaction.
+// Returns the count of issues imported, or 0 if the database was not empty.
+// Does NOT issue DOLT_COMMIT — the caller is responsible for committing
+// (e.g. via the PersistentPostRun auto-commit hook).
+func (s *EmbeddedDoltStore) ImportJSONLData(
+	ctx context.Context,
+	issues []*types.Issue,
+	configEntries map[string]string,
+	actor string,
+) (int, error) {
+	var imported int
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
+		// Atomically check: is the database empty?
+		stats := &types.Statistics{}
+		if err := issueops.ScanIssueCountsInTx(ctx, tx, stats); err != nil {
+			return fmt.Errorf("checking issue count: %w", err)
+		}
+		if stats.TotalIssues > 0 {
+			return nil // database is not empty — skip import
+		}
+
+		// Import config entries (memories, etc.)
+		for key, value := range configEntries {
+			if err := issueops.SetConfigInTx(ctx, tx, key, value); err != nil {
+				return fmt.Errorf("importing config %q: %w", key, err)
+			}
+		}
+
+		if len(issues) == 0 {
+			return nil
+		}
+
+		// Auto-detect prefix from first issue if not already provided
+		if _, hasPrefix := configEntries["issue_prefix"]; !hasPrefix {
+			firstPrefix := utils.ExtractIssuePrefix(issues[0].ID)
+			if firstPrefix != "" {
+				if err := issueops.SetConfigInTx(ctx, tx, "issue_prefix", firstPrefix); err != nil {
+					return fmt.Errorf("setting issue_prefix: %w", err)
+				}
+			}
+		}
+
+		// Create all issues in the same transaction
+		if err := issueops.CreateIssuesInTx(ctx, tx, issues, actor, storage.BatchCreateOptions{
+			OrphanHandling:       storage.OrphanAllow,
+			SkipPrefixValidation: true,
+		}); err != nil {
+			return err
+		}
+
+		imported = len(issues)
+		return nil
+	})
+	return imported, err
 }
 
 // Flatten squashes all Dolt commit history into a single commit.
@@ -543,26 +560,7 @@ func (s *EmbeddedDoltStore) CLIDir() string {
 // implemented in version_control.go via versioncontrolops.
 
 func (s *EmbeddedDoltStore) CommitPending(ctx context.Context, actor string) (bool, error) {
-	var hasPending bool
-	var msg string
-	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
-		var err error
-		hasPending, err = issueops.HasPendingChanges(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if hasPending {
-			msg = issueops.BuildBatchCommitMessage(ctx, tx, actor)
-		}
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-	if !hasPending {
-		return false, nil
-	}
-
+	msg := fmt.Sprintf("bd: commit pending changes by %s", actor)
 	if err := s.Commit(ctx, msg); err != nil {
 		if issueops.IsNothingToCommitError(err) {
 			return false, nil

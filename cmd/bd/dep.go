@@ -159,7 +159,7 @@ Examples:
 			}
 
 			if isEmbeddedMode() && fromStore != nil {
-				if _, err := fromStore.CommitPending(ctx, actor); err != nil {
+				if err := fromStore.Commit(ctx, fmt.Sprintf("bd: dep add (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 					FatalErrorRespectJSON("failed to commit: %v", err)
 				}
 			}
@@ -341,7 +341,7 @@ Examples:
 		}
 
 		if isEmbeddedMode() && fromStore != nil {
-			if _, err := fromStore.CommitPending(ctx, actor); err != nil {
+			if err := fromStore.Commit(ctx, fmt.Sprintf("bd: dep add (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 				FatalErrorRespectJSON("failed to commit: %v", err)
 			}
 		}
@@ -839,7 +839,7 @@ var depRemoveCmd = &cobra.Command{
 		}
 
 		if isEmbeddedMode() && fromStore != nil {
-			if _, err := fromStore.CommitPending(ctx, actor); err != nil {
+			if err := fromStore.Commit(ctx, fmt.Sprintf("bd: dep remove (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 				FatalErrorRespectJSON("failed to commit: %v", err)
 			}
 		}
@@ -1228,6 +1228,11 @@ func formatTreeNode(node *types.TreeNode, isBlocked bool) string {
 	// Build the line
 	line := fmt.Sprintf("%s: %s [P%d] (%s)",
 		idStr, node.Title, node.Priority, node.Status)
+
+	// Show edge type for non-root nodes (GH#3565)
+	if node.Depth > 0 && node.EdgeFromParent != "" {
+		line += " " + ui.RenderMuted(fmt.Sprintf("[%s]", node.EdgeFromParent))
+	}
 
 	// Add READY/BLOCKED indicator for root node
 	if node.Status == types.StatusOpen && node.Depth == 0 {
