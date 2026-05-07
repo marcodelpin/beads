@@ -158,13 +158,11 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
-      - name: Install Dolt (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Dolt (Linux/macOS)
         run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
 
-      - name: Install Dolt (macOS)
-        if: runner.os == 'macOS'
-        run: brew install dolt
+      - name: Verify dolt on PATH
+        run: dolt version
 
       - name: Configure Git and Dolt identity
         run: |

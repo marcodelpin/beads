@@ -94,7 +94,6 @@ Secrets in this list are refused on git-tracked `config.yaml` files unless you p
 | `no-git-ops` | — | — | `false` | Disable git ops in `bd prime` close protocol |
 | `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | `on` | Create a Dolt history commit after each successful write |
 | `dolt.auto-push` | — | `BD_DOLT_AUTO_PUSH` | `false` | Auto-push to Dolt remote after writes (opt-in) |
-| `dolt.idle-timeout` | — | — | `30m` | Idle auto-stop timeout (`"0"` disables) |
 | `dolt.shared-server` | `--shared-server` | `BEADS_DOLT_SHARED_SERVER` | `false` | Share one Dolt server at `~/.beads/shared-server/` |
 | `dolt.max-conns` | — | `BEADS_DOLT_MAX_CONNS` | `10` | Connection pool size |
 | `git.author` | — | — | (none) | Override commit author for beads commits |
