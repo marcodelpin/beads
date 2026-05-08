@@ -11,6 +11,5 @@ type DatabaseServer interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Running(ctx context.Context) bool
-	Ping(ctx context.Context) error
 	Dial(ctx context.Context) (net.Conn, error)
 }

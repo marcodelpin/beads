@@ -1,4 +1,4 @@
-package proxy
+package pidfile
 
 import (
 	"encoding/json"
@@ -10,19 +10,17 @@ import (
 	"github.com/steveyegge/beads/internal/atomicfile"
 )
 
-const pidFileName = "proxy.pid"
-
 type PidFile struct {
 	Pid  int `json:"pid"`
 	Port int `json:"port"`
 }
 
-func pidFilePath(rootDir string) string {
-	return filepath.Join(rootDir, pidFileName)
+func Path(rootDir, name string) string {
+	return filepath.Join(rootDir, name)
 }
 
-func ReadDatabaseProxyPidFile(rootDir string) (*PidFile, error) {
-	data, err := os.ReadFile(pidFilePath(rootDir))
+func Read(rootDir, name string) (*PidFile, error) {
+	data, err := os.ReadFile(Path(rootDir, name))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -36,16 +34,16 @@ func ReadDatabaseProxyPidFile(rootDir string) (*PidFile, error) {
 	return &pf, nil
 }
 
-func WriteDatabaseProxyPidFile(rootDir string, pf PidFile) error {
+func Write(rootDir, name string, pf PidFile) error {
 	data, err := json.Marshal(pf)
 	if err != nil {
 		return err
 	}
-	return atomicfile.WriteFile(pidFilePath(rootDir), data, 0o644)
+	return atomicfile.WriteFile(Path(rootDir, name), data, 0o644)
 }
 
-func RemoveDatabaseProxyPidFile(rootDir string) error {
-	err := os.Remove(pidFilePath(rootDir))
+func Remove(rootDir, name string) error {
+	err := os.Remove(Path(rootDir, name))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}

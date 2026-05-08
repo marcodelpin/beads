@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-05-07
+
 ### Added
 
 - **`bd init --reinit-local` / `--discard-remote`** — named-intent flags for local re-initialization and explicit remote-history override. Replaces the overloaded `--force`. See [`bd help init-safety`](docs/adr/0002-init-safety-invariants.md) and [`docs/RECOVERY.md`](docs/RECOVERY.md).
@@ -15,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **[ADR 0002 — `bd init` safety invariants](docs/adr/0002-init-safety-invariants.md)** — encodes the single-source identity rule, scope-bound `--force`/`--reinit-local`, the `CheckRemoteSafety` chokepoint, the error-text-no-echo rule, and the race-safety invariant.
 - **[`docs/RECOVERY.md`](docs/RECOVERY.md)** — playbooks for each named init refusal.
 - **CODEOWNERS** — `cmd/bd/init*.go` routes review to maintainers with an ADR-linked acknowledgment requirement.
+- **`bd -C <path>`** — run bd from another directory without changing the caller's shell cwd. Useful for hooks, agents, and scripts that coordinate multiple workspaces.
+- **`bd close --reason-file`** — reads close reasons from a file or stdin, matching existing body-file workflows.
+- **Linear sync throughput and correctness improvements** — batch create/update, idempotency markers, retry-after handling, OAuth client-credentials support, and workspace-level sync locking.
+- **Shared Beads plugin package** — Claude and Codex plugin metadata now ship together from the repository.
 
 ### Changed
 
@@ -22,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Init refusal messages follow What/Why/Next structure** — runtime error text no longer echoes copy-pasteable destructive invocations. Token values and exact override commands live in `bd help init-safety` and `docs/RECOVERY.md` only. Closes the failure class where an AI agent destroyed 247 issues by pattern-matching on the tool's own error output (`58f5989bf`).
 - **`beads.OpenBestAvailable` signature changed (breaking)** — returns `(Storage, error)` instead of `(Storage, Unlocker, error)`. The per-open flock and `Unlocker` return value were removed; the embedded Dolt engine handles its own concurrency internally. External SDK consumers that call `OpenBestAvailable` must drop the second return value. ([PR #3614](https://github.com/gastownhall/beads/pull/3614))
 - **Embedded-mode flock removed** — the process-lifetime exclusive flock on `.beads/embeddeddolt/` has been removed. Concurrent `bd` processes now open the embedded engine independently. If the GH#2571 nil-deref stack (`NewConnector` → `DoltDB.SetCrashOnFatalError` → `CollectDBs`) resurfaces under concurrent access, it should be filed and fixed in `dolthub/driver`, not reintroduced as a beads-side flock. ([PR #3614](https://github.com/gastownhall/beads/pull/3614))
+- **Auto-export is now on by default** — pending Dolt changes are committed automatically and exported to JSONL when configured, reducing manual sync drift in coordinated repos.
+- **Release workflow uses the checked-in beads-release formula** — the old release shell path now delegates to the formula-backed release workflow with CI gates.
 
 ### Deprecated
 
@@ -30,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`bd close <id>` in contributor auto-routing mode** — `bd close` now resolves IDs through the same routing fallback as `bd show` and `bd update`. Previously `bd close` errored with `no issue found matching <id>` in workspaces with `routing.mode=auto`, `routing.contributor=<path>`, and `beads.role=contributor` — even for IDs that `bd create` had just returned, because the issue lived in the routed planning store while `bd close` only checked the local primary. Bulk close (`bd close <id1> <id2> ...`) is also fixed by sharing one routed-store handle across the close batch. Fixes [#3608](https://github.com/gastownhall/beads/issues/3608).
+- **Dolt-in-git hook recursion** — internal pushes of `refs/dolt/data` skip git hooks, preventing sync loops. Fixes [#3724](https://github.com/gastownhall/beads/issues/3724).
+- **Hook setup and migration safety** — generated hooks no longer drop sibling commands, stale Claude hooks are warned about, and post-pull/checkout auto-import keeps committed `.beads/issues.jsonl` state fresh.
+- **Dependency display and routing** — dependency trees show blocked state only for genuine blockers, tolerate unresolved IDs in batch output, and include dependency type information.
+- **Export filtering** — closed memories and ephemeral wisps are excluded from default exports, and NoHistory beads survive explicit filters.
+- **Graph/list regressions** — graph HTML emits empty arrays instead of `null`, merges disconnected components for `--all --html`, and list output avoids duplicate issues with multiple blockers.
+- **Configuration documentation and validation drift** — stale TOML/`BEADS_*` references were corrected to YAML/`BD_*`, and secret keys are refused in git-tracked config.
+- **Release preflight and packaging** — release formula adoption, script selection, pure-Go test helpers, Windows install cleanup, and generated CLI reference paths were hardened for the v1.0.4 release attempt.
 
 ## [1.0.3] - 2026-04-24
 

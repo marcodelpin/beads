@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/lockfile"
+	"github.com/steveyegge/beads/internal/storage/db/pidfile"
+	"github.com/steveyegge/beads/internal/storage/db/server"
 	"github.com/steveyegge/beads/internal/storage/db/util"
 )
 
@@ -37,6 +39,8 @@ const (
 	spawnReadyHardTimeout = 2 * time.Minute
 	openPollInterval      = 100 * time.Millisecond
 )
+
+var ResolveExecutable = os.Executable
 
 func PickFreePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -109,7 +113,22 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 
 	// Stale pidfile from a previous (now-dead) proxy must not mislead racing
 	// readers into dialing a port that nobody is listening on.
-	_ = RemoveDatabaseProxyPidFile(rootDir)
+	_ = pidfile.Remove(rootDir, PIDFileName)
+
+	// Probe the proxy-child flock: if held, a previous proxy-child is still
+	// alive and has an orphaned dolt sql-server we must kill before
+	// respawning. If we can acquire it, no proxy-child is running — release
+	// immediately so the child we are about to spawn can take it.
+	if l, err := util.TryLock(filepath.Join(rootDir, server.LockFileName)); err == nil {
+		l.Unlock()
+	} else if lockfile.IsLocked(err) {
+		if pf, perr := pidfile.Read(rootDir, server.PIDFileName); perr == nil && pf != nil {
+			if proc, ferr := os.FindProcess(pf.Pid); ferr == nil {
+				_ = proc.Kill()
+			}
+			_ = pidfile.Remove(rootDir, server.PIDFileName)
+		}
+	}
 
 	port, err := PickFreePort()
 	if err != nil {
@@ -154,7 +173,7 @@ func forkExecChild(rootDir, configFilePath, logFilePath, doltBinPath string, por
 		}
 	}()
 
-	self, err := os.Executable()
+	self, err := ResolveExecutable()
 	if err != nil {
 		return nil, nil, fmt.Errorf("locate bd executable: %w", err)
 	}
@@ -210,7 +229,7 @@ func forkExecChild(rootDir, configFilePath, logFilePath, doltBinPath string, por
 }
 
 func readAndDial(rootDir string) (Endpoint, bool) {
-	pf, err := ReadDatabaseProxyPidFile(rootDir)
+	pf, err := pidfile.Read(rootDir, PIDFileName)
 	if err != nil || pf == nil {
 		return Endpoint{}, false
 	}

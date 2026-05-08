@@ -80,7 +80,7 @@ not intended to be invoked directly by users.`,
 func newDatabaseServer(backend proxy.Backend, rootDir, configPath, logPath, doltBin string) (server.DatabaseServer, error) {
 	switch backend {
 	case proxy.BackendLocalServer:
-		return server.NewDoltServer(doltBin, rootDir, configPath, logPath, "root", "", 0)
+		return server.NewDoltServer(doltBin, rootDir, configPath, logPath, 0)
 	case proxy.BackendExternal, proxy.BackendLocalSharedServer:
 		return nil, fmt.Errorf("backend %q: not yet implemented", backend)
 	}

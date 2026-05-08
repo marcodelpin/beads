@@ -18,8 +18,6 @@ type Counters struct {
 	StartCalls    int64
 	StopCalls     int64
 	RunningCalls  int64
-	PingCalls     int64
-	PingErrors    int64
 	DialCalls     int64
 	DialErrors    int64
 	AcceptedConns int64 // cumulative
@@ -38,7 +36,6 @@ type TestDatabaseServerImpl struct {
 	DSN_     string                 // returned by DSN(); default "test://in-memory"
 	StartErr error                  // if non-nil, Start returns it (and does not mark started)
 	StopErr  error                  // if non-nil, Stop returns it after closing conns
-	PingErr  error                  // if non-nil, Ping returns it
 	DialErr  error                  // if non-nil, Dial returns it
 	Handler  func(backend net.Conn) // runs once per Dial; default EchoHandler
 
@@ -69,6 +66,14 @@ func EchoHandler(c net.Conn) {
 func DiscardHandler(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	_, _ = io.Copy(io.Discard, c)
+}
+
+// SetDialErr atomically replaces DialErr. Use to flip Dial behavior after
+// the proxy has already reached readiness.
+func (s *TestDatabaseServerImpl) SetDialErr(err error) {
+	s.mu.Lock()
+	s.DialErr = err
+	s.mu.Unlock()
 }
 
 func (s *TestDatabaseServerImpl) Snapshot() Counters {
@@ -121,17 +126,6 @@ func (s *TestDatabaseServerImpl) Running(_ context.Context) bool {
 	defer s.mu.Unlock()
 	s.counters.RunningCalls++
 	return s.started
-}
-
-func (s *TestDatabaseServerImpl) Ping(_ context.Context) error {
-	s.mu.Lock()
-	s.counters.PingCalls++
-	if s.PingErr != nil {
-		s.counters.PingErrors++
-	}
-	err := s.PingErr
-	s.mu.Unlock()
-	return err
 }
 
 func (s *TestDatabaseServerImpl) Dial(_ context.Context) (net.Conn, error) {

@@ -1,13 +1,9 @@
 package server_test
 
-// doltserver_test.go covers the DoltServer lifecycle. Most tests start a real
-// `dolt sql-server` subprocess; those skip when `dolt` is not on PATH.
-// Validation tests (constructor argument checks, ID stability, DSN building)
-// run unconditionally.
-
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,16 +16,13 @@ import (
 	"time"
 
 	mysqldrv "github.com/go-sql-driver/mysql"
+	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/storage/db/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	pingPollInterval = 100 * time.Millisecond
-	pingPollTimeout  = 10 * time.Second
-	stopTimeout      = 15 * time.Second
-)
+const stopTimeout = 15 * time.Second
 
 func requireDolt(t *testing.T) string {
 	t.Helper()
@@ -53,9 +46,6 @@ func writeConfig(t *testing.T, port int) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	// dolt deprecated user/password in sql-server YAML (it now creates
-	// root@localhost as the superuser regardless). DoltServer takes
-	// credentials via NewDoltServer instead.
 	body := fmt.Sprintf(`log_level: debug
 listener:
   host: 127.0.0.1
@@ -73,9 +63,7 @@ func newDoltServer(t *testing.T) (*server.DoltServer, string) {
 	port := freePort(t)
 	cfg := writeConfig(t, port)
 	log := filepath.Join(t.TempDir(), "server.log")
-	// dolt auto-creates root@localhost with empty password; match those
-	// credentials so Ping/Dial/SELECT actually authenticate.
-	s, err := server.NewDoltServer(bin, rootDir, cfg, log, "root", "", 0)
+	s, err := server.NewDoltServer(bin, rootDir, cfg, log, 0)
 	require.NoError(t, err)
 	return s, rootDir
 }
@@ -85,13 +73,6 @@ func stopWithTimeout(t *testing.T, s *server.DoltServer) {
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 	require.NoError(t, s.Stop(ctx))
-}
-
-func waitReady(t *testing.T, s *server.DoltServer) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		return s.Ping(context.Background()) == nil
-	}, pingPollTimeout, pingPollInterval, "server never became ready")
 }
 
 func TestNewDoltServer_Validation(t *testing.T) {
@@ -108,19 +89,17 @@ func TestNewDoltServer_Validation(t *testing.T) {
 		bin  string
 		root string
 		cfg  string
-		user string
 		want string
 	}{
-		{"empty bin", "", t.TempDir(), goodCfg, "root", "doltBinExec is required"},
-		{"empty root", "dolt", "", goodCfg, "root", "rootDir is required"},
-		{"empty cfg", "dolt", t.TempDir(), "", "root", "configPath is required"},
-		{"empty user", "dolt", t.TempDir(), goodCfg, "", "user is required"},
-		{"missing cfg", "dolt", t.TempDir(), missingCfg, "root", "parse config"},
-		{"bad yaml", "dolt", t.TempDir(), badYAML, "root", "parse config"},
+		{"empty bin", "", t.TempDir(), goodCfg, "doltBinExec is required"},
+		{"empty root", "dolt", "", goodCfg, "rootDir is required"},
+		{"empty cfg", "dolt", t.TempDir(), "", "configPath is required"},
+		{"missing cfg", "dolt", t.TempDir(), missingCfg, "parse config"},
+		{"bad yaml", "dolt", t.TempDir(), badYAML, "parse config"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := server.NewDoltServer(tc.bin, tc.root, tc.cfg, "", tc.user, "", 0)
+			s, err := server.NewDoltServer(tc.bin, tc.root, tc.cfg, "", 0)
 			assert.Nil(t, s)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
@@ -133,11 +112,11 @@ func TestDoltServer_ID_Stable(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()
 
-	a1, err := server.NewDoltServer("dolt", rootA, cfgPath, "", "root", "", 0)
+	a1, err := server.NewDoltServer("dolt", rootA, cfgPath, "", 0)
 	require.NoError(t, err)
-	a2, err := server.NewDoltServer("dolt", rootA, cfgPath, "", "root", "", 0)
+	a2, err := server.NewDoltServer("dolt", rootA, cfgPath, "", 0)
 	require.NoError(t, err)
-	b, err := server.NewDoltServer("dolt", rootB, cfgPath, "", "root", "", 0)
+	b, err := server.NewDoltServer("dolt", rootB, cfgPath, "", 0)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -147,18 +126,14 @@ func TestDoltServer_ID_Stable(t *testing.T) {
 
 func TestDoltServer_DSN(t *testing.T) {
 	cfgPath := writeConfig(t, 13306)
-
-	// Construct with one set of credentials, then call DSN with a different
-	// set — the args must win. This proves DSN does not silently fall back
-	// to the DoltServer's stored creds.
-	s, err := server.NewDoltServer("dolt", t.TempDir(), cfgPath, "", "stored-user", "stored-pass", 0)
+	s, err := server.NewDoltServer("dolt", t.TempDir(), cfgPath, "", 0)
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	parsed, err := mysqldrv.ParseDSN(s.DSN(ctx, "", "alice", "s3cret"))
 	require.NoError(t, err)
-	assert.Equal(t, "alice", parsed.User, "DSN must use the user arg, not s.user")
-	assert.Equal(t, "s3cret", parsed.Passwd, "DSN must use the password arg, not s.password")
+	assert.Equal(t, "alice", parsed.User)
+	assert.Equal(t, "s3cret", parsed.Passwd)
 	assert.Equal(t, "tcp", parsed.Net)
 	assert.Equal(t, "127.0.0.1:13306", parsed.Addr)
 	assert.Empty(t, parsed.DBName)
@@ -183,7 +158,6 @@ func TestDoltServer_StartStop_HappyPath(t *testing.T) {
 
 	require.NoError(t, s.Start(ctx))
 	t.Cleanup(func() { stopWithTimeout(t, s) })
-	waitReady(t, s)
 	assert.True(t, s.Running(ctx))
 
 	db, err := sql.Open("mysql", s.DSN(ctx, "", "root", ""))
@@ -231,13 +205,12 @@ listener:
 	require.NoError(t, os.WriteFile(cfgPath, []byte(body), 0o600))
 
 	logPath := filepath.Join(t.TempDir(), "server.log")
-	s, err := server.NewDoltServer(bin, rootDir, cfgPath, logPath, "root", "", 0)
+	s, err := server.NewDoltServer(bin, rootDir, cfgPath, logPath, 0)
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	require.NoError(t, s.Start(ctx))
 	t.Cleanup(func() { stopWithTimeout(t, s) })
-	waitReady(t, s)
 	assert.True(t, s.Running(ctx))
 
 	// DSN must select the unix transport when a socket is configured.
@@ -297,30 +270,22 @@ func TestDoltServer_StartStopStart_NewInstanceSameRootDirSucceeds(t *testing.T) 
 
 	port1 := freePort(t)
 	cfg1 := writeConfig(t, port1)
-	s1, err := server.NewDoltServer(bin, rootDir, cfg1, logPath, "root", "", 0)
+	s1, err := server.NewDoltServer(bin, rootDir, cfg1, logPath, 0)
 	require.NoError(t, err)
 	require.NoError(t, s1.Start(ctx))
-	waitReady(t, s1)
 	require.NoError(t, s1.Stop(ctx))
 
 	// Fresh port to dodge any TIME_WAIT lingering on the old one.
 	port2 := freePort(t)
 	cfg2 := writeConfig(t, port2)
-	s2, err := server.NewDoltServer(bin, rootDir, cfg2, logPath, "root", "", 0)
+	s2, err := server.NewDoltServer(bin, rootDir, cfg2, logPath, 0)
 	require.NoError(t, err)
 	require.NoError(t, s2.Start(ctx), "new instance at same rootDir must start")
 	t.Cleanup(func() { stopWithTimeout(t, s2) })
-	waitReady(t, s2)
 	assert.True(t, s2.Running(ctx))
 
 	// ID is rootDir-derived and therefore stable across instances.
 	assert.Equal(t, s1.ID(ctx), s2.ID(ctx))
-}
-
-func TestDoltServer_Ping_BeforeStart(t *testing.T) {
-	s, _ := newDoltServer(t)
-	err := s.Ping(context.Background())
-	require.Error(t, err, "Ping must fail before Start")
 }
 
 func TestDoltServer_Dial_AfterStart(t *testing.T) {
@@ -328,7 +293,6 @@ func TestDoltServer_Dial_AfterStart(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, s.Start(ctx))
 	t.Cleanup(func() { stopWithTimeout(t, s) })
-	waitReady(t, s)
 
 	conn, err := s.Dial(ctx)
 	require.NoError(t, err)
@@ -367,12 +331,11 @@ func TestDoltServer_LogFile_CapturesOutput(t *testing.T) {
 	cfgPath := writeConfig(t, port)
 	logPath := filepath.Join(t.TempDir(), "server.log")
 
-	s, err := server.NewDoltServer(bin, rootDir, cfgPath, logPath, "root", "", 0)
+	s, err := server.NewDoltServer(bin, rootDir, cfgPath, logPath, 0)
 	require.NoError(t, err)
 	ctx := context.Background()
 	require.NoError(t, s.Start(ctx))
 	t.Cleanup(func() { stopWithTimeout(t, s) })
-	waitReady(t, s)
 	require.NoError(t, s.Stop(ctx))
 
 	info, err := os.Stat(logPath)
@@ -412,12 +375,6 @@ func TestDoltServer_ConcurrentStart_SameRootDir_OneWins(t *testing.T) {
 	require.NoError(t, exec.Command(bin, "config", "--global", "--add", "user.email", "beads@test").Run())
 
 	rootDir := t.TempDir()
-	// Pre-init disabled — let the 10 concurrent Starts race through
-	// doltInit themselves.
-	// initCmd := exec.Command(bin, "init")
-	// initCmd.Dir = rootDir
-	// initOut, err := initCmd.CombinedOutput()
-	// require.NoError(t, err, "manual dolt init failed: %s", initOut)
 
 	const n = 10
 	servers := make([]*server.DoltServer, n)
@@ -426,7 +383,7 @@ func TestDoltServer_ConcurrentStart_SameRootDir_OneWins(t *testing.T) {
 		port := freePort(t)
 		cfg := writeConfig(t, port)
 		log := filepath.Join(logDir, fmt.Sprintf("server-%d.log", i))
-		s, err := server.NewDoltServer(bin, rootDir, cfg, log, "root", "", 0)
+		s, err := server.NewDoltServer(bin, rootDir, cfg, log, 0)
 		require.NoError(t, err)
 		servers[i] = s
 	}
@@ -438,10 +395,6 @@ func TestDoltServer_ConcurrentStart_SameRootDir_OneWins(t *testing.T) {
 		}
 	})
 
-	// Fire all Starts concurrently. Start currently returns nil even if
-	// the spawned sql-server later dies (the 200ms sleep returns before
-	// cmd.Run reports failure), so the test checks Running()/Ping() to
-	// determine the actual winner.
 	var wg sync.WaitGroup
 	startErrs := make([]error, n)
 	for i := 0; i < n; i++ {
@@ -452,43 +405,26 @@ func TestDoltServer_ConcurrentStart_SameRootDir_OneWins(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+
+	winner := -1
+	losers := 0
 	for i, err := range startErrs {
-		require.NoError(t, err, "server %d Start returned err", i)
-	}
-
-	// Wait for the losers' subprocesses to exit. A loser is a DoltServer
-	// whose dolt sql-server child failed to acquire the rootDir lock and
-	// exited non-zero — that cancels its egCtx and flips Running() to
-	// false. The fight can take a moment to settle, so poll.
-	tally := func() (winners, losers int) {
-		for _, s := range servers {
-			if s.Running(context.Background()) {
-				winners++
-			} else {
-				losers++
-			}
+		if err == nil {
+			require.Equal(t, -1, winner, "more than one Start succeeded (server %d and %d)", winner, i)
+			winner = i
+			continue
 		}
-		return winners, losers
+		require.True(t, errors.Is(err, lockfile.ErrLocked),
+			"server %d: expected proxy-child.lock contention, got %v", i, err)
+		losers++
 	}
-	require.Eventually(t, func() bool {
-		w, l := tally()
-		return w == 1 && l == n-1
-	}, 10*time.Second, 100*time.Millisecond, "expected 1 winner + %d losers after rootDir lock fight", n-1)
-
-	winners, losers := tally()
-	assert.Equal(t, 1, winners, "exactly 1 Start must win the rootDir lock")
+	require.GreaterOrEqual(t, winner, 0, "no Start succeeded")
 	assert.Equal(t, n-1, losers, "the other %d Starts must lose", n-1)
 
-	// The single survivor must be ping-able (i.e., actually serving SQL).
-	winner := -1
-	for i, s := range servers {
-		if s.Running(context.Background()) {
-			winner = i
-			break
-		}
-	}
-	require.GreaterOrEqual(t, winner, 0)
-	require.NoError(t, servers[winner].Ping(context.Background()))
+	assert.True(t, servers[winner].Running(context.Background()), "winner must be running")
+	conn, err := servers[winner].Dial(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
 }
 
 func TestDoltServer_DoltInit_Idempotent(t *testing.T) {
@@ -500,6 +436,7 @@ func TestDoltServer_DoltInit_Idempotent(t *testing.T) {
 	// user.name/email in global config, so set those first.
 	require.NoError(t, exec.Command(bin, "config", "--global", "--add", "user.name", "beads-test").Run())
 	require.NoError(t, exec.Command(bin, "config", "--global", "--add", "user.email", "beads@test").Run())
+
 	cmd := exec.Command(bin, "init")
 	cmd.Dir = rootDir
 	out, err := cmd.CombinedOutput()
@@ -507,11 +444,10 @@ func TestDoltServer_DoltInit_Idempotent(t *testing.T) {
 
 	port := freePort(t)
 	cfgPath := writeConfig(t, port)
-	s, err := server.NewDoltServer(bin, rootDir, cfgPath, "", "root", "", 0)
+	s, err := server.NewDoltServer(bin, rootDir, cfgPath, "", 0)
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	require.NoError(t, s.Start(ctx), "Start against pre-initialized rootDir should succeed")
 	t.Cleanup(func() { stopWithTimeout(t, s) })
-	waitReady(t, s)
 }

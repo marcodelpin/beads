@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,10 +19,22 @@ import (
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/steveyegge/beads/internal/storage/db/pidfile"
 	"github.com/steveyegge/beads/internal/storage/db/util"
 )
 
 const defaultKeepAlivePeriod = 30 * time.Second
+
+const (
+	PIDFileName  = "proxy-child.pid"
+	LockFileName = "proxy-child.lock"
+)
+
+const (
+	startReadyTimeout      = 30 * time.Second
+	startReadyPollInterval = 50 * time.Millisecond
+	startReadyDialTimeout  = 250 * time.Millisecond
+)
 
 type DoltServer struct {
 	id              string
@@ -31,19 +42,18 @@ type DoltServer struct {
 	rootDir         string
 	configPath      string
 	config          servercfg.ServerConfig
-	user            string
-	password        string
 	keepAlivePeriod time.Duration
 
 	logFile *os.File
 	eg      *errgroup.Group
 	egCtx   context.Context
 	cancel  context.CancelFunc
+	pid     int
 }
 
 var _ DatabaseServer = (*DoltServer)(nil)
 
-func NewDoltServer(doltBinExec, rootDir, configPath, logFilePath, user, password string, keepAlivePeriod time.Duration) (*DoltServer, error) {
+func NewDoltServer(doltBinExec, rootDir, configPath, logFilePath string, keepAlivePeriod time.Duration) (*DoltServer, error) {
 	if doltBinExec == "" {
 		return nil, errors.New("server: NewDoltServer: doltBinExec is required")
 	}
@@ -52,9 +62,6 @@ func NewDoltServer(doltBinExec, rootDir, configPath, logFilePath, user, password
 	}
 	if configPath == "" {
 		return nil, errors.New("server: NewDoltServer: configPath is required")
-	}
-	if user == "" {
-		return nil, errors.New("server: NewDoltServer: user is required")
 	}
 	absDoltBinExec, err := filepath.Abs(doltBinExec)
 	if err != nil {
@@ -93,8 +100,6 @@ func NewDoltServer(doltBinExec, rootDir, configPath, logFilePath, user, password
 		rootDir:         absRootDir,
 		configPath:      absConfigPath,
 		config:          cfg,
-		user:            user,
-		password:        password,
 		keepAlivePeriod: keepAlivePeriod,
 		logFile:         logFile,
 	}, nil
@@ -207,11 +212,18 @@ func (s *DoltServer) Start(ctx context.Context) error {
 		return fmt.Errorf("server: DoltServer.Start: server already started")
 	}
 
+	lock, err := util.TryLock(filepath.Join(s.rootDir, LockFileName))
+	if err != nil {
+		return fmt.Errorf("server: DoltServer.Start: acquire %s: %w", LockFileName, err)
+	}
+
 	if err := s.doltConfigure(ctx); err != nil {
+		lock.Unlock()
 		return err
 	}
 
 	if err := s.doltInitWithRetries(ctx); err != nil {
+		lock.Unlock()
 		return err
 	}
 
@@ -236,13 +248,69 @@ func (s *DoltServer) Start(ctx context.Context) error {
 
 	cmd.Env = os.Environ()
 
+	if err := cmd.Start(); err != nil {
+		s.eg, s.egCtx, s.cancel = nil, nil, nil
+		cancel()
+		lock.Unlock()
+		return fmt.Errorf("server: DoltServer.Start: spawn dolt: %w", err)
+	}
+
+	s.pid = cmd.Process.Pid
+
+	if err := pidfile.Write(s.rootDir, PIDFileName, pidfile.PidFile{
+		Pid:  s.pid,
+		Port: s.config.Port(),
+	}); err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		s.eg, s.egCtx, s.cancel, s.pid = nil, nil, nil, 0
+		cancel()
+		lock.Unlock()
+		return fmt.Errorf("server: DoltServer.Start: write pidfile: %w", err)
+	}
+
 	eg.Go(func() error {
-		return cmd.Run()
+		defer lock.Unlock()
+		return cmd.Wait()
 	})
 
-	// give server time to come up
-	time.Sleep(200 * time.Millisecond)
+	if err := s.waitReady(ctx); err != nil {
+		cancel()
+		_ = s.eg.Wait()
+		s.eg, s.egCtx, s.cancel, s.pid = nil, nil, nil, 0
+		_ = pidfile.Remove(s.rootDir, PIDFileName)
+		return fmt.Errorf("server: DoltServer.Start: %w", err)
+	}
 	return nil
+}
+
+func (s *DoltServer) waitReady(ctx context.Context) error {
+	deadline := time.Now().Add(startReadyTimeout)
+	for {
+		if s.egCtx.Err() != nil {
+			return errors.New("dolt sql-server exited before listener became ready")
+		}
+
+		dctx, dcancel := context.WithTimeout(ctx, startReadyDialTimeout)
+		conn, err := s.Dial(dctx)
+		dcancel()
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("listener not ready after %s: %w", startReadyTimeout, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.egCtx.Done():
+			return errors.New("dolt sql-server exited before listener became ready")
+		case <-time.After(startReadyPollInterval):
+		}
+	}
 }
 
 func (s *DoltServer) Stop(_ context.Context) error {
@@ -262,11 +330,19 @@ func (s *DoltServer) Stop(_ context.Context) error {
 		closeErr = s.logFile.Close()
 		s.logFile = nil
 	}
+	var rmErr error
+	if s.pid != 0 {
+		rmErr = pidfile.Remove(s.rootDir, PIDFileName)
+		s.pid = 0
+	}
 	if waitErr != nil {
 		return fmt.Errorf("server: DoltServer.Stop: %w", waitErr)
 	}
 	if closeErr != nil {
 		return fmt.Errorf("server: DoltServer.Stop: close log: %w", closeErr)
+	}
+	if rmErr != nil {
+		return fmt.Errorf("server: DoltServer.Stop: remove pidfile: %w", rmErr)
 	}
 	return nil
 }
@@ -276,18 +352,6 @@ func (s *DoltServer) Running(_ context.Context) bool {
 		return false
 	}
 	return s.egCtx.Err() == nil
-}
-
-func (s *DoltServer) Ping(ctx context.Context) error {
-	db, err := sql.Open("mysql", s.DSN(ctx, "", s.user, s.password))
-	if err != nil {
-		return fmt.Errorf("server: DoltServer.Ping: open: %w", err)
-	}
-	defer db.Close()
-	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("server: DoltServer.Ping: %w", err)
-	}
-	return nil
 }
 
 func (s *DoltServer) Dial(ctx context.Context) (net.Conn, error) {

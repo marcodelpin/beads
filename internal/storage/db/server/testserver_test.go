@@ -120,27 +120,6 @@ func TestRunning_Counter(t *testing.T) {
 	assert.Equal(t, int64(5), srv.Snapshot().RunningCalls)
 }
 
-func TestPing_Success(t *testing.T) {
-	srv := server.New()
-
-	require.NoError(t, srv.Ping(context.Background()))
-
-	c := srv.Snapshot()
-	assert.Equal(t, int64(1), c.PingCalls)
-	assert.Equal(t, int64(0), c.PingErrors)
-}
-
-func TestPing_Error(t *testing.T) {
-	srv := server.New()
-	srv.PingErr = errors.New("offline")
-
-	assert.EqualError(t, srv.Ping(context.Background()), "offline")
-
-	c := srv.Snapshot()
-	assert.Equal(t, int64(1), c.PingCalls)
-	assert.Equal(t, int64(1), c.PingErrors)
-}
-
 func TestDial_Echo(t *testing.T) {
 	ctx := context.Background()
 	srv := server.New()
