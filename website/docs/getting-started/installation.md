@@ -149,10 +149,10 @@ cd your-project
 bd init --quiet
 
 # 3. Setup editor integration (choose one)
-bd setup claude   # Claude Code - installs SessionStart/PreCompact hooks
+bd setup claude   # Claude Code - installs SessionStart hooks
 bd setup cursor   # Cursor IDE - creates .cursor/rules/beads.mdc
 bd setup aider    # Aider - creates .aider.conf.yml
-bd setup codex    # Codex CLI - creates/updates AGENTS.md
+bd setup codex    # Codex CLI - installs Beads skill, AGENTS.md guidance, and native hooks
 bd setup factory  # Factory.ai Droid - creates/updates AGENTS.md
 bd setup mux      # Mux - creates/updates AGENTS.md
 ```
@@ -160,6 +160,7 @@ bd setup mux      # Mux - creates/updates AGENTS.md
 **How it works:**
 - `bd init` creates or updates `AGENTS.md` by default unless you use `--skip-agents` or `--stealth`
 - Editor hooks/rules inject `bd prime` automatically on session start
+- Codex 0.129.0+ uses native `/hooks` for startup and compaction-aware context refresh
 - `bd prime` provides ~1-2k tokens of workflow context
 - You use `bd` CLI commands directly
 - Git hooks (installed by `bd init`) auto-sync the database

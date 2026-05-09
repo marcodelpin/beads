@@ -525,7 +525,7 @@ func enrichStaleMolecules(dc DoctorCheck) agentEnrichment {
 func enrichClaude(dc DoctorCheck) agentEnrichment {
 	return agentEnrichment{
 		severity:    "advisory",
-		explanation: fmt.Sprintf("Claude integration: %s. Beads integrates with Claude Code via hooks (SessionStart, PreCompact) defined in .claude/settings.json.", dc.Message),
+		explanation: fmt.Sprintf("Claude integration: %s. Beads integrates with Claude Code via SessionStart hooks defined in .claude/settings.json.", dc.Message),
 		observed:    dc.Message + "\n" + dc.Detail,
 		expected:    "Claude Code hooks configured for beads (bd prime on SessionStart)",
 		commands:    []string{"bd hooks install"},
@@ -547,9 +547,9 @@ func enrichClaudeSettings(dc DoctorCheck) agentEnrichment {
 func enrichClaudeHooks(dc DoctorCheck) agentEnrichment {
 	return agentEnrichment{
 		severity:    "advisory",
-		explanation: fmt.Sprintf("Claude hook completeness: %s. Beads needs both SessionStart and PreCompact hooks to function properly in Claude Code sessions.", dc.Message),
+		explanation: fmt.Sprintf("Claude hook completeness: %s. Beads needs a SessionStart hook to inject context in Claude Code sessions, including after compaction.", dc.Message),
 		observed:    dc.Message + "\n" + dc.Detail,
-		expected:    "Both SessionStart and PreCompact hooks configured for beads",
+		expected:    "SessionStart hook configured for beads",
 		commands:    []string{"bd hooks install"},
 		sourceFiles: []string{"cmd/bd/doctor/claude.go:CheckClaudeHookCompleteness"},
 	}

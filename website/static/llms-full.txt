@@ -108,7 +108,7 @@ bd setup claude
 bd setup claude --check  # Verify
 ```
 
-Installs SessionStart hook (`bd prime`) and PreCompact hook (`bd prime`).
+Installs SessionStart hook (`bd prime`).
 
 ## Cursor IDE
 
@@ -9855,7 +9855,7 @@ bd setup claude
 
 This installs:
 - **SessionStart hook** - Runs `bd prime` on session start
-- **PreCompact hook** - Runs `bd prime` before context compaction
+- **SessionStart compact refresh** - Runs `bd prime` after context compaction
 
 ### Manual Setup
 

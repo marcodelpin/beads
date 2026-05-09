@@ -73,7 +73,7 @@ func CheckLegacyBeadsSlashCommands(repoPath string) DoctorCheck {
 		Fix: "Migrate to bd prime hooks for better token efficiency:\n" +
 			"\n" +
 			"Migration Steps:\n" +
-			"  1. Run 'bd setup claude' to add SessionStart/PreCompact hooks\n" +
+			"  1. Run 'bd setup claude' to add SessionStart hooks\n" +
 			"  2. Update " + config.AgentsFile() + "/CLAUDE.md:\n" +
 			"     - Remove /beads:* slash command references\n" +
 			"     - Add: \"Run 'bd prime' for workflow context\" (for users without hooks)\n" +
@@ -135,7 +135,7 @@ func CheckLegacyMCPToolReferences(repoPath string) DoctorCheck {
 		Fix: "Migrate to bd prime hooks for better token efficiency:\n" +
 			"\n" +
 			"Migration Steps:\n" +
-			"  1. Run 'bd setup claude' to add SessionStart/PreCompact hooks\n" +
+			"  1. Run 'bd setup claude' to add SessionStart hooks\n" +
 			"  2. Replace MCP tool references with CLI commands:\n" +
 			"     - mcp__beads_beads__list  → bd list\n" +
 			"     - mcp__beads_beads__show  → bd show <id>\n" +

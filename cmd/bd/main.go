@@ -711,6 +711,7 @@ var rootCmd = &cobra.Command{
 			"bootstrap",
 			"completion",
 			"context", // reads config files directly, does not need DB open
+			"codex-hook",
 			"doctor",
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",

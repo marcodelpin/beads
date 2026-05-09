@@ -67,14 +67,14 @@ var BuiltinRecipes = map[string]Recipe{
 	"claude": {
 		Name:        "Claude Code",
 		Type:        TypeHooks,
-		Description: "Claude Code hooks (SessionStart, PreCompact)",
+		Description: "Claude Code hooks (SessionStart)",
 		GlobalPath:  "~/.claude/settings.json",
 		ProjectPath: ".claude/settings.local.json",
 	},
 	"gemini": {
 		Name:        "Gemini CLI",
 		Type:        TypeHooks,
-		Description: "Gemini CLI hooks (SessionStart, PreCompress)",
+		Description: "Gemini CLI hooks (SessionStart)",
 		GlobalPath:  "~/.gemini/settings.json",
 		ProjectPath: ".gemini/settings.json",
 	},

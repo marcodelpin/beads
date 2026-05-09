@@ -41,16 +41,21 @@ func TestPluginLayoutUsesSharedBeadsRoot(t *testing.T) {
 
 	var codexManifest struct {
 		Skills string `json:"skills"`
+		Hooks  string `json:"hooks"`
 	}
 	readJSONFile(t, filepath.Join(root, "plugins", "beads", ".codex-plugin", "plugin.json"), &codexManifest)
 	if codexManifest.Skills != "./skills/" {
 		t.Fatalf("Codex manifest skills path = %q, want ./skills/", codexManifest.Skills)
+	}
+	if codexManifest.Hooks != "./hooks/hooks.json" {
+		t.Fatalf("Codex manifest hooks path = %q, want ./hooks/hooks.json", codexManifest.Hooks)
 	}
 
 	requireRepoFile(t, root, "plugins", "beads", "skills", "beads", "SKILL.md")
 	requireRepoFile(t, root, "plugins", "beads", "skills", "beads", "agents", "openai.yaml")
 	requireRepoFile(t, root, "plugins", "beads", "agents", "task-agent.md")
 	requireRepoFile(t, root, "plugins", "beads", "skills", "beads", "commands", "ready.md")
+	requireRepoFile(t, root, "plugins", "beads", "hooks", "hooks.json")
 }
 
 func readJSONFile(t *testing.T, path string, dest interface{}) {
