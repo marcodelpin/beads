@@ -118,6 +118,17 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			FatalError("unknown backend %q: only \"dolt\" is supported", backendFlag)
 		}
 
+		// bda-r2r: --inject-agents-md is independent of Dolt/embedded-mode setup.
+		// Run it eagerly here so the flag works even in builds without embedded
+		// Dolt support (e.g. gms_pure_go) and even before .beads/ exists. The
+		// in-flow call later (after addAgentsInstructions) is a no-op once the
+		// block is already present, since injectBdBlock is idempotent.
+		if injectAgentsMd, _ := cmd.Flags().GetBool("inject-agents-md"); injectAgentsMd {
+			if err := runInjectAgentsMd(!quiet); err != nil && !quiet {
+				fmt.Fprintf(os.Stderr, "Warning: --inject-agents-md returned error: %v\n", err)
+			}
+		}
+
 		// Validate --database format early, before any side effects.
 		if database != "" {
 			if err := dolt.ValidateDatabaseName(database); err != nil {
@@ -1265,6 +1276,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				renderOpts := agents.RenderOpts{HasRemote: shouldWireInitRemote(syncURL, syncFromRemote, syncURLFromConfig)}
 				addAgentsInstructions(resolvedAgentsFile, !quiet, agentsTemplate, agentsProfile, renderOpts)
 			}
+			// bda-r2r: --inject-agents-md was handled eagerly at the top of Run()
+			// so it works even when embedded Dolt is unavailable. No-op here.
 		}
 
 		// Auto-setup Claude hooks for project (writes to .claude/settings.json)
@@ -1429,6 +1442,7 @@ func init() {
 	initCmd.Flags().String("agents-template", "", "Path to custom AGENTS.md template (overrides embedded default)")
 	initCmd.Flags().String("agents-profile", "", "AGENTS.md profile: 'minimal' (default, pointer to bd prime) or 'full' (complete command reference)")
 	initCmd.Flags().String("agents-file", "", "Custom filename for agent instructions (default: AGENTS.md)")
+	initCmd.Flags().Bool("inject-agents-md", false, "Inject bd-usage block (marker-delimited <!-- bd:start --> ... <!-- bd:end -->) into CLAUDE.md AND AGENTS.md (idempotent; replaces existing block in place). Pattern borrowed from ghist init (bda-r2r).")
 	initCmd.Flags().String("remote", "", "Dolt remote URL to clone from and persist as sync.remote")
 
 	// Non-interactive mode for CI/cloud agents
