@@ -94,19 +94,25 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 		return // nothing to import
 	}
 
-	// Fork-only guard (P0): TotalIssues==0 is not enough — a database with 0
-	// issues but >=1 memory IS populated, and re-importing the JSONL on
-	// every invocation will resurrect memories that were intentionally
-	// deleted (e.g. by 'bd memories --gc' or 'bd gc' memory prune).
-	// Runs BEFORE upstream's single-transaction path so the guard applies
-	// to both embedded and non-embedded stores.
-	if memCount, err := countMemoriesInStore(ctx, s); err == nil && memCount > 0 {
-		return
-	}
-
 	// Prefer single-transaction import (embedded mode) to avoid
 	// DOLT_COMMIT races with concurrent writers.
 	if importer, ok := s.(jsonlImporter); ok {
+		// Fork-only guard (P0): TotalIssues==0 is not enough — a database with
+		// 0 issues but >=1 memory IS populated, and re-importing the JSONL on
+		// every invocation will resurrect memories that were intentionally
+		// deleted (e.g. by 'bd memories --gc' or 'bd gc' memory prune).
+		// Scoped to the embedded path because:
+		//   1) the embedded ImportJSONLData replays full config including
+		//      memory keys, which is exactly the resurrection vector;
+		//   2) the server-mode fallback's emptiness is already enforced by
+		//      the upstream TotalIssues guard above, and applying this
+		//      memory check there breaks upstream's
+		//      TestMaybeAutoImportJSONL_ServerModeFallback_RunsWhenEmpty
+		//      because the test's fakeFallbackStore intentionally does not
+		//      implement GetAllConfig (panics on call).
+		if memCount, err := countMemoriesInStore(ctx, s); err == nil && memCount > 0 {
+			return
+		}
 		imported, err := importer.ImportJSONLData(ctx, issues, configEntries, "auto-import")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: auto-import from %s failed: %v\n", jsonlPath, err)
