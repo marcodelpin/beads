@@ -267,7 +267,7 @@ Consent flow (recommended):
 						if !jsonOutput {
 							fmt.Printf("  Memory prune: deleted %d expired memor(y/ies) with policy=delete\n", len(deleted))
 						}
-						if isEmbeddedMode() && store != nil {
+						if !usesSQLServer() && store != nil {
 							if _, err := store.CommitPending(ctx, actor); err != nil {
 								WarnError("failed to commit after memory prune: %v", err)
 							}
