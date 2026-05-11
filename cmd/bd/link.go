@@ -68,7 +68,7 @@ Examples:
 		// Check for cycles after adding dependency
 		warnIfCyclesExist(fromStore)
 
-		if isEmbeddedMode() && fromStore != nil {
+		if !usesSQLServer() && fromStore != nil {
 			if err := fromStore.Commit(ctx, fmt.Sprintf("bd: link (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 				FatalErrorRespectJSON("failed to commit: %v", err)
 			}

@@ -12,37 +12,40 @@ import (
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/storage"
-	"github.com/steveyegge/beads/internal/storage/db/util"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 )
 
-// isEmbeddedMode returns true when the current session is using the embedded
-// Dolt engine (the default). Returns false in server mode (external dolt
-// sql-server). Safe to call before store initialization — defaults to true
-// (embedded) when the mode hasn't been set yet.
-func isEmbeddedMode() bool {
+func usesSQLServer() bool {
 	if shouldUseGlobals() {
-		if serverMode {
-			return false
+		if serverMode || proxiedServerMode {
+			return true
 		}
-	} else if cmdCtx != nil && cmdCtx.ServerMode {
-		return false
+	} else if cmdCtx != nil && (cmdCtx.ServerMode || cmdCtx.ProxiedServerMode) {
+		return true
 	}
-	// Shared server mode is a form of server mode. This check covers
-	// commands that skip DB init (dolt status, dolt start, etc.) where
-	// serverMode hasn't been set from metadata.json yet (GH#2946).
 	if doltserver.IsSharedServerMode() {
-		return false
+		return true
 	}
-	return true // default: embedded
+	return false // default: embedded
+}
+
+func usesProxiedServer() bool {
+	if shouldUseGlobals() {
+		return proxiedServerMode
+	}
+	return cmdCtx != nil && cmdCtx.ProxiedServerMode
 }
 
 // newDoltStore creates a storage backend from an explicit config.
-// When cfg.ServerMode is true, connects to an external dolt sql-server;
-// otherwise uses the embedded Dolt engine (default).
 // Used by bd init and PersistentPreRun.
 func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, error) {
+	if cfg.ProxiedServer {
+		// TODO: this should not be a store
+		// it should be a uow provider
+		return nil, fmt.Errorf("proxy server store should be uow provider")
+	}
 	if cfg.ServerMode {
 		return dolt.New(ctx, cfg)
 	}
@@ -78,6 +81,15 @@ func acquireEmbeddedLock(beadsDir string, serverMode bool) (util.Unlocker, error
 // auto-sanitized to underscores and the fix is persisted to metadata.json.
 func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
 	cfg, err := configfile.Load(beadsDir)
+	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
+		// TODO: this needs to be uow provider
+		return nil, fmt.Errorf("proxy server store should be uow provider")
+		// 	return newProxiedServerStore(ctx, &dolt.Config{
+		// 		BeadsDir:      beadsDir,
+		// 		Database:      cfg.GetDoltDatabase(),
+		// 		ProxiedServer: true,
+		// 	})
+	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
 		return dolt.NewFromConfig(ctx, beadsDir)
 	}
@@ -142,6 +154,16 @@ func migrateHyphenatedDB(beadsDir string, cfg *configfile.Config, oldName, newNa
 // hydration from mutating foreign projects (GH#3231).
 func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
 	cfg, err := configfile.Load(beadsDir)
+	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
+		// TODO: this needs to be uow provider
+		return nil, fmt.Errorf("proxy server store needs to be uow provider")
+		// return newProxiedServerStore(ctx, &dolt.Config{
+		// 	BeadsDir:      beadsDir,
+		// 	Database:      cfg.GetDoltDatabase(),
+		// 	ProxiedServer: true,
+		// 	ReadOnly:      true,
+		// })
+	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
 		return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
 	}

@@ -7,28 +7,15 @@ import (
 	"sync"
 )
 
-// ignoredMigration identifies an embedded .up.sql migration (or a subset of
-// its statements) that defines or alters a dolt-ignored table.
-type ignoredMigration struct {
-	version int
-	// filter, if non-empty, selects only statements containing this substring
-	// (case-insensitive). When empty, the entire migration file is used.
-	filter string
-}
-
-// ignoredMigrations lists the migrations that define or alter dolt-ignored
-// tables, in the order they must be applied. This replaces the former
-// hand-maintained Go constants — the .up.sql files are the single source
-// of truth.
-var ignoredMigrations = []ignoredMigration{
-	{version: 29},                  // CREATE TABLE local_metadata
-	{version: 11},                  // CREATE TABLE repo_mtimes
-	{version: 20},                  // CREATE TABLE wisps
-	{version: 21},                  // CREATE TABLE wisp_labels, wisp_dependencies, wisp_events, wisp_comments
-	{version: 22},                  // CREATE INDEX on wisp_dependencies
-	{version: 23, filter: "wisps"}, // ALTER TABLE wisps ADD COLUMN no_history (skip issues ALTER)
-	{version: 27, filter: "wisps"}, // ALTER TABLE wisps ADD COLUMN started_at (skip issues ALTER)
-	{version: 31},                  // CREATE INDEX idx_wisp_events_created_at
+var ignoredMigrations = []int{
+	29, // CREATE TABLE local_metadata
+	11, // CREATE TABLE repo_mtimes
+	20, // CREATE TABLE wisps
+	21, // CREATE TABLE wisp_labels, wisp_dependencies, wisp_events, wisp_comments
+	22, // CREATE INDEX on wisp_dependencies
+	23, // ADD COLUMN no_history (issues + wisps; issues ALTER tolerated as duplicate)
+	27, // ADD COLUMN started_at (issues + wisps; issues ALTER tolerated as duplicate)
+	31, // CREATE INDEX idx_wisp_events_created_at
 }
 
 var (
@@ -36,9 +23,9 @@ var (
 	ignoredDDLVal  []string
 )
 
-// IgnoredTableDDL returns the ordered list of SQL statements needed to
-// recreate all dolt-ignored tables from scratch. Derived from embedded
-// migration files at first call and cached thereafter.
+// IgnoredTableDDL returns the ordered list of SQL bodies needed to recreate
+// all dolt-ignored tables from scratch. Each entry is the full contents of
+// one .up.sql file. Derived at first call and cached thereafter.
 func IgnoredTableDDL() []string {
 	ignoredDDLOnce.Do(func() {
 		ignoredDDLVal = buildIgnoredTableDDL()
@@ -47,20 +34,9 @@ func IgnoredTableDDL() []string {
 }
 
 func buildIgnoredTableDDL() []string {
-	var result []string
-	for _, im := range ignoredMigrations {
-		raw := ReadMigrationSQL(im.version)
-		stmts := splitStatements(raw)
-		if im.filter != "" {
-			filterLower := strings.ToLower(im.filter)
-			for _, s := range stmts {
-				if strings.Contains(strings.ToLower(s), filterLower) {
-					result = append(result, s)
-				}
-			}
-		} else {
-			result = append(result, stmts...)
-		}
+	result := make([]string, 0, len(ignoredMigrations))
+	for _, v := range ignoredMigrations {
+		result = append(result, ReadMigrationSQL(v))
 	}
 	return result
 }
@@ -83,32 +59,4 @@ func ReadMigrationSQL(version int) string {
 		}
 	}
 	panic(fmt.Sprintf("schema: migration %04d not found", version))
-}
-
-// splitStatements splits SQL text on semicolons into individual statements,
-// stripping SQL comments and whitespace. Returns only non-empty statements.
-func splitStatements(sql string) []string {
-	raw := strings.Split(sql, ";")
-	var out []string
-	for _, s := range raw {
-		s = stripSQLComments(s)
-		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// stripSQLComments removes lines starting with -- from SQL text.
-func stripSQLComments(sql string) string {
-	var lines []string
-	for _, line := range strings.Split(sql, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
 }

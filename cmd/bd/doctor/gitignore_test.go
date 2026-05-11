@@ -1770,7 +1770,7 @@ func TestCheckProjectGitignore_AllPresent(t *testing.T) {
 		}
 	}()
 
-	content := "node_modules/\n.dolt/\n*.db\n.beads-credential-key\n"
+	content := "node_modules/\n.dolt/\n*.db\n.beads-credential-key\n.beads/proxieddb/\n"
 	if err := os.WriteFile(".gitignore", []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -15,8 +15,8 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
-	"github.com/steveyegge/beads/internal/storage/db/proxy"
-	"github.com/steveyegge/beads/internal/storage/db/util"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -48,7 +48,7 @@ var (
 	_ storage.Compactor        = (*DoltServerStore)(nil)
 )
 
-func newDoltServerStore(
+func NewDoltServerStore(
 	ctx context.Context,
 	serverRootDir string,
 	beadsDir string,
@@ -113,31 +113,25 @@ func newDoltServerStore(
 		return nil, fmt.Errorf("doltserver: get proxy endpoint: %w", err)
 	}
 
-	// Open the initial connection with no default database — the target
-	// database does not yet exist, so a DSN-level USE would 1049. initSchema
-	// is responsible for CREATE DATABASE + migrations on this connection.
 	initDB, err := openDB(ctx, buildDSN(ep, "", rootUser, rootPassword))
 	if err != nil {
 		return nil, err
 	}
-	s.db = initDB
 
-	if err := s.initSchema(ctx); err != nil {
+	if err := s.initSchema(ctx, initDB); err != nil {
 		_ = initDB.Close()
 		return nil, fmt.Errorf("doltserver: init schema: %w", err)
 	}
 	if err := initDB.Close(); err != nil {
 		return nil, fmt.Errorf("doltserver: close init db: %w", err)
 	}
-	s.db = nil
 
-	// Reopen with the target database now that initSchema has created it.
 	db, err := openDB(ctx, buildDSN(ep, database, rootUser, rootPassword))
 	if err != nil {
 		return nil, err
 	}
-	s.db = db
 
+	s.db = db
 	return s, nil
 }
 
@@ -147,6 +141,7 @@ func (s *DoltServerStore) getDatabaseProxyEndpoint() (proxy.Endpoint, error) {
 		ConfigFilePath: s.serverConfigFilePath,
 		LogFilePath:    s.serverLogFilePath,
 		DoltBinPath:    s.doltBinExec,
+		IdleTimeout:    30 * time.Second,
 	})
 }
 
@@ -171,8 +166,8 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-func (s *DoltServerStore) withReadTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func withReadTxOn(ctx context.Context, db *sql.DB, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("doltserver: begin read tx: %w", err)
 	}
@@ -180,8 +175,8 @@ func (s *DoltServerStore) withReadTx(ctx context.Context, fn func(ctx context.Co
 	return fn(ctx, tx)
 }
 
-func (s *DoltServerStore) withWriteTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func withWriteTxOn(ctx context.Context, db *sql.DB, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("doltserver: begin write tx: %w", err)
 	}
@@ -194,13 +189,21 @@ func (s *DoltServerStore) withWriteTx(ctx context.Context, fn func(ctx context.C
 	return nil
 }
 
-func (s *DoltServerStore) initSchema(ctx context.Context) error {
+func (s *DoltServerStore) withReadTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return withReadTxOn(ctx, s.db, fn)
+}
+
+func (s *DoltServerStore) withWriteTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return withWriteTxOn(ctx, s.db, fn)
+}
+
+func (s *DoltServerStore) initSchema(ctx context.Context, db *sql.DB) error {
 	if !validIdentifier.MatchString(s.database) {
 		return fmt.Errorf("doltserver: invalid database name: %q", s.database)
 	}
 	dbIdent := "`" + s.database + "`"
 
-	return s.withWriteTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	return withWriteTxOn(ctx, db, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+dbIdent); err != nil {
 			return fmt.Errorf("doltserver: creating database: %w", err)
 		}

@@ -184,7 +184,7 @@ Examples:
   bd doctor --migration=post   # Validate Dolt migration completed
   bd doctor --migration=pre --json  # Machine-parseable migration validation`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Note: 'bd doctor' is not yet supported in embedded mode.")
 			fmt.Fprintln(os.Stderr, "")
 			fmt.Fprintln(os.Stderr, "For embedded mode troubleshooting:")
@@ -192,6 +192,10 @@ Examples:
 			fmt.Fprintln(os.Stderr, "  • Check bd version:        bd version")
 			fmt.Fprintln(os.Stderr, "  • Reinitialize if needed:  bd init --force")
 			fmt.Fprintln(os.Stderr, "  • Switch to server mode:   bd init --server")
+			os.Exit(0)
+		}
+		if usesProxiedServer() {
+			fmt.Fprintln(os.Stderr, "Note: 'bd doctor' is not yet supported in proxied-server mode.")
 			os.Exit(0)
 		}
 		// Use global jsonOutput set by PersistentPreRun

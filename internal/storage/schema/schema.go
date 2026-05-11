@@ -1,6 +1,3 @@
-// Package schema provides the unified schema definitions and migration runner
-// for both DoltStore and EmbeddedDoltStore. The embedded .up.sql migration
-// files are the single source of truth for the database schema.
 package schema
 
 import (
@@ -113,9 +110,6 @@ func parseVersion(name string) (int, error) {
 // Returns the number of migrations applied. Safe for use with both *sql.Tx and
 // *sql.DB — the caller controls transaction boundaries.
 func MigrateUp(ctx context.Context, db DBConn) (int, error) {
-	// Bootstrap the tracking table.
-	// Bootstrap with applied_at so migration 0032 can unconditionally drop it.
-	// After 0032 runs, the table has only the version column.
 	if _, err := db.ExecContext(ctx, schemaMigrationsBootstrapSQL); err != nil {
 		return 0, fmt.Errorf("creating schema_migrations table: %w", err)
 	}
@@ -129,30 +123,11 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 		return 0, fmt.Errorf("reading current migration version: %w", err)
 	}
 
-	// Fast path: if current version matches the highest embedded migration, nothing to do.
 	if current >= LatestVersion() {
 		return 0, nil
 	}
 
-	// If schema_migrations is empty but core tables already exist (e.g. restored
-	// from a DoltStore backup that doesn't track embedded migrations), backfill
-	// all versions so we don't re-run migrations that would fail on "already exists".
-	if current == 0 {
-		var tableCount int
-		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'issues' AND table_schema = DATABASE()").Scan(&tableCount); err == nil && tableCount > 0 {
-			return backfillMigrations(ctx, db)
-		}
-	}
-
-	return runMigrations(ctx, db, current, false)
-}
-
-// backfillMigrations runs all migrations in order, ignoring "already exists"
-// errors, and records each version. Used when a database is restored from a
-// backup that predates the schema_migrations tracking table — most of the
-// schema is already correct, but dolt_ignore'd tables (wisps) may be missing.
-func backfillMigrations(ctx context.Context, db DBConn) (int, error) {
-	return runMigrations(ctx, db, 0, true)
+	return runMigrations(ctx, db, current)
 }
 
 type migrationFile struct {
@@ -160,12 +135,7 @@ type migrationFile struct {
 	name    string
 }
 
-// runMigrations collects all embedded .up.sql files with version > minVersion,
-// sorts them, and executes each one. DDL "already exists" errors and duplicate
-// version inserts are always tolerated to support concurrent initialization
-// (multiple processes racing to apply the same migration). When tolerateExisting
-// is true, ALL "already exists" errors are silently ignored (backfill path).
-func runMigrations(ctx context.Context, db DBConn, minVersion int, tolerateExisting bool) (int, error) {
+func runMigrations(ctx context.Context, db DBConn, minVersion int) (int, error) {
 	entries, err := fs.ReadDir(upMigrations, "migrations")
 	if err != nil {
 		return 0, fmt.Errorf("reading embedded migrations: %w", err)
@@ -197,44 +167,14 @@ func runMigrations(ctx context.Context, db DBConn, minVersion int, tolerateExist
 			return 0, fmt.Errorf("reading migration %s: %w", mf.name, err)
 		}
 
-		// Execute statements individually. Multi-statement Exec can abort the
-		// batch on the first error, which under tolerateExisting silently skips
-		// subsequent DDL while still recording the version as applied (GH#3363).
-		for _, stmt := range splitStatements(string(data)) {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				if !tolerateExisting && !isConcurrentInitError(err) {
-					return 0, fmt.Errorf("migration %s: statement failed: %w", mf.name, err)
-				}
-			}
+		if _, err := db.ExecContext(ctx, string(data)); err != nil {
+			return 0, fmt.Errorf("migration %s: %w", mf.name, err)
 		}
 
-		// Always use INSERT IGNORE — concurrent processes may race to record
-		// the same migration version. Duplicate PK is expected and harmless.
 		if _, err := db.ExecContext(ctx, "INSERT IGNORE INTO schema_migrations (version) VALUES (?)", mf.version); err != nil {
-			if !isConcurrentInitError(err) {
-				return 0, fmt.Errorf("recording migration %s: %w", mf.name, err)
-			}
+			return 0, fmt.Errorf("recording migration %s: %w", mf.name, err)
 		}
 	}
 
 	return len(pending), nil
-}
-
-// isConcurrentInitError returns true for errors that are expected and harmless
-// during concurrent schema initialization, or when the desired state is already
-// present because a db was bootstrapped out-of-band:
-//   - "already exists" — table/index/key created by another process (1050, 1061)
-//   - "duplicate column" — ALTER TABLE ADD COLUMN raced (1060)
-//   - "duplicate key name" — CREATE INDEX raced (1061)
-//   - "serialization failure" — Dolt write conflict from concurrent transaction
-//   - "does not have column" — ALTER TABLE DROP COLUMN on already-missing column
-//     (Dolt 1105); symmetric with "duplicate column" above. Makes DROP COLUMN
-//     migrations idempotent across dbs bootstrapped with different base schemas.
-func isConcurrentInitError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "already exists") ||
-		strings.Contains(msg, "duplicate column") ||
-		strings.Contains(msg, "duplicate key name") ||
-		strings.Contains(msg, "serialization failure") ||
-		strings.Contains(msg, "does not have column")
 }

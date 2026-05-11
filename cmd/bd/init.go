@@ -101,6 +101,49 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 		sharedServer, _ := cmd.Flags().GetBool("shared-server")
 		externalServer, _ := cmd.Flags().GetBool("external")
+		initProxiedServer, _ := cmd.Flags().GetBool("proxied-server")
+		serverConfigPath, _ := cmd.Flags().GetString("proxied-server-config")
+		serverLogPath, _ := cmd.Flags().GetString("proxied-server-log-path")
+		serverRootPath, _ := cmd.Flags().GetString("proxied-server-root-path")
+		if os.Getenv("BEADS_DOLT_PROXIED_SERVER") == "1" {
+			initProxiedServer = true
+		}
+		if initProxiedServer {
+			FatalError("--proxied-server is not yet implemented")
+		}
+		if initProxiedServer && initServerMode {
+			FatalError("--server and --proxied-server are mutually exclusive")
+		}
+		if initProxiedServer {
+			if sharedServer || externalServer ||
+				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" {
+				FatalError("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
+			}
+		}
+		if serverConfigPath != "" {
+			if !initProxiedServer {
+				FatalError("--proxied-server-config requires --proxied-server")
+			}
+			if err := validateProxiedServerConfig(serverConfigPath); err != nil {
+				FatalError("%v", err)
+			}
+		}
+		if serverLogPath != "" {
+			if !initProxiedServer {
+				FatalError("--proxied-server-log-path requires --proxied-server")
+			}
+			if err := validateProxiedServerLogPath(serverLogPath); err != nil {
+				FatalError("%v", err)
+			}
+		}
+		if serverRootPath != "" {
+			if !initProxiedServer {
+				FatalError("--proxied-server-root-path requires --proxied-server")
+			}
+			if err := validateProxiedServerRootPath(serverRootPath); err != nil {
+				FatalError("%v", err)
+			}
+		}
 
 		// Handle --backend flag: "dolt" is the only supported backend.
 		// "sqlite" is accepted for backward compatibility but prints a
@@ -174,12 +217,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			initServerMode = true
 		}
 
-		// Set serverMode so isEmbeddedMode() returns the correct value.
+		// Set serverMode so !usesSQLServer() returns the correct value.
 		// Both the global and cmdCtx must be set because PersistentPreRun
 		// creates a fresh cmdCtx (with ServerMode=false) before Run executes.
 		serverMode = initServerMode
+		proxiedServerMode = initProxiedServer
 		if cmdCtx != nil {
 			cmdCtx.ServerMode = initServerMode
+			cmdCtx.ProxiedServerMode = initProxiedServer
 		}
 
 		// Propagate --shared-server flag to env so that IsSharedServerMode(),
@@ -190,9 +235,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 
 		// Reject hyphens in --database for embedded mode. Must run AFTER
-		// serverMode is set above — otherwise isEmbeddedMode() always returns
+		// serverMode is set above — otherwise !usesSQLServer() always returns
 		// true and incorrectly rejects server-mode names (GH#3231).
-		if database != "" && strings.ContainsRune(database, '-') && isEmbeddedMode() {
+		if database != "" && strings.ContainsRune(database, '-') && !usesSQLServer() {
 			FatalError("database name %q contains hyphens which are invalid in embedded mode; use underscores instead (e.g. %q)",
 				database, sanitizeDBName(database))
 		}
@@ -705,6 +750,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			Database:        dbName,
 			ServerPort:      initPort,
 			ServerMode:      initServerMode,
+			ProxiedServer:   initProxiedServer,
 			CreateIfMissing: true, // bd init is the only path that should create databases
 			AutoStart:       initServerMode && os.Getenv("BEADS_DOLT_AUTO_START") != "0",
 		}
@@ -721,7 +767,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			doltCfg.ServerUser = serverUser
 		}
 
-		initLock, err := acquireEmbeddedLock(beadsDir, initServerMode)
+		initLock, err := acquireEmbeddedLock(beadsDir, initServerMode || initProxiedServer)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -934,22 +980,40 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				}
 
 				// Persist the connection mode matching this build.
-				if isEmbeddedMode() {
-					cfg.DoltMode = configfile.DoltModeEmbedded
-				} else {
+				switch {
+				case usesProxiedServer():
+					cfg.DoltMode = configfile.DoltModeProxiedServer
+				case usesSQLServer():
 					cfg.DoltMode = configfile.DoltModeServer
+				default:
+					cfg.DoltMode = configfile.DoltModeEmbedded
 				}
-				if serverHost != "" {
-					cfg.DoltServerHost = serverHost
+
+				if !usesProxiedServer() {
+					if serverHost != "" {
+						cfg.DoltServerHost = serverHost
+					}
+					if serverPort != 0 {
+						cfg.DoltServerPort = serverPort
+					}
+					if serverSocket != "" {
+						cfg.DoltServerSocket = serverSocket
+					}
+					if serverUser != "" {
+						cfg.DoltServerUser = serverUser
+					}
 				}
-				if serverPort != 0 {
-					cfg.DoltServerPort = serverPort
-				}
-				if serverSocket != "" {
-					cfg.DoltServerSocket = serverSocket
-				}
-				if serverUser != "" {
-					cfg.DoltServerUser = serverUser
+
+				if usesProxiedServer() {
+					if serverConfigPath != "" {
+						cfg.DoltProxiedServerConfig = serverConfigPath
+					}
+					if serverLogPath != "" {
+						cfg.DoltProxiedServerLog = serverLogPath
+					}
+					if serverRootPath != "" {
+						cfg.DoltProxiedServerRootPath = serverRootPath
+					}
 				}
 			}
 
@@ -1360,7 +1424,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			fmt.Printf("\n%s bd initialized successfully!\n\n", ui.RenderPass("✓"))
 		}
 		fmt.Printf("  Backend: %s\n", ui.RenderAccent(backend))
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Printf("  Mode: %s\n", ui.RenderAccent("embedded"))
 		} else {
 			host := serverHost
@@ -1403,7 +1467,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// Skipped in embedded mode: diagnostics use dolt.NewFromConfigWithOptions
 		// which auto-starts a dolt sql-server. Embedded init already validates
 		// the database via initSchema.
-		if !isEmbeddedMode() {
+		if usesSQLServer() {
 			doctorResult := runInitDiagnostics(cwd)
 			hasIssues := false
 			for _, check := range doctorResult.Checks {
@@ -1461,6 +1525,10 @@ func init() {
 	initCmd.Flags().String("database", "", "Use existing server database name (overrides prefix-based naming)")
 	initCmd.Flags().Bool("shared-server", false, "Enable shared Dolt server mode (all projects share one server at ~/.beads/shared-server/)")
 	initCmd.Flags().Bool("external", false, "Server is externally managed (skip server startup); use with --shared-server or --server")
+	initCmd.Flags().Bool("proxied-server", false, "[EXPERIMENTAL] Use a per-workspace proxied dolt sql-server (proxy + child dolt) rooted at .beads/proxieddb")
+	initCmd.Flags().String("proxied-server-config", "", "[EXPERIMENTAL] Path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one.")
+	initCmd.Flags().String("proxied-server-log-path", "", "[EXPERIMENTAL] Path to the proxied dolt sql-server log file (proxied-server mode only). Default: <beadsDir>/proxieddb/server.log.")
+	initCmd.Flags().String("proxied-server-root-path", "", "[EXPERIMENTAL] Directory holding the proxied dolt sql-server's lockfiles, pidfiles, and child .dolt repository (proxied-server mode only). Default: <beadsDir>/proxieddb. May not exist yet — bd will create it.")
 
 	rootCmd.AddCommand(initCmd)
 }
@@ -1533,8 +1601,23 @@ func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 		return nil // No .beads directory, safe to init
 	}
 
-	// Check for existing Dolt database
 	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() == configfile.BackendDolt {
+		if cfg.IsDoltProxiedServerMode() {
+			proxiedRoot := resolveProxiedServerRootPath(beadsDir, cfg)
+			if info, statErr := os.Stat(proxiedRoot); statErr == nil && info.IsDir() {
+				return fmt.Errorf(`
+%s Found existing Dolt database: %s
+
+This workspace is already initialized.
+
+To use the existing database:
+  Just run bd commands normally (e.g., %s)
+
+Aborting.`, ui.RenderWarn("⚠"), proxiedRoot, ui.RenderAccent("bd list"))
+			}
+			return nil
+		}
+
 		// Embedded mode stores databases under `.beads/embeddeddolt/<db>/`.
 		// Use the target workspace metadata rather than ambient process state so
 		// init guards remain deterministic even when another test or earlier
@@ -1967,7 +2050,7 @@ func isEmptyRemoteCloneError(err error) bool {
 func verifyMetadata(ctx context.Context, store storage.DoltStorage, key, value string) bool {
 	if err := store.SetMetadata(ctx, key, value); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to write %s metadata: %v\n", key, err)
-		if !isEmbeddedMode() {
+		if usesSQLServer() {
 			fmt.Fprintf(os.Stderr, "  Run 'bd doctor --fix' to repair.\n")
 		}
 		return false
@@ -1976,7 +2059,7 @@ func verifyMetadata(ctx context.Context, store storage.DoltStorage, key, value s
 	readBack, err := store.GetMetadata(ctx, key)
 	if err != nil || readBack != value {
 		fmt.Fprintf(os.Stderr, "Warning: %s metadata write did not persist (wrote %q, read %q)\n", key, value, readBack)
-		if !isEmbeddedMode() {
+		if usesSQLServer() {
 			fmt.Fprintf(os.Stderr, "  Run 'bd doctor --fix' to repair.\n")
 		}
 		return false

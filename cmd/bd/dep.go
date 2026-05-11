@@ -158,7 +158,7 @@ Examples:
 				warnIfCyclesExist(fromStore)
 			}
 
-			if isEmbeddedMode() && fromStore != nil {
+			if !usesSQLServer() && fromStore != nil {
 				if err := fromStore.Commit(ctx, fmt.Sprintf("bd: dep add (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 					FatalErrorRespectJSON("failed to commit: %v", err)
 				}
@@ -340,7 +340,7 @@ Examples:
 			warnIfCyclesExist(fromStore)
 		}
 
-		if isEmbeddedMode() && fromStore != nil {
+		if !usesSQLServer() && fromStore != nil {
 			if err := fromStore.Commit(ctx, fmt.Sprintf("bd: dep add (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 				FatalErrorRespectJSON("failed to commit: %v", err)
 			}
@@ -862,7 +862,7 @@ var depRemoveCmd = &cobra.Command{
 			FatalErrorRespectJSON("%v", err)
 		}
 
-		if isEmbeddedMode() && fromStore != nil {
+		if !usesSQLServer() && fromStore != nil {
 			if err := fromStore.Commit(ctx, fmt.Sprintf("bd: dep remove (auto-commit) by %s", actor)); err != nil && !isDoltNothingToCommit(err) {
 				FatalErrorRespectJSON("failed to commit: %v", err)
 			}

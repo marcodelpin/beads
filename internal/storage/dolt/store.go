@@ -40,7 +40,6 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
-	"github.com/steveyegge/beads/internal/storage/dolt/migrations"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
@@ -242,6 +241,14 @@ type Config struct {
 	// rather than the embedded Dolt engine. Set by the store factory based
 	// on metadata.json dolt_mode or BEADS_DOLT_SERVER_MODE env var.
 	ServerMode bool
+
+	// ProxiedServer indicates this config targets a per-workspace proxied
+	// dolt sql-server (a parent proxy + a child dolt sql-server, both rooted
+	// at <BeadsDir>/proxieddb). Mutually exclusive with ServerMode: the
+	// proxied path owns its own connection details and does not consult
+	// ServerHost/Port/Socket/User. Set by the store factory based on
+	// metadata.json dolt_mode=proxied-server.
+	ProxiedServer bool
 
 	// AutoStart enables transparent server auto-start when connection fails.
 	// When true and the host is localhost, bd will start a dolt sql-server
@@ -1113,14 +1120,6 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	// CREATE DATABASE, information_schema queries may fail transiently
 	// even though Ping succeeded. This resolves within ~1s.
 	if !cfg.ReadOnly {
-		// Ensure dolt_ignore'd tables exist BEFORE running migrations.
-		// Migrations may reference these tables (e.g. 0027 alters wisps,
-		// 0030 inserts into local_metadata). After a clone or server restart
-		// these tables don't exist yet since they're not in committed data.
-		if err := versioncontrolops.EnsureIgnoredTables(ctx, db); err != nil {
-			return nil, fmt.Errorf("failed to ensure ignored tables: %w", err)
-		}
-
 		schemaBO := backoff.NewExponentialBackOff()
 		schemaBO.InitialInterval = 100 * time.Millisecond
 		schemaBO.MaxElapsedTime = 5 * time.Second
@@ -1131,6 +1130,13 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 			}
 			if schemaErr != nil {
 				return backoff.Permanent(schemaErr)
+			}
+			// Recreate dolt_ignore'd tables after migrations. Migrations
+			// create them on first init; this rebuilds them when the
+			// working set was reset (clone, branch switch, server restart)
+			// and schema_migrations records make MigrateUp a no-op.
+			if err := versioncontrolops.EnsureIgnoredTables(ctx, db); err != nil {
+				return backoff.Permanent(err)
 			}
 			return nil
 		}, backoff.WithContext(schemaBO, ctx)); err != nil {
@@ -1459,42 +1465,25 @@ func databaseExistsOnServer(ctx context.Context, db *sql.DB, name string) (bool,
 	return false, rows.Err()
 }
 
-// initSchemaOnDB applies pending schema migrations and DoltStore-specific
-// backward-compat transforms. Uses the shared schema.MigrateUp runner which
-// tracks applied versions in the schema_migrations table.
+// initSchemaOnDB applies pending schema migrations on a generated branch,
+// merges them into main, and then backfills legacy config-driven tables.
+// schema.MigrateOnBranch tracks applied versions in schema_migrations.
 func initSchemaOnDB(ctx context.Context, db *sql.DB) error {
-	applied, err := schema.MigrateUp(ctx, db)
+	conn, err := db.Conn(ctx)
 	if err != nil {
+		return fmt.Errorf("schema: pin connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := schema.MigrateOnBranch(ctx, conn, "main"); err != nil {
 		return fmt.Errorf("schema migration: %w", err)
 	}
 
-	if applied > 0 {
-		// Stage only schema tables — avoid DOLT_ADD('-A') which can sweep up
-		// unrelated dirty tables like config from concurrent operations (GH#2455).
-		schemaTables := []string{
-			"issues", "dependencies", "labels", "comments", "events",
-			"config", "metadata", "child_counters",
-			"issue_snapshots", "compaction_snapshots",
-			"routes", "issue_counter",
-			"interactions", "federation_peers",
-			"custom_statuses", "custom_types",
-			"dolt_ignore", "schema_migrations",
-		}
-		for _, table := range schemaTables {
-			_, _ = db.ExecContext(ctx, "CALL DOLT_ADD(?)", table)
-		}
-		if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'schema: apply migrations')"); err != nil {
-			if !strings.Contains(strings.ToLower(err.Error()), "nothing to commit") {
-				return fmt.Errorf("failed to commit schema migrations: %w", err)
-			}
-		}
-	}
-
-	// Run backward-compat migrations for databases that predate the embedded
-	// migration system (e.g. ALTER TABLE ADD COLUMN, historical data
-	// transforms). These are idempotent.
-	if err := migrations.RunCompatMigrations(db); err != nil {
-		return fmt.Errorf("failed to run compat migrations: %w", err)
+	// Backfill custom_statuses and custom_types from legacy config rows.
+	// Migration 0024 creates the empty tables; this populates them on legacy
+	// DBs that have status.custom / types.custom set via `bd config set`.
+	if err := schema.EnsureBackfilledCustomStatusesCustomTypes(ctx, conn); err != nil {
+		return fmt.Errorf("backfill custom tables: %w", err)
 	}
 
 	return nil

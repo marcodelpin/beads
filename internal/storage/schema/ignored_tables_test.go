@@ -52,22 +52,3 @@ func TestReadMigrationSQL_Panics(t *testing.T) {
 	}()
 	ReadMigrationSQL(9999)
 }
-
-func TestSplitStatements(t *testing.T) {
-	sql := "CREATE TABLE foo (id INT);\nALTER TABLE foo ADD COLUMN bar INT;\n"
-	stmts := splitStatements(sql)
-	if len(stmts) != 2 {
-		t.Fatalf("expected 2 statements, got %d: %v", len(stmts), stmts)
-	}
-}
-
-func TestSplitStatements_StripsComments(t *testing.T) {
-	sql := "-- This is a comment\nCREATE TABLE foo (id INT);\n"
-	stmts := splitStatements(sql)
-	if len(stmts) != 1 {
-		t.Fatalf("expected 1 statement, got %d", len(stmts))
-	}
-	if strings.Contains(stmts[0], "--") {
-		t.Error("comment not stripped from statement")
-	}
-}

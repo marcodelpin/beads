@@ -100,7 +100,7 @@ Examples:
   bd dolt set data-dir /home/user/.beads-dolt/myproject`,
 	Args: cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Error: 'bd dolt set' is not supported in embedded mode (no Dolt server)")
 			os.Exit(1)
 		}
@@ -122,7 +122,7 @@ This verifies that:
 
 Use this before switching to server mode to ensure the server is running.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Error: 'bd dolt test' is not supported in embedded mode (no Dolt server)")
 			os.Exit(1)
 		}
@@ -366,7 +366,7 @@ project path. PID and logs are stored in .beads/.
 The server auto-starts transparently when needed, so manual start is rarely
 required. Use this command for explicit control or diagnostics.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Error: 'bd dolt start' is not supported in embedded mode (no Dolt server)")
 			os.Exit(1)
 		}
@@ -403,7 +403,7 @@ var doltStopCmd = &cobra.Command{
 This sends a graceful shutdown signal. The server will restart automatically
 on the next bd command unless auto-start is disabled.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Error: 'bd dolt stop' is not supported in embedded mode (no Dolt server)")
 			os.Exit(1)
 		}
@@ -439,7 +439,7 @@ reachability, server version, and database.`,
 		if beadsDir == "" {
 			FatalErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 		}
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			showEmbeddedDoltStatus(beadsDir)
 			return
 		}
@@ -672,7 +672,7 @@ In standalone mode, only dolt sql-server processes using the current
 project's Dolt data directory are eligible for cleanup. Other projects'
 servers are preserved.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Error: 'bd dolt killall' is not supported in embedded mode (no Dolt server)")
 			os.Exit(1)
 		}
@@ -717,7 +717,7 @@ Stale database prefixes: testdb_*, doctest_*, doctortest_*, beads_pt*, beads_vr*
 These waste server memory and can degrade performance under concurrent load.
 Use --dry-run to see what would be dropped without actually dropping.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Fprintln(os.Stderr, "Error: 'bd dolt clean-databases' is not supported in embedded mode (no Dolt server)")
 			os.Exit(1)
 		}
@@ -906,7 +906,7 @@ var doltRemoteAddCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		dbPath := locator.CLIDir()
-		embedded := isEmbeddedMode()
+		embedded := !usesSQLServer()
 
 		// Check existing remotes on both surfaces
 		sqlRemotes, _, cliRemotes, _ := listRemoteSurfaces(ctx, st, dbPath, embedded)
@@ -1011,7 +1011,7 @@ var doltRemoteListCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		dbPath := locator.CLIDir()
-		embedded := isEmbeddedMode()
+		embedded := !usesSQLServer()
 
 		sqlRemotes, sqlErr, cliRemotes, cliErr := listRemoteSurfaces(ctx, st, dbPath, embedded)
 		if sqlErr != nil {
@@ -1130,7 +1130,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		dbPath := locator.CLIDir()
-		embedded := isEmbeddedMode()
+		embedded := !usesSQLServer()
 
 		// Check both surfaces for conflicts
 		sqlRemotes, _, cliRemotes, _ := listRemoteSurfaces(ctx, st, dbPath, embedded)
@@ -1281,7 +1281,7 @@ func showDoltConfig(testConnection bool) {
 	}
 
 	backend := cfg.GetBackend()
-	embedded := isEmbeddedMode()
+	embedded := !usesSQLServer()
 
 	// Resolve actual server port for connection testing
 	showHost := cfg.GetDoltServerHost()

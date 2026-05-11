@@ -458,7 +458,7 @@ func printBootstrapPlan(plan BootstrapPlan) {
 	switch plan.Action {
 	case "none":
 		fmt.Printf("✓ Database already exists: %s\n", plan.BeadsDir)
-		if isEmbeddedMode() {
+		if !usesSQLServer() {
 			fmt.Printf("  Nothing to do.\n")
 		} else {
 			fmt.Printf("  Nothing to do. Use 'bd doctor' to check health.\n")
@@ -666,9 +666,12 @@ func finalizeSyncedBootstrap(beadsDir, syncRemote string, cfg *configfile.Config
 	// required by configfile.Load consumers.
 	cfg.Backend = configfile.BackendDolt
 	cfg.DoltDatabase = dbName
-	if cfg.IsDoltServerMode() || doltserver.IsSharedServerMode() {
+	switch {
+	case cfg.IsDoltProxiedServerMode():
+		cfg.DoltMode = configfile.DoltModeProxiedServer
+	case cfg.IsDoltServerMode() || doltserver.IsSharedServerMode():
 		cfg.DoltMode = configfile.DoltModeServer
-	} else {
+	default:
 		cfg.DoltMode = configfile.DoltModeEmbedded
 	}
 	// Mirror init's convention: metadata.json database points at the Dolt

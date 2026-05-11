@@ -1,24 +1,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/steveyegge/beads/internal/lockfile"
-	"github.com/steveyegge/beads/internal/storage/db/proxy"
-	"github.com/steveyegge/beads/internal/storage/db/server"
-	"github.com/steveyegge/beads/internal/storage/db/util"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/server"
 )
-
-// proxyChildLockHeldExitCode is returned when another proxy already holds
-// proxy.lock — the spawning parent treats this as "lost the spawn race" and
-// loops back to readAndDial. EX_TEMPFAIL by convention.
-const proxyChildLockHeldExitCode = 75
 
 var (
 	dbProxyChildRoot        string
@@ -50,18 +43,6 @@ not intended to be invoked directly by users.`,
 			return err
 		}
 
-		// Acquire proxy.lock. If already held, another proxy is alive — exit
-		// cleanly with EX_TEMPFAIL so the spawning parent retries via
-		// readAndDial.
-		lock, err := util.TryLock(filepath.Join(dbProxyChildRoot, "proxy.lock"))
-		if err != nil {
-			if lockfile.IsLocked(err) {
-				os.Exit(proxyChildLockHeldExitCode)
-			}
-			return fmt.Errorf("acquire proxy lock: %w", err)
-		}
-		defer lock.Unlock()
-
 		srv, err := newDatabaseServer(backend, dbProxyChildRoot, dbProxyChildConfig, dbProxyChildLogPath, dbProxyChildDoltBin)
 		if err != nil {
 			return err
@@ -73,7 +54,13 @@ not intended to be invoked directly by users.`,
 			IdleTimeout: dbProxyChildIdleTimeout,
 			Server:      srv,
 		})
-		return p.Start(cmd.Context())
+		if err := p.ListenAndServe(cmd.Context()); err != nil {
+			if errors.Is(err, proxy.ErrLockHeld) {
+				os.Exit(proxy.LockHeldExitCode)
+			}
+			return err
+		}
+		return nil
 	},
 }
 
@@ -90,7 +77,7 @@ func newDatabaseServer(backend proxy.Backend, rootDir, configPath, logPath, dolt
 func init() {
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildRoot, "root", "", "root directory holding proxy.lock, proxy.pid, proxy.log")
 	dbProxyChildCmd.Flags().IntVar(&dbProxyChildPort, "port", 0, "port to listen on")
-	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildIdleTimeout, "idle-timeout", 5*time.Minute, "idle timeout before shutdown (0 disables)")
+	dbProxyChildCmd.Flags().DurationVar(&dbProxyChildIdleTimeout, "idle-timeout", 30*time.Second, "idle timeout before shutdown (0 disables)")
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildBackend, "backend", "",
 		"backend kind: "+strings.Join(proxy.KnownBackendNames(), " | "))
 	dbProxyChildCmd.Flags().StringVar(&dbProxyChildConfig, "config", "", "path to backend server config (e.g. dolt sql-server YAML)")
