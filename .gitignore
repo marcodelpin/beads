@@ -138,3 +138,6 @@ bd_test
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+
+# Local Claude Code statusline (user-specific)
+.claude/statusline-command.sh

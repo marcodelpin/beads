@@ -1288,6 +1288,12 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 }
 
 func main() {
+	// chg-8hnz: bridge GUI-subsystem child → parent's conhost (if any). Must
+	// run BEFORE any stdio is touched, so the very first line of main().
+	// No-op on non-Windows, fail-silent on Windows when no parent console.
+	// See cmd/bd/console_{windows,other}.go.
+	attachParentConsole()
+
 	// BD_NAME overrides the binary name in help text (e.g. BD_NAME=ops makes
 	// "ops --help" show "ops" instead of "bd"). Useful for multi-instance
 	// setups where wrapper scripts set BEADS_DIR for routing.

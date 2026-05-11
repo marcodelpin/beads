@@ -49,10 +49,15 @@ BUILD_TAGS := gms_pure_go
 REGRESSION_TIMEOUT ?= 20m
 
 # Build the bd binary
+# chg-8hnz (marcodelpin/beads fork only): on Windows targets, link as GUI
+# subsystem (-H=windowsgui) to suppress conhost flash on every spawn. The
+# AttachConsole(ATTACH_PARENT_PROCESS) call at the start of main() bridges
+# output back to an interactive pwsh terminal when invoked directly, while
+# silently no-op'ing for hook/pipe spawns. See cmd/bd/console_windows.go.
 build:
 	@echo "Building bd..."
 ifeq ($(OS),Windows_NT)
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -H=windowsgui" -o $(BUILD_DIR)/bd.exe ./cmd/bd
 else
 	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd ./cmd/bd
 ifeq ($(shell uname),Darwin)
