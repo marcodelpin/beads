@@ -787,15 +787,22 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// --external skips this: the server is managed outside bd (e.g.
 		// Docker, systemd, testcontainers). The caller is responsible for
 		// ensuring the server is reachable and the port file exists.
+		// --server-host=<remote> also skips the local-spawn block: when the
+		// shared server lives on another host, there is no local Dolt
+		// process to start, but EnsureGlobalDatabase below still runs
+		// against the remote via MySQL wire protocol (bda-4sl).
+		isRemoteHost := serverHost != "" && serverHost != "localhost" && serverHost != "127.0.0.1"
 		if !externalServer && (sharedServer || doltserver.IsSharedServerMode()) {
-			if sharedDir, err := doltserver.SharedServerDir(); err == nil {
-				if state, _ := doltserver.IsRunning(sharedDir); state == nil || !state.Running {
-					if _, startErr := doltserver.Start(sharedDir); startErr != nil {
-						fmt.Fprintf(os.Stderr, "Error: failed to start shared Dolt server: %v\n", startErr)
-						os.Exit(1)
-					}
-					if !quiet {
-						fmt.Printf("  %s Shared Dolt server started\n", ui.RenderPass("✓"))
+			if !isRemoteHost {
+				if sharedDir, err := doltserver.SharedServerDir(); err == nil {
+					if state, _ := doltserver.IsRunning(sharedDir); state == nil || !state.Running {
+						if _, startErr := doltserver.Start(sharedDir); startErr != nil {
+							fmt.Fprintf(os.Stderr, "Error: failed to start shared Dolt server: %v\n", startErr)
+							os.Exit(1)
+						}
+						if !quiet {
+							fmt.Printf("  %s Shared Dolt server started\n", ui.RenderPass("✓"))
+						}
 					}
 				}
 			}
