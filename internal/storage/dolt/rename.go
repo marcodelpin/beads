@@ -10,15 +10,15 @@ import (
 
 // UpdateIssueID updates an issue ID and all its references.
 func (s *DoltStore) UpdateIssueID(ctx context.Context, oldID, newID string, issue *types.Issue, actor string) error {
-	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		return issueops.UpdateIssueIDInTx(ctx, tx, oldID, newID, issue, actor)
+	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		return issueops.UpdateIssueIDInTx(ctx, regularTx, ignoredTx, oldID, newID, issue, actor)
 	})
 }
 
 // RenameDependencyPrefix updates the prefix in all dependency records
 func (s *DoltStore) RenameDependencyPrefix(ctx context.Context, oldPrefix, newPrefix string) error {
-	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		return issueops.RenameDependencyPrefixInTx(ctx, tx, oldPrefix, newPrefix)
+	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		return issueops.RenameDependencyPrefixInTx(ctx, regularTx, oldPrefix, newPrefix)
 	})
 }
 

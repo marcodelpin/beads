@@ -46,18 +46,17 @@ func NewBatchContext(ctx context.Context, tx *sql.Tx, opts storage.BatchCreateOp
 	}, nil
 }
 
-// CreateIssueInTx handles a single issue within a transaction:
-// prepare, resolve prefix, generate ID, validate prefix, check orphans,
-// insert, record event, persist labels/comments.
-// Returns nil if the issue was skipped (e.g., orphan skip mode).
-func CreateIssueInTx(ctx context.Context, tx *sql.Tx, bc *BatchContext, issue *types.Issue, actor string) error {
+func CreateIssueInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, bc *BatchContext, issue *types.Issue, actor string) error {
 	if err := PrepareIssueForInsert(issue, bc.CustomStatuses, bc.CustomTypes); err != nil {
 		return err
 	}
 
 	issueTable, eventTable := TableRouting(issue)
+	tx := regularTx
+	if IsWisp(issue) {
+		tx = ignoredTx
+	}
 
-	// Resolve prefix and generate ID if needed.
 	if issue.ID == "" {
 		prefix := bc.ConfigPrefix
 		if issue.PrefixOverride != "" {
@@ -95,32 +94,29 @@ func CreateIssueInTx(ctx context.Context, tx *sql.Tx, bc *BatchContext, issue *t
 		}
 	}
 
-	if err := PersistLabels(ctx, tx, issue); err != nil {
+	if err := PersistLabels(ctx, regularTx, ignoredTx, issue); err != nil {
 		return err
 	}
-	return PersistComments(ctx, tx, issue)
+	return PersistComments(ctx, regularTx, ignoredTx, issue)
 }
 
-// CreateIssuesInTx creates multiple issues within a single transaction.
-// Handles the first pass (insert each issue), second pass (dependencies),
-// and child counter reconciliation. Does NOT handle dolt versioning.
-func CreateIssuesInTx(ctx context.Context, tx *sql.Tx, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
-	bc, err := NewBatchContext(ctx, tx, opts)
+func CreateIssuesInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
+	bc, err := NewBatchContext(ctx, regularTx, opts)
 	if err != nil {
 		return err
 	}
 
 	for _, issue := range issues {
-		if err := CreateIssueInTx(ctx, tx, bc, issue, actor); err != nil {
+		if err := CreateIssueInTx(ctx, regularTx, ignoredTx, bc, issue, actor); err != nil {
 			return err
 		}
 	}
 
-	if err := PersistDependencies(ctx, tx, issues, actor); err != nil {
+	if err := PersistDependencies(ctx, regularTx, ignoredTx, issues, actor); err != nil {
 		return err
 	}
 
-	return ReconcileChildCounters(ctx, tx, issues)
+	return ReconcileChildCounters(ctx, regularTx, ignoredTx, issues)
 }
 
 // PrepareIssueForInsert normalizes timestamps, validates, and computes the content hash.
@@ -252,14 +248,15 @@ func InsertIssueIfNew(ctx context.Context, tx *sql.Tx, issueTable string, issue 
 	return existingCount == 0, nil
 }
 
-// PersistLabels writes issue.Labels into the appropriate labels table.
-func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
+func PersistLabels(ctx context.Context, regularTx, ignoredTx *sql.Tx, issue *types.Issue) error {
 	if len(issue.Labels) == 0 {
 		return nil
 	}
 	labelTable := "labels"
+	tx := regularTx
 	if IsWisp(issue) {
 		labelTable = "wisp_labels"
+		tx = ignoredTx
 	}
 	for _, label := range issue.Labels {
 		//nolint:gosec // G201: table is determined by ephemeral flag
@@ -275,18 +272,15 @@ func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
 	return nil
 }
 
-// PersistComments writes issue.Comments into the appropriate comments table.
-// The comments table uses a UUID PK (DEFAULT UUID()), so ON DUPLICATE KEY UPDATE
-// would never match. Instead, we check for an existing identical comment
-// (same issue_id, author, and created_at) before inserting to prevent
-// duplicates on re-import.
-func PersistComments(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
+func PersistComments(ctx context.Context, regularTx, ignoredTx *sql.Tx, issue *types.Issue) error {
 	if len(issue.Comments) == 0 {
 		return nil
 	}
 	commentTable := "comments"
+	tx := regularTx
 	if IsWisp(issue) {
 		commentTable = "wisp_comments"
+		tx = ignoredTx
 	}
 	for _, comment := range issue.Comments {
 		createdAt := comment.CreatedAt
@@ -319,17 +313,18 @@ func PersistComments(ctx context.Context, tx *sql.Tx, issue *types.Issue) error 
 	return nil
 }
 
-// PersistDependencies inserts dependencies for all issues (second pass).
-func PersistDependencies(ctx context.Context, tx *sql.Tx, issues []*types.Issue, actor string) error {
+func PersistDependencies(ctx context.Context, regularTx, ignoredTx *sql.Tx, issues []*types.Issue, actor string) error {
 	for _, issue := range issues {
 		if len(issue.Dependencies) == 0 {
 			continue
 		}
 		depTable := "dependencies"
 		lookupTable := "issues"
+		tx := regularTx
 		if IsWisp(issue) {
 			depTable = "wisp_dependencies"
 			lookupTable = "wisps"
+			tx = ignoredTx
 		}
 		for _, dep := range issue.Dependencies {
 			// Default IssueID to the owning issue when not pre-set (e.g.,
@@ -361,9 +356,8 @@ func PersistDependencies(ctx context.Context, tx *sql.Tx, issues []*types.Issue,
 	return nil
 }
 
-// ReconcileChildCounters updates child_counters so that subsequent
-// bd create --parent doesn't collide with imported hierarchical IDs.
-func ReconcileChildCounters(ctx context.Context, tx *sql.Tx, issues []*types.Issue) error {
+func ReconcileChildCounters(ctx context.Context, regularTx, ignoredTx *sql.Tx, issues []*types.Issue) error {
+	_ = ignoredTx // unused: child_counters is regular-only
 	childMaxMap := make(map[string]int)
 	for _, issue := range issues {
 		if parentID, childNum, ok := ParseHierarchicalID(issue.ID); ok {
@@ -374,10 +368,10 @@ func ReconcileChildCounters(ctx context.Context, tx *sql.Tx, issues []*types.Iss
 	}
 	for parentID, maxChild := range childMaxMap {
 		var parentExists int
-		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM issues WHERE id = ?", parentID).Scan(&parentExists); err != nil {
+		if err := regularTx.QueryRowContext(ctx, "SELECT 1 FROM issues WHERE id = ?", parentID).Scan(&parentExists); err != nil {
 			continue // parent not in issues table — skip counter
 		}
-		_, err := tx.ExecContext(ctx, `
+		_, err := regularTx.ExecContext(ctx, `
 			INSERT INTO child_counters (parent_id, last_child) VALUES (?, ?)
 			ON DUPLICATE KEY UPDATE last_child = GREATEST(last_child, ?)
 		`, parentID, maxChild, maxChild)

@@ -35,14 +35,14 @@ func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, ac
 		}
 	}
 
-	if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
+	if err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
 		opts := issueops.AddDependencyOpts{
 			SourceTable:   "issues",
 			TargetTable:   targetTable,
 			WriteTable:    "dependencies",
 			IsCrossPrefix: isCrossPrefix,
 		}
-		if err := issueops.AddDependencyInTx(ctx, tx, dep, actor, opts); err != nil {
+		if err := issueops.AddDependencyInTx(ctx, regularTx, dep, actor, opts); err != nil {
 			return err
 		}
 		s.invalidateBlockedIDsCache()

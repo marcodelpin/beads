@@ -16,18 +16,20 @@ const deleteBatchSize = 50
 // discovered during recursive dependent traversal.
 const maxRecursiveResults = 10000
 
-// DeleteIssueInTx deletes a single issue and all its related data within a transaction.
-// Routes to the correct tables (issues/wisps) via IsActiveWispInTx.
-//
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
-func DeleteIssueInTx(ctx context.Context, tx *sql.Tx, id string) error {
-	isWisp := IsActiveWispInTx(ctx, tx, id)
+func DeleteIssueInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, id string) error {
+	isWisp := IsActiveWispInTx(ctx, ignoredTx, id)
 	issueTable, labelTable, eventTable, depTable := WispTableRouting(isWisp)
 
 	// commentTable follows the same naming convention
 	commentTable := "comments"
 	if isWisp {
 		commentTable = "wisp_comments"
+	}
+
+	tx := regularTx
+	if isWisp {
+		tx = ignoredTx
 	}
 
 	// Delete related data
@@ -61,30 +63,21 @@ func DeleteIssueInTx(ctx context.Context, tx *sql.Tx, id string) error {
 	return nil
 }
 
-// DeleteIssuesInTx deletes multiple issues in a single transaction.
-// If cascade is true, recursively deletes dependents.
-// If cascade is false but force is true, deletes issues and orphans dependents.
-// If both are false, returns an error if any issue has dependents outside the set.
-// If dryRun is true, only computes statistics without deleting.
-//
 //nolint:gosec // G201: inClause contains only ? placeholders
-func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade bool, force bool, dryRun bool) (*types.DeleteIssuesResult, error) {
+func DeleteIssuesInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, ids []string, cascade bool, force bool, dryRun bool) (*types.DeleteIssuesResult, error) {
 	if len(ids) == 0 {
 		return &types.DeleteIssuesResult{}, nil
 	}
 
-	// Partition into wisps and regular issues in a single batched query
-	// instead of one round-trip per ID (GH#3414).
-	wispIDs, regularIDs, err := PartitionWispIDsInTx(ctx, tx, ids)
+	wispIDs, regularIDs, err := PartitionWispIDsInTx(ctx, ignoredTx, ids)
 	if err != nil {
 		return nil, err
 	}
 
-	// Delete wisps first.
 	wispDeleteCount := 0
 	if len(wispIDs) > 0 && !dryRun {
 		for _, id := range wispIDs {
-			if err := DeleteIssueInTx(ctx, tx, id); err != nil {
+			if err := DeleteIssueInTx(ctx, regularTx, ignoredTx, id); err != nil {
 				return nil, fmt.Errorf("delete wisp %s: %w", id, err)
 			}
 			wispDeleteCount++
@@ -105,10 +98,9 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 
 	result := &types.DeleteIssuesResult{}
 
-	// Resolve the full set of IDs to delete.
 	expandedIDs := ids
 	if cascade {
-		allToDelete, err := findAllDependentsRecursiveInTx(ctx, tx, ids)
+		allToDelete, err := findAllDependentsRecursiveInTx(ctx, regularTx, ids)
 		if err != nil {
 			return nil, fmt.Errorf("find dependents: %w", err)
 		}
@@ -117,7 +109,6 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 			expandedIDs = append(expandedIDs, id)
 		}
 	} else if !force {
-		// Check for external dependents.
 		for i := 0; i < len(ids); i += deleteBatchSize {
 			end := i + deleteBatchSize
 			if end > len(ids) {
@@ -126,7 +117,7 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 			batch := ids[i:end]
 			inClause, args := buildSQLInClause(batch)
 
-			rows, err := tx.QueryContext(ctx,
+			rows, err := regularTx.QueryContext(ctx,
 				fmt.Sprintf(`SELECT depends_on_id, issue_id FROM dependencies WHERE depends_on_id IN (%s)`, inClause),
 				args...)
 			if err != nil {
@@ -157,22 +148,19 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 			}
 		}
 	} else {
-		// Force mode: track orphaned issues.
-		orphans, err := findExternalDependentsBatchedInTx(ctx, tx, ids, idSet)
+		orphans, err := findExternalDependentsBatchedInTx(ctx, regularTx, ids, idSet)
 		if err != nil {
 			return nil, fmt.Errorf("get dependents: %w", err)
 		}
 		result.OrphanedIssues = orphans
 	}
 
-	// Populate stats using batched queries.
 	expandedIDSet := make(map[string]bool, len(expandedIDs))
 	for _, id := range expandedIDs {
 		expandedIDSet[id] = true
 	}
 
 	var depsCount, labelsCount, eventsCount int
-	// Pass 1: deps originating from deleted issues.
 	for i := 0; i < len(expandedIDs); i += deleteBatchSize {
 		end := i + deleteBatchSize
 		if end > len(expandedIDs) {
@@ -182,7 +170,7 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		batchInClause, batchArgs := buildSQLInClause(batch)
 
 		var batchDeps int
-		if err := tx.QueryRowContext(ctx,
+		if err := regularTx.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT COUNT(*) FROM dependencies WHERE issue_id IN (%s)`, batchInClause),
 			batchArgs...).Scan(&batchDeps); err != nil {
 			return nil, fmt.Errorf("count dependencies: %w", err)
@@ -190,7 +178,7 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		depsCount += batchDeps
 
 		var batchLabels int
-		if err := tx.QueryRowContext(ctx,
+		if err := regularTx.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT COUNT(*) FROM labels WHERE issue_id IN (%s)`, batchInClause),
 			batchArgs...).Scan(&batchLabels); err != nil {
 			return nil, fmt.Errorf("count labels: %w", err)
@@ -198,7 +186,7 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		labelsCount += batchLabels
 
 		var batchEvents int
-		if err := tx.QueryRowContext(ctx,
+		if err := regularTx.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE issue_id IN (%s)`, batchInClause),
 			batchArgs...).Scan(&batchEvents); err != nil {
 			return nil, fmt.Errorf("count events: %w", err)
@@ -215,7 +203,7 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		batch := expandedIDs[i:end]
 		batchInClause, batchArgs := buildSQLInClause(batch)
 
-		rows, err := tx.QueryContext(ctx,
+		rows, err := regularTx.QueryContext(ctx,
 			fmt.Sprintf(`SELECT issue_id FROM dependencies WHERE depends_on_id IN (%s)`, batchInClause),
 			batchArgs...)
 		if err != nil {
@@ -259,14 +247,14 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		batchInClause, batchArgs := buildSQLInClause(batch)
 
 		// Delete inbound dependency edges (depends_on_id has no FK CASCADE).
-		if _, err := tx.ExecContext(ctx,
+		if _, err := regularTx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM dependencies WHERE depends_on_id IN (%s)`, batchInClause),
 			batchArgs...); err != nil {
 			return nil, fmt.Errorf("delete inbound dependencies: %w", err)
 		}
 
 		// Delete the issues — CASCADE handles the rest.
-		deleteResult, err := tx.ExecContext(ctx,
+		deleteResult, err := regularTx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM issues WHERE id IN (%s)`, batchInClause),
 			batchArgs...)
 		if err != nil {

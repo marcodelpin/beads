@@ -27,16 +27,16 @@ func (s *DoltStore) CreateIssue(ctx context.Context, issue *types.Issue, actor s
 		issue.Ephemeral = true // infra types get marked ephemeral (legacy behavior)
 	}
 
-	if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
+	if err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
 		// SkipPrefixValidation matches legacy behavior: single-issue path does
 		// not validate prefixes for explicit IDs.
-		bc, err := issueops.NewBatchContext(ctx, tx, storage.BatchCreateOptions{
+		bc, err := issueops.NewBatchContext(ctx, regularTx, storage.BatchCreateOptions{
 			SkipPrefixValidation: true,
 		})
 		if err != nil {
 			return err
 		}
-		return issueops.CreateIssueInTx(ctx, tx, bc, issue, actor)
+		return issueops.CreateIssueInTx(ctx, regularTx, ignoredTx, bc, issue, actor)
 	}); err != nil {
 		return err
 	}
@@ -73,12 +73,12 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 			if !issue.NoHistory {
 				issue.Ephemeral = true
 			}
-			if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
-				bc, err := issueops.NewBatchContext(ctx, tx, opts)
+			if err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+				bc, err := issueops.NewBatchContext(ctx, regularTx, opts)
 				if err != nil {
 					return err
 				}
-				return issueops.CreateIssueInTx(ctx, tx, bc, issue, actor)
+				return issueops.CreateIssueInTx(ctx, regularTx, ignoredTx, bc, issue, actor)
 			}); err != nil {
 				return err
 			}
@@ -86,8 +86,8 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 		return nil
 	}
 
-	if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		return issueops.CreateIssuesInTx(ctx, tx, issues, actor, opts)
+	if err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		return issueops.CreateIssuesInTx(ctx, regularTx, ignoredTx, issues, actor, opts)
 	}); err != nil {
 		return err
 	}
@@ -335,27 +335,21 @@ func (s *DoltStore) DeleteIssue(ctx context.Context, id string) error {
 		return s.deleteWisp(ctx, id)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // No-op after successful commit
+	if err := s.withWriteTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		if err := issueops.DeleteIssueInTx(ctx, regularTx, ignoredTx, id); err != nil {
+			return err
+		}
 
-	if err := issueops.DeleteIssueInTx(ctx, tx, id); err != nil {
-		return err
-	}
-
-	// GH#2455: Stage only the tables we modified, then commit without -A.
-	for _, table := range []string{"issues", "dependencies", "labels", "comments", "events", "child_counters", "issue_snapshots", "compaction_snapshots"} {
-		_, _ = tx.ExecContext(ctx, "CALL DOLT_ADD(?)", table)
-	}
-	commitMsg := fmt.Sprintf("bd: delete %s", id)
-	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
-		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
-		return fmt.Errorf("dolt commit: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
+		for _, table := range []string{"issues", "dependencies", "labels", "comments", "events", "child_counters", "issue_snapshots", "compaction_snapshots"} {
+			_, _ = regularTx.ExecContext(ctx, "CALL DOLT_ADD(?)", table)
+		}
+		commitMsg := fmt.Sprintf("bd: delete %s", id)
+		if _, err := regularTx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+			commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+			return fmt.Errorf("dolt commit: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	s.invalidateBlockedIDsCache()
@@ -412,15 +406,28 @@ func (s *DoltStore) DeleteIssues(ctx context.Context, ids []string, cascade bool
 		return &types.DeleteIssuesResult{DeletedCount: wispDeleteCount}, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	var result *types.DeleteIssuesResult
+	if err := s.withWriteTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		r, err := issueops.DeleteIssuesInTx(ctx, regularTx, ignoredTx, ids, cascade, force, dryRun)
+		if err != nil {
+			result = r
+			return err
+		}
+		result = r
+		if dryRun {
+			return nil
+		}
 
-	// Delegate core logic (cascade/force/dryRun, stats, batch deletion) to issueops.
-	result, err := issueops.DeleteIssuesInTx(ctx, tx, ids, cascade, force, dryRun)
-	if err != nil {
+		for _, table := range []string{"issues", "dependencies", "labels", "comments", "events", "child_counters", "issue_snapshots", "compaction_snapshots"} {
+			_, _ = regularTx.ExecContext(ctx, "CALL DOLT_ADD(?)", table)
+		}
+		commitMsg := fmt.Sprintf("bd: delete %d issue(s)", result.DeletedCount)
+		if _, err := regularTx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+			commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+			return fmt.Errorf("dolt commit: %w", err)
+		}
+		return nil
+	}); err != nil {
 		// Preserve partial result (e.g., OrphanedIssues) on error.
 		if result != nil {
 			result.DeletedCount += wispDeleteCount
@@ -431,21 +438,6 @@ func (s *DoltStore) DeleteIssues(ctx context.Context, ids []string, cascade bool
 
 	if dryRun {
 		return result, nil
-	}
-
-	// GH#2455: Stage only the tables this operation modified, then commit
-	// without -A.
-	for _, table := range []string{"issues", "dependencies", "labels", "comments", "events", "child_counters", "issue_snapshots", "compaction_snapshots"} {
-		_, _ = tx.ExecContext(ctx, "CALL DOLT_ADD(?)", table)
-	}
-	commitMsg := fmt.Sprintf("bd: delete %d issue(s)", result.DeletedCount-wispDeleteCount)
-	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
-		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
-		return nil, fmt.Errorf("dolt commit: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	s.invalidateBlockedIDsCache()
@@ -635,9 +627,9 @@ var (
 // Returns the number of issues deleted.
 func (s *DoltStore) DeleteIssuesBySourceRepo(ctx context.Context, sourceRepo string) (int, error) {
 	var count int
-	err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
+	err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
 		var err error
-		count, err = issueops.DeleteIssuesBySourceRepoInTx(ctx, tx, sourceRepo)
+		count, err = issueops.DeleteIssuesBySourceRepoInTx(ctx, regularTx, sourceRepo)
 		return err
 	})
 	if err == nil {
@@ -648,8 +640,8 @@ func (s *DoltStore) DeleteIssuesBySourceRepo(ctx context.Context, sourceRepo str
 
 // ClearRepoMtime removes the mtime cache entry for a repository.
 func (s *DoltStore) ClearRepoMtime(ctx context.Context, repoPath string) error {
-	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		return issueops.ClearRepoMtimeInTx(ctx, tx, repoPath)
+	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		return issueops.ClearRepoMtimeInTx(ctx, ignoredTx, repoPath)
 	})
 }
 
@@ -667,7 +659,7 @@ func (s *DoltStore) GetRepoMtime(ctx context.Context, repoPath string) (int64, e
 
 // SetRepoMtime updates the mtime cache for a repository's data file.
 func (s *DoltStore) SetRepoMtime(ctx context.Context, repoPath, jsonlPath string, mtimeNs int64) error {
-	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		return issueops.SetRepoMtimeInTx(ctx, tx, repoPath, jsonlPath, mtimeNs)
+	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+		return issueops.SetRepoMtimeInTx(ctx, ignoredTx, repoPath, jsonlPath, mtimeNs)
 	})
 }
