@@ -40,6 +40,7 @@ require (
 	github.com/moby/moby/api v1.54.1 // indirect
 	github.com/moby/moby/client v0.4.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
+	github.com/zeebo/blake3 v0.2.3 // indirect
 )
 
 require (
