@@ -363,7 +363,16 @@ create, update, show, or close operation).`,
 				regularUpdates["notes"] = combined
 			}
 			if len(regularUpdates) > 0 {
-				if err := issueStore.UpdateIssue(ctx, result.ResolvedID, regularUpdates, actor); err != nil {
+				if err := writeWithSpool(ctx, "update",
+					spoolPayload(map[string]interface{}{
+						"id":      result.ResolvedID,
+						"updates": regularUpdates,
+						"actor":   actor,
+					}),
+					func() error {
+						return issueStore.UpdateIssue(ctx, result.ResolvedID, regularUpdates, actor)
+					},
+				); err != nil {
 					fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
 					result.Close()
 					continue

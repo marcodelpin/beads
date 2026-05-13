@@ -167,7 +167,17 @@ create, update, show, or close operation).`,
 				}
 			}
 
-			if err := activeStore.CloseIssue(ctx, id, reason, actor, session); err != nil {
+			if err := writeWithSpool(ctx, "close",
+				spoolPayload(map[string]interface{}{
+					"id":      id,
+					"reason":  reason,
+					"actor":   actor,
+					"session": session,
+				}),
+				func() error {
+					return activeStore.CloseIssue(ctx, id, reason, actor, session)
+				},
+			); err != nil {
 				fmt.Fprintf(os.Stderr, "Error closing %s: %v\n", id, err)
 				continue
 			}
