@@ -146,13 +146,22 @@ func drainInternal(ctx context.Context, s *Spool, dispatch DispatchFunc, tryLock
 		result.Drained += dr
 		result.Dead += dead
 
-		// On error (transient or permanent), compute how far we actually
-		// advanced. Entries past the failure stay in queue for next cycle.
+		// On transient error, compute how far we actually advanced.
+		// Entries past the failure stay in queue for next cycle.
 		if err != nil {
 			_ = s.WriteInflight(remaining)
 			cursor.LastAckedOffset = computeProcessedOffset(s.QueueFile(), cursor.LastAckedOffset, entries, remaining)
 			_ = s.SaveCursor(cursor)
 			return result, err
+		}
+
+		// On permanent error (dead > 0, err == nil), cursor advances
+		// only past entries that were actually processed before the failure.
+		if dead > 0 {
+			_ = s.WriteInflight(remaining)
+			cursor.LastAckedOffset = computeProcessedOffset(s.QueueFile(), cursor.LastAckedOffset, entries, remaining)
+			_ = s.SaveCursor(cursor)
+			return result, nil
 		}
 
 		// Write remaining entries to inflight. If replayEntries hit a transient
