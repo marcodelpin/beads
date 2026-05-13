@@ -155,9 +155,13 @@ func drainInternal(ctx context.Context, s *Spool, dispatch DispatchFunc, tryLock
 			return result, err
 		}
 
-		// Clear inflight after successful dispatch of this batch.
-		if err := s.WriteInflight(nil); err != nil {
-			return result, fmt.Errorf("clear inflight: %w", err)
+		// Write remaining entries to inflight. If replayEntries hit a transient
+		// failure without returning err (entry appended to remaining + break),
+		// `remaining` contains the failed entry — writing it back to inflight
+		// preserves the retry state. If `remaining` is empty (all dispatched
+		// successfully), this writes nil = clears inflight.
+		if err := s.WriteInflight(remaining); err != nil {
+			return result, fmt.Errorf("write inflight after dispatch: %w", err)
 		}
 
 		// If all entries were skipped (dedup), don't advance cursor.
