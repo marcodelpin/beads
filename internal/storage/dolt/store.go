@@ -1243,7 +1243,13 @@ func buildServerDSN(cfg *Config, database string) string {
 	if err != nil {
 		return base.String()
 	}
-	parsed.ReadTimeout = 10 * time.Second
+	readTimeout := 10 * time.Second
+	if v := os.Getenv("BEADS_DOLT_READ_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			readTimeout = d
+		}
+	}
+	parsed.ReadTimeout = readTimeout
 	parsed.WriteTimeout = 10 * time.Second
 	return parsed.FormatDSN()
 }
