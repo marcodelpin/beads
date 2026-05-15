@@ -12,7 +12,6 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
-	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
@@ -395,12 +394,9 @@ func (s *DoltStore) filteredPushToPeer(ctx context.Context, peer string, exclude
 		_, _ = conn.ExecContext(ctx, "CALL DOLT_BRANCH('-Df', ?)", federationStagingBranch)
 	}()
 
-	// Checkout staging branch and ensure ignored tables exist.
+	// Checkout staging branch.
 	if err := versioncontrolops.CheckoutBranch(ctx, conn, federationStagingBranch); err != nil {
 		return fmt.Errorf("federation filter: checkout staging: %w", err)
-	}
-	if err := schema.EnsureIgnoredTables(ctx, conn); err != nil {
-		return fmt.Errorf("federation filter: ensure ignored tables: %w", err)
 	}
 
 	// Delete excluded issues from the committed issues table.

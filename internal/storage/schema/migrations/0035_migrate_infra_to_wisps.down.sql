@@ -1,5 +1,19 @@
-INSERT IGNORE INTO issues SELECT * FROM wisps
-WHERE issue_type IN ('agent', 'rig', 'role', 'message');
+SET @shared_cols = (
+    SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY ORDINAL_POSITION SEPARATOR ', ')
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'wisps'
+      AND COLUMN_NAME IN (
+          SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'issues'
+      )
+);
+SET @sql = IF(@shared_cols IS NULL OR @shared_cols = '',
+    'SELECT 1',
+    CONCAT('INSERT IGNORE INTO issues (', @shared_cols, ') SELECT ', @shared_cols,
+           ' FROM wisps WHERE issue_type IN (''agent'', ''rig'', ''role'', ''message'')')
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 UPDATE issues SET ephemeral = 0
 WHERE issue_type IN ('agent', 'rig', 'role', 'message');

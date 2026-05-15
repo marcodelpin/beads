@@ -50,13 +50,6 @@ func (s *DoltStore) SetConfig(ctx context.Context, key, value string) error {
 	}
 	s.cacheMu.Unlock()
 
-	// Rebuild status views when custom statuses change
-	if key == "status.custom" {
-		if err := s.RebuildStatusViews(ctx); err != nil {
-			return fmt.Errorf("failed to rebuild status views: %w", err)
-		}
-	}
-
 	return nil
 }
 

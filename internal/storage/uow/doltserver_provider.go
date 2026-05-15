@@ -172,15 +172,11 @@ func (p *doltServerProvider) initSchema(ctx context.Context, database string) er
 			return backoff.Permanent(fmt.Errorf("uow: switching to database: %w", err))
 		}
 
-		if _, err := schema.MigrateOnBranch(ctx, conn, p.defaultBranch); err != nil {
+		if _, err := schema.MigrateUp(ctx, conn); err != nil {
 			if isSerializationError(err) {
 				return fmt.Errorf("uow: migrate: %w", err)
 			}
 			return backoff.Permanent(fmt.Errorf("uow: migrate: %w", err))
-		}
-
-		if err := schema.EnsureIgnoredTables(ctx, conn); err != nil {
-			return backoff.Permanent(fmt.Errorf("uow: ensure ignored tables after migration: %w", err))
 		}
 		return nil
 	}, backoff.WithContext(bo, ctx))

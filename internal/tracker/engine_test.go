@@ -37,13 +37,6 @@ func newTestStore(t *testing.T) *dolt.DoltStore {
 	// Create an isolated branch for this test
 	_, branchCleanup := testutil.StartTestBranch(t, store.DB(), testSharedDB)
 
-	// Re-create dolt_ignore'd tables on the branch
-	if err := dolt.CreateIgnoredTables(store.DB()); err != nil {
-		branchCleanup()
-		store.Close()
-		t.Fatalf("CreateIgnoredTables failed: %v", err)
-	}
-
 	t.Cleanup(func() {
 		branchCleanup()
 		store.Close()

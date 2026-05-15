@@ -157,11 +157,6 @@ func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(r
 	return
 }
 
-// initSchema creates the database (if needed) and runs all pending migrations
-// on a generated branch that's merged into the default branch. A pinned
-// *sql.Conn is required because DOLT_CHECKOUT/DOLT_BRANCH/DOLT_MERGE inside
-// schema.MigrateOnBranch are session-scoped; the embedded driver hands out
-// connections from a pool, so we acquire one and reuse it for the whole flow.
 func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 	db, cleanup, err := OpenSQL(ctx, s.dataDir, "", "")
 	if err != nil {
@@ -196,25 +191,8 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 		}
 	}
 
-	defaultBranch := s.branch
-	if defaultBranch == "" {
-		defaultBranch = "main"
-	}
-	if _, err := schema.MigrateOnBranch(ctx, conn, defaultBranch); err != nil {
+	if _, err := schema.MigrateUp(ctx, conn); err != nil {
 		return fmt.Errorf("embeddeddolt: migrate: %w", err)
-	}
-
-	// Recreate dolt_ignore'd tables on the default branch after migrations
-	// have been merged in. Required when the working set was reset (clone,
-	// branch switch) and schema_migrations records make the migrate path a
-	// no-op.
-	if err := schema.EnsureIgnoredTables(ctx, conn); err != nil {
-		return fmt.Errorf("embeddeddolt: ensure ignored tables: %w", err)
-	}
-
-	// Backfill custom_statuses and custom_types from legacy config rows.
-	if err := schema.EnsureBackfilledCustomStatusesCustomTypes(ctx, conn); err != nil {
-		return fmt.Errorf("embeddeddolt: backfill custom tables: %w", err)
 	}
 
 	return nil

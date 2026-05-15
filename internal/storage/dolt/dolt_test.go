@@ -114,16 +114,6 @@ func setupTestStore(t *testing.T) (*DoltStore, func()) {
 	// Create an isolated branch for this test
 	_, branchCleanup := testutil.StartTestBranch(t, store.db, testSharedDB)
 
-	// Re-create dolt_ignore'd tables (wisps, etc.) on the branch.
-	// These tables are in dolt_ignore so they only exist in the working set,
-	// not in commits. Branching from main doesn't inherit them.
-	if err := CreateIgnoredTables(store.db); err != nil {
-		branchCleanup()
-		store.Close()
-		os.RemoveAll(tmpDir)
-		t.Fatalf("CreateIgnoredTables on branch failed: %v", err)
-	}
-
 	cleanup := func() {
 		branchCleanup()
 		store.Close()
