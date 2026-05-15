@@ -302,6 +302,23 @@ This installs:
 
 ## Common Development Tasks
 
+### Offline Write-Spool (Operator Notes)
+
+The spool is **automatic**: `bd` buffers writes (create/update/note/close)
+during Dolt outages and replays them on the next invocation. No manual
+intervention is required for normal operation.
+
+Useful commands:
+
+```sh
+bd spool status          # queue depth, disk usage, last drain timestamp
+bd spool drain           # force-drain now (synchronous)
+bd spool clear --confirm # wipe spool (last resort — discards pending writes)
+```
+
+See [docs/spool.md](docs/spool.md) for full operator documentation including
+troubleshooting recipes.
+
 ### Visual Design System
 
 When adding CLI output features, follow these design principles for consistent,
