@@ -10,6 +10,35 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+type DepTargetKind int
+
+const (
+	DepTargetIssue DepTargetKind = iota
+	DepTargetWisp
+	DepTargetExternal
+)
+
+func (k DepTargetKind) Column() string {
+	switch k {
+	case DepTargetWisp:
+		return "depends_on_wisp_id"
+	case DepTargetExternal:
+		return "depends_on_external"
+	default:
+		return "depends_on_issue_id"
+	}
+}
+
+func ClassifyDepTarget(ctx context.Context, tx *sql.Tx, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
+	if isCrossPrefix || strings.HasPrefix(dep.DependsOnID, "external:") {
+		return DepTargetExternal
+	}
+	if IsActiveWispInTx(ctx, tx, dep.DependsOnID) {
+		return DepTargetWisp
+	}
+	return DepTargetIssue
+}
+
 // AddDependencyOpts configures AddDependencyInTx behavior.
 // When fields are left empty, AddDependencyInTx performs wisp routing
 // automatically via IsActiveWispInTx. Callers that have already determined
@@ -34,6 +63,7 @@ type AddDependencyOpts struct {
 	// SkipCycleCheck skips the recursive pre-insert cycle check for callers
 	// that intentionally trade validation cost for bulk graph wiring speed.
 	SkipCycleCheck bool
+	TargetKind     *DepTargetKind
 }
 
 // AddDependencyInTx validates and inserts a dependency within an existing
@@ -173,12 +203,50 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		return fmt.Errorf("failed to check existing dependency: %w", err)
 	}
 
-	//nolint:gosec // G201: writeTable is from WispTableRouting
+	var kind DepTargetKind
+	if opts.TargetKind != nil {
+		kind = *opts.TargetKind
+	} else {
+		kind = ClassifyDepTarget(ctx, tx, dep, opts.IsCrossPrefix)
+	}
+
+	//nolint:gosec // G201: writeTable from WispTableRouting; target column from DepTargetKind.Column()
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (issue_id, depends_on_id, type, created_at, created_by, metadata, thread_id)
+		INSERT INTO %s (issue_id, %s, type, created_at, created_by, metadata, thread_id)
 		VALUES (?, ?, ?, NOW(), ?, ?, ?)
-	`, writeTable), dep.IssueID, dep.DependsOnID, dep.Type, actor, metadata, dep.ThreadID); err != nil {
+	`, writeTable, kind.Column()), dep.IssueID, dep.DependsOnID, dep.Type, actor, metadata, dep.ThreadID); err != nil {
 		return fmt.Errorf("failed to add dependency: %w", err)
+	}
+	return nil
+}
+
+func DeleteWispFromDependenciesInTx(ctx context.Context, tx *sql.Tx, wispID string) error {
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM dependencies WHERE depends_on_wisp_id = ?", wispID); err != nil {
+		return fmt.Errorf("delete wisp %s from dependencies: %w", wispID, err)
+	}
+	return nil
+}
+
+//nolint:gosec // G201: inClause contains only ? placeholders
+func DeleteWispsFromDependenciesInTx(ctx context.Context, tx *sql.Tx, wispIDs []string) error {
+	if len(wispIDs) == 0 {
+		return nil
+	}
+	inClause, args := buildSQLInClause(wispIDs)
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("DELETE FROM dependencies WHERE depends_on_wisp_id IN (%s)", inClause),
+		args...); err != nil {
+		return fmt.Errorf("delete wisps from dependencies: %w", err)
+	}
+	return nil
+}
+
+func UpdateWispIDInDependenciesInTx(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE dependencies SET depends_on_wisp_id = ? WHERE depends_on_wisp_id = ?",
+		newID, oldID); err != nil {
+		return fmt.Errorf("update wisp %s -> %s in dependencies: %w", oldID, newID, err)
 	}
 	return nil
 }

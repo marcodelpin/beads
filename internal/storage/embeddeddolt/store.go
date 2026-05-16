@@ -101,7 +101,7 @@ func newStore(ctx context.Context, beadsDir, database, branch string) (*Embedded
 // returns regardless of outcome.
 //
 // The database must already exist (created during initSchema).
-func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(regularTx, ignoredTx *sql.Tx) error) (err error) {
+func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(tx *sql.Tx) error) (err error) {
 	if s.closed.Load() {
 		err = errClosed
 		return
@@ -118,40 +118,25 @@ func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(r
 		err = errors.Join(err, cleanup())
 	}()
 
-	var regularTx, ignoredTx *sql.Tx
-	regularTx, err = db.BeginTx(ctx, nil)
+	var tx *sql.Tx
+	tx, err = db.BeginTx(ctx, nil)
 	if err != nil {
-		err = fmt.Errorf("embeddeddolt: begin regular tx: %w", err)
-		return
-	}
-	ignoredTx, err = db.BeginTx(ctx, nil)
-	if err != nil {
-		err = errors.Join(
-			fmt.Errorf("embeddeddolt: begin ignored tx: %w", err),
-			regularTx.Rollback(),
-		)
+		err = fmt.Errorf("embeddeddolt: begin tx: %w", err)
 		return
 	}
 
-	if fnErr := fn(regularTx, ignoredTx); fnErr != nil {
-		err = errors.Join(fnErr, regularTx.Rollback(), ignoredTx.Rollback())
+	if fnErr := fn(tx); fnErr != nil {
+		err = errors.Join(fnErr, tx.Rollback())
 		return
 	}
 
 	if !commit {
-		err = errors.Join(regularTx.Rollback(), ignoredTx.Rollback())
+		err = tx.Rollback()
 		return
 	}
 
-	if cErr := regularTx.Commit(); cErr != nil {
-		err = errors.Join(
-			fmt.Errorf("embeddeddolt: commit regular tx: %w", cErr),
-			ignoredTx.Rollback(),
-		)
-		return
-	}
-	if cErr := ignoredTx.Commit(); cErr != nil {
-		err = fmt.Errorf("embeddeddolt: commit ignored tx (regular tx already committed): %w", cErr)
+	if cErr := tx.Commit(); cErr != nil {
+		err = fmt.Errorf("embeddeddolt: commit tx: %w", cErr)
 		return
 	}
 	return
@@ -202,9 +187,9 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 
 func (s *EmbeddedDoltStore) GetIssueByExternalRef(ctx context.Context, externalRef string) (*types.Issue, error) {
 	var id string
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		id, err = issueops.GetIssueByExternalRefInTx(ctx, regularTx, externalRef)
+		id, err = issueops.GetIssueByExternalRefInTx(ctx, tx, externalRef)
 		return err
 	})
 	if err != nil {
@@ -220,8 +205,8 @@ func (s *EmbeddedDoltStore) GetIssueByExternalRef(ctx context.Context, externalR
 // CloseIssue is implemented in issues.go.
 
 func (s *EmbeddedDoltStore) DeleteIssue(ctx context.Context, id string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.DeleteIssueInTx(ctx, regularTx, ignoredTx, id)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.DeleteIssueInTx(ctx, tx, id)
 	})
 }
 
@@ -231,9 +216,9 @@ func (s *EmbeddedDoltStore) DeleteIssue(ctx context.Context, id string) error {
 
 func (s *EmbeddedDoltStore) GetDependencies(ctx context.Context, issueID string) ([]*types.Issue, error) {
 	var result []*types.Issue
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetDependenciesInTx(ctx, regularTx, issueID)
+		result, err = issueops.GetDependenciesInTx(ctx, tx, issueID)
 		return err
 	})
 	return result, err
@@ -241,9 +226,9 @@ func (s *EmbeddedDoltStore) GetDependencies(ctx context.Context, issueID string)
 
 func (s *EmbeddedDoltStore) GetDependents(ctx context.Context, issueID string) ([]*types.Issue, error) {
 	var result []*types.Issue
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetDependentsInTx(ctx, regularTx, issueID)
+		result, err = issueops.GetDependentsInTx(ctx, tx, issueID)
 		return err
 	})
 	return result, err
@@ -255,9 +240,9 @@ func (s *EmbeddedDoltStore) GetDependents(ctx context.Context, issueID string) (
 
 func (s *EmbeddedDoltStore) GetDependencyTree(ctx context.Context, issueID string, maxDepth int, showAllPaths bool, reverse bool) ([]*types.TreeNode, error) {
 	var result []*types.TreeNode
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetDependencyTreeInTx(ctx, regularTx, issueID, maxDepth, showAllPaths, reverse)
+		result, err = issueops.GetDependencyTreeInTx(ctx, tx, issueID, maxDepth, showAllPaths, reverse)
 		return err
 	})
 	return result, err
@@ -271,9 +256,9 @@ func (s *EmbeddedDoltStore) GetDependencyTree(ctx context.Context, issueID strin
 
 func (s *EmbeddedDoltStore) GetIssuesByLabel(ctx context.Context, label string) ([]*types.Issue, error) {
 	var ids []string
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		ids, err = issueops.GetIssuesByLabelInTx(ctx, regularTx, label)
+		ids, err = issueops.GetIssuesByLabelInTx(ctx, tx, label)
 		return err
 	})
 	if err != nil {
@@ -286,9 +271,9 @@ func (s *EmbeddedDoltStore) GetIssuesByLabel(ctx context.Context, label string) 
 
 func (s *EmbeddedDoltStore) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
 	var result []*types.BlockedIssue
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetBlockedIssuesInTx(ctx, regularTx, filter)
+		result, err = issueops.GetBlockedIssuesInTx(ctx, tx, filter)
 		return err
 	})
 	return result, err
@@ -296,9 +281,9 @@ func (s *EmbeddedDoltStore) GetBlockedIssues(ctx context.Context, filter types.W
 
 func (s *EmbeddedDoltStore) GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error) {
 	var result []*types.EpicStatus
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetEpicsEligibleForClosureInTx(ctx, regularTx)
+		result, err = issueops.GetEpicsEligibleForClosureInTx(ctx, tx)
 		return err
 	})
 	return result, err
@@ -306,9 +291,9 @@ func (s *EmbeddedDoltStore) GetEpicsEligibleForClosure(ctx context.Context) ([]*
 
 func (s *EmbeddedDoltStore) AddIssueComment(ctx context.Context, issueID, author, text string) (*types.Comment, error) {
 	var result *types.Comment
-	err := s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.AddIssueCommentInTx(ctx, regularTx, issueID, author, text)
+		result, err = issueops.AddIssueCommentInTx(ctx, tx, issueID, author, text)
 		return err
 	})
 	return result, err
@@ -316,9 +301,9 @@ func (s *EmbeddedDoltStore) AddIssueComment(ctx context.Context, issueID, author
 
 func (s *EmbeddedDoltStore) GetIssueComments(ctx context.Context, issueID string) ([]*types.Comment, error) {
 	var result []*types.Comment
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetIssueCommentsInTx(ctx, regularTx, issueID)
+		result, err = issueops.GetIssueCommentsInTx(ctx, tx, issueID)
 		return err
 	})
 	return result, err
@@ -326,9 +311,9 @@ func (s *EmbeddedDoltStore) GetIssueComments(ctx context.Context, issueID string
 
 func (s *EmbeddedDoltStore) GetEvents(ctx context.Context, issueID string, limit int) ([]*types.Event, error) {
 	var result []*types.Event
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetEventsInTx(ctx, regularTx, issueID, limit)
+		result, err = issueops.GetEventsInTx(ctx, tx, issueID, limit)
 		return err
 	})
 	return result, err
@@ -336,9 +321,9 @@ func (s *EmbeddedDoltStore) GetEvents(ctx context.Context, issueID string, limit
 
 func (s *EmbeddedDoltStore) GetAllEventsSince(ctx context.Context, since time.Time) ([]*types.Event, error) {
 	var result []*types.Event
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetAllEventsSinceInTx(ctx, regularTx, since)
+		result, err = issueops.GetAllEventsSinceInTx(ctx, tx, since)
 		return err
 	})
 	return result, err
@@ -382,10 +367,10 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 	actor string,
 ) (int, error) {
 	var imported int
-	err := s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		// Atomically check: is the database empty?
 		stats := &types.Statistics{}
-		if err := issueops.ScanIssueCountsInTx(ctx, regularTx, stats); err != nil {
+		if err := issueops.ScanIssueCountsInTx(ctx, tx, stats); err != nil {
 			return fmt.Errorf("checking issue count: %w", err)
 		}
 		if stats.TotalIssues > 0 {
@@ -394,7 +379,7 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 
 		// Import config entries (memories, etc.)
 		for key, value := range configEntries {
-			if err := issueops.SetConfigInTx(ctx, regularTx, key, value); err != nil {
+			if err := issueops.SetConfigInTx(ctx, tx, key, value); err != nil {
 				return fmt.Errorf("importing config %q: %w", key, err)
 			}
 		}
@@ -407,14 +392,14 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 		if _, hasPrefix := configEntries["issue_prefix"]; !hasPrefix {
 			firstPrefix := utils.ExtractIssuePrefix(issues[0].ID)
 			if firstPrefix != "" {
-				if err := issueops.SetConfigInTx(ctx, regularTx, "issue_prefix", firstPrefix); err != nil {
+				if err := issueops.SetConfigInTx(ctx, tx, "issue_prefix", firstPrefix); err != nil {
 					return fmt.Errorf("setting issue_prefix: %w", err)
 				}
 			}
 		}
 
 		// Create all issues in the same transaction
-		if err := issueops.CreateIssuesInTx(ctx, regularTx, ignoredTx, issues, actor, storage.BatchCreateOptions{
+		if err := issueops.CreateIssuesInTx(ctx, tx, issues, actor, storage.BatchCreateOptions{
 			OrphanHandling:       storage.OrphanAllow,
 			SkipPrefixValidation: true,
 		}); err != nil {
@@ -497,8 +482,8 @@ func (s *EmbeddedDoltStore) CommitPending(ctx context.Context, actor string) (bo
 
 func (s *EmbeddedDoltStore) GetCurrentCommit(ctx context.Context) (string, error) {
 	var hash string
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
-		return regularTx.QueryRowContext(ctx, "SELECT HASHOF('HEAD')").Scan(&hash)
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, "SELECT HASHOF('HEAD')").Scan(&hash)
 	})
 	return hash, err
 }
@@ -512,9 +497,9 @@ func (s *EmbeddedDoltStore) GetCurrentCommit(ctx context.Context) (string, error
 
 func (s *EmbeddedDoltStore) History(ctx context.Context, issueID string) ([]*storage.HistoryEntry, error) {
 	var result []*storage.HistoryEntry
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.HistoryInTx(ctx, regularTx, issueID)
+		result, err = issueops.HistoryInTx(ctx, tx, issueID)
 		return err
 	})
 	return result, err
@@ -522,9 +507,9 @@ func (s *EmbeddedDoltStore) History(ctx context.Context, issueID string) ([]*sto
 
 func (s *EmbeddedDoltStore) AsOf(ctx context.Context, issueID string, ref string) (*types.Issue, error) {
 	var result *types.Issue
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.AsOfInTx(ctx, regularTx, issueID, ref)
+		result, err = issueops.AsOfInTx(ctx, tx, issueID, ref)
 		return err
 	})
 	return result, err
@@ -532,9 +517,9 @@ func (s *EmbeddedDoltStore) AsOf(ctx context.Context, issueID string, ref string
 
 func (s *EmbeddedDoltStore) Diff(ctx context.Context, fromRef, toRef string) ([]*storage.DiffEntry, error) {
 	var result []*storage.DiffEntry
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.DiffInTx(ctx, regularTx, fromRef, toRef)
+		result, err = issueops.DiffInTx(ctx, tx, fromRef, toRef)
 		return err
 	})
 	return result, err
@@ -568,9 +553,9 @@ func (s *EmbeddedDoltStore) Diff(ctx context.Context, fromRef, toRef string) ([]
 
 func (s *EmbeddedDoltStore) DeleteIssues(ctx context.Context, ids []string, cascade bool, force bool, dryRun bool) (*types.DeleteIssuesResult, error) {
 	var result *types.DeleteIssuesResult
-	err := s.withConn(ctx, !dryRun, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, !dryRun, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.DeleteIssuesInTx(ctx, regularTx, ignoredTx, ids, cascade, force, dryRun)
+		result, err = issueops.DeleteIssuesInTx(ctx, tx, ids, cascade, force, dryRun)
 		return err
 	})
 	return result, err
@@ -578,33 +563,29 @@ func (s *EmbeddedDoltStore) DeleteIssues(ctx context.Context, ids []string, casc
 
 func (s *EmbeddedDoltStore) DeleteIssuesBySourceRepo(ctx context.Context, sourceRepo string) (int, error) {
 	var count int
-	err := s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		var err error
-		count, err = issueops.DeleteIssuesBySourceRepoInTx(ctx, regularTx, sourceRepo)
+		count, err = issueops.DeleteIssuesBySourceRepoInTx(ctx, tx, sourceRepo)
 		return err
 	})
 	return count, err
 }
 
 func (s *EmbeddedDoltStore) UpdateIssueID(ctx context.Context, oldID, newID string, issue *types.Issue, actor string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.UpdateIssueIDInTx(ctx, regularTx, ignoredTx, oldID, newID, issue, actor)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.UpdateIssueIDInTx(ctx, tx, oldID, newID, issue, actor)
 	})
 }
 
 // ClaimIssue is implemented in issues.go.
 
 func (s *EmbeddedDoltStore) PromoteFromEphemeral(ctx context.Context, id string, actor string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.PromoteFromEphemeralInTx(ctx, regularTx, ignoredTx, id, actor)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.PromoteFromEphemeralInTx(ctx, tx, id, actor)
 	})
 }
 
 // GetNextChildID is implemented in child_id.go.
-
-func (s *EmbeddedDoltStore) RenameCounterPrefix(ctx context.Context, oldPrefix, newPrefix string) error {
-	return nil // Hash-based IDs don't use counters.
-}
 
 // ---------------------------------------------------------------------------
 // storage.DependencyQueryStore
@@ -612,8 +593,8 @@ func (s *EmbeddedDoltStore) RenameCounterPrefix(ctx context.Context, oldPrefix, 
 
 func (s *EmbeddedDoltStore) GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error) {
 	var result []*types.Dependency
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
-		m, err := issueops.GetDependencyRecordsForIssuesInTx(ctx, regularTx, []string{issueID})
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		m, err := issueops.GetDependencyRecordsForIssuesInTx(ctx, tx, []string{issueID})
 		if err != nil {
 			return err
 		}
@@ -631,18 +612,12 @@ func (s *EmbeddedDoltStore) GetDependencyRecords(ctx context.Context, issueID st
 
 func (s *EmbeddedDoltStore) FindWispDependentsRecursive(ctx context.Context, ids []string) (map[string]bool, error) {
 	var result map[string]bool
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.FindWispDependentsRecursiveInTx(ctx, ignoredTx, ids)
+		result, err = issueops.FindWispDependentsRecursiveInTx(ctx, tx, ids)
 		return err
 	})
 	return result, err
-}
-
-func (s *EmbeddedDoltStore) RenameDependencyPrefix(ctx context.Context, oldPrefix, newPrefix string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.RenameDependencyPrefixInTx(ctx, regularTx, oldPrefix, newPrefix)
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -650,16 +625,16 @@ func (s *EmbeddedDoltStore) RenameDependencyPrefix(ctx context.Context, oldPrefi
 // ---------------------------------------------------------------------------
 
 func (s *EmbeddedDoltStore) AddComment(ctx context.Context, issueID, actor, comment string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.AddCommentEventInTx(ctx, regularTx, issueID, actor, comment)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.AddCommentEventInTx(ctx, tx, issueID, actor, comment)
 	})
 }
 
 func (s *EmbeddedDoltStore) ImportIssueComment(ctx context.Context, issueID, author, text string, createdAt time.Time) (*types.Comment, error) {
 	var result *types.Comment
-	err := s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.ImportIssueCommentInTx(ctx, regularTx, issueID, author, text, createdAt)
+		result, err = issueops.ImportIssueCommentInTx(ctx, tx, issueID, author, text, createdAt)
 		return err
 	})
 	return result, err
@@ -667,9 +642,9 @@ func (s *EmbeddedDoltStore) ImportIssueComment(ctx context.Context, issueID, aut
 
 func (s *EmbeddedDoltStore) GetCommentsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Comment, error) {
 	var result map[string][]*types.Comment
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetCommentsForIssuesInTx(ctx, regularTx, issueIDs)
+		result, err = issueops.GetCommentsForIssuesInTx(ctx, tx, issueIDs)
 		return err
 	})
 	return result, err
@@ -680,8 +655,8 @@ func (s *EmbeddedDoltStore) GetCommentsForIssues(ctx context.Context, issueIDs [
 // ---------------------------------------------------------------------------
 
 func (s *EmbeddedDoltStore) DeleteConfig(ctx context.Context, key string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.DeleteConfigInTx(ctx, regularTx, key)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.DeleteConfigInTx(ctx, tx, key)
 	})
 }
 
@@ -695,9 +670,9 @@ func (s *EmbeddedDoltStore) GetCustomStatuses(ctx context.Context) ([]string, er
 
 func (s *EmbeddedDoltStore) GetCustomStatusesDetailed(ctx context.Context) ([]types.CustomStatus, error) {
 	var result []types.CustomStatus
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var txErr error
-		result, txErr = issueops.ResolveCustomStatusesDetailedInTx(ctx, regularTx)
+		result, txErr = issueops.ResolveCustomStatusesDetailedInTx(ctx, tx)
 		return txErr
 	})
 	if err != nil {
@@ -712,9 +687,9 @@ func (s *EmbeddedDoltStore) GetCustomStatusesDetailed(ctx context.Context) ([]ty
 
 func (s *EmbeddedDoltStore) GetCustomTypes(ctx context.Context) ([]string, error) {
 	var result []string
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var txErr error
-		result, txErr = issueops.ResolveCustomTypesInTx(ctx, regularTx)
+		result, txErr = issueops.ResolveCustomTypesInTx(ctx, tx)
 		return txErr
 	})
 	if err != nil {
@@ -734,25 +709,25 @@ func (s *EmbeddedDoltStore) GetCustomTypes(ctx context.Context) ([]string, error
 func (s *EmbeddedDoltStore) CheckEligibility(ctx context.Context, issueID string, tier int) (bool, string, error) {
 	var eligible bool
 	var reason string
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		eligible, reason, err = issueops.CheckEligibilityInTx(ctx, regularTx, issueID, tier)
+		eligible, reason, err = issueops.CheckEligibilityInTx(ctx, tx, issueID, tier)
 		return err
 	})
 	return eligible, reason, err
 }
 
 func (s *EmbeddedDoltStore) ApplyCompaction(ctx context.Context, issueID string, tier int, originalSize int, _ int, commitHash string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.ApplyCompactionInTx(ctx, regularTx, issueID, tier, originalSize, commitHash)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.ApplyCompactionInTx(ctx, tx, issueID, tier, originalSize, commitHash)
 	})
 }
 
 func (s *EmbeddedDoltStore) GetTier1Candidates(ctx context.Context) ([]*types.CompactionCandidate, error) {
 	var result []*types.CompactionCandidate
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetTier1CandidatesInTx(ctx, regularTx)
+		result, err = issueops.GetTier1CandidatesInTx(ctx, tx)
 		return err
 	})
 	return result, err
@@ -760,9 +735,9 @@ func (s *EmbeddedDoltStore) GetTier1Candidates(ctx context.Context) ([]*types.Co
 
 func (s *EmbeddedDoltStore) GetTier2Candidates(ctx context.Context) ([]*types.CompactionCandidate, error) {
 	var result []*types.CompactionCandidate
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetTier2CandidatesInTx(ctx, regularTx)
+		result, err = issueops.GetTier2CandidatesInTx(ctx, tx)
 		return err
 	})
 	return result, err
@@ -774,23 +749,23 @@ func (s *EmbeddedDoltStore) GetTier2Candidates(ctx context.Context) ([]*types.Co
 
 func (s *EmbeddedDoltStore) GetRepoMtime(ctx context.Context, repoPath string) (int64, error) {
 	var result int64
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetRepoMtimeInTx(ctx, ignoredTx, repoPath)
+		result, err = issueops.GetRepoMtimeInTx(ctx, tx, repoPath)
 		return err
 	})
 	return result, err
 }
 
 func (s *EmbeddedDoltStore) SetRepoMtime(ctx context.Context, repoPath, jsonlPath string, mtimeNs int64) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.SetRepoMtimeInTx(ctx, ignoredTx, repoPath, jsonlPath, mtimeNs)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.SetRepoMtimeInTx(ctx, tx, repoPath, jsonlPath, mtimeNs)
 	})
 }
 
 func (s *EmbeddedDoltStore) ClearRepoMtime(ctx context.Context, repoPath string) error {
-	return s.withConn(ctx, true, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.ClearRepoMtimeInTx(ctx, ignoredTx, repoPath)
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.ClearRepoMtimeInTx(ctx, tx, repoPath)
 	})
 }
 
@@ -798,9 +773,9 @@ func (s *EmbeddedDoltStore) ClearRepoMtime(ctx context.Context, repoPath string)
 
 func (s *EmbeddedDoltStore) GetMoleculeLastActivity(ctx context.Context, moleculeID string) (*types.MoleculeLastActivity, error) {
 	var result *types.MoleculeLastActivity
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetMoleculeLastActivityInTx(ctx, regularTx, moleculeID)
+		result, err = issueops.GetMoleculeLastActivityInTx(ctx, tx, moleculeID)
 		return err
 	})
 	return result, err
@@ -808,9 +783,9 @@ func (s *EmbeddedDoltStore) GetMoleculeLastActivity(ctx context.Context, molecul
 
 func (s *EmbeddedDoltStore) GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error) {
 	var result []*types.Issue
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetStaleIssuesInTx(ctx, regularTx, filter)
+		result, err = issueops.GetStaleIssuesInTx(ctx, tx, filter)
 		return err
 	})
 	return result, err

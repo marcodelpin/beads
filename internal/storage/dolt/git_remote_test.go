@@ -35,7 +35,7 @@ import (
 //     so we avoid it entirely and verify via `dolt sql -q ... -r csv`.
 //
 // Prerequisites:
-//   - dolt >= 1.81.8 (native git remote support)
+//   - dolt >= 1.88.1
 //   - git CLI available
 //
 // Run:
@@ -467,7 +467,7 @@ func TestGitRemoteRoundTripAllTables(t *testing.T) {
 
 	// Dependency
 	runDoltSQL(t, setup.sourceDir,
-		`INSERT INTO dependencies (issue_id, depends_on_id, type, created_at, created_by) `+
+		`INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_at, created_by) `+
 			`VALUES ('rt-child', 'rt-parent', 'blocks', NOW(), 'test')`)
 
 	// Config

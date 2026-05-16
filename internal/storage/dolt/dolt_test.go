@@ -1424,7 +1424,7 @@ func TestDeleteIssuesCircularDeps(t *testing.T) {
 	// the cycle detection in AddDependency -- this test exercises DeleteIssues'
 	// ability to handle cycles that may exist in the database, not AddDependency.
 	if _, err := store.execContext(ctx, `
-		INSERT INTO dependencies (issue_id, depends_on_id, type, created_at, created_by, metadata)
+		INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_at, created_by, metadata)
 		VALUES (?, ?, 'blocks', NOW(), 'tester', '{}')
 	`, "circ-a", "circ-c"); err != nil {
 		t.Fatalf("failed to insert cycle-completing dep circ-a->circ-c: %v", err)

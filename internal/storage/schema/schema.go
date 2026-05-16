@@ -44,8 +44,10 @@ var (
 )
 
 var (
-	latestOnce sync.Once
-	latestVer  int
+	latestOnce        sync.Once
+	latestVer         int
+	latestIgnoredOnce sync.Once
+	latestIgnoredVer  int
 )
 
 func LatestVersion() int {
@@ -53,6 +55,13 @@ func LatestVersion() int {
 		latestVer = mainSource.latest()
 	})
 	return latestVer
+}
+
+func LatestIgnoredVersion() int {
+	latestIgnoredOnce.Do(func() {
+		latestIgnoredVer = ignoredSource.latest()
+	})
+	return latestIgnoredVer
 }
 
 func AllMigrationsSQL() string {
