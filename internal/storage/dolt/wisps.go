@@ -224,18 +224,6 @@ func (s *DoltStore) deleteWisp(ctx context.Context, id string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Delete from auxiliary tables
-	for _, table := range []string{"wisp_dependencies", "wisp_events", "wisp_comments", "wisp_labels"} {
-		if table == "wisp_dependencies" {
-			_, err = tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE issue_id = ? OR depends_on_id = ?", table), id, id) //nolint:gosec // G201: table is hardcoded
-		} else {
-			_, err = tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE issue_id = ?", table), id) //nolint:gosec // G201: table is hardcoded
-		}
-		if err != nil {
-			return fmt.Errorf("failed to delete from %s: %w", table, err)
-		}
-	}
-
 	result, err := tx.ExecContext(ctx, "DELETE FROM wisps WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("failed to delete wisp: %w", err)
@@ -247,6 +235,10 @@ func (s *DoltStore) deleteWisp(ctx context.Context, id string) error {
 	}
 	if rows == 0 {
 		return fmt.Errorf("wisp not found: %s", id)
+	}
+
+	if err := issueops.DeleteWispFromDependenciesInTx(ctx, tx, id); err != nil {
+		return err
 	}
 
 	return wrapTransactionError("commit delete wisp", tx.Commit())
@@ -298,35 +290,6 @@ func (s *DoltStore) deleteWispBatchTx(ctx context.Context, ids []string) (int, e
 
 	inClause, args := doltBuildSQLInClause(ids)
 
-	// Delete from wisp_dependencies using two separate queries rather than a
-	// single OR condition. An OR across issue_id and depends_on_id forces Dolt
-	// to union two index scans in one statement, which is slow enough to trigger
-	// the driver's write timeout on large batches (ff-tqm). Two targeted queries
-	// each use their own index: PRIMARY KEY for issue_id and
-	// idx_wisp_dep_depends for depends_on_id.
-	//nolint:gosec // G201: inClause contains only ? markers
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf("DELETE FROM wisp_dependencies WHERE issue_id IN (%s)", inClause),
-		args...); err != nil {
-		return 0, fmt.Errorf("failed to batch delete from wisp_dependencies (issue_id): %w", err)
-	}
-	//nolint:gosec // G201: inClause contains only ? markers
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf("DELETE FROM wisp_dependencies WHERE depends_on_id IN (%s)", inClause),
-		args...); err != nil {
-		return 0, fmt.Errorf("failed to batch delete from wisp_dependencies (depends_on_id): %w", err)
-	}
-
-	for _, table := range []string{"wisp_events", "wisp_comments", "wisp_labels"} {
-		//nolint:gosec // G201: table is a hardcoded constant, inClause contains only ? markers
-		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf("DELETE FROM %s WHERE issue_id IN (%s)", table, inClause),
-			args...); err != nil {
-			return 0, fmt.Errorf("failed to batch delete from %s: %w", table, err)
-		}
-	}
-
-	// Delete the wisps themselves
 	//nolint:gosec // G201: inClause contains only ? markers
 	result, err := tx.ExecContext(ctx,
 		fmt.Sprintf("DELETE FROM wisps WHERE id IN (%s)", inClause),
@@ -335,6 +298,10 @@ func (s *DoltStore) deleteWispBatchTx(ctx context.Context, ids []string) (int, e
 		return 0, fmt.Errorf("failed to batch delete wisps: %w", err)
 	}
 	rowsAffected, _ := result.RowsAffected()
+
+	if err := issueops.DeleteWispsFromDependenciesInTx(ctx, tx, ids); err != nil {
+		return 0, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("failed to commit batch wisp delete: %w", err)
@@ -522,7 +489,7 @@ func (s *DoltStore) getWispsByIDs(ctx context.Context, ids []string) ([]*types.I
 }
 
 // addWispDependency adds a dependency to the wisp_dependencies table.
-func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency, actor string) error {
+func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency, actor string, isCrossPrefix bool) error {
 	metadata := dep.Metadata
 	if metadata == "" {
 		metadata = "{}"
@@ -535,25 +502,13 @@ func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency
 	defer func() { _ = tx.Rollback() }()
 
 	// Cycle detection for blocking dependency types: check if adding this edge
-	// would create a cycle. UNIONs both tables to detect cross-table cycles
-	// (e.g., wisp A -> permanent B -> wisp A). (bd-xe27)
+	// would create a cycle. Edge storage is source-routed, so same-class
+	// endpoints can still have mixed-table interior paths.
 	if dep.Type == types.DepBlocks {
+		depTables := wispCycleDetectionTables()
 		var reachable int
-		if err := tx.QueryRowContext(ctx, `
-			WITH RECURSIVE reachable AS (
-				SELECT ? AS node, 0 AS depth
-				UNION ALL
-				SELECT d.depends_on_id, r.depth + 1
-				FROM reachable r
-				JOIN (
-					SELECT issue_id, depends_on_id FROM dependencies WHERE type = 'blocks'
-					UNION ALL
-					SELECT issue_id, depends_on_id FROM wisp_dependencies WHERE type = 'blocks'
-				) d ON d.issue_id = r.node
-				WHERE r.depth < 100
-			)
-			SELECT COUNT(*) FROM reachable WHERE node = ?
-		`, dep.DependsOnID, dep.IssueID).Scan(&reachable); err != nil {
+		query := wispCycleReachabilityQuery(depTables)
+		if err := tx.QueryRowContext(ctx, query, dep.DependsOnID, dep.IssueID).Scan(&reachable); err != nil {
 			return fmt.Errorf("failed to check for dependency cycle: %w", err)
 		}
 		if reachable > 0 {
@@ -582,14 +537,53 @@ func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency
 		return fmt.Errorf("failed to check existing wisp dependency: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO wisp_dependencies (issue_id, depends_on_id, type, created_at, created_by, metadata, thread_id)
+	kind := issueops.ClassifyDepTarget(ctx, tx, dep, isCrossPrefix)
+	//nolint:gosec // G201: typed column name from DepTargetKind.Column()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO wisp_dependencies (issue_id, %s, type, created_at, created_by, metadata, thread_id)
 		VALUES (?, ?, ?, NOW(), ?, ?, ?)
-	`, dep.IssueID, dep.DependsOnID, dep.Type, actor, metadata, dep.ThreadID); err != nil {
+	`, kind.Column()), dep.IssueID, dep.DependsOnID, dep.Type, actor, metadata, dep.ThreadID); err != nil {
 		return fmt.Errorf("failed to add wisp dependency: %w", err)
 	}
 
 	return wrapTransactionError("commit add wisp dependency", tx.Commit())
+}
+
+// wispCycleReachabilityQuery uses UNION distinct recursion so cyclic and
+// diamond graphs terminate by unique reachable node instead of enumerating paths.
+func wispCycleReachabilityQuery(depTables []string) string {
+	if len(depTables) == 1 {
+		return fmt.Sprintf(`
+			WITH RECURSIVE reachable(node) AS (
+				SELECT ?
+				UNION
+				SELECT d.depends_on_id
+				FROM reachable r
+				JOIN %s d ON d.issue_id = r.node AND d.type = 'blocks'
+			)
+			SELECT COUNT(*) FROM reachable WHERE node = ?
+		`, depTables[0])
+	}
+
+	var unions []string
+	for _, t := range depTables {
+		unions = append(unions, fmt.Sprintf("SELECT issue_id, depends_on_id FROM %s WHERE type = 'blocks'", t))
+	}
+	unionQuery := strings.Join(unions, " UNION ")
+	return fmt.Sprintf(`
+		WITH RECURSIVE reachable(node) AS (
+			SELECT ?
+			UNION
+			SELECT d.depends_on_id
+			FROM reachable r
+			JOIN (%s) d ON d.issue_id = r.node
+		)
+		SELECT COUNT(*) FROM reachable WHERE node = ?
+	`, unionQuery)
+}
+
+func wispCycleDetectionTables() []string {
+	return []string{"dependencies", "wisp_dependencies"}
 }
 
 // getWispDependencies retrieves issues that a wisp depends on.

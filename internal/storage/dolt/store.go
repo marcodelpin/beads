@@ -302,6 +302,9 @@ func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if schema.IsMigrationLockError(err) {
+		return true
+	}
 	errStr := strings.ToLower(err.Error())
 	// MySQL driver transient errors
 	if strings.Contains(errStr, "driver: bad connection") {
@@ -613,7 +616,7 @@ func (s *DoltStore) withReadTx(ctx context.Context, fn func(tx *sql.Tx) error) e
 	return fn(tx)
 }
 
-func (s *DoltStore) withRetryTxs(ctx context.Context, fn func(regularTx, ignoredTx *sql.Tx) error) error {
+func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
 	bo.MaxElapsedTime = 5 * time.Second
@@ -621,7 +624,7 @@ func (s *DoltStore) withRetryTxs(ctx context.Context, fn func(regularTx, ignored
 		bo.MaxElapsedTime = 15 * time.Second
 	}
 	return backoff.Retry(func() error {
-		err := s.withWriteTxs(ctx, fn)
+		err := s.withWriteTx(ctx, fn)
 		if err != nil && isSerializationError(err) {
 			doltMetrics.serializationErrors.Add(ctx, 1)
 			return err // retryable
@@ -633,32 +636,19 @@ func (s *DoltStore) withRetryTxs(ctx context.Context, fn func(regularTx, ignored
 	}, backoff.WithContext(bo, ctx))
 }
 
-func (s *DoltStore) withWriteTxs(ctx context.Context, fn func(regularTx, ignoredTx *sql.Tx) error) error {
+func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	if s.closed.Load() {
 		return ErrStoreClosed
 	}
-	regularTx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin regular write tx: %w", err)
+		return fmt.Errorf("begin write tx: %w", err)
 	}
-	ignoredTx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return errors.Join(
-			fmt.Errorf("begin ignored write tx: %w", err),
-			regularTx.Rollback(),
-		)
+	if err := fn(tx); err != nil {
+		return errors.Join(err, tx.Rollback())
 	}
-	if err := fn(regularTx, ignoredTx); err != nil {
-		return errors.Join(err, regularTx.Rollback(), ignoredTx.Rollback())
-	}
-	if err := regularTx.Commit(); err != nil {
-		return errors.Join(
-			fmt.Errorf("commit regular write tx: %w", err),
-			ignoredTx.Rollback(),
-		)
-	}
-	if err := ignoredTx.Commit(); err != nil {
-		return fmt.Errorf("commit ignored write tx (regular already committed): %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit write tx: %w", err)
 	}
 	return nil
 }
@@ -1117,7 +1107,9 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	if !cfg.ReadOnly {
 		schemaBO := backoff.NewExponentialBackOff()
 		schemaBO.InitialInterval = 100 * time.Millisecond
-		schemaBO.MaxElapsedTime = 5 * time.Second
+		// Must exceed schema.MigrateUpWithLock's 5s GET_LOCK wait so a
+		// contended schema migration can time out once and still retry.
+		schemaBO.MaxElapsedTime = 15 * time.Second
 		if err := backoff.Retry(func() error {
 			schemaErr := store.initSchema(ctx)
 			if schemaErr != nil && isRetryableError(schemaErr) {
@@ -1500,7 +1492,12 @@ func initSchemaOnDB(ctx context.Context, db *sql.DB) error {
 	}
 	defer conn.Close()
 
-	if _, err := schema.MigrateUp(ctx, conn); err != nil {
+	var dbName string
+	if err := conn.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dbName); err != nil {
+		return fmt.Errorf("schema: read database name: %w", err)
+	}
+
+	if _, err := schema.MigrateUpWithLock(ctx, conn, dbName); err != nil {
 		return fmt.Errorf("schema migration: %w", err)
 	}
 

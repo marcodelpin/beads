@@ -10,6 +10,35 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+type DepTargetKind int
+
+const (
+	DepTargetIssue DepTargetKind = iota
+	DepTargetWisp
+	DepTargetExternal
+)
+
+func (k DepTargetKind) Column() string {
+	switch k {
+	case DepTargetWisp:
+		return "depends_on_wisp_id"
+	case DepTargetExternal:
+		return "depends_on_external"
+	default:
+		return "depends_on_issue_id"
+	}
+}
+
+func ClassifyDepTarget(ctx context.Context, tx *sql.Tx, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
+	if isCrossPrefix || strings.HasPrefix(dep.DependsOnID, "external:") {
+		return DepTargetExternal
+	}
+	if IsActiveWispInTx(ctx, tx, dep.DependsOnID) {
+		return DepTargetWisp
+	}
+	return DepTargetIssue
+}
+
 // AddDependencyOpts configures AddDependencyInTx behavior.
 // When fields are left empty, AddDependencyInTx performs wisp routing
 // automatically via IsActiveWispInTx. Callers that have already determined
@@ -25,8 +54,9 @@ type AddDependencyOpts struct {
 	// WriteTable is the dependency table to insert/update/check existing deps in.
 	// Auto-detected from source wisp routing if empty.
 	WriteTable string
-	// DepTables are the tables to scan for cycle detection. The recursive CTE
-	// UNIONs all of them. Defaults to ["dependencies", "wisp_dependencies"] if empty.
+	// DepTables are the tables to scan for cycle detection. Defaults to both
+	// dependency tables; edge storage is source-routed, so same-class endpoints
+	// can still have mixed-table interior paths.
 	DepTables []string
 	// IsCrossPrefix is true when source and target have different prefixes,
 	// meaning the target lives in another rig's database.
@@ -34,6 +64,7 @@ type AddDependencyOpts struct {
 	// SkipCycleCheck skips the recursive pre-insert cycle check for callers
 	// that intentionally trade validation cost for bulk graph wiring speed.
 	SkipCycleCheck bool
+	TargetKind     *DepTargetKind
 }
 
 // AddDependencyInTx validates and inserts a dependency within an existing
@@ -74,7 +105,7 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 
 	depTables := opts.DepTables
 	if len(depTables) == 0 {
-		depTables = []string{"dependencies", "wisp_dependencies"}
+		depTables = cycleDetectionTables()
 	}
 
 	metadata := dep.Metadata
@@ -124,27 +155,9 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 
 	// Cycle detection for blocking deps via recursive CTE.
 	if !opts.SkipCycleCheck && (dep.Type == types.DepBlocks || dep.Type == types.DepConditionalBlocks) {
-		// Build UNION ALL across all dep tables for the CTE.
-		var unions []string
-		for _, t := range depTables {
-			//nolint:gosec // G201: depTables are caller-controlled constants
-			unions = append(unions, fmt.Sprintf("SELECT issue_id, depends_on_id FROM %s WHERE type IN ('blocks', 'conditional-blocks')", t))
-		}
-		unionQuery := strings.Join(unions, " UNION ALL ")
-
 		var reachable int
-		//nolint:gosec // G201: unionQuery built from caller-controlled table names
-		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
-			WITH RECURSIVE reachable AS (
-				SELECT ? AS node, 0 AS depth
-				UNION ALL
-				SELECT d.depends_on_id, r.depth + 1
-				FROM reachable r
-				JOIN (%s) d ON d.issue_id = r.node
-				WHERE r.depth < 100
-			)
-			SELECT COUNT(*) FROM reachable WHERE node = ?
-		`, unionQuery), dep.DependsOnID, dep.IssueID).Scan(&reachable); err != nil {
+		query := cycleReachabilityQuery(depTables)
+		if err := tx.QueryRowContext(ctx, query, dep.DependsOnID, dep.IssueID).Scan(&reachable); err != nil {
 			return fmt.Errorf("failed to check for dependency cycle: %w", err)
 		}
 		if reachable > 0 {
@@ -173,12 +186,87 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		return fmt.Errorf("failed to check existing dependency: %w", err)
 	}
 
-	//nolint:gosec // G201: writeTable is from WispTableRouting
+	var kind DepTargetKind
+	if opts.TargetKind != nil {
+		kind = *opts.TargetKind
+	} else {
+		kind = ClassifyDepTarget(ctx, tx, dep, opts.IsCrossPrefix)
+	}
+
+	//nolint:gosec // G201: writeTable from WispTableRouting; target column from DepTargetKind.Column()
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (issue_id, depends_on_id, type, created_at, created_by, metadata, thread_id)
+		INSERT INTO %s (issue_id, %s, type, created_at, created_by, metadata, thread_id)
 		VALUES (?, ?, ?, NOW(), ?, ?, ?)
-	`, writeTable), dep.IssueID, dep.DependsOnID, dep.Type, actor, metadata, dep.ThreadID); err != nil {
+	`, writeTable, kind.Column()), dep.IssueID, dep.DependsOnID, dep.Type, actor, metadata, dep.ThreadID); err != nil {
 		return fmt.Errorf("failed to add dependency: %w", err)
+	}
+	return nil
+}
+
+// cycleReachabilityQuery uses UNION distinct recursion so cyclic and diamond
+// graphs terminate by unique reachable node instead of enumerating paths.
+func cycleReachabilityQuery(depTables []string) string {
+	if len(depTables) == 1 {
+		return fmt.Sprintf(`
+			WITH RECURSIVE reachable(node) AS (
+				SELECT ?
+				UNION
+				SELECT d.depends_on_id
+				FROM reachable r
+				JOIN %s d ON d.issue_id = r.node AND d.type IN ('blocks', 'conditional-blocks')
+			)
+			SELECT COUNT(*) FROM reachable WHERE node = ?
+		`, depTables[0])
+	}
+
+	var unions []string
+	for _, t := range depTables {
+		unions = append(unions, fmt.Sprintf("SELECT issue_id, depends_on_id FROM %s WHERE type IN ('blocks', 'conditional-blocks')", t))
+	}
+	unionQuery := strings.Join(unions, " UNION ")
+	return fmt.Sprintf(`
+		WITH RECURSIVE reachable(node) AS (
+			SELECT ?
+			UNION
+			SELECT d.depends_on_id
+			FROM reachable r
+			JOIN (%s) d ON d.issue_id = r.node
+		)
+		SELECT COUNT(*) FROM reachable WHERE node = ?
+	`, unionQuery)
+}
+
+func cycleDetectionTables() []string {
+	return []string{"dependencies", "wisp_dependencies"}
+}
+
+func DeleteWispFromDependenciesInTx(ctx context.Context, tx *sql.Tx, wispID string) error {
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM dependencies WHERE depends_on_wisp_id = ?", wispID); err != nil {
+		return fmt.Errorf("delete wisp %s from dependencies: %w", wispID, err)
+	}
+	return nil
+}
+
+//nolint:gosec // G201: inClause contains only ? placeholders
+func DeleteWispsFromDependenciesInTx(ctx context.Context, tx *sql.Tx, wispIDs []string) error {
+	if len(wispIDs) == 0 {
+		return nil
+	}
+	inClause, args := buildSQLInClause(wispIDs)
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("DELETE FROM dependencies WHERE depends_on_wisp_id IN (%s)", inClause),
+		args...); err != nil {
+		return fmt.Errorf("delete wisps from dependencies: %w", err)
+	}
+	return nil
+}
+
+func UpdateWispIDInDependenciesInTx(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE dependencies SET depends_on_wisp_id = ? WHERE depends_on_wisp_id = ?",
+		newID, oldID); err != nil {
+		return fmt.Errorf("update wisp %s -> %s in dependencies: %w", oldID, newID, err)
 	}
 	return nil
 }

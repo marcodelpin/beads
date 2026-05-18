@@ -46,16 +46,12 @@ func NewBatchContext(ctx context.Context, tx *sql.Tx, opts storage.BatchCreateOp
 	}, nil
 }
 
-func CreateIssueInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, bc *BatchContext, issue *types.Issue, actor string) error {
+func CreateIssueInTx(ctx context.Context, tx *sql.Tx, bc *BatchContext, issue *types.Issue, actor string) error {
 	if err := PrepareIssueForInsert(issue, bc.CustomStatuses, bc.CustomTypes); err != nil {
 		return err
 	}
 
 	issueTable, eventTable := TableRouting(issue)
-	tx := regularTx
-	if IsWisp(issue) {
-		tx = ignoredTx
-	}
 
 	if issue.ID == "" {
 		prefix := bc.ConfigPrefix
@@ -94,29 +90,29 @@ func CreateIssueInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, bc *Batc
 		}
 	}
 
-	if err := PersistLabels(ctx, regularTx, ignoredTx, issue); err != nil {
+	if err := PersistLabels(ctx, tx, issue); err != nil {
 		return err
 	}
-	return PersistComments(ctx, regularTx, ignoredTx, issue)
+	return PersistComments(ctx, tx, issue)
 }
 
-func CreateIssuesInTx(ctx context.Context, regularTx, ignoredTx *sql.Tx, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
-	bc, err := NewBatchContext(ctx, regularTx, opts)
+func CreateIssuesInTx(ctx context.Context, tx *sql.Tx, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
+	bc, err := NewBatchContext(ctx, tx, opts)
 	if err != nil {
 		return err
 	}
 
 	for _, issue := range issues {
-		if err := CreateIssueInTx(ctx, regularTx, ignoredTx, bc, issue, actor); err != nil {
+		if err := CreateIssueInTx(ctx, tx, bc, issue, actor); err != nil {
 			return err
 		}
 	}
 
-	if err := PersistDependencies(ctx, regularTx, ignoredTx, issues, actor); err != nil {
+	if err := PersistDependencies(ctx, tx, issues, actor); err != nil {
 		return err
 	}
 
-	return ReconcileChildCounters(ctx, regularTx, ignoredTx, issues)
+	return ReconcileChildCounters(ctx, tx, issues)
 }
 
 // PrepareIssueForInsert normalizes timestamps, validates, and computes the content hash.
@@ -248,15 +244,13 @@ func InsertIssueIfNew(ctx context.Context, tx *sql.Tx, issueTable string, issue 
 	return existingCount == 0, nil
 }
 
-func PersistLabels(ctx context.Context, regularTx, ignoredTx *sql.Tx, issue *types.Issue) error {
+func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
 	if len(issue.Labels) == 0 {
 		return nil
 	}
 	labelTable := "labels"
-	tx := regularTx
 	if IsWisp(issue) {
 		labelTable = "wisp_labels"
-		tx = ignoredTx
 	}
 	for _, label := range issue.Labels {
 		//nolint:gosec // G201: table is determined by ephemeral flag
@@ -272,15 +266,13 @@ func PersistLabels(ctx context.Context, regularTx, ignoredTx *sql.Tx, issue *typ
 	return nil
 }
 
-func PersistComments(ctx context.Context, regularTx, ignoredTx *sql.Tx, issue *types.Issue) error {
+func PersistComments(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
 	if len(issue.Comments) == 0 {
 		return nil
 	}
 	commentTable := "comments"
-	tx := regularTx
 	if IsWisp(issue) {
 		commentTable = "wisp_comments"
-		tx = ignoredTx
 	}
 	for _, comment := range issue.Comments {
 		createdAt := comment.CreatedAt
@@ -313,18 +305,14 @@ func PersistComments(ctx context.Context, regularTx, ignoredTx *sql.Tx, issue *t
 	return nil
 }
 
-func PersistDependencies(ctx context.Context, regularTx, ignoredTx *sql.Tx, issues []*types.Issue, actor string) error {
+func PersistDependencies(ctx context.Context, tx *sql.Tx, issues []*types.Issue, actor string) error {
 	for _, issue := range issues {
 		if len(issue.Dependencies) == 0 {
 			continue
 		}
 		depTable := "dependencies"
-		lookupTable := "issues"
-		tx := regularTx
 		if IsWisp(issue) {
 			depTable = "wisp_dependencies"
-			lookupTable = "wisps"
-			tx = ignoredTx
 		}
 		for _, dep := range issue.Dependencies {
 			// Default IssueID to the owning issue when not pre-set (e.g.,
@@ -332,22 +320,33 @@ func PersistDependencies(ctx context.Context, regularTx, ignoredTx *sql.Tx, issu
 			if dep.IssueID == "" {
 				dep.IssueID = issue.ID
 			}
-			// Skip if target doesn't exist.
-			var exists int
-			//nolint:gosec // G201: table is determined by isWisp flag
-			if err := tx.QueryRowContext(ctx, fmt.Sprintf("SELECT 1 FROM %s WHERE id = ?", lookupTable), dep.DependsOnID).Scan(&exists); err != nil {
-				continue
+
+			kind := ClassifyDepTarget(ctx, tx, dep, false)
+
+			if kind != DepTargetExternal {
+				lookupTable := "issues"
+				if kind == DepTargetWisp {
+					lookupTable = "wisps"
+				}
+				var exists int
+				//nolint:gosec // G201: lookupTable is one of two hardcoded constants
+				if err := tx.QueryRowContext(ctx,
+					fmt.Sprintf("SELECT 1 FROM %s WHERE id = ?", lookupTable),
+					dep.DependsOnID).Scan(&exists); err != nil {
+					continue
+				}
 			}
+
 			createdAt := dep.CreatedAt
 			if createdAt.IsZero() {
 				createdAt = time.Now().UTC()
 			}
-			//nolint:gosec // G201: table is determined by isWisp flag
+			//nolint:gosec // G201: depTable is one of two hardcoded constants; target column from DepTargetKind.Column()
 			_, err := tx.ExecContext(ctx, fmt.Sprintf(`
-				INSERT INTO %s (issue_id, depends_on_id, type, created_by, created_at)
+				INSERT INTO %s (issue_id, %s, type, created_by, created_at)
 				VALUES (?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE type = type
-			`, depTable), dep.IssueID, dep.DependsOnID, dep.Type, actor, createdAt)
+			`, depTable, kind.Column()), dep.IssueID, dep.DependsOnID, dep.Type, actor, createdAt)
 			if err != nil {
 				return fmt.Errorf("failed to insert dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
 			}
@@ -356,26 +355,55 @@ func PersistDependencies(ctx context.Context, regularTx, ignoredTx *sql.Tx, issu
 	return nil
 }
 
-func ReconcileChildCounters(ctx context.Context, regularTx, ignoredTx *sql.Tx, issues []*types.Issue) error {
-	_ = ignoredTx // unused: child_counters is regular-only
-	childMaxMap := make(map[string]int)
+func ReconcileChildCounters(ctx context.Context, tx *sql.Tx, issues []*types.Issue) error {
+	type bucket struct {
+		maxChild int
+		isWisp   bool
+		known    bool
+	}
+	parents := make(map[string]*bucket)
+
 	for _, issue := range issues {
-		if parentID, childNum, ok := ParseHierarchicalID(issue.ID); ok {
-			if childNum > childMaxMap[parentID] {
-				childMaxMap[parentID] = childNum
+		if IsWisp(issue) {
+			if b, ok := parents[issue.ID]; ok {
+				b.isWisp, b.known = true, true
+			} else {
+				parents[issue.ID] = &bucket{isWisp: true, known: true}
 			}
 		}
 	}
-	for parentID, maxChild := range childMaxMap {
-		var parentExists int
-		if err := regularTx.QueryRowContext(ctx, "SELECT 1 FROM issues WHERE id = ?", parentID).Scan(&parentExists); err != nil {
-			continue // parent not in issues table — skip counter
+
+	for _, issue := range issues {
+		parentID, childNum, ok := ParseHierarchicalID(issue.ID)
+		if !ok {
+			continue
 		}
-		_, err := regularTx.ExecContext(ctx, `
-			INSERT INTO child_counters (parent_id, last_child) VALUES (?, ?)
+		b, exists := parents[parentID]
+		if !exists {
+			b = &bucket{}
+			parents[parentID] = b
+		}
+		if childNum > b.maxChild {
+			b.maxChild = childNum
+		}
+	}
+
+	for parentID, b := range parents {
+		if b.maxChild == 0 {
+			continue
+		}
+		if !b.known {
+			b.isWisp = IsActiveWispInTx(ctx, tx, parentID)
+		}
+		table := "child_counters"
+		if b.isWisp {
+			table = "wisp_child_counters"
+		}
+		//nolint:gosec // G201: table is one of two hardcoded constants.
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (parent_id, last_child) VALUES (?, ?)
 			ON DUPLICATE KEY UPDATE last_child = GREATEST(last_child, ?)
-		`, parentID, maxChild, maxChild)
-		if err != nil {
+		`, table), parentID, b.maxChild, b.maxChild); err != nil {
 			return fmt.Errorf("failed to reconcile child counter for %s: %w", parentID, err)
 		}
 	}

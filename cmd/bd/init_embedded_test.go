@@ -97,6 +97,14 @@ func isEmbeddedLockOutput(out string) bool {
 		strings.Contains(out, "locked by another dolt process")
 }
 
+func runCommandBuffers(t *testing.T, cmd *exec.Cmd) (stdout, stderr bytes.Buffer, err error) {
+	t.Helper()
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	return stdout, stderr, err
+}
+
 // bdRunWithFlockRetry runs a bd command with retry on flock contention.
 // Returns stdout and nil on success, or combined stdout/stderr and the last
 // error after retries are exhausted or a non-flock error occurs.
@@ -144,11 +152,11 @@ func runBDInit(t *testing.T, bd, dir string, extraArgs ...string) string {
 	cmd := exec.Command(bd, args...)
 	cmd.Dir = dir
 	cmd.Env = bdEnv(dir)
-	out, err := cmd.CombinedOutput()
+	stdout, stderr, err := runCommandBuffers(t, cmd)
 	if err != nil {
-		t.Fatalf("bd init %s failed: %v\n%s", strings.Join(extraArgs, " "), err, out)
+		t.Fatalf("bd init %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(extraArgs, " "), err, stdout.String(), stderr.String())
 	}
-	return string(out)
+	return stdout.String()
 }
 
 // bdInitFail runs bd init --quiet expecting failure. Returns combined output.
@@ -325,12 +333,12 @@ func TestEmbeddedInit(t *testing.T) {
 		cmd := exec.Command(bd, "init", "--prefix", "nq")
 		cmd.Dir = dir
 		cmd.Env = bdEnv(dir)
-		out, err := cmd.CombinedOutput()
+		stdout, stderr, err := runCommandBuffers(t, cmd)
 		if err != nil {
-			t.Fatalf("bd init failed: %v\n%s", err, out)
+			t.Fatalf("bd init failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
-		if !strings.Contains(string(out), "bd initialized successfully") {
-			t.Errorf("expected success message, got: %s", out)
+		if !strings.Contains(stdout.String(), "bd initialized successfully") {
+			t.Errorf("expected success message, got: %s", stdout.String())
 		}
 	})
 
@@ -373,6 +381,103 @@ func TestEmbeddedInit(t *testing.T) {
 		}
 		if !strings.Contains(string(lsOut), "refs/dolt/data") {
 			t.Fatalf("bd dolt push did not publish refs/dolt/data:\n%s", lsOut)
+		}
+	})
+
+	t.Run("no_git_origin_stays_local", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepoAt(t, dir)
+
+		runBDInit(t, bd, dir, "--prefix", "local", "--skip-hooks", "--skip-agents")
+
+		out := bdDolt(t, bd, dir, "remote", "list")
+		if strings.Contains(out, "origin") {
+			t.Fatalf("init without git origin should not configure a Dolt remote; remote list:\n%s", out)
+		}
+
+		configYAML, err := os.ReadFile(filepath.Join(dir, ".beads", "config.yaml"))
+		if err != nil {
+			t.Fatalf("read config.yaml: %v", err)
+		}
+		if strings.Contains(string(configYAML), "sync.remote:") || strings.Contains(string(configYAML), "sync-remote:") {
+			t.Fatalf("init without git origin should not persist sync.remote; config.yaml:\n%s", configYAML)
+		}
+	})
+
+	t.Run("dolt_push_lazily_adopts_later_git_origin", func(t *testing.T) {
+		bareDir := filepath.Join(t.TempDir(), "later-origin.git")
+		runGitForBootstrapTest(t, "", "init", "--bare", "-b", "main", bareDir)
+		remoteURL := "file://" + bareDir
+
+		dir := t.TempDir()
+		initGitRepoAt(t, dir)
+		runGitForBootstrapTest(t, dir, "branch", "-M", "main")
+		runGitForBootstrapTest(t, dir, "commit", "--allow-empty", "-m", "init")
+		runBDInit(t, bd, dir, "--prefix", "late", "--skip-hooks", "--skip-agents")
+		bdCreate(t, bd, dir, "Lazy remote adoption", "--type", "task")
+
+		runGitForBootstrapTest(t, dir, "remote", "add", "origin", remoteURL)
+		runGitForBootstrapTest(t, dir, "push", "-u", "origin", "main")
+
+		bdDolt(t, bd, dir, "push")
+
+		out := bdDolt(t, bd, dir, "remote", "list")
+		if !strings.Contains(out, "origin") || !strings.Contains(out, remoteURL) {
+			t.Fatalf("bd dolt push should adopt later git origin %q; remote list:\n%s", remoteURL, out)
+		}
+
+		configYAML, err := os.ReadFile(filepath.Join(dir, ".beads", "config.yaml"))
+		if err != nil {
+			t.Fatalf("read config.yaml: %v", err)
+		}
+		if !strings.Contains(string(configYAML), remoteURL) {
+			t.Fatalf("bd dolt push should persist sync.remote; config.yaml:\n%s", configYAML)
+		}
+
+		ls := exec.Command("git", "ls-remote", remoteURL, "refs/dolt/data")
+		lsOut, err := ls.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git ls-remote refs/dolt/data failed: %v\n%s", err, lsOut)
+		}
+		if !strings.Contains(string(lsOut), "refs/dolt/data") {
+			t.Fatalf("bd dolt push did not publish refs/dolt/data:\n%s", lsOut)
+		}
+	})
+
+	t.Run("dolt_push_adopts_target_origin_with_dash_c", func(t *testing.T) {
+		targetBare := filepath.Join(t.TempDir(), "target-origin.git")
+		ambientBare := filepath.Join(t.TempDir(), "ambient-origin.git")
+		runGitForBootstrapTest(t, "", "init", "--bare", "-b", "main", targetBare)
+		runGitForBootstrapTest(t, "", "init", "--bare", "-b", "main", ambientBare)
+		targetURL := "file://" + targetBare
+		ambientURL := "file://" + ambientBare
+
+		targetDir := t.TempDir()
+		initGitRepoAt(t, targetDir)
+		runGitForBootstrapTest(t, targetDir, "branch", "-M", "main")
+		runGitForBootstrapTest(t, targetDir, "commit", "--allow-empty", "-m", "init")
+		runBDInit(t, bd, targetDir, "--prefix", "dc", "--skip-hooks", "--skip-agents")
+		bdCreate(t, bd, targetDir, "Dash C remote adoption", "--type", "task")
+		runGitForBootstrapTest(t, targetDir, "remote", "add", "origin", targetURL)
+		runGitForBootstrapTest(t, targetDir, "push", "-u", "origin", "main")
+
+		ambientDir := t.TempDir()
+		initGitRepoAt(t, ambientDir)
+		runGitForBootstrapTest(t, ambientDir, "remote", "add", "origin", ambientURL)
+
+		cmd := exec.Command(bd, "-C", targetDir, "dolt", "push")
+		cmd.Dir = ambientDir
+		cmd.Env = bdEnv(ambientDir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("bd -C target dolt push failed: %v\n%s", err, out)
+		}
+
+		out := bdDolt(t, bd, targetDir, "remote", "list")
+		if !strings.Contains(out, "origin") || !strings.Contains(out, targetURL) {
+			t.Fatalf("bd -C target dolt push should adopt target origin %q; remote list:\n%s", targetURL, out)
+		}
+		if strings.Contains(out, ambientURL) {
+			t.Fatalf("bd -C target dolt push adopted ambient origin %q; remote list:\n%s", ambientURL, out)
 		}
 	})
 
@@ -472,12 +577,12 @@ func TestEmbeddedInit(t *testing.T) {
 		cmd = exec.Command(bd, "list")
 		cmd.Dir = cloneDir
 		cmd.Env = bdEnv(cloneDir)
-		listOut, err := cmd.CombinedOutput()
+		stdout, stderr, err := runCommandBuffers(t, cmd)
 		if err != nil {
-			t.Fatalf("bd list failed: %v\n%s", err, listOut)
+			t.Fatalf("bd list failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
-		if !strings.Contains(string(listOut), "Remote issue") {
-			t.Fatalf("cloned database missing remote issue:\n%s", listOut)
+		if !strings.Contains(stdout.String(), "Remote issue") {
+			t.Fatalf("cloned database missing remote issue:\n%s", stdout.String())
 		}
 
 		cloneBeadsDir := filepath.Join(cloneDir, ".beads")
@@ -708,12 +813,12 @@ func TestEmbeddedInit(t *testing.T) {
 		}
 		logCmd := exec.Command("git", "log", "--oneline", "-n", "1")
 		logCmd.Dir = dir
-		logOut, err := logCmd.CombinedOutput()
+		stdout, stderr, err := runCommandBuffers(t, logCmd)
 		if err != nil {
-			t.Fatalf("git log failed: %v\n%s", err, logOut)
+			t.Fatalf("git log failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
-		if !strings.Contains(string(logOut), "bd init: initialize beads issue tracking") {
-			t.Fatalf("expected init commit to succeed, got log: %s", logOut)
+		if !strings.Contains(stdout.String(), "bd init: initialize beads issue tracking") {
+			t.Fatalf("expected init commit to succeed, got log: %s", stdout.String())
 		}
 	})
 
@@ -750,21 +855,24 @@ func TestEmbeddedInit(t *testing.T) {
 		cmd := exec.Command(bd, "init", "--prefix", "jl", "--from-jsonl", "--quiet")
 		cmd.Dir = dir
 		cmd.Env = bdEnv(dir)
-		out, err := cmd.CombinedOutput()
+		stdout, stderr, err := runCommandBuffers(t, cmd)
 		if err != nil {
-			t.Fatalf("--from-jsonl should succeed now that CreateIssuesWithFullOptions is implemented: %v\n%s", err, out)
+			t.Fatalf("--from-jsonl should succeed now that CreateIssuesWithFullOptions is implemented: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
 		if _, err := os.Stat(filepath.Join(dir, ".hook-ran")); err == nil {
 			t.Fatal("expected --from-jsonl auto-commit to bypass git hooks")
 		}
 		logCmd := exec.Command("git", "log", "--oneline", "-n", "1")
 		logCmd.Dir = dir
-		logOut, err := logCmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git log failed: %v\n%s", err, logOut)
+		stdout.Reset()
+		stderr.Reset()
+		logCmd.Stdout = &stdout
+		logCmd.Stderr = &stderr
+		if err := logCmd.Run(); err != nil {
+			t.Fatalf("git log failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
-		if !strings.Contains(string(logOut), "bd init: initialize beads issue tracking") {
-			t.Fatalf("expected init commit to succeed, got log: %s", logOut)
+		if !strings.Contains(stdout.String(), "bd init: initialize beads issue tracking") {
+			t.Fatalf("expected init commit to succeed, got log: %s", stdout.String())
 		}
 	})
 

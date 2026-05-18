@@ -14,9 +14,9 @@ import (
 // Delegates to issueops.GetReadyWorkInTx with the shared blocked-ID computation.
 func (s *EmbeddedDoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
 	var result []*types.Issue
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetReadyWorkInTx(ctx, regularTx, filter, computeBlockedIDsWrapper)
+		result, err = issueops.GetReadyWorkInTx(ctx, tx, filter, computeBlockedIDsWrapper)
 		return err
 	})
 	return result, err
@@ -33,9 +33,9 @@ func computeBlockedIDsWrapper(ctx context.Context, tx *sql.Tx, includeWisps bool
 // Delegates to issueops.GetMoleculeProgressInTx.
 func (s *EmbeddedDoltStore) GetMoleculeProgress(ctx context.Context, moleculeID string) (*types.MoleculeProgressStats, error) {
 	var result *types.MoleculeProgressStats
-	err := s.withConn(ctx, false, func(regularTx, ignoredTx *sql.Tx) error {
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetMoleculeProgressInTx(ctx, regularTx, moleculeID)
+		result, err = issueops.GetMoleculeProgressInTx(ctx, tx, moleculeID)
 		return err
 	})
 	return result, err

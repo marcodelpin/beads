@@ -14,18 +14,18 @@ import (
 
 // SetConfig sets a configuration value
 func (s *DoltStore) SetConfig(ctx context.Context, key, value string) error {
-	if err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
-		if err := issueops.SetConfigInTx(ctx, regularTx, key, value); err != nil {
+	if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		if err := issueops.SetConfigInTx(ctx, tx, key, value); err != nil {
 			return err
 		}
 		// Sync normalized tables when config keys change
 		switch key {
 		case "status.custom":
-			if err := issueops.SyncCustomStatusesTable(ctx, regularTx, value); err != nil {
+			if err := issueops.SyncCustomStatusesTable(ctx, tx, value); err != nil {
 				return fmt.Errorf("syncing custom_statuses table: %w", err)
 			}
 		case "types.custom":
-			if err := issueops.SyncCustomTypesTable(ctx, regularTx, value); err != nil {
+			if err := issueops.SyncCustomTypesTable(ctx, tx, value); err != nil {
 				return fmt.Errorf("syncing custom_types table: %w", err)
 			}
 		}
@@ -77,15 +77,15 @@ func (s *DoltStore) GetAllConfig(ctx context.Context) (map[string]string, error)
 
 // DeleteConfig removes a configuration value
 func (s *DoltStore) DeleteConfig(ctx context.Context, key string) error {
-	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.DeleteConfigInTx(ctx, regularTx, key)
+	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		return issueops.DeleteConfigInTx(ctx, tx, key)
 	})
 }
 
 // SetMetadata sets a metadata value
 func (s *DoltStore) SetMetadata(ctx context.Context, key, value string) error {
-	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.SetMetadataInTx(ctx, regularTx, key, value)
+	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		return issueops.SetMetadataInTx(ctx, tx, key, value)
 	})
 }
 
@@ -103,8 +103,8 @@ func (s *DoltStore) GetMetadata(ctx context.Context, key string) (string, error)
 // SetLocalMetadata sets a value in the dolt-ignored local_metadata table.
 // Used for clone-local state that should not generate merge conflicts.
 func (s *DoltStore) SetLocalMetadata(ctx context.Context, key, value string) error {
-	return s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
-		return issueops.SetLocalMetadataInTx(ctx, ignoredTx, key, value)
+	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		return issueops.SetLocalMetadataInTx(ctx, tx, key, value)
 	})
 }
 

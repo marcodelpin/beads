@@ -20,29 +20,34 @@ func isCrossPrefixDep(sourceID, targetID string) bool {
 // Delegates SQL work to issueops.AddDependencyInTx; handles Dolt versioning
 // and cache invalidation.
 func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
+	isCrossPrefix := isCrossPrefixDep(dep.IssueID, dep.DependsOnID)
+
 	// Route to wisp_dependencies if the source is an active wisp.
 	if s.isActiveWisp(ctx, dep.IssueID) {
-		return s.addWispDependency(ctx, dep, actor)
+		return s.addWispDependency(ctx, dep, actor, isCrossPrefix)
 	}
 
-	// Pre-transaction: check if target is a wisp (must be done before opening tx
-	// to avoid connection pool deadlock with embedded dolt — bd-w2w).
-	isCrossPrefix := isCrossPrefixDep(dep.IssueID, dep.DependsOnID)
 	targetTable := "issues"
-	if !strings.HasPrefix(dep.DependsOnID, "external:") && !isCrossPrefix {
+	kind := issueops.DepTargetIssue
+	switch {
+	case isCrossPrefix, strings.HasPrefix(dep.DependsOnID, "external:"):
+		kind = issueops.DepTargetExternal
+	default:
 		if s.isActiveWisp(ctx, dep.DependsOnID) {
 			targetTable = "wisps"
+			kind = issueops.DepTargetWisp
 		}
 	}
 
-	if err := s.withRetryTxs(ctx, func(regularTx, ignoredTx *sql.Tx) error {
+	if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
 		opts := issueops.AddDependencyOpts{
 			SourceTable:   "issues",
 			TargetTable:   targetTable,
 			WriteTable:    "dependencies",
 			IsCrossPrefix: isCrossPrefix,
+			TargetKind:    &kind,
 		}
-		if err := issueops.AddDependencyInTx(ctx, regularTx, dep, actor, opts); err != nil {
+		if err := issueops.AddDependencyInTx(ctx, tx, dep, actor, opts); err != nil {
 			return err
 		}
 		s.invalidateBlockedIDsCache()
