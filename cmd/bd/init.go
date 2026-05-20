@@ -103,6 +103,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 		sharedServer, _ := cmd.Flags().GetBool("shared-server")
 		externalServer, _ := cmd.Flags().GetBool("external")
+		debugMode, _ := cmd.Flags().GetBool("debug")
 		initProxiedServer, _ := cmd.Flags().GetBool("proxied-server")
 		serverConfigPath, _ := cmd.Flags().GetString("proxied-server-config")
 		serverLogPath, _ := cmd.Flags().GetString("proxied-server-log-path")
@@ -229,11 +230,39 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			cmdCtx.ProxiedServerMode = initProxiedServer
 		}
 
+		if initProxiedServer {
+			runInitProxiedServer(cmd, rootCtx, initProxiedServerInput{
+				prefix:            prefix,
+				database:          database,
+				roleFlag:          roleFlag,
+				initRemote:        initRemote,
+				initRemoteChanged: initRemoteChanged,
+				destroyToken:      destroyToken,
+				serverConfigPath:  serverConfigPath,
+				serverLogPath:     serverLogPath,
+				serverRootPath:    serverRootPath,
+				quiet:             quiet,
+				stealth:           stealth,
+				skipHooks:         skipHooks,
+				skipAgents:        skipAgents,
+				reinitLocal:       reinitLocal,
+				contributor:       contributor,
+				team:              team,
+				fromJSONL:         fromJSONL,
+				nonInteractive:    nonInteractive,
+			})
+			return
+		}
+
 		// Propagate --shared-server flag to env so that IsSharedServerMode(),
 		// ResolveDoltDir(), and DefaultConfig() all see shared mode immediately
 		// (before config.yaml exists). Safe: init runs once and exits.
 		if sharedServer {
 			_ = os.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+		}
+
+		if debugMode {
+			_ = os.Setenv("BEADS_DOLT_DEBUG", "1")
 		}
 
 		// Reject hyphens in --database for embedded mode. Must run AFTER
@@ -799,7 +828,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if !externalServer && (sharedServer || doltserver.IsSharedServerMode()) {
 			if !isRemoteHost {
 				if sharedDir, err := doltserver.SharedServerDir(); err == nil {
-					if state, _ := doltserver.IsRunning(sharedDir); state == nil || !state.Running {
+					state, _ := doltserver.IsRunning(sharedDir)
+					if state == nil || !state.Running {
 						if _, startErr := doltserver.Start(sharedDir); startErr != nil {
 							fmt.Fprintf(os.Stderr, "Error: failed to start shared Dolt server: %v\n", startErr)
 							os.Exit(1)
@@ -807,6 +837,10 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 						if !quiet {
 							fmt.Printf("  %s Shared Dolt server started\n", ui.RenderPass("✓"))
 						}
+					} else if debugMode {
+						fmt.Fprintf(os.Stderr, "Warning: shared Dolt server (PID %d, port %d) is already running without debug flags.\n", state.PID, state.Port)
+						fmt.Fprintf(os.Stderr, "  Restart to pick up debug mode:\n")
+						fmt.Fprintf(os.Stderr, "    bd dolt stop && bd dolt start\n")
 					}
 				}
 			}
@@ -1052,6 +1086,18 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					fmt.Fprintf(os.Stderr, "Warning: failed to enable shared server mode: %v\n", err)
 				} else if !quiet {
 					fmt.Printf("  %s Shared server mode enabled\n", ui.RenderPass("✓"))
+				}
+			}
+
+			if debugMode {
+				if err := config.SetYamlConfig("dolt.debug", "true"); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to persist dolt.debug: %v\n", err)
+				} else if !quiet {
+					serverDir := doltserver.ResolveServerDir(beadsDir)
+					fmt.Printf("  %s Debug mode enabled\n", ui.RenderPass("✓"))
+					fmt.Printf("      Server log:  %s\n", doltserver.LogPath(serverDir))
+					fmt.Printf("      Profile dir: %s\n", doltserver.DebugProfileDir(beadsDir))
+					fmt.Printf("      Note: cpu.pprof is written when the server exits cleanly (bd dolt stop).\n")
 				}
 			}
 
@@ -1528,6 +1574,7 @@ func init() {
 	initCmd.Flags().String("database", "", "Use existing server database name (overrides prefix-based naming)")
 	initCmd.Flags().Bool("shared-server", false, "Enable shared Dolt server mode (all projects share one server at ~/.beads/shared-server/)")
 	initCmd.Flags().Bool("external", false, "Server is externally managed (skip server startup); use with --shared-server or --server")
+	initCmd.Flags().Bool("debug", false, "Run the managed Dolt sql-server with --loglevel=debug and CPU profiling (--prof cpu). Persisted to config.yaml as dolt.debug. No effect on externally-managed servers.")
 	initCmd.Flags().Bool("proxied-server", false, "[EXPERIMENTAL] Use a per-workspace proxied dolt sql-server (proxy + child dolt) rooted at .beads/proxieddb")
 	initCmd.Flags().String("proxied-server-config", "", "[EXPERIMENTAL] Path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one.")
 	initCmd.Flags().String("proxied-server-log-path", "", "[EXPERIMENTAL] Path to the proxied dolt sql-server log file (proxied-server mode only). Default: <beadsDir>/proxieddb/server.log.")
