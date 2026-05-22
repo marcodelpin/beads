@@ -53,17 +53,17 @@ Pass --server to use an external dolt sql-server instead. In server mode,
 set connection details with --server-host, --server-port, and --server-user.
 Password should be set via BEADS_DOLT_PASSWORD environment variable.
 
-Auto-export is enabled by default. After every write command, bd exports
-issues to .beads/issues.jsonl (throttled to once per 60s). This keeps
-viewers (bv) and interchange up to date without extra steps.
+Auto-export is optional. When enabled, bd exports issues to
+.beads/issues.jsonl after write commands (throttled to once per 60s). This is
+for viewers (bv), interchange, and issue-level migration; not backup.
 Cross-machine sync and backups use Dolt remotes/backups, not JSONL import/export.
-To disable: bd config set export.auto false
+To enable: bd config set export.auto true
 
 Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
   Skips all interactive prompts, using sensible defaults:
   • Role defaults to "maintainer" (override with --role)
   • Fork exclude auto-configured when fork detected
-  • Auto-export left at default (enabled)
+  • Auto-export left at default (disabled)
   • --contributor and --team flags are rejected (wizards require interaction)
   Also auto-detected when stdin is not a terminal or CI=true is set.`,
 	Run: func(cmd *cobra.Command, _ []string) {
@@ -112,6 +112,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			initProxiedServer = true
 		}
 		if initProxiedServer {
+			// Proxied-server mode has no local Dolt init lifecycle yet. When it
+			// is implemented, that path must mark any local .dolt/ it creates or
+			// acknowledges with doltserver.MarkDoltDirCompatible.
 			FatalError("--proxied-server is not yet implemented")
 		}
 		if initProxiedServer && initServerMode {
@@ -1128,7 +1131,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// Import from local JSONL if requested (GH#2023).
 		// This must run after the store is created and prefix is set.
 		if fromJSONL {
-			localJSONLPath := filepath.Join(beadsDir, "issues.jsonl")
+			localJSONLPath := configuredImportJSONLPath(beadsDir)
 			if _, statErr := os.Stat(localJSONLPath); os.IsNotExist(statErr) {
 				_ = store.Close()
 				FatalError("--from-jsonl specified but %s does not exist", localJSONLPath)
@@ -1250,6 +1253,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			fmt.Fprintf(os.Stderr, "Warning: failed to close database: %v\n", err)
 		}
 
+		if initServerMode {
+			if err := doltserver.MarkDoltDirCompatible(storagePath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write Dolt compatibility marker at %s: %v\n", storagePath, err)
+			}
+		}
+
 		// WARNING: DO NOT remove, delete, or modify files inside Dolt's .dolt/
 		// directory — including noms/LOCK files. These are Dolt-internal files.
 		// Removing them WILL cause unrecoverable data corruption and data loss.
@@ -1287,22 +1296,23 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 
-		// Auto-export prompt: enabled by default, let user opt out interactively (GH#2973).
-		// In non-interactive mode the default (enabled) is kept.
+		// Auto-export prompt: disabled by default, let users opt in
+		// interactively for viewers and other JSONL integrations (GH#4062).
+		// In non-interactive mode the default (disabled) is kept.
 		if !nonInteractive && !quiet {
 			wantExport, err := promptAutoExport()
 			if err != nil && isCanceled(err) {
 				fmt.Fprintln(os.Stderr, "Setup canceled.")
 				exitCanceled()
 			}
-			if !wantExport {
-				if err := config.SetYamlConfig("export.auto", "false"); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to disable auto-export: %v\n", err)
+			if wantExport {
+				if err := config.SetYamlConfig("export.auto", "true"); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to enable auto-export: %v\n", err)
 				} else {
-					fmt.Printf("  %s Auto-export disabled (enable later with: bd config set export.auto true)\n", ui.RenderPass("✓"))
+					fmt.Printf("  %s Auto-export enabled -> .beads/issues.jsonl\n", ui.RenderPass("✓"))
 				}
 			} else if !quiet {
-				fmt.Printf("  %s Auto-export enabled → .beads/issues.jsonl\n", ui.RenderPass("✓"))
+				fmt.Printf("  %s Auto-export disabled (enable later with: bd config set export.auto true)\n", ui.RenderPass("✓"))
 			}
 		}
 
@@ -1550,7 +1560,7 @@ func init() {
 	initCmd.Flags().Bool("force", false, "Deprecated alias for --reinit-local. Bypasses only the LOCAL data-safety guard; does NOT authorize remote divergence (see 'bd help init-safety').")
 	initCmd.Flags().Bool("reinit-local", false, "Re-initialize local .beads/ over existing local data. Does NOT authorize remote divergence; see --discard-remote.")
 	initCmd.Flags().Bool("discard-remote", false, "Authorize discarding the configured remote's Dolt history when re-initializing. Requires --destroy-token in non-interactive mode; see 'bd help init-safety'.")
-	initCmd.Flags().Bool("from-jsonl", false, "Import issues from .beads/issues.jsonl instead of git history")
+	initCmd.Flags().Bool("from-jsonl", false, "Import issues from configured import.path instead of git history")
 	initCmd.Flags().String("destroy-token", "", "Explicit confirmation token for destructive re-init in non-interactive mode (format: 'DESTROY-<prefix>')")
 	initCmd.Flags().String("agents-template", "", "Path to custom AGENTS.md template (overrides embedded default)")
 	initCmd.Flags().String("agents-profile", "", "AGENTS.md profile: 'minimal' (default, pointer to bd prime) or 'full' (complete command reference)")
@@ -1993,12 +2003,13 @@ func promptContributorMode() (isContributor bool, err error) {
 	return isContributor, nil
 }
 
-// promptAutoExport asks the user whether to keep auto-export enabled (the default).
-// Returns true to keep it enabled, false to disable.
+// promptAutoExport asks the user whether to enable optional auto-export.
+// Returns true to enable it, false to leave it disabled.
 func promptAutoExport() (bool, error) {
-	fmt.Printf("\n%s Auto-export keeps .beads/issues.jsonl up to date after every write command.\n", ui.RenderAccent("▶"))
-	fmt.Println("  This is useful for viewers (bv) and interchange. Dolt remotes/backups handle sync and backup.")
-	fmt.Print("\nEnable auto-export? [Y/n]: ")
+	fmt.Printf("\n%s Auto-export can keep .beads/issues.jsonl up to date after write commands.\n", ui.RenderAccent("▶"))
+	fmt.Println("  This optional JSONL export is useful for viewers (bv), interchange, and issue-level migration.")
+	fmt.Println("  Dolt remotes/backups handle cross-machine sync and backup.")
+	fmt.Print("\nEnable auto-export? [y/N]: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	response, err := readLineWithContext(getRootContext(), reader, os.Stdin)
@@ -2010,8 +2021,8 @@ func promptAutoExport() (bool, error) {
 	}
 	response = strings.TrimSpace(strings.ToLower(response))
 
-	// Default to yes (empty or "y" or "yes")
-	return response == "" || response == "y" || response == "yes", nil
+	// Default to no. Users and integrations can enable it explicitly.
+	return response == "y" || response == "yes", nil
 }
 
 func shouldWireInitRemote(syncURL string, syncFromRemote, syncURLFromConfig, syncURLFromGitOrigin bool) bool {

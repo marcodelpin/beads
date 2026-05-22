@@ -2380,8 +2380,8 @@ bd federation
 
 Import issues from a JSONL file (newline-delimited JSON) into the database.
 
-If no file is specified, imports from .beads/issues.jsonl (the git-tracked
-export). Use "-" to read from stdin. This is the incremental counterpart to
+If no file is specified, imports from the configured import.path under .beads/
+(default: issues.jsonl). Use "-" to read from stdin. This is the incremental counterpart to
 'bd export': new issues are created and existing issues are updated (upsert
 semantics).
 
@@ -2417,7 +2417,7 @@ when present in the JSONL and otherwise filled in by the importer. The
 legacy "wisp" boolean is accepted as an alias for "ephemeral".
 
 EXAMPLES:
-  bd import                        # Import from .beads/issues.jsonl
+  bd import                        # Import from configured import.path
   bd import backup.jsonl           # Import from a specific file
   bd import -i backup.jsonl        # Legacy alias for a specific file
   bd import -                      # Read JSONL from stdin
@@ -2576,6 +2576,7 @@ Configuration is stored per-project in the beads database and is version-control
 
 Common namespaces:
   - export.*          Auto-export settings (stored in config.yaml)
+  - import.*          JSONL import settings (stored in config.yaml)
   - jira.*            Jira integration settings
   - linear.*          Linear integration settings
   - github.*          GitHub integration settings
@@ -2584,15 +2585,25 @@ Common namespaces:
   - doctor.suppress.* Suppress specific bd doctor warnings (GH#1095)
 
 Auto-Export (config.yaml):
-  Writes .beads/issues.jsonl after every write command (throttled).
-  Enabled by default. Useful for viewers (bv) and interchange; not a backup.
+  Optional JSONL export to .beads/issues.jsonl after write commands (throttled).
+  Useful for viewers (bv), interchange, and issue-level migration; not a backup.
   It is not cross-machine sync; use bd dolt push/pull with a Dolt remote.
+  Disabled by default. Enable only for integrations that need fresh JSONL.
+  Auto-staging is separate and disabled by default.
 
   Keys:
-    export.auto       Enable/disable auto-export (default: true)
+    export.auto       Enable/disable auto-export (default: false)
     export.path       Output filename relative to .beads/ (default: issues.jsonl)
     export.interval   Minimum time between exports (default: 60s)
-    export.git-add    Auto-stage the export file (default: true)
+    export.git-add    Auto-stage the export file (default: false)
+
+Auto-Import (config.yaml):
+  Reads .beads/issues.jsonl by default when a JSONL import path is implied.
+  Use a relative filename/path so the import stays within the project .beads/
+  directory and remains portable across machines.
+
+  Keys:
+    import.path       Input filename relative to .beads/ (default: issues.jsonl)
 
 Custom Status States:
   You can define custom status states for multi-step pipelines using the
@@ -2613,8 +2624,10 @@ Suppressing Doctor Warnings:
   To unsuppress: bd config unset doctor.suppress.&lt;slug&gt;
 
 Examples:
-  bd config set export.auto false                      # Disable auto-export
+  bd config set export.auto true                       # Enable auto-export for viewer integrations
   bd config set export.path "beads.jsonl"              # Custom export filename
+  bd config set import.path "beads.jsonl"              # Custom import filename
+  bd config set export.git-add true                    # Also stage the export file
   bd config set jira.url "https://company.atlassian.net"
   bd config set jira.project "PROJ"
   bd config set status.custom "awaiting_review,awaiting_testing"
@@ -3343,17 +3356,17 @@ Pass --server to use an external dolt sql-server instead. In server mode,
 set connection details with --server-host, --server-port, and --server-user.
 Password should be set via BEADS_DOLT_PASSWORD environment variable.
 
-Auto-export is enabled by default. After every write command, bd exports
-issues to .beads/issues.jsonl (throttled to once per 60s). This keeps
-viewers (bv) and interchange up to date without extra steps.
+Auto-export is optional. When enabled, bd exports issues to
+.beads/issues.jsonl after write commands (throttled to once per 60s). This is
+for viewers (bv), interchange, and issue-level migration; not backup.
 Cross-machine sync and backups use Dolt remotes/backups, not JSONL import/export.
-To disable: bd config set export.auto false
+To enable: bd config set export.auto true
 
 Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
   Skips all interactive prompts, using sensible defaults:
   • Role defaults to "maintainer" (override with --role)
   • Fork exclude auto-configured when fork detected
-  • Auto-export left at default (enabled)
+  • Auto-export left at default (disabled)
   • --contributor and --team flags are rejected (wizards require interaction)
   Also auto-detected when stdin is not a terminal or CI=true is set.
 
@@ -3375,7 +3388,7 @@ bd init [flags]
       --discard-remote                    Authorize discarding the configured remote's Dolt history when re-initializing. Requires --destroy-token in non-interactive mode; see 'bd help init-safety'.
       --external                          Server is externally managed (skip server startup); use with --shared-server or --server
       --force                             Deprecated alias for --reinit-local. Bypasses only the LOCAL data-safety guard; does NOT authorize remote divergence (see 'bd help init-safety').
-      --from-jsonl                        Import issues from .beads/issues.jsonl instead of git history
+      --from-jsonl                        Import issues from configured import.path instead of git history
       --non-interactive                   Skip all interactive prompts (auto-detected in CI or non-TTY environments)
   -p, --prefix string                     Issue prefix (default: current directory name)
       --proxied-server                    [EXPERIMENTAL] Use a per-workspace proxied dolt sql-server (proxy + child dolt) rooted at .beads/proxieddb

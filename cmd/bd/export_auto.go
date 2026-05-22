@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -54,19 +55,27 @@ func maybeAutoExport(ctx context.Context) {
 		return
 	}
 
-	// Load state and check throttle
+	// Resolve the export path before throttle/check detection so all decisions
+	// refer to the path that would actually be written.
+	exportPath := config.GetString("export.path")
+	if exportPath == "" {
+		if globalFlag {
+			exportPath = "global-issues.jsonl"
+		} else {
+			exportPath = "issues.jsonl"
+		}
+	}
+	fullPath := filepath.Join(beadsDir, exportPath)
+
+	// Load state + interval.
 	state := loadExportAutoState(beadsDir)
 	interval := config.GetDuration("export.interval")
 	if interval == 0 {
 		interval = 60 * time.Second
 	}
-	if !state.Timestamp.IsZero() && time.Since(state.Timestamp) < interval {
-		debug.Logf("auto-export: throttled (last export %s ago, interval %s)\n",
-			time.Since(state.Timestamp).Round(time.Second), interval)
-		return
-	}
 
-	// Change detection via Dolt commit hash
+	// Change detection via Dolt commit hash. This is cheap, so do it before
+	// throttle: when there are no changes, there is nothing to throttle.
 	currentCommit, err := store.GetCurrentCommit(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: failed to get current commit: %v\n", err)
@@ -77,16 +86,19 @@ func maybeAutoExport(ctx context.Context) {
 		return
 	}
 
-	// Determine output path
-	exportPath := config.GetString("export.path")
-	if exportPath == "" {
-		if globalFlag {
-			exportPath = "global-issues.jsonl"
-		} else {
-			exportPath = "issues.jsonl"
-		}
+	if !shouldExport(state, interval) {
+		debug.Logf("auto-export: throttled (last export %s ago, interval %s)\n",
+			time.Since(state.Timestamp).Round(time.Second), interval)
+		return
 	}
-	fullPath := filepath.Join(beadsDir, exportPath)
+
+	if skip, existingCount, err := shouldSkipEmptyAutoExport(ctx, fullPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: failed to check existing JSONL: %v\n", err)
+		return
+	} else if skip {
+		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: current database would export 0 issues, but %s already contains %d issue(s); refusing to overwrite. Run `bd init --from-jsonl` to import the JSONL file, or move it aside and retry.\n", fullPath, existingCount)
+		return
+	}
 
 	// Run the export — memories are excluded from auto-export because they
 	// contain private agent context that must not reach git history (GH#3650).
@@ -128,21 +140,93 @@ func maybeAutoExport(ctx context.Context) {
 	saveExportAutoState(beadsDir, &newState)
 }
 
-// exportToFile atomically exports issues + memories to the given file path.
-// Writes to a temp file first, then renames into place so readers never see
-// a partial or truncated export. Used by both `bd export -o` and auto-export.
-func exportToFile(ctx context.Context, path string, includeMemories bool) (issueCount, memoryCount int, err error) {
-	w, err := atomicfile.Create(path, 0o644)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create export file: %w", err)
+// shouldExport reports whether the throttle window has elapsed, or whether
+// this is the first auto-export attempt. It returns false only when a recent
+// export exists and the configured interval has not elapsed.
+//
+// Extracted from Jeremy Longshore's GH#4061 throttle-decision refactor.
+func shouldExport(state *exportAutoState, interval time.Duration) bool {
+	if state.Timestamp.IsZero() {
+		return true
 	}
-	defer func() {
-		if err != nil {
-			_ = w.Abort()
-		}
-	}()
+	return time.Since(state.Timestamp) >= interval
+}
 
-	// Build filter: exclude infra types and templates
+func shouldSkipEmptyAutoExport(ctx context.Context, path string) (bool, int, error) {
+	existingCount, err := countIssueRecordsInJSONL(path)
+	if err != nil {
+		return false, 0, err
+	}
+	if existingCount == 0 {
+		return false, 0, nil
+	}
+
+	issues, err := store.SearchIssues(ctx, "", autoExportFilter(ctx))
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to search issues: %w", err)
+	}
+
+	return len(issues) == 0, existingCount, nil
+}
+
+func countIssueRecordsInJSONL(path string) (int, error) {
+	f, err := os.Open(path) //nolint:gosec
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 64*1024*1024)
+
+	count := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			return 0, err
+		}
+
+		if rawType, ok := raw["_type"]; ok {
+			var recordType string
+			if err := json.Unmarshal(rawType, &recordType); err == nil && recordType != "" && recordType != "issue" {
+				continue
+			}
+		}
+
+		var id string
+		if rawID, ok := raw["id"]; ok {
+			_ = json.Unmarshal(rawID, &id)
+		}
+		if id == "" {
+			continue
+		}
+
+		var status string
+		if rawStatus, ok := raw["status"]; ok {
+			_ = json.Unmarshal(rawStatus, &status)
+		}
+		if status == "tombstone" {
+			continue
+		}
+
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+func autoExportFilter(ctx context.Context) types.IssueFilter {
 	filter := types.IssueFilter{Limit: 0}
 	var infraTypes []string
 	if store != nil {
@@ -167,7 +251,24 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 	persistentOnly := false
 	filter.Ephemeral = &persistentOnly
 
-	issues, err := store.SearchIssues(ctx, "", filter)
+	return filter
+}
+
+// exportToFile atomically exports issues + memories to the given file path.
+// Writes to a temp file first, then renames into place so readers never see
+// a partial or truncated export. Used by both `bd export -o` and auto-export.
+func exportToFile(ctx context.Context, path string, includeMemories bool) (issueCount, memoryCount int, err error) {
+	w, err := atomicfile.Create(path, 0o644)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to create export file: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = w.Abort()
+		}
+	}()
+
+	issues, err := store.SearchIssues(ctx, "", autoExportFilter(ctx))
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to search issues: %w", err)
 	}
@@ -379,7 +480,8 @@ func hookWorkTreeRoot() string {
 		return ""
 	}
 	var root string
-	if data, err := os.ReadFile(filepath.Join(gitDir, "gitdir")); err == nil { // #nosec G304 -- path is GIT_DIR/gitdir, a well-known git internal file
+	//nolint:gosec // G304: path is GIT_DIR/gitdir, a well-known git internal file.
+	if data, err := os.ReadFile(filepath.Join(gitDir, "gitdir")); err == nil {
 		if dotGit := strings.TrimSpace(string(data)); dotGit != "" {
 			root = filepath.Dir(dotGit)
 		}
