@@ -96,29 +96,6 @@ func TestBuildSQLInClause(t *testing.T) {
 	}
 }
 
-func TestGetReadyWorkInTx_UnboundedPropagatesBlockedComputationError(t *testing.T) {
-	t.Parallel()
-
-	blockedErr := errors.New("blocked graph unavailable")
-	_, err := GetReadyWorkInTx(
-		context.Background(),
-		nil,
-		types.WorkFilter{IncludeDeferred: true},
-		func(context.Context, *sql.Tx, bool) ([]string, error) {
-			return nil, blockedErr
-		},
-	)
-	if err == nil {
-		t.Fatal("expected blocked computation error")
-	}
-	if !errors.Is(err, blockedErr) {
-		t.Fatalf("expected wrapped blocked computation error, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "compute blocked IDs") {
-		t.Fatalf("expected compute blocked IDs context, got %v", err)
-	}
-}
-
 func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 	t.Parallel()
 
@@ -130,10 +107,6 @@ func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 		context.Background(),
 		tx,
 		types.WorkFilter{},
-		func(context.Context, *sql.Tx, bool) ([]string, error) {
-			t.Fatal("blocked computation should not run after deferred parent child failure")
-			return nil, nil
-		},
 	)
 	if err == nil {
 		t.Fatal("expected deferred parent child error")
@@ -146,6 +119,45 @@ func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestLoadStatusByIDInTxErrorsOnIssueWispCollision(t *testing.T) {
+	t.Parallel()
+
+	_, mock, tx := beginMockTx(t)
+	mock.ExpectQuery("SELECT id, status FROM issues").
+		WithArgs("dup-id").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("dup-id", types.StatusOpen))
+	mock.ExpectQuery("SELECT id, status FROM wisps").
+		WithArgs("dup-id").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("dup-id", types.StatusClosed))
+
+	_, err := loadStatusByIDInTx(context.Background(), tx, []string{"dup-id"})
+	if err == nil {
+		t.Fatal("expected duplicate issue/wisp status error")
+	}
+	if !strings.Contains(err.Error(), `id "dup-id" exists in both issues and wisps`) {
+		t.Fatalf("error = %v, want duplicate issue/wisp context", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestMergeReadyWispsErrorsOnIssueWispCollision(t *testing.T) {
+	t.Parallel()
+
+	_, err := mergeReadyWisps(
+		[]*types.Issue{{ID: "dup-id", Status: types.StatusOpen}},
+		[]*types.Issue{{ID: "dup-id", Status: types.StatusClosed}},
+		types.WorkFilter{},
+	)
+	if err == nil {
+		t.Fatal("expected duplicate issue/wisp ready-work error")
+	}
+	if !strings.Contains(err.Error(), `id "dup-id" exists in both issues and wisps`) {
+		t.Fatalf("error = %v, want duplicate issue/wisp context", err)
 	}
 }
 
