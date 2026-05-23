@@ -30,29 +30,35 @@ type exportAutoState struct {
 }
 
 const exportAutoStateFile = "export-state.json"
+const gitAddTimeout = 5 * time.Second
 
 // maybeAutoExport writes a git-tracked JSONL file if enabled and due.
 // Called from PersistentPostRun after auto-backup.
-func maybeAutoExport(ctx context.Context) {
+func maybeAutoExport(ctx context.Context, serverMode, allowEmptyOverwrite bool) error {
+	if serverMode {
+		debug.Logf("auto-export: skipping — server mode\n")
+		return nil
+	}
+
 	// Skip when running as a git hook to avoid re-export during pre-commit.
 	if os.Getenv("BD_GIT_HOOK") == "1" {
 		debug.Logf("auto-export: skipping — running as git hook\n")
-		return
+		return nil
 	}
 
 	if !config.GetBool("export.auto") {
-		return
+		return nil
 	}
 	if store == nil {
-		return
+		return nil
 	}
 	if lm, ok := storage.UnwrapStore(store).(storage.LifecycleManager); ok && lm.IsClosed() {
-		return
+		return nil
 	}
 
 	beadsDir := beads.FindBeadsDir()
 	if beadsDir == "" {
-		return
+		return nil
 	}
 
 	// Resolve the export path before throttle/check detection so all decisions
@@ -79,25 +85,36 @@ func maybeAutoExport(ctx context.Context) {
 	currentCommit, err := store.GetCurrentCommit(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: failed to get current commit: %v\n", err)
-		return
+		return nil
 	}
 	if currentCommit == state.LastDoltCommit && state.LastDoltCommit != "" {
 		debug.Logf("auto-export: no changes since last export\n")
-		return
+		return nil
 	}
 
 	if !shouldExport(state, interval) {
 		debug.Logf("auto-export: throttled (last export %s ago, interval %s)\n",
 			time.Since(state.Timestamp).Round(time.Second), interval)
-		return
+		return nil
 	}
 
-	if skip, existingCount, err := shouldSkipEmptyAutoExport(ctx, fullPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: failed to check existing JSONL: %v\n", err)
-		return
-	} else if skip {
-		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: current database would export 0 issues, but %s already contains %d issue(s); refusing to overwrite. Run `bd init --from-jsonl` to import the JSONL file, or move it aside and retry.\n", fullPath, existingCount)
-		return
+	if !allowEmptyOverwrite {
+		if skip, existingCount, err := shouldSkipEmptyAutoExport(ctx, fullPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: failed to check existing JSONL: %v\n", err)
+			return nil
+		} else if skip {
+			fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: current database would export 0 issues, but %s already contains %d issue(s); refusing to overwrite. Run `bd init --from-jsonl` to import the JSONL file, or move it aside and retry.\n", fullPath, existingCount)
+			return nil
+		}
+	}
+	if !allowEmptyOverwrite {
+		if missingIDs, err := missingJSONLIssueIDsInStore(ctx, fullPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: failed to compare existing JSONL against local store: %v\n", err)
+			return nil
+		} else if len(missingIDs) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: %s contains %d JSONL-only issue record(s) absent from the local Dolt store (%s); refusing to overwrite. Run `bd init --from-jsonl` to import the JSONL file, or move it aside and retry.\n", fullPath, len(missingIDs), strings.Join(sampleStrings(missingIDs, 5), ", "))
+			return nil
+		}
 	}
 
 	// Run the export — memories are excluded from auto-export because they
@@ -105,7 +122,7 @@ func maybeAutoExport(ctx context.Context) {
 	issueCount, memoryCount, err := exportToFile(ctx, fullPath, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export failed: %v\n", err)
-		return
+		return nil
 	}
 
 	debug.Logf("auto-export: wrote %d issues and %d memories to %s\n",
@@ -118,7 +135,13 @@ func maybeAutoExport(ctx context.Context) {
 	// issues.jsonl before any issues exist.
 	if issueCount == 0 && memoryCount == 0 {
 		_ = os.Remove(fullPath)
-		return
+		saveExportAutoState(beadsDir, &exportAutoState{
+			LastDoltCommit: currentCommit,
+			Timestamp:      time.Now(),
+			Issues:         0,
+			Memories:       0,
+		})
+		return nil
 	}
 	warnJSONLWithoutDoltRemote("auto-export")
 
@@ -126,7 +149,7 @@ func maybeAutoExport(ctx context.Context) {
 	// git repo (standalone BEADS_DIR flow), or when export.git-add is false.
 	if config.GetBool("export.git-add") && !config.GetBool("no-git-ops") && isGitRepo() {
 		if err := gitAddFile(fullPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: auto-export: git add failed: %v\n", err)
+			return fmt.Errorf("auto-export: git add failed: %w", err)
 		}
 	}
 
@@ -138,6 +161,7 @@ func maybeAutoExport(ctx context.Context) {
 		Memories:       memoryCount,
 	}
 	saveExportAutoState(beadsDir, &newState)
+	return nil
 }
 
 // shouldExport reports whether the throttle window has elapsed, or whether
@@ -170,19 +194,55 @@ func shouldSkipEmptyAutoExport(ctx context.Context, path string) (bool, int, err
 }
 
 func countIssueRecordsInJSONL(path string) (int, error) {
+	ids, err := issueIDsInJSONL(path)
+	if err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
+func missingJSONLIssueIDsInStore(ctx context.Context, path string) ([]string, error) {
+	existingIDs, err := issueIDsInJSONL(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(existingIDs) == 0 {
+		return nil, nil
+	}
+
+	issues, err := store.SearchIssues(ctx, "", types.IssueFilter{Limit: 0})
+	if err != nil {
+		return nil, fmt.Errorf("failed to search issues: %w", err)
+	}
+	localIDs := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		localIDs[issue.ID] = struct{}{}
+	}
+
+	missing := make([]string, 0)
+	for _, id := range existingIDs {
+		if _, ok := localIDs[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing, nil
+}
+
+func issueIDsInJSONL(path string) ([]string, error) {
 	f, err := os.Open(path) //nolint:gosec
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, nil
+			return nil, nil
 		}
-		return 0, err
+		return nil, err
 	}
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 64*1024*1024)
 
-	count := 0
+	seen := make(map[string]struct{})
+	var ids []string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -191,7 +251,7 @@ func countIssueRecordsInJSONL(path string) (int, error) {
 
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			return 0, err
+			return nil, err
 		}
 
 		if rawType, ok := raw["_type"]; ok {
@@ -217,16 +277,35 @@ func countIssueRecordsInJSONL(path string) (int, error) {
 			continue
 		}
 
-		count++
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	return count, nil
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func sampleStrings(values []string, limit int) []string {
+	if len(values) <= limit {
+		return values
+	}
+	out := append([]string{}, values[:limit]...)
+	out = append(out, "...")
+	return out
 }
 
 func autoExportFilter(ctx context.Context) types.IssueFilter {
+	filter, _ := buildAutoExportFilter(ctx)
+	return filter
+}
+
+func buildAutoExportFilter(ctx context.Context) (types.IssueFilter, map[string]bool) {
 	filter := types.IssueFilter{Limit: 0}
 	var infraTypes []string
 	if store != nil {
@@ -240,6 +319,11 @@ func autoExportFilter(ctx context.Context) types.IssueFilter {
 	if len(infraTypes) == 0 {
 		infraTypes = dolt.DefaultInfraTypes()
 	}
+	infraTypeSet := make(map[string]bool, len(infraTypes))
+	for _, t := range infraTypes {
+		infraTypeSet[t] = true
+	}
+	sort.Strings(infraTypes)
 	for _, t := range infraTypes {
 		filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(t))
 	}
@@ -251,7 +335,7 @@ func autoExportFilter(ctx context.Context) types.IssueFilter {
 	persistentOnly := false
 	filter.Ephemeral = &persistentOnly
 
-	return filter
+	return filter, infraTypeSet
 }
 
 // exportToFile atomically exports issues + memories to the given file path.
@@ -268,9 +352,14 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 		}
 	}()
 
-	issues, err := store.SearchIssues(ctx, "", autoExportFilter(ctx))
+	filter, infraTypeSet := buildAutoExportFilter(ctx)
+	issues, err := store.SearchIssues(ctx, "", filter)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to search issues: %w", err)
+	}
+
+	if err := guardAutoExportOverwrite(path, infraTypeSet, includeMemories); err != nil {
+		return 0, 0, err
 	}
 
 	// Bulk-load relational data
@@ -358,6 +447,84 @@ func exportToFile(ctx context.Context, path string, includeMemories bool) (issue
 	return issueCount, memoryCount, nil
 }
 
+func guardAutoExportOverwrite(path string, infraTypes map[string]bool, includeMemories bool) error {
+	f, err := os.Open(path) //nolint:gosec
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("auto-export shrink guard: inspect existing JSONL: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var stats autoExportOverwriteStats
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if err := classifyExistingAutoExportRecord([]byte(line), infraTypes, includeMemories, &stats); err != nil {
+			return fmt.Errorf("auto-export shrink guard: inspect existing JSONL line %d: %w", lineNo, err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("auto-export shrink guard: inspect existing JSONL: %w", err)
+	}
+
+	if stats.FilteredRecords == 0 {
+		return nil
+	}
+	return fmt.Errorf("auto-export shrink guard: refusing to overwrite %s because it contains %d record(s) outside auto-export scope (%d memories, %d infra/template/ephemeral issues, %d unknown); run an explicit export if you want to replace it", path, stats.FilteredRecords, stats.Memories, stats.FilteredIssues, stats.UnknownRecords)
+}
+
+type autoExportOverwriteStats struct {
+	FilteredRecords int
+	Memories        int
+	FilteredIssues  int
+	UnknownRecords  int
+}
+
+func classifyExistingAutoExportRecord(line []byte, infraTypes map[string]bool, includeMemories bool, stats *autoExportOverwriteStats) error {
+	var record struct {
+		Type       string          `json:"_type"`
+		IssueType  types.IssueType `json:"issue_type"`
+		IsTemplate bool            `json:"is_template"`
+		Ephemeral  bool            `json:"ephemeral"`
+		ID         string          `json:"id"`
+	}
+	if err := json.Unmarshal(line, &record); err != nil {
+		return err
+	}
+
+	switch record.Type {
+	case "memory":
+		if !includeMemories {
+			stats.FilteredRecords++
+			stats.Memories++
+		}
+		return nil
+	case "", "issue":
+		if record.ID == "" {
+			stats.FilteredRecords++
+			stats.UnknownRecords++
+			return nil
+		}
+		if infraTypes[string(record.IssueType)] || record.IsTemplate || record.Ephemeral {
+			stats.FilteredRecords++
+			stats.FilteredIssues++
+		}
+		return nil
+	default:
+		stats.FilteredRecords++
+		stats.UnknownRecords++
+		return nil
+	}
+}
+
 func loadExportAutoState(beadsDir string) *exportAutoState {
 	path := filepath.Join(beadsDir, exportAutoStateFile)
 	data, err := os.ReadFile(path) //nolint:gosec
@@ -395,13 +562,30 @@ func gitAddFile(path string) error {
 		// Staging here would pollute a different repo's index; skip.
 		return nil
 	}
-	cmd := exec.Command("git", "add", path)
+
+	env := scrubGitHookEnv(os.Environ())
+	if lockPath, err := gitIndexLockPath(path, env); err == nil && lockPath != "" {
+		if _, statErr := os.Stat(lockPath); statErr == nil {
+			return fmt.Errorf("git index is locked at %s; skipping auto-stage", lockPath)
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("failed to check git index lock %s: %w", lockPath, statErr)
+		}
+	} else if err != nil {
+		debug.Logf("auto-export: git add lock preflight skipped: %v\n", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), gitAddTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "add", path)
 	cmd.Dir = filepath.Dir(path)
-	cmd.Env = scrubGitHookEnv(os.Environ())
+	cmd.Env = env
 	// Capture combined output so the caller's warning surfaces git's stderr
 	// (e.g. "paths are ignored", "Unable to create index.lock") instead of
 	// just the exit-status text.
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("git add timed out after %s", gitAddTimeout)
+	}
 	if err != nil {
 		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
 			return fmt.Errorf("%w: %s", err, trimmed)
@@ -409,6 +593,32 @@ func gitAddFile(path string) error {
 		return err
 	}
 	return nil
+}
+
+func gitIndexLockPath(path string, env []string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitAddTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmd.Dir = filepath.Dir(path)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git rev-parse timed out after %s", gitAddTimeout)
+	}
+	if err != nil {
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			return "", fmt.Errorf("%w: %s", err, trimmed)
+		}
+		return "", err
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if gitDir == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(filepath.Dir(path), gitDir)
+	}
+	return filepath.Join(gitDir, "index.lock"), nil
 }
 
 // scrubGitHookEnv returns env with the GIT_* variables that can poison

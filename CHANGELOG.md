@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JSONL auto-export shrink guard** - when opt-in `export.auto` is enabled,
+  auto-export now refuses to overwrite an existing `.beads/issues.jsonl` that
+  contains records outside the auto-export scope (memories, infrastructure
+  beads, templates, ephemeral wisps, or unknown record types). This prevents
+  a viewer/interchange refresh from silently replacing a richer JSONL file
+  with the filtered auto-export subset. ([#4069](https://github.com/gastownhall/beads/issues/4069))
 - **`bd dolt status` reports externally-managed local servers truthfully** - when a rig is configured as `dolt_mode: server` pointing at a local host but `dolt.auto-start: false` (so an orchestrator or systemd owns the sql-server lifecycle), `bd dolt status` previously said `not running` because no PID file existed. It now SQL-probes the configured endpoint, matching the path already used for non-local hosts, and reports `running (external)` with host/port/database/version when the server answers. **JSON output shape change**: on affected rigs, `bd dolt status --json` now emits `{"running": true, "mode": "external", ...}` instead of `{"running": false, "pid": 0, ...}`. Automation that parsed the old `running:false` as a "needs restart" sentinel should switch to checking `running` directly. (be-0eyj, [#3550](https://github.com/gastownhall/beads/pull/3550))
 
 ## [1.0.4] - 2026-05-07
@@ -67,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disabled unless a viewer or JSONL integration explicitly enables them. This
   keeps `.beads/issues.jsonl` as an optional export surface, not the default
   mutation path. ([GH#4062](https://github.com/gastownhall/beads/issues/4062))
+  Thanks [Kevin Glynn](https://github.com/kevglynn) for surfacing the JSONL
+  source-of-truth mismatch through the export cleanup work that led to this
+  change.
 
 - **Release workflow uses the checked-in beads-release formula** — the old release shell path now delegates to the formula-backed release workflow with CI gates.
 
