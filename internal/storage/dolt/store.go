@@ -186,6 +186,7 @@ type DoltStore struct {
 	remoteUser     string // Remote auth user for Hosted Dolt push/pull (optional)
 	remotePassword string // Remote auth password for Hosted Dolt push/pull (optional)
 	serverMode     bool   // true when connected to external dolt sql-server (not embedded)
+	remoteServer   bool   // true when serverMode AND host is not localhost: the dolt sql-server does NOT share this client's filesystem (sys-c8066)
 
 	// autoStartedServerDir is set when this store triggered a dolt sql-server
 	// auto-start. Close() uses it to stop the server when the last store
@@ -704,6 +705,18 @@ func (s *DoltStore) BackupRemove(ctx context.Context, name string) error {
 // BackupDatabase registers dir as a file:// Dolt backup remote and syncs
 // the full database to it, preserving complete commit history.
 func (s *DoltStore) BackupDatabase(ctx context.Context, dir string) error {
+	// Dolt-native backups execute server-side (CALL DOLT_BACKUP). When the dolt
+	// sql-server is remote (does not share this client's filesystem), a
+	// client-local file:// path is meaningless: the server resolves it relative
+	// to its own cwd and writes a garbage tree under, e.g.,
+	// /var/lib/dolt/S:/Commesse/<windows-path>/.beads/backup — an unbounded leak
+	// that grows on every bd write (sys-c8066). The git-tracked JSONL auto-export
+	// already provides a local backup, so skip the Dolt-native path here.
+	// Explicit `bd backup init <url>` + `bd backup sync` (BackupSync) is a
+	// separate, user-configured path and is unaffected.
+	if s.remoteServer {
+		return nil
+	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("backup destination does not exist: %w", err)
@@ -1091,6 +1104,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 		remoteUser:           cfg.RemoteUser,
 		remotePassword:       cfg.RemotePassword,
 		serverMode:           true,
+		remoteServer:         !isLocalHost(cfg.ServerHost),
 		readOnly:             cfg.ReadOnly,
 		autoStartedServerDir: autoStartedDir,
 	}
