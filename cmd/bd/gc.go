@@ -147,7 +147,7 @@ Consent flow (recommended):
 			}
 
 			cutoffDays := gcOlderThan
-			cutoffTime := time.Now().AddDate(0, 0, -cutoffDays)
+			cutoffTime := time.Now().UTC().AddDate(0, 0, -cutoffDays)
 			statusClosed := types.StatusClosed
 			filter := types.IssueFilter{
 				Status:       &statusClosed,
@@ -159,28 +159,15 @@ Consent flow (recommended):
 				FatalError("searching closed issues: %v", err)
 			}
 
-			// Filter out pinned issues AND issues with missing/zero closed_at.
-			// The null-safe ClosedAt check is a fork-only defense against upstream #3543:
-			// any candidate without a real ClosedAt should never be treated as "old".
-			filtered := make([]*types.Issue, 0, len(closedIssues))
-			skippedNullClosedAt := 0
-			for _, issue := range closedIssues {
-				if issue.Pinned {
-					continue
-				}
-				if issue.ClosedAt == nil || issue.ClosedAt.IsZero() {
-					skippedNullClosedAt++
-					WarnError("skipping %s: closed_at is null/zero (refusing to treat as old)", issue.ID)
-					continue
-				}
-				filtered = append(filtered, issue)
-			}
-			closedIssues = filtered
-			if skippedNullClosedAt > 0 && !jsonOutput {
-				fmt.Printf("  Skipped %d issue(s) with null/zero closed_at (fork safety net)\n", skippedNullClosedAt)
-			}
+			// Upstream now performs the null-safe closed_at + pinned defense natively
+			// (filterClosedDeletionCandidates, PR #4171) — supersedes the fork's prior
+			// inline #3543 mitigation (bda-zpg). Keep the fork-only --only allowlist below.
+			var stats closedDeletionCandidateStats
+			closedIssues, stats = filterClosedDeletionCandidates(closedIssues, &cutoffTime)
+			warnClosedDeletionSafetySkips(stats)
 
 			// Apply --only allowlist if set: keep only issues whose ID is in the set.
+			// (fork-only feature; upstream helper does not cover the curated-subset flow)
 			if onlySet != nil {
 				keep := closedIssues[:0]
 				for _, issue := range closedIssues {
