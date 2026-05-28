@@ -522,7 +522,7 @@ func formatPrimeMemoryTimeout(compact bool, timeout time.Duration) string {
 func outputMCPContext(w io.Writer, stealthMode bool) error {
 	ephemeral := isEphemeralBranch()
 	noPush := primeNoPushConfigured()
-	localOnly := !primeHasGitRemote()
+	localOnly := !primeHasGitRemote() || resolveSyncRemote() == ""
 
 	var closeProtocol string
 	var profileRule string
@@ -581,7 +581,7 @@ Start: Check ` + "`ready`" + ` tool for available work.
 func outputCLIContext(w io.Writer, stealthMode bool) error {
 	ephemeral := isEphemeralBranch()
 	noPush := primeNoPushConfigured()
-	localOnly := !primeHasGitRemote()
+	localOnly := !primeHasGitRemote() || resolveSyncRemote() == ""
 
 	var closeProtocol string
 	var closeNote string
