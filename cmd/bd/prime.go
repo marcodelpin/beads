@@ -312,6 +312,11 @@ var primeHasGitRemote = func() bool {
 	return len(strings.TrimSpace(string(out))) > 0
 }
 
+// primeHasSyncRemote detects if a Dolt sync remote is configured (stubbable for tests)
+var primeHasSyncRemote = func() bool {
+	return resolveSyncRemote() != ""
+}
+
 // getRedirectNotice returns a notice string if beads is redirected
 func getRedirectNotice(verbose bool) string {
 	redirectInfo := beads.GetRedirectInfo()
@@ -522,7 +527,7 @@ func formatPrimeMemoryTimeout(compact bool, timeout time.Duration) string {
 func outputMCPContext(w io.Writer, stealthMode bool) error {
 	ephemeral := isEphemeralBranch()
 	noPush := primeNoPushConfigured()
-	localOnly := !primeHasGitRemote() || resolveSyncRemote() == ""
+	localOnly := !primeHasGitRemote() || !primeHasSyncRemote()
 
 	var closeProtocol string
 	var profileRule string
@@ -581,7 +586,7 @@ Start: Check ` + "`ready`" + ` tool for available work.
 func outputCLIContext(w io.Writer, stealthMode bool) error {
 	ephemeral := isEphemeralBranch()
 	noPush := primeNoPushConfigured()
-	localOnly := !primeHasGitRemote() || resolveSyncRemote() == ""
+	localOnly := !primeHasGitRemote() || !primeHasSyncRemote()
 
 	var closeProtocol string
 	var closeNote string
