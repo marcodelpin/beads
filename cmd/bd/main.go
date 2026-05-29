@@ -197,6 +197,15 @@ func forcedMigratePreviewFlag(cmd *cobra.Command) string {
 	return ""
 }
 
+// applyNoColorFlag disables colorized output when --no-color is set.
+// Complements the NO_COLOR / CLICOLOR=0 env detection in package ui,
+// giving callers a per-invocation override.
+func applyNoColorFlag() {
+	if noColorFlag {
+		ui.DisableColors()
+	}
+}
+
 // loadBeadsEnvFile loads .beads/.env into process environment for per-project
 // Dolt credentials (GH#2520). Uses gotenv.Load which is non-overriding —
 // existing shell env vars always take precedence.
@@ -693,9 +702,7 @@ var rootCmd = &cobra.Command{
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if noColorFlag {
-			ui.DisableColors()
-		}
+		applyNoColorFlag()
 
 		// Initialize CommandContext to hold runtime state (replaces scattered globals)
 		initCommandContext()
