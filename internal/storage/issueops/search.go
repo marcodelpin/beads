@@ -104,7 +104,7 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 	// Pattern A: full 47-column scan (used for unlimited queries or when NoIDShrink is set).
 	limitSQL := ""
 	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf(" LIMIT %d", filter.Limit+1)
+		limitSQL = fmt.Sprintf(" LIMIT %d", filter.Limit)
 	}
 
 	selectSQL := "SELECT "
@@ -157,7 +157,7 @@ func searchTablePatternB(ctx context.Context, tx *sql.Tx, fromSQL, whereSQL stri
 	//nolint:gosec // G201: SQL fragments from fixed column/table names and parameterized filters.
 	idQuery := fmt.Sprintf(`%s%s.id FROM %s %s %s LIMIT %d`,
 		idSelect, tables.Main, fromSQL, whereSQL,
-		issueOpsOrderBy(filter.SortBy, filter.SortDesc, tables.Main), filter.Limit+1)
+		issueOpsOrderBy(filter.SortBy, filter.SortDesc, tables.Main), filter.Limit)
 
 	rows, err := tx.QueryContext(ctx, idQuery, args...)
 	if err != nil {

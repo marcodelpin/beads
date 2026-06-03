@@ -38,6 +38,13 @@ func withStorage(ctx context.Context, store storage.DoltStorage, dbPath string, 
 	return fmt.Errorf("no storage available")
 }
 
+func withFetchOneExtra(filter types.IssueFilter) types.IssueFilter {
+	if filter.Limit > 0 {
+		filter.Limit++
+	}
+	return filter
+}
+
 func readyWorkFilterFromIssueFilter(filter types.IssueFilter) types.WorkFilter {
 	wf := types.WorkFilter{
 		Status:         types.StatusOpen,
@@ -154,7 +161,7 @@ type watchListDependencyStore interface {
 
 func loadWatchedIssues(ctx context.Context, store storage.DoltStorage, filter types.IssueFilter, ready bool, parentID string, sortBy string, reverse bool) ([]*types.Issue, error) {
 	if ready {
-		issues, err := store.GetReadyWork(ctx, readyWorkFilterFromIssueFilter(filter))
+		issues, err := store.GetReadyWork(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
 		if err != nil {
 			return nil, err
 		}
@@ -173,7 +180,7 @@ func loadWatchedIssues(ctx context.Context, store storage.DoltStorage, filter ty
 		return issues, nil
 	}
 
-	issues, err := store.SearchIssues(ctx, "", filter)
+	issues, err := store.SearchIssues(ctx, "", withFetchOneExtra(filter))
 	if err != nil {
 		return nil, err
 	}
@@ -494,9 +501,9 @@ var listCmd = &cobra.Command{
 			var iwc []*types.IssueWithCounts
 			var err error
 			if in.readyFlag {
-				iwc, err = activeStore.GetReadyWorkWithCounts(ctx, readyWorkFilterFromIssueFilter(filter))
+				iwc, err = activeStore.GetReadyWorkWithCounts(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
 			} else {
-				iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", filter)
+				iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", withFetchOneExtra(filter))
 			}
 			if err != nil {
 				FatalError("%v", err)
@@ -524,7 +531,7 @@ var listCmd = &cobra.Command{
 			// Use blocker-aware GetReadyWork semantics (GH#3478).
 			// This ensures bd list --ready matches bd ready behavior,
 			// excluding issues with open blocks dependencies.
-			wf := readyWorkFilterFromIssueFilter(filter)
+			wf := readyWorkFilterFromIssueFilter(withFetchOneExtra(filter))
 			var err error
 			issues, err = activeStore.GetReadyWork(ctx, wf)
 			if err != nil {
@@ -532,7 +539,7 @@ var listCmd = &cobra.Command{
 			}
 		} else {
 			var err error
-			issues, err = activeStore.SearchIssues(ctx, "", filter)
+			issues, err = activeStore.SearchIssues(ctx, "", withFetchOneExtra(filter))
 			if err != nil {
 				FatalError("%v", err)
 			}
