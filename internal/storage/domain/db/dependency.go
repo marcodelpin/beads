@@ -242,24 +242,6 @@ func (r *dependencySQLRepositoryImpl) CountsByIssueIDs(ctx context.Context, issu
 	return result, nil
 }
 
-func (r *dependencySQLRepositoryImpl) GetAll(ctx context.Context, opts domain.DepListOpts) (map[string][]*types.Dependency, error) {
-	table := pickDepTable(opts.UseWispsTable)
-	typeWhere, typeArgs := buildTypeFilter(opts.Types)
-	whereClause := ""
-	if typeWhere != "" {
-		whereClause = " WHERE" + strings.TrimPrefix(typeWhere, " AND")
-	}
-
-	//nolint:gosec // G201: table and depSelectColumns are hardcoded constants
-	q := fmt.Sprintf("SELECT %s FROM %s%s ORDER BY issue_id", depSelectColumns, table, whereClause)
-
-	result := make(map[string][]*types.Dependency)
-	if err := r.queryDeps(ctx, q, typeArgs, result, true); err != nil {
-		return nil, fmt.Errorf("db: DependencySQLRepository.GetAll: %w", err)
-	}
-	return result, nil
-}
-
 func (r *dependencySQLRepositoryImpl) GetBlockingInfo(ctx context.Context, issueIDs []string, opts domain.DepListOpts) (domain.BlockingInfo, error) {
 	info := domain.BlockingInfo{
 		BlockedBy: make(map[string][]string),
@@ -323,24 +305,6 @@ func (r *dependencySQLRepositoryImpl) GetBlockingInfo(ctx context.Context, issue
 	}
 
 	return info, nil
-}
-
-func (r *dependencySQLRepositoryImpl) GetAllAcrossIssuesAndWisps(ctx context.Context, opts domain.DepListOpts) (map[string][]*types.Dependency, error) {
-	perm, err := r.GetAll(ctx, domain.DepListOpts{Types: opts.Types, UseWispsTable: false})
-	if err != nil {
-		return nil, err
-	}
-	wisp, err := r.GetAll(ctx, domain.DepListOpts{Types: opts.Types, UseWispsTable: true})
-	if err != nil {
-		if !dberrors.IsTableNotExist(err) {
-			return nil, err
-		}
-		wisp = nil
-	}
-	for k, v := range wisp {
-		perm[k] = append(perm[k], v...)
-	}
-	return perm, nil
 }
 
 func (r *dependencySQLRepositoryImpl) GetBlockingInfoAcrossIssuesAndWisps(ctx context.Context, issueIDs []string) (domain.BlockingInfo, error) {
@@ -501,12 +465,12 @@ func scanCounts(ctx context.Context, runner Runner, q string, args []any, into m
 	return rows.Err()
 }
 
-func buildInPlaceholders(values []string) (string, []any) {
+func buildInPlaceholders[T ~string](values []T) (string, []any) {
 	ph := make([]string, len(values))
 	args := make([]any, len(values))
 	for i, v := range values {
 		ph[i] = "?"
-		args[i] = v
+		args[i] = string(v)
 	}
 	return strings.Join(ph, ","), args
 }

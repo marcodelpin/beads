@@ -126,8 +126,8 @@ func (s *testSuite) searchAcrossLabelHydration() {
 	out, err := r.SearchAcrossIssuesAndWisps(s.Ctx(), "",
 		types.IssueFilter{IDPrefix: "bd-srx-hyd-"})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.ElementsMatch([]string{"alpha", "beta"}, out[0].Labels)
+	s.Require().Len(out.Items, 1)
+	s.ElementsMatch([]string{"alpha", "beta"}, out.Items[0].Labels)
 }
 
 func (s *testSuite) searchAcrossLimitRespected() {
@@ -140,7 +140,7 @@ func (s *testSuite) searchAcrossLimitRespected() {
 	out, err := r.SearchAcrossIssuesAndWisps(s.Ctx(), "",
 		types.IssueFilter{IDPrefix: "bd-srx-lim-", Limit: 3, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Len(out, 3)
+	s.Len(out.Items, 3)
 }
 
 func (s *testSuite) searchAcrossCollisionError() {
@@ -169,13 +169,13 @@ func (s *testSuite) searchAcrossSkipLabels() {
 	out, err := r.SearchAcrossIssuesAndWisps(s.Ctx(), "",
 		types.IssueFilter{IDPrefix: "bd-srx-nolbl-", SkipLabels: true, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.Empty(out[0].Labels, "SkipLabels must leave Labels nil/empty")
+	s.Require().Len(out.Items, 1)
+	s.Empty(out.Items[0].Labels, "SkipLabels must leave Labels nil/empty")
 }
 
-func idsFrom(issues []*types.Issue) []string {
-	out := make([]string, 0, len(issues))
-	for _, issue := range issues {
+func idsFrom(page domain.SearchPage) []string {
+	out := make([]string, 0, len(page.Items))
+	for _, issue := range page.Items {
 		out = append(out, issue.ID)
 	}
 	return out

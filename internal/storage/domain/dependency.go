@@ -51,8 +51,6 @@ type DependencySQLRepository interface {
 	ListByIssueIDs(ctx context.Context, issueIDs []string, opts DepListOpts) (DepBulkResult, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string, opts DepCountsOpts) (map[string]*types.DependencyCounts, error)
 
-	GetAll(ctx context.Context, opts DepListOpts) (map[string][]*types.Dependency, error)
-	GetAllAcrossIssuesAndWisps(ctx context.Context, opts DepListOpts) (map[string][]*types.Dependency, error)
 	GetBlockingInfo(ctx context.Context, issueIDs []string, opts DepListOpts) (BlockingInfo, error)
 	GetBlockingInfoAcrossIssuesAndWisps(ctx context.Context, issueIDs []string) (BlockingInfo, error)
 }
@@ -61,8 +59,8 @@ type DependencyUseCase interface {
 	AddDependency(ctx context.Context, dep *types.Dependency, actor string) error
 	ListByIssueIDs(ctx context.Context, issueIDs []string, filter DepListFilter) (DepBulkResult, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string) (map[string]*types.DependencyCounts, error)
-	GetAll(ctx context.Context) (map[string][]*types.Dependency, error)
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
+	GetForIssueID(ctx context.Context, id string) ([]*types.Dependency, error)
 
 	AddWispDependency(ctx context.Context, dep *types.Dependency, actor string) error
 	ListByWispIDs(ctx context.Context, wispIDs []string, filter DepListFilter) (DepBulkResult, error)
@@ -115,6 +113,21 @@ func (u *dependencyUseCaseImpl) ListByIssueIDs(ctx context.Context, issueIDs []s
 	return u.list(ctx, issueIDs, filter, false)
 }
 
+func (u *dependencyUseCaseImpl) GetForIssueID(ctx context.Context, id string) ([]*types.Dependency, error) {
+	if id == "" {
+		return nil, fmt.Errorf("GetForIssueID: id must not be empty")
+	}
+	result, err := u.depRepo.ListByIssueIDs(ctx, []string{id}, DepListOpts{Direction: DepDirectionOut})
+	if err != nil {
+		return nil, fmt.Errorf("GetForIssueID: %w", err)
+	}
+	out := result.Outgoing[id]
+	if out == nil {
+		out = []*types.Dependency{}
+	}
+	return out, nil
+}
+
 func (u *dependencyUseCaseImpl) ListByWispIDs(ctx context.Context, wispIDs []string, filter DepListFilter) (DepBulkResult, error) {
 	return u.list(ctx, wispIDs, filter, true)
 }
@@ -152,14 +165,6 @@ func (u *dependencyUseCaseImpl) counts(ctx context.Context, ids []string, useWis
 	out, err := u.depRepo.CountsByIssueIDs(ctx, ids, DepCountsOpts{UseWispsTable: useWisp})
 	if err != nil {
 		return nil, fmt.Errorf("dep counts: %w", err)
-	}
-	return out, nil
-}
-
-func (u *dependencyUseCaseImpl) GetAll(ctx context.Context) (map[string][]*types.Dependency, error) {
-	out, err := u.depRepo.GetAllAcrossIssuesAndWisps(ctx, DepListOpts{})
-	if err != nil {
-		return nil, fmt.Errorf("GetAll: %w", err)
 	}
 	return out, nil
 }
