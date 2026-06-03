@@ -43,8 +43,6 @@ func readyWorkFilterFromIssueFilter(filter types.IssueFilter) types.WorkFilter {
 		Status:         types.StatusOpen,
 		Limit:          filter.Limit,
 		Offset:         filter.Offset,
-		SortBy:         filter.SortBy,
-		SortDesc:       filter.SortDesc,
 		Labels:         filter.Labels,
 		LabelsAny:      filter.LabelsAny,
 		ExcludeLabels:  filter.ExcludeLabels,
@@ -256,56 +254,47 @@ func issueSnapshot(issues []*types.Issue) string {
 	return b.String()
 }
 
-// sortIssues sorts a slice of issues by the specified field and direction
+func compareIssuesBy(a, b *types.Issue, sortBy string) int {
+	switch sortBy {
+	case "priority":
+		return cmp.Compare(a.Priority, b.Priority)
+	case "created":
+		return b.CreatedAt.Compare(a.CreatedAt)
+	case "updated":
+		return b.UpdatedAt.Compare(a.UpdatedAt)
+	case "closed":
+		if a.ClosedAt == nil && b.ClosedAt == nil {
+			return 0
+		} else if a.ClosedAt == nil {
+			return 1
+		} else if b.ClosedAt == nil {
+			return -1
+		}
+		return b.ClosedAt.Compare(*a.ClosedAt)
+	case "status":
+		return cmp.Compare(a.Status, b.Status)
+	case "id":
+		return utils.NaturalCompareIDs(a.ID, b.ID)
+	case "title":
+		return cmp.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
+	case "type":
+		return cmp.Compare(a.IssueType, b.IssueType)
+	case "assignee":
+		return cmp.Compare(a.Assignee, b.Assignee)
+	}
+	return 0
+}
+
 func sortIssues(issues []*types.Issue, sortBy string, reverse bool) {
 	if sortBy == "" {
 		return
 	}
-
 	slices.SortFunc(issues, func(a, b *types.Issue) int {
-		var result int
-
-		switch sortBy {
-		case "priority":
-			// Lower priority numbers come first (P0 > P1 > P2 > P3 > P4)
-			result = cmp.Compare(a.Priority, b.Priority)
-		case "created":
-			// Default: newest first (descending)
-			result = b.CreatedAt.Compare(a.CreatedAt)
-		case "updated":
-			// Default: newest first (descending)
-			result = b.UpdatedAt.Compare(a.UpdatedAt)
-		case "closed":
-			// Default: newest first (descending)
-			// Handle nil ClosedAt values
-			if a.ClosedAt == nil && b.ClosedAt == nil {
-				result = 0
-			} else if a.ClosedAt == nil {
-				result = 1 // nil sorts last
-			} else if b.ClosedAt == nil {
-				result = -1 // non-nil sorts before nil
-			} else {
-				result = b.ClosedAt.Compare(*a.ClosedAt)
-			}
-		case "status":
-			result = cmp.Compare(a.Status, b.Status)
-		case "id":
-			result = utils.NaturalCompareIDs(a.ID, b.ID)
-		case "title":
-			result = cmp.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
-		case "type":
-			result = cmp.Compare(a.IssueType, b.IssueType)
-		case "assignee":
-			result = cmp.Compare(a.Assignee, b.Assignee)
-		default:
-			// Unknown sort field, no sorting
-			result = 0
-		}
-
+		r := compareIssuesBy(a, b, sortBy)
 		if reverse {
-			return -result
+			return -r
 		}
-		return result
+		return r
 	})
 }
 
@@ -314,51 +303,29 @@ func sortIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, reverse
 		return
 	}
 	slices.SortFunc(items, func(a, b *types.IssueWithCounts) int {
-		if a == nil || a.Issue == nil {
-			if b == nil || b.Issue == nil {
+		ai, bi := issueOrNil(a), issueOrNil(b)
+		if ai == nil {
+			if bi == nil {
 				return 0
 			}
 			return 1
 		}
-		if b == nil || b.Issue == nil {
+		if bi == nil {
 			return -1
 		}
-		var result int
-		switch sortBy {
-		case "priority":
-			result = cmp.Compare(a.Priority, b.Priority)
-		case "created":
-			result = b.CreatedAt.Compare(a.CreatedAt)
-		case "updated":
-			result = b.UpdatedAt.Compare(a.UpdatedAt)
-		case "closed":
-			if a.ClosedAt == nil && b.ClosedAt == nil {
-				result = 0
-			} else if a.ClosedAt == nil {
-				result = 1
-			} else if b.ClosedAt == nil {
-				result = -1
-			} else {
-				result = b.ClosedAt.Compare(*a.ClosedAt)
-			}
-		case "status":
-			result = cmp.Compare(a.Status, b.Status)
-		case "id":
-			result = utils.NaturalCompareIDs(a.ID, b.ID)
-		case "title":
-			result = cmp.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
-		case "type":
-			result = cmp.Compare(a.IssueType, b.IssueType)
-		case "assignee":
-			result = cmp.Compare(a.Assignee, b.Assignee)
-		default:
-			result = 0
-		}
+		r := compareIssuesBy(ai, bi, sortBy)
 		if reverse {
-			return -result
+			return -r
 		}
-		return result
+		return r
 	})
+}
+
+func issueOrNil(iwc *types.IssueWithCounts) *types.Issue {
+	if iwc == nil {
+		return nil
+	}
+	return iwc.Issue
 }
 
 // skipLabelsIssueView wraps IssueWithCounts so the JSON encoder always emits

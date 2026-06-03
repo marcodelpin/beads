@@ -9,6 +9,22 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+type predBundle struct {
+	snippet string
+	args    []any
+}
+
+func buildDescendantsPred(table, alias string, clauses []string, args []any) predBundle {
+	if len(clauses) == 0 {
+		return predBundle{}
+	}
+	return predBundle{
+		snippet: fmt.Sprintf(" AND %s.id IN (SELECT id FROM %s WHERE %s)",
+			alias, table, strings.Join(clauses, " AND ")),
+		args: args,
+	}
+}
+
 func (r *issueSQLRepositoryImpl) GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error) {
 	levelFilter := filter
 	levelFilter.ParentID = nil
@@ -42,30 +58,13 @@ func (r *issueSQLRepositoryImpl) GetDescendants(ctx context.Context, rootID stri
 		}
 	}
 
-	issueAllowedID := ""
-	if len(issueWhereClauses) > 0 {
-		issueAllowedID = fmt.Sprintf(" AND i.id IN (SELECT id FROM issues WHERE %s)",
-			strings.Join(issueWhereClauses, " AND "))
-	}
-	wispAllowedID := ""
-	if walkWisps && len(wispWhereClauses) > 0 {
-		wispAllowedID = fmt.Sprintf(" AND w.id IN (SELECT id FROM wisps WHERE %s)",
-			strings.Join(wispWhereClauses, " AND "))
+	issuePred := buildDescendantsPred("issues", "i", issueWhereClauses, issueArgs)
+	var wispPred predBundle
+	if walkWisps {
+		wispPred = buildDescendantsPred("wisps", "w", wispWhereClauses, wispArgs)
 	}
 
-	cte := buildDescendantsCTE(walkWisps, issueAllowedID, wispAllowedID)
-
-	var allArgs []any
-	allArgs = append(allArgs, rootID)
-	allArgs = append(allArgs, issueArgs...)
-	if walkWisps {
-		allArgs = append(allArgs, rootID)
-		allArgs = append(allArgs, wispArgs...)
-	}
-	allArgs = append(allArgs, issueArgs...)
-	if walkWisps {
-		allArgs = append(allArgs, wispArgs...)
-	}
+	cte, allArgs := buildDescendantsCTE(rootID, walkWisps, issuePred, wispPred)
 
 	rows, err := r.runner.QueryContext(ctx, cte, allArgs...)
 	if err != nil {
@@ -92,8 +91,9 @@ func (r *issueSQLRepositoryImpl) GetDescendants(ctx context.Context, rootID stri
 	return reassembleBySrc(page.ordered, issuesByID, wispsByID), nil
 }
 
-func buildDescendantsCTE(walkWisps bool, issueAllowedID, wispAllowedID string) string {
+func buildDescendantsCTE(rootID string, walkWisps bool, issuePred, wispPred predBundle) (string, []any) {
 	var b strings.Builder
+	var args []any
 	b.WriteString("WITH RECURSIVE descendants AS (\n")
 
 	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src
@@ -101,7 +101,9 @@ func buildDescendantsCTE(walkWisps bool, issueAllowedID, wispAllowedID string) s
     JOIN dependencies d ON d.issue_id = i.id
     WHERE d.type = 'parent-child'
       AND COALESCE(d.depends_on_issue_id, d.depends_on_wisp_id) = ?
-      %s`, issueAllowedID)
+      %s`, issuePred.snippet)
+	args = append(args, rootID)
+	args = append(args, issuePred.args...)
 
 	if walkWisps {
 		b.WriteString("\n    UNION ALL\n")
@@ -110,7 +112,9 @@ func buildDescendantsCTE(walkWisps bool, issueAllowedID, wispAllowedID string) s
     JOIN wisp_dependencies wd ON wd.issue_id = w.id
     WHERE wd.type = 'parent-child'
       AND COALESCE(wd.depends_on_issue_id, wd.depends_on_wisp_id) = ?
-      %s`, wispAllowedID)
+      %s`, wispPred.snippet)
+		args = append(args, rootID)
+		args = append(args, wispPred.args...)
 	}
 
 	b.WriteString("\n    UNION ALL\n")
@@ -120,7 +124,8 @@ func buildDescendantsCTE(walkWisps bool, issueAllowedID, wispAllowedID string) s
     JOIN dependencies d ON d.issue_id = i.id
     JOIN descendants p ON COALESCE(d.depends_on_issue_id, d.depends_on_wisp_id) = p.id
     WHERE d.type = 'parent-child'
-      %s`, issueAllowedID)
+      %s`, issuePred.snippet)
+	args = append(args, issuePred.args...)
 
 	if walkWisps {
 		b.WriteString("\n    UNION ALL\n")
@@ -129,9 +134,10 @@ func buildDescendantsCTE(walkWisps bool, issueAllowedID, wispAllowedID string) s
     JOIN wisp_dependencies wd ON wd.issue_id = w.id
     JOIN descendants p ON COALESCE(wd.depends_on_issue_id, wd.depends_on_wisp_id) = p.id
     WHERE wd.type = 'parent-child'
-      %s`, wispAllowedID)
+      %s`, wispPred.snippet)
+		args = append(args, wispPred.args...)
 	}
 
 	b.WriteString("\n)\nSELECT id, src FROM descendants\n")
-	return b.String()
+	return b.String(), args
 }

@@ -1365,9 +1365,7 @@ type WorkFilter struct {
 	MetadataFields map[string]string // Top-level key=value equality; AND semantics (all must match)
 	HasMetadataKey string            // Existence check: issue has this top-level key set (non-null)
 
-	Offset   int
-	SortBy   string
-	SortDesc bool
+	Offset int
 }
 
 // StaleFilter is used to filter stale issue queries

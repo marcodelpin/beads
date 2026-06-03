@@ -45,20 +45,46 @@ func (c listFilterConfig) isInfra(t string) bool {
 	return c.infraSet[t]
 }
 
-func loadDirectListFilterConfig(ctx context.Context, store storage.DoltStorage) (listFilterConfig, error) {
-	var cfg listFilterConfig
-	if store == nil {
-		cfg.customTypes = config.GetCustomTypesFromYAML()
-		return cfg, nil
-	}
+type listFilterConfigSource interface {
+	GetCustomStatuses(ctx context.Context) ([]types.CustomStatus, error)
+	GetCustomTypes(ctx context.Context) ([]string, error)
+	GetInfraTypes(ctx context.Context) (map[string]bool, error)
+}
 
-	detailed, err := store.GetCustomStatusesDetailed(ctx)
+type directConfigSource struct{ store storage.DoltStorage }
+
+func (d directConfigSource) GetCustomStatuses(ctx context.Context) ([]types.CustomStatus, error) {
+	return d.store.GetCustomStatusesDetailed(ctx)
+}
+func (d directConfigSource) GetCustomTypes(ctx context.Context) ([]string, error) {
+	return d.store.GetCustomTypes(ctx)
+}
+func (d directConfigSource) GetInfraTypes(ctx context.Context) (map[string]bool, error) {
+	return d.store.GetInfraTypes(ctx), nil
+}
+
+type proxiedConfigSource struct{ uw uow.UnitOfWork }
+
+func (p proxiedConfigSource) GetCustomStatuses(ctx context.Context) ([]types.CustomStatus, error) {
+	return p.uw.ConfigUseCase().GetCustomStatuses(ctx)
+}
+func (p proxiedConfigSource) GetCustomTypes(ctx context.Context) ([]string, error) {
+	return p.uw.ConfigUseCase().GetCustomTypes(ctx)
+}
+func (p proxiedConfigSource) GetInfraTypes(ctx context.Context) (map[string]bool, error) {
+	return p.uw.ConfigUseCase().GetInfraTypes(ctx)
+}
+
+func loadListFilterConfig(ctx context.Context, src listFilterConfigSource) (listFilterConfig, error) {
+	var cfg listFilterConfig
+
+	statuses, err := src.GetCustomStatuses(ctx)
 	if err != nil {
 		return cfg, fmt.Errorf("load custom statuses: %w", err)
 	}
-	cfg.customStatuses = detailed
+	cfg.customStatuses = statuses
 
-	ct, err := store.GetCustomTypes(ctx)
+	ct, err := src.GetCustomTypes(ctx)
 	if err != nil {
 		return cfg, fmt.Errorf("load custom types: %w", err)
 	}
@@ -68,44 +94,26 @@ func loadDirectListFilterConfig(ctx context.Context, store storage.DoltStorage) 
 		cfg.customTypes = config.GetCustomTypesFromYAML()
 	}
 
-	if infraSet := store.GetInfraTypes(ctx); len(infraSet) > 0 {
+	infraSet, err := src.GetInfraTypes(ctx)
+	if err != nil {
+		return cfg, fmt.Errorf("load infra types: %w", err)
+	}
+	if len(infraSet) > 0 {
 		cfg.infraSet = infraSet
 	}
 
 	return cfg, nil
 }
 
+func loadDirectListFilterConfig(ctx context.Context, store storage.DoltStorage) (listFilterConfig, error) {
+	if store == nil {
+		return listFilterConfig{customTypes: config.GetCustomTypesFromYAML()}, nil
+	}
+	return loadListFilterConfig(ctx, directConfigSource{store: store})
+}
+
 func loadProxiedListFilterConfig(ctx context.Context, uw uow.UnitOfWork) (listFilterConfig, error) {
-	var cfg listFilterConfig
-
-	statuses, err := uw.ConfigUseCase().GetCustomStatuses(ctx)
-	if err != nil {
-		return cfg, fmt.Errorf("load custom statuses: %w", err)
-	}
-
-	cfg.customStatuses = statuses
-
-	ct, err := uw.ConfigUseCase().GetCustomTypes(ctx)
-	if err != nil {
-		return cfg, fmt.Errorf("load custom types: %w", err)
-	}
-
-	if len(ct) > 0 {
-		cfg.customTypes = ct
-	} else {
-		cfg.customTypes = config.GetCustomTypesFromYAML()
-	}
-
-	infraSet, err := uw.ConfigUseCase().GetInfraTypes(ctx)
-	if err != nil {
-		return cfg, fmt.Errorf("load infra types: %w", err)
-	}
-
-	if len(infraSet) > 0 {
-		cfg.infraSet = infraSet
-	}
-
-	return cfg, nil
+	return loadListFilterConfig(ctx, proxiedConfigSource{uw: uw})
 }
 
 func buildListFilter(in listInput, cfg listFilterConfig) (types.IssueFilter, error) {

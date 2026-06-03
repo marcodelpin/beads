@@ -1,8 +1,11 @@
 package db
 
 import (
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 type clauseBuf struct {
@@ -72,4 +75,35 @@ func boolFlag(c *clauseBuf, col string, p *bool) {
 
 func nullOrEmpty(c *clauseBuf, col string) {
 	c.and("(" + col + " IS NULL OR " + col + " = '')")
+}
+
+func (c *clauseBuf) metadata(hasKey string, fields map[string]string) error {
+	var err error
+	c.where, c.args, err = appendMetadataClauses(c.where, c.args, hasKey, fields)
+	return err
+}
+
+func appendMetadataClauses(where []string, args []any, hasKey string, fields map[string]string) ([]string, []any, error) {
+	if hasKey != "" {
+		if err := storage.ValidateMetadataKey(hasKey); err != nil {
+			return nil, nil, err
+		}
+		where = append(where, "JSON_EXTRACT(metadata, ?) IS NOT NULL")
+		args = append(args, storage.JSONMetadataPath(hasKey))
+	}
+	if len(fields) > 0 {
+		keys := make([]string, 0, len(fields))
+		for k := range fields {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if err := storage.ValidateMetadataKey(k); err != nil {
+				return nil, nil, err
+			}
+			where = append(where, "JSON_UNQUOTE(JSON_EXTRACT(metadata, ?)) = ?")
+			args = append(args, storage.JSONMetadataPath(k), fields[k])
+		}
+	}
+	return where, args, nil
 }

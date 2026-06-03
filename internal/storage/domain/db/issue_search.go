@@ -582,11 +582,10 @@ func buildIssueFilterClauses(query string, filter types.IssueFilter, tables filt
 			time.Now().UTC().Format(time.RFC3339), types.StatusClosed)
 	}
 
-	where, args, err := appendMetadataClauses(c.where, c.args, filter.HasMetadataKey, filter.MetadataFields)
-	if err != nil {
+	if err := c.metadata(filter.HasMetadataKey, filter.MetadataFields); err != nil {
 		return nil, nil, err
 	}
-	return where, args, nil
+	return c.where, c.args, nil
 }
 
 func looksLikeIssueID(query string) bool {
@@ -605,4 +604,187 @@ func looksLikeIssueID(query string) bool {
 			return true
 		}
 	}) == -1
+}
+
+type idSrcPage struct {
+	ordered  []idSrcRef
+	issueIDs []string
+	wispIDs  []string
+}
+
+func scanIDSrcPage(rows *sql.Rows, strictCrossTable bool) (idSrcPage, error) {
+	defer func() { _ = rows.Close() }()
+
+	var page idSrcPage
+	seen := make(map[string]string)
+	for rows.Next() {
+		var id, src string
+		if err := rows.Scan(&id, &src); err != nil {
+			return idSrcPage{}, fmt.Errorf("scan: %w", err)
+		}
+		if prev, dup := seen[id]; dup {
+			if strictCrossTable && prev != src {
+				return idSrcPage{}, fmt.Errorf("id %q exists in both issues and wisps", id)
+			}
+			continue
+		}
+		seen[id] = src
+		page.ordered = append(page.ordered, idSrcRef{id: id, src: src})
+		switch src {
+		case "i":
+			page.issueIDs = append(page.issueIDs, id)
+		case "w":
+			page.wispIDs = append(page.wispIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return idSrcPage{}, fmt.Errorf("rows: %w", err)
+	}
+	return page, nil
+}
+
+func orderByIDs[T any](ids []string, byID map[string]T) []T {
+	out := make([]T, 0, len(ids))
+	for _, id := range ids {
+		if v, ok := byID[id]; ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func reassembleBySrc[T comparable](ordered []idSrcRef, issues, wisps map[string]T) []T {
+	var zero T
+	out := make([]T, 0, len(ordered))
+	for _, p := range ordered {
+		var v T
+		switch p.src {
+		case "i":
+			v = issues[p.id]
+		case "w":
+			v = wisps[p.id]
+		}
+		if v != zero {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (p *idSrcPage) trimToLimit(limit int) bool {
+	if limit <= 0 || len(p.ordered) <= limit {
+		return false
+	}
+	p.ordered = p.ordered[:limit]
+	p.issueIDs = p.issueIDs[:0]
+	p.wispIDs = p.wispIDs[:0]
+	for _, r := range p.ordered {
+		switch r.src {
+		case "i":
+			p.issueIDs = append(p.issueIDs, r.id)
+		case "w":
+			p.wispIDs = append(p.wispIDs, r.id)
+		}
+	}
+	return true
+}
+
+type idSrcRef struct{ id, src string }
+
+type sortDef struct {
+	column     string
+	defaultDir string
+}
+
+var sortDefs = map[string]sortDef{
+	"":         {"priority", "ASC"},
+	"priority": {"priority", "ASC"},
+	"created":  {"created_at", "DESC"},
+	"updated":  {"updated_at", "DESC"},
+	"closed":   {"closed_at", "DESC"},
+	"status":   {"status", "ASC"},
+	"type":     {"issue_type", "ASC"},
+	"assignee": {"assignee", "ASC"},
+	"title":    {"title", "ASC"},
+}
+
+const unionSortColumnsSQL = `priority AS sort_priority,
+	created_at AS sort_created,
+	updated_at AS sort_updated,
+	closed_at AS sort_closed,
+	status AS sort_status,
+	issue_type AS sort_type,
+	assignee AS sort_assignee,
+	LOWER(title) AS sort_title`
+
+func isGoSideSort(sortBy string) bool {
+	return sortBy == "id"
+}
+
+func flipDir(dir string) string {
+	if dir == "ASC" {
+		return "DESC"
+	}
+	return "ASC"
+}
+
+func orderBySQLForColumns(sortBy string, sortDesc bool, col func(sortKey string) string) string {
+	if isGoSideSort(sortBy) {
+		return ""
+	}
+	def, ok := sortDefs[sortBy]
+	if !ok {
+		def = sortDefs[""]
+		sortBy = ""
+	}
+	dir := def.defaultDir
+	if sortDesc {
+		dir = flipDir(dir)
+	}
+	if sortBy == "" || sortBy == "priority" {
+		return fmt.Sprintf("ORDER BY %s %s, %s DESC, %s ASC", col("priority"), dir, col("created"), col("id"))
+	}
+	return fmt.Sprintf("ORDER BY %s %s, %s ASC", col(sortBy), dir, col("id"))
+}
+
+func unionOrderBySQL(sortBy string, sortDesc bool) string {
+	return orderBySQLForColumns(sortBy, sortDesc, func(k string) string {
+		if k == "id" {
+			return "id"
+		}
+		return "sort_" + k
+	})
+}
+
+func orderBySQL(sortBy string, sortDesc bool, prefix string) string {
+	qual := ""
+	if prefix != "" {
+		qual = prefix + "."
+	}
+	return orderBySQLForColumns(sortBy, sortDesc, func(k string) string {
+		switch k {
+		case "id":
+			return qual + "id"
+		case "title":
+			return "LOWER(" + qual + "title)"
+		}
+		return qual + sortDefs[k].column
+	})
+}
+
+func limitOffsetSQL(limit, offset int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if offset > 0 {
+		return fmt.Sprintf("LIMIT %d OFFSET %d", limit+1, offset)
+	}
+	return fmt.Sprintf("LIMIT %d", limit+1)
+}
+
+func applyN1Overflow[T any](items []T, limit int) ([]T, bool) {
+	if limit <= 0 || len(items) <= limit {
+		return items, false
+	}
+	return items[:limit], true
 }

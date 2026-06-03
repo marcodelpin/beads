@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -43,17 +44,16 @@ func buildReadyWorkOrder(policy types.SortPolicy) readyWorkOrder {
 }
 
 func readyWorkExcludeTypes(extra []types.IssueType) []types.IssueType {
-	excludeTypes := []types.IssueType{
+	out := []types.IssueType{
 		types.IssueType("merge-request"),
 		types.TypeGate,
 		types.TypeMolecule,
-		types.TypeMessage,
-		types.IssueType("agent"),
-		types.IssueType("role"),
-		types.IssueType("rig"),
 	}
-	seen := make(map[types.IssueType]bool, len(excludeTypes)+len(extra))
-	for _, t := range excludeTypes {
+	for _, t := range domain.DefaultInfraTypes() {
+		out = append(out, types.IssueType(t))
+	}
+	seen := make(map[types.IssueType]bool, len(out)+len(extra))
+	for _, t := range out {
 		seen[t] = true
 	}
 	for _, t := range extra {
@@ -61,9 +61,9 @@ func readyWorkExcludeTypes(extra []types.IssueType) []types.IssueType {
 			continue
 		}
 		seen[t] = true
-		excludeTypes = append(excludeTypes, t)
+		out = append(out, t)
 	}
-	return excludeTypes
+	return out
 }
 
 func (r *issueSQLRepositoryImpl) buildReadyWorkPredicates(ctx context.Context, filter types.WorkFilter, tables filterTables) (*readyWorkPredicates, error) {

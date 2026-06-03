@@ -42,22 +42,30 @@ func openProxiedListUOW(ctx context.Context) (uow.UnitOfWork, error) {
 	return uw, nil
 }
 
-func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) error {
+func openAndPrepare(ctx context.Context, in listInput) (uow.UnitOfWork, types.IssueFilter, error) {
 	uw, err := openProxiedListUOW(ctx)
+	if err != nil {
+		return nil, types.IssueFilter{}, err
+	}
+	cfg, err := loadProxiedListFilterConfig(ctx, uw)
+	if err != nil {
+		uw.Close(ctx)
+		return nil, types.IssueFilter{}, err
+	}
+	filter, err := buildListFilter(in, cfg)
+	if err != nil {
+		uw.Close(ctx)
+		return nil, types.IssueFilter{}, err
+	}
+	return uw, filter, nil
+}
+
+func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) error {
+	uw, filter, err := openAndPrepare(ctx, in)
 	if err != nil {
 		return err
 	}
 	defer uw.Close(ctx)
-
-	cfg, err := loadProxiedListFilterConfig(ctx, uw)
-	if err != nil {
-		return err
-	}
-
-	filter, err := buildListFilter(in, cfg)
-	if err != nil {
-		return err
-	}
 
 	if in.prettyFormat && in.parentID != "" {
 		if in.offset > 0 {
@@ -129,21 +137,11 @@ func gatherProxiedHierarchical(ctx context.Context, uw uow.UnitOfWork, parentID 
 }
 
 func runListProxiedReady(_ *cobra.Command, ctx context.Context, in listInput) error {
-	uw, err := openProxiedListUOW(ctx)
+	uw, filter, err := openAndPrepare(ctx, in)
 	if err != nil {
 		return err
 	}
 	defer uw.Close(ctx)
-
-	cfg, err := loadProxiedListFilterConfig(ctx, uw)
-	if err != nil {
-		return err
-	}
-
-	filter, err := buildListFilter(in, cfg)
-	if err != nil {
-		return err
-	}
 
 	wf := readyWorkFilterFromIssueFilter(filter)
 
@@ -171,22 +169,11 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 		return errors.New("--format under --proxied-server --watch is not supported")
 	}
 
-	var filter types.IssueFilter
-	if err := func() error {
-		uw, err := openProxiedListUOW(ctx)
-		if err != nil {
-			return err
-		}
-		defer uw.Close(ctx)
-		cfg, err := loadProxiedListFilterConfig(ctx, uw)
-		if err != nil {
-			return err
-		}
-		filter, err = buildListFilter(in, cfg)
-		return err
-	}(); err != nil {
+	uw, filter, err := openAndPrepare(ctx, in)
+	if err != nil {
 		return err
 	}
+	uw.Close(ctx)
 
 	load := func() ([]*types.Issue, bool, map[string][]*types.Dependency, error) {
 		uw, err := openProxiedListUOW(ctx)
@@ -281,17 +268,11 @@ func emitProxiedListJSONResult(iwc []*types.IssueWithCounts, in listInput, hasMo
 }
 
 func loadDepsForIssues(ctx context.Context, uw uow.UnitOfWork, issues []*types.Issue) (map[string][]*types.Dependency, error) {
-	depsByIssueID := make(map[string][]*types.Dependency, len(issues))
-	for _, issue := range issues {
-		deps, err := uw.DependencyUseCase().GetForIssueID(ctx, issue.ID)
-		if err != nil {
-			return nil, fmt.Errorf("load dependencies for %s: %w", issue.ID, err)
-		}
-		if len(deps) > 0 {
-			depsByIssueID[issue.ID] = deps
-		}
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = issue.ID
 	}
-	return depsByIssueID, nil
+	return uw.DependencyUseCase().GetForIssueIDs(ctx, ids)
 }
 
 func renderProxiedListText(ctx context.Context, uw uow.UnitOfWork, issues []*types.Issue, in listInput, truncated bool) error {

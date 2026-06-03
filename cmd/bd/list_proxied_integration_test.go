@@ -456,7 +456,6 @@ func TestProxiedServerList(t *testing.T) {
 	})
 
 	t.Run("format_digraph", func(t *testing.T) {
-		// digraph format exercises the GetForIssueID per-issue dep fetch.
 		out := bdProxiedList(t, bd, p, "--format", "digraph", "--all", "--no-pager")
 		if out == "" {
 			t.Error("digraph output should not be empty")
@@ -464,8 +463,6 @@ func TestProxiedServerList(t *testing.T) {
 	})
 
 	t.Run("format_dot", func(t *testing.T) {
-		// dot format also exercises GetForIssueID; --flat disables tree mode
-		// which would otherwise override --format.
 		out := bdProxiedList(t, bd, p, "--format", "dot", "--flat", "--all", "--no-pager")
 		if !strings.Contains(out, "digraph") {
 			t.Errorf("dot output should contain 'digraph' header, got: %s", out)
