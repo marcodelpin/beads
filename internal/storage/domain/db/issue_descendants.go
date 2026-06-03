@@ -40,7 +40,7 @@ func (r *issueSQLRepositoryImpl) GetDescendants(ctx context.Context, rootID stri
 	if err != nil {
 		return nil, fmt.Errorf("descendants: wisp_dependencies probe: %w", err)
 	}
-	walkWisps := wispDepsExist
+	walkWisps := wispDepsExist && !filter.SkipWisps
 	if walkWisps {
 		empty, probeErr := r.wispsTableEmptyOrMissing(ctx)
 		if probeErr != nil {

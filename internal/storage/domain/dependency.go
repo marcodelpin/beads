@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -117,11 +118,22 @@ func (u *dependencyUseCaseImpl) GetForIssueIDs(ctx context.Context, ids []string
 	if len(ids) == 0 {
 		return map[string][]*types.Dependency{}, nil
 	}
-	result, err := u.depRepo.ListByIssueIDs(ctx, ids, DepListOpts{Direction: DepDirectionOut})
+	issueRes, err := u.depRepo.ListByIssueIDs(ctx, ids, DepListOpts{Direction: DepDirectionOut})
 	if err != nil {
 		return nil, fmt.Errorf("GetForIssueIDs: %w", err)
 	}
-	return result.Outgoing, nil
+	out := issueRes.Outgoing
+	if out == nil {
+		out = make(map[string][]*types.Dependency)
+	}
+	wispRes, err := u.depRepo.ListByIssueIDs(ctx, ids, DepListOpts{Direction: DepDirectionOut, UseWispsTable: true})
+	if err != nil && !dberrors.IsTableNotExist(err) {
+		return nil, fmt.Errorf("GetForIssueIDs (wisps): %w", err)
+	}
+	for id, deps := range wispRes.Outgoing {
+		out[id] = append(out[id], deps...)
+	}
+	return out, nil
 }
 
 func (u *dependencyUseCaseImpl) ListByWispIDs(ctx context.Context, wispIDs []string, filter DepListFilter) (DepBulkResult, error) {

@@ -774,6 +774,9 @@ func orderBySQL(sortBy string, sortDesc bool, prefix string) string {
 
 func limitOffsetSQL(limit, offset int) string {
 	if limit <= 0 {
+		if offset > 0 {
+			return fmt.Sprintf("LIMIT 18446744073709551615 OFFSET %d", offset)
+		}
 		return ""
 	}
 	if offset > 0 {
