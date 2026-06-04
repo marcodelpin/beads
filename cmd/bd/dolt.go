@@ -239,6 +239,68 @@ func printDivergedHistoryGuidance(operation string) {
 	fmt.Fprintln(os.Stderr, "existing remote instead of 'bd init' to avoid divergent histories.")
 }
 
+// Explicit `bd dolt push` resilience (sys-t9tlx). The push command used
+// context.Background() with no deadline, so a slow or unreachable Dolt remote
+// could block `bd dolt push` indefinitely — and a backgrounded invocation that
+// was later reaped then looked like a spurious exit 0. These defaults bound
+// each attempt and retry transient failures with exponential backoff so a slow
+// remote degrades to an explicit error instead of hanging.
+const (
+	doltPushTimeoutDefault = 90 * time.Second
+	doltPushRetriesDefault = 2
+)
+
+// runDoltPushWithRetry executes push under a bounded per-attempt timeout,
+// retrying transient failures with exponential backoff. Non-transient failures
+// (remote-not-found, diverged-history) are returned immediately without retry.
+// A goroutine guard bounds push implementations that do not honor ctx, so the
+// command never hangs past the timeout (same pattern as maybeAutoPush's
+// pushWithContext). Tunable via dolt.push-timeout / dolt.push-retries.
+func runDoltPushWithRetry(parent context.Context, label string, push func(ctx context.Context) error) error {
+	timeout := config.GetDuration("dolt.push-timeout")
+	if timeout <= 0 {
+		timeout = doltPushTimeoutDefault
+	}
+	retries := config.GetInt("dolt.push-retries")
+	if retries < 0 {
+		retries = doltPushRetriesDefault
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s, ...
+			fmt.Fprintf(os.Stderr, "Retrying %s (attempt %d/%d after %s)...\n", label, attempt+1, retries+1, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-parent.Done():
+				return parent.Err()
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		errCh := make(chan error, 1) // buffered so the guard goroutine never leaks if we time out
+		go func() { errCh <- push(ctx) }()
+
+		select {
+		case err := <-errCh:
+			cancel()
+			if err == nil {
+				return nil
+			}
+			// Non-transient failures are not retryable — surface immediately.
+			if isRemoteNotFoundErr(err) || isDivergedHistoryErr(err) {
+				return err
+			}
+			lastErr = err
+		case <-ctx.Done():
+			cancel()
+			lastErr = fmt.Errorf("push timed out after %s (remote may be slow or unreachable): %w", timeout, ctx.Err())
+		}
+	}
+	return lastErr
+}
+
 var doltPushCmd = &cobra.Command{
 	Use:   "push",
 	Short: "Push commits to Dolt remote",
@@ -264,7 +326,9 @@ The remote must already exist (see 'bd dolt remote add').`,
 		remote, _ := cmd.Flags().GetString("remote")
 		if remote != "" {
 			fmt.Printf("Pushing to Dolt remote %q...\n", remote)
-			if err := st.PushRemote(ctx, remote, force); err != nil {
+			if err := runDoltPushWithRetry(ctx, fmt.Sprintf("push to %q", remote), func(c context.Context) error {
+				return st.PushRemote(c, remote, force)
+			}); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				if isRemoteNotFoundErr(err) {
 					fmt.Fprintf(os.Stderr, "\nRemote %q is not configured.\n", remote)
@@ -286,12 +350,12 @@ The remote must already exist (see 'bd dolt remote add').`,
 		}
 		fmt.Println("Pushing to Dolt remote...")
 
-		var pushErr error
-		if force {
-			pushErr = st.ForcePush(ctx)
-		} else {
-			pushErr = st.Push(ctx)
-		}
+		pushErr := runDoltPushWithRetry(ctx, "push", func(c context.Context) error {
+			if force {
+				return st.ForcePush(c)
+			}
+			return st.Push(c)
+		})
 		if pushErr != nil {
 			if isRemoteNotFoundErr(pushErr) {
 				printNoRemoteGuidance()
