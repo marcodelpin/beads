@@ -313,7 +313,18 @@ func IsColocatedJJGit() bool {
 // Secondary workspaces have .jj/repo as a file (pointer to the primary's repo
 // directory) rather than a directory.
 func JJSecondaryWorkspaceRoot() (string, bool) {
-	jjRoot, err := GetJujutsuRoot()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	return JJSecondaryWorkspaceRootFrom(cwd)
+}
+
+// JJSecondaryWorkspaceRootFrom is the path-aware variant of
+// JJSecondaryWorkspaceRoot: it resolves the jujutsu root starting from startDir
+// rather than the current working directory.
+func JJSecondaryWorkspaceRootFrom(startDir string) (string, bool) {
+	jjRoot, err := getJujutsuRootFrom(startDir)
 	if err != nil {
 		return "", false
 	}
@@ -337,7 +348,18 @@ func IsJJSecondaryWorkspace() bool {
 //
 // Returns an error if not in a jj secondary workspace or the path cannot be resolved.
 func GetJJPrimaryWorkspaceRoot() (string, error) {
-	jjRoot, err := GetJujutsuRoot()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current directory: %w", err)
+	}
+	return GetJJPrimaryWorkspaceRootFrom(cwd)
+}
+
+// GetJJPrimaryWorkspaceRootFrom is the path-aware variant of
+// GetJJPrimaryWorkspaceRoot: it resolves the jujutsu root starting from startDir
+// rather than the current working directory.
+func GetJJPrimaryWorkspaceRootFrom(startDir string) (string, error) {
+	jjRoot, err := getJujutsuRootFrom(startDir)
 	if err != nil {
 		return "", err
 	}
@@ -391,8 +413,19 @@ func GetJujutsuRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get current directory: %w", err)
 	}
+	return getJujutsuRootFrom(cwd)
+}
 
-	dir := cwd
+// getJujutsuRootFrom walks up from startDir to find the jujutsu root, applying
+// the same .git-boundary rule as GetJujutsuRoot. startDir is made absolute first
+// so that a relative input (e.g. ".") walks correctly rather than stalling at
+// filepath.Dir(".") == ".".
+func getJujutsuRootFrom(startDir string) (string, error) {
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve start directory: %w", err)
+	}
+
 	for {
 		jjPath := filepath.Join(dir, ".jj")
 		if info, err := os.Stat(jjPath); err == nil && info.IsDir() {

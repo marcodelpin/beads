@@ -394,3 +394,70 @@ func TestDetectUserRole_JJSecondaryWorkspace(t *testing.T) {
 		t.Errorf("expected no role-not-configured warning, got stderr:\n%s", stderr)
 	}
 }
+
+// TestDetectUserRole_JJSecondaryWorkspace_NonCwdRepoPath verifies that the jj
+// secondary resolution honors the repoPath argument rather than the current
+// working directory. Here cwd is a neutral, non-jj directory and the secondary
+// workspace is passed explicitly as repoPath — the role must still resolve from
+// the primary's git config, with no deprecation warning. (GH#2950)
+func TestDetectUserRole_JJSecondaryWorkspace_NonCwdRepoPath(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	tmpDir, _ = filepath.EvalSymlinks(tmpDir) // macOS /var -> /private/var
+	primaryDir := filepath.Join(tmpDir, "primary")
+	secondaryDir := filepath.Join(tmpDir, "secondary")
+	if err := os.MkdirAll(filepath.Join(primaryDir, ".jj", "repo"), 0750); err != nil {
+		t.Fatalf("failed to create primary .jj/repo: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(secondaryDir, ".jj"), 0750); err != nil {
+		t.Fatalf("failed to create secondary .jj: %v", err)
+	}
+	repoTarget := filepath.Join(primaryDir, ".jj", "repo")
+	if err := os.WriteFile(filepath.Join(secondaryDir, ".jj", "repo"), []byte(repoTarget+"\n"), 0640); err != nil {
+		t.Fatalf("failed to write secondary .jj/repo: %v", err)
+	}
+
+	// cwd is a neutral directory that is NOT a jj workspace. This is what
+	// distinguishes this test from TestDetectUserRole_JJSecondaryWorkspace:
+	// the jj resolution must come from repoPath, not cwd.
+	neutralDir := filepath.Join(tmpDir, "neutral")
+	if err := os.MkdirAll(neutralDir, 0750); err != nil {
+		t.Fatalf("failed to create neutral dir: %v", err)
+	}
+	if err := os.Chdir(neutralDir); err != nil {
+		t.Fatalf("failed to chdir into neutral dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+		git.ResetCaches()
+	})
+	git.ResetCaches()
+
+	orig := gitCommandRunner
+	gitCommandRunner = func(repo string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(repo, "primary") {
+			return []byte("maintainer\n"), nil
+		}
+		return nil, errors.New("not a git repository")
+	}
+	t.Cleanup(func() { gitCommandRunner = orig })
+
+	var role UserRole
+	stderr := captureStderr(t, func() {
+		role, err = DetectUserRole(secondaryDir)
+	})
+
+	if err != nil {
+		t.Fatalf("DetectUserRole error = %v", err)
+	}
+	if role != Maintainer {
+		t.Fatalf("expected %s, got %s", Maintainer, role)
+	}
+	if strings.Contains(stderr, "not configured") {
+		t.Errorf("expected no role-not-configured warning, got stderr:\n%s", stderr)
+	}
+}

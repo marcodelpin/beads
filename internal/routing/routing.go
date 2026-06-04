@@ -44,13 +44,10 @@ func DetectUserRole(repoPath string) (UserRole, error) {
 	// fails even when the primary workspace has beads.role set. Resolve the
 	// primary workspace and retry there, then run the remaining fallbacks
 	// against the primary's git repo since the secondary has no usable git
-	// context. (GH#2950)
-	//
-	// NOTE: this jj resolution is based on the current working directory, not
-	// repoPath. That is correct for the current callers (both pass "."); a
-	// future caller passing a non-cwd repoPath would need this revisited.
-	if _, isSecondary := git.JJSecondaryWorkspaceRoot(); isSecondary {
-		if primaryRoot, err := git.GetJJPrimaryWorkspaceRoot(); err == nil {
+	// context. The resolution is anchored at repoPath (not cwd) so it stays
+	// consistent with the git-config lookup above. (GH#2950)
+	if _, isSecondary := git.JJSecondaryWorkspaceRootFrom(repoPath); isSecondary {
+		if primaryRoot, err := git.GetJJPrimaryWorkspaceRootFrom(repoPath); err == nil {
 			if role, ok := roleFromGitConfig(primaryRoot); ok {
 				return role, nil
 			}
