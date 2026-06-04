@@ -38,9 +38,9 @@ func (s *testSuite) searchCountsDepAndRDep() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDs: []string{"bd-srxc-dr-mid"}, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.Equal(2, out[0].DependencyCount, "outgoing blocks count")
-	s.Equal(1, out[0].DependentCount, "incoming blocks count")
+	s.Require().Len(out.Items, 1)
+	s.Equal(2, out.Items[0].DependencyCount, "outgoing blocks count")
+	s.Equal(1, out.Items[0].DependentCount, "incoming blocks count")
 }
 
 func (s *testSuite) searchCountsComment() {
@@ -58,8 +58,8 @@ func (s *testSuite) searchCountsComment() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDs: []string{"bd-srxc-cmt-1"}, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.Equal(3, out[0].CommentCount)
+	s.Require().Len(out.Items, 1)
+	s.Equal(3, out.Items[0].CommentCount)
 }
 
 func (s *testSuite) searchCountsParent() {
@@ -75,9 +75,9 @@ func (s *testSuite) searchCountsParent() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDs: []string{"bd-srxc-par-child"}, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.Require().NotNil(out[0].Parent)
-	s.Equal("bd-srxc-par-parent", *out[0].Parent)
+	s.Require().Len(out.Items, 1)
+	s.Require().NotNil(out.Items[0].Parent)
+	s.Equal("bd-srxc-par-parent", *out.Items[0].Parent)
 }
 
 func (s *testSuite) searchCountsMergesTables() {
@@ -139,8 +139,8 @@ func (s *testSuite) searchCountsLabelHydration() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDs: []string{"bd-srxc-lbl-1"}, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.ElementsMatch([]string{"alpha", "beta"}, out[0].Issue.Labels)
+	s.Require().Len(out.Items, 1)
+	s.ElementsMatch([]string{"alpha", "beta"}, out.Items[0].Issue.Labels)
 }
 
 func (s *testSuite) searchCountsSkipLabels() {
@@ -153,8 +153,8 @@ func (s *testSuite) searchCountsSkipLabels() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDs: []string{"bd-srxc-nolbl-1"}, SkipWisps: true, SkipLabels: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 1)
-	s.Empty(out[0].Issue.Labels)
+	s.Require().Len(out.Items, 1)
+	s.Empty(out.Items[0].Issue.Labels)
 }
 
 func (s *testSuite) searchCountsSortOrder() {
@@ -172,10 +172,10 @@ func (s *testSuite) searchCountsSortOrder() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDPrefix: "bd-srxc-srt-", SkipWisps: true})
 	s.Require().NoError(err)
-	s.Require().Len(out, 3)
-	s.Equal("bd-srxc-srt-hi", out[0].Issue.ID)
-	s.Equal("bd-srxc-srt-mid", out[1].Issue.ID)
-	s.Equal("bd-srxc-srt-lo", out[2].Issue.ID)
+	s.Require().Len(out.Items, 3)
+	s.Equal("bd-srxc-srt-hi", out.Items[0].Issue.ID)
+	s.Equal("bd-srxc-srt-mid", out.Items[1].Issue.ID)
+	s.Equal("bd-srxc-srt-lo", out.Items[2].Issue.ID)
 }
 
 func (s *testSuite) searchCountsLimit() {
@@ -188,7 +188,7 @@ func (s *testSuite) searchCountsLimit() {
 	out, err := r.SearchAcrossIssuesAndWispsWithCounts(s.Ctx(), "",
 		types.IssueFilter{IDPrefix: "bd-srxc-lim-", Limit: 3, SkipWisps: true})
 	s.Require().NoError(err)
-	s.Len(out, 3)
+	s.Len(out.Items, 3)
 }
 
 func (s *testSuite) searchCountsCollision() {
@@ -205,9 +205,9 @@ func (s *testSuite) searchCountsCollision() {
 	s.Contains(err.Error(), "exists in both issues and wisps")
 }
 
-func iwcIDs(items []*types.IssueWithCounts) []string {
-	out := make([]string, 0, len(items))
-	for _, iwc := range items {
+func iwcIDs(page domain.SearchCountsPage) []string {
+	out := make([]string, 0, len(page.Items))
+	for _, iwc := range page.Items {
 		if iwc == nil || iwc.Issue == nil {
 			continue
 		}

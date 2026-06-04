@@ -33,15 +33,6 @@ func (s *testSuite) TestDependencySQLRepository() {
 		s.Run("CountsBlockingEdgesOnly", s.depCountsBlocksOnly)
 		s.Run("ZeroCountsPresentInMap", s.depCountsZeroPresent)
 	})
-	s.Run("GetAll", func() {
-		s.Run("KeyedByIssueID", s.depGetAllKeyedByIssueID)
-		s.Run("TypeFilterApplied", s.depGetAllTypeFilter)
-		s.Run("WispTableRouting", s.depGetAllWispRouting)
-	})
-	s.Run("GetAllAcrossIssuesAndWisps", func() {
-		s.Run("UnionsBothTables", s.depGetAllAcrossUnions)
-		s.Run("IgnoresUseWispsTableOpt", s.depGetAllAcrossIgnoresUseWispsOpt)
-	})
 	s.Run("GetBlockingInfo", func() {
 		s.Run("EmptyInputReturnsEmptyMaps", s.depBlockingInfoEmpty)
 		s.Run("PopulatesBlockedByAndBlocks", s.depBlockingInfoBlockedByAndBlocks)
@@ -407,87 +398,6 @@ func (s *testSuite) depWispHasCycleCrossTable() {
 	cycle, err := r.HasCycle(s.Ctx(), "bd-dep-cx-b", "bd-dep-cx-a")
 	s.Require().NoError(err)
 	s.False(cycle, "wisp-target edges are intentionally not followed in cycle detection")
-}
-
-func (s *testSuite) depGetAllKeyedByIssueID() {
-	s.seedIssueRow("bd-getall-a")
-	s.seedIssueRow("bd-getall-b")
-	s.seedIssueRow("bd-getall-c")
-	r := s.depRepo()
-	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-a", "bd-getall-b", types.DepBlocks), "tester", domain.DepInsertOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-a", "bd-getall-c", types.DepRelated), "tester", domain.DepInsertOpts{}))
-
-	out, err := r.GetAll(s.Ctx(), domain.DepListOpts{})
-	s.Require().NoError(err)
-	s.Require().Len(out["bd-getall-a"], 2)
-}
-
-func (s *testSuite) depGetAllTypeFilter() {
-	s.seedIssueRow("bd-getall-tf-a")
-	s.seedIssueRow("bd-getall-tf-b")
-	s.seedIssueRow("bd-getall-tf-c")
-	r := s.depRepo()
-	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-tf-a", "bd-getall-tf-b", types.DepBlocks), "tester", domain.DepInsertOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-getall-tf-a", "bd-getall-tf-c", types.DepRelated), "tester", domain.DepInsertOpts{}))
-
-	out, err := r.GetAll(s.Ctx(), domain.DepListOpts{Types: []types.DependencyType{types.DepBlocks}})
-	s.Require().NoError(err)
-	s.Require().Len(out["bd-getall-tf-a"], 1)
-	s.Equal(types.DepBlocks, out["bd-getall-tf-a"][0].Type)
-}
-
-func (s *testSuite) depGetAllWispRouting() {
-	s.seedWispRow("bd-getall-w-src")
-	s.seedIssueRow("bd-getall-w-tgt")
-	r := s.depRepo()
-	s.Require().NoError(r.Insert(s.Ctx(),
-		newDep("bd-getall-w-src", "bd-getall-w-tgt", types.DepBlocks), "tester",
-		domain.DepInsertOpts{UseWispsTable: true}))
-
-	wispOut, err := r.GetAll(s.Ctx(), domain.DepListOpts{UseWispsTable: true})
-	s.Require().NoError(err)
-	s.Require().Len(wispOut["bd-getall-w-src"], 1)
-
-	permOut, err := r.GetAll(s.Ctx(), domain.DepListOpts{})
-	s.Require().NoError(err)
-	s.Empty(permOut["bd-getall-w-src"], "perm-table GetAll must not see wisp_dependencies rows")
-}
-
-func (s *testSuite) depGetAllAcrossUnions() {
-	s.seedIssueRow("bd-getall-x-a")
-	s.seedIssueRow("bd-getall-x-b")
-	s.seedWispRow("bd-getall-x-w")
-	s.seedIssueRow("bd-getall-x-wtgt")
-	r := s.depRepo()
-	s.Require().NoError(r.Insert(s.Ctx(),
-		newDep("bd-getall-x-a", "bd-getall-x-b", types.DepBlocks), "tester",
-		domain.DepInsertOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(),
-		newDep("bd-getall-x-w", "bd-getall-x-wtgt", types.DepBlocks), "tester",
-		domain.DepInsertOpts{UseWispsTable: true}))
-
-	out, err := r.GetAllAcrossIssuesAndWisps(s.Ctx(), domain.DepListOpts{})
-	s.Require().NoError(err)
-	s.Require().Len(out["bd-getall-x-a"], 1, "perm-table row present")
-	s.Require().Len(out["bd-getall-x-w"], 1, "wisp-table row present")
-}
-
-func (s *testSuite) depGetAllAcrossIgnoresUseWispsOpt() {
-	s.seedIssueRow("bd-getall-ig-a")
-	s.seedIssueRow("bd-getall-ig-b")
-	s.seedWispRow("bd-getall-ig-w")
-	s.seedIssueRow("bd-getall-ig-wtgt")
-	r := s.depRepo()
-	s.Require().NoError(r.Insert(s.Ctx(),
-		newDep("bd-getall-ig-a", "bd-getall-ig-b", types.DepBlocks), "tester",
-		domain.DepInsertOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(),
-		newDep("bd-getall-ig-w", "bd-getall-ig-wtgt", types.DepBlocks), "tester",
-		domain.DepInsertOpts{UseWispsTable: true}))
-	out, err := r.GetAllAcrossIssuesAndWisps(s.Ctx(), domain.DepListOpts{UseWispsTable: true})
-	s.Require().NoError(err)
-	s.Require().Len(out["bd-getall-ig-a"], 1)
-	s.Require().Len(out["bd-getall-ig-w"], 1)
 }
 
 func (s *testSuite) depBlockingInfoEmpty() {

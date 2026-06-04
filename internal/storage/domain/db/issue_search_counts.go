@@ -10,76 +10,116 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
 
-func (r *issueSQLRepositoryImpl) searchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
-	limit := filter.Limit
-
+func (r *issueSQLRepositoryImpl) searchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) (domain.SearchCountsPage, error) {
 	wispDepsExist, err := r.optionalTableExists(ctx, "wisp_dependencies")
 	if err != nil {
-		return nil, fmt.Errorf("search issues with counts: wisp dependency probe: %w", err)
+		return domain.SearchCountsPage{}, fmt.Errorf("search issues with counts: wisp dependency probe: %w", err)
 	}
 
 	if filter.Ephemeral != nil && *filter.Ephemeral {
 		empty, probeErr := r.wispsTableEmptyOrMissing(ctx)
 		if probeErr != nil {
-			return nil, fmt.Errorf("search issues with counts: ephemeral wisp probe: %w", probeErr)
+			return domain.SearchCountsPage{}, fmt.Errorf("search issues with counts: ephemeral wisp probe: %w", probeErr)
 		}
 		if empty || !wispDepsExist {
-			return nil, nil
+			return domain.SearchCountsPage{}, nil
 		}
 		wisps, err := r.runFilterSearchQuery(ctx, query, filter, wispsFilterTables, true)
 		if err != nil {
-			return nil, err
+			return domain.SearchCountsPage{}, err
 		}
-		return finishSearchIssuesWithCounts(wisps, limit), nil
-	}
-
-	out, err := r.runFilterSearchQuery(ctx, query, filter, issuesFilterTables, wispDepsExist)
-	if err != nil {
-		return nil, err
+		return finishSearchCountsPage(wisps, filter.Limit), nil
 	}
 
 	if filter.SkipWisps {
-		return finishSearchIssuesWithCounts(out, limit), nil
+		out, err := r.runFilterSearchQuery(ctx, query, filter, issuesFilterTables, wispDepsExist)
+		if err != nil {
+			return domain.SearchCountsPage{}, err
+		}
+		return finishSearchCountsPage(out, filter.Limit), nil
 	}
 
 	empty, probeErr := r.wispsTableEmptyOrMissing(ctx)
 	if probeErr != nil {
-		return nil, fmt.Errorf("search issues with counts: wisp probe: %w", probeErr)
+		return domain.SearchCountsPage{}, fmt.Errorf("search issues with counts: wisp probe: %w", probeErr)
 	}
 	if empty || !wispDepsExist {
-		return finishSearchIssuesWithCounts(out, limit), nil
+		out, err := r.runFilterSearchQuery(ctx, query, filter, issuesFilterTables, wispDepsExist)
+		if err != nil {
+			return domain.SearchCountsPage{}, err
+		}
+		return finishSearchCountsPage(out, filter.Limit), nil
 	}
 
-	wisps, err := r.runFilterSearchQuery(ctx, query, filter, wispsFilterTables, true)
+	return r.searchUnionWithCounts(ctx, query, filter, wispDepsExist)
+}
+
+func (r *issueSQLRepositoryImpl) searchUnionWithCounts(ctx context.Context, query string, filter types.IssueFilter, wispDepsExist bool) (domain.SearchCountsPage, error) {
+	iSub, iArgs, err := r.buildUnionSubquery(query, filter, issuesFilterTables, "i")
 	if err != nil {
-		if dberrors.IsTableNotExist(err) {
-			return finishSearchIssuesWithCounts(out, limit), nil
-		}
+		return domain.SearchCountsPage{}, fmt.Errorf("search union with counts (issues): %w", err)
+	}
+	wSub, wArgs, err := r.buildUnionSubquery(query, filter, wispsFilterTables, "w")
+	if err != nil {
+		return domain.SearchCountsPage{}, fmt.Errorf("search union with counts (wisps): %w", err)
+	}
+
+	outerOrderBy := unionOrderBySQL(filter.SortBy, filter.SortDesc)
+	outerLimit := limitOffsetSQL(filter.Limit, filter.Offset)
+
+	//nolint:gosec // G201: subqueries built from hardcoded table names and ? placeholders.
+	unionSQL := fmt.Sprintf("SELECT id, src FROM (%s UNION ALL %s) merged %s %s",
+		iSub, wSub, outerOrderBy, outerLimit)
+
+	args := make([]any, 0, len(iArgs)+len(wArgs))
+	args = append(args, iArgs...)
+	args = append(args, wArgs...)
+
+	rows, err := r.runner.QueryContext(ctx, unionSQL, args...)
+	if err != nil {
+		return domain.SearchCountsPage{}, fmt.Errorf("search union with counts: %w", err)
+	}
+	page, err := scanIDSrcPage(rows, true)
+	if err != nil {
+		return domain.SearchCountsPage{}, fmt.Errorf("search union with counts: %w", err)
+	}
+	hasMore := page.trimToLimit(filter.Limit)
+
+	issuesByID, err := r.fetchCountsByIDs(ctx, page.issueIDs, issuesFilterTables, wispDepsExist, filter.SkipLabels)
+	if err != nil {
+		return domain.SearchCountsPage{}, fmt.Errorf("search union with counts (hydrate issues): %w", err)
+	}
+	wispsByID, err := r.fetchCountsByIDs(ctx, page.wispIDs, wispsFilterTables, true, filter.SkipLabels)
+	if err != nil && !dberrors.IsTableNotExist(err) {
+		return domain.SearchCountsPage{}, fmt.Errorf("search union with counts (hydrate wisps): %w", err)
+	}
+
+	out := reassembleBySrc(page.ordered, issuesByID, wispsByID)
+	return domain.SearchCountsPage{Items: out, HasMore: hasMore}, nil
+}
+
+func (r *issueSQLRepositoryImpl) fetchCountsByIDs(ctx context.Context, ids []string, tables filterTables, includeWispReverseDeps bool, skipLabels bool) (map[string]*types.IssueWithCounts, error) {
+	if len(ids) == 0 {
+		return map[string]*types.IssueWithCounts{}, nil
+	}
+	placeholders, args := buildInPlaceholders(ids)
+	whereSQL := fmt.Sprintf("WHERE i.id IN (%s)", placeholders)
+	items, err := r.runSearchQuery(ctx, tables, whereSQL, "", "", args, includeWispReverseDeps, skipLabels)
+	if err != nil {
 		return nil, err
 	}
-	if len(wisps) == 0 {
-		return finishSearchIssuesWithCounts(out, limit), nil
-	}
-
-	seen := make(map[string]struct{}, len(out))
-	for _, iwc := range out {
-		if iwc != nil && iwc.Issue != nil {
-			seen[iwc.Issue.ID] = struct{}{}
-		}
-	}
-	for _, w := range wisps {
-		if w == nil || w.Issue == nil {
+	out := make(map[string]*types.IssueWithCounts, len(items))
+	for _, iwc := range items {
+		if iwc == nil || iwc.Issue == nil {
 			continue
 		}
-		if _, dup := seen[w.Issue.ID]; dup {
-			return nil, fmt.Errorf("search issues with counts: id %q exists in both issues and wisps", w.Issue.ID)
-		}
-		out = append(out, w)
+		out[iwc.Issue.ID] = iwc
 	}
-	return finishSearchIssuesWithCounts(out, limit), nil
+	return out, nil
 }
 
 func (r *issueSQLRepositoryImpl) runFilterSearchQuery(ctx context.Context, query string, filter types.IssueFilter, tables filterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
@@ -91,11 +131,8 @@ func (r *issueSQLRepositoryImpl) runFilterSearchQuery(ctx context.Context, query
 	if len(whereClauses) > 0 {
 		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
-	limitSQL := ""
-	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
-	}
-	const orderBy = "ORDER BY i.priority ASC, i.created_at DESC, i.id ASC"
+	orderBy := orderBySQL(filter.SortBy, filter.SortDesc, "i")
+	limitSQL := limitOffsetSQL(filter.Limit, filter.Offset)
 	return r.runSearchQuery(ctx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, filter.SkipLabels)
 }
 
@@ -226,15 +263,17 @@ func (r *issueSQLRepositoryImpl) optionalTableExists(ctx context.Context, table 
 	}
 }
 
-var readyWorkIssueColumns = func() string {
-	raw := strings.ReplaceAll(issueSelectColumns, "\n", " ")
+var readyWorkIssueColumns = qualifyColumns(issueSelectColumns, "i.")
+
+func qualifyColumns(columns, prefix string) string {
+	raw := strings.ReplaceAll(columns, "\n", " ")
 	raw = strings.ReplaceAll(raw, "\t", " ")
 	parts := strings.Split(raw, ",")
 	for i, p := range parts {
-		parts[i] = "i." + strings.TrimSpace(p)
+		parts[i] = prefix + strings.TrimSpace(p)
 	}
 	return strings.Join(parts, ", ")
-}()
+}
 
 const readyWorkDepJSONObject = `JSON_OBJECT(
 	'issue_id', issue_id,
@@ -251,18 +290,8 @@ func scanReadyWorkRowWithCounts(rows *sql.Rows) (*types.IssueWithCounts, error) 
 	var parentID sql.NullString
 	var depCount, rdepCount, commentCount sql.NullInt64
 
-	composite := &compositeReadyRow{
-		row: rows,
-		extra: []any{
-			&labelsJSON,
-			&depCount,
-			&rdepCount,
-			&commentCount,
-			&parentID,
-			&depsJSON,
-		},
-	}
-	issue, err := scanIssue(composite)
+	issue, err := scanIssue(rows,
+		&labelsJSON, &depCount, &rdepCount, &commentCount, &parentID, &depsJSON)
 	if err != nil {
 		return nil, fmt.Errorf("scan issue with counts: %w", err)
 	}
@@ -297,44 +326,7 @@ func scanReadyWorkRowWithCounts(rows *sql.Rows) (*types.IssueWithCounts, error) 
 	return iwc, nil
 }
 
-type compositeReadyRow struct {
-	row   *sql.Rows
-	extra []any
-}
-
-func (c *compositeReadyRow) Scan(dest ...any) error {
-	combined := make([]any, 0, len(dest)+len(c.extra))
-	combined = append(combined, dest...)
-	combined = append(combined, c.extra...)
-	return c.row.Scan(combined...)
-}
-
-func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, limit int) []*types.IssueWithCounts {
-	sortSearchIssuesWithCounts(items)
-	if limit > 0 && len(items) > limit {
-		return items[:limit]
-	}
-	return items
-}
-
-func sortSearchIssuesWithCounts(items []*types.IssueWithCounts) {
-	if len(items) <= 1 {
-		return
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		a, b := items[i], items[j]
-		if a == nil || a.Issue == nil {
-			return false
-		}
-		if b == nil || b.Issue == nil {
-			return true
-		}
-		if a.Issue.Priority != b.Issue.Priority {
-			return a.Issue.Priority < b.Issue.Priority
-		}
-		if !a.Issue.CreatedAt.Equal(b.Issue.CreatedAt) {
-			return a.Issue.CreatedAt.After(b.Issue.CreatedAt)
-		}
-		return a.Issue.ID < b.Issue.ID
-	})
+func finishSearchCountsPage(items []*types.IssueWithCounts, limit int) domain.SearchCountsPage {
+	trimmed, hasMore := applyN1Overflow(items, limit)
+	return domain.SearchCountsPage{Items: trimmed, HasMore: hasMore}
 }
