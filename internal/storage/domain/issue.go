@@ -29,10 +29,21 @@ type IssueSQLRepository interface {
 	Exists(ctx context.Context, id string, opts IssueTableOpts) (bool, error)
 	CountForPrefix(ctx context.Context, prefix string, opts IssueTableOpts) (int, error)
 	NextCounterID(ctx context.Context, prefix string) (int, error)
-	SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
-	SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)
-	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
-	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
+	SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error)
+	SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
+	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
+	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
+	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
+}
+
+type SearchPage struct {
+	Items   []*types.Issue
+	HasMore bool
+}
+
+type SearchCountsPage struct {
+	Items   []*types.IssueWithCounts
+	HasMore bool
 }
 
 type CreateIssueParams struct {
@@ -118,10 +129,11 @@ type IssueUseCase interface {
 	GetIssue(ctx context.Context, id string) (*types.Issue, error)
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
 	ListIssues(ctx context.Context, filter types.IssueFilter, proj ListProjection) (ListResult, error)
-	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
-	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)
-	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
-	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
+	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error)
+	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
+	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
+	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
+	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
 
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
@@ -353,34 +365,45 @@ func (u *issueUseCaseImpl) list(ctx context.Context, filter types.IssueFilter, p
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
+func (u *issueUseCaseImpl) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error) {
 	out, err := u.issueRepo.SearchAcrossIssuesAndWisps(ctx, query, filter)
 	if err != nil {
-		return nil, fmt.Errorf("SearchIssues: %w", err)
+		return SearchPage{}, fmt.Errorf("SearchIssues: %w", err)
 	}
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
+func (u *issueUseCaseImpl) SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error) {
 	out, err := u.issueRepo.SearchAcrossIssuesAndWispsWithCounts(ctx, query, filter)
 	if err != nil {
-		return nil, fmt.Errorf("SearchIssuesWithCounts: %w", err)
+		return SearchCountsPage{}, fmt.Errorf("SearchIssuesWithCounts: %w", err)
 	}
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
+func (u *issueUseCaseImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error) {
 	out, err := u.issueRepo.GetReadyWork(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("GetReadyWork: %w", err)
+		return SearchPage{}, fmt.Errorf("GetReadyWork: %w", err)
 	}
 	return out, nil
 }
 
-func (u *issueUseCaseImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
+func (u *issueUseCaseImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error) {
 	out, err := u.issueRepo.GetReadyWorkWithCounts(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("GetReadyWorkWithCounts: %w", err)
+		return SearchCountsPage{}, fmt.Errorf("GetReadyWorkWithCounts: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error) {
+	if rootID == "" {
+		return nil, fmt.Errorf("GetDescendants: rootID must not be empty")
+	}
+	out, err := u.issueRepo.GetDescendants(ctx, rootID, filter)
+	if err != nil {
+		return nil, fmt.Errorf("GetDescendants: %w", err)
 	}
 	return out, nil
 }

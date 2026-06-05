@@ -56,7 +56,7 @@ func (s *testSuite) readyCountsDepAndRDep() {
 	out, err := r.GetReadyWorkWithCounts(s.Ctx(), types.WorkFilter{})
 	s.Require().NoError(err)
 	var midIWC *types.IssueWithCounts
-	for _, iwc := range out {
+	for _, iwc := range out.Items {
 		if iwc.Issue.ID == "bd-rdyc-dr-mid" {
 			midIWC = iwc
 			break
@@ -81,7 +81,7 @@ func (s *testSuite) readyCountsComment() {
 	out, err := r.GetReadyWorkWithCounts(s.Ctx(), types.WorkFilter{})
 	s.Require().NoError(err)
 	var got *types.IssueWithCounts
-	for _, iwc := range out {
+	for _, iwc := range out.Items {
 		if iwc.Issue.ID == "bd-rdyc-cmt-1" {
 			got = iwc
 			break
@@ -104,7 +104,7 @@ func (s *testSuite) readyCountsParent() {
 	out, err := r.GetReadyWorkWithCounts(s.Ctx(), types.WorkFilter{})
 	s.Require().NoError(err)
 	var got *types.IssueWithCounts
-	for _, iwc := range out {
+	for _, iwc := range out.Items {
 		if iwc.Issue.ID == "bd-rdyc-par-child" {
 			got = iwc
 			break
@@ -178,7 +178,7 @@ func (s *testSuite) readyCountsLabelHydration() {
 	out, err := r.GetReadyWorkWithCounts(s.Ctx(), types.WorkFilter{})
 	s.Require().NoError(err)
 	var got *types.IssueWithCounts
-	for _, iwc := range out {
+	for _, iwc := range out.Items {
 		if iwc.Issue.ID == "bd-rdyc-lbl-1" {
 			got = iwc
 			break
@@ -221,7 +221,7 @@ func (s *testSuite) readyCountsLimit() {
 	pri := 1
 	out, err := r.GetReadyWorkWithCounts(s.Ctx(), types.WorkFilter{Priority: &pri, Limit: 3, SortPolicy: types.SortPolicyPriority})
 	s.Require().NoError(err)
-	s.Len(out, 3)
+	s.Len(out.Items, 3)
 }
 
 func (s *testSuite) readyCountsCollision() {
