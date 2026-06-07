@@ -9,6 +9,7 @@ import (
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
@@ -291,6 +292,107 @@ func TestApplyConfigDefaults_TestModeBlocksProdPort(t *testing.T) {
 
 	if cfg.ServerPort != 1 {
 		t.Errorf("BEADS_TEST_MODE=1 with BEADS_DOLT_PORT=3307 should force port 1, got %d", cfg.ServerPort)
+	}
+}
+
+// TestApplyConfigDefaults_RemoteHostDefaultsSharedPort verifies that a remote
+// dolt_server_host with no resolved port falls back to the well-known shared
+// server port instead of staying 0 (bda-i69). A fresh clone has metadata.json
+// with dolt_server_host set but no gitignored .beads/dolt-server.port yet;
+// dialing host:0 can never succeed because auto-start is local-only.
+func TestApplyConfigDefaults_RemoteHostDefaultsSharedPort(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origServerPort := os.Getenv("BEADS_DOLT_SERVER_PORT")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		restoreEnv := func(key, val string) {
+			if val == "" {
+				os.Unsetenv(key)
+			} else {
+				os.Setenv(key, val)
+			}
+		}
+		restoreEnv("BEADS_TEST_MODE", origTestMode)
+		restoreEnv("BEADS_DOLT_SERVER_PORT", origServerPort)
+		restoreEnv("BEADS_DOLT_PORT", origPort)
+	}()
+
+	os.Unsetenv("BEADS_TEST_MODE")
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
+
+	cfg := &Config{ServerHost: "dolt.example.test"} // remote host, no port anywhere
+	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != doltserver.DefaultSharedServerPort {
+		t.Errorf("remote host with unresolved port should default to shared port %d, got %d",
+			doltserver.DefaultSharedServerPort, cfg.ServerPort)
+	}
+}
+
+// TestApplyConfigDefaults_RemoteHostTestModeStillSentinel verifies that the
+// remote-host shared-port default (bda-i69) does NOT bypass the test-mode
+// guard: with BEADS_TEST_MODE=1 an unresolved port must still become the
+// sentinel 1, never the production shared port.
+func TestApplyConfigDefaults_RemoteHostTestModeStillSentinel(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origServerPort := os.Getenv("BEADS_DOLT_SERVER_PORT")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		restoreEnv := func(key, val string) {
+			if val == "" {
+				os.Unsetenv(key)
+			} else {
+				os.Setenv(key, val)
+			}
+		}
+		restoreEnv("BEADS_TEST_MODE", origTestMode)
+		restoreEnv("BEADS_DOLT_SERVER_PORT", origServerPort)
+		restoreEnv("BEADS_DOLT_PORT", origPort)
+	}()
+
+	os.Setenv("BEADS_TEST_MODE", "1")
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
+
+	cfg := &Config{ServerHost: "dolt.example.test"}
+	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != 1 {
+		t.Errorf("test mode with remote host and unresolved port should force sentinel 1, got %d", cfg.ServerPort)
+	}
+}
+
+// TestApplyConfigDefaults_LocalHostKeepsZeroPort verifies that the bda-i69
+// remote-host default does not change local-host behavior: an unresolved port
+// on a local host stays 0 so auto-start can allocate an ephemeral port
+// (GH#2098, GH#2372).
+func TestApplyConfigDefaults_LocalHostKeepsZeroPort(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origServerPort := os.Getenv("BEADS_DOLT_SERVER_PORT")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		restoreEnv := func(key, val string) {
+			if val == "" {
+				os.Unsetenv(key)
+			} else {
+				os.Setenv(key, val)
+			}
+		}
+		restoreEnv("BEADS_TEST_MODE", origTestMode)
+		restoreEnv("BEADS_DOLT_SERVER_PORT", origServerPort)
+		restoreEnv("BEADS_DOLT_PORT", origPort)
+	}()
+
+	os.Unsetenv("BEADS_TEST_MODE")
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
+
+	cfg := &Config{ServerHost: "127.0.0.1"}
+	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != 0 {
+		t.Errorf("local host with unresolved port should keep 0 (ephemeral auto-start), got %d", cfg.ServerPort)
 	}
 }
 
