@@ -5,13 +5,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // runContributorWizard guides the user through OSS contributor setup
@@ -153,7 +153,7 @@ func runContributorWizard(ctx context.Context, store storage.DoltStorage) error 
 		}
 
 		// Initialize git repo in planning directory
-		cmd := exec.Command("git", "init")
+		cmd := execx.GitCommand("init")
 		cmd.Dir = planningPath
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to initialize git in planning repo: %w", err)
@@ -189,11 +189,11 @@ Created by: bd init --contributor
 		}
 
 		// Initial commit in planning repo
-		cmd = exec.Command("git", "add", ".")
+		cmd = execx.GitCommand("add", ".")
 		cmd.Dir = planningPath
 		_ = cmd.Run()
 
-		cmd = exec.Command("git", "commit", "-m", "Initial commit: beads planning repository")
+		cmd = execx.GitCommand("commit", "-m", "Initial commit: beads planning repository")
 		cmd.Dir = planningPath
 		_ = cmd.Run()
 
@@ -315,7 +315,7 @@ func autoConfigureForkContributor(ctx context.Context, store storage.DoltStorage
 		if err := os.MkdirAll(planningPath, 0750); err != nil {
 			return fmt.Errorf("failed to create planning repo: %w", err)
 		}
-		gitInit := exec.Command("git", "init")
+		gitInit := execx.GitCommand("init")
 		gitInit.Dir = planningPath
 		if err := gitInit.Run(); err != nil {
 			return fmt.Errorf("failed to init git in planning repo: %w", err)
@@ -343,7 +343,7 @@ func autoConfigureForkContributor(ctx context.Context, store storage.DoltStorage
 		return fmt.Errorf("failed to set sync.remote: %w", err)
 	}
 
-	_ = exec.Command("git", "config", "beads.role", "contributor").Run()
+	_ = execx.GitCommand("config", "beads.role", "contributor").Run()
 
 	if configPath, err := config.FindConfigYAMLPath(); err == nil {
 		if addErr := config.AddRepo(configPath, planningPath); addErr != nil && !strings.Contains(addErr.Error(), "already exists") {
@@ -367,7 +367,7 @@ func autoConfigureForkContributor(ctx context.Context, store storage.DoltStorage
 
 // detectForkSetup checks if we're in a fork by looking for upstream remote
 func detectForkSetup() (isFork bool, upstreamURL string) {
-	cmd := exec.Command("git", "remote", "get-url", "upstream")
+	cmd := execx.GitCommand("remote", "get-url", "upstream")
 	output, err := cmd.Output()
 	if err != nil {
 		// No upstream remote found
@@ -381,7 +381,7 @@ func detectForkSetup() (isFork bool, upstreamURL string) {
 // checkPushAccess determines if we have push access to origin
 func checkPushAccess() (hasPush bool, originURL string) {
 	// Get origin URL
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := execx.GitCommand("remote", "get-url", "origin")
 	output, err := cmd.Output()
 	if err != nil {
 		return false, ""

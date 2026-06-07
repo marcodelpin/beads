@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/git"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // isGitWorktree detects if the current directory is in a git worktree.
@@ -19,7 +19,7 @@ func isGitWorktree() bool {
 // gitRevParse runs git rev-parse with the given flag and returns the trimmed output.
 // This is a helper for CLI utilities that need git command execution.
 func gitRevParse(flag string) string {
-	out, err := exec.Command("git", "rev-parse", flag).Output()
+	out, err := execx.GitCommand("rev-parse", flag).Output()
 	if err != nil {
 		return ""
 	}

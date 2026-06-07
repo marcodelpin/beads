@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/pprof"
@@ -36,6 +35,7 @@ import (
 	"github.com/steveyegge/beads/internal/utils"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 var (
@@ -477,7 +477,7 @@ func getActorWithGit() string {
 	}
 
 	// Try git config user.name - the natural default for a git-native tool
-	if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.name").Output(); err == nil {
 		if gitUser := strings.TrimSpace(string(out)); gitUser != "" {
 			return gitUser
 		}
@@ -502,7 +502,7 @@ func getOwner() string {
 	}
 
 	// Fall back to git config user.email - the natural default
-	if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.email").Output(); err == nil {
 		if gitEmail := strings.TrimSpace(string(out)); gitEmail != "" {
 			return gitEmail
 		}

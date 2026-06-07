@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
@@ -931,7 +931,7 @@ func captureMemoryProvenance() memoryProvenance {
 		prov.Path = cwd
 	}
 	// Best-effort git HEAD; ignore errors (not in a repo, git missing, etc.)
-	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+	if out, err := execx.GitCommand("rev-parse", "HEAD").Output(); err == nil {
 		prov.Commit = strings.TrimSpace(string(out))
 	}
 	return prov

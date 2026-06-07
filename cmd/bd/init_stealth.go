@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // setupStealthMode configures git settings for stealth operation.
@@ -46,7 +46,7 @@ func setupStealthMode(verbose bool) error {
 func setupGitExclude(verbose bool) error {
 	// Find the common .git directory (handles worktrees correctly - GH#1053)
 	// Use --git-common-dir to get the main repo's .git, not the worktree's .git/worktrees/<name>
-	gitDir, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
+	gitDir, err := execx.GitCommand("rev-parse", "--git-common-dir").Output()
 	if err != nil {
 		return fmt.Errorf("not a git repository")
 	}
@@ -118,7 +118,7 @@ func setupGitExclude(verbose bool) error {
 // preventing beads/Claude files from appearing in upstream PRs.
 func setupForkExclude(verbose bool) error {
 	// Use --git-common-dir to get main repo's .git, not worktree's (GH#1053)
-	gitDir, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
+	gitDir, err := execx.GitCommand("rev-parse", "--git-common-dir").Output()
 	if err != nil {
 		return fmt.Errorf("not a git repository")
 	}
@@ -221,7 +221,7 @@ func promptForkExclude(upstreamURL string, quiet bool) (bool, error) {
 // Use setupGitExclude instead for new code.
 func setupGlobalGitIgnore(homeDir string, projectPath string, verbose bool) error {
 	// Check if user already has a global gitignore file configured
-	cmd := exec.Command("git", "config", "--global", "core.excludesfile")
+	cmd := execx.GitCommand("config", "--global", "core.excludesfile")
 	output, err := cmd.Output()
 
 	var ignorePath string

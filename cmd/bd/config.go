@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 var configCmd = &cobra.Command{
@@ -170,7 +170,7 @@ var configSetCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "Error: invalid role %q (valid values: maintainer, contributor)\n", value)
 				os.Exit(1)
 			}
-			cmd := exec.Command("git", "config", "beads.role", value) //nolint:gosec // value is validated against allowlist above
+			cmd := execx.GitCommand("config", "beads.role", value) //nolint:gosec // value is validated against allowlist above
 			if err := cmd.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error setting beads.role in git config: %v\n", err)
 				os.Exit(1)
@@ -251,7 +251,7 @@ var configGetCmd = &cobra.Command{
 
 		// beads.role is stored in git config, not SQLite (GH#1531).
 		if key == "beads.role" {
-			cmd := exec.Command("git", "config", "--get", "beads.role")
+			cmd := execx.GitCommand("config", "--get", "beads.role")
 			output, err := cmd.Output()
 			value := strings.TrimSpace(string(output))
 			if err != nil {
@@ -451,7 +451,7 @@ var configUnsetCmd = &cobra.Command{
 
 		// beads.role is stored in git config, not the database (GH#1531).
 		if key == "beads.role" {
-			gitCmd := exec.Command("git", "config", "--unset", "beads.role")
+			gitCmd := execx.GitCommand("config", "--unset", "beads.role")
 			if err := gitCmd.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error unsetting beads.role in git config: %v\n", err)
 				os.Exit(1)
@@ -721,7 +721,7 @@ Examples:
 
 		// Phase 5: Write git config keys
 		for _, p := range gitPairs {
-			cmd := exec.Command("git", "config", "beads.role", p.value) //nolint:gosec // value is validated against allowlist above
+			cmd := execx.GitCommand("config", "beads.role", p.value) //nolint:gosec // value is validated against allowlist above
 			if err := cmd.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error setting %s in git config: %v\n", p.key, err)
 				os.Exit(1)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -26,6 +25,7 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"golang.org/x/term"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 var initCmd = &cobra.Command{
@@ -670,7 +670,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// Skip when BEADS_DIR is explicitly set — the caller may be creating a
 		// standalone .beads/ directory outside any git repo.
 		if !isGitRepo() && !hasExplicitBeadsDir {
-			gitInitCmd := exec.Command("git", "init")
+			gitInitCmd := execx.GitCommand("init")
 			if output, err := gitInitCmd.CombinedOutput(); err != nil {
 				FatalError("failed to initialize git repository: %v\n%s", err, output)
 			}
@@ -1508,42 +1508,42 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// untracked files or dirty working tree in a clean room setup.
 		// Only runs when not stealth, in a git repo, and using local storage.
 		if !stealth && isGitRepo() && useLocalBeads {
-			gitAddCmd := exec.Command("git", "add", ".beads/")
+			gitAddCmd := execx.GitCommand("add", ".beads/")
 			if _, addErr := gitAddCmd.CombinedOutput(); addErr == nil {
 				// Also stage the agents file if it exists
 				agentsFileToStage := config.SafeAgentsFile()
 				if _, statErr := os.Stat(agentsFileToStage); statErr == nil {
-					agentsCmd := exec.Command("git", "add", agentsFileToStage)
+					agentsCmd := execx.GitCommand("add", agentsFileToStage)
 					_ = agentsCmd.Run()
 				}
 				// Also stage Claude settings if created by init
 				claudeSettingsPath := filepath.Join(".claude", "settings.json")
 				if _, statErr := os.Stat(claudeSettingsPath); statErr == nil {
-					claudeCmd := exec.Command("git", "add", claudeSettingsPath)
+					claudeCmd := execx.GitCommand("add", claudeSettingsPath)
 					_ = claudeCmd.Run()
 				}
 				// Also stage CLAUDE.md if created by setup
 				if _, statErr := os.Stat("CLAUDE.md"); statErr == nil {
-					claudeMdCmd := exec.Command("git", "add", "CLAUDE.md")
+					claudeMdCmd := execx.GitCommand("add", "CLAUDE.md")
 					_ = claudeMdCmd.Run()
 				}
 				// Also stage Codex project integration files if created by setup
 				for _, path := range []string{".agents", ".codex"} {
 					if _, statErr := os.Stat(path); statErr == nil {
-						codexCmd := exec.Command("git", "add", path)
+						codexCmd := execx.GitCommand("add", path)
 						_ = codexCmd.Run()
 					}
 				}
 				// Also stage .gitignore if modified by EnsureProjectGitignore
 				if _, statErr := os.Stat(".gitignore"); statErr == nil {
-					giCmd := exec.Command("git", "add", ".gitignore")
+					giCmd := execx.GitCommand("add", ".gitignore")
 					_ = giCmd.Run()
 				}
 				// Hooks installed by this init can call back into bd. Skip them
 				// for the bootstrap commit to avoid self-deadlocking while init
 				// still owns the embedded Dolt lock.
 				commitArgs := []string{"commit", "--no-verify", "-m", "bd init: initialize beads issue tracking"}
-				commitCmd := exec.Command("git", commitArgs...)
+				commitCmd := execx.GitCommand(commitArgs...)
 				if commitOut, commitErr := commitCmd.CombinedOutput(); commitErr != nil {
 					if !quiet && !strings.Contains(string(commitOut), "nothing to commit") {
 						fmt.Fprintf(os.Stderr, "Warning: failed to commit beads files: %v\n", commitErr)
@@ -2041,7 +2041,7 @@ func shouldPromptForRole() bool {
 // getBeadsRole reads the beads.role git config value.
 // Returns the role and true if configured, or empty string and false if not set.
 func getBeadsRole() (string, bool) {
-	cmd := exec.Command("git", "config", "--get", "beads.role")
+	cmd := execx.GitCommand("config", "--get", "beads.role")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", false
@@ -2055,7 +2055,7 @@ func getBeadsRole() (string, bool) {
 
 // setBeadsRole writes the beads.role git config value.
 func setBeadsRole(role string) error {
-	cmd := exec.Command("git", "config", "beads.role", role)
+	cmd := execx.GitCommand("config", "beads.role", role)
 	return cmd.Run()
 }
 

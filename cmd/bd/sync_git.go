@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/doltremote"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // isGitRepo checks if the current working directory is in a git repository.
@@ -17,14 +17,14 @@ import (
 // before calling other git functions to prevent hangs on Windows (GH#727).
 // Does not use RepoContext because it's a prerequisite check for git availability.
 func isGitRepo() bool {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommand("rev-parse", "--git-dir")
 	return cmd.Run() == nil
 }
 
 // isBareGitRepo checks if the current git repository is bare.
 // Returns false when not in a git repository.
 func isBareGitRepo() bool {
-	cmd := exec.Command("git", "rev-parse", "--is-bare-repository")
+	cmd := execx.GitCommand("rev-parse", "--is-bare-repository")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
@@ -72,7 +72,7 @@ func gitHasAnyRemotes() bool {
 
 // gitOriginGetURL returns the URL for the origin git remote.
 func gitOriginGetURL() (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := execx.GitCommand("remote", "get-url", "origin")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -100,7 +100,7 @@ func gitOriginGetURLForActiveRepo(ctx context.Context) (string, error) {
 func gitOriginHasDoltDataRef() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "origin", "refs/dolt/data")
+	cmd := execx.GitCommandContext(ctx, "ls-remote", "origin", "refs/dolt/data")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.Output()
 	if err != nil {

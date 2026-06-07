@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // exportAutoState tracks auto-export state to avoid redundant work.
@@ -576,7 +576,7 @@ func gitAddFile(path string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), gitAddTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "add", path)
+	cmd := execx.GitCommandContext(ctx, "add", path)
 	cmd.Dir = filepath.Dir(path)
 	cmd.Env = env
 	// Capture combined output so the caller's warning surfaces git's stderr
@@ -598,7 +598,7 @@ func gitAddFile(path string) error {
 func gitIndexLockPath(path string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitAddTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommandContext(ctx, "rev-parse", "--git-dir")
 	cmd.Dir = filepath.Dir(path)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()

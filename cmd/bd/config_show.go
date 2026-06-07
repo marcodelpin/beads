@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // configEntry represents a single configuration key with its effective value and source.
@@ -249,7 +249,7 @@ func collectGitConfigEntries() []configEntry {
 	var entries []configEntry
 
 	// beads.role is the only git config key currently
-	cmd := exec.Command("git", "config", "--get", "beads.role")
+	cmd := execx.GitCommand("config", "--get", "beads.role")
 	output, err := cmd.Output()
 	if err == nil {
 		value := strings.TrimSpace(string(output))

@@ -3,9 +3,9 @@ package doctor
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // GitignoreTemplate is the canonical .beads/.gitignore content
@@ -214,7 +214,7 @@ func CheckRedirectNotTracked(repoPath string) DoctorCheck {
 
 	// Check if git considers this file tracked
 	// git ls-files exits 0 and outputs the filename if tracked, empty if untracked
-	cmd := exec.Command("git", "ls-files", redirectPath) // #nosec G204 - args are hardcoded paths
+	cmd := execx.GitCommand("ls-files", redirectPath) // #nosec G204 - args are hardcoded paths
 	output, err := cmd.Output()
 	if err != nil {
 		// Not in a git repo or git error - skip check
@@ -251,7 +251,7 @@ func FixRedirectTracking(repoPath string) error {
 	redirectPath := filepath.Join(repoPath, ".beads", "redirect")
 
 	// Check if file is actually tracked first
-	cmd := exec.Command("git", "ls-files", redirectPath) // #nosec G204 - args are hardcoded paths
+	cmd := execx.GitCommand("ls-files", redirectPath) // #nosec G204 - args are hardcoded paths
 	output, err := cmd.Output()
 	if err != nil {
 		return nil // Not a git repo, nothing to do
@@ -263,7 +263,7 @@ func FixRedirectTracking(repoPath string) error {
 	}
 
 	// Untrack the file (keeps the local copy)
-	cmd = exec.Command("git", "rm", "--cached", redirectPath) // #nosec G204 - args are hardcoded paths
+	cmd = execx.GitCommand("rm", "--cached", redirectPath) // #nosec G204 - args are hardcoded paths
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to untrack redirect file: %w", err)
 	}
@@ -578,7 +578,7 @@ func CheckLastTouchedNotTracked(repoPath string) DoctorCheck {
 
 	// Check if git considers this file tracked
 	// git ls-files exits 0 and outputs the filename if tracked, empty if untracked
-	cmd := exec.Command("git", "ls-files", lastTouchedPath) // #nosec G204 - args are hardcoded paths
+	cmd := execx.GitCommand("ls-files", lastTouchedPath) // #nosec G204 - args are hardcoded paths
 	output, err := cmd.Output()
 	if err != nil {
 		// Not in a git repo or git error - skip check
@@ -615,7 +615,7 @@ func FixLastTouchedTracking(repoPath string) error {
 	lastTouchedPath := filepath.Join(repoPath, ".beads", "last-touched")
 
 	// Check if file is actually tracked first
-	cmd := exec.Command("git", "ls-files", lastTouchedPath) // #nosec G204 - args are hardcoded paths
+	cmd := execx.GitCommand("ls-files", lastTouchedPath) // #nosec G204 - args are hardcoded paths
 	output, err := cmd.Output()
 	if err != nil {
 		return nil // Not a git repo, nothing to do
@@ -627,7 +627,7 @@ func FixLastTouchedTracking(repoPath string) error {
 	}
 
 	// Untrack the file (keeps the local copy)
-	cmd = exec.Command("git", "rm", "--cached", lastTouchedPath) // #nosec G204 - args are hardcoded paths
+	cmd = execx.GitCommand("rm", "--cached", lastTouchedPath) // #nosec G204 - args are hardcoded paths
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to untrack last-touched file: %w", err)
 	}

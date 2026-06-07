@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/steveyegge/beads/internal/debug"
 	"gopkg.in/yaml.v3"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 var v *viper.Viper
@@ -328,7 +328,7 @@ func worktreeFallbackConfigPath(repoPath string) string {
 }
 
 func gitDirsForRepo(repoPath string) (gitDir, commonDir string, ok bool) {
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--git-dir", "--git-common-dir")
+	cmd := execx.GitCommand("-C", repoPath, "rev-parse", "--git-dir", "--git-common-dir")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", "", false
@@ -852,7 +852,7 @@ func GetIdentity(flagValue string) string {
 	}
 
 	// 3. git config user.name
-	cmd := exec.Command("git", "config", "user.name")
+	cmd := execx.GitCommand("config", "user.name")
 	if output, err := cmd.Output(); err == nil {
 		if gitUser := strings.TrimSpace(string(output)); gitUser != "" {
 			return gitUser

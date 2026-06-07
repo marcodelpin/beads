@@ -29,6 +29,7 @@ import (
 	"sync"
 
 	"github.com/steveyegge/beads/internal/git"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // UserRole represents the user's relationship to a repository.
@@ -170,7 +171,7 @@ func isExternalBeadsDir(beadsDir string) (bool, error) {
 // getGitCommonDirForPath returns the shared git directory for a path.
 // For worktrees, this returns the shared git directory (common to all worktrees).
 func getGitCommonDirForPath(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir")
+	cmd := execx.GitCommand("-C", path, "rev-parse", "--git-common-dir")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get git common dir for %s: %w", path, err)
@@ -205,7 +206,7 @@ func repoRootForBeadsDir(beadsDir string) string {
 
 // getRepoRootFromPath returns the git repository root for a given path.
 func getRepoRootFromPath(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")
+	cmd := execx.GitCommand("-C", path, "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get git root for %s: %w", path, err)
@@ -234,7 +235,7 @@ func getRepoRootFromPath(path string) (string, error) {
 // the correct repository (the one containing .beads/).
 func (rc *RepoContext) GitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	gitArgs := append([]string{"-c", "core.hooksPath="}, args...)
-	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	cmd := execx.GitCommandContext(ctx, gitArgs...)
 	cmd.Dir = rc.RepoRoot
 
 	// GH#2538: Ensure git uses the target repository, not the worktree we may be running from.
@@ -258,7 +259,7 @@ func (rc *RepoContext) GitCmd(ctx context.Context, args ...string) *exec.Cmd {
 //
 // If CWD is not in a git repository, cmd.Dir is left unset (uses process CWD).
 func (rc *RepoContext) GitCmdCWD(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := execx.GitCommandContext(ctx, args...)
 	if rc.CWDRepoRoot != "" {
 		cmd.Dir = rc.CWDRepoRoot
 	}

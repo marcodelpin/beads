@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // YamlOnlyKeys are configuration keys that must be stored in config.yaml
@@ -121,7 +121,7 @@ func IsSecretKey(key string) bool {
 // isGitTracked returns true if the file at path is tracked by git
 // (i.e., has been git-added). Uses `git ls-files --error-unmatch`.
 func isGitTracked(path string) bool {
-	cmd := exec.Command("git", "ls-files", "--error-unmatch", path)
+	cmd := execx.GitCommand("ls-files", "--error-unmatch", path)
 	cmd.Dir = filepath.Dir(path)
 	cmd.Stdout = nil
 	cmd.Stderr = nil

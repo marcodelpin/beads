@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // gitCmdTimeout is the timeout for git subprocess commands in doctor checks.
@@ -300,7 +300,7 @@ func CheckGitWorkingTree(path string) DoctorCheck {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommandContext(ctx, "rev-parse", "--git-dir")
 	cmd.Dir = path
 	if err := cmd.Run(); err != nil {
 		return DoctorCheck{
@@ -310,7 +310,7 @@ func CheckGitWorkingTree(path string) DoctorCheck {
 		}
 	}
 
-	cmd = exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd = execx.GitCommandContext(ctx, "status", "--porcelain")
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {
@@ -405,7 +405,7 @@ func CheckGitUpstream(path string) DoctorCheck {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommandContext(ctx, "rev-parse", "--git-dir")
 	cmd.Dir = path
 	if err := cmd.Run(); err != nil {
 		return DoctorCheck{
@@ -416,7 +416,7 @@ func CheckGitUpstream(path string) DoctorCheck {
 	}
 
 	// Detect detached HEAD.
-	cmd = exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "HEAD")
+	cmd = execx.GitCommandContext(ctx, "symbolic-ref", "--short", "HEAD")
 	cmd.Dir = path
 	branchOut, err := cmd.Output()
 	if err != nil {
@@ -430,7 +430,7 @@ func CheckGitUpstream(path string) DoctorCheck {
 	branch := strings.TrimSpace(string(branchOut))
 
 	// Check if any remotes exist — no point warning about upstream if there's no remote
-	remoteCmd := exec.CommandContext(ctx, "git", "remote")
+	remoteCmd := execx.GitCommandContext(ctx, "remote")
 	remoteCmd.Dir = path
 	remoteOut, err := remoteCmd.Output()
 	if err != nil || strings.TrimSpace(string(remoteOut)) == "" {
@@ -441,7 +441,7 @@ func CheckGitUpstream(path string) DoctorCheck {
 		}
 	}
 
-	cmd = exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd = execx.GitCommandContext(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	cmd.Dir = path
 	upOut, err := cmd.Output()
 	if err != nil {
@@ -512,7 +512,7 @@ func CheckGitUpstream(path string) DoctorCheck {
 }
 
 func gitRevListCount(ctx context.Context, path string, rangeExpr string) (int, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", rangeExpr) // #nosec G204 -- fixed args
+	cmd := execx.GitCommandContext(ctx, "rev-list", "--count", rangeExpr) // #nosec G204 -- fixed args
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {
@@ -699,7 +699,7 @@ func FindOrphanedIssues(gitPath string, provider types.IssueProvider) ([]OrphanI
 	defer cancel()
 
 	// Skip if not in a git repo
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommandContext(ctx, "rev-parse", "--git-dir")
 	cmd.Dir = gitPath
 	if err := cmd.Run(); err != nil {
 		return []OrphanIssue{}, nil // Not a git repo, return empty list
@@ -728,7 +728,7 @@ func FindOrphanedIssues(gitPath string, provider types.IssueProvider) ([]OrphanI
 	}
 
 	// Get git log
-	cmd = exec.CommandContext(ctx, "git", "log", "--oneline", "--all")
+	cmd = execx.GitCommandContext(ctx, "log", "--oneline", "--all")
 	cmd.Dir = gitPath
 	output, err := cmd.Output()
 	if err != nil {

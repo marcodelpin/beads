@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,6 +21,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // CanonicalDatabaseName is the required database filename for all beads repositories
@@ -239,7 +239,7 @@ func isDetachedCommitWorktreePath(path string) bool {
 func gitOutput(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...) //nolint:gosec // args are internal, not user-supplied
+	cmd := execx.GitCommandContext(ctx, append([]string{"-C", dir}, args...)...) //nolint:gosec // args are internal, not user-supplied
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -906,7 +906,7 @@ func ResolveBeadsDirForRepo(repoPath string) string {
 }
 
 func worktreeFallbackBeadsDirForRepo(repoPath string) string {
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--git-dir", "--git-common-dir")
+	cmd := execx.GitCommand("-C", repoPath, "rev-parse", "--git-dir", "--git-common-dir")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

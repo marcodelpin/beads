@@ -35,6 +35,7 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // ErrServerNotRunning is returned by Stop when the Dolt server is not running.
@@ -1247,12 +1248,12 @@ func ensureDoltIdentity() error {
 	gitName := "beads"
 	gitEmail := "beads@localhost"
 
-	if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.name").Output(); err == nil {
 		if name := strings.TrimSpace(string(out)); name != "" {
 			gitName = name
 		}
 	}
-	if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.email").Output(); err == nil {
 		if email := strings.TrimSpace(string(out)); email != "" {
 			gitEmail = email
 		}

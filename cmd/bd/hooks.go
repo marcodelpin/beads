@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // managedHookNames lists the git hooks managed by beads.
@@ -1141,7 +1142,7 @@ func configureSharedHooksPath() error {
 		return fmt.Errorf("not in a git repository")
 	}
 	absHooksPath := filepath.Join(repoRoot, ".beads-hooks")
-	cmd := exec.Command("git", "config", "core.hooksPath", absHooksPath)
+	cmd := execx.GitCommand("config", "core.hooksPath", absHooksPath)
 	cmd.Dir = repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git config failed: %w (output: %s)", err, string(output))
@@ -1163,7 +1164,7 @@ func configureBeadsHooksPath() error {
 		return fmt.Errorf("not in a git repository")
 	}
 	absHooksPath := filepath.Join(repoRoot, ".beads", "hooks")
-	cmd := exec.Command("git", "config", "core.hooksPath", absHooksPath)
+	cmd := execx.GitCommand("config", "core.hooksPath", absHooksPath)
 	cmd.Dir = repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git config failed: %w (output: %s)", err, string(output))
@@ -1245,7 +1246,7 @@ func resetHooksPathIfBeadsManaged() error {
 		return nil // not in a git repo
 	}
 
-	cmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd := execx.GitCommand("config", "--get", "core.hooksPath")
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
@@ -1258,7 +1259,7 @@ func resetHooksPathIfBeadsManaged() error {
 	absSharedHooks := filepath.Join(repoRoot, ".beads-hooks")
 	if hooksPath == ".beads/hooks" || hooksPath == ".beads-hooks" ||
 		hooksPath == absBeadsHooks || hooksPath == absSharedHooks {
-		cmd = exec.Command("git", "config", "--unset", "core.hooksPath")
+		cmd = execx.GitCommand("config", "--unset", "core.hooksPath")
 		cmd.Dir = repoRoot
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git config --unset core.hooksPath failed: %w (output: %s)", err, string(output))
@@ -1402,7 +1403,7 @@ func preCommitHasStagedBeadsFiles(beadsDir string) bool {
 	if hookRoot := hookWorkTreeRoot(); hookRoot != "" {
 		cmdDir = hookRoot
 	}
-	cmd := exec.Command("git", "diff", "--cached", "--name-only", "--", ".beads")
+	cmd := execx.GitCommand("diff", "--cached", "--name-only", "--", ".beads")
 	cmd.Dir = cmdDir
 	cmd.Env = scrubGitHookEnv(os.Environ())
 	out, err := cmd.Output()

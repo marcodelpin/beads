@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 const (
@@ -285,7 +286,7 @@ func isKnownLegacyHookLine(line string) bool {
 }
 
 func resolveGitHooksDir(path string) (repoRoot string, hooksDir string, err error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel", "--git-common-dir")
+	cmd := execx.GitCommand("rev-parse", "--show-toplevel", "--git-common-dir")
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {
@@ -305,7 +306,7 @@ func resolveGitHooksDir(path string) (repoRoot string, hooksDir string, err erro
 
 	hooksDir = filepath.Join(gitCommonDir, "hooks")
 
-	hooksPathCmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	hooksPathCmd := execx.GitCommand("config", "--get", "core.hooksPath")
 	hooksPathCmd.Dir = repoRoot
 	if hooksPathOut, hooksPathErr := hooksPathCmd.Output(); hooksPathErr == nil {
 		hooksPath := strings.TrimSpace(string(hooksPathOut))

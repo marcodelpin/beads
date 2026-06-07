@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // ComputeRepoID generates a unique identifier for this git repository
@@ -142,7 +142,7 @@ func GetCloneIDForPath(repoPath string) (string, error) {
 }
 
 func runGitInRepo(repoPath string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := execx.GitCommand(args...)
 	if repoPath != "" {
 		cmd.Dir = repoPath
 	}
@@ -158,7 +158,7 @@ func runGitInRepo(repoPath string, args ...string) ([]byte, error) {
 // the same across all worktrees sharing a database.
 func mainRepoRootForPath(repoPath string) (string, error) {
 	// Get both toplevel and common-dir in one pass to detect worktrees.
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel", "--git-common-dir")
+	cmd := execx.GitCommand("rev-parse", "--show-toplevel", "--git-common-dir")
 	if repoPath != "" {
 		cmd.Dir = repoPath
 	}

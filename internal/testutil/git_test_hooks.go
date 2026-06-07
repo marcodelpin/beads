@@ -2,14 +2,14 @@ package testutil
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // ForceRepoLocalHooksPath configures a git test repository to use .git/hooks
 // regardless of any global core.hooksPath configuration.
 func ForceRepoLocalHooksPath(repoDir string) error {
-	cmd := exec.Command("git", "config", "core.hooksPath", ".git/hooks")
+	cmd := execx.GitCommand("config", "core.hooksPath", ".git/hooks")
 	cmd.Dir = repoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		trimmed := strings.TrimSpace(string(out))

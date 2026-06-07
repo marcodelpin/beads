@@ -12,6 +12,7 @@ import (
 
 	internalgit "github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 func NewGitRepository(workDir string) domain.GitRepository {
@@ -25,7 +26,7 @@ type gitRepositoryImpl struct {
 var _ domain.GitRepository = (*gitRepositoryImpl)(nil)
 
 func (r *gitRepositoryImpl) gitCmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := execx.GitCommandContext(ctx, args...)
 	cmd.Dir = r.workDir
 	return cmd
 }

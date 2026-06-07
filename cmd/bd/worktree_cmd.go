@@ -14,6 +14,7 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // WorktreeInfo contains information about a git worktree
@@ -438,7 +439,7 @@ func runWorktreeInfo(cmd *cobra.Command, args []string) error {
 // for defense-in-depth, matching the pattern in RepoContext.GitCmd().
 func gitCmdInDir(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	gitArgs := append([]string{"-c", "core.hooksPath="}, args...)
-	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	cmd := execx.GitCommandContext(ctx, gitArgs...)
 	cmd.Dir = dir
 	// Security: Disable git hooks and templates (SEC-001, SEC-002)
 	cmd.Env = append(os.Environ(),

@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 var gitCommandRunner = func(repoPath string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := execx.GitCommand(args...)
 	if repoPath != "" {
 		cmd.Dir = repoPath
 	}

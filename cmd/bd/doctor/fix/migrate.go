@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // DatabaseVersion fixes database version mismatches by updating metadata in-process.
@@ -244,7 +244,7 @@ func detectActor() string {
 	if bdActor := os.Getenv("BD_ACTOR"); bdActor != "" {
 		return bdActor
 	}
-	if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.name").Output(); err == nil {
 		if gitUser := strings.TrimSpace(string(out)); gitUser != "" {
 			return gitUser
 		}

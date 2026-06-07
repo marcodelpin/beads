@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // gitContext holds cached git repository information.
@@ -29,7 +30,7 @@ var (
 // This is called once per process via sync.Once.
 func initGitContext() {
 	// Get all three values with a single git call
-	cmd := exec.Command("git", "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel")
+	cmd := execx.GitCommand("rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
 		gitCtx.err = fmt.Errorf("not a git repository: %w", err)
@@ -125,7 +126,7 @@ func GetGitCommonDir() (string, error) {
 func GetGitHooksDir() (string, error) {
 	// Respect core.hooksPath if configured.
 	// This is used by beads' Dolt backend (hooks installed to .beads/hooks/).
-	cmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd := execx.GitCommand("config", "--get", "core.hooksPath")
 	if out, err := cmd.Output(); err == nil {
 		hooksPath := strings.TrimSpace(string(out))
 		if hooksPath != "" {

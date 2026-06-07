@@ -21,6 +21,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/dbproxy/pidfile"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 const defaultKeepAlivePeriod = 30 * time.Second
@@ -133,12 +134,12 @@ func (s *DoltServer) doltConfigure(ctx context.Context) error {
 		return nil
 	}
 	name, email := "beads", "beads@localhost"
-	if out, err := exec.CommandContext(ctx, "git", "config", "user.name").Output(); err == nil {
+	if out, err := execx.GitCommandContext(ctx, "config", "user.name").Output(); err == nil {
 		if v := strings.TrimSpace(string(out)); v != "" {
 			name = v
 		}
 	}
-	if out, err := exec.CommandContext(ctx, "git", "config", "user.email").Output(); err == nil {
+	if out, err := execx.GitCommandContext(ctx, "config", "user.email").Output(); err == nil {
 		if v := strings.TrimSpace(string(out)); v != "" {
 			email = v
 		}

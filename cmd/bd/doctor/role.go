@@ -3,10 +3,10 @@ package doctor
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // CheckBeadsRole verifies that beads.role is configured.
@@ -17,7 +17,7 @@ import (
 // Opens its own store; prefer CheckBeadsRoleWithStore when a shared store is available.
 func CheckBeadsRole(path string) DoctorCheck {
 	// Read beads.role from git config (canonical location)
-	cmd := exec.Command("git", "config", "--get", "beads.role")
+	cmd := execx.GitCommand("config", "--get", "beads.role")
 	if path != "" {
 		cmd.Dir = path
 	}
@@ -41,7 +41,7 @@ func CheckBeadsRole(path string) DoctorCheck {
 // CheckBeadsRoleWithStore verifies beads.role using a shared store (GH#2636).
 func CheckBeadsRoleWithStore(path string, ss *SharedStore) DoctorCheck {
 	// Read beads.role from git config (canonical location)
-	cmd := exec.Command("git", "config", "--get", "beads.role")
+	cmd := execx.GitCommand("config", "--get", "beads.role")
 	if path != "" {
 		cmd.Dir = path
 	}
@@ -86,7 +86,7 @@ func checkBeadsRoleNotInGit(path string) DoctorCheck {
 
 // isGitRepo checks whether the given path is inside a git repository.
 func isGitRepo(path string) bool {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommand("rev-parse", "--git-dir")
 	if path != "" {
 		cmd.Dir = path
 	}

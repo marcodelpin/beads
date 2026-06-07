@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // ExternalHookManager represents a detected external hook management tool.
@@ -114,7 +114,7 @@ var hookManagerPatterns = []hookManagerPattern{
 // This is more reliable than just checking for config files when multiple managers exist.
 func DetectActiveHookManager(path string) string {
 	// Get common git dir (hooks are shared across worktrees)
-	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd := execx.GitCommand("rev-parse", "--git-common-dir")
 	cmd.Dir = path
 	output, err := cmd.Output()
 	if err != nil {
@@ -127,7 +127,7 @@ func DetectActiveHookManager(path string) string {
 
 	// Check for custom hooks path (core.hooksPath)
 	hooksDir := filepath.Join(gitCommonDir, "hooks")
-	hooksPathCmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	hooksPathCmd := execx.GitCommand("config", "--get", "core.hooksPath")
 	hooksPathCmd.Dir = path
 	if hooksPathOutput, err := hooksPathCmd.Output(); err == nil {
 		customPath := strings.TrimSpace(string(hooksPathOutput))
@@ -600,7 +600,7 @@ func GitHooks(path string) error {
 
 	// Check if we're in a git repository using git rev-parse
 	// This handles worktrees where .git is a file, not a directory
-	checkCmd := exec.Command("git", "rev-parse", "--git-dir")
+	checkCmd := execx.GitCommand("rev-parse", "--git-dir")
 	checkCmd.Dir = path
 	if err := checkCmd.Run(); err != nil {
 		return fmt.Errorf("not a git repository")
