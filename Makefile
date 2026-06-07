@@ -49,15 +49,25 @@ endif
 BUILD_TAGS := gms_pure_go
 REGRESSION_TIMEOUT ?= 20m
 
+# Effective target OS for this build (honors GOOS env, else host default).
+# bda-5u7: the GUI-subsystem link (-H=windowsgui, see build target) must key on
+# the build TARGET, not the build HOST. Keying on $(OS) silently shipped a
+# CONSOLE binary on Linux cross-compile (GOOS=windows), regressing the guiflip.
+GOOS_EFFECTIVE := $(shell go env GOOS)
+
 # Build the bd binary
 # chg-8hnz (marcodelpin/beads fork only): on Windows targets, link as GUI
 # subsystem (-H=windowsgui) to suppress conhost flash on every spawn. The
 # AttachConsole(ATTACH_PARENT_PROCESS) call at the start of main() bridges
 # output back to an interactive pwsh terminal when invoked directly, while
 # silently no-op'ing for hook/pipe spawns. See cmd/bd/console_windows.go.
+# bda-5u7: gated on $(GOOS_EFFECTIVE)==windows (the build TARGET), so a Linux
+# cross-compile (GOOS=windows make build) also links GUI + names the output
+# bd.exe. Was gated on $(OS) (build host) → cross-compile silently shipped a
+# CONSOLE binary named bd.
 build:
 	@echo "Building bd..."
-ifeq ($(OS),Windows_NT)
+ifeq ($(GOOS_EFFECTIVE),windows)
 	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -H=windowsgui" -o $(BUILD_DIR)/bd.exe ./cmd/bd
 else
 	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd ./cmd/bd
