@@ -36,7 +36,7 @@ var _ storage.SchemaMigrator = (*EmbeddedDoltStore)(nil)
 // time the embedded engine's write lock is held, reducing contention when
 // multiple processes access the same database concurrently.
 //
-// The dolthub/driver handles its own concurrency internally. File-level locking
+// The dolthub/driver/v2 handles its own concurrency internally. File-level locking
 // is only used during bd init to protect one-time initialization steps.
 type EmbeddedDoltStore struct {
 	dataDir       string
@@ -61,7 +61,7 @@ func (s *EmbeddedDoltStore) IsClosed() bool {
 // beadsDir is the .beads/ root; the data directory is derived as <beadsDir>/embeddeddolt/.
 // The database is created automatically if it doesn't exist (initSchema handles this).
 //
-// The dolthub/driver handles its own concurrency internally. File-level locking
+// The dolthub/driver/v2 handles its own concurrency internally. File-level locking
 // is only used during bd init (via util.TryLock in the init command) to protect
 // one-time initialization steps — the store itself does not hold any lock.
 func newStore(ctx context.Context, beadsDir, database, branch string) (*EmbeddedDoltStore, error) {
@@ -196,7 +196,7 @@ func (s *EmbeddedDoltStore) initSchema(ctx context.Context) error {
 		}
 	}
 
-	// Embedded mode relies on the dolthub/driver's local file/concurrency
+	// Embedded mode relies on the dolthub/driver/v2's local file/concurrency
 	// controls; schema.MigrateUpWithLock requires a sql-server session lock.
 	if _, err := schema.MigrateUp(ctx, conn); err != nil {
 		return fmt.Errorf("embeddeddolt: migrate: %w", err)
