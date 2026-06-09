@@ -28,6 +28,7 @@ Config options:
 	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default workflow text. Persistent memories (from bd remember) are still appended so memory injection keeps working under a custom template.
 	- Use --export to dump the default content for customization.
 	- Use --memories-only for hook contexts that should inject only persistent memories; this returns only the memories section even when a custom PRIME.md is present.
+	- Use --no-memories to omit the persistent memories section (useful when the memories section is large and would dominate a context budget). --memories-only takes precedence if both are set.
 
 Memory injection caps:
 	Large memory sets can exceed what a session-start hook host will ingest,
@@ -54,5 +55,6 @@ bd prime [flags]
       --max-memory-chars int   Cap the total bytes of injected memory entries, at whole-memory boundaries; section header and banner are not counted (0 = unlimited; falls back to the prime.max-memory-chars config key)
       --mcp                    Force MCP mode (minimal output)
       --memories-only          Output only persistent memories for compact hook contexts
+      --no-memories            Omit the persistent memories section (ignored when --memories-only is set, which wins)
       --stealth                Stealth mode (no git operations, flush only)
 ```

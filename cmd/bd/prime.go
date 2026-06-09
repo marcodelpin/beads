@@ -25,6 +25,7 @@ var (
 	primeStealthMode  bool
 	primeExportMode   bool
 	primeMemoriesOnly bool
+	primeNoMemories   bool
 	primeHookJSONMode bool
 
 	primeMaxMemories       int
@@ -102,6 +103,7 @@ Config options:
 	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default workflow text. Persistent memories (from bd remember) are still appended so memory injection keeps working under a custom template.
 	- Use --export to dump the default content for customization.
 	- Use --memories-only for hook contexts that should inject only persistent memories; this returns only the memories section even when a custom PRIME.md is present.
+	- Use --no-memories to omit the persistent memories section (useful when the memories section is large and would dominate a context budget). --memories-only takes precedence if both are set.
 
 Memory injection caps:
 	Large memory sets can exceed what a session-start hook host will ingest,
@@ -180,8 +182,10 @@ Memory injection caps:
 		// (GH#3941).
 		if !primeExportMode {
 			if content, ok := readCustomPrimeContent(beadsDir); ok {
-				if mem := formatMemoriesForPrime(false); mem != "" {
-					content += mem
+				if !primeNoMemories {
+					if mem := formatMemoriesForPrime(false); mem != "" {
+						content += mem
+					}
 				}
 				emit(content)
 				return nil
@@ -211,6 +215,7 @@ func init() {
 	primeCmd.Flags().BoolVar(&primeStealthMode, "stealth", false, "Stealth mode (no git operations, flush only)")
 	primeCmd.Flags().BoolVar(&primeExportMode, "export", false, "Output default content (ignores PRIME.md override)")
 	primeCmd.Flags().BoolVar(&primeMemoriesOnly, "memories-only", false, "Output only persistent memories for compact hook contexts")
+	primeCmd.Flags().BoolVar(&primeNoMemories, "no-memories", false, "Omit the persistent memories section (ignored when --memories-only is set, which wins)")
 	primeCmd.Flags().BoolVar(&primeHookJSONMode, "hook-json", false, "Wrap output in the SessionStart hook JSON envelope (Claude Code, Gemini CLI, Codex)")
 	primeCmd.Flags().IntVar(&primeMaxMemories, "max-memories", 0, "Cap injected persistent memories to N entries (0 = unlimited; falls back to the prime.max-memories config key)")
 	primeCmd.Flags().IntVar(&primeMaxMemoryChars, "max-memory-chars", 0, "Cap the total bytes of injected memory entries, at whole-memory boundaries; section header and banner are not counted (0 = unlimited; falls back to the prime.max-memory-chars config key)")
@@ -568,7 +573,10 @@ func outputMCPContext(w io.Writer, stealthMode bool) error {
 	}
 
 	redirectNotice := getRedirectNotice(false)
-	memories := formatMemoriesForPrime(true)
+	var memories string
+	if !primeNoMemories {
+		memories = formatMemoriesForPrime(true)
+	}
 
 	context := primeTruncationDirective + `# Beads Issue Tracker Active
 
@@ -688,7 +696,10 @@ git status                  # Check changed files
 	}
 
 	redirectNotice := getRedirectNotice(true)
-	memories := formatMemoriesForPrime(false)
+	var memories string
+	if !primeNoMemories {
+		memories = formatMemoriesForPrime(false)
+	}
 
 	context := primeTruncationDirective + `# Beads Workflow Context
 
