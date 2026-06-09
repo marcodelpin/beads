@@ -322,6 +322,84 @@ func TestPrime_HookJSON_NoBeadsWorkspace(t *testing.T) {
 	}
 }
 
+// rememberInWorkspace stores a persistent memory via `bd remember` so prime can
+// inject it. Memories live in the workspace store, so the same isolated env as
+// initBeadsWorkspace/runPrimeBinary resolves the same database.
+func rememberInWorkspace(t *testing.T, binPath, workDir, key, content string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "remember", content, "--key", key)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(),
+		"HOME="+t.TempDir(),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"BEADS_TEST_IGNORE_REPO_CONFIG=1",
+		"BEADS_DIR=",
+		"BEADS_DB=",
+		"LINEAR_API_KEY=",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bd remember in %s: %v\n%s", workDir, err, out)
+	}
+}
+
+// TestPrime_CustomPrimeMd_AppendsMemories: a custom .beads/PRIME.md replaces the
+// default workflow text, but persistent memories must still be appended so
+// `bd remember` keeps working under a custom template (GH#3941).
+func TestPrime_CustomPrimeMd_AppendsMemories(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	workDir := t.TempDir()
+	initBeadsWorkspace(t, binPath, workDir)
+	rememberInWorkspace(t, binPath, workDir, "prime-mem-key", "remember this insight")
+
+	const custom = "# Custom local PRIME.md override\nBe excellent.\n"
+	primePath := filepath.Join(workDir, ".beads", "PRIME.md")
+	if err := os.WriteFile(primePath, []byte(custom), 0o644); err != nil {
+		t.Fatalf("write PRIME.md: %v", err)
+	}
+
+	stdout, _ := runPrimeBinary(t, binPath, workDir)
+	out := string(stdout)
+
+	if !strings.Contains(out, "Be excellent.") {
+		t.Errorf("custom PRIME.md content missing from output: %q", firstN(out, 300))
+	}
+	if !strings.Contains(out, "Persistent Memories") {
+		t.Errorf("memories section should be appended under custom PRIME.md, got: %q", firstN(out, 600))
+	}
+	if !strings.Contains(out, "remember this insight") {
+		t.Errorf("memory content should appear under custom PRIME.md, got: %q", firstN(out, 600))
+	}
+}
+
+// TestPrime_MemoriesOnly_WithCustomPrimeMd: --memories-only must return only the
+// memories section even when a custom PRIME.md exists; the PRIME.md content must
+// NOT leak into the output (GH#3941). This is the primary memory-injection path
+// for PreCompact hooks, which a custom PRIME.md previously broke.
+func TestPrime_MemoriesOnly_WithCustomPrimeMd(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	workDir := t.TempDir()
+	initBeadsWorkspace(t, binPath, workDir)
+	rememberInWorkspace(t, binPath, workDir, "prime-mem-key", "remember this insight")
+
+	const custom = "# Custom local PRIME.md override\nBe excellent.\n"
+	primePath := filepath.Join(workDir, ".beads", "PRIME.md")
+	if err := os.WriteFile(primePath, []byte(custom), 0o644); err != nil {
+		t.Fatalf("write PRIME.md: %v", err)
+	}
+
+	stdout, _ := runPrimeBinary(t, binPath, workDir, "--memories-only")
+	out := string(stdout)
+
+	if strings.Contains(out, "Be excellent.") {
+		t.Errorf("--memories-only must not include custom PRIME.md content, got: %q", firstN(out, 300))
+	}
+	if !strings.Contains(out, "remember this insight") {
+		t.Errorf("--memories-only should include memory content under custom PRIME.md, got: %q", firstN(out, 300))
+	}
+}
+
 func firstN(s string, n int) string {
 	if len(s) <= n {
 		return s
