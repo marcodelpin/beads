@@ -32,7 +32,7 @@ Section requirements by type:
   bug:      Steps to Reproduce, Acceptance Criteria
   task:     Acceptance Criteria
   feature:  Acceptance Criteria
-  epic:     Success Criteria
+  epic:     Success Criteria (or Acceptance Criteria)
   chore:    (none)
 
 Examples:
