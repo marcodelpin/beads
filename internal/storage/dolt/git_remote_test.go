@@ -37,7 +37,7 @@ import (
 //     so we avoid it entirely and verify via `dolt sql -q ... -r csv`.
 //
 // Prerequisites:
-//   - dolt >= 1.88.1
+//   - dolt >= 2.1.0
 //   - git CLI available
 //
 // Run:
