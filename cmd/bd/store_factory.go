@@ -179,5 +179,9 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 	if sanitized := sanitizeDBName(database); sanitized != database {
 		database = sanitized
 	}
-	return embeddeddolt.Open(ctx, beadsDir, database, "main")
+	// OpenReadOnly, not Open: a read-only open of a foreign project must not
+	// run the remote-migrate gate (a behind, remote-backed database would fail
+	// hard) and must not write migrations into the target's history
+	// (bd-6dnrw.32, GH#3231).
+	return embeddeddolt.OpenReadOnly(ctx, beadsDir, database, "main")
 }
