@@ -3,7 +3,6 @@ package versioncontrolops
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/steveyegge/beads/internal/storage"
 )
@@ -96,10 +95,13 @@ func ForcePush(ctx context.Context, db DBConn, remote, branch, user string) erro
 // Pull pulls changes from the named remote by fetching the branch and merging
 // the remote tracking ref. This is equivalent to DOLT_PULL(remote, branch) but
 // avoids a nil-pointer panic in embedded Dolt when upstream branch tracking is
-// not configured in repo_state.json (GH#3144).
+// not configured in repo_state.json (GH#3144). The merge runs through
+// MergeAndSettle (bd-6dnrw.40), so safe conflict classes are auto-resolved and
+// FK cascade violations repaired, matching server-mode pulls.
 //
-// See Push for the user/auth contract; only the fetch step authenticates,
-// since the merge step is local.
+// db must be a single session (see MergeAndSettle). See Push for the
+// user/auth contract; only the fetch step authenticates, since the merge step
+// is local.
 func Pull(ctx context.Context, db DBConn, remote, branch, user string) error {
 	if user != "" {
 		if _, err := db.ExecContext(ctx, "CALL DOLT_FETCH('--user', ?, ?, ?)", user, remote, branch); err != nil {
@@ -111,12 +113,7 @@ func Pull(ctx context.Context, db DBConn, remote, branch, user string) error {
 		}
 	}
 	trackingRef := remote + "/" + branch
-	if _, err := db.ExecContext(ctx, "CALL DOLT_MERGE(?)", trackingRef); err != nil {
-		// DOLT_MERGE returns "Already up to date." when there is nothing
-		// to merge; DOLT_PULL swallows this internally, so we do the same.
-		if strings.Contains(err.Error(), "up to date") {
-			return nil
-		}
+	if err := MergeAndSettle(ctx, db, trackingRef); err != nil {
 		return fmt.Errorf("merge %s: %w", trackingRef, err)
 	}
 	return nil
