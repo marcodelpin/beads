@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +24,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
+	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"golang.org/x/term"
 )
@@ -644,6 +647,25 @@ func executeSyncAction(ctx context.Context, plan BootstrapPlan, cfg *configfile.
 	// Both embedded and server mode handle this in their store init paths.
 	warmupStore, err := newDoltStoreFromConfig(ctx, plan.BeadsDir)
 	if err != nil {
+		// #4259: the cloned remote is behind this binary, so the remote-migrate
+		// gate held migration for an explicit operator decision. Surface that
+		// now with bootstrap-specific guidance and a non-zero exit. Returning
+		// silent success here (as this path once did) sent operators in a
+		// loop: the first real command failed with the gate message, whose
+		// generic "adopt" remedy is `bd bootstrap` — which re-clones the same
+		// behind database and silently "succeeds" again (bd-6dnrw.31).
+		var gateErr *schema.RemoteMigrateGateError
+		if errors.As(err, &gateErr) {
+			if !jsonOutput {
+				printBootstrapRemoteBehindGuidance(os.Stderr, gateErr, plan.SyncRemote)
+			}
+			unit := "migrations"
+			if gateErr.Pending == 1 {
+				unit = "migration"
+			}
+			return fmt.Errorf("clone from %s succeeded, but the database needs %d schema %s (v%d -> v%d) that bd will not auto-apply to a remote-backed database (#4259)",
+				plan.SyncRemote, gateErr.Pending, unit, gateErr.CurrentVersion, gateErr.LatestVersion)
+		}
 		// Non-fatal: wisp tables will be created on the next command that
 		// opens the store. Warn so the user knows to retry if they hit
 		// "table not found: wisp_*" errors.
@@ -654,6 +676,33 @@ func executeSyncAction(ctx context.Context, plan BootstrapPlan, cfg *configfile.
 	_ = warmupStore.Close()
 
 	return nil
+}
+
+// printBootstrapRemoteBehindGuidance explains a remote-migrate gate refusal in
+// bootstrap terms. The gate's generic remedy ("adopt the migrated database:
+// bd bootstrap") is wrong from inside bootstrap — the database was just cloned
+// from the remote, so the REMOTE is what is behind this binary and re-cloning
+// can never help. The way out is exactly one designated machine migrating and
+// pushing.
+func printBootstrapRemoteBehindGuidance(w io.Writer, e *schema.RemoteMigrateGateError, syncRemote string) {
+	unit := "migrations"
+	if e.Pending == 1 {
+		unit = "migration"
+	}
+	fmt.Fprintf(w, "\nThe database cloned from %s needs %d schema %s (v%d -> v%d).\n",
+		syncRemote, e.Pending, unit, e.CurrentVersion, e.LatestVersion)
+	fmt.Fprint(w,
+		"  bd will not migrate it automatically: migrating clones independently forks\n"+
+			"  the schema so `bd dolt pull` can no longer merge (#4259).\n"+
+			"\n"+
+			"  Re-running `bd bootstrap` will NOT fix this — the remote itself is behind.\n"+
+			"  Choose one:\n"+
+			"    • This machine is the designated migrator (exactly ONE machine should be):\n"+
+			"        "+schema.AllowRemoteMigrateEnv+"=1 bd ready\n"+
+			"        bd dolt push\n"+
+			"      then other machines re-run `bd bootstrap` to adopt the migrated database.\n"+
+			"    • Another machine is the designated migrator: wait for it to push, then\n"+
+			"      re-run `bd bootstrap`, or keep using a bd version that matches the remote.\n\n")
 }
 
 // finalizeSyncedBootstrap writes metadata.json and config.yaml after a

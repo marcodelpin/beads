@@ -3,12 +3,14 @@ package dolt
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
@@ -145,6 +147,43 @@ func (s *DoltStore) ListRemotes(ctx context.Context) ([]storage.RemoteInfo, erro
 	return versioncontrolops.ListRemotes(ctx, s.db)
 }
 
+// hasPersistedCLIRemote reports whether a Dolt remote is persisted on disk in
+// .dolt/repo_state.json — in the database CLI directory (CLIDir) or the dolt
+// server root (Path, per GH#2118). A freshly (auto-)started sql-server can
+// report an empty dolt_remotes table at store open even though remotes are
+// persisted on disk. The #4259 remote-migrate gate therefore consults this
+// directly so a cold-start open cannot miss the remote and migrate the shared
+// database in place.
+//
+// The probe reads repo_state.json itself (no dolt CLI subprocess), so a
+// missing dolt binary can no longer disable the gate. A directory that is not
+// a dolt repository is a definite "no remote here"; a read/parse failure still
+// fails open (migration is not wedged on unrelated corruption) but is logged,
+// never swallowed (bd-6dnrw.33).
+func (s *DoltStore) hasPersistedCLIRemote() bool {
+	cliDir := s.CLIDir()
+	dirs := []string{cliDir}
+	if s.dbPath != "" && s.dbPath != cliDir {
+		dirs = append(dirs, s.dbPath)
+	}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		remotes, err := doltutil.PersistedRemotes(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: remote-migrate gate could not inspect %s for persisted remotes (assuming none): %v\n",
+				dir, err)
+			continue
+		}
+		if len(remotes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveRemote removes a configured remote.
 func (s *DoltStore) RemoveRemote(ctx context.Context, name string) error {
 	return versioncontrolops.RemoveRemote(ctx, s.db, name)
@@ -156,23 +195,31 @@ func (s *DoltStore) SyncStatus(ctx context.Context, peer string) (*storage.SyncS
 		Peer: peer,
 	}
 
-	// Get ahead/behind counts by comparing refs
-	// This requires the peer to have been fetched first
-	query := `
-		SELECT
-			(SELECT COUNT(*) FROM dolt_log WHERE commit_hash NOT IN
-				(SELECT commit_hash FROM dolt_log AS OF CONCAT(?, '/', ?))) as ahead,
-			(SELECT COUNT(*) FROM dolt_log AS OF CONCAT(?, '/', ?) WHERE commit_hash NOT IN
-				(SELECT commit_hash FROM dolt_log)) as behind
-	`
-
-	err := s.db.QueryRowContext(ctx, query, peer, s.branch, peer, s.branch).
-		Scan(&status.LocalAhead, &status.LocalBehind)
-	if err != nil {
-		// If we can't get the status, return a partial result
-		// This happens when the remote branch doesn't exist locally yet
+	// Get ahead/behind counts by comparing refs.
+	// This requires the peer to have been fetched first.
+	// Dolt's AS OF requires a literal ref: bind parameters (even inside CONCAT)
+	// fail server-side with `unbound variable "v1" in query`, so validate the
+	// ref and interpolate it (same pattern as embeddeddolt SyncStatus).
+	remoteRef := peer + "/" + s.branch
+	if err := issueops.ValidateRef(remoteRef); err != nil {
 		status.LocalAhead = -1
 		status.LocalBehind = -1
+	} else {
+		//nolint:gosec // G201: remoteRef is validated by issueops.ValidateRef above — AS OF requires a literal
+		query := fmt.Sprintf(`
+			SELECT
+				(SELECT COUNT(*) FROM dolt_log WHERE commit_hash NOT IN
+					(SELECT commit_hash FROM dolt_log AS OF '%s')) as ahead,
+				(SELECT COUNT(*) FROM dolt_log AS OF '%s' WHERE commit_hash NOT IN
+					(SELECT commit_hash FROM dolt_log)) as behind
+		`, remoteRef, remoteRef)
+		if err := s.db.QueryRowContext(ctx, query).
+			Scan(&status.LocalAhead, &status.LocalBehind); err != nil {
+			// If we can't get the status, return a partial result.
+			// This happens when the remote branch doesn't exist locally yet.
+			status.LocalAhead = -1
+			status.LocalBehind = -1
+		}
 	}
 
 	// Check for conflicts

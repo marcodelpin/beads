@@ -60,7 +60,7 @@ func (p *doltSQLProvider) BeginTx(ctx context.Context) (Tx, error) {
 	}, nil
 }
 
-func (p *doltSQLProvider) initSchema(ctx context.Context, database string) error {
+func (p *doltSQLProvider) initSchema(ctx context.Context, database string, hasRemoteProbe func() bool) error {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
 	bo.MaxElapsedTime = 15 * time.Second
@@ -80,6 +80,21 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string) error
 		}
 		if err := ddl.UseDatabase(ctx, database); err != nil {
 			return backoff.Permanent(fmt.Errorf("uow: switching to database: %w", err))
+		}
+
+		// #4259: refuse to silently auto-apply pending migrations to a
+		// remote-backed database — the same gate the dolt and embeddeddolt
+		// store opens run (bd-6dnrw.28: this third store-open path used to
+		// bypass it). hasRemoteProbe is the on-disk fallback for a freshly
+		// started child server whose dolt_remotes table is still empty
+		// (GH#2315); nil disables it (e.g. external servers with no local
+		// data dir). A gate refusal is permanent — never retried into a
+		// migration.
+		if err := schema.CheckRemoteMigrateGateWithRemoteCheck(ctx, conn, hasRemoteProbe); err != nil {
+			if isSerializationError(err) {
+				return fmt.Errorf("uow: remote-migrate gate: %w", err)
+			}
+			return backoff.Permanent(fmt.Errorf("uow: remote-migrate gate: %w", err))
 		}
 
 		if _, err := schema.MigrateUpWithLock(ctx, conn, database); err != nil {
@@ -113,7 +128,10 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	return conn, nil
 }
 
-func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUser, rootPassword string) (UnitOfWorkProvider, error) {
+// openAndInitSchema connects to the proxied server, initializes the schema,
+// and returns a ready provider. hasRemoteProbe is the remote-migrate gate's
+// on-disk remote probe (nil to rely on dolt_remotes alone — see initSchema).
+func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUser, rootPassword string, hasRemoteProbe func() bool) (UnitOfWorkProvider, error) {
 	initDB, err := openDB(ctx, buildDSN(ep, "", rootUser, rootPassword))
 	if err != nil {
 		return nil, err
@@ -124,7 +142,7 @@ func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUse
 		db:            initDB,
 	}
 
-	if err := initProvider.initSchema(ctx, database); err != nil {
+	if err := initProvider.initSchema(ctx, database, hasRemoteProbe); err != nil {
 		_ = initDB.Close()
 		return nil, fmt.Errorf("uow: init schema: %w", err)
 	}

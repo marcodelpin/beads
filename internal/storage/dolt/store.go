@@ -696,6 +696,12 @@ func (s *DoltStore) DB() *sql.DB {
 	return s.db
 }
 
+// RemoteName returns the configured default sync remote name ("origin" unless
+// overridden), the remote Push/Pull target when no explicit remote is given.
+func (s *DoltStore) RemoteName() string {
+	return s.remote
+}
+
 // BackupAdd registers a Dolt backup destination.
 func (s *DoltStore) BackupAdd(ctx context.Context, name, url string) error {
 	return versioncontrolops.BackupAdd(ctx, s.db, name, url)
@@ -1520,6 +1526,16 @@ func initSchemaOnDB(ctx context.Context, db *sql.DB) (int, error) {
 }
 
 func initSchemaOnDBWithRetry(ctx context.Context, db *sql.DB) (int, error) {
+	return initSchemaOnDBWithRetryAndGate(ctx, db, nil)
+}
+
+// initSchemaOnDBWithRetryAndGate is initSchemaOnDBWithRetry with an optional
+// pre-migration gate run INSIDE the retry loop. The gate's own reads
+// (schema_migrations, dolt_remotes) can hit the same transient Dolt
+// startup/catalog races the migration retry absorbs, so gate probe errors are
+// retried with them instead of failing the open fast (bd-6dnrw.30); a
+// *schema.RemoteMigrateGateError refusal stays permanent.
+func initSchemaOnDBWithRetryAndGate(ctx context.Context, db *sql.DB, gate func(context.Context, *sql.DB) error) (int, error) {
 	// Schema initialization for server mode is idempotent. Retry transient
 	// Dolt startup/catalog races and contended migration-lock attempts so
 	// concurrent bd processes converge instead of failing one unlucky waiter.
@@ -1530,6 +1546,14 @@ func initSchemaOnDBWithRetry(ctx context.Context, db *sql.DB) (int, error) {
 	schemaBO.MaxElapsedTime = serverRetryMaxElapsed
 	var applied int
 	err := backoff.Retry(func() error {
+		if gate != nil {
+			if gateErr := gate(ctx, db); gateErr != nil {
+				if !schema.IsRemoteMigrateGateError(gateErr) && isRetryableError(gateErr) {
+					return gateErr
+				}
+				return backoff.Permanent(gateErr)
+			}
+		}
 		var schemaErr error
 		applied, schemaErr = initSchemaOnDB(ctx, db)
 		if schemaErr != nil && isRetryableError(schemaErr) {
@@ -1556,7 +1580,19 @@ func (s *DoltStore) initSchema(ctx context.Context) error {
 		return err
 	}
 	defer migDB.Close()
-	_, err = initSchemaOnDBWithRetry(ctx, migDB)
+	// #4259: refuse to silently apply pending migrations to a remote-backed,
+	// already-initialized database — that is how two clones fork the schema.
+	// The gate runs inside the retry loop, before each migration attempt: its
+	// reads can hit transient startup/catalog races (retryable) while a gate
+	// refusal is permanent and never retried into a migration.
+	// Use the on-disk fallback: a freshly (auto-)started server can report an
+	// empty dolt_remotes table even though remotes are persisted in .dolt/config
+	// (GH#2315), so an SQL-only check would miss the remote on the first write
+	// open after an upgrade.
+	gate := func(ctx context.Context, db *sql.DB) error {
+		return schema.CheckRemoteMigrateGateWithRemoteCheck(ctx, db, s.hasPersistedCLIRemote)
+	}
+	_, err = initSchemaOnDBWithRetryAndGate(ctx, migDB, gate)
 	return err
 }
 
@@ -2518,9 +2554,18 @@ func (s *DoltStore) autoResolveConflictsAfterCLIPull(ctx context.Context) (bool,
 //     convergent across clones pulling from the same remote). A conflict where the
 //     dependency type differs, or one side deleted the edge, is a real semantic
 //     conflict and is left for the operator.
+//   - schema_migrations: pre-#4270 binaries record (version, NULL content_hash)
+//     while post-#4270 binaries record (version, sha256), so two clones applying
+//     the SAME migration with mixed binary vintages conflict on the cursor row
+//     (bd-6dnrw.29). When one side's hash is NULL/empty and the other has one
+//     (or both are equal), the row is resolved keeping the hash — recorded
+//     provenance beats its absence, and the result converges across clones.
+//     Two DIFFERENT non-empty hashes are the #4259 schema fork itself and are
+//     left for the operator (bd doctor reports them as Migration Content Skew).
 //
-// Any conflict on another table, or an unresolvable dependencies conflict, returns
-// (false, nil) so the caller fails the pull and the operator resolves it.
+// Any conflict on another table, or an unresolvable dependencies or
+// schema_migrations conflict, returns (false, nil) so the caller fails the pull
+// and the operator resolves it.
 func (s *DoltStore) tryAutoResolveMergeConflicts(ctx context.Context, tx *sql.Tx) (bool, error) {
 	rows, err := tx.QueryContext(ctx, "SELECT `table`, num_conflicts FROM dolt_conflicts")
 	if err != nil {
@@ -2565,17 +2610,34 @@ func (s *DoltStore) tryAutoResolveMergeConflicts(ctx context.Context, tx *sql.Tx
 				return false, nil
 			}
 			resolvable = append(resolvable, "dependencies")
+		case "schema_migrations":
+			vintageOnly, err := s.schemaMigrationsConflictsAreVintageOnly(ctx, tx)
+			if err != nil {
+				return false, err
+			}
+			if !vintageOnly {
+				return false, nil
+			}
+			resolvable = append(resolvable, "schema_migrations")
 		default:
 			return false, nil
 		}
 	}
 
-	// Resolve each safe table with "theirs" and stage only that table (GH#2455).
+	// Resolve each safe table and stage only that table (GH#2455).
 	// table is from the fixed allowlist above, never user input.
 	for _, table := range resolvable {
-		//nolint:gosec // G201: table is one of the hardcoded constants above.
-		if _, err := tx.ExecContext(ctx, "CALL DOLT_CONFLICTS_RESOLVE('--theirs', '"+table+"')"); err != nil {
-			return false, fmt.Errorf("failed to resolve %s conflicts: %w", table, err)
+		if table == "schema_migrations" {
+			// Row-wise: keep whichever side recorded a content hash, so the
+			// table-level --ours/--theirs choice can never drop one.
+			if err := s.resolveSchemaMigrationsVintageConflicts(ctx, tx); err != nil {
+				return false, err
+			}
+		} else {
+			//nolint:gosec // G201: table is one of the hardcoded constants above.
+			if _, err := tx.ExecContext(ctx, "CALL DOLT_CONFLICTS_RESOLVE('--theirs', '"+table+"')"); err != nil {
+				return false, fmt.Errorf("failed to resolve %s conflicts: %w", table, err)
+			}
 		}
 		//nolint:gosec // G201: table is one of the hardcoded constants above.
 		if _, err := tx.ExecContext(ctx, "CALL DOLT_ADD('"+table+"')"); err != nil {
@@ -2651,6 +2713,83 @@ func (s *DoltStore) dependencyConflictsAreAuditOnly(ctx context.Context, tx *sql
 		}
 	}
 	return true, rows.Err()
+}
+
+// schemaMigrationsConflictsAreVintageOnly reports whether every conflicted
+// schema_migrations row is the same migration version present on BOTH sides
+// whose content hashes are compatible: equal, or NULL/empty on exactly one side
+// (a pre-#4270 binary recorded the version without a hash, bd-6dnrw.29). Two
+// different non-empty hashes mean the clones applied different content for the
+// same version — the #4259 schema fork — and are never auto-resolved. A row
+// deleted on one side is not a vintage artifact either.
+func (s *DoltStore) schemaMigrationsConflictsAreVintageOnly(ctx context.Context, tx *sql.Tx) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT our_version, their_version, our_content_hash, their_content_hash
+		FROM dolt_conflicts_schema_migrations`)
+	if err != nil {
+		return false, fmt.Errorf("query schema_migrations conflicts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ourVersion, theirVersion sql.NullInt64
+		var ourHash, theirHash sql.NullString
+		if err := rows.Scan(&ourVersion, &theirVersion, &ourHash, &theirHash); err != nil {
+			return false, fmt.Errorf("scan schema_migrations conflict: %w", err)
+		}
+		if !ourVersion.Valid || !theirVersion.Valid || ourVersion.Int64 != theirVersion.Int64 {
+			return false, nil
+		}
+		ours, theirs := ourHash.String, theirHash.String
+		if ours != "" && theirs != "" && ours != theirs {
+			return false, nil // real content skew (#4259) — operator decides
+		}
+	}
+	return true, rows.Err()
+}
+
+// resolveSchemaMigrationsVintageConflicts resolves vintage-only cursor-row
+// conflicts (validated by schemaMigrationsConflictsAreVintageOnly) keeping
+// whichever side recorded a content hash: when theirs has the hash and ours is
+// NULL, the working-set row is updated to theirs before the table-level
+// resolve, so '--ours' never discards recorded provenance.
+func (s *DoltStore) resolveSchemaMigrationsVintageConflicts(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT our_version, our_content_hash, their_content_hash
+		FROM dolt_conflicts_schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("query schema_migrations conflicts: %w", err)
+	}
+	type hashFix struct {
+		version int64
+		hash    string
+	}
+	var fixes []hashFix
+	for rows.Next() {
+		var version sql.NullInt64
+		var ourHash, theirHash sql.NullString
+		if err := rows.Scan(&version, &ourHash, &theirHash); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan schema_migrations conflict: %w", err)
+		}
+		if ourHash.String == "" && theirHash.String != "" {
+			fixes = append(fixes, hashFix{version: version.Int64, hash: theirHash.String})
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+
+	for _, f := range fixes {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE schema_migrations SET content_hash = ? WHERE version = ?", f.hash, f.version); err != nil {
+			return fmt.Errorf("backfill content_hash for migration %d: %w", f.version, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_CONFLICTS_RESOLVE('--ours', 'schema_migrations')"); err != nil {
+		return fmt.Errorf("failed to resolve schema_migrations conflicts: %w", err)
+	}
+	return nil
 }
 
 // resolveConflictDepTarget returns the single non-null dependency target from a

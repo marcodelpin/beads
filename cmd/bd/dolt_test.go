@@ -1022,6 +1022,54 @@ func TestIsDivergedHistoryErr(t *testing.T) {
 	}
 }
 
+func TestIsAncestorPKMismatchErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"unrelated error", fmt.Errorf("connection refused"), false},
+		{"diverged history", fmt.Errorf("no common ancestor"), false},
+		{"row conflict", fmt.Errorf("merge has unresolved conflicts"), false},
+		{"ancestor PK variant", fmt.Errorf("error: cannot merge because table dependencies has different primary keys in its common ancestor"), true},
+		{"head PK variant", fmt.Errorf("error: cannot merge because table dependencies has different primary keys"), true},
+		{"wrapped", fmt.Errorf("pull failed: %w", fmt.Errorf("error: cannot merge because table issues has different primary keys in its common ancestor")), true},
+		{"sql error envelope", fmt.Errorf("Error 1105 (HY000): error: cannot merge because table dependencies has different primary keys in its common ancestor"), true},
+		{"mixed case", fmt.Errorf("Cannot Merge Because Table dependencies Has Different Primary Keys"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAncestorPKMismatchErr(tt.err)
+			if got != tt.want {
+				t.Errorf("isAncestorPKMismatchErr(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAncestorPKMismatchTable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil error", nil, ""},
+		{"no match", fmt.Errorf("no common ancestor"), ""},
+		{"ancestor variant", fmt.Errorf("error: cannot merge because table dependencies has different primary keys in its common ancestor"), "dependencies"},
+		{"head variant", fmt.Errorf("error: cannot merge because table wisp_dependencies has different primary keys"), "wisp_dependencies"},
+		{"sql error envelope", fmt.Errorf("Error 1105 (HY000): error: cannot merge because table issues has different primary keys in its common ancestor"), "issues"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ancestorPKMismatchTable(tt.err)
+			if got != tt.want {
+				t.Errorf("ancestorPKMismatchTable(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsRemoteNotFoundErr(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1096,6 +1144,44 @@ func TestPrintDivergedHistoryGuidance(t *testing.T) {
 	}
 	if !strings.Contains(output, "rm -rf .beads/dolt") {
 		t.Error("expected guidance to mention manual recovery")
+	}
+}
+
+func TestPrintAncestorPKMismatchGuidance(t *testing.T) {
+	// Capture stderr output
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printAncestorPKMismatchGuidance(fmt.Errorf("error: cannot merge because table dependencies has different primary keys in its common ancestor"))
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	output := buf.String()
+
+	if !strings.Contains(output, `table "dependencies"`) {
+		t.Error("expected guidance to name the refused table")
+	}
+	if !strings.Contains(output, "schema fork") {
+		t.Error("expected guidance to explain this is a schema fork")
+	}
+	if !strings.Contains(output, "Retrying will not help") {
+		t.Error("expected guidance to say retrying cannot converge the clones")
+	}
+	if !strings.Contains(output, "bd dolt push --force") {
+		t.Error("expected guidance to mention making the canonical clone authoritative")
+	}
+	if !strings.Contains(output, "bd export --all") {
+		t.Error("expected guidance to mention saving local-only work")
+	}
+	if !strings.Contains(output, "bd bootstrap") {
+		t.Error("expected guidance to mention re-cloning via bd bootstrap")
+	}
+	if !strings.Contains(output, "docs/RECOVERY.md#pk-fork-refused") {
+		t.Error("expected guidance to link the full recovery playbook")
 	}
 }
 
