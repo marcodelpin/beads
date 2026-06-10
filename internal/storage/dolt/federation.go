@@ -145,6 +145,31 @@ func (s *DoltStore) ListRemotes(ctx context.Context) ([]storage.RemoteInfo, erro
 	return versioncontrolops.ListRemotes(ctx, s.db)
 }
 
+// hasPersistedCLIRemote reports whether a Dolt remote is persisted on disk in
+// .dolt/config — in the database CLI directory (CLIDir) or the dolt server root
+// (Path, per GH#2118). A freshly (auto-)started sql-server can report an empty
+// dolt_remotes table at store open even though remotes are persisted on disk.
+// The #4259 remote-migrate gate therefore consults this directly so a
+// cold-start open cannot miss the remote and migrate the shared database in
+// place. Best-effort: a missing dolt binary, a non-dolt directory, or any
+// listing error counts as "no remote found" rather than wedging the open.
+func (s *DoltStore) hasPersistedCLIRemote() bool {
+	cliDir := s.CLIDir()
+	dirs := []string{cliDir}
+	if s.dbPath != "" && s.dbPath != cliDir {
+		dirs = append(dirs, s.dbPath)
+	}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		if remotes, err := doltutil.ListCLIRemotes(dir); err == nil && len(remotes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveRemote removes a configured remote.
 func (s *DoltStore) RemoveRemote(ctx context.Context, name string) error {
 	return versioncontrolops.RemoveRemote(ctx, s.db, name)
