@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
@@ -30,19 +32,45 @@ func CheckMigrationContentSkew(ss *SharedStore) DoctorCheck {
 			Category: CategoryData,
 		}
 	}
-	return checkMigrationContentSkew(context.Background(), store.DB())
+	return checkMigrationContentSkew(context.Background(), store.DB(), store.RemoteName())
 }
 
-func checkMigrationContentSkew(ctx context.Context, db *sql.DB) DoctorCheck {
+// checkMigrationContentSkew compares local migration content hashes against the
+// configured sync remote's cached tracking ref. remote is the sync remote name
+// (DoltStore.RemoteName(), "origin" by default) — NOT whichever remote happens
+// to sort first in dolt_remotes.
+func checkMigrationContentSkew(ctx context.Context, db *sql.DB, remote string) DoctorCheck {
 	ok := func(msg string) DoctorCheck {
 		return DoctorCheck{Name: migrationContentSkewCheckName, Status: StatusOK, Message: msg, Category: CategoryData}
 	}
+	// "Cannot check" is NOT "checked and matches": surface unexpected failures
+	// as a warning instead of swallowing them as OK (bd-6dnrw.27 — a broken
+	// query made this check a silent permanent no-op).
+	cannot := func(stage string, err error) DoctorCheck {
+		return DoctorCheck{
+			Name:     migrationContentSkewCheckName,
+			Status:   StatusWarning,
+			Message:  fmt.Sprintf("Could not check migration content skew (%s): %v", stage, err),
+			Detail:   "The skew check failed to run; this does not mean skew exists. Re-run `bd doctor` and report the error if it persists.",
+			Category: CategoryData,
+		}
+	}
 
-	// Without a remote there is nothing to compare against.
-	var remote string
+	if remote == "" {
+		remote = "origin"
+	}
+
+	// Without the configured sync remote there is nothing to compare against.
+	var remoteCount int
 	if err := db.QueryRowContext(ctx,
-		"SELECT name FROM dolt_remotes ORDER BY name LIMIT 1").Scan(&remote); err != nil {
-		return ok("No remote configured — nothing to compare")
+		"SELECT COUNT(*) FROM dolt_remotes WHERE name = ?", remote).Scan(&remoteCount); err != nil {
+		if dberrors.IsTableNotExist(err) {
+			return ok("No remote configured — nothing to compare")
+		}
+		return cannot("read dolt_remotes", err)
+	}
+	if remoteCount == 0 {
+		return ok(fmt.Sprintf("Sync remote %q not configured — nothing to compare", remote))
 	}
 
 	branch := "main"
@@ -51,14 +79,26 @@ func checkMigrationContentSkew(ctx context.Context, db *sql.DB) DoctorCheck {
 		branch = active
 	}
 
-	local, err := readMigrationContentHashes(ctx, db, "", "")
+	local, err := readMigrationContentHashes(ctx, db, "")
 	if err != nil {
-		return ok("schema_migrations unavailable")
+		if missingObjectErr(err) {
+			return ok("No local migration content hashes recorded yet")
+		}
+		return cannot("read local schema_migrations", err)
 	}
-	remoteHashes, err := readMigrationContentHashes(ctx, db, remote, branch)
+	if len(local) == 0 {
+		return ok("No local migration content hashes recorded yet")
+	}
+
+	ref := "remotes/" + remote + "/" + branch
+	remoteHashes, err := readMigrationContentHashes(ctx, db, ref)
 	if err != nil {
-		// The remote-tracking ref is not cached yet (e.g. never pulled).
-		return ok("No cached remote ref to compare")
+		// The remote-tracking ref is not cached yet (e.g. never pushed/pulled),
+		// or the cached ref predates schema_migrations/content_hash.
+		if remoteRefUnavailableErr(err) || missingObjectErr(err) {
+			return ok(fmt.Sprintf("No cached remote ref %q to compare", ref))
+		}
+		return cannot(fmt.Sprintf("read schema_migrations at %q", ref), err)
 	}
 
 	skewed := schema.ContentHashSkew(local, remoteHashes)
@@ -80,21 +120,49 @@ func checkMigrationContentSkew(ctx context.Context, db *sql.DB) DoctorCheck {
 	}
 }
 
-// readMigrationContentHashes reads version -> content_hash from schema_migrations,
-// either at HEAD (remote == "") or AS OF the cached remote-tracking ref
-// remotes/<remote>/<branch>. NULL/empty hashes are dropped. It returns an error
-// when the table or the remote ref is unavailable, which the caller treats as
-// "nothing to compare".
-func readMigrationContentHashes(ctx context.Context, db *sql.DB, remote, branch string) (map[int]string, error) {
+// remoteRefUnavailableErr reports whether err means the AS OF ref does not
+// exist locally. Dolt 2.x: "branch not found: remotes/origin/main".
+func remoteRefUnavailableErr(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "branch not found") ||
+		strings.Contains(s, "invalid ref spec")
+}
+
+// missingObjectErr reports whether err means schema_migrations or its
+// content_hash column does not exist (at HEAD or at the AS OF ref) — an old
+// database or an old cached ref, which is a legitimate "nothing to compare".
+// Dolt 2.x AS OF phrasing: "table not found: x",
+// `column "content_hash" could not be found in any table in scope`.
+func missingObjectErr(err error) bool {
+	if dberrors.IsTableNotExist(err) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "table not found") ||
+		(strings.Contains(s, "column") && strings.Contains(s, "could not be found")) ||
+		strings.Contains(s, "unknown column")
+}
+
+// readMigrationContentHashes reads version -> content_hash from
+// schema_migrations, either at HEAD (ref == "") or AS OF ref (e.g.
+// "remotes/origin/main"). NULL/empty hashes are dropped. It returns an error
+// when the table, column, or ref is unavailable; the caller classifies it.
+//
+// Dolt requires a literal ref in AS OF: bind parameters (including inside
+// CONCAT) fail server-side with `unbound variable "v1" in query`, so the
+// validated ref is interpolated into the SQL text (bd-6dnrw.27).
+func readMigrationContentHashes(ctx context.Context, db *sql.DB, ref string) (map[int]string, error) {
 	var rows *sql.Rows
 	var err error
-	if remote == "" {
+	if ref == "" {
 		rows, err = db.QueryContext(ctx, "SELECT version, content_hash FROM schema_migrations")
 	} else {
-		// CONCAT keeps the (user-controlled) remote name out of the SQL text.
+		if err := issueops.ValidateRef(ref); err != nil {
+			return nil, fmt.Errorf("invalid ref: %w", err)
+		}
+		//nolint:gosec // G201: ref is validated by issueops.ValidateRef above — AS OF requires a literal
 		rows, err = db.QueryContext(ctx,
-			"SELECT version, content_hash FROM schema_migrations AS OF CONCAT('remotes/', ?, '/', ?)",
-			remote, branch)
+			fmt.Sprintf("SELECT version, content_hash FROM schema_migrations AS OF '%s'", ref))
 	}
 	if err != nil {
 		return nil, err

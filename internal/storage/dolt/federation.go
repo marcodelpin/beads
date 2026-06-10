@@ -9,6 +9,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
@@ -181,23 +182,31 @@ func (s *DoltStore) SyncStatus(ctx context.Context, peer string) (*storage.SyncS
 		Peer: peer,
 	}
 
-	// Get ahead/behind counts by comparing refs
-	// This requires the peer to have been fetched first
-	query := `
-		SELECT
-			(SELECT COUNT(*) FROM dolt_log WHERE commit_hash NOT IN
-				(SELECT commit_hash FROM dolt_log AS OF CONCAT(?, '/', ?))) as ahead,
-			(SELECT COUNT(*) FROM dolt_log AS OF CONCAT(?, '/', ?) WHERE commit_hash NOT IN
-				(SELECT commit_hash FROM dolt_log)) as behind
-	`
-
-	err := s.db.QueryRowContext(ctx, query, peer, s.branch, peer, s.branch).
-		Scan(&status.LocalAhead, &status.LocalBehind)
-	if err != nil {
-		// If we can't get the status, return a partial result
-		// This happens when the remote branch doesn't exist locally yet
+	// Get ahead/behind counts by comparing refs.
+	// This requires the peer to have been fetched first.
+	// Dolt's AS OF requires a literal ref: bind parameters (even inside CONCAT)
+	// fail server-side with `unbound variable "v1" in query`, so validate the
+	// ref and interpolate it (same pattern as embeddeddolt SyncStatus).
+	remoteRef := peer + "/" + s.branch
+	if err := issueops.ValidateRef(remoteRef); err != nil {
 		status.LocalAhead = -1
 		status.LocalBehind = -1
+	} else {
+		//nolint:gosec // G201: remoteRef is validated by issueops.ValidateRef above — AS OF requires a literal
+		query := fmt.Sprintf(`
+			SELECT
+				(SELECT COUNT(*) FROM dolt_log WHERE commit_hash NOT IN
+					(SELECT commit_hash FROM dolt_log AS OF '%s')) as ahead,
+				(SELECT COUNT(*) FROM dolt_log AS OF '%s' WHERE commit_hash NOT IN
+					(SELECT commit_hash FROM dolt_log)) as behind
+		`, remoteRef, remoteRef)
+		if err := s.db.QueryRowContext(ctx, query).
+			Scan(&status.LocalAhead, &status.LocalBehind); err != nil {
+			// If we can't get the status, return a partial result.
+			// This happens when the remote branch doesn't exist locally yet.
+			status.LocalAhead = -1
+			status.LocalBehind = -1
+		}
 	}
 
 	// Check for conflicts

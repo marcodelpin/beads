@@ -695,6 +695,12 @@ func (s *DoltStore) DB() *sql.DB {
 	return s.db
 }
 
+// RemoteName returns the configured default sync remote name ("origin" unless
+// overridden), the remote Push/Pull target when no explicit remote is given.
+func (s *DoltStore) RemoteName() string {
+	return s.remote
+}
+
 // BackupAdd registers a Dolt backup destination.
 func (s *DoltStore) BackupAdd(ctx context.Context, name, url string) error {
 	return versioncontrolops.BackupAdd(ctx, s.db, name, url)
