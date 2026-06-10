@@ -64,11 +64,19 @@ func NewDoltServerUOWProvider(
 	// On-disk remote probe for the remote-migrate gate: the child dolt
 	// sql-server stores the database at <serverRootDir>/<database>, and a
 	// freshly started server can report an empty dolt_remotes table even
-	// though a remote is persisted in .dolt (GH#2315). Best-effort — any
-	// listing error counts as "no remote found".
+	// though a remote is persisted in .dolt (GH#2315). Reads
+	// repo_state.json directly; a read/parse failure fails open but is
+	// logged, never swallowed (bd-6dnrw.33).
 	hasRemoteProbe := func() bool {
 		for _, dir := range []string{filepath.Join(absServerRootDir, database), absServerRootDir} {
-			if remotes, err := doltutil.ListCLIRemotes(dir); err == nil && len(remotes) > 0 {
+			remotes, err := doltutil.PersistedRemotes(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"Warning: remote-migrate gate could not inspect %s for persisted remotes (assuming none): %v\n",
+					dir, err)
+				continue
+			}
+			if len(remotes) > 0 {
 				return true
 			}
 		}

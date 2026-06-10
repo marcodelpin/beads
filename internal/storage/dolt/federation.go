@@ -3,6 +3,7 @@ package dolt
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -147,13 +148,18 @@ func (s *DoltStore) ListRemotes(ctx context.Context) ([]storage.RemoteInfo, erro
 }
 
 // hasPersistedCLIRemote reports whether a Dolt remote is persisted on disk in
-// .dolt/config — in the database CLI directory (CLIDir) or the dolt server root
-// (Path, per GH#2118). A freshly (auto-)started sql-server can report an empty
-// dolt_remotes table at store open even though remotes are persisted on disk.
-// The #4259 remote-migrate gate therefore consults this directly so a
-// cold-start open cannot miss the remote and migrate the shared database in
-// place. Best-effort: a missing dolt binary, a non-dolt directory, or any
-// listing error counts as "no remote found" rather than wedging the open.
+// .dolt/repo_state.json — in the database CLI directory (CLIDir) or the dolt
+// server root (Path, per GH#2118). A freshly (auto-)started sql-server can
+// report an empty dolt_remotes table at store open even though remotes are
+// persisted on disk. The #4259 remote-migrate gate therefore consults this
+// directly so a cold-start open cannot miss the remote and migrate the shared
+// database in place.
+//
+// The probe reads repo_state.json itself (no dolt CLI subprocess), so a
+// missing dolt binary can no longer disable the gate. A directory that is not
+// a dolt repository is a definite "no remote here"; a read/parse failure still
+// fails open (migration is not wedged on unrelated corruption) but is logged,
+// never swallowed (bd-6dnrw.33).
 func (s *DoltStore) hasPersistedCLIRemote() bool {
 	cliDir := s.CLIDir()
 	dirs := []string{cliDir}
@@ -164,7 +170,14 @@ func (s *DoltStore) hasPersistedCLIRemote() bool {
 		if dir == "" {
 			continue
 		}
-		if remotes, err := doltutil.ListCLIRemotes(dir); err == nil && len(remotes) > 0 {
+		remotes, err := doltutil.PersistedRemotes(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: remote-migrate gate could not inspect %s for persisted remotes (assuming none): %v\n",
+				dir, err)
+			continue
+		}
+		if len(remotes) > 0 {
 			return true
 		}
 	}
