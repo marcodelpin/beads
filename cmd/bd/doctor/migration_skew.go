@@ -71,11 +71,11 @@ func checkMigrationContentSkew(ctx context.Context, db *sql.DB) DoctorCheck {
 		versions[i] = fmt.Sprintf("%04d", v)
 	}
 	return DoctorCheck{
-		Name:    migrationContentSkewCheckName,
-		Status:  StatusWarning,
-		Message: fmt.Sprintf("This database and remote %q applied different content for migration(s) %s", remote, strings.Join(versions, ", ")),
-		Detail:  "Two clones ran different migration content for the same version number — a silent schema fork (gastownhall/beads#4259). `bd dolt pull` may fail to merge cryptically.",
-		Fix:     "Upgrade every clone to a bd version that carries the schema-convergence migration. If a merge already fails, make one clone canonical and re-bootstrap the others from the remote.",
+		Name:     migrationContentSkewCheckName,
+		Status:   StatusWarning,
+		Message:  fmt.Sprintf("This database and remote %q applied different content for migration(s) %s", remote, strings.Join(versions, ", ")),
+		Detail:   "Two clones ran different migration content for the same version number — a silent schema fork (gastownhall/beads#4259). `bd dolt pull` may fail to merge cryptically.",
+		Fix:      "Upgrade every clone to a bd version that carries the schema-convergence migration. If a merge already fails, make one clone canonical and re-bootstrap the others from the remote.",
 		Category: CategoryData,
 	}
 }
