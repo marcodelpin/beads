@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 )
 
-// AllowRemoteMigrateEnv, when set to "1", lets the designated migrator apply
-// pending schema migrations to a remote-backed database despite the gate below.
+// AllowRemoteMigrateEnv, when set to a boolean true ("1", "true", ...), lets
+// the designated migrator apply pending schema migrations to a remote-backed
+// database despite the gate below. It is consulted only when the gate would
+// otherwise fire, so exporting it permanently does not warn on every store open.
 const AllowRemoteMigrateEnv = "BD_ALLOW_REMOTE_MIGRATE"
 
 // RemoteMigrateGateError is returned when bd is about to auto-apply pending
@@ -28,6 +31,11 @@ type RemoteMigrateGateError struct {
 	CurrentVersion int
 	LatestVersion  int
 	Pending        int
+	// UnrecognizedEnv carries a BD_ALLOW_REMOTE_MIGRATE value that was set but
+	// not understood (only boolean values unlock, e.g. "1"/"true"), so a
+	// typo'd escape hatch fails with a hint instead of silently staying locked
+	// (bd-6dnrw.34).
+	UnrecognizedEnv string
 }
 
 func (e *RemoteMigrateGateError) Error() string {
@@ -41,7 +49,7 @@ func (e *RemoteMigrateGateError) Error() string {
 
 // UserMessage returns the full multi-line error block for terminal output.
 func (e *RemoteMigrateGateError) UserMessage() string {
-	return e.Error() + "\n" +
+	msg := e.Error() + "\n" +
 		"\n" +
 		"  This database syncs with a remote. Applying schema migrations on more than\n" +
 		"  one clone independently forks the schema so `bd dolt pull` can no longer\n" +
@@ -56,6 +64,12 @@ func (e *RemoteMigrateGateError) UserMessage() string {
 		"      migrating here — re-clone from the remote so you receive the migrated\n" +
 		"      schema:\n" +
 		"        bd bootstrap\n"
+	if e.UnrecognizedEnv != "" {
+		msg += "\n" +
+			"  Note: " + AllowRemoteMigrateEnv + "=" + e.UnrecognizedEnv + " is set but was not recognized —\n" +
+			"  use " + AllowRemoteMigrateEnv + "=1 to unlock.\n"
+	}
+	return msg
 }
 
 // EscapeHint returns the escape-hatch string for JSON error output.
@@ -101,13 +115,6 @@ func CheckRemoteMigrateGateWithRemoteCheck(ctx context.Context, db DBConn, extra
 }
 
 func checkRemoteMigrateGate(ctx context.Context, db DBConn, extraHasRemote func() bool) error {
-	if os.Getenv(AllowRemoteMigrateEnv) == "1" {
-		fmt.Fprintf(os.Stderr,
-			"Warning: applying schema migrations to a remote-backed database (%s=1); only one clone should migrate, then `bd dolt push`\n",
-			AllowRemoteMigrateEnv)
-		return nil
-	}
-
 	// CurrentVersion treats a missing schema_migrations table as version 0, so a
 	// brand-new database falls through the current==0 check below — nothing to fork.
 	current, err := CurrentVersion(ctx, db)
@@ -140,10 +147,30 @@ func checkRemoteMigrateGate(ctx context.Context, db DBConn, extraHasRemote func(
 		return nil // no remote — no cross-clone fork risk
 	}
 
+	// Escape hatch — consulted only once the gate would actually fire, so an
+	// operator who exports it in a shell profile is not warned on every store
+	// open with nothing pending or no remote (bd-6dnrw.34). Any boolean true
+	// ("1", "true", "TRUE", ...) unlocks; a set-but-unparseable value is
+	// surfaced in the gate error instead of silently staying locked.
+	unrecognizedEnv := ""
+	if v := os.Getenv(AllowRemoteMigrateEnv); v != "" {
+		if allowed, perr := strconv.ParseBool(v); perr == nil {
+			if allowed {
+				fmt.Fprintf(os.Stderr,
+					"Warning: applying %d pending schema migration(s) to a remote-backed database (%s=%s); only one clone should migrate, then `bd dolt push`\n",
+					len(pending), AllowRemoteMigrateEnv, v)
+				return nil
+			}
+		} else {
+			unrecognizedEnv = v
+		}
+	}
+
 	return &RemoteMigrateGateError{
-		CurrentVersion: current,
-		LatestVersion:  LatestVersion(),
-		Pending:        len(pending),
+		CurrentVersion:  current,
+		LatestVersion:   LatestVersion(),
+		Pending:         len(pending),
+		UnrecognizedEnv: unrecognizedEnv,
 	}
 }
 

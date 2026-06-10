@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -20,18 +21,54 @@ func expectGateCurrentVersion(mock sqlmock.Sqlmock, version int) {
 func TestCheckRemoteMigrateGate(t *testing.T) {
 	latest := LatestVersion()
 
-	t.Run("escape hatch env var allows migration without any query", func(t *testing.T) {
-		t.Setenv(AllowRemoteMigrateEnv, "1")
+	// expectFiringGate mocks the probe sequence for a behind, remote-backed
+	// database — the only state in which the gate (and the escape hatch) acts.
+	expectFiringGate := func(mock sqlmock.Sqlmock) {
+		expectGateCurrentVersion(mock, 1) // CurrentVersion
+		expectGateCurrentVersion(mock, 1) // PendingVersions -> pending exists
+		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	}
+
+	t.Run("escape hatch allows migration when the gate would fire", func(t *testing.T) {
+		for _, v := range []string{"1", "true", "TRUE"} {
+			t.Setenv(AllowRemoteMigrateEnv, v)
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			expectFiringGate(mock)
+			if err := CheckRemoteMigrateGate(context.Background(), db); err != nil {
+				t.Fatalf("%s=%s: expected nil, got %v", AllowRemoteMigrateEnv, v, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("%s=%s: unmet expectations: %v", AllowRemoteMigrateEnv, v, err)
+			}
+			db.Close()
+		}
+	})
+
+	t.Run("unrecognized escape hatch value stays locked with a hint", func(t *testing.T) {
+		t.Setenv(AllowRemoteMigrateEnv, "yes")
 		db, mock, err := sqlmock.New()
 		if err != nil {
 			t.Fatalf("sqlmock.New: %v", err)
 		}
 		defer db.Close()
-		if err := CheckRemoteMigrateGate(context.Background(), db); err != nil {
-			t.Fatalf("expected nil with escape hatch set, got %v", err)
+		expectFiringGate(mock)
+		gerr := CheckRemoteMigrateGate(context.Background(), db)
+		var gateErr *RemoteMigrateGateError
+		if !errors.As(gerr, &gateErr) {
+			t.Fatalf("expected *RemoteMigrateGateError, got %v", gerr)
+		}
+		if gateErr.UnrecognizedEnv != "yes" {
+			t.Errorf("UnrecognizedEnv = %q, want %q", gateErr.UnrecognizedEnv, "yes")
+		}
+		if msg := gateErr.UserMessage(); !strings.Contains(msg, "not recognized") {
+			t.Errorf("UserMessage missing unrecognized-value hint:\n%s", msg)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatalf("unexpected queries with escape hatch: %v", err)
+			t.Fatalf("unmet expectations: %v", err)
 		}
 	})
 
