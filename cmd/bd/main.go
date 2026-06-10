@@ -1034,6 +1034,17 @@ var rootCmd = &cobra.Command{
 		if proxiedServerMode {
 			p, err := newProxiedServerUOWProvider(rootCtx, beadsDir)
 			if err != nil {
+				// #4259: same migrate-or-adopt UX as the dolt/embeddeddolt open
+				// paths when the remote-migrate gate refuses an in-place upgrade.
+				var gateErr *schema.RemoteMigrateGateError
+				if errors.As(err, &gateErr) {
+					if jsonOutput {
+						handleRemoteMigrateGateJSON(gateErr)
+					} else {
+						fmt.Fprint(os.Stderr, gateErr.UserMessage())
+					}
+					os.Exit(1)
+				}
 				FatalError("failed to open uow provider: %v", err)
 			}
 			uowProvider = p
