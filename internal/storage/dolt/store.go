@@ -1493,6 +1493,16 @@ func initSchemaOnDB(ctx context.Context, db *sql.DB) (int, error) {
 }
 
 func initSchemaOnDBWithRetry(ctx context.Context, db *sql.DB) (int, error) {
+	return initSchemaOnDBWithRetryAndGate(ctx, db, nil)
+}
+
+// initSchemaOnDBWithRetryAndGate is initSchemaOnDBWithRetry with an optional
+// pre-migration gate run INSIDE the retry loop. The gate's own reads
+// (schema_migrations, dolt_remotes) can hit the same transient Dolt
+// startup/catalog races the migration retry absorbs, so gate probe errors are
+// retried with them instead of failing the open fast (bd-6dnrw.30); a
+// *schema.RemoteMigrateGateError refusal stays permanent.
+func initSchemaOnDBWithRetryAndGate(ctx context.Context, db *sql.DB, gate func(context.Context, *sql.DB) error) (int, error) {
 	// Schema initialization for server mode is idempotent. Retry transient
 	// Dolt startup/catalog races and contended migration-lock attempts so
 	// concurrent bd processes converge instead of failing one unlucky waiter.
@@ -1503,6 +1513,14 @@ func initSchemaOnDBWithRetry(ctx context.Context, db *sql.DB) (int, error) {
 	schemaBO.MaxElapsedTime = serverRetryMaxElapsed
 	var applied int
 	err := backoff.Retry(func() error {
+		if gate != nil {
+			if gateErr := gate(ctx, db); gateErr != nil {
+				if !schema.IsRemoteMigrateGateError(gateErr) && isRetryableError(gateErr) {
+					return gateErr
+				}
+				return backoff.Permanent(gateErr)
+			}
+		}
 		var schemaErr error
 		applied, schemaErr = initSchemaOnDB(ctx, db)
 		if schemaErr != nil && isRetryableError(schemaErr) {
@@ -1531,15 +1549,17 @@ func (s *DoltStore) initSchema(ctx context.Context) error {
 	defer migDB.Close()
 	// #4259: refuse to silently apply pending migrations to a remote-backed,
 	// already-initialized database — that is how two clones fork the schema.
-	// Checked before the (retried) migration so it fails fast and is not retried.
+	// The gate runs inside the retry loop, before each migration attempt: its
+	// reads can hit transient startup/catalog races (retryable) while a gate
+	// refusal is permanent and never retried into a migration.
 	// Use the on-disk fallback: a freshly (auto-)started server can report an
 	// empty dolt_remotes table even though remotes are persisted in .dolt/config
 	// (GH#2315), so an SQL-only check would miss the remote on the first write
 	// open after an upgrade.
-	if err := schema.CheckRemoteMigrateGateWithRemoteCheck(ctx, migDB, s.hasPersistedCLIRemote); err != nil {
-		return err
+	gate := func(ctx context.Context, db *sql.DB) error {
+		return schema.CheckRemoteMigrateGateWithRemoteCheck(ctx, db, s.hasPersistedCLIRemote)
 	}
-	_, err = initSchemaOnDBWithRetry(ctx, migDB)
+	_, err = initSchemaOnDBWithRetryAndGate(ctx, migDB, gate)
 	return err
 }
 
