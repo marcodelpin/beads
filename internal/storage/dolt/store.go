@@ -2431,6 +2431,16 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 		_ = tx.Rollback()
 		return fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
 	}
+	// bd-6dnrw.4: a merge that violates a foreign key (e.g. one clone deleted
+	// an issue while another inserted a child row referencing it) rolls the
+	// whole transaction back before it can be inspected. Let it land in the
+	// working set instead so tryRepairFKCascadeViolations can apply the
+	// cascade semantics; the violation check before tx.Commit() below refuses
+	// to commit anything the repair did not fully clear.
+	if _, err := tx.ExecContext(ctx, "SET @@dolt_force_transaction_commit = 1"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("failed to set dolt_force_transaction_commit: %w", err)
+	}
 
 	_, pullErr := tx.ExecContext(ctx, query, args...)
 
@@ -2451,6 +2461,18 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 		pullErr = mergeErr
 	}
 
+	return s.settleMergeInTx(ctx, tx, pullErr)
+}
+
+// settleMergeInTx finishes a pull/merge that ran in tx: it auto-resolves the
+// safe conflict classes, repairs FK cascade violations (bd-6dnrw.4), and
+// commits — or rolls back when anything needs the operator. pullErr is the
+// pull/merge statement's own error; it is surfaced whenever nothing was
+// resolved or repaired. The tx must have been opened with
+// dolt_allow_commit_conflicts and dolt_force_transaction_commit set, which is
+// why the violation gate here is mandatory: with the force flag on, committing
+// without it would persist a violated working set.
+func (s *DoltStore) settleMergeInTx(ctx context.Context, tx *sql.Tx, pullErr error) error {
 	// Check for merge conflicts regardless of whether DOLT_PULL errored.
 	// Some Dolt versions error on conflicts, others leave them in the working set.
 	resolved, resolveErr := s.tryAutoResolveMergeConflicts(ctx, tx)
@@ -2462,7 +2484,26 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 		return resolveErr
 	}
 
-	if pullErr != nil && !resolved {
+	// bd-6dnrw.4: repair FK cascade violations the merge produced (child rows
+	// whose parent issue was deleted on the other clone). Unrepaired
+	// violations MUST NOT be committed.
+	repairedViol, hadViol, violErr := s.tryRepairFKCascadeViolations(ctx, tx)
+	if violErr != nil {
+		_ = tx.Rollback()
+		if pullErr != nil {
+			return pullErr
+		}
+		return violErr
+	}
+	if hadViol && !repairedViol {
+		_ = tx.Rollback()
+		if pullErr != nil {
+			return pullErr
+		}
+		return fmt.Errorf("pull merge left constraint violations bd cannot auto-repair; inspect dolt_constraint_violations and resolve before retrying")
+	}
+
+	if pullErr != nil && !resolved && !repairedViol {
 		// Pull failed for a non-conflict reason, or conflicts include non-metadata tables.
 		_ = tx.Rollback()
 		return pullErr
@@ -2553,7 +2594,20 @@ func (s *DoltStore) autoResolveConflictsAfterCLIPull(ctx context.Context) (bool,
 		_ = tx.Rollback()
 		return false, err
 	}
-	if !resolved {
+	// bd-6dnrw.4: a CLI pull can also leave FK cascade violations in the
+	// shared working set (child rows whose parent issue was deleted on the
+	// other clone). Repair them like the SQL route does; unrepaired
+	// violations roll back untouched for the operator.
+	repairedViol, hadViol, violErr := s.tryRepairFKCascadeViolations(ctx, tx)
+	if violErr != nil {
+		_ = tx.Rollback()
+		return false, violErr
+	}
+	if hadViol && !repairedViol {
+		_ = tx.Rollback()
+		return false, nil
+	}
+	if !resolved && !repairedViol {
 		_ = tx.Rollback()
 		return false, nil
 	}
