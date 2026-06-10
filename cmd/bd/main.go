@@ -250,13 +250,22 @@ func repairSharedServerEmbeddedMismatch(beadsDir string, cfg *configfile.Config)
 // loadServerModeFromBeadsDir loads the storage mode (embedded vs server vs
 // proxied-server) from the given beads directory's metadata.json so that
 // usesSQLServer() and usesProxiedServer() return the correct values.
-func loadServerModeFromBeadsDir(beadsDir string) {
+//
+// A metadata.json that exists but cannot be loaded is a hard error: treating
+// it like an absent file silently flips server-mode deployments onto the
+// embedded store, where every query answers from an empty relic with exit 0
+// (false-empty). Absent metadata.json (cfg == nil) keeps the fresh-repo
+// embedded default.
+func loadServerModeFromBeadsDir(beadsDir string) error {
 	if beadsDir == "" {
-		return
+		return nil
 	}
 	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
-		return
+	if err != nil {
+		return fmt.Errorf("load %s: %w (refusing to guess the storage mode; the embedded fallback would mask server-backed data)", configfile.ConfigPath(beadsDir), err)
+	}
+	if cfg == nil {
+		return nil
 	}
 	repairSharedServerEmbeddedMismatch(beadsDir, cfg)
 	psm := cfg.IsDoltProxiedServerMode()
@@ -271,14 +280,15 @@ func loadServerModeFromBeadsDir(beadsDir string) {
 		cmdCtx.ServerMode = sm
 		cmdCtx.ProxiedServerMode = psm
 	}
+	return nil
 }
 
 // loadServerModeFromConfig loads the storage mode (embedded vs server vs
 // proxied-server) from metadata.json so that usesSQLServer() and
 // usesProxiedServer() return the correct values. Called for commands that
 // skip full DB init but still need to know the mode.
-func loadServerModeFromConfig() {
-	loadServerModeFromBeadsDir(beads.FindBeadsDir())
+func loadServerModeFromConfig() error {
+	return loadServerModeFromBeadsDir(beads.FindBeadsDir())
 }
 
 func preserveRedirectSourceDatabase(beadsDir string) {
@@ -393,7 +403,9 @@ func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to reinitialize config for selected beads dir: %v\n", err)
 	}
 	config.CheckBeadsDirPermissions(beadsDir)
-	loadServerModeFromBeadsDir(beadsDir)
+	if err := loadServerModeFromBeadsDir(beadsDir); err != nil {
+		FatalError("%v", err)
+	}
 }
 
 func prepareSelectedNoDBContext(beadsDir string) {
@@ -817,7 +829,9 @@ var rootCmd = &cobra.Command{
 			refreshBoundCommandConfig(cmd)
 			if beadsDir := os.Getenv("BEADS_DIR"); beadsDir == "" {
 				loadEnvironment()
-				loadServerModeFromConfig()
+				if err := loadServerModeFromConfig(); err != nil {
+					FatalError("%v", err)
+				}
 			}
 			if _, err := getDoltAutoCommitMode(); err != nil {
 				FatalError("%v", err)
@@ -956,10 +970,17 @@ var rootCmd = &cobra.Command{
 			BeadsDir: beadsDir,
 		}
 
-		// Load config to get database name and server connection settings
+		// Load config to get database name and server connection settings.
+		// A present-but-unloadable metadata.json must stop the command here:
+		// continuing with the zero-value config silently selects the embedded
+		// store with the default database name, and on server-mode
+		// deployments that empty relic answers every query with an empty
+		// result set and exit 0 (false-empty), which readers misinterpret as
+		// "no work". Absent metadata.json (cfg == nil, cfgErr == nil) keeps
+		// the fresh-repo embedded default below.
 		cfg, cfgErr := configfile.Load(beadsDir)
 		if cfgErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to load beads config from %s: %v\n", beadsDir, cfgErr)
+			FatalError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
 		}
 		if cfg != nil {
 			doltCfg.ProxiedServer = cfg.IsDoltProxiedServerMode()
