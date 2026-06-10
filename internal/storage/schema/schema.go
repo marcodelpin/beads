@@ -247,6 +247,17 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	}
 	backfilled = backfilled || rekeyed
 
+	// bd-6dnrw.2: converge the events/comments/snapshots primary keys that
+	// migration 0037 randomized per-clone, the same hazard class on the aux
+	// tables. Gated on the clone-local ignored marker (recorded later in this
+	// pass by ignoredSource.migrate) so it runs exactly once per clone instead
+	// of churning synced rows on every later migration pass.
+	auxRekeyed, err := rekeyAuxRowIDs(ctx, db)
+	if err != nil {
+		return applied, fmt.Errorf("rekey aux row ids: %w", err)
+	}
+	backfilled = backfilled || auxRekeyed
+
 	if _, err := db.ExecContext(ctx, "REPLACE INTO dolt_ignore VALUES ('ignored_schema_migrations', true)"); err != nil {
 		return applied, fmt.Errorf("registering ignored_schema_migrations in dolt_ignore: %w", err)
 	}
