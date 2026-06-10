@@ -41,6 +41,7 @@ import (
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
@@ -2314,6 +2315,33 @@ func (s *DoltStore) pullFromRemote(ctx context.Context, remote string) (retErr e
 		}
 	}
 
+	// bd-6dnrw.3: capture the pre-pull HEAD so a successful merge can recompute
+	// the denormalized is_blocked column for the rows it changed. Read before
+	// the transport; an unreadable HEAD degrades to a full recompute.
+	preHead := ""
+	if !s.readOnly {
+		if h, err := s.GetCurrentCommit(ctx); err == nil {
+			preHead = h
+		}
+	}
+
+	if err := s.pullTransport(ctx, remote); err != nil {
+		return err
+	}
+
+	if !s.readOnly {
+		if err := s.recomputeBlockedAfterPull(ctx, preHead); err != nil {
+			return fmt.Errorf("pull succeeded but is_blocked recompute failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// pullTransport routes one pull through CLI or SQL based on the remote's
+// protocol and credentials, including the post-pull conflict auto-resolution
+// each route carries. Split from pullFromRemote so every successful route
+// funnels back through the is_blocked recompute.
+func (s *DoltStore) pullTransport(ctx context.Context, remote string) error {
 	creds := s.credentialsForRemote(remote)
 	// Git-protocol remotes: use CLI to avoid MySQL connection timeout during transfer.
 	// Must check before remoteUser — Hosted Dolt SSH remotes have remoteUser set
@@ -2441,6 +2469,34 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 	}
 
 	return tx.Commit()
+}
+
+// recomputeBlockedAfterPull recomputes the denormalized is_blocked column for
+// the rows a pull's merge changed (bd-6dnrw.3) and commits the result.
+// is_blocked is otherwise maintained only by local write paths, so a merge
+// that brings in another clone's status or dependency changes leaves it stale
+// and `bd ready` trusts it. fromCommit is the pre-pull HEAD; empty means it
+// could not be read, which degrades to a full recompute. A pull that merged
+// nothing (HEAD unchanged) is a no-op.
+func (s *DoltStore) recomputeBlockedAfterPull(ctx context.Context, fromCommit string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin is_blocked recompute: %w", err)
+	}
+	if err := issueops.RecomputeIsBlockedAfterMergeInTx(ctx, tx, fromCommit); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit is_blocked recompute: %w", err)
+	}
+	// Derived state converges: every clone computes the same values from the
+	// same merged graph, so committing is merge-safe. Commit no-ops when the
+	// recompute changed nothing.
+	if err := s.Commit(ctx, "bd: recompute is_blocked after pull"); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("commit is_blocked recompute: %w", err)
+	}
+	return nil
 }
 
 // finishCLIPull runs the merge-conflict auto-resolver after a CLI-based pull

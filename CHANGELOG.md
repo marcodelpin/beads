@@ -44,6 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`is_blocked` recomputed after `bd dolt pull`.** The denormalized
+  `is_blocked` column (migration `0046`) was maintained only by local write
+  paths, so a pull that merged another clone's writes silently left it stale —
+  e.g. clone A closes blocker X while clone B adds an edge W→X, and the merged
+  result carries `W.is_blocked=1` with a closed blocker, hiding W from
+  `bd ready`. Every pull path (server SQL and CLI routes, peer pulls, embedded
+  mode) now recomputes the column for exactly the rows the merge changed,
+  scoped via `dolt_diff` between the pre- and post-pull HEADs and expanded
+  through the same affected-set logic the local write paths use. Oversized or
+  schema-reshaping merges fall back to a full recompute; conflicted pulls skip
+  it until the operator resolves. (bd-6dnrw.3, PR 4107 follow-up)
+
 - **Deterministic history-table primary keys (cross-clone merge-safety).**
   Migration `0037` converted the legacy BIGINT primary keys of `events`,
   `comments`, `issue_snapshots` and `compaction_snapshots` by backfilling
