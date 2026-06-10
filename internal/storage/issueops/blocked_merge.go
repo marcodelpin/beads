@@ -23,8 +23,11 @@ const mergeRecomputeSeedCap = 1000
 
 // RecomputeIsBlockedAfterMergeInTx recomputes the denormalized is_blocked
 // column for every issue and wisp whose blocked state may have changed between
-// fromCommit and the current HEAD — typically the HEADs before and after a
-// `bd dolt pull` merge (bd-6dnrw.3, PR 4107 follow-up).
+// fromCommit and the current working set — typically the HEAD before a
+// `bd dolt pull` and the merged result it produced (bd-6dnrw.3, PR 4107
+// follow-up). The diff targets WORKING, not HEAD: an auto-resolved or
+// cascade-repaired merge sits in the working set without a merge commit until
+// a later DOLT_COMMIT, so HEAD alone misses it (bd-6dnrw.39).
 //
 // is_blocked is maintained only by the local write paths (create/close/
 // delete/dep/promote/bulk ops), so a merge that brings in another clone's
@@ -39,8 +42,8 @@ const mergeRecomputeSeedCap = 1000
 // on large databases when migration 0047 tried it). Above
 // mergeRecomputeSeedCap changed rows — or if the diff itself fails, e.g.
 // because the merge also changed those tables' schemas — it falls back to
-// recomputing every issue and wisp. A fromCommit equal to HEAD (nothing
-// merged) is a no-op.
+// recomputing every issue and wisp. A fromCommit equal to HEAD with a clean
+// working set (nothing merged) is a no-op.
 //
 // The is_blocked updates land in the working set; committing them is the
 // caller's responsibility (they are derived state, so committing them on every
@@ -63,7 +66,17 @@ func RecomputeIsBlockedAfterMergeInTx(ctx context.Context, tx *sql.Tx, fromCommi
 		}
 	}
 	if head == fromCommit {
-		return nil // nothing was merged
+		// HEAD did not advance — but a merge whose conflicts or constraint
+		// violations bd auto-resolved lands in the WORKING SET without a merge
+		// commit (bd-6dnrw.39), so an unchanged HEAD alone does not mean
+		// nothing merged. Skip only when issues/dependencies are clean too;
+		// on a status read error fall through to the diff, which answers the
+		// same question row-by-row.
+		var dirty int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM dolt_status WHERE table_name IN ('issues', 'dependencies')").Scan(&dirty); err == nil && dirty == 0 {
+			return nil // nothing was merged
+		}
 	}
 
 	issueIDs, wispIDs, ok, err := mergeAffectedSets(ctx, tx, fromCommit)
@@ -130,13 +143,13 @@ func mergeAffectedSets(ctx context.Context, tx *sql.Tx, fromCommit string) (issu
 }
 
 // changedIssueIDs returns the id of every issues row added, removed, or
-// modified between fromCommit and HEAD. Removed ids are included on purpose:
+// modified between fromCommit and the working set. Removed ids are included on purpose:
 // they no longer match any UPDATE, but their dependers (reached through the
 // dependencies diff and the expansion) may unblock.
 func changedIssueIDs(ctx context.Context, tx *sql.Tx, fromCommit string) ([]string, error) {
 	//nolint:gosec // fromCommit is validated against doltCommitHashRE; dolt_diff requires literal args.
 	rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-		"SELECT COALESCE(to_id, from_id) FROM dolt_diff('%s', 'HEAD', 'issues')", fromCommit))
+		"SELECT COALESCE(to_id, from_id) FROM dolt_diff('%s', 'WORKING', 'issues')", fromCommit))
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +174,7 @@ type changedDepEdge struct {
 }
 
 // changedDependencyEdges returns one entry per side (pre- and post-merge) of
-// every dependencies row changed between fromCommit and HEAD. Both sides
+// every dependencies row changed between fromCommit and the working set. Both sides
 // matter: the to-side seeds newly-added or retargeted edges, the from-side
 // seeds the dependers of deleted edges (whose rows no longer exist to be found
 // by the expansion).
@@ -170,7 +183,7 @@ func changedDependencyEdges(ctx context.Context, tx *sql.Tx, fromCommit string) 
 	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
 		SELECT from_issue_id, COALESCE(from_depends_on_issue_id, from_depends_on_wisp_id, from_depends_on_external), from_type,
 		       to_issue_id, COALESCE(to_depends_on_issue_id, to_depends_on_wisp_id, to_depends_on_external), to_type
-		FROM dolt_diff('%s', 'HEAD', 'dependencies')`, fromCommit))
+		FROM dolt_diff('%s', 'WORKING', 'dependencies')`, fromCommit))
 	if err != nil {
 		return nil, err
 	}

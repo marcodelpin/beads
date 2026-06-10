@@ -166,3 +166,33 @@ func TestRecomputeIsBlockedAfterMerge_UnknownFromCommitFullPass(t *testing.T) {
 		t.Error("full-pass recompute left bm-w stale")
 	}
 }
+
+// TestRecomputeIsBlockedAfterMerge_WorkingSetMergeHEADUnchanged covers the
+// bd-6dnrw.39 hole: a pull whose merge bd auto-resolved (conflicts) or
+// cascade-repaired (FK violations) lands in the WORKING SET without advancing
+// HEAD — the merge commit is only created by a later DOLT_COMMIT. The
+// recompute must not mistake the unchanged HEAD for "nothing merged": it
+// diffs to WORKING and skips only when issues/dependencies are clean too.
+func TestRecomputeIsBlockedAfterMerge_WorkingSetMergeHEADUnchanged(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	preHead := seedBlockedPair(ctx, t, store, true)
+
+	// The "merge": the remote's close of blocker X sits in the working set,
+	// uncommitted — HEAD still equals the pre-pull commit.
+	if _, err := store.db.ExecContext(ctx, "UPDATE issues SET status = 'closed' WHERE id = 'bm-x'"); err != nil {
+		t.Fatalf("simulate resolved merge in working set: %v", err)
+	}
+	if !isBlocked(ctx, t, store.db, "bm-w") {
+		t.Fatal("setup: bm-w must still read blocked before the recompute")
+	}
+
+	recomputeAfterMerge(ctx, t, store.db, preHead)
+
+	if isBlocked(ctx, t, store.db, "bm-w") {
+		t.Error("bm-w still is_blocked=1: recompute skipped a working-set merge because HEAD was unchanged (bd-6dnrw.39)")
+	}
+}
