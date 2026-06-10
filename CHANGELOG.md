@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade Notes
+
+- **Mixed bd versions sharing one Dolt remote.** Pre-1.0.6 binaries record
+  applied migrations as `(version, NULL)` while 1.0.6+ records
+  `(version, sha256)` in `schema_migrations`, so two clones applying the same
+  migration with different bd vintages used to produce a row conflict on
+  `bd dolt pull`. The pull auto-resolver now resolves this class by keeping
+  whichever side recorded the hash. Two *different* recorded hashes for the
+  same version are the real [#4259](https://github.com/gastownhall/beads/issues/4259)
+  schema fork and are still surfaced to the operator (see the `bd doctor`
+  Migration Content Skew check). To avoid the mixed-vintage window entirely,
+  upgrade all clones of a shared remote together, letting one designated
+  machine migrate and `bd dolt push` first.
+
 ### Added
 
 - **Per-migration content hash.** `schema_migrations` now records the SHA-256 of each migration's file content alongside its version (`content_hash`), so two clones at the same `MAX(version)` but with divergent migration content become detectable (reporter fix No.2 for [#4259](https://github.com/gastownhall/beads/issues/4259)). The column is added to fresh databases via the bootstrap schema and idempotently to existing databases at migrate time; already-applied rows keep a NULL hash. The column definition and the hashes are deterministic, so `schema_migrations` still merges cleanly across clones.
