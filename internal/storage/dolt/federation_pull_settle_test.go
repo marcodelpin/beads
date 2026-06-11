@@ -114,3 +114,99 @@ func TestPullFromSettlesFKCascadeViolations(t *testing.T) {
 		t.Errorf("%d constraint violations survive the peer pull", violations)
 	}
 }
+
+// TestPullFromReportsOperatorConflicts covers bd-578h9.15 on the server-mode
+// SQL route: a semantic conflict the resolver declines (both clones retitle
+// the same issue) rolls the merge transaction back inside settleMergeInTx, so
+// peerPullOutcome's post-hoc GetConflicts can never see it — the conflicts
+// must arrive captured pre-rollback inside MergeConflictsError and surface
+// through PullFrom's conflict-reporting contract. Peer setup mirrors
+// TestPullFromSettlesFKCascadeViolations.
+func TestPullFromReportsOperatorConflicts(t *testing.T) {
+	store, cleanup := setupConcurrentTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+	db := store.db
+
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type) "+
+			"VALUES ('opcpeer-x', 'base', '', '', '', '', 'open', 2, 'task')"); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', 'seed issue')"); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	peerDB := uniqueTestDBName(t)
+	remoteURL := "file:///tmp/" + peerDB + "_remote"
+	if err := store.AddFederationPeer(ctx, &storage.FederationPeer{Name: "peer", RemoteURL: remoteURL}); err != nil {
+		t.Fatalf("add federation peer: %v", err)
+	}
+	if err := store.PushTo(ctx, "peer"); err != nil {
+		t.Fatalf("push to peer remote: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "CALL DOLT_CLONE(?, ?)", remoteURL, peerDB); err != nil {
+		t.Fatalf("clone peer database: %v", err)
+	}
+
+	peerConn, err := sql.Open("mysql", doltutil.ServerDSN{
+		Host: "127.0.0.1", Port: testServerPort, User: "root", Database: peerDB,
+	}.String())
+	if err != nil {
+		t.Fatalf("open peer connection: %v", err)
+	}
+	defer peerConn.Close()
+	peerConn.SetMaxOpenConns(1)
+	for _, q := range []string{
+		"UPDATE issues SET title = 'theirs' WHERE id = 'opcpeer-x'",
+		"CALL DOLT_COMMIT('-Am', 'peer retitles')",
+		"CALL DOLT_PUSH('origin', 'main')",
+	} {
+		if _, err := peerConn.ExecContext(ctx, q); err != nil {
+			t.Fatalf("peer %q: %v", q, err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, "UPDATE issues SET title = 'ours' WHERE id = 'opcpeer-x'"); err != nil {
+		t.Fatalf("retitle locally: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', 'local retitles')"); err != nil {
+		t.Fatalf("commit local retitle: %v", err)
+	}
+
+	conflicts, err := store.PullFrom(ctx, "peer")
+	if err != nil {
+		t.Fatalf("PullFrom should report operator conflicts as data, got error: %v", err)
+	}
+	if len(conflicts) == 0 {
+		t.Fatal("PullFrom returned no conflicts for a semantic issues-table conflict")
+	}
+	foundIssues := false
+	for _, c := range conflicts {
+		if c.Field == "issues" {
+			foundIssues = true
+		}
+	}
+	if !foundIssues {
+		t.Errorf("reported conflicts %+v do not name the issues table", conflicts)
+	}
+
+	// The merge must have been rolled back: no live conflicts, local value intact.
+	var liveConflicts int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM dolt_conflicts").Scan(&liveConflicts); err != nil {
+		t.Fatalf("count live conflicts: %v", err)
+	}
+	if liveConflicts != 0 {
+		t.Errorf("%d conflicted table(s) remain after the rollback", liveConflicts)
+	}
+	var title string
+	if err := db.QueryRowContext(ctx,
+		"SELECT title FROM issues WHERE id = 'opcpeer-x'").Scan(&title); err != nil {
+		t.Fatalf("read title: %v", err)
+	}
+	if title != "ours" {
+		t.Errorf("local title = %q after refused pull, want %q", title, "ours")
+	}
+}

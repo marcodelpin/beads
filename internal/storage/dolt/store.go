@@ -2485,6 +2485,19 @@ func (s *DoltStore) settleMergeInTx(ctx context.Context, tx *sql.Tx, pullErr err
 		return resolveErr
 	}
 
+	// bd-578h9.15: conflicts the resolver declined are the operator's. Capture
+	// them BEFORE the rollback wipes merge state — a post-rollback GetConflicts
+	// on a fresh transaction sees an empty set, which made PullFrom's
+	// conflict-reporting contract dead code on the SQL route. The resolver
+	// pre-screens every table before resolving any, so a declined resolve
+	// leaves dolt_conflicts fully intact here.
+	if !resolved {
+		if conflicts, cErr := versioncontrolops.GetConflicts(ctx, tx); cErr == nil && len(conflicts) > 0 {
+			_ = tx.Rollback()
+			return &versioncontrolops.MergeConflictsError{Conflicts: conflicts, MergeErr: pullErr}
+		}
+	}
+
 	// bd-6dnrw.4: repair FK cascade violations the merge produced (child rows
 	// whose parent issue was deleted on the other clone). Unrepaired
 	// violations MUST NOT be committed.

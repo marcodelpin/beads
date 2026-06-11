@@ -323,10 +323,13 @@ func (s *EmbeddedDoltStore) PullFrom(ctx context.Context, peer string) ([]storag
 	var conflicts []storage.Conflict
 	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		if pullErr := versioncontrolops.Pull(ctx, db, peer, s.branch, remoteAuthUser()); pullErr != nil {
-			// Check if the error is due to merge conflicts.
-			c, conflictErr := versioncontrolops.GetConflicts(ctx, db)
-			if conflictErr == nil && len(c) > 0 {
-				conflicts = c
+			// bd-578h9.15: the settle machinery aborts a merge it cannot
+			// auto-resolve before returning, so dolt_conflicts is already
+			// empty here; the conflicts arrive captured pre-abort inside
+			// MergeConflictsError instead.
+			var mce *versioncontrolops.MergeConflictsError
+			if errors.As(pullErr, &mce) {
+				conflicts = mce.Conflicts
 				return nil
 			}
 			return fmt.Errorf("pull from %s: %w", peer, pullErr)

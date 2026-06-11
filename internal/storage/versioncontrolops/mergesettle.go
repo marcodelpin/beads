@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // This file holds the merge-settlement machinery shared by server-mode
@@ -53,6 +55,31 @@ func MergeAndSettle(ctx context.Context, db DBConn, ref string) error {
 	return SettleMerge(ctx, db, mergeErr, preMergeClean)
 }
 
+// MergeConflictsError reports the conflicts a settle pass refused to
+// auto-resolve. By the time the caller sees it the merge has been aborted (or
+// the transaction rolled back) and the working set restored, so the conflicts
+// are no longer queryable from dolt_conflicts — they were captured before the
+// abort precisely so callers with a conflict-reporting contract (PullFrom) can
+// still surface them (bd-578h9.15). Unwrap returns the merge statement's own
+// error, when there was one.
+type MergeConflictsError struct {
+	Conflicts []storage.Conflict
+	// MergeErr is the merge/pull statement's own error; nil on Dolt versions
+	// that leave conflicts in the working set without erroring.
+	MergeErr error
+}
+
+func (e *MergeConflictsError) Error() string {
+	tables := make([]string, len(e.Conflicts))
+	for i, c := range e.Conflicts {
+		tables[i] = c.Field
+	}
+	return fmt.Sprintf("merge conflicts in %s require operator resolution; merge aborted and working set restored",
+		strings.Join(tables, ", "))
+}
+
+func (e *MergeConflictsError) Unwrap() error { return e.MergeErr }
+
 // SettleMerge finishes a merge that ran on db with the session flags
 // MergeAndSettle sets: it auto-resolves the safe conflict classes, repairs FK
 // cascade violations (bd-6dnrw.4), and leaves the settled working set in
@@ -73,6 +100,18 @@ func SettleMerge(ctx context.Context, db DBConn, mergeErr error, preMergeClean b
 			return mergeErr
 		}
 		return resolveErr
+	}
+
+	// bd-578h9.15: conflicts the resolver declined are the operator's. Capture
+	// them BEFORE the abort wipes merge state — a post-abort GetConflicts sees
+	// an empty set, which made PullFrom's conflict-reporting contract dead
+	// code. The resolver pre-screens every table before resolving any, so a
+	// declined resolve leaves dolt_conflicts fully intact here.
+	if !resolved {
+		if conflicts, err := GetConflicts(ctx, db); err == nil && len(conflicts) > 0 {
+			abortMerge(ctx, db, preMergeClean)
+			return &MergeConflictsError{Conflicts: conflicts, MergeErr: mergeErr}
+		}
 	}
 
 	// bd-6dnrw.4: repair FK cascade violations the merge produced (child rows
