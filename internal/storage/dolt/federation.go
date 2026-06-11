@@ -195,6 +195,13 @@ func (s *DoltStore) ListRemotes(ctx context.Context) ([]storage.RemoteInfo, erro
 // fails open (migration is not wedged on unrelated corruption) but is logged,
 // never swallowed (bd-6dnrw.33).
 func (s *DoltStore) hasPersistedCLIRemote() bool {
+	return s.HasPersistedRemote()
+}
+
+// HasPersistedRemote is the exported on-disk probe for callers that must not
+// trust an empty dolt_remotes table at cold start: the remote-migrate gate
+// and the push/pull "no remote configured" exit-0 skip (bd-578h9.10).
+func (s *DoltStore) HasPersistedRemote() bool {
 	cliDir := s.CLIDir()
 	dirs := []string{cliDir}
 	if s.dbPath != "" && s.dbPath != cliDir {
