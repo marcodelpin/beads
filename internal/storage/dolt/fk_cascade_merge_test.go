@@ -42,8 +42,10 @@ var fkCascadeCases = []fkCascadeCase{
 	},
 	{
 		name: "comments",
-		insert: "INSERT INTO comments (issue_id, author, text, created_at) " +
-			"VALUES ('fkc-x-%[1]s', 'peer', 'late comment', NOW())",
+		// comments.id lost its DB-side default in 0051 (bd-2rd37); inserts
+		// must supply an explicit id like the app does (bd-6dnrw.18).
+		insert: "INSERT INTO comments (id, issue_id, author, text, created_at) " +
+			"VALUES (UUID(), 'fkc-x-%[1]s', 'peer', 'late comment', NOW())",
 		orphanQuery: "SELECT COUNT(*) FROM comments WHERE issue_id = 'fkc-x-%[1]s'",
 	},
 }
