@@ -101,6 +101,19 @@ func SettleMerge(ctx context.Context, db DBConn, mergeErr error, preMergeClean b
 		return mergeErr
 	}
 
+	// Conclude the merge for resolved conflicts only now, after the FK repair:
+	// DOLT_COMMIT refuses a violated working set, so a merge carrying both
+	// classes could never settle when the resolver committed first (bd-578h9.14).
+	if resolved {
+		if err := CommitResolvedConflicts(ctx, db); err != nil {
+			abortMerge(ctx, db, preMergeClean)
+			if mergeErr != nil {
+				return mergeErr
+			}
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -156,6 +169,10 @@ func workingSetClean(ctx context.Context, db DBConn) bool {
 // Any conflict on another table, or an unresolvable dependencies or
 // schema_migrations conflict, returns (false, nil) so the caller fails the pull
 // and the operator resolves it.
+//
+// The resolved tables are staged but NOT committed: the caller must run
+// CommitResolvedConflicts after the FK cascade repair, because DOLT_COMMIT
+// refuses a working set with outstanding constraint violations (bd-578h9.14).
 func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) {
 	rows, err := db.QueryContext(ctx, "SELECT `table`, num_conflicts FROM dolt_conflicts")
 	if err != nil {
@@ -234,11 +251,22 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 			return false, fmt.Errorf("failed to stage %s: %w", table, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve merge conflicts (GH#2466, #4259)')"); err != nil {
-		return false, fmt.Errorf("failed to commit resolved conflicts: %w", err)
-	}
 
 	return true, nil
+}
+
+// CommitResolvedConflicts creates the dolt commit that concludes a merge whose
+// conflicts TryAutoResolveMergeConflicts settled. Callers that saw
+// resolved=true MUST call this, and only AFTER TryRepairFKCascadeViolations
+// has run: DOLT_COMMIT refuses a working set with outstanding constraint
+// violations, so a merge carrying both an auto-resolvable conflict and an FK
+// cascade violation could never settle while the resolver committed first
+// (bd-578h9.14).
+func CommitResolvedConflicts(ctx context.Context, db DBConn) error {
+	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve merge conflicts (GH#2466, #4259)')"); err != nil {
+		return fmt.Errorf("failed to commit resolved conflicts: %w", err)
+	}
+	return nil
 }
 
 // dependencyConflictsAreAuditOnly reports whether every conflicted row in the

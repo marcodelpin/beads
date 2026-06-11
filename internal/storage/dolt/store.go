@@ -2510,6 +2510,19 @@ func (s *DoltStore) settleMergeInTx(ctx context.Context, tx *sql.Tx, pullErr err
 		return pullErr
 	}
 
+	// Conclude the merge for resolved conflicts only now, after the FK repair:
+	// DOLT_COMMIT refuses a violated working set, so a merge carrying both
+	// classes could never settle when the resolver committed first (bd-578h9.14).
+	if resolved {
+		if err := versioncontrolops.CommitResolvedConflicts(ctx, tx); err != nil {
+			_ = tx.Rollback()
+			if pullErr != nil {
+				return pullErr
+			}
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -2611,6 +2624,15 @@ func (s *DoltStore) autoResolveConflictsAfterCLIPull(ctx context.Context) (bool,
 	if !resolved && !repairedViol {
 		_ = tx.Rollback()
 		return false, nil
+	}
+	// Conclude the merge for resolved conflicts only now, after the FK repair:
+	// DOLT_COMMIT refuses a violated working set, so a merge carrying both
+	// classes could never settle when the resolver committed first (bd-578h9.14).
+	if resolved {
+		if err := versioncontrolops.CommitResolvedConflicts(ctx, tx); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("failed to commit resolved conflicts: %w", err)
