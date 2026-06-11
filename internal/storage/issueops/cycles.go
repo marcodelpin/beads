@@ -12,7 +12,6 @@ import (
 // DetectCyclesInTx finds dependency cycles across both the dependencies and
 // wisp_dependencies tables. Returns slices of issues forming each cycle.
 // Only considers "blocks" and "conditional-blocks" dependencies for cycle detection.
-//
 func DetectCyclesInTx(ctx context.Context, tx *sql.Tx) ([][]*types.Issue, error) {
 	// Build adjacency list from both dependency tables.
 	graph := make(map[string][]string)

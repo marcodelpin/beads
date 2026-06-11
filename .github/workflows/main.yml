@@ -27,6 +27,24 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/ci-embedded-tier.sh
 
+  # Same guard as pr.yml's check-migration-hygiene: direct pushes to main
+  # (and PR merges whose base moved) must not bypass the migration lints.
+  # BASE_SHA is the pre-push tip; on force pushes or history rewrites the
+  # script warns and skips the frozen-migrations diff but still runs the
+  # duplicate-version and nondeterministic-SQL checks.
+  check-migration-hygiene:
+    name: Check migration hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Run migration hygiene checks
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: ./scripts/check-migration-hygiene.sh
+
   build-artifacts:
     name: Build Artifacts
     runs-on: ubuntu-latest

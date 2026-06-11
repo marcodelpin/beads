@@ -63,7 +63,10 @@ func (e *RemoteMigrateGateError) UserMessage() string {
 		"    • Another machine has already migrated: adopt its database instead of\n" +
 		"      migrating here — re-clone from the remote so you receive the migrated\n" +
 		"      schema:\n" +
-		"        bd bootstrap\n"
+		"        bd bootstrap\n" +
+		"      Re-cloning replaces your local database: any local issues you have not\n" +
+		"      pushed are LOST. Push first (`bd dolt push`) or save a copy\n" +
+		"      (`bd export --all -o backup.jsonl`) before re-cloning.\n"
 	if e.UnrecognizedEnv != "" {
 		msg += "\n" +
 			"  Note: " + AllowRemoteMigrateEnv + "=" + e.UnrecognizedEnv + " is set but was not recognized —\n" +

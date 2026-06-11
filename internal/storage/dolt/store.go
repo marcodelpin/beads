@@ -15,6 +15,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -2628,22 +2629,40 @@ func (s *DoltStore) finishCLIPull(ctx context.Context, pullErr error) error {
 
 // autoResolveConflictsAfterCLIPull inspects the working set and auto-resolves the
 // conflict classes that are safe without operator input (#4259 audit-only dependency
-// edges, GH#2466 metadata). It runs on the store connection (s.db) on purpose: that
-// connection is on the same branch the CLI `dolt pull` merged into, whereas a fresh
-// connection would default to the base branch and never see the conflicts. The pull's
+// edges, GH#2466 metadata). It runs on a connection from the store pool (s.db) on
+// purpose: those connections are on the same branch the CLI `dolt pull` merged into,
+// whereas a separately opened connection would default to the base branch and never
+// see the conflicts. The pull's
 // network transfer already completed in the subprocess, so no long-timeout connection
 // is needed for the local resolve. Returns (true, nil) only if all conflicts were
 // resolved and committed; (false, nil) when there is nothing to resolve or a conflict
 // needs the operator, leaving the working set untouched for manual resolution.
 func (s *DoltStore) autoResolveConflictsAfterCLIPull(ctx context.Context) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	// Pin a single connection: @@dolt_allow_commit_conflicts is session-scoped,
+	// and setting it through a pooled transaction leaks it to whichever caller
+	// drains that connection next. Reset it before releasing the connection; if
+	// the reset cannot run, discard the connection rather than return it dirty.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	varSet := false
+	defer func() {
+		if varSet {
+			if _, err := conn.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 0"); err != nil {
+				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			}
+		}
+		_ = conn.Close()
+	}()
+	// Allow committing while conflicts exist so we can inspect and resolve them.
+	if _, err := conn.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 1"); err != nil {
+		return false, fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
+	}
+	varSet = true
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	// Allow committing while conflicts exist so we can inspect and resolve them.
-	if _, err := tx.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 1"); err != nil {
-		_ = tx.Rollback()
-		return false, fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
 	}
 	resolved, err := s.tryAutoResolveMergeConflicts(ctx, tx)
 	if err != nil {

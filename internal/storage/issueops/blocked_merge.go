@@ -160,11 +160,19 @@ func mergeAffectedSets(ctx context.Context, tx *sql.Tx, fromCommit string) (issu
 	changedIssues, err := changedIssueIDs(ctx, tx, fromCommit)
 	if err != nil {
 		// dolt_diff fails when the merge also reshaped the table (schema change
-		// between the refs); the safe answer is the full pass.
+		// between the refs); the safe answer is the full pass. A canceled or
+		// timed-out context is not a diff failure, though — falling back would
+		// only run a doomed full recompute on a dead context.
+		if ctx.Err() != nil {
+			return nil, nil, false, ctx.Err()
+		}
 		return nil, nil, false, nil
 	}
 	changedDeps, err := changedDependencyEdges(ctx, tx, fromCommit)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, false, ctx.Err()
+		}
 		return nil, nil, false, nil
 	}
 	if len(changedIssues)+len(changedDeps) > mergeRecomputeSeedCap {
