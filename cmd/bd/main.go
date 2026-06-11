@@ -1182,11 +1182,23 @@ var rootCmd = &cobra.Command{
 			// commandDidWrite is a fast-path hint, not the sole trigger: a write path
 			// that forgets to set it would otherwise leak its writes into the NEXT
 			// command's auto-commit with wrong attribution, so a dirty working set
-			// also triggers the commit (bd-6dnrw.11).
-			if !commandDidExplicitDoltCommit &&
-				(commandDidWrite.Load() || workingSetHasUnflaggedWrites(rootCtx, cmd.Name())) {
-				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
-					FatalError("dolt auto-commit failed: %v", err)
+			// also triggers the commit (bd-6dnrw.11) — except after read-only and
+			// inspection commands, where the sweep would commit the very state the
+			// command exists to display, or fail outright on a read-only store
+			// (bd-578h9.7). Sweep commits are attributed as sweeps: the changes
+			// belong to an earlier command, not this one.
+			if !commandDidExplicitDoltCommit {
+				didWrite := commandDidWrite.Load()
+				sweep := !didWrite && !autoCommitSweepExempt(cmd) &&
+					workingSetHasUnflaggedWrites(rootCtx, cmd.Name())
+				if didWrite || sweep {
+					params := doltAutoCommitParams{Command: cmd.Name()}
+					if sweep {
+						params.MessageOverride = formatDoltSweepCommitMessage(cmd.Name(), getActor())
+					}
+					if err := maybeAutoCommit(rootCtx, params); err != nil {
+						FatalError("dolt auto-commit failed: %v", err)
+					}
 				}
 			}
 

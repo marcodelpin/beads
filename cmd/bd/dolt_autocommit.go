@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
@@ -112,6 +113,44 @@ func maybeAutoCommitStore(ctx context.Context, st storage.DoltStorage, p doltAut
 		return err
 	}
 	return nil
+}
+
+// autoCommitSweepExemptPaths are inspection commands that display version
+// control or working-set state. The unflagged-writes sweep must never run
+// after them: bd dolt status would commit the dirty state it just displayed,
+// destroying the inspect-before-commit flow (bd-578h9.7). Keyed by full
+// command path because leaf names like "status" collide across parents.
+var autoCommitSweepExemptPaths = map[string]bool{
+	"bd dolt status": true,
+	"bd vc status":   true,
+	"bd diff":        true,
+	"bd history":     true,
+}
+
+// autoCommitSweepExempt reports whether cmd must not trigger the
+// dirty-working-set sweep (bd-578h9.7). Read-only commands are exempt for a
+// second reason: they open the embedded store read-only, so the sweep's
+// commit would fail with errReadOnly and turn a successful read into a fatal
+// error. Explicitly flagged writes (commandDidWrite) still auto-commit.
+func autoCommitSweepExempt(cmd *cobra.Command) bool {
+	return isReadOnlyCommand(cmd.Name()) || autoCommitSweepExemptPaths[cmd.CommandPath()]
+}
+
+// formatDoltSweepCommitMessage attributes a sweep commit distinctly from a
+// normal auto-commit: the swept changes belong to an EARLIER command that
+// failed (or forgot commandDidWrite) before its own auto-commit could run —
+// blaming them on the command that merely triggered the sweep corrupts the
+// audit trail (bd-578h9.7).
+func formatDoltSweepCommitMessage(cmd, actor string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		cmd = "write"
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "unknown"
+	}
+	return fmt.Sprintf("bd: autocommit sweep of earlier uncommitted changes (after %s by %s)", cmd, actor)
 }
 
 // workingSetHasUnflaggedWrites reports whether the embedded working set holds
