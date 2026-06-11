@@ -30,6 +30,12 @@ type ImportOptions struct {
 	// auto-import upgrade-recovery fallback (GH#3955); explicit `bd import`
 	// leaves this false and keeps UPSERT semantics.
 	ConflictSkip bool
+	// AllowStale imports rows even when their updated_at is older than the
+	// local issue's, overwriting newer local state. Required for the
+	// restore-an-older-snapshot recovery workflow, which the default stale
+	// guard otherwise silently no-ops per row (bd-6dnrw.9). Only settable
+	// via explicit `bd import --allow-stale`; auto-import paths never set it.
+	AllowStale bool
 }
 
 // ImportResult describes what an import operation did.
@@ -57,18 +63,22 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		return &ImportResult{Skipped: len(issues)}, nil
 	}
 
-	filtered, staleSkippedIDs, err := filterStaleImportIssues(ctx, store, issues)
-	if err != nil {
-		return nil, err
-	}
-	issues = filtered
-	if len(issues) == 0 {
-		return &ImportResult{Skipped: len(staleSkippedIDs), StaleSkippedIDs: staleSkippedIDs}, nil
+	var staleSkippedIDs []string
+	if !opts.AllowStale {
+		filtered, skipped, err := filterStaleImportIssues(ctx, store, issues)
+		if err != nil {
+			return nil, err
+		}
+		issues = filtered
+		staleSkippedIDs = skipped
+		if len(issues) == 0 {
+			return &ImportResult{Skipped: len(staleSkippedIDs), StaleSkippedIDs: staleSkippedIDs}, nil
+		}
 	}
 
 	var skippedDependencies []string
 	skippedDependencySet := make(map[string]struct{})
-	err = store.CreateIssuesWithFullOptions(ctx, issues, getActorWithGit(), storage.BatchCreateOptions{
+	err := store.CreateIssuesWithFullOptions(ctx, issues, getActorWithGit(), storage.BatchCreateOptions{
 		OrphanHandling:                 storage.OrphanAllow,
 		SkipPrefixValidation:           opts.SkipPrefixValidation,
 		ConflictSkip:                   opts.ConflictSkip,

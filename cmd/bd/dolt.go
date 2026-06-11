@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/ui"
 	"golang.org/x/term"
@@ -143,6 +143,27 @@ func isRemoteNotFoundErr(err error) bool {
 	return strings.Contains(msg, "remote") && strings.Contains(msg, "not found")
 }
 
+// remoteLister is the narrow store surface needed to confirm the structured
+// no-remote-configured state.
+type remoteLister interface {
+	ListRemotes(ctx context.Context) ([]storage.RemoteInfo, error)
+}
+
+// isConfirmedNoRemote reports whether a push/pull failure is the benign
+// "no remote configured" case that may exit 0. isRemoteNotFoundErr alone is a
+// loose string match that also fires on deleted/renamed remote-side repos,
+// missing remote branches, and typoed remote names — real sync failures that
+// must keep a non-zero exit so agents and CI notice (bd-6dnrw.7). Only an
+// actually-empty dolt_remotes table makes the skip safe; if the remotes can't
+// be listed, treat the failure as real.
+func isConfirmedNoRemote(ctx context.Context, st remoteLister, err error) bool {
+	if !isRemoteNotFoundErr(err) {
+		return false
+	}
+	remotes, listErr := st.ListRemotes(ctx)
+	return listErr == nil && len(remotes) == 0
+}
+
 // isDivergedHistoryErr checks whether the error indicates that local and remote
 // Dolt histories have diverged. This happens when independent pushes create
 // separate commit histories with no common merge base (e.g., two agents
@@ -158,39 +179,20 @@ func isDivergedHistoryErr(err error) bool {
 		strings.Contains(msg, "cannot find common ancestor")
 }
 
-// isAncestorPKMismatchErr checks whether the error is Dolt's hard refusal to
-// merge a table whose primary key set differs between the merging heads or in
-// their common ancestor (merge.ErrMergeWithDifferentPks /
-// ErrMergeWithDifferentPksFromAncestor: "cannot merge because table X has
-// different primary keys[ in its common ancestor]"). This is the signature of
-// a schema fork where clones reshaped a table's primary key independently —
-// e.g. two clones straddling the 0041/0043/0050 dependencies PK reshape
-// (#4259). Dolt refuses the merge before any row conflicts materialize, so
-// the pull auto-resolver never gets a chance to run, and retrying can never
-// converge the clones: recovery requires re-cloning from one canonical side.
+// isAncestorPKMismatchErr reports Dolt's hard refusal to merge a table whose
+// primary key set differs across the merging histories or in their common
+// ancestor. The classification lives in dberrors so the cross-upgrade merge
+// test (internal/storage/dolt) can pin it against a real Dolt refusal; see
+// dberrors.IsAncestorPKMismatch for the full background (#4259).
 func isAncestorPKMismatchErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "cannot merge because table") &&
-		strings.Contains(msg, "different primary keys")
+	return dberrors.IsAncestorPKMismatch(err)
 }
 
 // ancestorPKMismatchTable extracts the table name from a Dolt
 // different-primary-keys merge refusal, or "" if it cannot be determined.
 func ancestorPKMismatchTable(err error) string {
-	if err == nil {
-		return ""
-	}
-	m := ancestorPKTableRe.FindStringSubmatch(err.Error())
-	if len(m) < 2 {
-		return ""
-	}
-	return m[1]
+	return dberrors.AncestorPKMismatchTable(err)
 }
-
-var ancestorPKTableRe = regexp.MustCompile(`cannot merge because table (\S+) has different primary keys`)
 
 // printAncestorPKMismatchGuidance prints recovery guidance when a Dolt merge
 // is refused because a table's primary key set differs across the merging
@@ -421,7 +423,7 @@ The remote must already exist (see 'bd dolt remote add').`,
 			return st.Push(c)
 		})
 		if pushErr != nil {
-			if isRemoteNotFoundErr(pushErr) {
+			if isConfirmedNoRemote(ctx, st, pushErr) {
 				printNoRemoteGuidance()
 				return
 			}
@@ -480,7 +482,7 @@ The remote must already exist (see 'bd dolt remote add').`,
 		}
 		fmt.Println("Pulling from Dolt remote...")
 		if err := st.Pull(ctx); err != nil {
-			if isRemoteNotFoundErr(err) {
+			if isConfirmedNoRemote(ctx, st, err) {
 				printNoRemoteGuidance()
 				return
 			}

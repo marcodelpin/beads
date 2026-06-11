@@ -692,6 +692,14 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 	return nil
 }
 
+// DetectCycles finds dependency cycles visible to this transaction. It runs
+// on the regular tx, so uncommitted permanent dependencies are included;
+// uncommitted wisp dependencies live in the separate ignoredTx and are only
+// seen once committed (bd-6dnrw.8).
+func (t *doltTransaction) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {
+	return issueops.DetectCyclesInTx(ctx, t.regularTx)
+}
+
 func (t *doltTransaction) GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error) {
 	table := "dependencies"
 	if t.isActiveWisp(ctx, issueID) {
@@ -920,9 +928,9 @@ func (t *doltTransaction) AddComment(ctx context.Context, issueID, actor, commen
 
 	//nolint:gosec // G201: table is hardcoded
 	_, err := t.txFor(table).ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (issue_id, event_type, actor, comment)
-		VALUES (?, ?, ?, ?)
-	`, table), issueID, types.EventCommented, actor, comment)
+		INSERT INTO %s (id, issue_id, event_type, actor, comment)
+		VALUES (?, ?, ?, ?, ?)
+	`, table), issueops.NewEventID(), issueID, types.EventCommented, actor, comment)
 	if err == nil {
 		t.dirty.MarkDirty(table)
 	}

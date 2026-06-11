@@ -44,6 +44,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cross-clone issue-delete vs child-row-insert merges now converge.** The
+  synced child tables (`dependencies`, `labels`, `comments`, `events`,
+  snapshots) carry `FOREIGN KEY ... ON DELETE CASCADE` to `issues` (migrations
+  `0041`/`0042`), but Dolt merges row-wise and never re-executes cascades: if
+  clone A deleted an issue while clone B added a dependency, label, or comment
+  referencing it, `bd dolt pull` failed outright with a foreign-key constraint
+  violation ("transaction rolled back"), recorded nothing in `dolt_conflicts`,
+  and could never converge on retry. The pull auto-resolver (SQL and CLI
+  routes) now repairs this class by applying the foreign key's own cascade
+  semantics — deleting the merged-in rows whose issue reference dangles — and
+  refuses, exactly as before, any constraint violation it does not recognize
+  (different constraint type, table bd does not own, FK to another parent).
+  The repair converges across clones: it deletes precisely the rows the
+  cascade already removed on the deleting clone. (bd-6dnrw.4)
+
+- **`is_blocked` recompute no longer misses auto-resolved merges.** A pull
+  whose merge bd auto-resolved (conflicts) or cascade-repaired (constraint
+  violations) lands in the working set without advancing HEAD — the merge
+  commit is created later — so the bd-6dnrw.3 post-pull recompute mistook it
+  for "nothing merged" and skipped, leaving `is_blocked` stale exactly when
+  the merge had needed intervention. The recompute now diffs to the working
+  set and skips only when `issues`/`dependencies` are clean too. (bd-6dnrw.39)
+
+- **`is_blocked` recomputed after `bd dolt pull`.** The denormalized
+  `is_blocked` column (migration `0046`) was maintained only by local write
+  paths, so a pull that merged another clone's writes silently left it stale —
+  e.g. clone A closes blocker X while clone B adds an edge W→X, and the merged
+  result carries `W.is_blocked=1` with a closed blocker, hiding W from
+  `bd ready`. Every pull path (server SQL and CLI routes, peer pulls, embedded
+  mode) now recomputes the column for exactly the rows the merge changed,
+  scoped via `dolt_diff` between the pre- and post-pull HEADs and expanded
+  through the same affected-set logic the local write paths use. Oversized or
+  schema-reshaping merges fall back to a full recompute; conflicted pulls skip
+  it until the operator resolves. (bd-6dnrw.3, PR 4107 follow-up)
+
+- **Deterministic history-table primary keys (cross-clone merge-safety).**
+  Migration `0037` converted the legacy BIGINT primary keys of `events`,
+  `comments`, `issue_snapshots` and `compaction_snapshots` by backfilling
+  `UUID()` — a different random value on every clone, the same hazard class as
+  the `dependencies` fork below. Two legacy clones that upgraded independently
+  held identical history rows under different primary keys, so their merges
+  duplicated every pre-upgrade event and comment (or refused outright). A
+  one-time-per-clone upgrade backfill now rewrites those ids to deterministic
+  values derived from each row's content (`internal/storage/rowid`), so
+  independently-migrated clones converge to byte-identical history tables;
+  exact-duplicate rows are kept distinct via per-duplicate ordinals. The pass
+  is gated on a clone-local marker (ignored migration `0009`), so steady-state
+  opens never re-key — rows inserted after the pass are minted once and reach
+  other clones by merge, so their ids are already consistent. (bd-6dnrw.2,
+  the history-table sibling of
+  [#4259](https://github.com/gastownhall/beads/issues/4259))
+
 - **Deterministic dependency primary keys (cross-clone merge-safety).** `dependencies.id` (and `wisp_dependencies.id`) were filled by `DEFAULT (UUID())`, a per-clone-random value. Two clones that created the same edge — or that applied migration `0043` independently — diverged on the primary key, so `bd dolt pull` failed unrecoverably (`cannot merge because table dependencies has different primary keys in its common ancestor`, or a `uk_dep_*` unique-key violation). `id` is now derived deterministically from the natural edge key `(issue_id, target)` at every insert site (`internal/storage/depid`); migration `0050` drops the random default and idempotently re-asserts the natural-identity unique keys; and an upgrade backfill rewrites existing rows. Independently-migrated clones now converge to byte-identical, merge-safe `dependencies`. And because the same edge now has the same primary key on every clone, `bd dolt pull` **auto-resolves** a same-edge dependency conflict that differs only in audit columns (created_at/created_by/metadata/thread_id) the same way it already does for the metadata table — so two machines that each run `bd dep add X Y` between syncs merge cleanly. A conflict where the dependency *type* differs is still surfaced for the operator. ([#4259](https://github.com/gastownhall/beads/issues/4259))
 
 ## [1.0.5] - 2026-05-28

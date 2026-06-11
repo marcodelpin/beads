@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
@@ -37,6 +38,43 @@ func (s *EmbeddedDoltStore) withDBConn(ctx context.Context, fn func(db versionco
 	}()
 
 	return fn(db)
+}
+
+// withPinnedDBConn is withDBConn pinned to a single *sql.Conn, for operation
+// sequences that depend on session state spanning statements — the pull path
+// sets @@dolt_allow_commit_conflicts/@@dolt_force_transaction_commit and needs
+// the subsequent DOLT_MERGE and settle statements to see them (bd-6dnrw.40).
+// A *sql.DB may rotate connections between statements; a pinned conn cannot.
+//
+// The pinned conn inherits the database/branch session setup OpenSQL applied:
+// the pool holds exactly the one connection OpenSQL configured (sequential
+// Ping/USE/SET on a fresh pool), and db.Conn returns it — the same invariant
+// ApplySchemaMigrations relies on.
+func (s *EmbeddedDoltStore) withPinnedDBConn(ctx context.Context, fn func(db versioncontrolops.DBConn) error) (err error) {
+	if s.closed.Load() {
+		return errClosed
+	}
+
+	var db *sql.DB
+	var cleanup func() error
+	db, cleanup, err = OpenSQL(ctx, s.dataDir, s.database, s.branch)
+	if err != nil {
+		return
+	}
+	defer func() {
+		err = errors.Join(err, cleanup())
+		// Best-effort cleanup of orphaned tmp_pack_* files left by git
+		// fetch in the Dolt git-remote-cache. Rate-limited internally.
+		s.cleanGitRemoteCacheGarbage()
+	}()
+
+	conn, connErr := db.Conn(ctx)
+	if connErr != nil {
+		return fmt.Errorf("embeddeddolt: pin connection: %w", connErr)
+	}
+	defer conn.Close()
+
+	return fn(conn)
 }
 
 func (s *EmbeddedDoltStore) Commit(ctx context.Context, message string) error {
@@ -216,9 +254,14 @@ func (s *EmbeddedDoltStore) Push(ctx context.Context) error {
 }
 
 func (s *EmbeddedDoltStore) Pull(ctx context.Context) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	preHead := s.preMergeHead(ctx)
+	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Pull(ctx, db, defaultRemote, s.branch, remoteAuthUser())
 	})
+	if err != nil {
+		return err
+	}
+	return s.recomputeBlockedAfterPull(ctx, preHead)
 }
 
 func (s *EmbeddedDoltStore) ForcePush(ctx context.Context) error {
@@ -237,9 +280,14 @@ func (s *EmbeddedDoltStore) PushRemote(ctx context.Context, remote string, force
 }
 
 func (s *EmbeddedDoltStore) PullRemote(ctx context.Context, remote string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	preHead := s.preMergeHead(ctx)
+	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Pull(ctx, db, remote, s.branch, remoteAuthUser())
 	})
+	if err != nil {
+		return err
+	}
+	return s.recomputeBlockedAfterPull(ctx, preHead)
 }
 
 func (s *EmbeddedDoltStore) Fetch(ctx context.Context, peer string) error {
@@ -261,8 +309,9 @@ func (s *EmbeddedDoltStore) PullFrom(ctx context.Context, peer string) ([]storag
 		return nil, fmt.Errorf("commit pending before pull: %w", err)
 	}
 
+	preHead := s.preMergeHead(ctx)
 	var conflicts []storage.Conflict
-	err := s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		if pullErr := versioncontrolops.Pull(ctx, db, peer, s.branch, remoteAuthUser()); pullErr != nil {
 			// Check if the error is due to merge conflicts.
 			c, conflictErr := versioncontrolops.GetConflicts(ctx, db)
@@ -274,7 +323,45 @@ func (s *EmbeddedDoltStore) PullFrom(ctx context.Context, peer string) ([]storag
 		}
 		return nil
 	})
-	return conflicts, err
+	if err != nil || len(conflicts) > 0 {
+		// Conflicted pulls skip the recompute: the operator resolves first,
+		// and the next sync picks the rows up.
+		return conflicts, err
+	}
+	if err := s.recomputeBlockedAfterPull(ctx, preHead); err != nil {
+		return conflicts, fmt.Errorf("pull succeeded but is_blocked recompute failed: %w", err)
+	}
+	return conflicts, nil
+}
+
+// preMergeHead reads the pre-pull HEAD for the post-merge is_blocked
+// recompute (bd-6dnrw.3). Empty on failure, which degrades the recompute to a
+// full pass instead of skipping the hook.
+func (s *EmbeddedDoltStore) preMergeHead(ctx context.Context) string {
+	head, err := s.GetCurrentCommit(ctx)
+	if err != nil {
+		return ""
+	}
+	return head
+}
+
+// recomputeBlockedAfterPull recomputes the denormalized is_blocked column for
+// the rows a pull's merge changed (bd-6dnrw.3) and creates a Dolt commit for
+// the result. is_blocked is otherwise maintained only by local write paths, so
+// a merge that brings in another clone's status or dependency changes leaves
+// it stale and `bd ready` trusts it. A pull that merged nothing (HEAD
+// unchanged) is a no-op; derived state converges, so committing it on every
+// clone is merge-safe.
+func (s *EmbeddedDoltStore) recomputeBlockedAfterPull(ctx context.Context, preHead string) error {
+	if err := s.withConn(ctx, true, func(tx *sql.Tx) error {
+		return issueops.RecomputeIsBlockedAfterMergeInTx(ctx, tx, preHead)
+	}); err != nil {
+		return err
+	}
+	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+		return versioncontrolops.StageAndCommit(ctx, db,
+			map[string]bool{"issues": true}, "bd: recompute is_blocked after pull", commitAuthor)
+	})
 }
 
 // ---------------------------------------------------------------------------

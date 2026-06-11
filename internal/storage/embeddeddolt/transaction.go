@@ -116,6 +116,12 @@ func (t *embeddedTransaction) AddDependencyWithOptions(ctx context.Context, dep 
 	return nil
 }
 
+// DetectCycles finds dependency cycles visible to this transaction,
+// including its own uncommitted dependency writes (bd-6dnrw.8).
+func (t *embeddedTransaction) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {
+	return issueops.DetectCyclesInTx(ctx, t.tx)
+}
+
 func (t *embeddedTransaction) RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error {
 	t.dirty.MarkDirty("dependencies")
 	return issueops.RemoveDependencyInTx(ctx, t.tx, issueID, dependsOnID)

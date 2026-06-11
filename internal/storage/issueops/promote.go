@@ -64,8 +64,8 @@ func PromoteFromEphemeralInTx(ctx context.Context, tx *sql.Tx, id string, actor 
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT IGNORE INTO events (issue_id, event_type, actor, old_value, new_value, comment, created_at)
-		SELECT issue_id, event_type, actor, old_value, new_value, comment, created_at
+		INSERT IGNORE INTO events (id, issue_id, event_type, actor, old_value, new_value, comment, created_at)
+		SELECT id, issue_id, event_type, actor, old_value, new_value, comment, created_at
 		FROM wisp_events WHERE issue_id = ?
 	`, id); err != nil {
 		return fmt.Errorf("copy events for promoted wisp %s: %w", id, err)
@@ -75,8 +75,8 @@ func PromoteFromEphemeralInTx(ctx context.Context, tx *sql.Tx, id string, actor 
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT IGNORE INTO comments (issue_id, author, text, created_at)
-		SELECT issue_id, author, text, created_at
+		INSERT IGNORE INTO comments (id, issue_id, author, text, created_at)
+		SELECT id, issue_id, author, text, created_at
 		FROM wisp_comments WHERE issue_id = ?
 	`, id); err != nil {
 		return fmt.Errorf("copy comments for promoted wisp %s: %w", id, err)

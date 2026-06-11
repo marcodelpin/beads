@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -1589,4 +1590,91 @@ func TestDepListCrossRigRouting(t *testing.T) {
 	}
 
 	t.Log("Successfully resolved cross-rig dependencies via routing")
+}
+
+type fakeCycleTx struct {
+	storage.Transaction
+	cycles [][]*types.Issue
+	err    error
+}
+
+func (f fakeCycleTx) DetectCycles(context.Context) ([][]*types.Issue, error) {
+	return f.cycles, f.err
+}
+
+// bd-6dnrw.8: the bulk-add cycle gate must flag cycles touching the added
+// edges, ignore pre-existing cycles elsewhere, and propagate check failures.
+func TestNewCycleThroughEdges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	edges := []bulkDepEdge{{IssueID: "bd-a", DependsOnID: "bd-b"}}
+	cycleAB := [][]*types.Issue{{{ID: "bd-a"}, {ID: "bd-b"}}}
+	cycleXY := [][]*types.Issue{{{ID: "bd-x"}, {ID: "bd-y"}}}
+
+	path, err := newCycleThroughEdges(ctx, fakeCycleTx{cycles: cycleAB}, edges)
+	if err != nil || path != "bd-a → bd-b → bd-a" {
+		t.Errorf("touching cycle: got (%q, %v), want rendered path", path, err)
+	}
+
+	path, err = newCycleThroughEdges(ctx, fakeCycleTx{cycles: cycleXY}, edges)
+	if err != nil || path != "" {
+		t.Errorf("pre-existing unrelated cycle: got (%q, %v), want no match", path, err)
+	}
+
+	_, err = newCycleThroughEdges(ctx, fakeCycleTx{err: fmt.Errorf("boom")}, edges)
+	if err == nil {
+		t.Error("check failure must propagate as error, not pass the gate")
+	}
+}
+
+// bd-6dnrw.8: with SkipCycleCheck the per-edge guard is off, so the in-tx
+// whole-graph check must catch the cycle and the transaction roll back —
+// no cycle may ever commit.
+func TestBulkDepAddCycleGateRollsBack(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	s := newTestStore(t, filepath.Join(tmpDir, ".beads", "beads.db"))
+	ctx := context.Background()
+
+	for _, id := range []string{"test-cyc-a", "test-cyc-b"} {
+		issue := &types.Issue{
+			ID: id, Title: id, Status: types.StatusOpen,
+			Priority: 1, IssueType: types.TypeTask, CreatedAt: time.Now(),
+		}
+		if err := s.CreateIssue(ctx, issue, "test"); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	if err := s.AddDependency(ctx, &types.Dependency{
+		IssueID: "test-cyc-a", DependsOnID: "test-cyc-b", Type: types.DependencyType("blocks"),
+	}, "test"); err != nil {
+		t.Fatalf("seed dependency: %v", err)
+	}
+
+	edges := []bulkDepEdge{{IssueID: "test-cyc-b", DependsOnID: "test-cyc-a"}}
+	err := s.RunInTransaction(ctx, "test: bulk cycle gate", func(tx storage.Transaction) error {
+		dep := &types.Dependency{IssueID: "test-cyc-b", DependsOnID: "test-cyc-a", Type: types.DependencyType("blocks")}
+		if err := tx.AddDependencyWithOptions(ctx, dep, "test", storage.DependencyAddOptions{SkipCycleCheck: true}); err != nil {
+			return err
+		}
+		cyclePath, cycleErr := newCycleThroughEdges(ctx, tx, edges)
+		if cycleErr != nil {
+			return cycleErr
+		}
+		if cyclePath == "" {
+			return fmt.Errorf("in-tx check missed the cycle created by the uncommitted edge")
+		}
+		return fmt.Errorf("dependency cycle would be created: %s", cyclePath)
+	})
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle would be created") {
+		t.Fatalf("expected cycle-gate error, got: %v", err)
+	}
+
+	deps, err := s.GetDependencyRecords(ctx, "test-cyc-b")
+	if err != nil {
+		t.Fatalf("GetDependencyRecords: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Fatalf("cycle edge was committed despite gate: %#v", deps)
+	}
 }

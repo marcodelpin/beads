@@ -68,11 +68,21 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 		}
 	}
 
+	// bd-6dnrw.3: pre-pull HEAD for the post-merge is_blocked recompute; an
+	// unreadable HEAD degrades to a full recompute.
+	preHead := ""
+	if !s.readOnly {
+		if h, err := s.GetCurrentCommit(ctx); err == nil {
+			preHead = h
+		}
+	}
+
 	var conflicts []storage.Conflict
-	if useCLI, err := s.prepareCLIRouteForPeerGitProtocol(ctx, peer); err != nil {
-		return nil, err
+	var err error
+	if useCLI, routeErr := s.prepareCLIRouteForPeerGitProtocol(ctx, peer); routeErr != nil {
+		return nil, routeErr
 	} else if useCLI {
-		err := s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
+		err = s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 			if pullErr := s.doltCLIPullFromPeer(ctx, peer, creds); pullErr != nil {
 				c, conflictErr := s.GetConflicts(ctx)
 				if conflictErr == nil && len(c) > 0 {
@@ -83,9 +93,9 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 			}
 			return nil
 		})
-		return conflicts, err
+		return s.finishPeerPull(ctx, conflicts, err, preHead)
 	}
-	err := s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
+	err = s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 		// Credential CLI routing: mirrors git-protocol peer pull path.
 		if useCLI, err := s.prepareCLIRouteForPeerCredentials(ctx, peer, creds); err != nil {
 			return err
@@ -112,7 +122,21 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 			return nil
 		})
 	})
-	return conflicts, err
+	return s.finishPeerPull(ctx, conflicts, err, preHead)
+}
+
+// finishPeerPull runs the post-merge is_blocked recompute (bd-6dnrw.3) after a
+// successful, conflict-free peer pull and passes the pull result through
+// otherwise. Conflicted pulls skip the recompute: the caller resolves the
+// conflicts first, and the next sync picks the rows up.
+func (s *DoltStore) finishPeerPull(ctx context.Context, conflicts []storage.Conflict, pullErr error, preHead string) ([]storage.Conflict, error) {
+	if pullErr != nil || len(conflicts) > 0 || s.readOnly {
+		return conflicts, pullErr
+	}
+	if err := s.recomputeBlockedAfterPull(ctx, preHead); err != nil {
+		return conflicts, fmt.Errorf("pull succeeded but is_blocked recompute failed: %w", err)
+	}
+	return conflicts, nil
 }
 
 // Fetch fetches refs from a peer without merging.
