@@ -274,6 +274,19 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration status: %w", err)
 	}
+	// A previous pass that crashed mid-aux-rekey left its partial UPDATEs
+	// dirty in the working set with the in-progress sentinel still recorded
+	// (bd-578h9.16). Those tables are this pass's own migration state, not
+	// pre-existing user writes: dropping them from dirtyBefore exempts them
+	// from the changed-signature guard (the resumed rekey is about to change
+	// them) and lets stageSchemaTables commit them with the rest of the pass.
+	if resuming, err := auxRekeyResumePending(ctx, db); err != nil {
+		return 0, fmt.Errorf("reading aux rekey sentinel: %w", err)
+	} else if resuming {
+		for _, t := range auxRekeyTables {
+			delete(dirtyBefore, t.name)
+		}
+	}
 	touchedDirtyTables, err := mainSource.pendingMigrationDirtyTables(ctx, db, dirtyBefore)
 	if err != nil {
 		return 0, fmt.Errorf("checking dirty tables against pending migrations: %w", err)
