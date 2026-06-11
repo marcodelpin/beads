@@ -296,6 +296,8 @@ func applyFixList(path string, fixes []doctorCheck) {
 			continue
 		case "Orphaned Dependencies":
 			err = fix.OrphanedDependencies(path, doctorVerbose)
+		case "Dependency Keys":
+			err = fix.DependencyKeys(path, doctorVerbose)
 		case "Child-Parent Dependencies":
 			// Requires explicit opt-in flag (destructive, may remove intentional deps)
 			if !doctorFixChildParent {
