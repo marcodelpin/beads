@@ -57,6 +57,13 @@ Timestamps (created_at, updated_at, started_at, closed_at) are preserved
 when present in the JSONL and otherwise filled in by the importer. The
 legacy "wisp" boolean is accepted as an alias for "ephemeral".
 
+By default rows whose updated_at is older than the local issue's are
+skipped (reported as stale_skipped_ids), so a routine import never rolls
+issues back. To deliberately restore an older snapshot, pass --allow-stale,
+which imports every row even when it overwrites newer local state. Note
+the default stale guard is checked before the write (not inside the upsert
+transaction), so a concurrent local update can still be overwritten.
+
 EXAMPLES:
   bd import                        # Import from configured import.path
   bd import backup.jsonl           # Import from a specific file
@@ -65,21 +72,24 @@ EXAMPLES:
   cat issues.jsonl | bd import -   # Pipe JSONL from another tool
   bd import --dry-run              # Show what would be imported
   bd import --dedup                # Skip issues with duplicate titles
+  bd import --allow-stale old.jsonl # Restore an older snapshot (overwrites newer local rows)
   bd import --json                 # Structured output with created and skipped IDs`,
 	GroupID: "sync",
 	RunE:    runImport,
 }
 
 var (
-	importDryRun bool
-	importDedup  bool
-	importInput  string
+	importDryRun     bool
+	importDedup      bool
+	importAllowStale bool
+	importInput      string
 )
 
 func init() {
 	importCmd.Flags().StringVarP(&importInput, "input", "i", "", "Read JSONL from a specific file")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Show what would be imported without importing")
 	importCmd.Flags().BoolVar(&importDedup, "dedup", false, "Skip lines whose title matches an existing open issue")
+	importCmd.Flags().BoolVar(&importAllowStale, "allow-stale", false, "Import rows even when older than the local issue (required to restore an older snapshot)")
 	rootCmd.AddCommand(importCmd)
 }
 
@@ -242,7 +252,7 @@ func runImportFromReader(ctx context.Context, r io.Reader, source string) error 
 
 	// Import issues
 	if len(issues) > 0 {
-		opts := ImportOptions{SkipPrefixValidation: true}
+		opts := ImportOptions{SkipPrefixValidation: true, AllowStale: importAllowStale}
 		importResult, err := importIssuesCore(ctx, "", store, issues, opts)
 		if err != nil {
 			return fmt.Errorf("import failed: %w", err)
@@ -279,7 +289,7 @@ func runImportFromReader(ctx context.Context, r io.Reader, source string) error 
 		fmt.Fprintf(os.Stderr, " (%d duplicates skipped)", dedupHits)
 	}
 	if staleSkipped := result.Skipped - dedupHits; staleSkipped > 0 {
-		fmt.Fprintf(os.Stderr, " (%d stale skipped)", staleSkipped)
+		fmt.Fprintf(os.Stderr, " (%d stale skipped; use --allow-stale to restore older rows)", staleSkipped)
 	}
 	fmt.Fprintln(os.Stderr)
 	for _, skipped := range result.SkippedDependencies {
