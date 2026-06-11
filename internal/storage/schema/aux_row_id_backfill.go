@@ -17,6 +17,16 @@ import (
 // performs its own convergence pass exactly once.
 const auxRowRekeyMarkerVersion = 9
 
+// auxRowRekeyShippedMainVersion is the main-source schema version that shipped
+// in the same release as the re-key pass. A database whose main cursor already
+// reached it BEFORE the current MigrateUp pass was migrated by a rekey-aware
+// binary, so its lineage has already converged — this open is a fresh clone
+// (or a post-pull adoption) whose dolt-ignored marker simply does not exist
+// locally yet. The pass is skipped there: rewriting would churn post-backfill
+// app-minted ids into a mass PK-rewrite commit from every new clone
+// (bd-578h9.4). The marker is still recorded.
+const auxRowRekeyShippedMainVersion = 51
+
 // auxRekeyTable describes one table covered by the re-key. columns is the
 // frozen SELECT list of every non-id column, in creation order, with datetime
 // columns CAST to CHAR server-side so the scanned text is identical across
@@ -69,7 +79,11 @@ var auxRekeyTables = []auxRekeyTable{
 // already consistent across clones (minted once, then merged), so re-keying
 // them would churn synced tables for no convergence benefit. Changes are
 // staged and committed by MigrateUp like any other backfill.
-func rekeyAuxRowIDs(ctx context.Context, db DBConn) (bool, error) {
+//
+// mainVersionBefore is the main-source cursor as it stood before this pass's
+// migrations ran; at or past auxRowRekeyShippedMainVersion the rewrite is
+// skipped (see that constant).
+func rekeyAuxRowIDs(ctx context.Context, db DBConn, mainVersionBefore int) (bool, error) {
 	pending, err := ignoredSource.pendingVersions(ctx, db)
 	if err != nil {
 		return false, fmt.Errorf("reading pending ignored migrations: %w", err)
@@ -82,6 +96,9 @@ func rekeyAuxRowIDs(ctx context.Context, db DBConn) (bool, error) {
 		}
 	}
 	if !markerPending {
+		return false, nil
+	}
+	if mainVersionBefore >= auxRowRekeyShippedMainVersion {
 		return false, nil
 	}
 

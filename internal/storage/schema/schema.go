@@ -238,6 +238,15 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration dirty table diffs: %w", err)
 	}
+	// Captured before the main migrations run: the aux re-key uses it to
+	// distinguish the lineage's first rekey-aware migration (run the pass)
+	// from a fresh clone of an already-converged lineage (record the marker
+	// only, bd-578h9.4).
+	mainVersionBefore, err := mainSource.currentVersion(ctx, db)
+	if err != nil {
+		return 0, fmt.Errorf("reading pre-migration schema version: %w", err)
+	}
+
 	applied, mainColumnAdded, err := mainSource.migrate(ctx, db, 0)
 	if err != nil {
 		return applied, err
@@ -263,8 +272,10 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	// migration 0037 randomized per-clone, the same hazard class on the aux
 	// tables. Gated on the clone-local ignored marker (recorded later in this
 	// pass by ignoredSource.migrate) so it runs exactly once per clone instead
-	// of churning synced rows on every later migration pass.
-	auxRekeyed, err := rekeyAuxRowIDs(ctx, db)
+	// of churning synced rows on every later migration pass — and on the
+	// pre-pass main cursor, so fresh clones of converged lineages record the
+	// marker without re-running the rewrite (bd-578h9.4).
+	auxRekeyed, err := rekeyAuxRowIDs(ctx, db, mainVersionBefore)
 	if err != nil {
 		return applied, fmt.Errorf("rekey aux row ids: %w", err)
 	}

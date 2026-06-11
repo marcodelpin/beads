@@ -104,6 +104,9 @@ func expectOnePendingMigration(t *testing.T, mock sqlmock.Sqlmock) {
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", latest-1)
 	expectDoltStatusRows(mock)
 	expectDoltStatusRows(mock)
+	// MigrateUp captures the pre-pass main cursor for the aux re-key
+	// watershed (bd-578h9.4) before the main migrations run.
+	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", latest-1)
 	mock.ExpectExec("(?s)^CREATE TABLE IF NOT EXISTS schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	expectContentHashColumnExists(mock)

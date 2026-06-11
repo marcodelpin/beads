@@ -202,7 +202,7 @@ func TestRekeyAuxRowIDsSkipsWhenMarkerRecorded(t *testing.T) {
 		"version", auxRowRekeyMarkerVersion)
 	// No further expectations: no table may be probed or scanned.
 
-	wrote, err := rekeyAuxRowIDs(context.Background(), db)
+	wrote, err := rekeyAuxRowIDs(context.Background(), db, auxRowRekeyShippedMainVersion-1)
 	if err != nil {
 		t.Fatalf("rekeyAuxRowIDs: %v", err)
 	}
@@ -231,12 +231,41 @@ func TestRekeyAuxRowIDsRunsAllTablesWhenMarkerPending(t *testing.T) {
 		expectColumnExists(mock, false)
 	}
 
-	wrote, err := rekeyAuxRowIDs(context.Background(), db)
+	wrote, err := rekeyAuxRowIDs(context.Background(), db, auxRowRekeyShippedMainVersion-1)
 	if err != nil {
 		t.Fatalf("rekeyAuxRowIDs: %v", err)
 	}
 	if wrote {
 		t.Error("expected wrote=false when no aux table exists")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestRekeyAuxRowIDsSkipsConvergedLineage verifies the bd-578h9.4 gate: when
+// the main cursor already reached the version that shipped with the re-key
+// BEFORE this pass ran, the lineage was migrated by a rekey-aware binary and
+// has converged — a pending marker just means "fresh clone" (the marker table
+// is dolt-ignored and never synced), and no table may be probed or rewritten.
+func TestRekeyAuxRowIDsSkipsConvergedLineage(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
+		"version", auxRowRekeyMarkerVersion-1)
+	// No further expectations: marker is pending, but the pre-pass main
+	// cursor at the watershed means no table may be probed or scanned.
+
+	wrote, err := rekeyAuxRowIDs(context.Background(), db, auxRowRekeyShippedMainVersion)
+	if err != nil {
+		t.Fatalf("rekeyAuxRowIDs: %v", err)
+	}
+	if wrote {
+		t.Error("expected wrote=false for a converged lineage (pre-pass cursor at watershed)")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
