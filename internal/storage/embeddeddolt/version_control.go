@@ -254,6 +254,12 @@ func (s *EmbeddedDoltStore) Push(ctx context.Context) error {
 }
 
 func (s *EmbeddedDoltStore) Pull(ctx context.Context) error {
+	// GH#2474 / bd-578h9.2: auto-commit pending changes before pull, matching
+	// server-mode pullFromRemote and PullFrom. Leftovers from a crashed
+	// command would otherwise make the merge refuse to start.
+	if _, err := s.CommitPending(ctx, "beads"); err != nil {
+		return fmt.Errorf("commit pending before pull: %w", err)
+	}
 	preHead := s.preMergeHead(ctx)
 	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Pull(ctx, db, defaultRemote, s.branch, remoteAuthUser())
@@ -280,6 +286,10 @@ func (s *EmbeddedDoltStore) PushRemote(ctx context.Context, remote string, force
 }
 
 func (s *EmbeddedDoltStore) PullRemote(ctx context.Context, remote string) error {
+	// GH#2474 / bd-578h9.2: see Pull.
+	if _, err := s.CommitPending(ctx, "beads"); err != nil {
+		return fmt.Errorf("commit pending before pull: %w", err)
+	}
 	preHead := s.preMergeHead(ctx)
 	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Pull(ctx, db, remote, s.branch, remoteAuthUser())
