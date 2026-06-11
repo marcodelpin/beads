@@ -372,37 +372,25 @@ type bulkDepInput struct {
 }
 
 // newCycleThroughEdges runs a whole-graph cycle check inside the bulk-add
-// transaction and returns a rendered cycle path when a detected cycle touches
-// any endpoint of the edges being added, or "" when none does. Pre-existing
-// cycles elsewhere in the graph are ignored so they don't block unrelated
-// bulk wiring. A failed check returns an error — the bulk add must roll back
+// transaction and returns a rendered cycle path when a cycle actually
+// traverses one of the edges being added, or "" when none does. Endpoint
+// membership is not enough: an issue sitting in a pre-existing committed
+// cycle must not block unrelated bulk wiring that merely touches it
+// (bd-578h9.9). Non-blocking edge types cannot form blocking cycles and are
+// excluded. A failed check returns an error — the bulk add must roll back
 // rather than commit unverified edges (bd-6dnrw.8).
 func newCycleThroughEdges(ctx context.Context, tx storage.Transaction, edges []bulkDepEdge) (string, error) {
-	cycles, err := tx.DetectCycles(ctx)
-	if err != nil {
-		return "", err
-	}
-	endpoints := make(map[string]struct{}, len(edges)*2)
+	pairs := make([][2]string, 0, len(edges))
 	for _, edge := range edges {
-		endpoints[edge.IssueID] = struct{}{}
-		endpoints[edge.DependsOnID] = struct{}{}
-	}
-	for _, cycle := range cycles {
-		for _, issue := range cycle {
-			if _, ok := endpoints[issue.ID]; !ok {
-				continue
-			}
-			ids := make([]string, 0, len(cycle)+1)
-			for _, member := range cycle {
-				ids = append(ids, member.ID)
-			}
-			if len(cycle) > 0 {
-				ids = append(ids, cycle[0].ID)
-			}
-			return strings.Join(ids, " → "), nil
+		if edge.Type != types.DepBlocks && edge.Type != types.DepConditionalBlocks {
+			continue
 		}
+		pairs = append(pairs, [2]string{edge.IssueID, edge.DependsOnID})
 	}
-	return "", nil
+	if len(pairs) == 0 {
+		return "", nil
+	}
+	return tx.CycleThroughEdges(ctx, pairs)
 }
 
 type bulkDepEdge struct {
