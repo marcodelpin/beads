@@ -481,8 +481,8 @@ func (s *testSuite) depBlockingInfoAcrossUnions() {
 		newDep("bd-bi-x-target", "bd-bi-x-permblocker", types.DepBlocks), "tester",
 		domain.DepInsertOpts{}))
 	_, err := s.Runner().ExecContext(s.Ctx(), `
-		INSERT INTO wisp_dependencies (issue_id, depends_on_wisp_id, type, created_at, created_by, metadata)
-		VALUES (?, ?, 'blocks', NOW(), 'tester', '{}')
+		INSERT INTO wisp_dependencies (id, issue_id, depends_on_wisp_id, type, created_at, created_by, metadata)
+		VALUES (UUID(), ?, ?, 'blocks', NOW(), 'tester', '{}')
 	`, "bd-bi-x-target", "bd-bi-x-wispblocker")
 	s.Require().NoError(err)
 
