@@ -143,6 +143,27 @@ func isRemoteNotFoundErr(err error) bool {
 	return strings.Contains(msg, "remote") && strings.Contains(msg, "not found")
 }
 
+// remoteLister is the narrow store surface needed to confirm the structured
+// no-remote-configured state.
+type remoteLister interface {
+	ListRemotes(ctx context.Context) ([]storage.RemoteInfo, error)
+}
+
+// isConfirmedNoRemote reports whether a push/pull failure is the benign
+// "no remote configured" case that may exit 0. isRemoteNotFoundErr alone is a
+// loose string match that also fires on deleted/renamed remote-side repos,
+// missing remote branches, and typoed remote names — real sync failures that
+// must keep a non-zero exit so agents and CI notice (bd-6dnrw.7). Only an
+// actually-empty dolt_remotes table makes the skip safe; if the remotes can't
+// be listed, treat the failure as real.
+func isConfirmedNoRemote(ctx context.Context, st remoteLister, err error) bool {
+	if !isRemoteNotFoundErr(err) {
+		return false
+	}
+	remotes, listErr := st.ListRemotes(ctx)
+	return listErr == nil && len(remotes) == 0
+}
+
 // isDivergedHistoryErr checks whether the error indicates that local and remote
 // Dolt histories have diverged. This happens when independent pushes create
 // separate commit histories with no common merge base (e.g., two agents
@@ -338,7 +359,7 @@ The remote must already exist (see 'bd dolt remote add').`,
 			pushErr = st.Push(ctx)
 		}
 		if pushErr != nil {
-			if isRemoteNotFoundErr(pushErr) {
+			if isConfirmedNoRemote(ctx, st, pushErr) {
 				printNoRemoteGuidance()
 				return
 			}
@@ -397,7 +418,7 @@ The remote must already exist (see 'bd dolt remote add').`,
 		}
 		fmt.Println("Pulling from Dolt remote...")
 		if err := st.Pull(ctx); err != nil {
-			if isRemoteNotFoundErr(err) {
+			if isConfirmedNoRemote(ctx, st, err) {
 				printNoRemoteGuidance()
 				return
 			}

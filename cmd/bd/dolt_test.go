@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 func TestDoltShowConfigNotInRepo(t *testing.T) {
@@ -1086,6 +1088,45 @@ func TestIsRemoteNotFoundErr(t *testing.T) {
 			got := isRemoteNotFoundErr(tt.err)
 			if got != tt.want {
 				t.Errorf("isRemoteNotFoundErr(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+type fakeRemoteLister struct {
+	remotes []storage.RemoteInfo
+	err     error
+}
+
+func (f fakeRemoteLister) ListRemotes(context.Context) ([]storage.RemoteInfo, error) {
+	return f.remotes, f.err
+}
+
+// bd-6dnrw.7: the exit-0 "no remote configured" skip must only fire when
+// dolt_remotes is actually empty. A remote-not-found error with remotes
+// configured (deleted remote-side repo, missing branch, typo) is a real sync
+// failure and must stay on the exit-1 path.
+func TestIsConfirmedNoRemote(t *testing.T) {
+	ctx := context.Background()
+	notFound := fmt.Errorf("remote 'origin' not found")
+	tests := []struct {
+		name   string
+		err    error
+		lister fakeRemoteLister
+		want   bool
+	}{
+		{"no remotes configured", notFound, fakeRemoteLister{}, true},
+		{"remotes exist", notFound, fakeRemoteLister{remotes: []storage.RemoteInfo{{Name: "origin"}}}, false},
+		{"list fails", notFound, fakeRemoteLister{err: fmt.Errorf("server unreachable")}, false},
+		{"unrelated error", fmt.Errorf("connection refused"), fakeRemoteLister{}, false},
+		{"nil error", nil, fakeRemoteLister{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isConfirmedNoRemote(ctx, tt.lister, tt.err)
+			if got != tt.want {
+				t.Errorf("isConfirmedNoRemote(%v, remotes=%d, listErr=%v) = %v, want %v",
+					tt.err, len(tt.lister.remotes), tt.lister.err, got, tt.want)
 			}
 		})
 	}
