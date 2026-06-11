@@ -555,9 +555,9 @@ func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue, actor, e
 		comment := "Added label: " + label
 		//nolint:gosec // G201: eventTable is determined by ephemeral flag
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-			INSERT INTO %s (issue_id, event_type, actor, comment)
-			VALUES (?, ?, ?, ?)
-		`, eventTable), issue.ID, types.EventLabelAdded, actor, comment); err != nil {
+			INSERT INTO %s (id, issue_id, event_type, actor, comment)
+			VALUES (?, ?, ?, ?, ?)
+		`, eventTable), NewEventID(), issue.ID, types.EventLabelAdded, actor, comment); err != nil {
 			return result, fmt.Errorf("failed to record label event %q for %s: %w", label, issue.ID, err)
 		}
 		result.markChanged(eventTable)

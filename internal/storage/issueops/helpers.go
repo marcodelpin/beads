@@ -14,12 +14,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/idgen"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+// NewEventID mints the app-side primary key for an events/wisp_events row.
+// Events have no natural identity (the same logical event can legitimately
+// occur twice), so the id is random — but minted app-side, once, at creation.
+// Insert sites must never fall back to the DB-side DEFAULT (UUID()): that is
+// the 0043-era pattern that let bulk/import paths silently mint clone-random
+// keys for logically identical rows, the same failure class as #4259 on
+// dependencies (bd-6dnrw.18). UUIDv7 matches the comments-table convention
+// and keeps ids time-sortable.
+func NewEventID() string {
+	return uuid.Must(uuid.NewV7()).String()
+}
 
 // IsWisp returns true if the issue should be routed to the wisps table.
 // Routes based on flags only — not the ID pattern. The "-wisp-" ID prefix is
@@ -107,9 +120,9 @@ func InsertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 //nolint:gosec // G201: table is a hardcoded constant ("events" or "wisp_events")
 func RecordEventInTable(ctx context.Context, tx *sql.Tx, table, issueID string, eventType types.EventType, actor, newValue string) error {
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (issue_id, event_type, actor, old_value, new_value)
-		VALUES (?, ?, ?, ?, ?)
-	`, table), issueID, eventType, actor, "", newValue)
+		INSERT INTO %s (id, issue_id, event_type, actor, old_value, new_value)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, table), NewEventID(), issueID, eventType, actor, "", newValue)
 	if err != nil {
 		return fmt.Errorf("record event in %s: %w", table, err)
 	}
