@@ -195,6 +195,18 @@ func parseVersion(name string) (int, error) {
 	return strconv.Atoi(parts[0])
 }
 
+// MigrateUpTo applies main-source migrations up to and including maxVersion,
+// without the dirty-table guards, backfills, rekeys, or ignored-source pass
+// that MigrateUp layers on. It exists so cross-upgrade-boundary tests
+// (bd-6dnrw.16) can reconstruct the schema as it stood at a historical
+// release and use it as a Dolt merge ancestor. Production code must use
+// MigrateUp: stopping short of the latest version on a real database leaves
+// it half-upgraded by design.
+func MigrateUpTo(ctx context.Context, db DBConn, maxVersion int) (int, error) {
+	applied, _, err := mainSource.migrate(ctx, db, maxVersion)
+	return applied, err
+}
+
 func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	needed, err := migrationWorkNeeded(ctx, db)
 	if err != nil {
@@ -226,7 +238,7 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration dirty table diffs: %w", err)
 	}
-	applied, mainColumnAdded, err := mainSource.migrate(ctx, db)
+	applied, mainColumnAdded, err := mainSource.migrate(ctx, db, 0)
 	if err != nil {
 		return applied, err
 	}
@@ -270,7 +282,7 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 		return applied, fmt.Errorf("pending ignored schema migrations alter pre-existing dirty tables: %s", strings.Join(touchedIgnoredDirtyTables, ", "))
 	}
 
-	appliedIgnored, ignoredColumnAdded, err := ignoredSource.migrate(ctx, db)
+	appliedIgnored, ignoredColumnAdded, err := ignoredSource.migrate(ctx, db, 0)
 	if err != nil {
 		return applied, fmt.Errorf("ignored migrations: %w", err)
 	}
@@ -817,7 +829,10 @@ func migrationSQLTouchesTable(sqlText, table string) bool {
 // numbered migrations applied plus whether it added the content_hash column to a
 // pre-existing cursor table. The column signal lets MigrateUp stage and commit
 // that ALTER as schema work even when no numbered migration was applied.
-func (m migrationSource) migrate(ctx context.Context, db DBConn) (int, bool, error) {
+// migrate applies pending migrations from this source. upTo bounds the highest
+// version applied; pass 0 for the latest (the production path — only the
+// MigrateUpTo test-support path passes a real bound).
+func (m migrationSource) migrate(ctx context.Context, db DBConn, upTo int) (int, bool, error) {
 	if _, err := db.ExecContext(ctx, m.bootstrapSQL()); err != nil {
 		return 0, false, fmt.Errorf("creating %s: %w", m.cursorTable, err)
 	}
@@ -826,18 +841,23 @@ func (m migrationSource) migrate(ctx context.Context, db DBConn) (int, bool, err
 		return 0, false, err
 	}
 
+	target := m.latest()
+	if upTo > 0 && upTo < target {
+		target = upTo
+	}
+
 	var current int
 	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable).Scan(&current); err != nil && err != sql.ErrNoRows {
 		return 0, columnAdded, fmt.Errorf("reading %s version: %w", m.cursorTable, err)
 	}
 
-	if current >= m.latest() {
+	if current >= target {
 		return 0, columnAdded, nil
 	}
 
 	count := 0
 	for _, mf := range m.list() {
-		if mf.version <= current {
+		if mf.version <= current || mf.version > target {
 			continue
 		}
 		data, err := m.files.ReadFile(m.dir + "/" + mf.name)

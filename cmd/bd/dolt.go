@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/ui"
 	"golang.org/x/term"
@@ -158,39 +158,20 @@ func isDivergedHistoryErr(err error) bool {
 		strings.Contains(msg, "cannot find common ancestor")
 }
 
-// isAncestorPKMismatchErr checks whether the error is Dolt's hard refusal to
-// merge a table whose primary key set differs between the merging heads or in
-// their common ancestor (merge.ErrMergeWithDifferentPks /
-// ErrMergeWithDifferentPksFromAncestor: "cannot merge because table X has
-// different primary keys[ in its common ancestor]"). This is the signature of
-// a schema fork where clones reshaped a table's primary key independently —
-// e.g. two clones straddling the 0041/0043/0050 dependencies PK reshape
-// (#4259). Dolt refuses the merge before any row conflicts materialize, so
-// the pull auto-resolver never gets a chance to run, and retrying can never
-// converge the clones: recovery requires re-cloning from one canonical side.
+// isAncestorPKMismatchErr reports Dolt's hard refusal to merge a table whose
+// primary key set differs across the merging histories or in their common
+// ancestor. The classification lives in dberrors so the cross-upgrade merge
+// test (internal/storage/dolt) can pin it against a real Dolt refusal; see
+// dberrors.IsAncestorPKMismatch for the full background (#4259).
 func isAncestorPKMismatchErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "cannot merge because table") &&
-		strings.Contains(msg, "different primary keys")
+	return dberrors.IsAncestorPKMismatch(err)
 }
 
 // ancestorPKMismatchTable extracts the table name from a Dolt
 // different-primary-keys merge refusal, or "" if it cannot be determined.
 func ancestorPKMismatchTable(err error) string {
-	if err == nil {
-		return ""
-	}
-	m := ancestorPKTableRe.FindStringSubmatch(err.Error())
-	if len(m) < 2 {
-		return ""
-	}
-	return m[1]
+	return dberrors.AncestorPKMismatchTable(err)
 }
-
-var ancestorPKTableRe = regexp.MustCompile(`cannot merge because table (\S+) has different primary keys`)
 
 // printAncestorPKMismatchGuidance prints recovery guidance when a Dolt merge
 // is refused because a table's primary key set differs across the merging
