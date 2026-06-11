@@ -1183,7 +1183,12 @@ var rootCmd = &cobra.Command{
 		} else {
 			// Dolt auto-commit: after a successful write command (and after final flush),
 			// create a Dolt commit so changes don't remain only in the working set.
-			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
+			// commandDidWrite is a fast-path hint, not the sole trigger: a write path
+			// that forgets to set it would otherwise leak its writes into the NEXT
+			// command's auto-commit with wrong attribution, so a dirty working set
+			// also triggers the commit (bd-6dnrw.11).
+			if !commandDidExplicitDoltCommit &&
+				(commandDidWrite.Load() || workingSetHasUnflaggedWrites(rootCtx, cmd.Name())) {
 				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
 					FatalError("dolt auto-commit failed: %v", err)
 				}

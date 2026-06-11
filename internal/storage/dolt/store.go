@@ -1822,20 +1822,11 @@ func (s *DoltStore) doltAddAndCommit(ctx context.Context, tables []string, commi
 // This is the primary commit mechanism for batch mode, where multiple bd commands
 // accumulate changes in the working set before committing at a logical boundary.
 func (s *DoltStore) CommitPending(ctx context.Context, actor string) (bool, error) {
-	// Check if there are any committable changes (excluding dolt_ignore'd tables
-	// like wisp tables, which appear in dolt_status but can't be staged).
-	var count int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM dolt_status s
-		WHERE NOT EXISTS (
-			SELECT 1 FROM dolt_ignore di
-			WHERE di.ignored = 1
-			AND s.table_name LIKE di.pattern
-		)`).Scan(&count)
+	pending, err := s.HasPendingChanges(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to check status: %w", err)
+		return false, err
 	}
-	if count == 0 {
+	if !pending {
 		return false, nil // Nothing to commit
 	}
 
@@ -1853,6 +1844,13 @@ func (s *DoltStore) CommitPending(ctx context.Context, actor string) (bool, erro
 		return false, err
 	}
 	return true, nil
+}
+
+// HasPendingChanges reports whether the working set has committable changes,
+// excluding dolt_ignore'd tables (e.g. wisp tables, which can sit dirty in
+// dolt_status indefinitely without being committable).
+func (s *DoltStore) HasPendingChanges(ctx context.Context) (bool, error) {
+	return issueops.HasPendingChanges(ctx, s.db)
 }
 
 // buildBatchCommitMessage generates a descriptive commit message summarizing

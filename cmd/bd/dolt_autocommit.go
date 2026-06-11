@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 )
@@ -111,6 +112,41 @@ func maybeAutoCommitStore(ctx context.Context, st storage.DoltStorage, p doltAut
 		return err
 	}
 	return nil
+}
+
+// workingSetHasUnflaggedWrites reports whether the embedded working set holds
+// committable changes even though no write path set commandDidWrite. It is the
+// safety net behind that flag: a mutating command that forgets to set it would
+// otherwise leave its writes to be swept into the NEXT command's auto-commit
+// with wrong attribution (bd-6dnrw.11). Only meaningful in embedded mode with
+// auto-commit "on" — batch mode keeps the working set dirty by design.
+func workingSetHasUnflaggedWrites(ctx context.Context, cmdName string) bool {
+	if !isEmbeddedMode() {
+		return false
+	}
+	if mode, err := getDoltAutoCommitMode(); err != nil || mode != doltAutoCommitOn {
+		return false
+	}
+	st := getStore()
+	if st == nil {
+		return false
+	}
+	unwrapped := storage.UnwrapStore(st)
+	if lm, ok := unwrapped.(storage.LifecycleManager); ok && lm.IsClosed() {
+		return false
+	}
+	checker, ok := unwrapped.(interface {
+		HasPendingChanges(ctx context.Context) (bool, error)
+	})
+	if !ok {
+		return false
+	}
+	dirty, err := checker.HasPendingChanges(ctx)
+	if err != nil || !dirty {
+		return false
+	}
+	debug.Logf("command %q left uncommitted changes without setting commandDidWrite; auto-committing anyway (bd-6dnrw.11)", cmdName)
+	return true
 }
 
 func isDoltNothingToCommit(err error) bool {
