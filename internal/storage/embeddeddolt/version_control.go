@@ -77,6 +77,27 @@ func (s *EmbeddedDoltStore) withPinnedDBConn(ctx context.Context, fn func(db ver
 	return fn(conn)
 }
 
+// withMutatingDBConn is withDBConn for operations that mutate the database
+// or its version-control state (merge, push/pull, branch ops, backups, GC).
+// withDBConn runs outside any SQL transaction, so withConn's commit guard
+// never sees these — a read-only store satisfies the full DoltStorage
+// interface and must refuse them here instead (bd-578h9.12).
+func (s *EmbeddedDoltStore) withMutatingDBConn(ctx context.Context, fn func(db versioncontrolops.DBConn) error) error {
+	if s.readOnly {
+		return errReadOnly
+	}
+	return s.withDBConn(ctx, fn)
+}
+
+// withMutatingPinnedDBConn is withPinnedDBConn with the same read-only
+// refusal as withMutatingDBConn (bd-578h9.12).
+func (s *EmbeddedDoltStore) withMutatingPinnedDBConn(ctx context.Context, fn func(db versioncontrolops.DBConn) error) error {
+	if s.readOnly {
+		return errReadOnly
+	}
+	return s.withPinnedDBConn(ctx, fn)
+}
+
 func (s *EmbeddedDoltStore) Commit(ctx context.Context, message string) error {
 	return s.withConn(ctx, true, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?)", message); err != nil {
@@ -93,7 +114,7 @@ func (s *EmbeddedDoltStore) CommitWithConfig(ctx context.Context, message string
 }
 
 func (s *EmbeddedDoltStore) AddRemote(ctx context.Context, name, url string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		_, err := db.ExecContext(ctx, "CALL DOLT_REMOTE('add', ?, ?)", name, url)
 		return err
 	})
@@ -115,13 +136,13 @@ func (s *EmbeddedDoltStore) HasRemote(ctx context.Context, name string) (bool, e
 // ---------------------------------------------------------------------------
 
 func (s *EmbeddedDoltStore) Branch(ctx context.Context, name string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.CreateBranch(ctx, db, name)
 	})
 }
 
 func (s *EmbeddedDoltStore) Checkout(ctx context.Context, branch string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.CheckoutBranch(ctx, db, branch)
 	})
 }
@@ -137,7 +158,7 @@ func (s *EmbeddedDoltStore) CurrentBranch(ctx context.Context) (string, error) {
 }
 
 func (s *EmbeddedDoltStore) DeleteBranch(ctx context.Context, branch string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.DeleteBranch(ctx, db, branch)
 	})
 }
@@ -200,7 +221,7 @@ func (s *EmbeddedDoltStore) Merge(ctx context.Context, branch string) ([]storage
 		preHead = s.preMergeHead(ctx)
 	}
 	var conflicts []storage.Conflict
-	err := s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	err := s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		var err error
 		conflicts, err = versioncontrolops.Merge(ctx, db, branch, commitAuthor)
 		return err
@@ -235,7 +256,7 @@ func (s *EmbeddedDoltStore) GetConflicts(ctx context.Context) ([]storage.Conflic
 }
 
 func (s *EmbeddedDoltStore) ResolveConflicts(ctx context.Context, table string, strategy string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.ResolveConflicts(ctx, db, table, strategy)
 	})
 }
@@ -257,7 +278,7 @@ func remoteAuthUser() string {
 }
 
 func (s *EmbeddedDoltStore) RemoveRemote(ctx context.Context, name string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.RemoveRemote(ctx, db, name)
 	})
 }
@@ -273,7 +294,7 @@ func (s *EmbeddedDoltStore) ListRemotes(ctx context.Context) ([]storage.RemoteIn
 }
 
 func (s *EmbeddedDoltStore) Push(ctx context.Context) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Push(ctx, db, defaultRemote, s.branch, remoteAuthUser())
 	})
 }
@@ -286,7 +307,7 @@ func (s *EmbeddedDoltStore) Pull(ctx context.Context) error {
 		return fmt.Errorf("commit pending before pull: %w", err)
 	}
 	preHead := s.preMergeHead(ctx)
-	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	err := s.withMutatingPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Pull(ctx, db, defaultRemote, s.branch, remoteAuthUser())
 	})
 	if err != nil {
@@ -296,13 +317,13 @@ func (s *EmbeddedDoltStore) Pull(ctx context.Context) error {
 }
 
 func (s *EmbeddedDoltStore) ForcePush(ctx context.Context) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.ForcePush(ctx, db, defaultRemote, s.branch, remoteAuthUser())
 	})
 }
 
 func (s *EmbeddedDoltStore) PushRemote(ctx context.Context, remote string, force bool) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		if force {
 			return versioncontrolops.ForcePush(ctx, db, remote, s.branch, remoteAuthUser())
 		}
@@ -316,7 +337,7 @@ func (s *EmbeddedDoltStore) PullRemote(ctx context.Context, remote string) error
 		return fmt.Errorf("commit pending before pull: %w", err)
 	}
 	preHead := s.preMergeHead(ctx)
-	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	err := s.withMutatingPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Pull(ctx, db, remote, s.branch, remoteAuthUser())
 	})
 	if err != nil {
@@ -326,13 +347,13 @@ func (s *EmbeddedDoltStore) PullRemote(ctx context.Context, remote string) error
 }
 
 func (s *EmbeddedDoltStore) Fetch(ctx context.Context, peer string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Fetch(ctx, db, peer, remoteAuthUser())
 	})
 }
 
 func (s *EmbeddedDoltStore) PushTo(ctx context.Context, peer string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.Push(ctx, db, peer, s.branch, remoteAuthUser())
 	})
 }
@@ -346,7 +367,7 @@ func (s *EmbeddedDoltStore) PullFrom(ctx context.Context, peer string) ([]storag
 
 	preHead := s.preMergeHead(ctx)
 	var conflicts []storage.Conflict
-	err := s.withPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	err := s.withMutatingPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		if pullErr := versioncontrolops.Pull(ctx, db, peer, s.branch, remoteAuthUser()); pullErr != nil {
 			// bd-578h9.15: the settle machinery aborts a merge it cannot
 			// auto-resolve before returning, so dolt_conflicts is already
@@ -403,7 +424,7 @@ func (s *EmbeddedDoltStore) recomputeBlockedAfterPull(ctx context.Context, preHe
 		})
 		return err
 	}
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.StageAndCommit(ctx, db,
 			map[string]bool{"issues": true}, "bd: recompute is_blocked after pull", commitAuthor)
 	})
@@ -414,19 +435,19 @@ func (s *EmbeddedDoltStore) recomputeBlockedAfterPull(ctx context.Context, preHe
 // ---------------------------------------------------------------------------
 
 func (s *EmbeddedDoltStore) BackupAdd(ctx context.Context, name, url string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.BackupAdd(ctx, db, name, url)
 	})
 }
 
 func (s *EmbeddedDoltStore) BackupSync(ctx context.Context, name string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.BackupSync(ctx, db, name)
 	})
 }
 
 func (s *EmbeddedDoltStore) BackupRemove(ctx context.Context, name string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.BackupRemove(ctx, db, name)
 	})
 }
@@ -449,7 +470,7 @@ func (s *EmbeddedDoltStore) BackupDatabase(ctx context.Context, dir string) erro
 	}
 	backupName := "backup_export"
 
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		// Register as a backup remote (idempotent — remove first if exists).
 		_ = versioncontrolops.BackupRemove(ctx, db, backupName)
 		if err := versioncontrolops.BackupAdd(ctx, db, backupName, backupURL); err != nil {
@@ -488,7 +509,7 @@ func (s *EmbeddedDoltStore) RestoreDatabase(ctx context.Context, dir string, for
 		return err
 	}
 
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.BackupRestore(ctx, db, backupURL, s.database, force)
 	})
 }

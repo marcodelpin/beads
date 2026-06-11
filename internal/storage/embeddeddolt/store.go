@@ -116,9 +116,11 @@ func newStore(ctx context.Context, beadsDir, database, branch string, lenientGat
 // (bd-6dnrw.32). It is the embedded equivalent of server mode's
 // Config.ReadOnly open, used for cross-repo hydration of foreign projects
 // (GH#3231) where opening must not write anything — not even a one-time
-// migration backfill commit — into the target's history. Forward drift (the
-// database AHEAD of this binary) is still checked, since stale-binary reads
-// fail cryptically.
+// migration backfill commit — into the target's history. Drift in either
+// direction is checked at open: forward (the database AHEAD of this binary)
+// because stale-binary reads fail cryptically, and behind (the database
+// BEHIND this binary) because these paths used to auto-migrate and would
+// otherwise fail at query time with unknown-column errors (bd-578h9.12).
 //
 // Read-only stores bypass the Open cache in both directions: they must not be
 // handed a future writable Open (which would skip migrations), and writable
@@ -154,6 +156,9 @@ func OpenReadOnly(ctx context.Context, beadsDir, database, branch string) (*Embe
 	}
 	defer func() { _ = cleanup() }()
 	if err := schema.CheckForwardDrift(ctx, db); err != nil {
+		return nil, err
+	}
+	if err := schema.CheckBehindDrift(ctx, db); err != nil {
 		return nil, err
 	}
 
@@ -466,7 +471,7 @@ func (s *EmbeddedDoltStore) Close() error {
 
 // DoltGC runs Dolt garbage collection to reclaim disk space.
 func (s *EmbeddedDoltStore) DoltGC(ctx context.Context) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		return versioncontrolops.DoltGC(ctx, db)
 	})
 }
@@ -537,7 +542,7 @@ func (s *EmbeddedDoltStore) ImportJSONLData(
 // Flatten squashes all Dolt commit history into a single commit.
 // Pins a single *sql.Conn for session-scoped stored procedures.
 func (s *EmbeddedDoltStore) Flatten(ctx context.Context) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		if pooled, ok := db.(*sql.DB); ok {
 			conn, err := pooled.Conn(ctx)
 			if err != nil {
@@ -553,7 +558,7 @@ func (s *EmbeddedDoltStore) Flatten(ctx context.Context) error {
 // Compact squashes old Dolt commits while preserving recent ones.
 // Pins a single *sql.Conn for session-scoped stored procedures.
 func (s *EmbeddedDoltStore) Compact(ctx context.Context, initialHash, boundaryHash string, oldCommits int, recentHashes []string) error {
-	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		// withDBConn returns *sql.DB; pin a single connection for
 		// session-scoped operations (checkout, reset, cherry-pick).
 		if pooled, ok := db.(*sql.DB); ok {

@@ -5,6 +5,7 @@ package embeddeddolt_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
@@ -115,6 +116,18 @@ func TestEmbeddedOpenReadOnly_SkipsGateAndMigrations(t *testing.T) {
 	if _, err := ro.ApplySchemaMigrations(ctx); err == nil {
 		t.Fatal("ApplySchemaMigrations on read-only store = nil error, want refusal")
 	}
+	// Version-control mutations bypass withConn's commit guard (they run via
+	// withDBConn, outside any SQL transaction) and must be refused too
+	// (bd-578h9.12).
+	if err := ro.Branch(ctx, "ro-test-branch"); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("Branch on read-only store = %v, want read-only refusal", err)
+	}
+	if err := ro.Push(ctx); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("Push on read-only store = %v, want read-only refusal", err)
+	}
+	if _, err := ro.Merge(ctx, "main"); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("Merge on read-only store = %v, want read-only refusal", err)
+	}
 	ro.Close()
 
 	if commitsAfter, dirtyAfter := snapshot(); commitsAfter != commitsBefore || dirtyAfter != dirtyBefore {
@@ -145,12 +158,26 @@ func TestEmbeddedOpenReadOnly_SkipsGateAndMigrations(t *testing.T) {
 		t.Fatalf("Open error = %T (%v), want *schema.RemoteMigrateGateError", gateErr, gateErr)
 	}
 
+	// The read-only open stays exempt from the remote-migrate gate, but a
+	// behind database now fails at open with a clear behind-drift error
+	// instead of unknown-column errors at query time (bd-578h9.12)...
+	if ro2, roErr := embeddeddolt.OpenReadOnly(ctx, beadsDir, "testdb", "main"); roErr == nil {
+		ro2.Close()
+		t.Fatal("OpenReadOnly of behind DB = nil error, want *schema.SchemaBehindError")
+	} else if schema.IsRemoteMigrateGateError(roErr) {
+		t.Fatalf("OpenReadOnly error = remote-migrate gate (%v); read-only opens must stay exempt from it", roErr)
+	} else if !schema.IsSchemaBehindError(roErr) {
+		t.Fatalf("OpenReadOnly error = %T (%v), want *schema.SchemaBehindError", roErr, roErr)
+	}
+
+	// ...and BD_IGNORE_SCHEMA_SKEW=1 keeps the escape hatch open.
+	t.Setenv("BD_IGNORE_SCHEMA_SKEW", "1")
 	ro2, err := embeddeddolt.OpenReadOnly(ctx, beadsDir, "testdb", "main")
 	if err != nil {
-		t.Fatalf("OpenReadOnly (behind, remote-backed) = %v, want nil — read-only opens are exempt from the gate", err)
+		t.Fatalf("OpenReadOnly (behind, skew ignored) = %v, want nil", err)
 	}
 	if got, err := ro2.GetConfig(ctx, "issue_prefix"); err != nil || got != "ro" {
-		t.Fatalf("GetConfig after gate-exempt open = %q, %v; want %q, nil", got, err, "ro")
+		t.Fatalf("GetConfig after skew-ignored open = %q, %v; want %q, nil", got, err, "ro")
 	}
 	ro2.Close()
 }

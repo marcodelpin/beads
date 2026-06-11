@@ -28,7 +28,7 @@ func (s *EmbeddedDoltStore) RunInTransaction(ctx context.Context, commitMsg stri
 
 	// Create a Dolt version commit from the working set changes.
 	if commitMsg != "" && len(tracker.DirtyTables()) > 0 {
-		return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
+		return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 			return versioncontrolops.StageAndCommit(ctx, db, tracker.DirtyTables(), commitMsg, commitAuthor)
 		})
 	}
