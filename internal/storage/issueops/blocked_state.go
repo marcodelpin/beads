@@ -120,9 +120,16 @@ func markIsBlockedPassForIssuesInTx(ctx context.Context, tx *sql.Tx, ids []strin
 	return runMarkBatchedInTx(ctx, tx, markBlockedTemplateForIssues(), ids)
 }
 
+// The mark/unmark templates explicitly assign updated_at to itself:
+// issues.updated_at (and wisps.updated_at) carry ON UPDATE CURRENT_TIMESTAMP,
+// and is_blocked is DERIVED state - letting a recompute bump updated_at
+// plants per-clone wall clock in a synced table (merge conflicts between
+// clones that recomputed the same flip at different times, bd-578h9.19) and
+// makes stale-guard/conflict-guard consumers treat the row as user-edited.
+// An explicit assignment suppresses the ON UPDATE clause.
 func markBlockedTemplateForIssues() string {
 	return fmt.Sprintf(`
-		UPDATE issues i SET i.is_blocked = 1
+		UPDATE issues i SET i.is_blocked = 1, i.updated_at = i.updated_at
 		WHERE i.id IN (%%s)
 		  AND i.is_blocked = 0
 		  AND i.status <> 'closed' AND i.status <> 'pinned'
@@ -166,7 +173,7 @@ func markBlockedTemplateForIssues() string {
 
 func unmarkBlockedTemplateForIssues() string {
 	return fmt.Sprintf(`
-		UPDATE issues i SET i.is_blocked = 0
+		UPDATE issues i SET i.is_blocked = 0, i.updated_at = i.updated_at
 		WHERE i.id IN (%%s)
 		  AND i.is_blocked = 1
 		  AND (
@@ -228,7 +235,7 @@ func markIsBlockedPassForWispsInTx(ctx context.Context, tx *sql.Tx, ids []string
 
 func markBlockedTemplateForWisps() string {
 	return fmt.Sprintf(`
-		UPDATE wisps w SET w.is_blocked = 1
+		UPDATE wisps w SET w.is_blocked = 1, w.updated_at = w.updated_at
 		WHERE w.id IN (%%s)
 		  AND w.is_blocked = 0
 		  AND w.status <> 'closed' AND w.status <> 'pinned'
@@ -272,7 +279,7 @@ func markBlockedTemplateForWisps() string {
 
 func unmarkBlockedTemplateForWisps() string {
 	return fmt.Sprintf(`
-		UPDATE wisps w SET w.is_blocked = 0
+		UPDATE wisps w SET w.is_blocked = 0, w.updated_at = w.updated_at
 		WHERE w.id IN (%%s)
 		  AND w.is_blocked = 1
 		  AND (

@@ -196,3 +196,50 @@ func TestRecomputeIsBlockedAfterMerge_WorkingSetMergeHEADUnchanged(t *testing.T)
 		t.Error("bm-w still is_blocked=1: recompute skipped a working-set merge because HEAD was unchanged (bd-6dnrw.39)")
 	}
 }
+
+// TestRecomputeIsBlockedAfterMerge_PreservesUpdatedAt pins bd-578h9.19:
+// is_blocked is derived state, and issues.updated_at carries ON UPDATE
+// CURRENT_TIMESTAMP, so a recompute that flips the flag must explicitly
+// preserve updated_at. Otherwise every clone's post-pull recompute stamps
+// its own wall clock into the synced issues table (cross-clone merge
+// conflicts on rows that converged) and updated_at consumers (tracker
+// conflict guard, import stale guard) misread the flip as a user edit.
+func TestRecomputeIsBlockedAfterMerge_PreservesUpdatedAt(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	preHead := seedBlockedPair(ctx, t, store, true)
+
+	// Pin bm-w's updated_at far in the past (explicit assignment suppresses
+	// the ON UPDATE clause), so any bump by the recompute is unmissable.
+	const pinned = "2026-01-01 00:00:00"
+	if _, err := store.db.ExecContext(ctx,
+		"UPDATE issues SET updated_at = ? WHERE id = 'bm-w'", pinned); err != nil {
+		t.Fatalf("pin updated_at: %v", err)
+	}
+	// The remote closes the blocker; the recompute must flip bm-w to
+	// unblocked WITHOUT touching its updated_at.
+	if _, err := store.db.ExecContext(ctx,
+		"UPDATE issues SET status = 'closed' WHERE id = 'bm-x'"); err != nil {
+		t.Fatalf("simulate merged close: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "CALL DOLT_COMMIT('-am', 'merged: remote closed bm-x')"); err != nil {
+		t.Fatalf("commit merged close: %v", err)
+	}
+
+	recomputeAfterMerge(ctx, t, store.db, preHead)
+
+	if isBlocked(ctx, t, store.db, "bm-w") {
+		t.Fatal("bm-w should be unblocked after its only blocker closed")
+	}
+	var got string
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT CAST(updated_at AS CHAR) FROM issues WHERE id = 'bm-w'").Scan(&got); err != nil {
+		t.Fatalf("read updated_at: %v", err)
+	}
+	if got != pinned {
+		t.Errorf("recompute bumped derived-flag row's updated_at: got %s, want %s", got, pinned)
+	}
+}
