@@ -56,6 +56,10 @@ func CreateIssueInTx(ctx context.Context, tx *sql.Tx, bc *BatchContext, issue *t
 // CreateIssueResult reports the tables actually written by CreateIssueInTx.
 type CreateIssueResult struct {
 	ChangedTables map[string]bool
+	// StaleRejected reports that the RejectStaleUpserts guard kept the stored
+	// row: nothing was written, and the issue's aux data must not be
+	// persisted by later batch stages either (bd-578h9.8).
+	StaleRejected bool
 }
 
 func (r *CreateIssueResult) markChanged(table string) {
@@ -112,9 +116,19 @@ func CreateIssueInTxWithResult(ctx context.Context, tx *sql.Tx, bc *BatchContext
 		return result, nil
 	}
 
-	isNew, err := InsertIssueIfNew(ctx, tx, issueTable, issue, bc.Opts)
+	isNew, staleRejected, err := InsertIssueIfNew(ctx, tx, issueTable, issue, bc.Opts)
 	if err != nil {
 		return result, err
+	}
+	if staleRejected {
+		// The stored row is strictly newer than this snapshot: nothing was
+		// written, and the snapshot's labels/comments belong to the older
+		// version, so they must not merge in either (bd-578h9.8).
+		result.StaleRejected = true
+		if bc.Opts.OnStaleRejected != nil {
+			bc.Opts.OnStaleRejected(issue.ID)
+		}
+		return result, nil
 	}
 	result.markChanged(issueTable)
 
@@ -179,13 +193,19 @@ func CreateIssuesInTxWithResult(ctx context.Context, tx *sql.Tx, issues []*types
 	}
 
 	result := CreateIssuesResult{}
+	accepted := issues[:0:0]
 	for _, issue := range issues {
 		issueResult, err := CreateIssueInTxWithResult(ctx, tx, bc, issue, actor)
 		if err != nil {
 			return CreateIssuesResult{}, err
 		}
 		result.merge(issueResult.ChangedTables)
+		if issueResult.StaleRejected {
+			continue // stale snapshot: keep its deps out of the batch too
+		}
+		accepted = append(accepted, issue)
 	}
+	issues = accepted
 
 	depResult, err := PersistDependenciesWithOptionsResult(ctx, tx, issues, actor, opts)
 	if err != nil {
@@ -494,7 +514,8 @@ func CheckOrphan(ctx context.Context, tx *sql.Tx, issue *types.Issue, issueTable
 	}
 }
 
-// InsertIssueIfNew inserts the issue and returns whether it was genuinely new.
+// InsertIssueIfNew inserts the issue and returns whether it was genuinely new,
+// and whether the RejectStaleUpserts guard rejected it.
 //
 // When opts.ConflictSkip is true and an issue with the same ID already exists,
 // the row is left untouched (no UPSERT) and isNew is false. This is the
@@ -503,23 +524,38 @@ func CheckOrphan(ctx context.Context, tx *sql.Tx, issue *types.Issue, issueTable
 // overwrite live rows — worst case is a no-op. Otherwise the INSERT … ON
 // DUPLICATE KEY UPDATE runs, so explicit `bd import` keeps UPSERT semantics;
 // with opts.RejectStaleUpserts the update half is conditional on the incoming
-// row being at least as new as the stored one (bd-pkim8).
+// row being at least as new as the stored one (bd-pkim8). Staleness is
+// decided by an explicit in-transaction read (stored updated_at strictly
+// newer ⇒ rejected, mirroring the ODKU's VALUES(updated_at) >= updated_at
+// accept condition) so callers can skip aux persistence and count the row as
+// skipped instead of created (bd-578h9.8).
 //
 //nolint:gosec // G201: table is a hardcoded constant
-func InsertIssueIfNew(ctx context.Context, tx *sql.Tx, issueTable string, issue *types.Issue, opts storage.BatchCreateOptions) (isNew bool, err error) {
+func InsertIssueIfNew(ctx context.Context, tx *sql.Tx, issueTable string, issue *types.Issue, opts storage.BatchCreateOptions) (isNew bool, staleRejected bool, err error) {
 	var existingCount int
 	if issue.ID != "" {
 		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE id = ?`, issueTable), issue.ID).Scan(&existingCount); err != nil {
-			return false, fmt.Errorf("failed to check issue existence for %s: %w", issue.ID, err)
+			return false, false, fmt.Errorf("failed to check issue existence for %s: %w", issue.ID, err)
 		}
 	}
 	if opts.ConflictSkip && existingCount > 0 {
-		return false, nil // issue already exists — skip, never overwrite
+		return false, false, nil // issue already exists — skip, never overwrite
+	}
+	if opts.RejectStaleUpserts && existingCount > 0 {
+		var storedNewer int
+		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE id = ? AND updated_at > ?`, issueTable), issue.ID, issue.UpdatedAt).Scan(&storedNewer); err != nil {
+			return false, false, fmt.Errorf("failed to check issue staleness for %s: %w", issue.ID, err)
+		}
+		if storedNewer > 0 {
+			// The conditional ODKU would keep every stored column anyway;
+			// skipping the no-op insert makes the rejection observable.
+			return false, true, nil
+		}
 	}
 	if err := insertIssueIntoTable(ctx, tx, issueTable, issue, opts.RejectStaleUpserts); err != nil {
-		return false, fmt.Errorf("failed to insert issue %s: %w", issue.ID, err)
+		return false, false, fmt.Errorf("failed to insert issue %s: %w", issue.ID, err)
 	}
-	return existingCount == 0, nil
+	return existingCount == 0, false, nil
 }
 
 func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue, actor, eventTable string) (CreateIssueResult, error) {

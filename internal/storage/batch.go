@@ -42,4 +42,10 @@ type BatchCreateOptions struct {
 	SkipDependencyValidationErrors bool
 	// OnSkippedDependency records dependency edges skipped during batch create.
 	OnSkippedDependency func(issueID, dependsOnID, reason string)
+	// OnStaleRejected records issues whose row the RejectStaleUpserts guard
+	// kept (stored row strictly newer than the incoming one). Rejected issues
+	// also skip label/comment/dependency persistence, so callers can count
+	// them as skipped rather than created. May fire more than once per issue
+	// if the enclosing transaction retries; callers should dedup by ID.
+	OnStaleRejected func(issueID string)
 }
