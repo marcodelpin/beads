@@ -63,6 +63,12 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		return &ImportResult{Skipped: len(issues)}, nil
 	}
 
+	// The stale guard has two halves (bd-pkim8). This pre-filter reports the
+	// rows that are already known stale (StaleSkippedIDs) and keeps their
+	// labels/comments/dependencies out of the batch entirely. It is a separate
+	// read, though, so a local update that commits between it and the batch
+	// write would slip through — RejectStaleUpserts below closes that race by
+	// re-checking updated_at inside the upsert itself.
 	var staleSkippedIDs []string
 	if !opts.AllowStale {
 		filtered, skipped, err := filterStaleImportIssues(ctx, store, issues)
@@ -82,6 +88,7 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		OrphanHandling:                 storage.OrphanAllow,
 		SkipPrefixValidation:           opts.SkipPrefixValidation,
 		ConflictSkip:                   opts.ConflictSkip,
+		RejectStaleUpserts:             !opts.AllowStale,
 		SkipDependencyValidationErrors: true,
 		OnSkippedDependency: func(issueID, dependsOnID, reason string) {
 			skipped := fmt.Sprintf("%s -> %s: %s", issueID, dependsOnID, reason)
