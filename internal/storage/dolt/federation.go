@@ -77,21 +77,21 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 		}
 	}
 
+	// bd-578h9.3: every peer-pull route funnels through the same settle
+	// machinery as the default-remote pull (pullTransport): the CLI routes
+	// through finishCLIPull, the SQL route through pullWithAutoResolve. A bare
+	// peer pull used to leave non-convergent merges behind — an FK
+	// delete-vs-insert divergence rolls the merge back with nothing in
+	// dolt_conflicts, and mixed-vintage schema_migrations rows conflict on
+	// every retry.
 	var conflicts []storage.Conflict
 	var err error
 	if useCLI, routeErr := s.prepareCLIRouteForPeerGitProtocol(ctx, peer); routeErr != nil {
 		return nil, routeErr
 	} else if useCLI {
 		err = s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
-			if pullErr := s.doltCLIPullFromPeer(ctx, peer, creds); pullErr != nil {
-				c, conflictErr := s.GetConflicts(ctx)
-				if conflictErr == nil && len(c) > 0 {
-					conflicts = c
-					return nil
-				}
-				return fmt.Errorf("failed to pull from peer %s: %w", peer, pullErr)
-			}
-			return nil
+			pullErr := s.finishCLIPull(ctx, s.doltCLIPullFromPeer(ctx, peer, creds))
+			return s.peerPullOutcome(ctx, peer, pullErr, &conflicts)
 		})
 		return s.finishPeerPull(ctx, conflicts, err, preHead)
 	}
@@ -100,29 +100,30 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 		if useCLI, err := s.prepareCLIRouteForPeerCredentials(ctx, peer, creds); err != nil {
 			return err
 		} else if useCLI {
-			if pullErr := s.doltCLIPullFromPeer(ctx, peer, creds); pullErr != nil {
-				c, conflictErr := s.GetConflicts(ctx)
-				if conflictErr == nil && len(c) > 0 {
-					conflicts = c
-					return nil
-				}
-				return fmt.Errorf("failed to pull from peer %s: %w", peer, pullErr)
-			}
-			return nil
+			pullErr := s.finishCLIPull(ctx, s.doltCLIPullFromPeer(ctx, peer, creds))
+			return s.peerPullOutcome(ctx, peer, pullErr, &conflicts)
 		}
 		return withEnvCredentials(creds, func() error {
-			if pullErr := s.execWithLongTimeout(ctx, "CALL DOLT_PULL(?)", peer); pullErr != nil {
-				c, conflictErr := s.GetConflicts(ctx)
-				if conflictErr == nil && len(c) > 0 {
-					conflicts = c
-					return nil
-				}
-				return fmt.Errorf("failed to pull from peer %s: %w", peer, pullErr)
-			}
-			return nil
+			pullErr := s.pullWithAutoResolve(ctx, peer, "CALL DOLT_PULL(?)", peer)
+			return s.peerPullOutcome(ctx, peer, pullErr, &conflicts)
 		})
 	})
 	return s.finishPeerPull(ctx, conflicts, err, preHead)
+}
+
+// peerPullOutcome converts a settled peer pull's result into PullFrom's
+// contract: conflicts the settle machinery could not auto-resolve and left in
+// the working set are returned as data for the caller to resolve, anything
+// else stays an error.
+func (s *DoltStore) peerPullOutcome(ctx context.Context, peer string, pullErr error, conflicts *[]storage.Conflict) error {
+	if pullErr == nil {
+		return nil
+	}
+	if c, conflictErr := s.GetConflicts(ctx); conflictErr == nil && len(c) > 0 {
+		*conflicts = c
+		return nil
+	}
+	return fmt.Errorf("failed to pull from peer %s: %w", peer, pullErr)
 }
 
 // finishPeerPull runs the post-merge is_blocked recompute (bd-6dnrw.3) after a

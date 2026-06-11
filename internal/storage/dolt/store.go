@@ -2371,14 +2371,14 @@ func (s *DoltStore) pullTransport(ctx context.Context, remote string) error {
 	// charge of metadata-only conflict repair.
 	if s.remoteUser != "" && remote == s.remote {
 		return withRemoteOperationEnv(creds, s.isS3Remote(ctx, remote), func() error {
-			if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
+			if err := s.pullWithAutoResolve(ctx, remote, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
 				return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 			}
 			return nil
 		})
 	}
 	return withRemoteOperationEnv(nil, s.isS3Remote(ctx, remote), func() error {
-		if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
+		if err := s.pullWithAutoResolve(ctx, remote, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
 			return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 		}
 		return nil
@@ -2413,7 +2413,10 @@ func (s *DoltStore) openLongTimeoutConn() (*sql.DB, error) {
 	return db, nil
 }
 
-func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args ...any) error {
+// remote names the remote the query pulls from; the GH#3144 fetch+merge
+// fallback targets it directly, so pulls from non-default remotes (PullRemote,
+// federation peers) no longer fall back to s.remote.
+func (s *DoltStore) pullWithAutoResolve(ctx context.Context, remote string, query string, args ...any) error {
 	db, err := s.openLongTimeoutConn()
 	if err != nil {
 		return err
@@ -2447,11 +2450,11 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 	// bd dolt remote add rather than bd bootstrap/dolt clone), fall back to
 	// DOLT_FETCH + DOLT_MERGE which does not require tracking config.
 	if pullErr != nil && isBranchTrackingError(pullErr) {
-		if _, err := tx.ExecContext(ctx, "CALL DOLT_FETCH(?, ?)", s.remote, s.branch); err != nil {
+		if _, err := tx.ExecContext(ctx, "CALL DOLT_FETCH(?, ?)", remote, s.branch); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("fetch from %s/%s: %w", s.remote, s.branch, err)
+			return fmt.Errorf("fetch from %s/%s: %w", remote, s.branch, err)
 		}
-		trackingRef := s.remote + "/" + s.branch
+		trackingRef := remote + "/" + s.branch
 		_, mergeErr := tx.ExecContext(ctx, "CALL DOLT_MERGE(?)", trackingRef)
 		if mergeErr != nil && strings.Contains(mergeErr.Error(), "up to date") {
 			mergeErr = nil
