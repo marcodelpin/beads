@@ -2547,6 +2547,26 @@ func (s *DoltStore) settleMergeInTx(ctx context.Context, tx *sql.Tx, pullErr err
 // could not be read, which degrades to a full recompute. A pull that merged
 // nothing (HEAD unchanged) is a no-op.
 func (s *DoltStore) recomputeBlockedAfterPull(ctx context.Context, fromCommit string) error {
+	if err := s.recomputeBlockedTx(ctx, fromCommit); err != nil {
+		// The merge this recompute covers is already committed, so a plain
+		// retry on the next pull would skip as "nothing merged" — leave a
+		// marker so it widens its window instead (bd-578h9.11). Best-effort:
+		// the recompute error is what matters.
+		s.markBlockedRecomputePending(ctx, fromCommit)
+		return err
+	}
+	// Derived state converges: every clone computes the same values from the
+	// same merged graph, so committing is merge-safe. Commit no-ops when the
+	// recompute changed nothing.
+	if err := s.Commit(ctx, "bd: recompute is_blocked after pull"); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("commit is_blocked recompute: %w", err)
+	}
+	return nil
+}
+
+// recomputeBlockedTx runs the post-merge is_blocked recompute in its own
+// transaction.
+func (s *DoltStore) recomputeBlockedTx(ctx context.Context, fromCommit string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin is_blocked recompute: %w", err)
@@ -2558,13 +2578,22 @@ func (s *DoltStore) recomputeBlockedAfterPull(ctx context.Context, fromCommit st
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit is_blocked recompute: %w", err)
 	}
-	// Derived state converges: every clone computes the same values from the
-	// same merged graph, so committing is merge-safe. Commit no-ops when the
-	// recompute changed nothing.
-	if err := s.Commit(ctx, "bd: recompute is_blocked after pull"); err != nil && !isDoltNothingToCommit(err) {
-		return fmt.Errorf("commit is_blocked recompute: %w", err)
-	}
 	return nil
+}
+
+// markBlockedRecomputePending best-effort records a failed post-merge
+// is_blocked recompute (bd-578h9.11); see
+// issueops.MarkIsBlockedRecomputePendingInTx.
+func (s *DoltStore) markBlockedRecomputePending(ctx context.Context, fromCommit string) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	if err := issueops.MarkIsBlockedRecomputePendingInTx(ctx, tx, fromCommit); err != nil {
+		_ = tx.Rollback()
+		return
+	}
+	_ = tx.Commit()
 }
 
 // finishCLIPull runs the merge-conflict auto-resolver after a CLI-based pull
@@ -2723,11 +2752,39 @@ func (s *DoltStore) Merge(ctx context.Context, branch string) (conflicts []stora
 	)
 	defer func() { endSpan(span, retErr) }()
 
+	// bd-578h9.11: like every pull path, a branch merge brings in writes that
+	// bypassed the local is_blocked hooks; recompute after a conflict-free
+	// merge. Conflicted merges defer to the caller's post-resolution hook
+	// (Sync, bd vc merge --strategy) — recomputing over unresolved rows would
+	// read garbage.
+	preHead := ""
+	if !s.readOnly {
+		if h, err := s.GetCurrentCommit(ctx); err == nil {
+			preHead = h
+		}
+	}
+
 	conflicts, err := versioncontrolops.Merge(ctx, s.db, branch, s.commitAuthorString())
 	if len(conflicts) > 0 {
 		span.SetAttributes(attribute.Int("dolt.conflicts", len(conflicts)))
 	}
+	if err == nil && len(conflicts) == 0 && !s.readOnly {
+		if rerr := s.recomputeBlockedAfterPull(ctx, preHead); rerr != nil {
+			return conflicts, fmt.Errorf("merge succeeded but is_blocked recompute failed: %w", rerr)
+		}
+	}
 	return conflicts, err
+}
+
+// RecomputeBlockedAfterMerge recomputes the denormalized is_blocked column
+// for the rows changed since fromCommit and commits the result — the hook a
+// caller that resolved merge conflicts itself must run after committing the
+// resolution (bd-578h9.11): conflicted merges skip the automatic recompute
+// because unresolved rows would feed it garbage, and nothing else covers the
+// merged-in writes. fromCommit is the pre-merge HEAD; empty degrades to a
+// full-graph recompute.
+func (s *DoltStore) RecomputeBlockedAfterMerge(ctx context.Context, fromCommit string) error {
+	return s.recomputeBlockedAfterPull(ctx, fromCommit)
 }
 
 // CurrentBranch returns the current branch name

@@ -21,6 +21,43 @@ var doltCommitHashRE = regexp.MustCompile(`^[0-9a-v]{32}$`)
 // is not.
 const mergeRecomputeSeedCap = 1000
 
+// isBlockedRecomputePendingKey marks a post-merge is_blocked recompute that
+// failed AFTER its merge was already committed (bd-578h9.11). Without it the
+// retry is unreachable: the next pull's fromCommit is the new HEAD, so the
+// head==fromCommit skip reads the failed window as "nothing merged" and stale
+// is_blocked persists silently. The marker's value is the failed attempt's
+// fromCommit (or "full" when unknown), so the retry can widen its diff window
+// to cover the lost merge instead of always paying the full-graph pass.
+const isBlockedRecomputePendingKey = "is_blocked_recompute_pending"
+
+// MarkIsBlockedRecomputePendingInTx records a failed post-merge recompute so
+// the next RecomputeIsBlockedAfterMergeInTx retries with a widened window. It
+// must run in its OWN transaction — the failed recompute's tx is rolling back.
+// INSERT IGNORE on purpose: when a marker from an earlier failure exists, its
+// older fromCommit covers a superset of this one's window and must win.
+func MarkIsBlockedRecomputePendingInTx(ctx context.Context, tx *sql.Tx, fromCommit string) error {
+	value := fromCommit
+	if !doltCommitHashRE.MatchString(value) {
+		value = "full"
+	}
+	_, err := tx.ExecContext(ctx,
+		"INSERT IGNORE INTO metadata (`key`, value) VALUES (?, ?)",
+		isBlockedRecomputePendingKey, value)
+	return err
+}
+
+// pendingIsBlockedRecompute reads the failure marker; "" means none. Read
+// errors degrade to "no marker" — the marker is a self-heal fast path, and the
+// caller's recompute proceeds either way.
+func pendingIsBlockedRecompute(ctx context.Context, tx *sql.Tx) string {
+	var value string
+	if err := tx.QueryRowContext(ctx,
+		"SELECT value FROM metadata WHERE `key` = ?", isBlockedRecomputePendingKey).Scan(&value); err != nil {
+		return ""
+	}
+	return value
+}
+
 // RecomputeIsBlockedAfterMergeInTx recomputes the denormalized is_blocked
 // column for every issue and wisp whose blocked state may have changed between
 // fromCommit and the current working set — typically the HEAD before a
@@ -50,6 +87,32 @@ const mergeRecomputeSeedCap = 1000
 // clone converges — both sides compute the same values from the same merged
 // graph).
 func RecomputeIsBlockedAfterMergeInTx(ctx context.Context, tx *sql.Tx, fromCommit string) error {
+	// bd-578h9.11: a marker from an earlier recompute that failed after its
+	// merge committed means this call must also cover THAT merge's window —
+	// the head==fromCommit skip below would otherwise read it as "nothing
+	// merged" forever. Widen fromCommit to the failed attempt's (older)
+	// pre-merge HEAD, or to a full pass when it is unknown. The marker is
+	// cleared in this same transaction, so it survives if this attempt fails
+	// too and disappears atomically with a successful recompute.
+	if pending := pendingIsBlockedRecompute(ctx, tx); pending != "" {
+		if doltCommitHashRE.MatchString(pending) && fromCommit != "" {
+			fromCommit = pending
+		} else {
+			fromCommit = ""
+		}
+		if err := recomputeIsBlockedAfterMergeScoped(ctx, tx, fromCommit); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			"DELETE FROM metadata WHERE `key` = ?", isBlockedRecomputePendingKey)
+		return err
+	}
+	return recomputeIsBlockedAfterMergeScoped(ctx, tx, fromCommit)
+}
+
+// recomputeIsBlockedAfterMergeScoped is RecomputeIsBlockedAfterMergeInTx
+// without the failure-marker handling.
+func recomputeIsBlockedAfterMergeScoped(ctx context.Context, tx *sql.Tx, fromCommit string) error {
 	if fromCommit == "" {
 		// The caller could not read the pre-merge HEAD; recompute everything
 		// rather than skip the hook.

@@ -190,13 +190,38 @@ func (s *EmbeddedDoltStore) Log(ctx context.Context, limit int) ([]storage.Commi
 }
 
 func (s *EmbeddedDoltStore) Merge(ctx context.Context, branch string) ([]storage.Conflict, error) {
+	// bd-578h9.11: like every pull path, a branch merge brings in writes that
+	// bypassed the local is_blocked hooks; recompute after a conflict-free
+	// merge. Conflicted merges defer to the caller's post-resolution hook
+	// (Sync, bd vc merge --strategy) — recomputing over unresolved rows would
+	// read garbage.
+	preHead := ""
+	if !s.readOnly {
+		preHead = s.preMergeHead(ctx)
+	}
 	var conflicts []storage.Conflict
 	err := s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		var err error
 		conflicts, err = versioncontrolops.Merge(ctx, db, branch, commitAuthor)
 		return err
 	})
+	if err == nil && len(conflicts) == 0 && !s.readOnly {
+		if rerr := s.recomputeBlockedAfterPull(ctx, preHead); rerr != nil {
+			return conflicts, fmt.Errorf("merge succeeded but is_blocked recompute failed: %w", rerr)
+		}
+	}
 	return conflicts, err
+}
+
+// RecomputeBlockedAfterMerge recomputes the denormalized is_blocked column
+// for the rows changed since fromCommit and commits the result — the hook a
+// caller that resolved merge conflicts itself must run after committing the
+// resolution (bd-578h9.11): conflicted merges skip the automatic recompute
+// because unresolved rows would feed it garbage, and nothing else covers the
+// merged-in writes. fromCommit is the pre-merge HEAD; empty degrades to a
+// full-graph recompute.
+func (s *EmbeddedDoltStore) RecomputeBlockedAfterMerge(ctx context.Context, fromCommit string) error {
+	return s.recomputeBlockedAfterPull(ctx, fromCommit)
 }
 
 func (s *EmbeddedDoltStore) GetConflicts(ctx context.Context) ([]storage.Conflict, error) {
@@ -369,6 +394,13 @@ func (s *EmbeddedDoltStore) recomputeBlockedAfterPull(ctx context.Context, preHe
 	if err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		return issueops.RecomputeIsBlockedAfterMergeInTx(ctx, tx, preHead)
 	}); err != nil {
+		// The merge this recompute covers is already committed, so a plain
+		// retry on the next pull would skip as "nothing merged" — leave a
+		// marker so it widens its window instead (bd-578h9.11). Best-effort:
+		// the recompute error is what matters.
+		_ = s.withConn(ctx, true, func(tx *sql.Tx) error {
+			return issueops.MarkIsBlockedRecomputePendingInTx(ctx, tx, preHead)
+		})
 		return err
 	}
 	return s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
