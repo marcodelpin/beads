@@ -698,7 +698,7 @@ func printBootstrapRemoteBehindGuidance(w io.Writer, e *schema.RemoteMigrateGate
 			"  Re-running `bd bootstrap` will NOT fix this — the remote itself is behind.\n"+
 			"  Choose one:\n"+
 			"    • This machine is the designated migrator (exactly ONE machine should be):\n"+
-			"        "+schema.AllowRemoteMigrateEnv+"=1 bd ready\n"+
+			"        "+schema.AllowRemoteMigrateEnv+"=1 bd migrate\n"+
 			"        bd dolt push\n"+
 			"      then other machines re-run `bd bootstrap` to adopt the migrated database.\n"+
 			"    • Another machine is the designated migrator: wait for it to push, then\n"+
