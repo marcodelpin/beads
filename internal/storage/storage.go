@@ -320,6 +320,11 @@ type Transaction interface {
 	AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, opts DependencyAddOptions) error
 	RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error
 	GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error)
+	// DetectCycles finds dependency cycles visible to this transaction,
+	// including its own uncommitted dependency writes. Lets bulk paths that
+	// add edges with SkipCycleCheck run one whole-graph check before commit
+	// and roll back instead of committing cycles (bd-6dnrw.8).
+	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
 
 	// Label operations
 	AddLabel(ctx context.Context, issueID, label, actor string) error
@@ -348,7 +353,10 @@ type Transaction interface {
 
 // DependencyAddOptions controls transaction-scoped dependency insertion.
 type DependencyAddOptions struct {
-	// SkipCycleCheck bypasses the recursive pre-insert cycle check. This is
-	// intended for bulk wiring paths that perform a final graph check separately.
+	// SkipCycleCheck bypasses the recursive pre-insert cycle check. Callers
+	// that set it MUST run Transaction.DetectCycles before commit and fail
+	// the transaction on new cycles — skipping the per-edge check trades
+	// per-edge cost for one whole-graph check, never graph integrity
+	// (bd-6dnrw.8).
 	SkipCycleCheck bool
 }
