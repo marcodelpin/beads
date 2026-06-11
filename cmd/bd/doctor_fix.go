@@ -9,6 +9,7 @@ import (
 
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/cmd/bd/doctor/fix"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/ui"
 	"golang.org/x/term"
@@ -363,6 +364,14 @@ func applyFixList(path string, fixes []doctorCheck) {
 			err = fix.FixMissingDoltDatabase(path)
 		case "Dolt Format":
 			err = fix.DoltFormat(path)
+		case "Corrupt Manifest":
+			// GH#3290 / bd-6dnrw.6: destructive backup+reinit, gated here so it
+			// only ever runs on explicit doctor --fix confirmation.
+			var backups []string
+			backups, err = doltserver.RecoverCorruptManifest(doctor.ResolveBeadsDirForRepo(path))
+			for _, b := range backups {
+				fmt.Printf("  Backed up corrupt dolt database to %s and reinitialized\n", b)
+			}
 		default:
 			fmt.Printf("  ⚠ No automatic fix available for %s\n", check.Name)
 			fmt.Printf("  Manual fix: %s\n", check.Fix)

@@ -550,6 +550,14 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	// Check 7e1: Corrupt-manifest state (GH#3290). Detection only; the
+	// destructive backup+reinit repair runs solely via doctor --fix (bd-6dnrw.6).
+	corruptManifestCheck := convertDoctorCheck(doctor.CheckCorruptManifest(path))
+	result.Checks = append(result.Checks, corruptManifestCheck)
+	if corruptManifestCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
 	// Check 7e2: Stale circuit breaker files
 	circuitCheck := convertDoctorCheck(doctor.CheckCircuitBreaker())
 	result.Checks = append(result.Checks, circuitCheck)
