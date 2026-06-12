@@ -187,6 +187,40 @@ var (
 	latestIgnoredVer  int
 )
 
+// doltIgnorePatterns is the canonical set of clone-local table patterns every
+// database must carry in dolt_ignore. Four of them are historically seeded as
+// one-shot up.sql side effects of migrations 0019/0028, which never re-execute
+// once the schema_migrations cursor is at-latest: a database materialized
+// out-of-band (table-by-table copy/rename, dump restore) arrives with the
+// cursor at-latest and misses them permanently, so wisp/local-state churn
+// pollutes dolt_status and feeds the dirty-table migration gates (bda-0mu,
+// bd_26_05_Magneti 2026-06-05). MigrateUp re-asserts the full set idempotently
+// at the top of every write-mode open.
+var doltIgnorePatterns = []string{
+	"ignored_schema_migrations",
+	"local_metadata",
+	"repo_mtimes",
+	"wisp_%",
+	"wisps",
+}
+
+// seedDoltIgnorePatterns idempotently asserts the canonical dolt_ignore
+// patterns. INSERT IGNORE leaves existing rows untouched, so a healthy
+// database sees no working-set change and an explicit operator override
+// (pattern present with ignored=false) is respected. On an under-seeded
+// database the new rows land in the working set, take effect immediately, and
+// are committed by the next migration pass: MigrateUp exempts dolt_ignore from
+// the pre-existing-dirty guards as pass-owned state (same treatment as the
+// aux-rekey tables), so stageSchemaTables picks it up.
+func seedDoltIgnorePatterns(ctx context.Context, db DBConn) error {
+	for _, pattern := range doltIgnorePatterns {
+		if _, err := db.ExecContext(ctx, "INSERT IGNORE INTO dolt_ignore VALUES (?, true)", pattern); err != nil {
+			return fmt.Errorf("seeding dolt_ignore pattern %q: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
 func LatestVersion() int {
 	latestOnce.Do(func() {
 		latestVer = mainSource.latest()
@@ -255,6 +289,15 @@ func MigrateUpTo(ctx context.Context, db DBConn, maxVersion int) (int, error) {
 }
 
 func MigrateUp(ctx context.Context, db DBConn) (int, error) {
+	// Re-assert the canonical dolt_ignore patterns before anything else, and
+	// in particular before the migrationWorkNeeded short-circuit: a database
+	// whose migration cursors arrived at-latest without executing the seeding
+	// migrations (out-of-band table copy, bda-0mu) reports no work needed and
+	// would otherwise never be healed.
+	if err := seedDoltIgnorePatterns(ctx, db); err != nil {
+		return 0, err
+	}
+
 	needed, err := migrationWorkNeeded(ctx, db)
 	if err != nil {
 		return 0, fmt.Errorf("checking schema migration work: %w", err)
@@ -267,6 +310,12 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration status: %w", err)
 	}
+	// dolt_ignore is pass-owned state: seedDoltIgnorePatterns above may have
+	// just dirtied it on an under-seeded database. Exempting it from the
+	// pre-existing-dirty guards (like the aux-rekey tables below) keeps the
+	// pending-migration and changed-signature gates off it and lets
+	// stageSchemaTables commit the seeded patterns with the pass.
+	delete(dirtyBeforeAll, "dolt_ignore")
 	if err := unstagePreExistingTables(ctx, db, dirtyBeforeAll); err != nil {
 		return 0, fmt.Errorf("unstaging pre-migration tables: %w", err)
 	}
@@ -274,6 +323,7 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration status: %w", err)
 	}
+	delete(dirtyBefore, "dolt_ignore")
 	// A previous pass that crashed mid-aux-rekey left its partial UPDATEs
 	// dirty in the working set with the in-progress sentinel still recorded
 	// (bd-578h9.16). Those tables are this pass's own migration state, not
@@ -340,10 +390,6 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 		return applied, fmt.Errorf("rekey aux row ids: %w", err)
 	}
 	backfilled = backfilled || auxRekeyed
-
-	if _, err := db.ExecContext(ctx, "REPLACE INTO dolt_ignore VALUES ('ignored_schema_migrations', true)"); err != nil {
-		return applied, fmt.Errorf("registering ignored_schema_migrations in dolt_ignore: %w", err)
-	}
 
 	touchedIgnoredDirtyTables, err := ignoredSource.pendingMigrationDirtyTables(ctx, db, dirtyBeforeAll)
 	if err != nil {
