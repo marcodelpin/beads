@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -118,10 +119,39 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		return fmt.Errorf("db: DependencySQLRepository.Insert: %w", err)
 	}
 
+	// is_blocked maintenance mirrors the classic AddDependencyInTx flow
+	// (issueops/dependencies.go): the affected set expands the source by its
+	// parent-child descendants (plus, for parent-child edges, waiters on the
+	// target spawner), then a Mark pass propagates blocked state — or, for
+	// parent-child adds (not monotonic: an already-closed child can satisfy an
+	// any-children waits-for gate), a full mark/unmark Recompute. Skipping the
+	// expansion left descendants stale when a blocking edge landed on their
+	// ancestor (bd-6dnrw.44 item 3).
+	srcIsWisp := opts.UseWispsTable
+	var affectedIssues, affectedWisps []string
+	var aerr error
+	if srcIsWisp {
+		affectedIssues, affectedWisps, aerr = issueops.AffectedByDepChangeForWispInTx(ctx, r.runner, dep.IssueID, dep.DependsOnID, dep.Type)
+	} else {
+		affectedIssues, affectedWisps, aerr = issueops.AffectedByDepChangeInTx(ctx, r.runner, dep.IssueID, dep.DependsOnID, dep.Type)
+	}
+	if aerr != nil {
+		return fmt.Errorf("db: DependencySQLRepository.Insert: affected set: %w", aerr)
+	}
 	if dep.Type == types.DepBlocks || dep.Type == types.DepConditionalBlocks {
-		if err := r.markDirectBlockedSource(ctx, dep.IssueID, opts.UseWispsTable, dep.DependsOnID, targetCol); err != nil {
+		if err := r.markDirectBlockedSource(ctx, dep.IssueID, srcIsWisp, dep.DependsOnID, targetCol); err != nil {
 			return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked: %w", err)
 		}
+		affectedIssues, affectedWisps = issueops.RemoveSourceFromAffected(dep.IssueID, srcIsWisp, affectedIssues, affectedWisps)
+	}
+	if dep.Type == types.DepParentChild {
+		if err := issueops.RecomputeIsBlockedInTx(ctx, r.runner, affectedIssues, affectedWisps); err != nil {
+			return fmt.Errorf("db: DependencySQLRepository.Insert: recompute is_blocked: %w", err)
+		}
+		return nil
+	}
+	if err := issueops.MarkIsBlockedInTx(ctx, r.runner, affectedIssues, affectedWisps); err != nil {
+		return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked (affected): %w", err)
 	}
 	return nil
 }

@@ -251,6 +251,47 @@ func (s *testSuite) TestParityReadyBlockedGraph() {
 	s.ElementsMatch(want, dom, "ready blocked graph: blocked/pinned/deferred excluded regardless of which stack wrote the edge")
 }
 
+// Case 4b: descendant expansion on blocking-edge insert (bd-6dnrw.44 item 3
+// residual): a blocks edge added to a PARENT must also drop its parent-child
+// descendants out of ready, whichever stack writes the edge. Case 4 is flat,
+// so it cannot see this; the empirical probe on 27bbecbd1 showed the domain
+// path leaving the child is_blocked=0.
+func (s *testSuite) TestParityReadyBlockedDescendants() {
+	base := s.parityBase()
+	for n, id := range []string{"bd-par-desc-x", "bd-par-desc-p", "bd-par-desc-c", "bd-par-desc-g", "bd-par-desc-n"} {
+		minute := n
+		s.seedParityIssue(id, func(i *types.Issue) {
+			i.CreatedAt = base.Add(time.Duration(minute) * time.Minute)
+		}, false)
+	}
+
+	// Tree structure via the direct stack: c is a child of p, g a child of c.
+	s.classicAddDep("bd-par-desc-c", "bd-par-desc-p", types.DepParentChild)
+	s.classicAddDep("bd-par-desc-g", "bd-par-desc-c", types.DepParentChild)
+
+	// The blocking edge on the PARENT goes through the domain use case — the
+	// write path that used to mark only the source row.
+	depUC := domain.NewDependencyUseCase(NewDependencySQLRepository(s.Runner()))
+	s.Require().NoError(depUC.AddDependency(s.Ctx(),
+		&types.Dependency{IssueID: "bd-par-desc-p", DependsOnID: "bd-par-desc-x", Type: types.DepBlocks}, "tester"))
+
+	classic := idsOf(s.classicReady(types.WorkFilter{}))
+	dom := idsOf(s.domainReady(types.WorkFilter{}).Items)
+	s.Equal(classic, dom, "ready after domain blocks-on-parent: same sequence")
+	s.ElementsMatch([]string{"bd-par-desc-x", "bd-par-desc-n"}, dom,
+		"descendants of a blocked parent must drop out of ready")
+
+	// A new child attached UNDER the blocked parent through the domain path
+	// must inherit blocked state (parent-child insert runs the recompute).
+	s.Require().NoError(depUC.AddDependency(s.Ctx(),
+		&types.Dependency{IssueID: "bd-par-desc-n", DependsOnID: "bd-par-desc-p", Type: types.DepParentChild}, "tester"))
+
+	classic = idsOf(s.classicReady(types.WorkFilter{}))
+	dom = idsOf(s.domainReady(types.WorkFilter{}).Items)
+	s.Equal(classic, dom, "ready after domain parent-child under blocked parent: same sequence")
+	s.ElementsMatch([]string{"bd-par-desc-x"}, dom, "new child of a blocked parent must not be ready")
+}
+
 // Case 5: ready limit boundary — membership parity at the cut, and the domain
 // HasMore flag agrees with what the direct stack's unlimited read implies.
 func (s *testSuite) TestParityReadyLimitBoundary() {
