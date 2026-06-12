@@ -12,6 +12,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -29,16 +30,9 @@ type issueSQLRepositoryImpl struct {
 
 var _ domain.IssueSQLRepository = (*issueSQLRepositoryImpl)(nil)
 
-const issueSelectColumns = `id, content_hash, title, description, design, acceptance_criteria, notes,
-	status, priority, issue_type, assignee, estimated_minutes,
-	created_at, created_by, owner, updated_at, started_at, closed_at, external_ref, spec_id,
-	compaction_level, compacted_at, compacted_at_commit, original_size, source_repo, close_reason,
-	sender, ephemeral, no_history, wisp_type, pinned, is_template,
-	await_type, await_id, timeout_ns, waiters,
-	mol_type,
-	event_kind, actor, target, payload,
-	due_at, defer_until,
-	work_type, source_system, metadata`
+// issueSelectColumns aliases the shared canonical column list; the scan side
+// delegates to issueops.ScanIssueFrom, which scans it positionally.
+const issueSelectColumns = sqlbuild.IssueSelectColumns
 
 var allowedUpdateFields = map[string]struct{}{
 	"status": {}, "priority": {}, "title": {}, "assignee": {},
@@ -471,8 +465,8 @@ type issueScanner interface {
 // The shared scan reads created_at/updated_at as strings with format
 // fallbacks where a hand-rolled sql.NullTime scan hard-fails on any driver
 // that hands timestamps back as text.
-func scanIssue(s issueScanner, extra ...any) (*types.Issue, error) {
-	return issueops.ScanIssueFrom(s, extra...)
+func scanIssue(s issueScanner) (*types.Issue, error) {
+	return issueops.ScanIssueFrom(s)
 }
 
 func nullString(s string) any {

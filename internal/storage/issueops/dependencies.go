@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/depid"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -34,7 +35,7 @@ func (k DepTargetKind) Column() string {
 // id from its three typed columns. Use this in SELECT projections (aliased as
 // depends_on_id) and in WHERE clauses when the caller doesn't know the target
 // kind ahead of time.
-const DepTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)"
+const DepTargetExpr = sqlbuild.DepTargetExpr
 
 func depTargetExpr(alias string) string {
 	if alias == "" {

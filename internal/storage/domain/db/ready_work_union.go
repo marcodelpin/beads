@@ -60,10 +60,10 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 	unionSQL := fmt.Sprintf(
 		"SELECT id, src FROM (%s) merged %s %s",
 		strings.Join(subqueries, " UNION ALL "),
-		sortOrder.sql,
+		sortOrder.SQL,
 		outerLimit,
 	)
-	allArgs = append(allArgs, sortOrder.args...)
+	allArgs = append(allArgs, sortOrder.Args...)
 
 	rows, err := r.runner.QueryContext(ctx, unionSQL, allArgs...)
 	if err != nil {

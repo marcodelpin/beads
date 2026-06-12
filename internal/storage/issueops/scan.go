@@ -5,22 +5,16 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
 // IssueSelectColumns is the canonical column list for full issue hydration.
 // Every query that reads a complete types.Issue from the issues table should
-// use this constant to avoid column-list drift between scan sites.
-const IssueSelectColumns = `id, content_hash, title, description, design, acceptance_criteria, notes,
-	       status, priority, issue_type, assignee, estimated_minutes,
-	       created_at, created_by, owner, updated_at, started_at, closed_at, external_ref, spec_id,
-	       compaction_level, compacted_at, compacted_at_commit, original_size, source_repo, close_reason,
-	       sender, ephemeral, no_history, wisp_type, pinned, is_template,
-	       await_type, await_id, timeout_ns, waiters,
-	       mol_type,
-	       event_kind, actor, target, payload,
-	       due_at, defer_until,
-	       work_type, source_system, metadata`
+// use this constant to avoid column-list drift between scan sites. The list
+// itself lives in internal/storage/sqlbuild, shared with the domain/db stack;
+// ScanIssueFrom below scans it positionally and must stay in agreement.
+const IssueSelectColumns = sqlbuild.IssueSelectColumns
 
 // IssueScanner is the common interface between *sql.Row and *sql.Rows,
 // allowing a single scan function to work with both single-row and

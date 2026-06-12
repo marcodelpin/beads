@@ -12,6 +12,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -25,7 +26,7 @@ type dependencySQLRepositoryImpl struct {
 
 var _ domain.DependencySQLRepository = (*dependencySQLRepositoryImpl)(nil)
 
-const depTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)"
+const depTargetExpr = sqlbuild.DepTargetExpr
 
 const depSelectColumns = "issue_id, " + depTargetExpr + " AS depends_on_id, type, created_at, created_by, metadata, thread_id"
 
