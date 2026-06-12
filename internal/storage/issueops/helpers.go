@@ -67,16 +67,22 @@ var issueUpsertColumns = []string{
 
 // issueUpsertAssignments renders the ON DUPLICATE KEY UPDATE clause. With
 // rejectStaleUpdate, each assignment keeps the stored value unless the
-// incoming row is at least as new (VALUES(updated_at) >= updated_at) — the
-// transactional import stale guard (bd-pkim8). Strictly-older rows are
-// rejected; equal timestamps win so re-importing the same snapshot stays
-// idempotent, matching cmd/bd's filterStaleImportIssues.
+// incoming row is strictly newer (VALUES(updated_at) > updated_at) — the
+// transactional import stale guard (bd-pkim8). Strictly-older AND
+// equal-timestamp rows keep every stored column: updated_at is DATETIME with
+// second granularity, so two distinct updates in the same second tie, and an
+// incoming tie row with an empty field (e.g. notes) must not wipe the
+// populated local value (bd-hj85c). Re-importing an identical snapshot stays
+// idempotent either way — the rewrite would have written identical values.
+// Tie rows are deliberately NOT short-circuited by the staleRejected
+// pre-check in InsertIssueIfNew, so their aux data (labels/comments/deps,
+// which never bump updated_at) still merges additively.
 func issueUpsertAssignments(rejectStaleUpdate bool) string {
 	assignments := make([]string, 0, len(issueUpsertColumns))
 	for _, col := range issueUpsertColumns {
 		if rejectStaleUpdate {
 			assignments = append(assignments,
-				fmt.Sprintf("%s = IF(VALUES(updated_at) >= updated_at, VALUES(%s), %s)", col, col, col))
+				fmt.Sprintf("%s = IF(VALUES(updated_at) > updated_at, VALUES(%s), %s)", col, col, col))
 		} else {
 			assignments = append(assignments, fmt.Sprintf("%s = VALUES(%s)", col, col))
 		}
