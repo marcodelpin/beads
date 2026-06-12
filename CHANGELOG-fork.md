@@ -51,6 +51,7 @@ Key surfaces: Makefile `-H=windowsgui` gated on `GOOS_EFFECTIVE`; `cmd/bd/consol
 | `e7b5b10d19` | 2026-05-27 | sys-c8066: skip Dolt-native backup for remote sql-server (stops /var/lib/dolt/S: leak) |
 | `d0047b27b2` | 2026-06-05 | sys-t9tlx: bd dolt push client-side timeout + retry/backoff |
 | `7d2c7c0419` | 2026-06-07 | bda-i69: default remote Dolt server port to DefaultSharedServerPort (3308) when unresolved |
+| (tip) | 2026-06-12 | bda-53z: tolerate dolthub/dolt#11131 schema-encoding drift in aux row re-key — skip drifted table + warn instead of crashing migration 0051 mid-pass (incident sys-duwt6: drift on 140/142 fleet DBs; on a single shared sql-server the skipped cross-clone PK convergence is moot) |
 
 Hardens bd for the fleet topology: a single shared remote Dolt sql-server
 (forgejo-mdp.mdp:3308) serving many client machines, including Windows CGO=0 builds with no

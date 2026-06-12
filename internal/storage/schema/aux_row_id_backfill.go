@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -174,17 +175,51 @@ func rekeyAuxRowIDs(ctx context.Context, db DBConn, mainVersionBefore int) (bool
 	}
 
 	wrote := false
+	var skipped []string
 	for _, t := range auxRekeyTables {
 		w, err := rekeyAuxRowTable(ctx, db, t)
 		wrote = wrote || w
 		if err != nil {
+			// Fork-only (bda-53z): tolerate the dolthub/dolt#11131 schema-
+			// encoding drift. On affected databases the scan of a drifted
+			// TEXT column panics server-side ("invalid hash length: 19") and
+			// no SQL read can ever decode those rows, so the re-key of this
+			// table is impossible until the storage drift is repaired.
+			// Skip the table loudly instead of crashing the whole migration
+			// pass mid-way (which strands a dirty working set on the shared
+			// server). On a single shared sql-server fleet the skipped
+			// cross-clone PK convergence has no practical effect: there is
+			// exactly one copy of every row and clones never merge.
+			if isEncodingDriftErr(err) {
+				skipped = append(skipped, t.name)
+				fmt.Fprintf(os.Stderr,
+					"beads: WARNING: aux row re-key skipped table %q: scan hit dolthub/dolt#11131 "+
+						"schema-encoding drift (%v). Row ids of this table stay unconverged; "+
+						"re-run the re-key after the storage drift is repaired.\n",
+					t.name, err)
+				continue
+			}
 			return wrote, fmt.Errorf("%s: %w", t.name, err)
 		}
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"beads: WARNING: aux row re-key completed with %d table(s) skipped for #11131 drift: %s\n",
+			len(skipped), strings.Join(skipped, ", "))
 	}
 	if err := clearAuxRekeyInProgress(ctx, db); err != nil {
 		return wrote, fmt.Errorf("clearing aux rekey sentinel: %w", err)
 	}
 	return wrote, nil
+}
+
+// isEncodingDriftErr reports whether err carries the dolthub/dolt#11131
+// schema-encoding-drift signature: the server-side adaptive-value decode
+// panic ("invalid hash length: N") that Dolt wraps in Error 1105. Only this
+// exact class is tolerated by the re-key; every other failure still aborts
+// the migration pass.
+func isEncodingDriftErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "invalid hash length")
 }
 
 // rekeyAuxRowTable re-derives the ids of one table. The whole table is grouped
