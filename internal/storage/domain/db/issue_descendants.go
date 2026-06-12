@@ -91,12 +91,19 @@ func (r *issueSQLRepositoryImpl) GetDescendants(ctx context.Context, rootID stri
 	return reassembleBySrc(page.ordered, issuesByID, wispsByID), nil
 }
 
+// buildDescendantsCTE walks parent-child edges AND the dotted-ID fallback the
+// classic ParentID filter applies (issueops/filters.go): a row named
+// <node>.<suffix> with no parent-child edge at all is a child of <node>.
+// Rows carry a via marker: 'e' for edge-found, 'd' for dotted-found. Dotted
+// recursion only fires from 'e' rows — a dotted node's own dotted
+// descendants share its prefix and were already matched by whichever LIKE
+// found it, so re-expanding them would only multiply duplicate rows.
 func buildDescendantsCTE(rootID string, walkWisps bool, issuePred, wispPred predBundle) (string, []any) {
 	var b strings.Builder
 	var args []any
 	b.WriteString("WITH RECURSIVE descendants AS (\n")
 
-	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src
+	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src, 'e' AS via
     FROM issues i
     JOIN dependencies d ON d.issue_id = i.id
     WHERE d.type = 'parent-child'
@@ -105,9 +112,18 @@ func buildDescendantsCTE(rootID string, walkWisps bool, issuePred, wispPred pred
 	args = append(args, rootID)
 	args = append(args, issuePred.args...)
 
+	b.WriteString("\n    UNION ALL\n")
+	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src, 'd' AS via
+    FROM issues i
+    WHERE i.id LIKE CONCAT(?, '.%%')
+      AND i.id NOT IN (SELECT issue_id FROM dependencies WHERE type = 'parent-child')
+      %s`, issuePred.snippet)
+	args = append(args, rootID)
+	args = append(args, issuePred.args...)
+
 	if walkWisps {
 		b.WriteString("\n    UNION ALL\n")
-		fmt.Fprintf(&b, `    SELECT w.id, 'w' AS src
+		fmt.Fprintf(&b, `    SELECT w.id, 'w' AS src, 'e' AS via
     FROM wisps w
     JOIN wisp_dependencies wd ON wd.issue_id = w.id
     WHERE wd.type = 'parent-child'
@@ -115,11 +131,20 @@ func buildDescendantsCTE(rootID string, walkWisps bool, issuePred, wispPred pred
       %s`, wispPred.snippet)
 		args = append(args, rootID)
 		args = append(args, wispPred.args...)
+
+		b.WriteString("\n    UNION ALL\n")
+		fmt.Fprintf(&b, `    SELECT w.id, 'w' AS src, 'd' AS via
+    FROM wisps w
+    WHERE w.id LIKE CONCAT(?, '.%%')
+      AND w.id NOT IN (SELECT issue_id FROM wisp_dependencies WHERE type = 'parent-child')
+      %s`, wispPred.snippet)
+		args = append(args, rootID)
+		args = append(args, wispPred.args...)
 	}
 
 	b.WriteString("\n    UNION ALL\n")
 
-	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src
+	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src, 'e' AS via
     FROM issues i
     JOIN dependencies d ON d.issue_id = i.id
     JOIN descendants p ON COALESCE(d.depends_on_issue_id, d.depends_on_wisp_id) = p.id
@@ -127,13 +152,31 @@ func buildDescendantsCTE(rootID string, walkWisps bool, issuePred, wispPred pred
       %s`, issuePred.snippet)
 	args = append(args, issuePred.args...)
 
+	b.WriteString("\n    UNION ALL\n")
+	fmt.Fprintf(&b, `    SELECT i.id, 'i' AS src, 'd' AS via
+    FROM issues i
+    JOIN descendants p ON i.id LIKE CONCAT(p.id, '.%%')
+    WHERE p.via = 'e'
+      AND i.id NOT IN (SELECT issue_id FROM dependencies WHERE type = 'parent-child')
+      %s`, issuePred.snippet)
+	args = append(args, issuePred.args...)
+
 	if walkWisps {
 		b.WriteString("\n    UNION ALL\n")
-		fmt.Fprintf(&b, `    SELECT w.id, 'w' AS src
+		fmt.Fprintf(&b, `    SELECT w.id, 'w' AS src, 'e' AS via
     FROM wisps w
     JOIN wisp_dependencies wd ON wd.issue_id = w.id
     JOIN descendants p ON COALESCE(wd.depends_on_issue_id, wd.depends_on_wisp_id) = p.id
     WHERE wd.type = 'parent-child'
+      %s`, wispPred.snippet)
+		args = append(args, wispPred.args...)
+
+		b.WriteString("\n    UNION ALL\n")
+		fmt.Fprintf(&b, `    SELECT w.id, 'w' AS src, 'd' AS via
+    FROM wisps w
+    JOIN descendants p ON w.id LIKE CONCAT(p.id, '.%%')
+    WHERE p.via = 'e'
+      AND w.id NOT IN (SELECT issue_id FROM wisp_dependencies WHERE type = 'parent-child')
       %s`, wispPred.snippet)
 		args = append(args, wispPred.args...)
 	}

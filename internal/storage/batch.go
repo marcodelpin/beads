@@ -30,12 +30,17 @@ type BatchCreateOptions struct {
 	// of clobbering live rows. Explicit `bd import` keeps UPSERT semantics.
 	ConflictSkip bool
 	// RejectStaleUpserts makes the issue-row UPSERT conditional on updated_at:
-	// when the existing row is strictly newer than the incoming one, the
-	// existing values are kept. This is the transactional half of the import
-	// stale guard (bd-pkim8): cmd/bd's filterStaleImportIssues reads local
-	// updated_at before the batch write, so a local update committing in
-	// between would otherwise be silently overwritten (the PR 4204 race).
-	// Set by `bd import` unless --allow-stale; create paths leave it false.
+	// the incoming row only rewrites the stored columns when it is strictly
+	// newer. A stored row that is strictly newer is rejected outright
+	// (OnStaleRejected fires, aux data skipped); an equal-timestamp row keeps
+	// every stored column but still merges its aux data — updated_at has
+	// second granularity, so a tie may be two distinct same-second updates
+	// and the local row wins it (bd-hj85c). This is the transactional half
+	// of the import stale guard (bd-pkim8): cmd/bd's filterStaleImportIssues
+	// reads local updated_at before the batch write, so a local update
+	// committing in between would otherwise be silently overwritten (the
+	// PR 4204 race). Set by `bd import` unless --allow-stale; create paths
+	// leave it false.
 	RejectStaleUpserts bool
 	// SkipDependencyValidationErrors skips dependency validation failures that
 	// legacy imports tolerated, such as cycles or self-dependencies.

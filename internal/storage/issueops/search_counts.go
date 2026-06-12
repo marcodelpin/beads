@@ -5,9 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
-	"time"
 
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -95,92 +94,13 @@ func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, fil
 	if filter.Limit > 0 {
 		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
 	}
-	orderBy := issueOpsOrderBy(filter.SortBy, filter.SortDesc, "i")
+	orderBy := sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, "i")
 	return runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, filter.SkipLabels)
 }
 
 //nolint:gosec // G201: SQL fragments are caller-built from hardcoded shapes
 func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, skipLabels bool) ([]*types.IssueWithCounts, error) {
-	reverseBlockerSelect := `
-				SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
-				FROM dependencies WHERE type = 'blocks'
-	`
-	if includeWispReverseDeps {
-		reverseBlockerSelect += `
-				UNION ALL
-				SELECT COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) AS dep_id
-				FROM wisp_dependencies WHERE type = 'blocks'
-		`
-	}
-
-	labelsSelect := "l.labels_json AS labels_json"
-	labelsJoin := fmt.Sprintf(`
-		LEFT JOIN (
-			SELECT issue_id, JSON_ARRAYAGG(label) AS labels_json
-			FROM %s
-			GROUP BY issue_id
-		) l ON l.issue_id = i.id`, tables.Labels)
-	if skipLabels {
-		labelsSelect = "NULL AS labels_json"
-		labelsJoin = ""
-	}
-
-	searchSQL := fmt.Sprintf(`
-		SELECT %s,
-			%s,
-			COALESCE(dc.cnt, 0) AS dep_count,
-			COALESCE(rc.cnt, 0) AS rdep_count,
-			COALESCE(cc.cnt, 0) AS comment_count,
-			pc.parent_id     AS parent_id,
-			d.deps_json      AS deps_json
-		FROM %s i
-		%s
-		LEFT JOIN (
-			SELECT issue_id, COUNT(*) AS cnt
-			FROM %s
-			WHERE type = 'blocks'
-			GROUP BY issue_id
-		) dc ON dc.issue_id = i.id
-		LEFT JOIN (
-			SELECT dep_id, COUNT(*) AS cnt FROM (
-				%s
-			) all_blockers GROUP BY dep_id
-		) rc ON rc.dep_id = i.id
-		LEFT JOIN (
-			SELECT issue_id, COUNT(*) AS cnt
-			FROM %s
-			GROUP BY issue_id
-		) cc ON cc.issue_id = i.id
-		LEFT JOIN (
-			SELECT issue_id,
-			       MIN(COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)) AS parent_id
-			FROM %s
-			WHERE type = 'parent-child'
-			GROUP BY issue_id
-		) pc ON pc.issue_id = i.id
-		LEFT JOIN (
-			SELECT issue_id, JSON_ARRAYAGG(%s) AS deps_json
-			FROM %s
-			GROUP BY issue_id
-		) d ON d.issue_id = i.id
-		%s
-		%s
-		%s
-	`,
-		readyWorkIssueColumns,
-		labelsSelect,
-		tables.Main,
-		labelsJoin,
-		tables.Dependencies,
-		reverseBlockerSelect,
-		tables.Comments,
-		tables.Dependencies,
-		readyWorkDepJSONObject,
-		tables.Dependencies,
-		whereSQL,
-		orderBySQL,
-		limitSQL,
-	)
+	searchSQL := sqlbuild.SearchCountsSQL(tables, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, skipLabels)
 
 	rows, err := tx.QueryContext(ctx, searchSQL, args...)
 	if err != nil {
@@ -191,7 +111,7 @@ func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, wh
 	var out []*types.IssueWithCounts
 	seen := make(map[string]bool)
 	for rows.Next() {
-		iwc, scanErr := scanReadyWorkRowWithCounts(rows)
+		iwc, scanErr := ScanReadyWorkRowWithCounts(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -219,7 +139,7 @@ func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, filter types.I
 }
 
 // sortSearchIssuesWithCounts must order the merged issues+wisps rows the same
-// way issueOpsOrderBy orders each per-table query; otherwise the limit cut in
+// way sqlbuild.OrderBy orders each per-table query; otherwise the limit cut in
 // finishSearchIssuesWithCounts keeps a different row set than SQL selected.
 func sortSearchIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, sortDesc bool) {
 	if len(items) <= 1 {
@@ -233,73 +153,8 @@ func sortSearchIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, s
 		if b == nil || b.Issue == nil {
 			return true
 		}
-		return issueOpsLess(a.Issue, b.Issue, sortBy, sortDesc)
+		return sqlbuild.Less(a.Issue, b.Issue, sortBy, sortDesc)
 	})
-}
-
-func issueOpsLess(a, b *types.Issue, sortBy string, sortDesc bool) bool {
-	if sortBy == "id" {
-		return a.ID < b.ID
-	}
-	def, ok := issueOpsSortDefs[sortBy]
-	if !ok {
-		def = issueOpsSortDefs[""]
-		sortBy = ""
-	}
-	descending := def.defaultDir == "DESC"
-	if sortDesc {
-		descending = !descending
-	}
-	if c := issueOpsSortKeyCompare(a, b, sortBy); c != 0 {
-		if descending {
-			return c > 0
-		}
-		return c < 0
-	}
-	if (sortBy == "" || sortBy == "priority") && !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.After(b.CreatedAt)
-	}
-	return a.ID < b.ID
-}
-
-// issueOpsSortKeyCompare three-way compares the primary sort column in
-// ascending order, with MySQL NULL-first semantics for nullable columns.
-func issueOpsSortKeyCompare(a, b *types.Issue, sortBy string) int {
-	switch sortBy {
-	case "created":
-		return compareTimesAsc(a.CreatedAt, b.CreatedAt)
-	case "updated":
-		return compareTimesAsc(a.UpdatedAt, b.UpdatedAt)
-	case "closed":
-		switch {
-		case a.ClosedAt == nil && b.ClosedAt == nil:
-			return 0
-		case a.ClosedAt == nil:
-			return -1
-		case b.ClosedAt == nil:
-			return 1
-		}
-		return compareTimesAsc(*a.ClosedAt, *b.ClosedAt)
-	case "status":
-		return strings.Compare(string(a.Status), string(b.Status))
-	case "type":
-		return strings.Compare(string(a.IssueType), string(b.IssueType))
-	case "assignee":
-		return strings.Compare(a.Assignee, b.Assignee)
-	case "title":
-		return strings.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
-	}
-	return a.Priority - b.Priority
-}
-
-func compareTimesAsc(a, b time.Time) int {
-	switch {
-	case a.Before(b):
-		return -1
-	case a.After(b):
-		return 1
-	}
-	return 0
 }
 
 func joinAnd(clauses []string) string {

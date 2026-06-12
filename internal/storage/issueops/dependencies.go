@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/depid"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -34,7 +35,7 @@ func (k DepTargetKind) Column() string {
 // id from its three typed columns. Use this in SELECT projections (aliased as
 // depends_on_id) and in WHERE clauses when the caller doesn't know the target
 // kind ahead of time.
-const DepTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)"
+const DepTargetExpr = sqlbuild.DepTargetExpr
 
 func depTargetExpr(alias string) string {
 	if alias == "" {
@@ -234,7 +235,7 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		if err := markDirectBlockingDependencySourceInTx(ctx, tx, dep.IssueID, srcIsWisp, dep.DependsOnID, kind); err != nil {
 			return fmt.Errorf("mark direct is_blocked after add dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
 		}
-		affectedIssues, affectedWisps = removeSourceFromAffected(dep.IssueID, srcIsWisp, affectedIssues, affectedWisps)
+		affectedIssues, affectedWisps = RemoveSourceFromAffected(dep.IssueID, srcIsWisp, affectedIssues, affectedWisps)
 	}
 	if dep.Type == types.DepParentChild {
 		// Parent-child adds are not monotonic: adding an already-closed child can
@@ -250,7 +251,10 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 	return nil
 }
 
-func removeSourceFromAffected(source string, srcIsWisp bool, issueIDs, wispIDs []string) ([]string, []string) {
+// RemoveSourceFromAffected drops the dep source from the affected-ID sets
+// after a direct is_blocked mark, so the follow-up Mark/Recompute pass does
+// not redo it. Shared with the domain/db dependency repository.
+func RemoveSourceFromAffected(source string, srcIsWisp bool, issueIDs, wispIDs []string) ([]string, []string) {
 	if srcIsWisp {
 		return issueIDs, removeID(wispIDs, source)
 	}

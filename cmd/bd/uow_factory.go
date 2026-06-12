@@ -17,13 +17,24 @@ func newProxiedServerUOWProvider(ctx context.Context, beadsDir string) (uow.Unit
 		return nil, fmt.Errorf("newProxiedServerUOWProvider: beadsDir must be set")
 	}
 
-	persisted, _ := configfile.Load(beadsDir)
+	// Both loads return (nil, nil) when the file is simply absent; a non-nil
+	// error means the file EXISTS but cannot be read or parsed. Swallowing
+	// either silently falls back to a fresh managed local database — reads
+	// return zero issues and writes land in the wrong database (split-brain,
+	// bd-6dnrw.44 item 6) — so refuse to proceed instead.
+	persisted, err := configfile.Load(beadsDir)
+	if err != nil {
+		return nil, fmt.Errorf("newProxiedServerUOWProvider: workspace config in %s is unreadable; fix or remove it rather than letting bd guess the database: %w", beadsDir, err)
+	}
 	database := configfile.DefaultDoltDatabase
 	if persisted != nil {
 		database = persisted.GetDoltDatabase()
 	}
 
-	info, _ := configfile.LoadProxiedServerClientInfo(beadsDir)
+	info, err := configfile.LoadProxiedServerClientInfo(beadsDir)
+	if err != nil {
+		return nil, fmt.Errorf("newProxiedServerUOWProvider: %s in %s is unreadable; refusing to fall back to a fresh managed database (fix or remove the file): %w", configfile.ProxiedServerClientInfoFileName, beadsDir, err)
+	}
 	if info != nil && info.External != nil {
 		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External)
 	}
