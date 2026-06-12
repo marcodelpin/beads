@@ -41,7 +41,7 @@ Key surfaces: Makefile `-H=windowsgui` gated on `GOOS_EFFECTIVE`; `cmd/bd/consol
 
 ## 2. Remote Dolt sql-server hardening (shared-server topology) — `active`
 
-**Issues**: bda-4sl, bda-68f, sys-9np6d, sys-t9tlx, sys-c8066, bda-i69, bda-53z, bda-0mu
+**Issues**: bda-4sl, bda-68f, sys-9np6d, sys-r8253, sys-t9tlx, sys-c8066, bda-i69, bda-53z, bda-0mu, bda-1mf
 
 | sha | date | subject |
 |-----|------|---------|
@@ -52,7 +52,8 @@ Key surfaces: Makefile `-H=windowsgui` gated on `GOOS_EFFECTIVE`; `cmd/bd/consol
 | `d0047b27b2` | 2026-06-05 | sys-t9tlx: bd dolt push client-side timeout + retry/backoff |
 | `7d2c7c0419` | 2026-06-07 | bda-i69: default remote Dolt server port to DefaultSharedServerPort (3308) when unresolved |
 | `767d5dcdef` | 2026-06-12 | bda-53z: tolerate dolthub/dolt#11131 schema-encoding drift in aux row re-key — skip drifted table + warn instead of crashing migration 0051 mid-pass (incident sys-duwt6: drift on 140/142 fleet DBs; on a single shared sql-server the skipped cross-clone PK convergence is moot) |
-| (tip) | 2026-06-12 | bda-0mu: idempotent dolt_ignore pattern seed at top of every MigrateUp — heals databases materialized out-of-band (table-copy/rename) that arrived with cursors at-latest and never executed seeding migrations 0019/0028 (bd_26_05_Magneti: 1 pattern instead of 5, wisp churn fed the v51 dirty-gate block); dolt_ignore exempted from pre-existing-dirty guards as pass-owned state |
+| `082796b711` | 2026-06-12 | bda-0mu: idempotent dolt_ignore pattern seed at top of every MigrateUp — heals databases materialized out-of-band (table-copy/rename) that arrived with cursors at-latest and never executed seeding migrations 0019/0028 (bd_26_05_Magneti: 1 pattern instead of 5, wisp churn fed the v51 dirty-gate block); dolt_ignore exempted from pre-existing-dirty guards as pass-owned state |
+| (tip) | 2026-06-12 | bda-1mf: realign sys-9np6d DSN-timeout tests to the sys-r8253 120s defaults (3 assertions stale since 2026-05-15 — failed deterministically everywhere incl. fork CI 'Main', misdiagnosed as CI noise) |
 
 Hardens bd for the fleet topology: a single shared remote Dolt sql-server
 (forgejo-mdp.mdp:3308) serving many client machines, including Windows CGO=0 builds with no

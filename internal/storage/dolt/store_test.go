@@ -14,8 +14,9 @@ func TestBuildServerDSN_ReadTimeoutDefault(t *testing.T) {
 		ServerUser: "root",
 	}
 	dsn := buildServerDSN(cfg, "testdb")
-	if !contains(dsn, "readTimeout=10s") {
-		t.Errorf("expected default readTimeout=10s in DSN, got: %s", dsn)
+	// Default bumped 10s -> 120s by sys-r8253 (migration 37 takes ~21s).
+	if !contains(dsn, "readTimeout=2m0s") {
+		t.Errorf("expected default readTimeout=2m0s in DSN, got: %s", dsn)
 	}
 }
 
@@ -44,8 +45,9 @@ func TestBuildServerDSN_ReadTimeoutEnvInvalid(t *testing.T) {
 		ServerUser: "root",
 	}
 	dsn := buildServerDSN(cfg, "testdb")
-	if !contains(dsn, "readTimeout=10s") {
-		t.Errorf("expected fallback readTimeout=10s when env invalid, got: %s", dsn)
+	// Invalid env falls back to the 120s default (sys-r8253).
+	if !contains(dsn, "readTimeout=2m0s") {
+		t.Errorf("expected fallback readTimeout=2m0s when env invalid, got: %s", dsn)
 	}
 }
 
@@ -78,10 +80,12 @@ func searchSubstring(s, substr string) bool {
 	return false
 }
 
-// TestBuildServerDSN_WriteTimeoutUnaffected verifies WriteTimeout stays at 10s
-// regardless of BEADS_DOLT_READ_TIMEOUT.
+// TestBuildServerDSN_WriteTimeoutUnaffected verifies WriteTimeout stays at the
+// 120s default regardless of BEADS_DOLT_READ_TIMEOUT (which only governs the
+// read side). The env read value is deliberately distinct from the write
+// default so the assertions can tell the two timeouts apart.
 func TestBuildServerDSN_WriteTimeoutUnaffected(t *testing.T) {
-	os.Setenv("BEADS_DOLT_READ_TIMEOUT", "2m")
+	os.Setenv("BEADS_DOLT_READ_TIMEOUT", "45s")
 	defer os.Unsetenv("BEADS_DOLT_READ_TIMEOUT")
 
 	cfg := &Config{
@@ -90,11 +94,11 @@ func TestBuildServerDSN_WriteTimeoutUnaffected(t *testing.T) {
 		ServerUser: "root",
 	}
 	dsn := buildServerDSN(cfg, "testdb")
-	if !contains(dsn, "writeTimeout=10s") {
-		t.Errorf("expected writeTimeout=10s unchanged, got: %s", dsn)
+	if !contains(dsn, "writeTimeout=2m0s") {
+		t.Errorf("expected writeTimeout=2m0s unchanged by read env, got: %s", dsn)
 	}
-	if !contains(dsn, "readTimeout=2m0s") {
-		t.Errorf("expected readTimeout=2m0s, got: %s", dsn)
+	if !contains(dsn, "readTimeout=45s") {
+		t.Errorf("expected readTimeout=45s from env, got: %s", dsn)
 	}
 }
 
