@@ -9,6 +9,7 @@ import (
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/servercfg"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/steveyegge/beads/internal/config"
@@ -21,6 +22,27 @@ const (
 	proxiedServerConfigName = "server_config.yaml"
 	proxiedServerLogName    = "server.log"
 )
+
+// proxiedServerCommands lists the top-level commands that have a
+// proxied-server dispatch path (a usesProxiedServer() branch in their Run
+// func). Every other store-backed command reads the global store, which
+// stays nil in proxied-server mode — PersistentPreRun rejects them up front
+// so they fail with a clear error instead of a nil-pointer panic.
+// doctor and init also work in proxied-server mode, but they skip store
+// init entirely and never reach the guard.
+var proxiedServerCommands = map[string]bool{
+	"create": true,
+	"list":   true,
+}
+
+// commandSupportsProxiedServer reports whether cmd can run in proxied-server
+// mode. Subcommands (e.g. "dep add") are judged by their top-level ancestor.
+func commandSupportsProxiedServer(cmd *cobra.Command) bool {
+	for cmd.Parent() != nil && cmd.Parent().Parent() != nil {
+		cmd = cmd.Parent()
+	}
+	return proxiedServerCommands[cmd.Name()]
+}
 
 func proxiedServerRoot(beadsDir string) string {
 	return filepath.Join(beadsDir, proxiedServerRootName)
