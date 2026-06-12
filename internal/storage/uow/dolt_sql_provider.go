@@ -66,9 +66,13 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string, hasRe
 	bo.InitialInterval = 25 * time.Millisecond
 	bo.MaxElapsedTime = 15 * time.Second
 	return backoff.Retry(func() error {
+		// Dial/handshake failures here are the NORMAL warmup case — the
+		// freshly spawned child server can accept TCP before the SQL engine
+		// answers — so only mark genuinely permanent errors Permanent
+		// (bd-6dnrw.44 item 8).
 		conn, err := p.db.Conn(ctx)
 		if err != nil {
-			if isSerializationError(err) {
+			if isRetryableWarmupError(err) {
 				return fmt.Errorf("uow: pin connection: %w", err)
 			}
 			return backoff.Permanent(fmt.Errorf("uow: pin connection: %w", err))
@@ -77,9 +81,15 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string, hasRe
 
 		ddl := db.NewDDLSQLRepository(conn)
 		if err := ddl.CreateDatabaseIfNotExists(ctx, database); err != nil {
+			if isRetryableWarmupError(err) {
+				return fmt.Errorf("uow: creating database: %w", err)
+			}
 			return backoff.Permanent(fmt.Errorf("uow: creating database: %w", err))
 		}
 		if err := ddl.UseDatabase(ctx, database); err != nil {
+			if isRetryableWarmupError(err) {
+				return fmt.Errorf("uow: switching to database: %w", err)
+			}
 			return backoff.Permanent(fmt.Errorf("uow: switching to database: %w", err))
 		}
 
@@ -92,14 +102,14 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string, hasRe
 		// data dir). A gate refusal is permanent — never retried into a
 		// migration.
 		if err := schema.CheckRemoteMigrateGateWithRemoteCheck(ctx, conn, hasRemoteProbe); err != nil {
-			if isSerializationError(err) {
+			if isRetryableWarmupError(err) {
 				return fmt.Errorf("uow: remote-migrate gate: %w", err)
 			}
 			return backoff.Permanent(fmt.Errorf("uow: remote-migrate gate: %w", err))
 		}
 
 		if _, err := schema.MigrateUpWithLock(ctx, conn, database); err != nil {
-			if isSerializationError(err) || schema.IsMigrationLockError(err) {
+			if isRetryableWarmupError(err) || schema.IsMigrationLockError(err) {
 				return fmt.Errorf("uow: migrate: %w", err)
 			}
 			return backoff.Permanent(fmt.Errorf("uow: migrate: %w", err))
