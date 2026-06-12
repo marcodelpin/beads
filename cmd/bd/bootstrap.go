@@ -657,7 +657,7 @@ func executeSyncAction(ctx context.Context, plan BootstrapPlan, cfg *configfile.
 		var gateErr *schema.RemoteMigrateGateError
 		if errors.As(err, &gateErr) {
 			if !jsonOutput {
-				printBootstrapRemoteBehindGuidance(os.Stderr, gateErr, plan.SyncRemote)
+				printBootstrapRemoteBehindGuidance(os.Stderr, gateErr, plan.SyncRemote, "bd bootstrap")
 			}
 			unit := "migrations"
 			if gateErr.Pending == 1 {
@@ -680,11 +680,12 @@ func executeSyncAction(ctx context.Context, plan BootstrapPlan, cfg *configfile.
 
 // printBootstrapRemoteBehindGuidance explains a remote-migrate gate refusal in
 // bootstrap terms. The gate's generic remedy ("adopt the migrated database:
-// bd bootstrap") is wrong from inside bootstrap — the database was just cloned
-// from the remote, so the REMOTE is what is behind this binary and re-cloning
-// can never help. The way out is exactly one designated machine migrating and
-// pushing.
-func printBootstrapRemoteBehindGuidance(w io.Writer, e *schema.RemoteMigrateGateError, syncRemote string) {
+// bd bootstrap") is wrong from inside a bootstrap-style clone — the database
+// was just cloned from the remote, so the REMOTE is what is behind this binary
+// and re-cloning can never help. The way out is exactly one designated machine
+// migrating and pushing. rerunCmd is the command the operator just ran ("bd
+// bootstrap", "bd init") so the don't-bother-retrying line names it.
+func printBootstrapRemoteBehindGuidance(w io.Writer, e *schema.RemoteMigrateGateError, syncRemote, rerunCmd string) {
 	unit := "migrations"
 	if e.Pending == 1 {
 		unit = "migration"
@@ -695,7 +696,7 @@ func printBootstrapRemoteBehindGuidance(w io.Writer, e *schema.RemoteMigrateGate
 		"  bd will not migrate it automatically: migrating clones independently forks\n"+
 			"  the schema so `bd dolt pull` can no longer merge (#4259).\n"+
 			"\n"+
-			"  Re-running `bd bootstrap` will NOT fix this — the remote itself is behind.\n"+
+			"  Re-running `"+rerunCmd+"` will NOT fix this — the remote itself is behind.\n"+
 			"  Choose one:\n"+
 			"    • This machine is the designated migrator (exactly ONE machine should be):\n"+
 			"        "+schema.AllowRemoteMigrateEnv+"=1 bd migrate\n"+
