@@ -30,10 +30,11 @@ type IssueScanner interface {
 }
 
 // ScanIssueFrom scans a full issue from any source implementing IssueScanner.
-// The caller must ensure the query selected exactly IssueSelectColumns in order.
-func ScanIssueFrom(s IssueScanner) (*types.Issue, error) {
+// The caller must ensure the query selected exactly IssueSelectColumns in
+// order; any extra dests are appended for trailing columns beyond that list.
+func ScanIssueFrom(s IssueScanner, extra ...any) (*types.Issue, error) {
 	var issue types.Issue
-	var createdAtStr, updatedAtStr sql.NullString // TEXT columns - must parse manually
+	var createdAtStr, updatedAtStr sql.NullString // scanned as strings, parsed with format fallbacks
 	var startedAt, closedAt, compactedAt, dueAt, deferUntil sql.NullTime
 	var estimatedMinutes, originalSize, timeoutNs sql.NullInt64
 	var createdBy sql.NullString
@@ -45,7 +46,7 @@ func ScanIssueFrom(s IssueScanner) (*types.Issue, error) {
 	var ephemeral, noHistory, pinned, isTemplate sql.NullInt64
 	var metadata sql.NullString
 
-	if err := s.Scan(
+	dests := []any{
 		&issue.ID, &contentHash, &issue.Title, &issue.Description, &issue.Design,
 		&issue.AcceptanceCriteria, &issue.Notes, &issue.Status,
 		&issue.Priority, &issue.IssueType, &assignee, &estimatedMinutes,
@@ -57,7 +58,9 @@ func ScanIssueFrom(s IssueScanner) (*types.Issue, error) {
 		&eventKind, &actor, &target, &payload,
 		&dueAt, &deferUntil,
 		&workType, &sourceSystem, &metadata,
-	); err != nil {
+	}
+	dests = append(dests, extra...)
+	if err := s.Scan(dests...); err != nil {
 		return nil, err
 	}
 

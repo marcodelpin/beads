@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -465,152 +466,13 @@ type issueScanner interface {
 	Scan(dest ...any) error
 }
 
+// scanIssue delegates to the classic scan so both stacks hydrate issues with
+// identical semantics (bd-6dnrw.44 item 12, extract-don't-duplicate per .46).
+// The shared scan reads created_at/updated_at as strings with format
+// fallbacks where a hand-rolled sql.NullTime scan hard-fails on any driver
+// that hands timestamps back as text.
 func scanIssue(s issueScanner, extra ...any) (*types.Issue, error) {
-	var issue types.Issue
-	var startedAt, closedAt, compactedAt, dueAt, deferUntil sql.NullTime
-	var estimatedMinutes, originalSize, timeoutNs sql.NullInt64
-	var contentHash, createdBy, owner sql.NullString
-	var assignee, externalRef, specID, compactedAtCommit sql.NullString
-	var sourceRepo, closeReason sql.NullString
-	var workType, sourceSystem sql.NullString
-	var sender, wispType, molType, eventKind, actorCol, target, payload sql.NullString
-	var awaitType, awaitID, waiters sql.NullString
-	var ephemeral, noHistory, pinned, isTemplate sql.NullInt64
-	var metadata sql.NullString
-	var createdAt, updatedAt sql.NullTime
-
-	dests := []any{
-		&issue.ID, &contentHash, &issue.Title, &issue.Description, &issue.Design,
-		&issue.AcceptanceCriteria, &issue.Notes, &issue.Status,
-		&issue.Priority, &issue.IssueType, &assignee, &estimatedMinutes,
-		&createdAt, &createdBy, &owner, &updatedAt, &startedAt, &closedAt, &externalRef, &specID,
-		&issue.CompactionLevel, &compactedAt, &compactedAtCommit, &originalSize, &sourceRepo, &closeReason,
-		&sender, &ephemeral, &noHistory, &wispType, &pinned, &isTemplate,
-		&awaitType, &awaitID, &timeoutNs, &waiters,
-		&molType,
-		&eventKind, &actorCol, &target, &payload,
-		&dueAt, &deferUntil,
-		&workType, &sourceSystem, &metadata,
-	}
-	dests = append(dests, extra...)
-	if err := s.Scan(dests...); err != nil {
-		return nil, err
-	}
-
-	if createdAt.Valid {
-		issue.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		issue.UpdatedAt = updatedAt.Time
-	}
-	if contentHash.Valid {
-		issue.ContentHash = contentHash.String
-	}
-	if startedAt.Valid {
-		issue.StartedAt = &startedAt.Time
-	}
-	if closedAt.Valid {
-		issue.ClosedAt = &closedAt.Time
-	}
-	if estimatedMinutes.Valid {
-		mins := int(estimatedMinutes.Int64)
-		issue.EstimatedMinutes = &mins
-	}
-	if assignee.Valid {
-		issue.Assignee = assignee.String
-	}
-	if createdBy.Valid {
-		issue.CreatedBy = createdBy.String
-	}
-	if owner.Valid {
-		issue.Owner = owner.String
-	}
-	if externalRef.Valid {
-		issue.ExternalRef = &externalRef.String
-	}
-	if specID.Valid {
-		issue.SpecID = specID.String
-	}
-	if compactedAt.Valid {
-		issue.CompactedAt = &compactedAt.Time
-	}
-	if compactedAtCommit.Valid {
-		issue.CompactedAtCommit = &compactedAtCommit.String
-	}
-	if originalSize.Valid {
-		issue.OriginalSize = int(originalSize.Int64)
-	}
-	if sourceRepo.Valid {
-		issue.SourceRepo = sourceRepo.String
-	}
-	if closeReason.Valid {
-		issue.CloseReason = closeReason.String
-	}
-	if sender.Valid {
-		issue.Sender = sender.String
-	}
-	if ephemeral.Valid && ephemeral.Int64 != 0 {
-		issue.Ephemeral = true
-	}
-	if noHistory.Valid && noHistory.Int64 != 0 {
-		issue.NoHistory = true
-	}
-	if wispType.Valid {
-		issue.WispType = types.WispType(wispType.String)
-	}
-	if pinned.Valid && pinned.Int64 != 0 {
-		issue.Pinned = true
-	}
-	if isTemplate.Valid && isTemplate.Int64 != 0 {
-		issue.IsTemplate = true
-	}
-	if awaitType.Valid {
-		issue.AwaitType = awaitType.String
-	}
-	if awaitID.Valid {
-		issue.AwaitID = awaitID.String
-	}
-	if timeoutNs.Valid {
-		issue.Timeout = time.Duration(timeoutNs.Int64)
-	}
-	if waiters.Valid && waiters.String != "" {
-		var parsed []string
-		if err := json.Unmarshal([]byte(waiters.String), &parsed); err == nil {
-			issue.Waiters = parsed
-		}
-	}
-	if molType.Valid {
-		issue.MolType = types.MolType(molType.String)
-	}
-	if eventKind.Valid {
-		issue.EventKind = eventKind.String
-	}
-	if actorCol.Valid {
-		issue.Actor = actorCol.String
-	}
-	if target.Valid {
-		issue.Target = target.String
-	}
-	if payload.Valid {
-		issue.Payload = payload.String
-	}
-	if dueAt.Valid {
-		issue.DueAt = &dueAt.Time
-	}
-	if deferUntil.Valid {
-		issue.DeferUntil = &deferUntil.Time
-	}
-	if workType.Valid {
-		issue.WorkType = types.WorkType(workType.String)
-	}
-	if sourceSystem.Valid {
-		issue.SourceSystem = sourceSystem.String
-	}
-	if metadata.Valid && metadata.String != "" && metadata.String != "{}" {
-		issue.Metadata = []byte(metadata.String)
-	}
-
-	return &issue, nil
+	return issueops.ScanIssueFrom(s, extra...)
 }
 
 func nullString(s string) any {
