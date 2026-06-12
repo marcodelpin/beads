@@ -1102,17 +1102,30 @@ func (f fakeRemoteLister) ListRemotes(context.Context) ([]storage.RemoteInfo, er
 	return f.remotes, f.err
 }
 
+// fakeProbingRemoteLister also implements persistedRemoteProber, like the
+// server-mode DoltStore.
+type fakeProbingRemoteLister struct {
+	fakeRemoteLister
+	persisted bool
+}
+
+func (f fakeProbingRemoteLister) HasPersistedRemote() bool {
+	return f.persisted
+}
+
 // bd-6dnrw.7: the exit-0 "no remote configured" skip must only fire when
 // dolt_remotes is actually empty. A remote-not-found error with remotes
 // configured (deleted remote-side repo, missing branch, typo) is a real sync
-// failure and must stay on the exit-1 path.
+// failure and must stay on the exit-1 path. bd-578h9.10: an empty table is
+// still not proof at server cold start — a remote persisted on disk
+// (repo_state.json, GH#2118) must also veto the skip.
 func TestIsConfirmedNoRemote(t *testing.T) {
 	ctx := context.Background()
 	notFound := fmt.Errorf("remote 'origin' not found")
 	tests := []struct {
 		name   string
 		err    error
-		lister fakeRemoteLister
+		lister remoteLister
 		want   bool
 	}{
 		{"no remotes configured", notFound, fakeRemoteLister{}, true},
@@ -1120,13 +1133,15 @@ func TestIsConfirmedNoRemote(t *testing.T) {
 		{"list fails", notFound, fakeRemoteLister{err: fmt.Errorf("server unreachable")}, false},
 		{"unrelated error", fmt.Errorf("connection refused"), fakeRemoteLister{}, false},
 		{"nil error", nil, fakeRemoteLister{}, false},
+		{"empty table but remote persisted on disk", notFound, fakeProbingRemoteLister{persisted: true}, false},
+		{"empty table and no persisted remote", notFound, fakeProbingRemoteLister{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isConfirmedNoRemote(ctx, tt.lister, tt.err)
 			if got != tt.want {
-				t.Errorf("isConfirmedNoRemote(%v, remotes=%d, listErr=%v) = %v, want %v",
-					tt.err, len(tt.lister.remotes), tt.lister.err, got, tt.want)
+				t.Errorf("isConfirmedNoRemote(%v, %#v) = %v, want %v",
+					tt.err, tt.lister, got, tt.want)
 			}
 		})
 	}

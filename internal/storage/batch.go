@@ -29,9 +29,23 @@ type BatchCreateOptions struct {
 	// again (cf. PR #3630), auto-import degrades to a harmless no-op instead
 	// of clobbering live rows. Explicit `bd import` keeps UPSERT semantics.
 	ConflictSkip bool
+	// RejectStaleUpserts makes the issue-row UPSERT conditional on updated_at:
+	// when the existing row is strictly newer than the incoming one, the
+	// existing values are kept. This is the transactional half of the import
+	// stale guard (bd-pkim8): cmd/bd's filterStaleImportIssues reads local
+	// updated_at before the batch write, so a local update committing in
+	// between would otherwise be silently overwritten (the PR 4204 race).
+	// Set by `bd import` unless --allow-stale; create paths leave it false.
+	RejectStaleUpserts bool
 	// SkipDependencyValidationErrors skips dependency validation failures that
 	// legacy imports tolerated, such as cycles or self-dependencies.
 	SkipDependencyValidationErrors bool
 	// OnSkippedDependency records dependency edges skipped during batch create.
 	OnSkippedDependency func(issueID, dependsOnID, reason string)
+	// OnStaleRejected records issues whose row the RejectStaleUpserts guard
+	// kept (stored row strictly newer than the incoming one). Rejected issues
+	// also skip label/comment/dependency persistence, so callers can count
+	// them as skipped rather than created. May fire more than once per issue
+	// if the enclosing transaction retries; callers should dedup by ID.
+	OnStaleRejected func(issueID string)
 }

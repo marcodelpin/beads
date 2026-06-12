@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-var ancestorPKTableRe = regexp.MustCompile(`cannot merge because table (\S+) has different primary keys`)
+// Case-insensitive to stay consistent with IsAncestorPKMismatch's lowercased
+// substring match: a casing change in Dolt's message must not produce
+// "detected, but table unknown".
+var ancestorPKTableRe = regexp.MustCompile(`(?i)cannot merge because table (\S+) has different primary keys`)
 
 // IsAncestorPKMismatch checks whether the error is Dolt's hard refusal to
 // merge a table whose primary key set differs between the merging heads or in

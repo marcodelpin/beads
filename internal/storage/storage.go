@@ -320,11 +320,14 @@ type Transaction interface {
 	AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, opts DependencyAddOptions) error
 	RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error
 	GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error)
-	// DetectCycles finds dependency cycles visible to this transaction,
-	// including its own uncommitted dependency writes. Lets bulk paths that
-	// add edges with SkipCycleCheck run one whole-graph check before commit
-	// and roll back instead of committing cycles (bd-6dnrw.8).
-	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
+	// CycleThroughEdges reports a rendered blocking-dependency cycle that
+	// traverses one of the given new edges (issueID -> dependsOnID pairs), or
+	// "" when none does. It sees the transaction's own uncommitted dependency
+	// writes, which must already include the edges. Lets bulk paths that add
+	// edges with SkipCycleCheck run one whole-graph check before commit and
+	// roll back instead of committing cycles (bd-6dnrw.8); pre-existing
+	// cycles not using any of the new edges never block (bd-578h9.9).
+	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 
 	// Label operations
 	AddLabel(ctx context.Context, issueID, label, actor string) error

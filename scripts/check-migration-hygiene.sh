@@ -15,8 +15,10 @@
 #
 # Checks, correspondingly:
 #   A. No duplicate migration version numbers (per directory).
-#   B. No UUID()/NOW()/RAND() in migration SQL unless the file is listed in
-#      migrations/nondeterminism-allowlist.txt with a justification.
+#   B. No UUID()/UUID_SHORT()/NOW()/RAND() — nor CURRENT_TIMESTAMP outside a
+#      DEFAULT / ON UPDATE column attribute — in migration SQL unless the file
+#      is listed in migrations/nondeterminism-allowlist.txt with a
+#      justification.
 #   C. No modification/deletion/rename of a migration file that already
 #      exists on the base branch. New files only. Fix-forward with a new
 #      migration instead: applied migration content is content-hashed
@@ -57,8 +59,12 @@ for dir in "$MIG_DIR" "$MIG_DIR/ignored"; do
 done
 
 # --- Check B: nondeterministic SQL ------------------------------------------
-# UUID(), NOW(), RAND() evaluate differently per clone / per run. In a
-# replicated migration that means divergent data under identical versions.
+# UUID(), UUID_SHORT(), NOW(), RAND() evaluate differently per clone / per
+# run. In a replicated migration that means divergent data under identical
+# versions. CURRENT_TIMESTAMP is the same hazard when it executes at
+# migration time (UPDATE ... SET x = CURRENT_TIMESTAMP), but as a column
+# attribute (DEFAULT ... / ON UPDATE ...) it evaluates at query time on every
+# clone and is fine — those positions are excluded.
 # Matches inside single-quoted dynamic SQL strings are intentional positives
 # (0037/0043 execute exactly that way); '-- ' comments are stripped first.
 # The allowlist grandfathers shipped files; additions require a justification
@@ -72,8 +78,14 @@ allowed() {
 while IFS= read -r f; do
   rel="${f#"$MIG_DIR"/}"
   [ "$rel" = "nondeterminism-allowlist.txt" ] && continue
-  hits=$(sed 's/--.*$//' "$f" \
-    | grep -n -i -E '(^|[^A-Za-z0-9_])(uuid|now|rand)[[:space:]]*\(' || true)
+  stripped=$(sed 's/--.*$//' "$f" | tr '[:upper:]' '[:lower:]')
+  hits=$(
+    {
+      grep -n -E '(^|[^a-z0-9_])(uuid|uuid_short|now|rand)[[:space:]]*\(' <<<"$stripped" || true
+      sed -E 's/(default|on +update) +current_timestamp(\(\))?//g' <<<"$stripped" \
+        | grep -n -E '(^|[^a-z0-9_])current_timestamp' || true
+    } | sort -t: -k1,1n -u
+  )
   if [ -n "$hits" ]; then
     if allowed "$rel"; then
       continue
@@ -82,10 +94,10 @@ while IFS= read -r f; do
     echo "FAIL (nondeterministic SQL) $f:"
     echo "$hits" | sed 's/^/  line /'
     cat <<EOF
-  UUID()/NOW()/RAND() in a migration produces per-clone-divergent results
-  (see #4259). Compute values in application code, or if this use is truly
-  safe (e.g. query-time evaluation inside a VIEW body), add a line to
-  $ALLOWLIST:
+  UUID()/UUID_SHORT()/NOW()/RAND()/migration-time CURRENT_TIMESTAMP in a
+  migration produces per-clone-divergent results (see #4259). Compute values
+  in application code, or if this use is truly safe (e.g. query-time
+  evaluation inside a VIEW body), add a line to $ALLOWLIST:
     $rel  <why this is deterministic-equivalent across clones>
 EOF
   fi

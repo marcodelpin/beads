@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // This file holds the merge-settlement machinery shared by server-mode
@@ -33,6 +35,11 @@ import (
 // rolling back, so the settle pass can repair it; SettleMerge's gates ensure
 // nothing unrepaired survives without an error.
 func MergeAndSettle(ctx context.Context, db DBConn, ref string) error {
+	// Capture pre-merge cleanliness before anything runs: abortMerge's
+	// hard-reset fallback is only safe when nothing uncommitted predates
+	// the merge (bd-578h9.2).
+	preMergeClean := workingSetClean(ctx, db)
+
 	if _, err := db.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 1"); err != nil {
 		return fmt.Errorf("set dolt_allow_commit_conflicts: %w", err)
 	}
@@ -45,28 +52,66 @@ func MergeAndSettle(ctx context.Context, db DBConn, ref string) error {
 		// DOLT_PULL swallows "Already up to date." internally; we do the same.
 		mergeErr = nil
 	}
-	return SettleMerge(ctx, db, mergeErr)
+	return SettleMerge(ctx, db, mergeErr, preMergeClean)
 }
+
+// MergeConflictsError reports the conflicts a settle pass refused to
+// auto-resolve. By the time the caller sees it the merge has been aborted (or
+// the transaction rolled back) and the working set restored, so the conflicts
+// are no longer queryable from dolt_conflicts — they were captured before the
+// abort precisely so callers with a conflict-reporting contract (PullFrom) can
+// still surface them (bd-578h9.15). Unwrap returns the merge statement's own
+// error, when there was one.
+type MergeConflictsError struct {
+	Conflicts []storage.Conflict
+	// MergeErr is the merge/pull statement's own error; nil on Dolt versions
+	// that leave conflicts in the working set without erroring.
+	MergeErr error
+}
+
+func (e *MergeConflictsError) Error() string {
+	tables := make([]string, len(e.Conflicts))
+	for i, c := range e.Conflicts {
+		tables[i] = c.Field
+	}
+	return fmt.Sprintf("merge conflicts in %s require operator resolution; merge aborted and working set restored",
+		strings.Join(tables, ", "))
+}
+
+func (e *MergeConflictsError) Unwrap() error { return e.MergeErr }
 
 // SettleMerge finishes a merge that ran on db with the session flags
 // MergeAndSettle sets: it auto-resolves the safe conflict classes, repairs FK
 // cascade violations (bd-6dnrw.4), and leaves the settled working set in
 // place — or aborts the merge when anything needs the operator. mergeErr is
 // the merge statement's own error; it is surfaced whenever nothing was
-// resolved or repaired. The decision logic mirrors server-mode
-// settleMergeInTx exactly; the abort stands in for that path's transaction
-// rollback, restoring the pre-merge working set (which the merge required to
-// be clean) so a retry is possible.
-func SettleMerge(ctx context.Context, db DBConn, mergeErr error) error {
+// resolved or repaired. preMergeClean reports whether the working set was
+// clean before the merge ran; it gates abortMerge's hard-reset fallback.
+// The decision logic mirrors server-mode settleMergeInTx exactly; the abort
+// stands in for that path's transaction rollback, restoring the pre-merge
+// working set so a retry is possible.
+func SettleMerge(ctx context.Context, db DBConn, mergeErr error, preMergeClean bool) error {
 	// Check for merge conflicts regardless of whether the merge errored.
 	// Some Dolt versions error on conflicts, others leave them in the working set.
 	resolved, resolveErr := TryAutoResolveMergeConflicts(ctx, db)
 	if resolveErr != nil {
-		abortMerge(ctx, db)
+		abortMerge(ctx, db, preMergeClean)
 		if mergeErr != nil {
 			return mergeErr
 		}
 		return resolveErr
+	}
+
+	// bd-578h9.15: conflicts the resolver declined are the operator's. Capture
+	// them BEFORE the abort wipes merge state — a post-abort GetConflicts sees
+	// an empty set, which made PullFrom's conflict-reporting contract dead
+	// code. The resolver pre-screens every table before resolving any, so a
+	// declined resolve leaves dolt_conflicts fully intact here.
+	if !resolved {
+		if conflicts, err := GetConflicts(ctx, db); err == nil && len(conflicts) > 0 {
+			abortMerge(ctx, db, preMergeClean)
+			return &MergeConflictsError{Conflicts: conflicts, MergeErr: mergeErr}
+		}
 	}
 
 	// bd-6dnrw.4: repair FK cascade violations the merge produced (child rows
@@ -75,14 +120,14 @@ func SettleMerge(ctx context.Context, db DBConn, mergeErr error) error {
 	// autocommits, so the abort below is what keeps them out of the database.
 	repairedViol, hadViol, violErr := TryRepairFKCascadeViolations(ctx, db)
 	if violErr != nil {
-		abortMerge(ctx, db)
+		abortMerge(ctx, db, preMergeClean)
 		if mergeErr != nil {
 			return mergeErr
 		}
 		return violErr
 	}
 	if hadViol && !repairedViol {
-		abortMerge(ctx, db)
+		abortMerge(ctx, db, preMergeClean)
 		if mergeErr != nil {
 			return mergeErr
 		}
@@ -91,8 +136,21 @@ func SettleMerge(ctx context.Context, db DBConn, mergeErr error) error {
 
 	if mergeErr != nil && !resolved && !repairedViol {
 		// Merge failed for a non-conflict reason, or conflicts include non-metadata tables.
-		abortMerge(ctx, db)
+		abortMerge(ctx, db, preMergeClean)
 		return mergeErr
+	}
+
+	// Conclude the merge for resolved conflicts only now, after the FK repair:
+	// DOLT_COMMIT refuses a violated working set, so a merge carrying both
+	// classes could never settle when the resolver committed first (bd-578h9.14).
+	if resolved {
+		if err := CommitResolvedConflicts(ctx, db); err != nil {
+			abortMerge(ctx, db, preMergeClean)
+			if mergeErr != nil {
+				return mergeErr
+			}
+			return err
+		}
 	}
 
 	return nil
@@ -102,13 +160,26 @@ func SettleMerge(ctx context.Context, db DBConn, mergeErr error) error {
 // merge — the autocommit-mode stand-in for server mode's tx.Rollback().
 // DOLT_MERGE('--abort') is the precise tool but only works while merge state
 // is active; a force-committed violation-only merge may have closed it, so
-// fall back to a hard reset, which is equivalent here because DOLT_MERGE
-// refuses to start on a dirty working set (nothing uncommitted can be lost).
+// fall back to a hard reset — but only when the working set was clean before
+// the merge ran. The most common reason --abort fails is a merge that
+// REFUSED TO START on a dirty working set; hard-resetting there would
+// destroy uncommitted data the merge never touched (bd-578h9.2).
 // Best-effort: the caller's error is what matters.
-func abortMerge(ctx context.Context, db DBConn) {
-	if _, err := db.ExecContext(ctx, "CALL DOLT_MERGE('--abort')"); err != nil {
+func abortMerge(ctx context.Context, db DBConn, preMergeClean bool) {
+	if _, err := db.ExecContext(ctx, "CALL DOLT_MERGE('--abort')"); err != nil && preMergeClean {
 		_, _ = db.ExecContext(ctx, "CALL DOLT_RESET('--hard')")
 	}
+}
+
+// workingSetClean reports whether dolt_status is empty. Errors count as
+// dirty so the hard-reset fallback stays conservative.
+func workingSetClean(ctx context.Context, db DBConn) bool {
+	rows, err := db.QueryContext(ctx, "SELECT 1 FROM dolt_status LIMIT 1")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return !rows.Next() && rows.Err() == nil
 }
 
 // TryAutoResolveMergeConflicts auto-resolves merge conflicts that are safe to
@@ -137,6 +208,10 @@ func abortMerge(ctx context.Context, db DBConn) {
 // Any conflict on another table, or an unresolvable dependencies or
 // schema_migrations conflict, returns (false, nil) so the caller fails the pull
 // and the operator resolves it.
+//
+// The resolved tables are staged but NOT committed: the caller must run
+// CommitResolvedConflicts after the FK cascade repair, because DOLT_COMMIT
+// refuses a working set with outstanding constraint violations (bd-578h9.14).
 func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) {
 	rows, err := db.QueryContext(ctx, "SELECT `table`, num_conflicts FROM dolt_conflicts")
 	if err != nil {
@@ -215,11 +290,22 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 			return false, fmt.Errorf("failed to stage %s: %w", table, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve merge conflicts (GH#2466, #4259)')"); err != nil {
-		return false, fmt.Errorf("failed to commit resolved conflicts: %w", err)
-	}
 
 	return true, nil
+}
+
+// CommitResolvedConflicts creates the dolt commit that concludes a merge whose
+// conflicts TryAutoResolveMergeConflicts settled. Callers that saw
+// resolved=true MUST call this, and only AFTER TryRepairFKCascadeViolations
+// has run: DOLT_COMMIT refuses a working set with outstanding constraint
+// violations, so a merge carrying both an auto-resolvable conflict and an FK
+// cascade violation could never settle while the resolver committed first
+// (bd-578h9.14).
+func CommitResolvedConflicts(ctx context.Context, db DBConn) error {
+	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve merge conflicts (GH#2466, #4259)')"); err != nil {
+		return fmt.Errorf("failed to commit resolved conflicts: %w", err)
+	}
+	return nil
 }
 
 // dependencyConflictsAreAuditOnly reports whether every conflicted row in the

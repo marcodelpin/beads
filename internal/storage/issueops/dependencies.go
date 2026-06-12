@@ -287,7 +287,7 @@ func markDirectBlockingDependencySourceInTx(ctx context.Context, tx *sql.Tx, sou
 	}
 
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		UPDATE %s s SET s.is_blocked = 1
+		UPDATE %s s SET s.is_blocked = 1, s.updated_at = s.updated_at
 		WHERE s.id = ?
 		  AND s.is_blocked = 0
 		  AND s.status <> 'closed' AND s.status <> 'pinned'

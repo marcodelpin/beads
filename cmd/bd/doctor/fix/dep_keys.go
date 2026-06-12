@@ -111,16 +111,19 @@ func repairDependencyKeys(ctx context.Context, db *sql.DB, verbose bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	var rekeyed, removed int
+	var rekeyed, removed, failed int
+	repairedTables := make(map[string]bool)
 	for _, a := range anomalies {
 		showIndividual := verbose || len(a.MisKeyed)+len(a.NullTarget) < 20
 		for _, mk := range a.MisKeyed {
 			//nolint:gosec // G201: table is a hardcoded constant, never user input.
 			if _, err := tx.Exec(fmt.Sprintf(`UPDATE %s SET id = ? WHERE id = ?`, a.Table), mk[1], mk[0]); err != nil {
-				fmt.Printf("  Warning: failed to re-key %s row %s: %v\n", a.Table, mk[0], err)
+				fmt.Printf("  Warning: failed to re-key %s row %s (row keeps its old id): %v\n", a.Table, mk[0], err)
+				failed++
 				continue
 			}
 			rekeyed++
+			repairedTables[a.Table] = true
 			if showIndividual {
 				fmt.Printf("  Re-keyed %s row %s → %s\n", a.Table, mk[0], mk[1])
 			}
@@ -129,9 +132,11 @@ func repairDependencyKeys(ctx context.Context, db *sql.DB, verbose bool) error {
 			//nolint:gosec // G201: table is a hardcoded constant, never user input.
 			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, a.Table), id); err != nil {
 				fmt.Printf("  Warning: failed to remove %s row %s: %v\n", a.Table, id, err)
+				failed++
 				continue
 			}
 			removed++
+			repairedTables[a.Table] = true
 			if showIndividual {
 				fmt.Printf("  Removed %s row %s (no dependency target)\n", a.Table, id)
 			}
@@ -141,9 +146,21 @@ func repairDependencyKeys(ctx context.Context, db *sql.DB, verbose bool) error {
 		return fmt.Errorf("failed to commit dependency key repairs: %w", err)
 	}
 
-	// Commit changes in Dolt
-	_, _ = db.Exec("CALL DOLT_COMMIT('-Am', 'doctor: re-key dependency ids to deterministic values')") // Best effort: commit advisory; repair already applied
+	// Commit changes in Dolt, staging only the repaired tables so an unrelated
+	// dirty working set is not swept under this message. Best effort: commit
+	// advisory; repair already applied.
+	if len(repairedTables) > 0 {
+		for table := range repairedTables {
+			_, _ = db.Exec("CALL DOLT_ADD(?)", table)
+		}
+		_, _ = db.Exec("CALL DOLT_COMMIT('-m', 'doctor: re-key dependency ids to deterministic values')")
+	}
 
+	if failed > 0 {
+		fmt.Printf("  Dependency keys: %d re-keyed, %d removed, %d FAILED — failed rows keep their old keys; resolve the warnings above and re-run bd doctor\n",
+			rekeyed, removed, failed)
+		return nil
+	}
 	fmt.Printf("  Fixed dependency keys: %d re-keyed, %d removed\n", rekeyed, removed)
 	return nil
 }

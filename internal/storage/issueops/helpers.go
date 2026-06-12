@@ -52,11 +52,46 @@ func TableRouting(issue *types.Issue) (issueTable, eventTable string) {
 	return "issues", "events"
 }
 
+// issueUpsertColumns are the columns rewritten by the issue UPSERT's
+// ON DUPLICATE KEY UPDATE clause. updated_at is deliberately last: the
+// stale-guarded variant compares VALUES(updated_at) against the stored
+// updated_at in every assignment, and ON DUPLICATE KEY UPDATE assignments are
+// evaluated in order, so the comparison column must not be reassigned until
+// all other columns have been decided.
+var issueUpsertColumns = []string{
+	"content_hash", "title", "description", "design", "acceptance_criteria",
+	"notes", "status", "priority", "issue_type", "assignee",
+	"estimated_minutes", "started_at", "closed_at", "external_ref",
+	"source_repo", "close_reason", "metadata", "updated_at",
+}
+
+// issueUpsertAssignments renders the ON DUPLICATE KEY UPDATE clause. With
+// rejectStaleUpdate, each assignment keeps the stored value unless the
+// incoming row is at least as new (VALUES(updated_at) >= updated_at) — the
+// transactional import stale guard (bd-pkim8). Strictly-older rows are
+// rejected; equal timestamps win so re-importing the same snapshot stays
+// idempotent, matching cmd/bd's filterStaleImportIssues.
+func issueUpsertAssignments(rejectStaleUpdate bool) string {
+	assignments := make([]string, 0, len(issueUpsertColumns))
+	for _, col := range issueUpsertColumns {
+		if rejectStaleUpdate {
+			assignments = append(assignments,
+				fmt.Sprintf("%s = IF(VALUES(updated_at) >= updated_at, VALUES(%s), %s)", col, col, col))
+		} else {
+			assignments = append(assignments, fmt.Sprintf("%s = VALUES(%s)", col, col))
+		}
+	}
+	return strings.Join(assignments, ",\n\t\t\t")
+}
+
 // InsertIssueIntoTable inserts an issue into the specified table ("issues" or "wisps"),
 // using ON DUPLICATE KEY UPDATE to handle pre-existing records gracefully.
-//
-//nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
 func InsertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *types.Issue) error {
+	return insertIssueIntoTable(ctx, tx, table, issue, false)
+}
+
+//nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
+func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *types.Issue, rejectStaleUpdate bool) error {
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (
 			id, content_hash, title, description, design, acceptance_criteria, notes,
@@ -80,25 +115,8 @@ func InsertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 			?, ?, ?
 		)
 		ON DUPLICATE KEY UPDATE
-			content_hash = VALUES(content_hash),
-			title = VALUES(title),
-			description = VALUES(description),
-			design = VALUES(design),
-			acceptance_criteria = VALUES(acceptance_criteria),
-			notes = VALUES(notes),
-			status = VALUES(status),
-			priority = VALUES(priority),
-			issue_type = VALUES(issue_type),
-			assignee = VALUES(assignee),
-			estimated_minutes = VALUES(estimated_minutes),
-			updated_at = VALUES(updated_at),
-			started_at = VALUES(started_at),
-			closed_at = VALUES(closed_at),
-			external_ref = VALUES(external_ref),
-			source_repo = VALUES(source_repo),
-			close_reason = VALUES(close_reason),
-			metadata = VALUES(metadata)
-	`, table),
+			%s
+	`, table, issueUpsertAssignments(rejectStaleUpdate)),
 		issue.ID, issue.ContentHash, issue.Title, issue.Description, issue.Design, issue.AcceptanceCriteria, issue.Notes,
 		issue.Status, issue.Priority, issue.IssueType, NullString(issue.Assignee), NullInt(issue.EstimatedMinutes),
 		issue.CreatedAt, issue.CreatedBy, issue.Owner, issue.UpdatedAt, issue.StartedAt, issue.ClosedAt, NullStringPtr(issue.ExternalRef), issue.SpecID,

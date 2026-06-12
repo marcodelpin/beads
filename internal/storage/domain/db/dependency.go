@@ -117,7 +117,49 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 	); err != nil {
 		return fmt.Errorf("db: DependencySQLRepository.Insert: %w", err)
 	}
+
+	if dep.Type == types.DepBlocks || dep.Type == types.DepConditionalBlocks {
+		if err := r.markDirectBlockedSource(ctx, dep.IssueID, opts.UseWispsTable, dep.DependsOnID, targetCol); err != nil {
+			return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked: %w", err)
+		}
+	}
 	return nil
+}
+
+// markDirectBlockedSource mirrors issueops.markDirectBlockingDependencySourceInTx:
+// is_blocked is derived state, and ready-work queries filter on it directly
+// (is_blocked = 0), so a blocking edge insert must set it on the source row
+// while the target is still open. updated_at is pinned because recomputing
+// derived state is not an edit.
+func (r *dependencySQLRepositoryImpl) markDirectBlockedSource(ctx context.Context, source string, srcIsWisp bool, target, targetCol string) error {
+	sourceTable := "issues"
+	if srcIsWisp {
+		sourceTable = "wisps"
+	}
+	var targetTable string
+	switch targetCol {
+	case "depends_on_issue_id":
+		targetTable = "issues"
+	case "depends_on_wisp_id":
+		targetTable = "wisps"
+	default:
+		// External targets carry no local status to derive from.
+		return nil
+	}
+
+	//nolint:gosec // G201: sourceTable/targetTable are hardcoded constants
+	_, err := r.runner.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE %s s SET s.is_blocked = 1, s.updated_at = s.updated_at
+		WHERE s.id = ?
+		  AND s.is_blocked = 0
+		  AND s.status <> 'closed' AND s.status <> 'pinned'
+		  AND EXISTS (
+		    SELECT 1 FROM %s t
+		    WHERE t.id = ?
+		      AND t.status <> 'closed' AND t.status <> 'pinned'
+		  )
+	`, sourceTable, targetTable), source, target)
+	return err
 }
 
 func (r *dependencySQLRepositoryImpl) HasCycle(ctx context.Context, issueID, dependsOnID string) (bool, error) {

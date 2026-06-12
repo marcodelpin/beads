@@ -449,10 +449,10 @@ jobs:
           sha256sum -c SHA256SUMS
           chmod +x bd-linux-gms-pure
 
-      - name: Test domain + uow
+      - name: Test domain + uow + tracker
         env:
           BEADS_TEST_BD_BINARY: ${{ github.workspace }}/ci-build-artifacts/bd-linux-gms-pure
-        run: go test -tags gms_pure_go -race -count=1 -v ./internal/storage/domain/... ./internal/storage/uow/...
+        run: go test -tags gms_pure_go -race -count=1 -v ./internal/storage/domain/... ./internal/storage/uow/... ./internal/tracker/...
 
   fmt-check:
     name: Check formatting

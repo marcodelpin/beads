@@ -149,19 +149,37 @@ type remoteLister interface {
 	ListRemotes(ctx context.Context) ([]storage.RemoteInfo, error)
 }
 
+// persistedRemoteProber is implemented by stores that can check on-disk
+// remote persistence (.dolt/repo_state.json) independently of the SQL
+// server's dolt_remotes table (server-mode DoltStore).
+type persistedRemoteProber interface {
+	HasPersistedRemote() bool
+}
+
 // isConfirmedNoRemote reports whether a push/pull failure is the benign
 // "no remote configured" case that may exit 0. isRemoteNotFoundErr alone is a
 // loose string match that also fires on deleted/renamed remote-side repos,
 // missing remote branches, and typoed remote names — real sync failures that
 // must keep a non-zero exit so agents and CI notice (bd-6dnrw.7). Only an
 // actually-empty dolt_remotes table makes the skip safe; if the remotes can't
-// be listed, treat the failure as real.
+// be listed, treat the failure as real. An empty table alone is still not
+// proof in server mode: a freshly auto-started sql-server can report empty
+// dolt_remotes at cold start even though remotes are persisted on disk
+// (GH#2118) — the same reason the remote-migrate gate reads repo_state.json
+// directly — so the on-disk probe must agree before the skip fires
+// (bd-578h9.10).
 func isConfirmedNoRemote(ctx context.Context, st remoteLister, err error) bool {
 	if !isRemoteNotFoundErr(err) {
 		return false
 	}
 	remotes, listErr := st.ListRemotes(ctx)
-	return listErr == nil && len(remotes) == 0
+	if listErr != nil || len(remotes) > 0 {
+		return false
+	}
+	if prober, ok := st.(persistedRemoteProber); ok && prober.HasPersistedRemote() {
+		return false
+	}
+	return true
 }
 
 // isDivergedHistoryErr checks whether the error indicates that local and remote

@@ -150,6 +150,18 @@ func (e *crossUpgradeEnv) upgradeBranch(t *testing.T, branch string) {
 	if _, err := schema.MigrateUp(e.ctx, e.conn); err != nil {
 		t.Fatalf("MigrateUp on %s: %v", branch, err)
 	}
+	// Frozen migrations 0046/0047 flip is_blocked on issue rows, and
+	// issues.updated_at carries ON UPDATE CURRENT_TIMESTAMP, so each branch
+	// stamps its own migration wall clock on blocked rows - branches
+	// upgraded across a second boundary then differ in bookkeeping only and
+	// the raw DOLT_MERGE below reports a conflict, drowning the 4266 claim
+	// this test pins (bd-578h9.19; production avoids the geometry via the
+	// remote-migrate gate, and the runtime recompute now preserves
+	// updated_at). Pin it to a constant on both branches.
+	if _, err := e.conn.ExecContext(e.ctx,
+		"UPDATE issues SET updated_at = '2026-01-01 00:00:00'"); err != nil {
+		t.Fatalf("pin issues.updated_at on %s: %v", branch, err)
+	}
 	// MigrateUp commits its own work; sweep anything it intentionally leaves
 	// in the working set so the merge below compares committed state only.
 	if _, err := e.conn.ExecContext(e.ctx, "CALL DOLT_COMMIT('-Am', 'post-upgrade sweep')"); err != nil &&

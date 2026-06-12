@@ -33,9 +33,11 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 	allArgs = append(allArgs, issuePreds.args...)
 
 	if !wispsEmpty {
-		wispFilter := filter
-		wispFilter.IncludeEphemeral = true
-		wispPreds, err := r.buildReadyWorkPredicates(ctx, wispFilter, wispsFilterTables)
+		// The ephemeral predicate applies to wisps too: the wisps table also
+		// holds non-ephemeral NoHistory beads (ephemeral=0), so forcing
+		// IncludeEphemeral here would leak true ephemerals into default ready
+		// work — issueops.getReadyWispsInTx filters them the same way.
+		wispPreds, err := r.buildReadyWorkPredicates(ctx, filter, wispsFilterTables)
 		if err != nil {
 			return idSrcPage{}, false, err
 		}
