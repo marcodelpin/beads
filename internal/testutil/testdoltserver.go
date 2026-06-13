@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	dockercontainer "github.com/moby/moby/api/types/container"
 	_ "github.com/go-sql-driver/mysql" // required by testcontainers Dolt module
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/dolt"
@@ -138,6 +139,15 @@ func startDoltContainer() error {
 	ctx, cancel := context.WithTimeout(context.Background(), serverStartTimeout)
 	defer cancel()
 
+	// Docker-in-LXC hosts (e.g. dev-claude/build-server CT 280) cannot load the
+	// AppArmor docker-default profile ("apparmor_parser: Access denied. You need
+	// policy admin privileges"), which makes every container start — including
+	// the testcontainers ryuk reaper — fail. Disabling ryuk removes one such
+	// start, and apparmor=unconfined on the dolt container itself lets it start
+	// without the profile load. Both are needed; without them the dolt package
+	// tests SKIP ("no test Dolt server running") on these hosts (bda-pjn).
+	_ = os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
+
 	ctr, err := dolt.Run(ctx, DoltDockerImage,
 		dolt.WithDatabase("beads_test"),
 		// Docker port-forwarding makes connections appear as non-localhost
@@ -145,6 +155,11 @@ func startDoltContainer() error {
 		// "localhost", so root@localhost won't match external connections.
 		// Set to "%" so root can connect from any host.
 		testcontainers.WithEnv(map[string]string{"DOLT_ROOT_HOST": "%"}),
+		// Start without an AppArmor profile so docker-in-LXC hosts that lack
+		// policy-admin privileges can launch the container (see comment above).
+		testcontainers.WithHostConfigModifier(func(hc *dockercontainer.HostConfig) {
+			hc.SecurityOpt = append(hc.SecurityOpt, "apparmor=unconfined")
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("starting Dolt container: %w", err)
