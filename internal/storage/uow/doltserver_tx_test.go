@@ -8,6 +8,7 @@ package uow
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -73,4 +74,25 @@ func TestBeginTxStartTransactionFailureReleasesConn(t *testing.T) {
 	_, err := p.BeginTx(context.Background())
 	require.ErrorContains(t, err, "no tx for you")
 	assert.Equal(t, 0, p.db.Stats().InUse, "pinned conn must not leak when START TRANSACTION fails")
+}
+
+func TestDoltServerTxRunnerAfterCommitErrorsInsteadOfPanicking(t *testing.T) {
+	p, mock := newMockTxProvider(t)
+	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DOLT_COMMIT").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	tx, err := p.BeginTx(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(context.Background(), "msg"))
+
+	r := tx.Runner()
+	require.NotNil(t, r, "Runner must stay usable for error reporting after commit")
+
+	_, err = r.ExecContext(context.Background(), "SELECT 1")
+	assert.ErrorIs(t, err, sql.ErrConnDone, "exec on a committed tx must error, not panic")
+	_, err = r.QueryContext(context.Background(), "SELECT 1")
+	assert.ErrorIs(t, err, sql.ErrConnDone, "query on a committed tx must error, not panic")
+	row := r.QueryRowContext(context.Background(), "SELECT 1")
+	require.NotNil(t, row)
+	assert.ErrorIs(t, row.Err(), sql.ErrConnDone, "row on a committed tx must carry the error, not panic")
 }

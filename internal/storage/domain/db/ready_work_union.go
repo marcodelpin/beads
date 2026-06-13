@@ -51,10 +51,10 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 	}
 
 	sortOrder := buildReadyWorkOrder(filter.SortPolicy)
-	outerLimit := ""
-	if filter.Limit > 0 {
-		outerLimit = fmt.Sprintf("LIMIT %d OFFSET %d", filter.Limit+1, filter.Offset)
-	}
+	// limitOffsetSQL keeps the +1 overfetch for hasMore AND honors Offset
+	// when Limit is 0 (the hand-rolled guard here used to drop the offset
+	// entirely in that case, bd-6dnrw.44 P3).
+	outerLimit := limitOffsetSQL(filter.Limit, filter.Offset)
 
 	//nolint:gosec // G201: subqueries built from hardcoded fragments and ? placeholders.
 	unionSQL := fmt.Sprintf(

@@ -71,9 +71,14 @@ func (t *doltServerTx) poisonConn() {
 	}
 }
 
+// releaseConn returns the pinned session to the pool. The conn reference is
+// deliberately kept: a closed *sql.Conn answers every Runner method with
+// sql.ErrConnDone (QueryRowContext surfaces it via Row.Err), so a
+// use-after-commit Runner fails with an error instead of the nil-pointer
+// panic that nil-ing the field caused. Close is idempotent for our purposes
+// (a second call just returns ErrConnDone, which we ignore).
 func (t *doltServerTx) releaseConn() {
 	if t.conn != nil {
 		_ = t.conn.Close()
-		t.conn = nil
 	}
 }

@@ -21,14 +21,26 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		if probeErr != nil {
 			return nil, fmt.Errorf("search issues with counts: ephemeral wisp probe: %w", probeErr)
 		}
-		if empty || !wispDepsExist {
-			return nil, nil
+		if !empty && wispDepsExist {
+			wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
+			if err != nil && !isTableNotExistError(err) {
+				return nil, err
+			}
+			if len(wisps) > 0 {
+				return finishSearchIssuesWithCounts(wisps, filter), nil
+			}
 		}
-		wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
+		// Fall through: the wisps tier is missing/empty or matched no rows.
+		// Mirror SearchIssuesInTx / CountIssuesInTx so count-projection searches
+		// also surface a durable issues-table row flagged ephemeral=1 instead of
+		// dropping it. Use the same IssuesFilterTables query the non-ephemeral
+		// path uses, keeping the GH#4387 count/list cardinality parity for
+		// searches that project counts (e.g. `bd search --counts --include-infra`).
+		out, err := runFilterSearchQueryInTx(ctx, tx, query, filter, IssuesFilterTables, wispDepsExist)
 		if err != nil {
 			return nil, err
 		}
-		return finishSearchIssuesWithCounts(wisps, filter), nil
+		return finishSearchIssuesWithCounts(out, filter), nil
 	}
 
 	out, err := runFilterSearchQueryInTx(ctx, tx, query, filter, IssuesFilterTables, wispDepsExist)

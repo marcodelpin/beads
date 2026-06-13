@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/uow"
 )
@@ -112,7 +113,7 @@ func newManagedProxiedServerUOWProvider(
 		}
 	}
 
-	return uow.NewDoltServerUOWProvider(
+	provider, err := uow.NewDoltServerUOWProvider(
 		ctx,
 		rootPath,
 		database,
@@ -123,4 +124,17 @@ func newManagedProxiedServerUOWProvider(
 		"", // proxy is loopback-only, no auth
 		doltBin,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Provider warmup means the managed dolt is up, so its `dolt init` (run by
+	// the proxy child in rootPath) has already happened. Seed the .bd-dolt-ok
+	// compatibility marker so future bd versions don't mistake the database
+	// for a pre-0.56 embedded-mode leftover. No-op when .dolt/ is absent.
+	if err := doltserver.MarkDoltDirCompatible(rootPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to mark %s dolt-compatible: %v\n", rootPath, err)
+	}
+
+	return provider, nil
 }
