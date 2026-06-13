@@ -266,4 +266,3 @@ func hydrateIssues(ctx context.Context, tx *sql.Tx, issues []*types.Issue, table
 
 	return nil
 }
-

@@ -22,8 +22,30 @@ import (
 // If the issue routes to a different database, a routed store is returned
 // and must be closed by the caller via the returned cleanup function.
 // If the issue is in the local store, cleanup is a no-op.
+//
+// The routed store is opened read-only; callers that mutate the returned store
+// (e.g. dep add/remove/link writing through the source issue's store) must use
+// resolveIDWithRoutingForWrite instead.
 func resolveIDWithRouting(ctx context.Context, localStore storage.DoltStorage, id string) (resolvedID string, targetStore storage.DoltStorage, cleanup func(), err error) {
-	result, err := resolveAndGetIssueWithRouting(ctx, localStore, id)
+	return resolveIDWithRoutingMode(ctx, localStore, id, false)
+}
+
+// resolveIDWithRoutingForWrite is the write-intent variant of
+// resolveIDWithRouting: a prefix-routed target store is opened writable so a
+// dependency write through it commits on the target head (#4141). Read-only
+// resolution (e.g. resolving the depends-on target ID, or dep tree) must keep
+// resolveIDWithRouting so a routed read never mutates a foreign project's
+// history (bd-6dnrw.32, GH#3231).
+func resolveIDWithRoutingForWrite(ctx context.Context, localStore storage.DoltStorage, id string) (resolvedID string, targetStore storage.DoltStorage, cleanup func(), err error) {
+	return resolveIDWithRoutingMode(ctx, localStore, id, true)
+}
+
+func resolveIDWithRoutingMode(ctx context.Context, localStore storage.DoltStorage, id string, forWrite bool) (resolvedID string, targetStore storage.DoltStorage, cleanup func(), err error) {
+	resolve := resolveAndGetIssueWithRouting
+	if forWrite {
+		resolve = resolveAndGetIssueWithRoutingForWrite
+	}
+	result, err := resolve(ctx, localStore, id)
 	if err != nil {
 		return "", nil, func() {}, fmt.Errorf("resolving issue ID %s: %w", id, err)
 	}
@@ -123,8 +145,10 @@ Examples:
 			ctx := rootCtx
 			depType := "blocks"
 
-			// Resolve partial IDs with routing support
-			fromID, fromStore, fromCleanup, err := resolveIDWithRouting(ctx, store, blocksID)
+			// Resolve partial IDs with routing support. The source issue's store
+			// is mutated below, so resolve it write-intent (#4141); the blocker
+			// target is only resolved by ID and stays read-only.
+			fromID, fromStore, fromCleanup, err := resolveIDWithRoutingForWrite(ctx, store, blocksID)
 			if err != nil {
 				FatalErrorRespectJSON("%v", err)
 			}
@@ -280,7 +304,9 @@ Examples:
 		// Check if toID is an external reference (don't resolve it)
 		isExternalRef := strings.HasPrefix(dependsOnArg, "external:")
 
-		fromID, fromStore, fromCleanup, err := resolveIDWithRouting(ctx, store, args[0])
+		// Write-intent: the source issue's store is mutated by AddDependency
+		// below, so the routed target must open writable (#4141).
+		fromID, fromStore, fromCleanup, err := resolveIDWithRoutingForWrite(ctx, store, args[0])
 		if err != nil {
 			FatalErrorRespectJSON("%v", err)
 		}
@@ -571,7 +597,9 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 
 	for _, edge := range edges {
 		current := edge
-		fromID, fromStore, fromCleanup, err := resolveIDWithRouting(ctx, store, edge.IssueID)
+		// Write-intent: addBulkDependencies writes through current.Store (the
+		// source issue's store), so a routed target must open writable (#4141).
+		fromID, fromStore, fromCleanup, err := resolveIDWithRoutingForWrite(ctx, store, edge.IssueID)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("line %d: resolving issue ID %s: %v", edge.Line, edge.IssueID, err))
 			continue
@@ -859,9 +887,11 @@ var depRemoveCmd = &cobra.Command{
 		CheckReadonly("dep remove")
 		ctx := rootCtx
 
-		// Resolve partial IDs with routing support
+		// Resolve partial IDs with routing support. The source issue's store is
+		// mutated by RemoveDependency below, so resolve it write-intent (#4141);
+		// the depends-on target is only resolved by ID and stays read-only.
 		var fromID, toID string
-		fromID, fromStore, fromCleanup, err := resolveIDWithRouting(ctx, store, args[0])
+		fromID, fromStore, fromCleanup, err := resolveIDWithRoutingForWrite(ctx, store, args[0])
 		if err != nil {
 			FatalErrorRespectJSON("%v", err)
 		}
