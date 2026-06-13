@@ -533,6 +533,24 @@ func FindBeadsDirFrom(startDir string) string {
 	if out, err := gitOutput(startDir, "rev-parse", "--show-toplevel"); err == nil {
 		repoRoot = utils.CanonicalizePath(out)
 	}
+
+	jjSecondaryRoot := ""
+	jjPrimaryBeadsDir := ""
+	jjPrimaryHasDB := false
+	if root, ok := git.JJSecondaryWorkspaceRootFrom(startDir); ok {
+		jjSecondaryRoot = utils.CanonicalizePath(root)
+		if primaryRoot, err := git.GetJJPrimaryWorkspaceRootFrom(startDir); err == nil && primaryRoot != "" {
+			primaryBeadsDir := filepath.Join(primaryRoot, ".beads")
+			if info, err := os.Stat(primaryBeadsDir); err == nil && info.IsDir() {
+				resolved := FollowRedirect(primaryBeadsDir)
+				if hasBeadsProjectFiles(resolved) {
+					jjPrimaryBeadsDir = resolved
+					jjPrimaryHasDB = hasBeadsDatabase(resolved)
+				}
+			}
+		}
+	}
+
 	fallbackBeadsDir := ""
 	fallbackHasDB := false
 	if repoRoot != "" {
@@ -549,10 +567,15 @@ func FindBeadsDirFrom(startDir string) string {
 		if info, err := os.Stat(beadsDir); err == nil && info.IsDir() {
 			resolved := FollowRedirect(beadsDir)
 			isWorktreeRoot := repoRoot != "" && utils.PathsEqual(dir, repoRoot)
+			isJJSecondaryRoot := jjSecondaryRoot != "" && utils.PathsEqual(dir, jjSecondaryRoot)
 			if isWorktreeRoot && fallbackHasDB && !hasBeadsDatabase(resolved) {
 				// A worktree root can contain tracked .beads metadata without
 				// owning the ignored database directory. Match FindBeadsDir by
 				// preferring the shared worktree database in that case.
+			} else if isJJSecondaryRoot && jjPrimaryHasDB && !hasBeadsDatabase(resolved) {
+				// A jj secondary workspace can likewise contain inherited
+				// .beads metadata without the ignored database directory.
+				// Match FindBeadsDir by preferring the primary workspace DB.
 			} else if hasBeadsProjectFiles(resolved) {
 				return resolved
 			}
@@ -572,6 +595,10 @@ func FindBeadsDirFrom(startDir string) string {
 				return resolved
 			}
 		}
+	}
+
+	if jjPrimaryBeadsDir != "" {
+		return jjPrimaryBeadsDir
 	}
 
 	return ""

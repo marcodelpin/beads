@@ -660,6 +660,17 @@ func TestFindBeadsDir_JJSecondaryWithInheritedArtifacts(t *testing.T) {
 	if resultResolved != primaryBeadsDirResolved {
 		t.Errorf("FindBeadsDir() = %q, want primary workspace .beads %q", result, primaryBeadsDir)
 	}
+
+	fromResult := FindBeadsDirFrom(secondaryDir)
+	fromResultResolved, _ := filepath.EvalSymlinks(fromResult)
+	if fromResultResolved == secondaryBeadsDirResolved {
+		t.Fatalf("FindBeadsDirFrom() returned secondary workspace's inherited .beads/ (%q); "+
+			"expected primary workspace's .beads/ (%q).",
+			fromResult, primaryBeadsDir)
+	}
+	if fromResultResolved != primaryBeadsDirResolved {
+		t.Errorf("FindBeadsDirFrom() = %q, want primary workspace .beads %q", fromResult, primaryBeadsDir)
+	}
 }
 
 // TestFindBeadsDir_JJSecondarySeparateDBPreservesLocal verifies that when a jj
@@ -749,6 +760,13 @@ func TestFindBeadsDir_JJSecondarySeparateDBPreservesLocal(t *testing.T) {
 	if resultResolved != secondaryBeadsDirResolved {
 		t.Errorf("FindBeadsDir() = %q, want secondary workspace .beads %q (separate-DB mode)",
 			result, secondaryBeadsDir)
+	}
+
+	fromResult := FindBeadsDirFrom(secondaryDir)
+	fromResultResolved, _ := filepath.EvalSymlinks(fromResult)
+	if fromResultResolved != secondaryBeadsDirResolved {
+		t.Errorf("FindBeadsDirFrom() = %q, want secondary workspace .beads %q (separate-DB mode)",
+			fromResult, secondaryBeadsDir)
 	}
 }
 
