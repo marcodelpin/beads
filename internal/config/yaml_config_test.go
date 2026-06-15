@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 func TestIsYamlOnlyKey(t *testing.T) {
@@ -137,6 +138,106 @@ func TestUpdateYamlKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateYamlKeyNested(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		key      string
+		value    string
+		wantBool *bool
+		wantStr  string
+	}{
+		{
+			name:     "update existing nested leaf",
+			content:  "metrics:\n  disabled: false\n  endpoint: https://example.com\n",
+			key:      "metrics.disabled",
+			value:    "true",
+			wantBool: boolPtr(true),
+		},
+		{
+			name:    "update string leaf under existing block",
+			content: "metrics:\n  disabled: false\n  endpoint: https://example.com\n",
+			key:     "metrics.endpoint",
+			value:   "https://updated.example.com",
+			wantStr: "https://updated.example.com",
+		},
+		{
+			name:     "create missing leaf under existing block",
+			content:  "metrics:\n  endpoint: https://example.com\n",
+			key:      "metrics.disabled",
+			value:    "true",
+			wantBool: boolPtr(true),
+		},
+		{
+			name:     "create entire block when parent missing",
+			content:  "other: value\n",
+			key:      "metrics.disabled",
+			value:    "true",
+			wantBool: boolPtr(true),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := updateYamlKey(tt.content, tt.key, tt.value)
+			if err != nil {
+				t.Fatalf("updateYamlKey() error = %v", err)
+			}
+
+			var parsed map[string]interface{}
+			if err := yaml.Unmarshal([]byte(got), &parsed); err != nil {
+				t.Fatalf("result is not valid YAML: %v\n%s", err, got)
+			}
+
+			parts := strings.Split(tt.key, ".")
+			leaf := walkMap(parsed, parts)
+			if leaf == nil {
+				t.Fatalf("key %q not found after update\nresult:\n%s", tt.key, got)
+			}
+			if tt.wantBool != nil {
+				b, ok := leaf.(bool)
+				if !ok {
+					t.Fatalf("leaf is not bool: %T %v\nresult:\n%s", leaf, leaf, got)
+				}
+				if b != *tt.wantBool {
+					t.Errorf("leaf = %v, want %v\nresult:\n%s", b, *tt.wantBool, got)
+				}
+			}
+			if tt.wantStr != "" {
+				s, ok := leaf.(string)
+				if !ok {
+					t.Fatalf("leaf is not string: %T %v\nresult:\n%s", leaf, leaf, got)
+				}
+				if s != tt.wantStr {
+					t.Errorf("leaf = %q, want %q\nresult:\n%s", s, tt.wantStr, got)
+				}
+			}
+
+			if strings.Contains(got, tt.key+":") && !strings.Contains(tt.content, tt.key+":") {
+				t.Errorf("result contains flat dotted key %q (should have updated nested form instead)\n%s",
+					tt.key, got)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func walkMap(m map[string]interface{}, parts []string) interface{} {
+	var cur interface{} = m
+	for _, p := range parts {
+		mm, ok := cur.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		cur, ok = mm[p]
+		if !ok {
+			return nil
+		}
+	}
+	return cur
 }
 
 func TestFormatYamlValue(t *testing.T) {

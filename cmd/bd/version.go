@@ -26,7 +26,7 @@ var (
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		commit := resolveCommitHash()
 		branch := resolveBranch()
 
@@ -41,7 +41,9 @@ var versionCmd = &cobra.Command{
 			if branch != "" {
 				result["branch"] = branch
 			}
-			outputJSON(result)
+			if err := outputJSON(result); err != nil {
+				return err
+			}
 		} else {
 			if commit != "" && branch != "" {
 				fmt.Printf("bd version %s (%s: %s@%s)\n", Version, Build, branch, shortCommit(commit))
@@ -60,6 +62,7 @@ var versionCmd = &cobra.Command{
 			}
 			fmt.Fprintf(os.Stderr, "The first one is being used. Remove duplicates to avoid confusion.\n")
 		}
+		return nil
 	},
 }
 

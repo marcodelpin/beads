@@ -8,6 +8,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
 jobs:
   detect-ci-tier:
     name: Detect CI tier

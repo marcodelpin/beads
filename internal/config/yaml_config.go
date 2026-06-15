@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // YamlOnlyKeys are configuration keys that must be stored in config.yaml
@@ -92,7 +94,7 @@ func IsYamlOnlyKey(key string) bool {
 	}
 
 	// Check prefix matches for nested keys
-	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation."}
+	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics."}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(key, prefix) {
 			return true
@@ -232,6 +234,56 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 		return fmt.Errorf("failed to stat config.yaml: %w", err)
 	}
 
+	return setYamlConfigAtPath(configPath, key, value)
+}
+
+var userGlobalKeyPrefixes = []string{"metrics."}
+
+func IsUserGlobalKey(key string) bool {
+	for _, prefix := range userGlobalKeyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func UnsetUserYamlConfig(key string) error {
+	configPath := UserConfigYamlPath()
+	normalizedKey := normalizeYamlKey(key)
+
+	content, err := os.ReadFile(configPath) //nolint:gosec // configPath is from UserConfigYamlPath
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read user config.yaml: %w", err)
+	}
+
+	newContent := commentOutYamlKey(string(content), normalizedKey)
+
+	if err := os.WriteFile(configPath, []byte(newContent), 0o644); err != nil { //nolint:gosec // configPath is from UserConfigYamlPath
+		return fmt.Errorf("failed to write user config.yaml: %w", err)
+	}
+
+	return nil
+}
+
+func SetUserYamlConfig(key, value string) error {
+	if err := validateYamlConfigValue(key, value); err != nil {
+		return err
+	}
+	configPath := UserConfigYamlPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return fmt.Errorf("failed to create user config directory: %w", err)
+	}
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if err := os.WriteFile(configPath, []byte{}, 0o600); err != nil {
+			return fmt.Errorf("failed to create user config.yaml: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to stat user config.yaml: %w", err)
+	}
 	return setYamlConfigAtPath(configPath, key, value)
 }
 
@@ -403,7 +455,14 @@ func findProjectBeadsDir() string {
 //
 //nolint:unparam // error return kept for future validation
 func updateYamlKey(content, key, value string) (string, error) {
-	// Format the value appropriately
+	if strings.Contains(key, ".") {
+		if updated, ok, err := updateNestedYamlKey(content, key, value); err != nil {
+			return "", err
+		} else if ok {
+			return updated, nil
+		}
+	}
+
 	formattedValue := formatYamlValue(value)
 	newLine := fmt.Sprintf("%s: %s", key, formattedValue)
 
@@ -444,10 +503,111 @@ func updateYamlKey(content, key, value string) (string, error) {
 	return strings.Join(result, "\n"), nil
 }
 
-// commentOutYamlKey comments out a key in yaml content by prefixing the line with "# ".
-// If the key is already commented or not found, the content is returned unchanged.
+func updateNestedYamlKey(content, key, value string) (string, bool, error) {
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		return "", false, nil
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return "", false, err
+	}
+	if len(root.Content) == 0 {
+		return "", false, nil
+	}
+	mapping := root.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return "", false, nil
+	}
+
+	if findMappingChild(mapping, key) != -1 {
+		return "", false, nil
+	}
+
+	leaf, ok := findOrCreateNestedScalar(mapping, parts)
+	if !ok {
+		return "", false, nil
+	}
+
+	leaf.Kind = yaml.ScalarNode
+	leaf.Tag = ""
+	leaf.Style = scalarStyleFor(value)
+	leaf.Value = value
+
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return "", false, err
+	}
+	return string(out), true, nil
+}
+
+func findOrCreateNestedScalar(mapping *yaml.Node, parts []string) (*yaml.Node, bool) {
+	current := mapping
+	for i, part := range parts {
+		if current.Kind != yaml.MappingNode {
+			return nil, false
+		}
+		idx := findMappingChild(current, part)
+		isLeaf := i == len(parts)-1
+		if idx == -1 {
+			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: part}
+			var valNode *yaml.Node
+			if isLeaf {
+				valNode = &yaml.Node{Kind: yaml.ScalarNode}
+			} else {
+				valNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			}
+			current.Content = append(current.Content, keyNode, valNode)
+			if isLeaf {
+				return valNode, true
+			}
+			current = valNode
+			continue
+		}
+		child := current.Content[idx+1]
+		if isLeaf {
+			return child, true
+		}
+		if child.Kind != yaml.MappingNode {
+			return nil, false
+		}
+		current = child
+	}
+	return nil, false
+}
+
+func findMappingChild(mapping *yaml.Node, name string) int {
+	for i := 0; i < len(mapping.Content); i += 2 {
+		k := mapping.Content[i]
+		if k.Kind == yaml.ScalarNode && k.Value == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func scalarStyleFor(value string) yaml.Style {
+	if value == "" {
+		return yaml.DoubleQuotedStyle
+	}
+	if _, err := strconv.ParseBool(value); err == nil {
+		return 0
+	}
+	if _, err := strconv.ParseFloat(value, 64); err == nil {
+		return 0
+	}
+	switch value {
+	case "null", "Null", "NULL", "~", "yes", "no", "on", "off":
+		return yaml.DoubleQuotedStyle
+	}
+	if strings.ContainsAny(value, ":#\n\"'") || strings.HasPrefix(value, " ") || strings.HasSuffix(value, " ") {
+		return yaml.DoubleQuotedStyle
+	}
+	return 0
+}
+
 func commentOutYamlKey(content, key string) string {
-	// Match the key line (not already commented)
 	keyPattern := regexp.MustCompile(`^(\s*)` + regexp.QuoteMeta(key) + `\s*:`)
 
 	var result []string

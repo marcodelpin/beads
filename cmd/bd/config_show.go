@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/metrics"
 )
 
 // configEntry represents a single configuration key with its effective value and source.
@@ -40,7 +41,14 @@ Examples:
   bd config show
   bd config show --json
   bd config show --source config.yaml`,
-	Run: func(cmd *cobra.Command, _ []string) {
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		evt := metrics.NewCommandEvent("config-show")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		sourceFilter, _ := cmd.Flags().GetString("source")
 
 		entries := collectConfigEntries()
@@ -50,16 +58,16 @@ Examples:
 		}
 
 		if jsonOutput {
-			outputJSON(entries)
-			return
+			return outputJSON(entries)
 		}
 
 		if len(entries) == 0 {
 			fmt.Println("No configuration found")
-			return
+			return nil
 		}
 
 		printConfigEntries(entries)
+		return nil
 	},
 }
 

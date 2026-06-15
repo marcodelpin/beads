@@ -9,6 +9,10 @@ on:
   # Allow manual trigger
   workflow_dispatch:
 
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
 jobs:
   detect-regression-need:
     name: Detect regression need
