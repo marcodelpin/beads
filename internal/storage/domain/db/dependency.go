@@ -193,6 +193,51 @@ func (r *dependencySQLRepositoryImpl) markDirectBlockedSource(ctx context.Contex
 	return err
 }
 
+func (r *dependencySQLRepositoryImpl) Delete(ctx context.Context, issueID, dependsOnID, actor string, opts domain.DepInsertOpts) (domain.DepDeleteResult, error) {
+	if issueID == "" || dependsOnID == "" {
+		return domain.DepDeleteResult{}, errors.New("db: DependencySQLRepository.Delete: issueID and dependsOnID must not be empty")
+	}
+	table := pickDepTable(opts.UseWispsTable)
+
+	var depType string
+	//nolint:gosec // G201: table and depTargetExpr are hardcoded constants
+	err := r.runner.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT type FROM %s WHERE issue_id = ? AND %s = ?", table, depTargetExpr),
+		issueID, dependsOnID,
+	).Scan(&depType)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return domain.DepDeleteResult{Found: false}, nil
+	case err != nil:
+		return domain.DepDeleteResult{}, fmt.Errorf("db: DependencySQLRepository.Delete: lookup type %s -> %s: %w", issueID, dependsOnID, err)
+	}
+
+	//nolint:gosec // G201: table and depTargetExpr are hardcoded constants
+	if _, err := r.runner.ExecContext(ctx,
+		fmt.Sprintf("DELETE FROM %s WHERE issue_id = ? AND %s = ?", table, depTargetExpr),
+		issueID, dependsOnID,
+	); err != nil {
+		return domain.DepDeleteResult{}, fmt.Errorf("db: DependencySQLRepository.Delete: %s -> %s: %w", issueID, dependsOnID, err)
+	}
+
+	dt := types.DependencyType(depType)
+	var affectedIssues, affectedWisps []string
+	var aerr error
+	if opts.UseWispsTable {
+		affectedIssues, affectedWisps, aerr = issueops.AffectedByDepChangeForWispInTx(ctx, r.runner, issueID, dependsOnID, dt)
+	} else {
+		affectedIssues, affectedWisps, aerr = issueops.AffectedByDepChangeInTx(ctx, r.runner, issueID, dependsOnID, dt)
+	}
+	if aerr != nil {
+		return domain.DepDeleteResult{}, fmt.Errorf("db: DependencySQLRepository.Delete: affected set: %w", aerr)
+	}
+	if err := issueops.RecomputeIsBlockedInTx(ctx, r.runner, affectedIssues, affectedWisps); err != nil {
+		return domain.DepDeleteResult{}, fmt.Errorf("db: DependencySQLRepository.Delete: recompute is_blocked: %w", err)
+	}
+
+	return domain.DepDeleteResult{Found: true, Type: dt, DependsOnID: dependsOnID}, nil
+}
+
 func (r *dependencySQLRepositoryImpl) HasCycle(ctx context.Context, issueID, dependsOnID string) (bool, error) {
 	if issueID == "" || dependsOnID == "" {
 		return false, errors.New("db: DependencySQLRepository.HasCycle: issueID and dependsOnID must not be empty")
