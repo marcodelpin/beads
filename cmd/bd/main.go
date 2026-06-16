@@ -1030,26 +1030,8 @@ var rootCmd = &cobra.Command{
 		dolt.ApplyCLIAutoStart(beadsDir, doltCfg)
 
 		if proxiedServerMode {
-			// Only commands with a proxied-server dispatch path may proceed:
-			// everything else reads the global store, which stays nil in this
-			// mode and would nil-panic mid-command (bd-6dnrw.44 item 1).
-			// Reject before spawning the proxy/dolt processes.
-			if !commandSupportsProxiedServer(cmd) {
-				FatalError("'bd %s' is not supported in proxied-server mode yet (supported: create, list, doctor, init; use 'bd list --ready' for ready work)", strings.TrimPrefix(cmd.CommandPath(), "bd "))
-			}
 			p, err := newProxiedServerUOWProvider(rootCtx, beadsDir)
 			if err != nil {
-				// #4259: same migrate-or-adopt UX as the dolt/embeddeddolt open
-				// paths when the remote-migrate gate refuses an in-place upgrade.
-				var gateErr *schema.RemoteMigrateGateError
-				if errors.As(err, &gateErr) {
-					if jsonOutput {
-						handleRemoteMigrateGateJSON(gateErr)
-					} else {
-						fmt.Fprint(os.Stderr, gateErr.UserMessage())
-					}
-					os.Exit(1)
-				}
 				FatalError("failed to open uow provider: %v", err)
 			}
 			uowProvider = p
@@ -1186,26 +1168,9 @@ var rootCmd = &cobra.Command{
 		} else {
 			// Dolt auto-commit: after a successful write command (and after final flush),
 			// create a Dolt commit so changes don't remain only in the working set.
-			// commandDidWrite is a fast-path hint, not the sole trigger: a write path
-			// that forgets to set it would otherwise leak its writes into the NEXT
-			// command's auto-commit with wrong attribution, so a dirty working set
-			// also triggers the commit (bd-6dnrw.11) — except after read-only and
-			// inspection commands, where the sweep would commit the very state the
-			// command exists to display, or fail outright on a read-only store
-			// (bd-578h9.7). Sweep commits are attributed as sweeps: the changes
-			// belong to an earlier command, not this one.
-			if !commandDidExplicitDoltCommit {
-				didWrite := commandDidWrite.Load()
-				sweep := !didWrite && !autoCommitSweepExempt(cmd) &&
-					workingSetHasUnflaggedWrites(rootCtx, cmd.Name())
-				if didWrite || sweep {
-					params := doltAutoCommitParams{Command: cmd.Name()}
-					if sweep {
-						params.MessageOverride = formatDoltSweepCommitMessage(cmd.Name(), getActor())
-					}
-					if err := maybeAutoCommit(rootCtx, params); err != nil {
-						FatalError("dolt auto-commit failed: %v", err)
-					}
+			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
+				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
+					FatalError("dolt auto-commit failed: %v", err)
 				}
 			}
 

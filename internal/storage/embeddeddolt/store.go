@@ -595,13 +595,7 @@ func (s *EmbeddedDoltStore) CLIDir() string {
 // implemented in version_control.go via versioncontrolops.
 
 func (s *EmbeddedDoltStore) CommitPending(ctx context.Context, actor string) (bool, error) {
-	// Best-effort descriptive message summarizing the accumulated working-set
-	// changes (bd-6dnrw.11); fall back to a generic one if the query fails.
 	msg := fmt.Sprintf("bd: commit pending changes by %s", actor)
-	_ = s.withConn(ctx, false, func(tx *sql.Tx) error {
-		msg = issueops.BuildBatchCommitMessage(ctx, tx, actor)
-		return nil
-	})
 	if err := s.Commit(ctx, msg); err != nil {
 		if issueops.IsNothingToCommitError(err) {
 			return false, nil
@@ -609,19 +603,6 @@ func (s *EmbeddedDoltStore) CommitPending(ctx context.Context, actor string) (bo
 		return false, err
 	}
 	return true, nil
-}
-
-// HasPendingChanges reports whether the working set has committable changes,
-// excluding dolt_ignore'd tables (e.g. wisp tables, which can sit dirty in
-// dolt_status indefinitely without being committable).
-func (s *EmbeddedDoltStore) HasPendingChanges(ctx context.Context) (bool, error) {
-	var pending bool
-	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
-		var err error
-		pending, err = issueops.HasPendingChanges(ctx, tx)
-		return err
-	})
-	return pending, err
 }
 
 // CommitExists is implemented in version_control.go via versioncontrolops.
