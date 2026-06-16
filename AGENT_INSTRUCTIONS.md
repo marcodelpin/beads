@@ -589,15 +589,16 @@ gh issue view 201
 ## Telemetry
 
 `bd` collects anonymous command-usage metrics. Each event is a `cli_command`
-record carrying only the command name and low-cardinality attributes (e.g.
-`dolt_mode`), keyed by a machine-derived, HMAC-protected distinct ID. No email,
-repo path, remote URL, issue content, or user-supplied strings are collected.
-Events are written under `~/.beads/eventsData` and POSTed to
+record carrying only the command name; each batch also carries the bd version
+and OS platform, keyed by a machine-derived, HMAC-protected distinct ID. No
+email, repo path, remote URL, issue content, or user-supplied strings are
+collected. Events are written under `~/.beads/eventsData` and POSTed to
 `https://gastownhall-eventsapi.com/mp/collect`.
 
-Metrics are enabled by default (opt-out). To disable persistently:
-`bd config set metrics.disabled true`. For a one-off override:
-`BD_DISABLE_METRICS=1`.
+Metrics are enabled by default (opt-out). The friendliest way to see or change
+them is `bd metrics` (`bd metrics on` / `bd metrics off` / `bd metrics example`),
+which takes effect on the next command with no restart. `BD_DISABLE_METRICS=1`
+still works as a one-off, shell-scoped override.
 
 ## Questions?
 

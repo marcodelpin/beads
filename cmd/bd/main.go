@@ -657,6 +657,11 @@ var rootCmd = &cobra.Command{
 			return nil
 		}
 
+		// One-time friendly heads-up about anonymous usage metrics. No-op after
+		// the first run; suppressed in JSON/hook/quiet/metrics contexts so it
+		// can never corrupt machine-readable output.
+		maybeShowMetricsFirstRunNotice(cmd)
+
 		// Start root span for this command. rootCtx now carries the span, so
 		// all downstream DB and AI calls become child spans automatically.
 		rootCtx, commandSpan = telemetry.Tracer("bd").Start(rootCtx, "bd.command."+cmd.Name(),
@@ -777,6 +782,7 @@ var rootCmd = &cobra.Command{
 			"human",
 			"init",
 			"merge",
+			"metrics", // config-only: status/on/off/example never touch the DB
 			"onboard",
 			"powershell",
 			"prime",
