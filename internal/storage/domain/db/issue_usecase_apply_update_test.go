@@ -15,6 +15,7 @@ func (s *testSuite) TestIssueUseCase_Claim() {
 	s.Run("ClosedWrapsErrNotClaimable", s.iucClaimClosed)
 	s.Run("EmptyIDReturnsError", s.iucClaimEmptyID)
 	s.Run("EmptyActorReturnsError", s.iucClaimEmptyActor)
+	s.Run("ClaimWispWritesToWispsTable", s.iucClaimWispWritesToWispsTable)
 }
 
 func (s *testSuite) TestIssueUseCase_ApplyUpdate() {
@@ -27,6 +28,8 @@ func (s *testSuite) TestIssueUseCase_ApplyUpdate() {
 	s.Run("ReparentReplacesParent", s.iucApplyUpdateReparent)
 	s.Run("ReparentEmptyUnparents", s.iucApplyUpdateUnparent)
 	s.Run("NoSpecBitsIsHarmless", s.iucApplyUpdateEmptySpec)
+	s.Run("WispIDDispatchesToWispTables", s.iucApplyUpdateDispatchesToWisp)
+	s.Run("ClaimAgainstWispDispatches", s.iucClaimDispatchesToWisp)
 }
 
 func (s *testSuite) seedOpenIssue(id string) {
@@ -207,4 +210,71 @@ func (s *testSuite) iucApplyUpdateEmptySpec() {
 	updated, err := s.issueUseCase().ApplyUpdate(s.Ctx(), "bd-iuc-au-empty", domain.UpdateSpec{}, "tester")
 	s.Require().NoError(err)
 	s.Equal("bd-iuc-au-empty", updated.ID)
+}
+
+func (s *testSuite) seedOpenWisp(id string) {
+	r := s.issueRepo()
+	w := newTestIssue(id, "seed wisp")
+	w.Ephemeral = true
+	s.Require().NoError(r.Insert(s.Ctx(), w, "seeder", domain.InsertIssueOpts{UseWispsTable: true}))
+}
+
+func (s *testSuite) iucApplyUpdateDispatchesToWisp() {
+	s.seedOpenWisp("bd-iuc-au-wisp-c")
+	s.seedOpenWisp("bd-iuc-au-wisp-newp")
+	depRepo := NewDependencySQLRepository(s.Runner())
+	s.Require().NoError(depRepo.Insert(s.Ctx(),
+		&types.Dependency{IssueID: "bd-iuc-au-wisp-c", DependsOnID: "bd-iuc-au-wisp-newp", Type: types.DepParentChild},
+		"seeder", domain.DepInsertOpts{UseWispsTable: true}))
+
+	setLabels := []string{"alpha", "beta"}
+	reparent := "bd-iuc-au-wisp-newp"
+	updated, err := s.issueUseCase().ApplyUpdate(s.Ctx(), "bd-iuc-au-wisp-c", domain.UpdateSpec{
+		Fields:    map[string]any{"title": "wisp renamed"},
+		SetLabels: &setLabels,
+		Reparent:  &reparent,
+	}, "tester")
+	s.Require().NoError(err)
+	s.Equal("wisp renamed", updated.Title)
+
+	wispRow, err := s.issueRepo().Get(s.Ctx(), "bd-iuc-au-wisp-c", domain.IssueTableOpts{UseWispsTable: true})
+	s.Require().NoError(err)
+	s.Equal("wisp renamed", wispRow.Title, "update must land in wisps table")
+
+	wispLabels, err := s.labelUseCase().GetWispLabels(s.Ctx(), "bd-iuc-au-wisp-c")
+	s.Require().NoError(err)
+	s.Equal([]string{"alpha", "beta"}, wispLabels)
+
+	var issueLabelCount int
+	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
+		"SELECT COUNT(*) FROM labels WHERE issue_id = ?", "bd-iuc-au-wisp-c").Scan(&issueLabelCount))
+	s.Equal(0, issueLabelCount, "wisp-dispatched ApplyUpdate must not write to issues label table")
+}
+
+func (s *testSuite) iucClaimWispWritesToWispsTable() {
+	s.seedOpenWisp("bd-iuc-clw-wisp")
+
+	res, err := s.issueUseCase().ClaimWisp(s.Ctx(), "bd-iuc-clw-wisp", "alice")
+	s.Require().NoError(err)
+	s.False(res.AlreadyClaimed)
+
+	wispRow, err := s.issueRepo().Get(s.Ctx(), "bd-iuc-clw-wisp", domain.IssueTableOpts{UseWispsTable: true})
+	s.Require().NoError(err)
+	s.Equal("alice", wispRow.Assignee)
+	s.Equal(types.StatusInProgress, wispRow.Status)
+}
+
+func (s *testSuite) iucClaimDispatchesToWisp() {
+	s.seedOpenWisp("bd-iuc-au-clw-wisp")
+
+	updated, err := s.issueUseCase().ApplyUpdate(s.Ctx(), "bd-iuc-au-clw-wisp", domain.UpdateSpec{
+		Claim: true,
+	}, "alice")
+	s.Require().NoError(err)
+	s.Equal("alice", updated.Assignee)
+	s.Equal(types.StatusInProgress, updated.Status)
+
+	wispRow, err := s.issueRepo().Get(s.Ctx(), "bd-iuc-au-clw-wisp", domain.IssueTableOpts{UseWispsTable: true})
+	s.Require().NoError(err)
+	s.Equal("alice", wispRow.Assignee, "ApplyUpdate's Claim branch must route to ClaimWisp for a wisp id")
 }

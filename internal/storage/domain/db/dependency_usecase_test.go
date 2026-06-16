@@ -19,6 +19,10 @@ func (s *testSuite) TestDependencyUseCase() {
 		s.Run("EmptyNewParentUnparents", s.ducReparentUnparent)
 		s.Run("SameParentIsNoop", s.ducReparentSameParent)
 	})
+	s.Run("Wisp", func() {
+		s.Run("RemoveWispDependencyRoutesToWispDeps", s.ducRemoveWispDependencyRoutes)
+		s.Run("ReparentWispRoutesToWispDeps", s.ducReparentWispRoutes)
+	})
 }
 
 func (s *testSuite) depUseCase() domain.DependencyUseCase {
@@ -123,4 +127,51 @@ func (s *testSuite) ducReparentSameParent() {
 		"SELECT COUNT(*) FROM dependencies WHERE issue_id = ? AND depends_on_issue_id = ? AND type = 'parent-child'",
 		"bd-duc-rp-same-c", "bd-duc-rp-same-p").Scan(&count))
 	s.Equal(1, count)
+}
+
+func (s *testSuite) currentWispParent(childID string) string {
+	res, err := s.depUseCase().ListByWispIDs(s.Ctx(), []string{childID}, domain.DepListFilter{
+		Types:     []types.DependencyType{types.DepParentChild},
+		Direction: domain.DepDirectionOut,
+	})
+	s.Require().NoError(err)
+	for _, dep := range res.Outgoing[childID] {
+		if dep.Type == types.DepParentChild {
+			return dep.DependsOnID
+		}
+	}
+	return ""
+}
+
+func (s *testSuite) ducRemoveWispDependencyRoutes() {
+	s.seedWispRow("bd-duc-rwd-a")
+	s.seedWispRow("bd-duc-rwd-b")
+	wispDepRepo := NewDependencySQLRepository(s.Runner())
+	s.Require().NoError(wispDepRepo.Insert(s.Ctx(),
+		newDep("bd-duc-rwd-a", "bd-duc-rwd-b", types.DepBlocks), "tester", domain.DepInsertOpts{UseWispsTable: true}))
+
+	s.Require().NoError(s.depUseCase().RemoveWispDependency(s.Ctx(), "bd-duc-rwd-a", "bd-duc-rwd-b", "tester"))
+
+	wispRes, err := s.depUseCase().ListByWispIDs(s.Ctx(), []string{"bd-duc-rwd-a"},
+		domain.DepListFilter{Direction: domain.DepDirectionOut})
+	s.Require().NoError(err)
+	s.Empty(wispRes.Outgoing["bd-duc-rwd-a"])
+}
+
+func (s *testSuite) ducReparentWispRoutes() {
+	s.seedWispRow("bd-duc-rpw-c")
+	s.seedWispRow("bd-duc-rpw-old")
+	s.seedWispRow("bd-duc-rpw-new")
+	depRepo := NewDependencySQLRepository(s.Runner())
+	s.Require().NoError(depRepo.Insert(s.Ctx(),
+		newDep("bd-duc-rpw-c", "bd-duc-rpw-old", types.DepParentChild), "seeder", domain.DepInsertOpts{UseWispsTable: true}))
+
+	s.Require().NoError(s.depUseCase().ReparentWisp(s.Ctx(), "bd-duc-rpw-c", "bd-duc-rpw-new", "tester"))
+
+	s.Equal("bd-duc-rpw-new", s.currentWispParent("bd-duc-rpw-c"))
+
+	var issuesCount int
+	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
+		"SELECT COUNT(*) FROM dependencies WHERE issue_id = ?", "bd-duc-rpw-c").Scan(&issuesCount))
+	s.Equal(0, issuesCount, "wisp-routed Reparent must not touch the issues dep table")
 }

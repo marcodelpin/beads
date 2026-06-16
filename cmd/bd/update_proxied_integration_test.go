@@ -875,6 +875,205 @@ func waitForMarker(path string, timeout time.Duration) (string, error) {
 	}
 }
 
+func TestProxiedServerUpdateWisp(t *testing.T) {
+	requireProxiedServerEnv(t)
+	bd := buildEmbeddedBD(t)
+
+	t.Run("wisp_field_update_routes_to_wisps_table", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uwf")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp field test", "--ephemeral")
+		db := openProxiedDB(t, p)
+		assertRowExists(t, db, "wisps", wisp.ID)
+		assertRowAbsent(t, db, "issues", wisp.ID)
+
+		updated := bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--title", "wisp renamed", "-p", "0")
+		if updated.Title != "wisp renamed" {
+			t.Errorf("title: got %q, want %q", updated.Title, "wisp renamed")
+		}
+		if updated.Priority != 0 {
+			t.Errorf("priority: got %d, want 0", updated.Priority)
+		}
+
+		var wispTitle string
+		var wispPriority int
+		s := db.QueryRowContext(context.Background(),
+			"SELECT title, priority FROM wisps WHERE id = ?", wisp.ID).Scan(&wispTitle, &wispPriority)
+		if s != nil {
+			t.Fatalf("read wisp row: %v", s)
+		}
+		if wispTitle != "wisp renamed" || wispPriority != 0 {
+			t.Errorf("wisps row: title=%q priority=%d, want (wisp renamed, 0)", wispTitle, wispPriority)
+		}
+	})
+
+	t.Run("wisp_status_close_routes_to_wisps_table", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uws")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp close test", "--ephemeral")
+
+		bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "-s", "closed")
+
+		db := openProxiedDB(t, p)
+		var status string
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT status FROM wisps WHERE id = ?", wisp.ID).Scan(&status); err != nil {
+			t.Fatalf("read wisp status: %v", err)
+		}
+		if status != "closed" {
+			t.Errorf("wisp status: got %q, want closed", status)
+		}
+	})
+
+	t.Run("wisp_labels_route_to_wisp_labels", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uwl")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp labels test", "--ephemeral")
+
+		bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--add-label", "alpha,beta")
+
+		db := openProxiedDB(t, p)
+		wispLabels := readLabels(t, db, "wisp_labels", wisp.ID)
+		if got := strings.Join(wispLabels, ","); got != "alpha,beta" && got != "beta,alpha" {
+			t.Errorf("wisp_labels: got %v, want [alpha beta] (any order)", wispLabels)
+		}
+		issueLabels := readLabels(t, db, "labels", wisp.ID)
+		if len(issueLabels) != 0 {
+			t.Errorf("labels table must be empty for wisp ids, got %v", issueLabels)
+		}
+	})
+
+	t.Run("wisp_set_labels_diffs_against_wisp_labels", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uwsl")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp set-labels test", "--ephemeral")
+
+		bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--add-label", "keep,drop")
+		bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--set-labels", "keep,add")
+
+		db := openProxiedDB(t, p)
+		got := strings.Join(readLabels(t, db, "wisp_labels", wisp.ID), ",")
+		if got != "add,keep" && got != "keep,add" {
+			t.Errorf("wisp_labels after set-labels: got %s, want [add keep] (any order)", got)
+		}
+	})
+
+	t.Run("wisp_claim_routes_to_wisps_table", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uwc")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp claim test", "--ephemeral")
+
+		updated := bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--claim", "--actor", "alice")
+		if updated.Assignee != "alice" {
+			t.Errorf("assignee: got %q, want alice", updated.Assignee)
+		}
+		if updated.Status != types.StatusInProgress {
+			t.Errorf("status: got %q, want in_progress", updated.Status)
+		}
+
+		db := openProxiedDB(t, p)
+		var assignee, status string
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT assignee, status FROM wisps WHERE id = ?", wisp.ID).Scan(&assignee, &status); err != nil {
+			t.Fatalf("read wisps row: %v", err)
+		}
+		if assignee != "alice" || status != "in_progress" {
+			t.Errorf("wisps row: assignee=%q status=%q, want (alice, in_progress)", assignee, status)
+		}
+	})
+
+	t.Run("wisp_reparent_routes_to_wisp_dependencies", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uwr")
+		parent := bdProxiedCreate(t, bd, p.dir, "Wisp parent", "--ephemeral")
+		child := bdProxiedCreate(t, bd, p.dir, "Wisp child", "--ephemeral")
+
+		bdProxiedUpdateOne(t, bd, p.dir, child.ID, "--parent", parent.ID)
+
+		db := openProxiedDB(t, p)
+		var wispCount, permCount int
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM wisp_dependencies WHERE issue_id = ? AND depends_on_wisp_id = ? AND type = 'parent-child'",
+			child.ID, parent.ID).Scan(&wispCount); err != nil {
+			t.Fatalf("read wisp_dependencies: %v", err)
+		}
+		if wispCount != 1 {
+			t.Errorf("wisp_dependencies: got %d parent-child rows, want 1", wispCount)
+		}
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM dependencies WHERE issue_id = ?", child.ID).Scan(&permCount); err != nil {
+			t.Fatalf("read dependencies: %v", err)
+		}
+		if permCount != 0 {
+			t.Errorf("dependencies (issues table) must be empty for wisp reparent, got %d", permCount)
+		}
+	})
+
+	t.Run("wisp_metadata_routes_to_wisps_table", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uwm")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp metadata test", "--ephemeral")
+
+		bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--metadata", `{"src":"wisp"}`)
+
+		db := openProxiedDB(t, p)
+		var raw sql.NullString
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT metadata FROM wisps WHERE id = ?", wisp.ID).Scan(&raw); err != nil {
+			t.Fatalf("read wisp metadata: %v", err)
+		}
+		if !raw.Valid {
+			t.Fatalf("wisp metadata: NULL, want JSON")
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(raw.String), &got); err != nil {
+			t.Fatalf("parse wisp metadata %q: %v", raw.String, err)
+		}
+		if got["src"] != "wisp" {
+			t.Errorf("metadata[src]: got %v, want %q", got["src"], "wisp")
+		}
+	})
+}
+
+func assertRowExists(t *testing.T, db *sql.DB, table, id string) {
+	t.Helper()
+	var count int
+	q := "SELECT COUNT(*) FROM " + table + " WHERE id = ?"
+	if err := db.QueryRowContext(context.Background(), q, id).Scan(&count); err != nil {
+		t.Fatalf("read %s for %s: %v", table, id, err)
+	}
+	if count != 1 {
+		t.Fatalf("%s row %s: count=%d, want 1", table, id, count)
+	}
+}
+
+func assertRowAbsent(t *testing.T, db *sql.DB, table, id string) {
+	t.Helper()
+	var count int
+	q := "SELECT COUNT(*) FROM " + table + " WHERE id = ?"
+	if err := db.QueryRowContext(context.Background(), q, id).Scan(&count); err != nil {
+		t.Fatalf("read %s for %s: %v", table, id, err)
+	}
+	if count != 0 {
+		t.Fatalf("%s row %s: count=%d, want 0", table, id, count)
+	}
+}
+
+func readLabels(t *testing.T, db *sql.DB, table, id string) []string {
+	t.Helper()
+	q := "SELECT label FROM " + table + " WHERE issue_id = ? ORDER BY label"
+	rows, err := db.QueryContext(context.Background(), q, id)
+	if err != nil {
+		t.Fatalf("query %s for %s: %v", table, id, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			t.Fatalf("scan %s: %v", table, err)
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iter %s: %v", table, err)
+	}
+	return out
+}
+
 func TestProxiedServerUpdateConcurrentClaim(t *testing.T) {
 	requireProxiedServerEnv(t)
 	bd := buildEmbeddedBD(t)

@@ -153,6 +153,7 @@ type IssueUseCase interface {
 	CreateWisp(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateWisps(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateWisp(ctx context.Context, id string, updates map[string]any, actor string) error
+	ClaimWisp(ctx context.Context, id, actor string) (ClaimResult, error)
 	ApplyWispGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
 }
 
@@ -259,13 +260,21 @@ func (u *issueUseCaseImpl) update(ctx context.Context, id string, updates map[st
 }
 
 func (u *issueUseCaseImpl) ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error) {
+	return u.claim(ctx, id, actor, false)
+}
+
+func (u *issueUseCaseImpl) ClaimWisp(ctx context.Context, id, actor string) (ClaimResult, error) {
+	return u.claim(ctx, id, actor, true)
+}
+
+func (u *issueUseCaseImpl) claim(ctx context.Context, id, actor string, useWisp bool) (ClaimResult, error) {
 	if id == "" {
 		return ClaimResult{}, fmt.Errorf("claim: id must not be empty")
 	}
 	if actor == "" {
 		return ClaimResult{}, fmt.Errorf("claim: actor must not be empty")
 	}
-	row, err := u.issueRepo.Claim(ctx, id, actor, IssueTableOpts{})
+	row, err := u.issueRepo.Claim(ctx, id, actor, IssueTableOpts{UseWispsTable: useWisp})
 	if err != nil {
 		return ClaimResult{}, fmt.Errorf("claim %s: %w", id, err)
 	}
@@ -286,46 +295,103 @@ func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec Upda
 		return nil, fmt.Errorf("ApplyUpdate: id must not be empty")
 	}
 
+	useWisp, err := u.isWispID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("ApplyUpdate %s: %w", id, err)
+	}
+
 	if spec.Claim {
-		if _, err := u.ClaimIssue(ctx, id, actor); err != nil {
-			return nil, err
+		if useWisp {
+			if _, err := u.ClaimWisp(ctx, id, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := u.ClaimIssue(ctx, id, actor); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	if len(spec.Fields) > 0 {
-		if err := u.UpdateIssue(ctx, id, spec.Fields, actor); err != nil {
-			return nil, err
+		if useWisp {
+			if err := u.UpdateWisp(ctx, id, spec.Fields, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.UpdateIssue(ctx, id, spec.Fields, actor); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	if spec.SetLabels != nil {
-		if err := u.labelUC.SetLabels(ctx, id, *spec.SetLabels, actor); err != nil {
-			return nil, err
-		}
-	} else {
-		if len(spec.AddLabels) > 0 {
-			if err := u.labelUC.AddLabels(ctx, id, spec.AddLabels, actor); err != nil {
+		if useWisp {
+			if err := u.labelUC.SetWispLabels(ctx, id, *spec.SetLabels, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.labelUC.SetLabels(ctx, id, *spec.SetLabels, actor); err != nil {
 				return nil, err
 			}
 		}
+	} else {
+		if len(spec.AddLabels) > 0 {
+			if useWisp {
+				if err := u.labelUC.AddWispLabels(ctx, id, spec.AddLabels, actor); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := u.labelUC.AddLabels(ctx, id, spec.AddLabels, actor); err != nil {
+					return nil, err
+				}
+			}
+		}
 		if len(spec.RemoveLabels) > 0 {
-			if err := u.labelUC.RemoveLabels(ctx, id, spec.RemoveLabels, actor); err != nil {
-				return nil, err
+			if useWisp {
+				if err := u.labelUC.RemoveWispLabels(ctx, id, spec.RemoveLabels, actor); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := u.labelUC.RemoveLabels(ctx, id, spec.RemoveLabels, actor); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 
 	if spec.Reparent != nil {
-		if err := u.depUC.Reparent(ctx, id, *spec.Reparent, actor); err != nil {
-			return nil, err
+		if useWisp {
+			if err := u.depUC.ReparentWisp(ctx, id, *spec.Reparent, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.depUC.Reparent(ctx, id, *spec.Reparent, actor); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	issue, err := u.GetIssue(ctx, id)
+	var issue *types.Issue
+	if useWisp {
+		issue, err = u.GetWisp(ctx, id)
+	} else {
+		issue, err = u.GetIssue(ctx, id)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ApplyUpdate: re-fetch %s: %w", id, err)
 	}
 	return issue, nil
+}
+
+func (u *issueUseCaseImpl) isWispID(ctx context.Context, id string) (bool, error) {
+	found, err := u.issueRepo.Exists(ctx, id, IssueTableOpts{UseWispsTable: true})
+	if err != nil {
+		if dberrors.IsTableNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("probe wisps table: %w", err)
+	}
+	return found, nil
 }
 
 func (u *issueUseCaseImpl) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error) {

@@ -26,6 +26,12 @@ func (s *testSuite) TestLabelUseCase() {
 		s.Run("SameSetIsNoop", s.lucSetLabelsSameSet)
 		s.Run("EmptyDesiredRemovesAll", s.lucSetLabelsEmptyClears)
 	})
+	s.Run("Wisp", func() {
+		s.Run("RemoveWispLabelRoutesToWispLabels", s.lucRemoveWispLabelRoutes)
+		s.Run("AddWispLabelsRoutesToWispLabels", s.lucAddWispLabelsRoutes)
+		s.Run("RemoveWispLabelsRoutesToWispLabels", s.lucRemoveWispLabelsRoutes)
+		s.Run("SetWispLabelsDiffsWispsTable", s.lucSetWispLabelsDiffs)
+	})
 }
 
 func (s *testSuite) labelUseCase() domain.LabelUseCase {
@@ -153,4 +159,54 @@ func (s *testSuite) lucSetLabelsEmptyClears() {
 	out, err := uc.GetLabels(s.Ctx(), "bd-luc-sl-clear")
 	s.Require().NoError(err)
 	s.Empty(out)
+}
+
+func (s *testSuite) lucRemoveWispLabelRoutes() {
+	s.seedWispRow("bd-lwc-rwl")
+	uc := s.labelUseCase()
+	s.Require().NoError(uc.AddWispLabel(s.Ctx(), "bd-lwc-rwl", "drop", "tester"))
+
+	s.Require().NoError(uc.RemoveWispLabel(s.Ctx(), "bd-lwc-rwl", "drop", "tester"))
+
+	wispLabels, err := uc.GetWispLabels(s.Ctx(), "bd-lwc-rwl")
+	s.Require().NoError(err)
+	s.Empty(wispLabels)
+}
+
+func (s *testSuite) lucAddWispLabelsRoutes() {
+	s.seedWispRow("bd-lwc-awl")
+	uc := s.labelUseCase()
+	s.Require().NoError(uc.AddWispLabels(s.Ctx(), "bd-lwc-awl", []string{"a", "", "b"}, "tester"))
+
+	wispLabels, err := uc.GetWispLabels(s.Ctx(), "bd-lwc-awl")
+	s.Require().NoError(err)
+	s.Equal([]string{"a", "b"}, wispLabels)
+
+	issueLabels, err := uc.GetLabels(s.Ctx(), "bd-lwc-awl")
+	s.Require().NoError(err)
+	s.Empty(issueLabels, "wisp-routed Add must not touch the issues label table")
+}
+
+func (s *testSuite) lucRemoveWispLabelsRoutes() {
+	s.seedWispRow("bd-lwc-rwls")
+	uc := s.labelUseCase()
+	s.Require().NoError(uc.AddWispLabels(s.Ctx(), "bd-lwc-rwls", []string{"keep", "drop1", "drop2"}, "tester"))
+
+	s.Require().NoError(uc.RemoveWispLabels(s.Ctx(), "bd-lwc-rwls", []string{"drop1", "drop2"}, "tester"))
+
+	wispLabels, err := uc.GetWispLabels(s.Ctx(), "bd-lwc-rwls")
+	s.Require().NoError(err)
+	s.Equal([]string{"keep"}, wispLabels)
+}
+
+func (s *testSuite) lucSetWispLabelsDiffs() {
+	s.seedWispRow("bd-lwc-swl")
+	uc := s.labelUseCase()
+	s.Require().NoError(uc.AddWispLabels(s.Ctx(), "bd-lwc-swl", []string{"keep", "drop"}, "tester"))
+
+	s.Require().NoError(uc.SetWispLabels(s.Ctx(), "bd-lwc-swl", []string{"keep", "add"}, "tester"))
+
+	wispLabels, err := uc.GetWispLabels(s.Ctx(), "bd-lwc-swl")
+	s.Require().NoError(err)
+	s.Equal([]string{"add", "keep"}, wispLabels)
 }

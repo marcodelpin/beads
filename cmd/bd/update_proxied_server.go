@@ -66,13 +66,17 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 
 	issueUC := uw.IssueUseCase()
 	current, err := issueUC.GetIssue(ctx, id)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error resolving %s: %v\n", id, err)
-		return nil, false
-	}
-	if current == nil {
-		fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
-		return nil, false
+	if err != nil || current == nil {
+		wispCurrent, wispErr := issueUC.GetWisp(ctx, id)
+		if wispErr == nil && wispCurrent != nil {
+			current = wispCurrent
+		} else if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving %s: %v\n", id, err)
+			return nil, false
+		} else {
+			fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
+			return nil, false
+		}
 	}
 	if err := validateIssueUpdatable(id, current); err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
