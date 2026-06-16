@@ -78,8 +78,10 @@ func Global() *eventkit.Collector {
 }
 
 func NewCommandEvent(command string) *eventkit.Event {
+	// A telemetry helper must never crash a real command: fall back to a
+	// placeholder rather than panicking on an empty command name.
 	if command == "" {
-		panic("metrics.NewCommandEvent: command is required")
+		command = "unknown"
 	}
 	evt := eventkit.NewEvent("cli_command")
 	evt.SetAttribute("command", command)

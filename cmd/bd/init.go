@@ -1017,7 +1017,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				} else {
 					fmt.Fprint(os.Stderr, gateErr.UserMessage())
 				}
-				os.Exit(1)
+				return &exitError{Code: 1}
 			}
 			fmt.Fprintf(os.Stderr, "Error: failed to open Dolt store: %v\n", err)
 			return &exitError{Code: 1}
