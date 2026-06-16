@@ -19,6 +19,7 @@ type ConfigSQLRepository interface {
 	GetAdaptiveIDConfig(ctx context.Context) (AdaptiveIDConfig, error)
 
 	GetCustomStatuses(ctx context.Context) ([]types.CustomStatus, error)
+	ListAllStatusNames(ctx context.Context) ([]string, error)
 	GetInfraTypes(ctx context.Context) (map[string]bool, error)
 }
 
@@ -28,6 +29,7 @@ type ConfigUseCase interface {
 	LoadCreateContext(ctx context.Context) (CreateContext, error)
 
 	GetCustomStatuses(ctx context.Context) ([]types.CustomStatus, error)
+	ListAllStatusNames(ctx context.Context) ([]string, error)
 	GetInfraTypes(ctx context.Context) (map[string]bool, error)
 	IsInfraTypeCtx(ctx context.Context, t types.IssueType) (bool, error)
 }
@@ -102,6 +104,14 @@ func (u *configUseCaseImpl) GetCustomStatuses(ctx context.Context) ([]types.Cust
 	out, err := u.cfgRepo.GetCustomStatuses(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("GetCustomStatuses: %w", err)
+	}
+	return out, nil
+}
+
+func (u *configUseCaseImpl) ListAllStatusNames(ctx context.Context) ([]string, error) {
+	out, err := u.cfgRepo.ListAllStatusNames(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ListAllStatusNames: %w", err)
 	}
 	return out, nil
 }

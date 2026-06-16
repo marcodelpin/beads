@@ -31,6 +31,8 @@ func (s *testSuite) TestConfigSQLRepository() {
 		s.Run("CommaSeparated", s.configGetCustomTypesCommaSeparated)
 		s.Run("JSONArray", s.configGetCustomTypesJSONArray)
 		s.Run("TrimsWhitespaceAndSkipsEmpty", s.configGetCustomTypesTrimsAndSkipsEmpty)
+		s.Run("CustomTypesTableTakesPrecedenceOverConfigString", s.configGetCustomTypesTablePrecedence)
+		s.Run("ConfigStringFallbackWhenTableEmpty", s.configGetCustomTypesConfigFallback)
 	})
 	s.Run("GetAllowedPrefixes", func() {
 		s.Run("MissingKeyReturnsEmpty", s.configGetAllowedPrefixesMissing)
@@ -44,6 +46,11 @@ func (s *testSuite) TestConfigSQLRepository() {
 	s.Run("GetCustomStatuses", func() {
 		s.Run("EmptyTableReturnsNil", s.configGetCustomStatusesEmpty)
 		s.Run("ReturnsRowsOrderedByName", s.configGetCustomStatusesRows)
+	})
+	s.Run("ListAllStatusNames", func() {
+		s.Run("BuiltinsOnlyWhenNoCustom", s.configListAllStatusNamesBuiltinsOnly)
+		s.Run("BuiltinsFirstThenCustomAppended", s.configListAllStatusNamesAppendsCustom)
+		s.Run("UseCaseSurfacesRepoResults", s.configUseCaseListAllStatusNames)
 	})
 	s.Run("GetInfraTypes", func() {
 		s.Run("MissingKeyReturnsEmpty", s.configGetInfraTypesMissing)
@@ -267,4 +274,75 @@ func (s *testSuite) configGetAdaptiveIDConfigMalformed() {
 	// All three should fall back to defaults: malformed values are silently
 	// ignored to match the embedded GetAdaptiveConfigTx behavior.
 	s.Equal(domain.DefaultAdaptiveConfig(), got)
+}
+
+func (s *testSuite) configListAllStatusNamesBuiltinsOnly() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM custom_statuses")
+	s.Require().NoError(err)
+
+	got, err := s.configRepo().ListAllStatusNames(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal([]string{"open", "in_progress", "blocked", "deferred", "closed", "pinned", "hooked"}, got)
+}
+
+func (s *testSuite) configListAllStatusNamesAppendsCustom() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM custom_statuses")
+	s.Require().NoError(err)
+	_, err = s.Runner().ExecContext(s.Ctx(),
+		"INSERT INTO custom_statuses (name, category) VALUES (?, ?), (?, ?)",
+		"review", string(types.CategoryWIP),
+		"archived", string(types.CategoryDone),
+	)
+	s.Require().NoError(err)
+
+	got, err := s.configRepo().ListAllStatusNames(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal([]string{
+		"open", "in_progress", "blocked", "deferred", "closed", "pinned", "hooked",
+		"archived", "review",
+	}, got)
+}
+
+func (s *testSuite) configUseCaseListAllStatusNames() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM custom_statuses")
+	s.Require().NoError(err)
+	_, err = s.Runner().ExecContext(s.Ctx(),
+		"INSERT INTO custom_statuses (name, category) VALUES (?, ?)",
+		"audit", string(types.CategoryWIP),
+	)
+	s.Require().NoError(err)
+
+	uc := domain.NewConfigUseCase(NewConfigSQLRepository(s.Runner()))
+	got, err := uc.ListAllStatusNames(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal([]string{
+		"open", "in_progress", "blocked", "deferred", "closed", "pinned", "hooked",
+		"audit",
+	}, got)
+}
+
+func (s *testSuite) configGetCustomTypesTablePrecedence() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM custom_types")
+	s.Require().NoError(err)
+	r := s.configRepo()
+	s.Require().NoError(r.SetConfig(s.Ctx(), "types.custom", "from-config"))
+	_, err = s.Runner().ExecContext(s.Ctx(),
+		"INSERT INTO custom_types (name) VALUES (?), (?)",
+		"from-table-a", "from-table-b")
+	s.Require().NoError(err)
+
+	got, err := r.GetCustomTypes(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal([]string{"from-table-a", "from-table-b"}, got)
+}
+
+func (s *testSuite) configGetCustomTypesConfigFallback() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM custom_types")
+	s.Require().NoError(err)
+	r := s.configRepo()
+	s.Require().NoError(r.SetConfig(s.Ctx(), "types.custom", "fallback-only"))
+
+	got, err := r.GetCustomTypes(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal([]string{"fallback-only"}, got)
 }
