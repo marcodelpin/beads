@@ -29,6 +29,7 @@ func (s *testSuite) issueUseCase() domain.IssueUseCase {
 		NewChildCounterSQLRepository(runner),
 		NewCommentSQLRepository(runner),
 		NewConfigSQLRepository(runner),
+		NewEventsSQLRepository(runner),
 		labelUC,
 		depUC,
 	)

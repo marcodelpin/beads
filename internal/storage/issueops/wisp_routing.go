@@ -22,7 +22,7 @@ func IsActiveWispInTx(ctx context.Context, tx *sql.Tx, id string) bool {
 	return err == nil
 }
 
-func wispsTableEmptyOrMissingInTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+func wispsTableEmptyOrMissingInTx(ctx context.Context, tx DBTX) (bool, error) {
 	var probe int
 	err := tx.QueryRowContext(ctx, "SELECT 1 FROM wisps LIMIT 1").Scan(&probe)
 	switch {
@@ -128,7 +128,7 @@ func partitionByWispSet(ids []string, wispSet map[string]struct{}) (wispIDs, per
 // and can push bulk hydration past the context deadline (see GH#3414).
 // IDs not present in the wisps table are treated as permanent issue IDs.
 // Returned slices preserve the input ordering within each bucket.
-func PartitionWispIDsInTx(ctx context.Context, tx *sql.Tx, ids []string) (wispIDs, permIDs []string, err error) {
+func PartitionWispIDsInTx(ctx context.Context, tx DBTX, ids []string) (wispIDs, permIDs []string, err error) {
 	if len(ids) == 0 {
 		return nil, nil, nil
 	}

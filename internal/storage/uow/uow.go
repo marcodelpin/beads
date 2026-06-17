@@ -89,6 +89,7 @@ func (u *baseUOW) IssueUseCase() domain.IssueUseCase {
 			db.NewChildCounterSQLRepository(runner),
 			db.NewCommentSQLRepository(runner),
 			db.NewConfigSQLRepository(runner),
+			db.NewEventsSQLRepository(runner),
 			u.LabelUseCase(),
 			u.DependencyUseCase(),
 		)

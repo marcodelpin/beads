@@ -616,3 +616,88 @@ func combineArgs(a, b []any) []any {
 	out = append(out, b...)
 	return out
 }
+
+func (r *dependencySQLRepositoryImpl) DeleteAllForIDs(ctx context.Context, ids []string, opts domain.DepInsertOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "dependencies"
+	if opts.UseWispsTable {
+		table = "wisp_dependencies"
+	}
+	total := 0
+	for start := 0; start < len(ids); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, 2*len(batch))
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		ph := strings.Join(placeholders, ",")
+		//nolint:gosec // G201: table is one of two hardcoded constants; ? placeholders only.
+		res, err := r.runner.ExecContext(ctx,
+			fmt.Sprintf("DELETE FROM %s WHERE issue_id IN (%s) OR %s IN (%s)", table, ph, issueops.DepTargetExpr, ph),
+			args...)
+		if err != nil {
+			if opts.UseWispsTable && dberrors.IsTableNotExist(err) {
+				return total, nil
+			}
+			return total, fmt.Errorf("db: DependencySQLRepository.DeleteAllForIDs from %s: %w", table, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("db: DependencySQLRepository.DeleteAllForIDs rows affected: %w", err)
+		}
+		total += int(n)
+	}
+	return total, nil
+}
+
+func (r *dependencySQLRepositoryImpl) CountAllForIDs(ctx context.Context, ids []string, opts domain.DepCountsOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "dependencies"
+	if opts.UseWispsTable {
+		table = "wisp_dependencies"
+	}
+	total := 0
+	for start := 0; start < len(ids); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, 2*len(batch))
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		ph := strings.Join(placeholders, ",")
+		var count int
+		//nolint:gosec // G201: table is one of two hardcoded constants; ? placeholders only.
+		err := r.runner.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE issue_id IN (%s) OR %s IN (%s)", table, ph, issueops.DepTargetExpr, ph),
+			args...).Scan(&count)
+		if err != nil {
+			if opts.UseWispsTable && dberrors.IsTableNotExist(err) {
+				return total, nil
+			}
+			return total, fmt.Errorf("db: DependencySQLRepository.CountAllForIDs from %s: %w", table, err)
+		}
+		total += count
+	}
+	return total, nil
+}
