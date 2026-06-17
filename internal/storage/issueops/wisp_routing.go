@@ -64,7 +64,7 @@ func optionalTableExistsInTx(ctx context.Context, tx *sql.Tx, table string) (boo
 // Returns an empty set when ids is empty; never issues a query.
 //
 //nolint:gosec // G201: query uses placeholder-only interpolation
-func WispIDSetInTx(ctx context.Context, tx *sql.Tx, ids []string) (map[string]struct{}, error) {
+func WispIDSetInTx(ctx context.Context, tx DBTX, ids []string) (map[string]struct{}, error) {
 	set := make(map[string]struct{})
 	if len(ids) == 0 {
 		return set, nil

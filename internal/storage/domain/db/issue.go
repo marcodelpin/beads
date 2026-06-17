@@ -708,4 +708,8 @@ func (r *issueSQLRepositoryImpl) RecomputeIsBlocked(ctx context.Context, issueID
 	return issueops.RecomputeIsBlockedInTx(ctx, r.runner, issueIDs, wispIDs)
 }
 
+func (r *issueSQLRepositoryImpl) AsOf(ctx context.Context, id, ref string) (*types.Issue, error) {
+	return issueops.AsOfInTx(ctx, r.runner, id, ref)
+}
+
 const deleteBatchSize = 200

@@ -752,7 +752,7 @@ func RemoveDependencyInTx(ctx context.Context, tx *sql.Tx, issueID, dependsOnID 
 // reuse it across calls.
 //
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
-func GetIssuesByIDsInTx(ctx context.Context, tx *sql.Tx, ids []string, wispSet map[string]struct{}) ([]*types.Issue, error) {
+func GetIssuesByIDsInTx(ctx context.Context, tx DBTX, ids []string, wispSet map[string]struct{}) ([]*types.Issue, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -850,7 +850,7 @@ func GetIssuesByIDsInTx(ctx context.Context, tx *sql.Tx, ids []string, wispSet m
 // Queries both dependency tables to handle cross-table dependencies.
 //
 //nolint:gosec // G201: table names come from hardcoded constants
-func GetDependenciesWithMetadataInTx(ctx context.Context, tx *sql.Tx, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
+func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
 	type depMeta struct {
 		depID, depType string
 	}
@@ -913,7 +913,7 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx *sql.Tx, issueID st
 // along with the dependency type. Works within an existing transaction.
 //
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
-func GetDependentsWithMetadataInTx(ctx context.Context, tx *sql.Tx, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
+func GetDependentsWithMetadataInTx(ctx context.Context, tx DBTX, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
 	type depMeta struct {
 		depID, depType string
 	}
