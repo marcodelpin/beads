@@ -724,6 +724,18 @@ func (r *issueSQLRepositoryImpl) Close(ctx context.Context, id string, params do
 	}, nil
 }
 
+func (r *issueSQLRepositoryImpl) Reopen(ctx context.Context, id string, params domain.ReopenRowParams, actor string, opts domain.IssueTableOpts) (domain.ReopenRowResult, error) {
+	res, err := issueops.ReopenIssueInTx(ctx, r.runner, id, params.Reason, actor)
+	if err != nil {
+		return domain.ReopenRowResult{}, fmt.Errorf("db: IssueSQLRepository.Reopen %s: %w", id, err)
+	}
+	return domain.ReopenRowResult{
+		Updated:     !res.AlreadyOpen,
+		AlreadyOpen: res.AlreadyOpen,
+		IsWisp:      res.IsWisp,
+	}, nil
+}
+
 func (r *issueSQLRepositoryImpl) GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error) {
 	out, err := issueops.GetNewlyUnblockedByCloseInTx(ctx, r.runner, closedID)
 	if err != nil {
