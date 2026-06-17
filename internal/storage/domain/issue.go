@@ -44,6 +44,33 @@ type IssueSQLRepository interface {
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
 	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
+	Delete(ctx context.Context, id string, opts IssueTableOpts) error
+	DeleteByIDs(ctx context.Context, ids []string, opts IssueTableOpts) (int, error)
+	PartitionWispIDs(ctx context.Context, ids []string) (wispIDs, regularIDs []string, err error)
+	FindAllDependents(ctx context.Context, ids []string) ([]string, error)
+	AffectedByDeletion(ctx context.Context, issueIDs, wispIDs []string) (affectedIssues, affectedWisps []string, err error)
+	RecomputeIsBlocked(ctx context.Context, issueIDs, wispIDs []string) error
+}
+
+type DeleteIssuesParams struct {
+	IDs                  []string
+	DryRun               bool
+	UpdateTextReferences bool
+}
+
+type DeleteIssuesResult struct {
+	DeletedCount      int
+	DependenciesCount int
+	LabelsCount       int
+	EventsCount       int
+	ReferencesUpdated int
+}
+
+type DeletePreview struct {
+	Issues          map[string]*types.Issue
+	ConnectedIssues map[string]*types.Issue
+	DepRecords      map[string][]*types.Dependency
+	NotFound        []string
 }
 
 type SearchPage struct {
@@ -147,6 +174,12 @@ type IssueUseCase interface {
 	ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error)
 	ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error)
 	ApplyIssueGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
+	DeleteIssue(ctx context.Context, id, actor string) (DeleteIssuesResult, error)
+	DeleteIssues(ctx context.Context, params DeleteIssuesParams, actor string) (DeleteIssuesResult, error)
+	PreviewDelete(ctx context.Context, ids []string) (DeletePreview, error)
+	DeleteWisp(ctx context.Context, id, actor string) (DeleteIssuesResult, error)
+	DeleteWisps(ctx context.Context, params DeleteIssuesParams, actor string) (DeleteIssuesResult, error)
+	PreviewDeleteWisp(ctx context.Context, ids []string) (DeletePreview, error)
 
 	GetWisp(ctx context.Context, id string) (*types.Issue, error)
 	GetWispsByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
@@ -164,6 +197,7 @@ func NewIssueUseCase(
 	counterRepo ChildCounterSQLRepository,
 	commentRepo CommentSQLRepository,
 	cfgRepo ConfigSQLRepository,
+	eventsRepo EventsSQLRepository,
 	labelUC LabelUseCase,
 	depUC DependencyUseCase,
 ) IssueUseCase {
@@ -174,6 +208,7 @@ func NewIssueUseCase(
 		counterRepo: counterRepo,
 		commentRepo: commentRepo,
 		cfgRepo:     cfgRepo,
+		eventsRepo:  eventsRepo,
 		labelUC:     labelUC,
 		depUC:       depUC,
 	}
@@ -186,6 +221,7 @@ type issueUseCaseImpl struct {
 	counterRepo ChildCounterSQLRepository
 	commentRepo CommentSQLRepository
 	cfgRepo     ConfigSQLRepository
+	eventsRepo  EventsSQLRepository
 	labelUC     LabelUseCase
 	depUC       DependencyUseCase
 }

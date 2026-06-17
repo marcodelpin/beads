@@ -61,6 +61,9 @@ type DependencySQLRepository interface {
 
 	GetBlockingInfo(ctx context.Context, issueIDs []string, opts DepListOpts) (BlockingInfo, error)
 	GetBlockingInfoAcrossIssuesAndWisps(ctx context.Context, issueIDs []string) (BlockingInfo, error)
+
+	DeleteAllForIDs(ctx context.Context, ids []string, opts DepInsertOpts) (int, error)
+	CountAllForIDs(ctx context.Context, ids []string, opts DepCountsOpts) (int, error)
 }
 
 type DependencyUseCase interface {

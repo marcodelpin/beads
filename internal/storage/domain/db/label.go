@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -139,4 +140,44 @@ func (r *labelSQLRepositoryImpl) ListByIssueIDs(ctx context.Context, issueIDs []
 		return nil, fmt.Errorf("db: LabelSQLRepository.ListByIssueIDs: rows: %w", err)
 	}
 	return result, nil
+}
+
+func (r *labelSQLRepositoryImpl) DeleteAllForIDs(ctx context.Context, ids []string, opts domain.LabelOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "labels"
+	if opts.UseWispsTable {
+		table = "wisp_labels"
+	}
+	total := 0
+	for start := 0; start < len(ids); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		//nolint:gosec // G201: table is one of two hardcoded constants; ? placeholders only.
+		res, err := r.runner.ExecContext(ctx,
+			fmt.Sprintf("DELETE FROM %s WHERE issue_id IN (%s)", table, strings.Join(placeholders, ",")),
+			args...)
+		if err != nil {
+			if opts.UseWispsTable && dberrors.IsTableNotExist(err) {
+				return total, nil
+			}
+			return total, fmt.Errorf("db: LabelSQLRepository.DeleteAllForIDs from %s: %w", table, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("db: LabelSQLRepository.DeleteAllForIDs rows affected: %w", err)
+		}
+		total += int(n)
+	}
+	return total, nil
 }

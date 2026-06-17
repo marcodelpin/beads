@@ -626,3 +626,86 @@ func (r *issueSQLRepositoryImpl) GetReadyWork(ctx context.Context, filter types.
 func (r *issueSQLRepositoryImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (domain.SearchCountsPage, error) {
 	return r.getReadyWorkWithCountsUnion(ctx, filter)
 }
+
+func (r *issueSQLRepositoryImpl) Delete(ctx context.Context, id string, opts domain.IssueTableOpts) error {
+	table := "issues"
+	if opts.UseWispsTable {
+		table = "wisps"
+	}
+	//nolint:gosec // G201: table is a hardcoded constant.
+	res, err := r.runner.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", table), id)
+	if err != nil {
+		return fmt.Errorf("db: IssueSQLRepository.Delete %s from %s: %w", id, table, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: IssueSQLRepository.Delete rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("issue not found: %s", id)
+	}
+	return nil
+}
+
+func (r *issueSQLRepositoryImpl) DeleteByIDs(ctx context.Context, ids []string, opts domain.IssueTableOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "issues"
+	if opts.UseWispsTable {
+		table = "wisps"
+	}
+	total := 0
+	for start := 0; start < len(ids); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		//nolint:gosec // G201: table is a hardcoded constant; placeholders are ?.
+		res, err := r.runner.ExecContext(ctx,
+			fmt.Sprintf("DELETE FROM %s WHERE id IN (%s)", table, strings.Join(placeholders, ",")),
+			args...)
+		if err != nil {
+			return total, fmt.Errorf("db: IssueSQLRepository.DeleteByIDs from %s: %w", table, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("db: IssueSQLRepository.DeleteByIDs rows affected: %w", err)
+		}
+		total += int(n)
+	}
+	return total, nil
+}
+
+func (r *issueSQLRepositoryImpl) PartitionWispIDs(ctx context.Context, ids []string) ([]string, []string, error) {
+	return issueops.PartitionWispIDsInTx(ctx, r.runner, ids)
+}
+
+func (r *issueSQLRepositoryImpl) FindAllDependents(ctx context.Context, ids []string) ([]string, error) {
+	set, err := issueops.FindAllDependentsInTx(ctx, r.runner, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) AffectedByDeletion(ctx context.Context, issueIDs, wispIDs []string) ([]string, []string, error) {
+	return issueops.AffectedByDeletionInTx(ctx, r.runner, issueIDs, wispIDs)
+}
+
+func (r *issueSQLRepositoryImpl) RecomputeIsBlocked(ctx context.Context, issueIDs, wispIDs []string) error {
+	return issueops.RecomputeIsBlockedInTx(ctx, r.runner, issueIDs, wispIDs)
+}
+
+const deleteBatchSize = 200

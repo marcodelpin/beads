@@ -49,6 +49,12 @@ Force: Delete and orphan dependents
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("delete")
+
+		if usesProxiedServer() {
+			runDeleteProxiedServer(cmd, rootCtx, args)
+			return
+		}
+
 		fromFile, _ := cmd.Flags().GetString("from-file")
 		force, _ := cmd.Flags().GetBool("force")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
