@@ -35,6 +35,7 @@ type IssueSQLRepository interface {
 	Update(ctx context.Context, id string, updates map[string]any, actor string, opts IssueTableOpts) error
 	Claim(ctx context.Context, id, actor string, opts IssueTableOpts) (ClaimRowResult, error)
 	Get(ctx context.Context, id string, opts IssueTableOpts) (*types.Issue, error)
+	AsOf(ctx context.Context, id, ref string) (*types.Issue, error)
 	GetByIDs(ctx context.Context, ids []string, opts IssueTableOpts) ([]*types.Issue, error)
 	Exists(ctx context.Context, id string, opts IssueTableOpts) (bool, error)
 	CountForPrefix(ctx context.Context, prefix string, opts IssueTableOpts) (int, error)
@@ -174,6 +175,7 @@ type IssueUseCase interface {
 	ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error)
 	ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error)
 	ApplyIssueGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
+	AsOf(ctx context.Context, id, ref string) (*types.Issue, error)
 	DeleteIssue(ctx context.Context, id, actor string) (DeleteIssuesResult, error)
 	DeleteIssues(ctx context.Context, params DeleteIssuesParams, actor string) (DeleteIssuesResult, error)
 	PreviewDelete(ctx context.Context, ids []string) (DeletePreview, error)
@@ -230,6 +232,17 @@ var _ IssueUseCase = (*issueUseCaseImpl)(nil)
 
 func (u *issueUseCaseImpl) GetIssue(ctx context.Context, id string) (*types.Issue, error) {
 	return u.get(ctx, id, false)
+}
+
+func (u *issueUseCaseImpl) AsOf(ctx context.Context, id, ref string) (*types.Issue, error) {
+	if id == "" {
+		return nil, fmt.Errorf("as of: id must not be empty")
+	}
+	issue, err := u.issueRepo.AsOf(ctx, id, ref)
+	if err != nil {
+		return nil, fmt.Errorf("as of %s @ %s: %w", id, ref, err)
+	}
+	return issue, nil
 }
 
 func (u *issueUseCaseImpl) GetWisp(ctx context.Context, id string) (*types.Issue, error) {

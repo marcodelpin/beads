@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -57,6 +58,9 @@ type DependencySQLRepository interface {
 	Delete(ctx context.Context, issueID, dependsOnID, actor string, opts DepInsertOpts) (DepDeleteResult, error)
 	HasCycle(ctx context.Context, issueID, dependsOnID string) (bool, error)
 	ListByIssueIDs(ctx context.Context, issueIDs []string, opts DepListOpts) (DepBulkResult, error)
+	ListWithIssueMetadata(ctx context.Context, sourceID string, opts DepListOpts) ([]*types.IssueWithDependencyMetadata, error)
+	IterWithIssueMetadata(ctx context.Context, sourceID string, opts DepListOpts) (storage.Iter[types.IssueWithDependencyMetadata], error)
+	CountByID(ctx context.Context, sourceID string, opts DepListOpts) (int64, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string, opts DepCountsOpts) (map[string]*types.DependencyCounts, error)
 
 	GetBlockingInfo(ctx context.Context, issueIDs []string, opts DepListOpts) (BlockingInfo, error)
@@ -71,6 +75,9 @@ type DependencyUseCase interface {
 	RemoveDependency(ctx context.Context, issueID, dependsOnID, actor string) error
 	Reparent(ctx context.Context, childID, newParentID, actor string) error
 	ListByIssueIDs(ctx context.Context, issueIDs []string, filter DepListFilter) (DepBulkResult, error)
+	ListWithIssueMetadata(ctx context.Context, issueID string, filter DepListFilter) ([]*types.IssueWithDependencyMetadata, error)
+	IterWithIssueMetadata(ctx context.Context, issueID string, filter DepListFilter) (storage.Iter[types.IssueWithDependencyMetadata], error)
+	CountByIssueID(ctx context.Context, issueID string, filter DepListFilter) (int64, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string) (map[string]*types.DependencyCounts, error)
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
@@ -79,6 +86,9 @@ type DependencyUseCase interface {
 	RemoveWispDependency(ctx context.Context, wispID, dependsOnID, actor string) error
 	ReparentWisp(ctx context.Context, childWispID, newParentID, actor string) error
 	ListByWispIDs(ctx context.Context, wispIDs []string, filter DepListFilter) (DepBulkResult, error)
+	ListWispWithIssueMetadata(ctx context.Context, wispID string, filter DepListFilter) ([]*types.IssueWithDependencyMetadata, error)
+	IterWispWithIssueMetadata(ctx context.Context, wispID string, filter DepListFilter) (storage.Iter[types.IssueWithDependencyMetadata], error)
+	CountByWispID(ctx context.Context, wispID string, filter DepListFilter) (int64, error)
 	CountsByWispIDs(ctx context.Context, wispIDs []string) (map[string]*types.DependencyCounts, error)
 }
 
@@ -203,6 +213,18 @@ func (u *dependencyUseCaseImpl) ListByIssueIDs(ctx context.Context, issueIDs []s
 	return u.list(ctx, issueIDs, filter, false)
 }
 
+func (u *dependencyUseCaseImpl) ListWithIssueMetadata(ctx context.Context, issueID string, filter DepListFilter) ([]*types.IssueWithDependencyMetadata, error) {
+	return u.listWithMetadata(ctx, issueID, filter, false)
+}
+
+func (u *dependencyUseCaseImpl) IterWithIssueMetadata(ctx context.Context, issueID string, filter DepListFilter) (storage.Iter[types.IssueWithDependencyMetadata], error) {
+	return u.iterWithMetadata(ctx, issueID, filter, false)
+}
+
+func (u *dependencyUseCaseImpl) CountByIssueID(ctx context.Context, issueID string, filter DepListFilter) (int64, error) {
+	return u.countByID(ctx, issueID, filter, false)
+}
+
 func (u *dependencyUseCaseImpl) GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error) {
 	if len(ids) == 0 {
 		return map[string][]*types.Dependency{}, nil
@@ -227,6 +249,63 @@ func (u *dependencyUseCaseImpl) GetForIssueIDs(ctx context.Context, ids []string
 
 func (u *dependencyUseCaseImpl) ListByWispIDs(ctx context.Context, wispIDs []string, filter DepListFilter) (DepBulkResult, error) {
 	return u.list(ctx, wispIDs, filter, true)
+}
+
+func (u *dependencyUseCaseImpl) ListWispWithIssueMetadata(ctx context.Context, wispID string, filter DepListFilter) ([]*types.IssueWithDependencyMetadata, error) {
+	return u.listWithMetadata(ctx, wispID, filter, true)
+}
+
+func (u *dependencyUseCaseImpl) IterWispWithIssueMetadata(ctx context.Context, wispID string, filter DepListFilter) (storage.Iter[types.IssueWithDependencyMetadata], error) {
+	return u.iterWithMetadata(ctx, wispID, filter, true)
+}
+
+func (u *dependencyUseCaseImpl) CountByWispID(ctx context.Context, wispID string, filter DepListFilter) (int64, error) {
+	return u.countByID(ctx, wispID, filter, true)
+}
+
+func (u *dependencyUseCaseImpl) listWithMetadata(ctx context.Context, sourceID string, filter DepListFilter, useWisp bool) ([]*types.IssueWithDependencyMetadata, error) {
+	if sourceID == "" {
+		return nil, fmt.Errorf("list dep metadata: sourceID must not be empty")
+	}
+	out, err := u.depRepo.ListWithIssueMetadata(ctx, sourceID, DepListOpts{
+		Types:         filter.Types,
+		Direction:     filter.Direction,
+		UseWispsTable: useWisp,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list dep metadata: %w", err)
+	}
+	return out, nil
+}
+
+func (u *dependencyUseCaseImpl) iterWithMetadata(ctx context.Context, sourceID string, filter DepListFilter, useWisp bool) (storage.Iter[types.IssueWithDependencyMetadata], error) {
+	if sourceID == "" {
+		return nil, fmt.Errorf("iter dep metadata: sourceID must not be empty")
+	}
+	it, err := u.depRepo.IterWithIssueMetadata(ctx, sourceID, DepListOpts{
+		Types:         filter.Types,
+		Direction:     filter.Direction,
+		UseWispsTable: useWisp,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("iter dep metadata: %w", err)
+	}
+	return it, nil
+}
+
+func (u *dependencyUseCaseImpl) countByID(ctx context.Context, sourceID string, filter DepListFilter, useWisp bool) (int64, error) {
+	if sourceID == "" {
+		return 0, fmt.Errorf("count by id: sourceID must not be empty")
+	}
+	n, err := u.depRepo.CountByID(ctx, sourceID, DepListOpts{
+		Types:         filter.Types,
+		Direction:     filter.Direction,
+		UseWispsTable: useWisp,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count by id: %w", err)
+	}
+	return n, nil
 }
 
 func (u *dependencyUseCaseImpl) list(ctx context.Context, ids []string, filter DepListFilter, useWisp bool) (DepBulkResult, error) {

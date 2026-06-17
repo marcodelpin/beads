@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -700,4 +701,52 @@ func (r *dependencySQLRepositoryImpl) CountAllForIDs(ctx context.Context, ids []
 		total += count
 	}
 	return total, nil
+}
+
+func (r *dependencySQLRepositoryImpl) ListWithIssueMetadata(ctx context.Context, sourceID string, opts domain.DepListOpts) ([]*types.IssueWithDependencyMetadata, error) {
+	var out []*types.IssueWithDependencyMetadata
+	if opts.Direction == domain.DepDirectionOut || opts.Direction == domain.DepDirectionBoth {
+		deps, err := issueops.GetDependenciesWithMetadataInTx(ctx, r.runner, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filterDepsByType(deps, opts.Types)...)
+	}
+	if opts.Direction == domain.DepDirectionIn || opts.Direction == domain.DepDirectionBoth {
+		deps, err := issueops.GetDependentsWithMetadataInTx(ctx, r.runner, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filterDepsByType(deps, opts.Types)...)
+	}
+	return out, nil
+}
+
+func (r *dependencySQLRepositoryImpl) IterWithIssueMetadata(ctx context.Context, sourceID string, opts domain.DepListOpts) (storage.Iter[types.IssueWithDependencyMetadata], error) {
+	items, err := r.ListWithIssueMetadata(ctx, sourceID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return storage.NewSliceIter(items), nil
+}
+
+func (r *dependencySQLRepositoryImpl) CountByID(ctx context.Context, sourceID string, opts domain.DepListOpts) (int64, error) {
+	return issueops.CountDependencyEdgesInTx(ctx, r.runner, sourceID, opts.Direction, opts.Types)
+}
+
+func filterDepsByType(deps []*types.IssueWithDependencyMetadata, filter []types.DependencyType) []*types.IssueWithDependencyMetadata {
+	if len(filter) == 0 {
+		return deps
+	}
+	allowed := make(map[types.DependencyType]struct{}, len(filter))
+	for _, t := range filter {
+		allowed[t] = struct{}{}
+	}
+	out := make([]*types.IssueWithDependencyMetadata, 0, len(deps))
+	for _, d := range deps {
+		if _, ok := allowed[d.DependencyType]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
