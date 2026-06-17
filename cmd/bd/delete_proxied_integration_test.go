@@ -450,17 +450,17 @@ func TestProxiedServerDeleteWisp(t *testing.T) {
 		}
 	})
 
-	t.Run("delete_cascade_flag_is_noop", func(t *testing.T) {
+	t.Run("delete_cascade_flag_is_error", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "dcn")
-		withCascade := bdProxiedCreate(t, bd, p.dir, "With cascade flag", "-t", "task")
-		withoutCascade := bdProxiedCreate(t, bd, p.dir, "Without cascade flag", "-t", "task")
+		issue := bdProxiedCreate(t, bd, p.dir, "Cascade flag", "-t", "task")
 
-		bdProxiedDelete(t, bd, p.dir, withCascade.ID, "--force", "--cascade")
-		bdProxiedDelete(t, bd, p.dir, withoutCascade.ID, "--force")
+		out := bdProxiedDeleteFail(t, bd, p.dir, issue.ID, "--force", "--cascade")
+		if !strings.Contains(out, "--cascade") {
+			t.Errorf("expected error mentioning --cascade, got: %s", out)
+		}
 
 		db := openProxiedDB(t, p)
-		assertRowAbsent(t, db, "issues", withCascade.ID)
-		assertRowAbsent(t, db, "issues", withoutCascade.ID)
+		assertRowExists(t, db, "issues", issue.ID)
 	})
 
 	t.Run("delete_mixed_wisp_and_issue_partition", func(t *testing.T) {

@@ -20,6 +20,10 @@ type deleteInput struct {
 }
 
 func gatherDeleteInput(cmd *cobra.Command, args []string) (*deleteInput, error) {
+	if cmd.Flags().Changed("cascade") {
+		return nil, fmt.Errorf("--cascade is not supported in proxied-server mode (delete always cascades)")
+	}
+
 	in := &deleteInput{}
 	in.ids = append(in.ids, args...)
 
