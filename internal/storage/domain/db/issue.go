@@ -39,10 +39,14 @@ var allowedUpdateFields = map[string]struct{}{
 	"description": {}, "design": {}, "acceptance_criteria": {}, "notes": {},
 	"issue_type": {}, "estimated_minutes": {}, "external_ref": {}, "spec_id": {},
 	"started_at": {}, "closed_at": {}, "close_reason": {}, "closed_by_session": {},
-	"source_repo": {}, "sender": {}, "wisp_type": {}, "no_history": {}, "pinned": {},
+	"source_repo": {}, "sender": {}, "wisp": {}, "wisp_type": {}, "no_history": {}, "pinned": {},
 	"mol_type": {}, "event_kind": {}, "actor": {}, "target": {}, "payload": {},
 	"due_at": {}, "defer_until": {}, "await_id": {}, "waiters": {},
 	"metadata": {},
+}
+
+var updateFieldColumnRename = map[string]string{
+	"wisp": "ephemeral",
 }
 
 func (r *issueSQLRepositoryImpl) Insert(ctx context.Context, issue *types.Issue, actor string, opts domain.InsertIssueOpts) error {
@@ -93,7 +97,11 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 		if _, ok := allowedUpdateFields[key]; !ok {
 			return fmt.Errorf("db: Update: field %q is not allowed", key)
 		}
-		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", key))
+		column := key
+		if renamed, ok := updateFieldColumnRename[key]; ok {
+			column = renamed
+		}
+		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", column))
 		args = append(args, normalizeUpdateValue(key, value))
 	}
 	setClauses = append(setClauses, "updated_at = ?")
@@ -101,6 +109,21 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 	args = append(args, id)
 
 	table := pickIssueTable(opts.UseWispsTable)
+
+	var oldStatus types.Status
+	_, statusChanging := updates["status"]
+	if statusChanging {
+		//nolint:gosec // G201: table is one of two hardcoded constants
+		if err := r.runner.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT status FROM %s WHERE id = ?", table), id,
+		).Scan(&oldStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("db: Update %s: %w", id, sql.ErrNoRows)
+			}
+			return fmt.Errorf("db: Update %s: read old status: %w", id, err)
+		}
+	}
+
 	//nolint:gosec // G201: table is one of two hardcoded constants
 	q := fmt.Sprintf("UPDATE %s SET %s WHERE id = ?", table, strings.Join(setClauses, ", "))
 	res, err := r.runner.ExecContext(ctx, q, args...)
@@ -115,11 +138,129 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 		return fmt.Errorf("db: Update %s: %w", id, sql.ErrNoRows)
 	}
 
-	return r.events.Record(ctx, domain.Event{
+	if err := r.events.Record(ctx, domain.Event{
 		IssueID: id,
 		Type:    types.EventUpdated,
 		Actor:   actor,
-	}, domain.RecordEventOpts{UseWispsTable: opts.UseWispsTable})
+	}, domain.RecordEventOpts{UseWispsTable: opts.UseWispsTable}); err != nil {
+		return err
+	}
+
+	if statusChanging {
+		newStatus := coerceStatus(updates["status"])
+		oldActive := oldStatus != types.StatusClosed && oldStatus != types.StatusPinned
+		newActive := newStatus != types.StatusClosed && newStatus != types.StatusPinned
+		if oldActive != newActive {
+			var (
+				affectedIssues, affectedWisps []string
+				aerr                          error
+			)
+			if opts.UseWispsTable {
+				affectedIssues, affectedWisps, aerr = issueops.AffectedByStatusChangeForWispInTx(ctx, r.runner, id)
+			} else {
+				affectedIssues, affectedWisps, aerr = issueops.AffectedByStatusChangeInTx(ctx, r.runner, id)
+			}
+			if aerr != nil {
+				return fmt.Errorf("db: Update %s: affected by status change: %w", id, aerr)
+			}
+			if err := issueops.RecomputeIsBlockedInTx(ctx, r.runner, affectedIssues, affectedWisps); err != nil {
+				return fmt.Errorf("db: Update %s: recompute is_blocked: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
+func coerceStatus(v any) types.Status {
+	switch s := v.(type) {
+	case string:
+		return types.Status(s)
+	case types.Status:
+		return s
+	default:
+		return ""
+	}
+}
+
+func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, opts domain.IssueTableOpts) (domain.ClaimRowResult, error) {
+	if id == "" {
+		return domain.ClaimRowResult{}, errors.New("db: Claim: id must not be empty")
+	}
+
+	oldIssue, err := r.Get(ctx, id, opts)
+	if err != nil {
+		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: read old issue: %w", id, err)
+	}
+
+	table := pickIssueTable(opts.UseWispsTable)
+	now := time.Now().UTC()
+	startedWasZero := oldIssue.StartedAt == nil
+
+	var res sql.Result
+	if startedWasZero {
+		//nolint:gosec // G201: table is one of two hardcoded constants
+		res, err = r.runner.ExecContext(ctx, fmt.Sprintf(`
+			UPDATE %s
+			SET assignee = ?, status = 'in_progress', updated_at = ?, started_at = ?
+			WHERE id = ? AND status = 'open' AND (assignee = '' OR assignee IS NULL OR assignee = ?)
+		`, table), actor, now, now, id, actor)
+	} else {
+		//nolint:gosec // G201: table is one of two hardcoded constants
+		res, err = r.runner.ExecContext(ctx, fmt.Sprintf(`
+			UPDATE %s
+			SET assignee = ?, status = 'in_progress', updated_at = ?
+			WHERE id = ? AND status = 'open' AND (assignee = '' OR assignee IS NULL OR assignee = ?)
+		`, table), actor, now, id, actor)
+	}
+	if err != nil {
+		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: rows affected: %w", id, err)
+	}
+
+	if rows == 0 {
+		var currentAssignee sql.NullString
+		var currentStatus types.Status
+		//nolint:gosec // G201: table is one of two hardcoded constants
+		if err := r.runner.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT assignee, status FROM %s WHERE id = ?", table), id,
+		).Scan(&currentAssignee, &currentStatus); err != nil {
+			return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: read current state: %w", id, err)
+		}
+		assignee := ""
+		if currentAssignee.Valid {
+			assignee = currentAssignee.String
+		}
+		return domain.ClaimRowResult{
+			Updated:          false,
+			CurrentAssignee:  assignee,
+			CurrentStatus:    currentStatus,
+			StartedAtWasZero: startedWasZero,
+			OldIssue:         oldIssue,
+		}, nil
+	}
+
+	oldData, _ := json.Marshal(oldIssue)
+	newData, _ := json.Marshal(map[string]any{"assignee": actor, "status": "in_progress"})
+	if err := r.events.Record(ctx, domain.Event{
+		IssueID:  id,
+		Type:     types.EventType("claimed"),
+		Actor:    actor,
+		OldValue: string(oldData),
+		NewValue: string(newData),
+	}, domain.RecordEventOpts{UseWispsTable: opts.UseWispsTable}); err != nil {
+		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: record event: %w", id, err)
+	}
+
+	return domain.ClaimRowResult{
+		Updated:          true,
+		CurrentAssignee:  actor,
+		CurrentStatus:    types.StatusInProgress,
+		StartedAtWasZero: startedWasZero,
+		OldIssue:         oldIssue,
+	}, nil
 }
 
 func (r *issueSQLRepositoryImpl) Get(ctx context.Context, id string, opts domain.IssueTableOpts) (*types.Issue, error) {

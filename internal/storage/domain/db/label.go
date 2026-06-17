@@ -53,6 +53,29 @@ func (r *labelSQLRepositoryImpl) Insert(ctx context.Context, issueID, label, act
 	}, domain.RecordEventOpts{UseWispsTable: opts.UseWispsTable})
 }
 
+func (r *labelSQLRepositoryImpl) Delete(ctx context.Context, issueID, label, actor string, opts domain.LabelOpts) error {
+	if issueID == "" {
+		return fmt.Errorf("db: LabelSQLRepository.Delete: issueID must not be empty")
+	}
+	if label == "" {
+		return fmt.Errorf("db: LabelSQLRepository.Delete: label must not be empty")
+	}
+	table := pickLabelTable(opts.UseWispsTable)
+	//nolint:gosec // G201: table is one of two hardcoded constants
+	if _, err := r.runner.ExecContext(ctx,
+		fmt.Sprintf("DELETE FROM %s WHERE issue_id = ? AND label = ?", table),
+		issueID, label,
+	); err != nil {
+		return fmt.Errorf("db: LabelSQLRepository.Delete %s/%s: %w", issueID, label, err)
+	}
+	return r.events.Record(ctx, domain.Event{
+		IssueID:  issueID,
+		Type:     types.EventLabelRemoved,
+		Actor:    actor,
+		OldValue: label,
+	}, domain.RecordEventOpts{UseWispsTable: opts.UseWispsTable})
+}
+
 func (r *labelSQLRepositoryImpl) List(ctx context.Context, issueID string, opts domain.LabelOpts) ([]string, error) {
 	if issueID == "" {
 		return nil, fmt.Errorf("db: LabelSQLRepository.List: issueID must not be empty")

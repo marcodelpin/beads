@@ -29,6 +29,11 @@ create, update, show, or close operation).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("update")
 
+		if usesProxiedServer() {
+			runUpdateProxiedServer(cmd, rootCtx, args)
+			return
+		}
+
 		// If no IDs provided, use last touched issue
 		if len(args) == 0 {
 			lastTouched := GetLastTouchedID()

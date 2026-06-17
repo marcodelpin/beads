@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/idgen"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -20,10 +21,19 @@ type IssueTableOpts struct {
 	UseWispsTable bool
 }
 
+type ClaimRowResult struct {
+	Updated          bool
+	CurrentAssignee  string
+	CurrentStatus    types.Status
+	StartedAtWasZero bool
+	OldIssue         *types.Issue
+}
+
 type IssueSQLRepository interface {
 	Insert(ctx context.Context, issue *types.Issue, actor string, opts InsertIssueOpts) error
 	InsertBatch(ctx context.Context, issues []*types.Issue, actor string, opts InsertIssueOpts) error
 	Update(ctx context.Context, id string, updates map[string]any, actor string, opts IssueTableOpts) error
+	Claim(ctx context.Context, id, actor string, opts IssueTableOpts) (ClaimRowResult, error)
 	Get(ctx context.Context, id string, opts IssueTableOpts) (*types.Issue, error)
 	GetByIDs(ctx context.Context, ids []string, opts IssueTableOpts) ([]*types.Issue, error)
 	Exists(ctx context.Context, id string, opts IssueTableOpts) (bool, error)
@@ -108,6 +118,20 @@ type GraphApplyResult struct {
 	IDs map[string]string
 }
 
+type ClaimResult struct {
+	AlreadyClaimed bool
+	PriorAssignee  string
+}
+
+type UpdateSpec struct {
+	Fields       map[string]any
+	Claim        bool
+	AddLabels    []string
+	RemoveLabels []string
+	SetLabels    *[]string
+	Reparent     *string
+}
+
 type IssueUseCase interface {
 	GetIssue(ctx context.Context, id string) (*types.Issue, error)
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
@@ -120,6 +144,8 @@ type IssueUseCase interface {
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateIssue(ctx context.Context, id string, updates map[string]any, actor string) error
+	ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error)
+	ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error)
 	ApplyIssueGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
 
 	GetWisp(ctx context.Context, id string) (*types.Issue, error)
@@ -127,6 +153,7 @@ type IssueUseCase interface {
 	CreateWisp(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateWisps(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateWisp(ctx context.Context, id string, updates map[string]any, actor string) error
+	ClaimWisp(ctx context.Context, id, actor string) (ClaimResult, error)
 	ApplyWispGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
 }
 
@@ -137,6 +164,8 @@ func NewIssueUseCase(
 	counterRepo ChildCounterSQLRepository,
 	commentRepo CommentSQLRepository,
 	cfgRepo ConfigSQLRepository,
+	labelUC LabelUseCase,
+	depUC DependencyUseCase,
 ) IssueUseCase {
 	return &issueUseCaseImpl{
 		issueRepo:   issueRepo,
@@ -145,6 +174,8 @@ func NewIssueUseCase(
 		counterRepo: counterRepo,
 		commentRepo: commentRepo,
 		cfgRepo:     cfgRepo,
+		labelUC:     labelUC,
+		depUC:       depUC,
 	}
 }
 
@@ -155,6 +186,8 @@ type issueUseCaseImpl struct {
 	counterRepo ChildCounterSQLRepository
 	commentRepo CommentSQLRepository
 	cfgRepo     ConfigSQLRepository
+	labelUC     LabelUseCase
+	depUC       DependencyUseCase
 }
 
 var _ IssueUseCase = (*issueUseCaseImpl)(nil)
@@ -212,7 +245,153 @@ func (u *issueUseCaseImpl) update(ctx context.Context, id string, updates map[st
 	if len(updates) == 0 {
 		return nil
 	}
+	if rawType, ok := updates["issue_type"]; ok {
+		if issueType, ok := rawType.(string); ok && issueType != "" {
+			customTypes, err := u.cfgRepo.GetCustomTypes(ctx)
+			if err != nil {
+				return fmt.Errorf("update: read custom types: %w", err)
+			}
+			if !types.IssueType(issueType).IsValidWithCustom(customTypes) {
+				return fmt.Errorf("invalid issue type: %s", issueType)
+			}
+		}
+	}
 	return u.issueRepo.Update(ctx, id, updates, actor, IssueTableOpts{UseWispsTable: useWisp})
+}
+
+func (u *issueUseCaseImpl) ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error) {
+	return u.claim(ctx, id, actor, false)
+}
+
+func (u *issueUseCaseImpl) ClaimWisp(ctx context.Context, id, actor string) (ClaimResult, error) {
+	return u.claim(ctx, id, actor, true)
+}
+
+func (u *issueUseCaseImpl) claim(ctx context.Context, id, actor string, useWisp bool) (ClaimResult, error) {
+	if id == "" {
+		return ClaimResult{}, fmt.Errorf("claim: id must not be empty")
+	}
+	if actor == "" {
+		return ClaimResult{}, fmt.Errorf("claim: actor must not be empty")
+	}
+	row, err := u.issueRepo.Claim(ctx, id, actor, IssueTableOpts{UseWispsTable: useWisp})
+	if err != nil {
+		return ClaimResult{}, fmt.Errorf("claim %s: %w", id, err)
+	}
+	if row.Updated {
+		return ClaimResult{}, nil
+	}
+	if row.CurrentAssignee == actor && row.CurrentStatus == types.StatusInProgress {
+		return ClaimResult{AlreadyClaimed: true, PriorAssignee: actor}, nil
+	}
+	if row.CurrentAssignee != "" && row.CurrentAssignee != actor {
+		return ClaimResult{}, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, row.CurrentAssignee)
+	}
+	return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
+}
+
+func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error) {
+	if id == "" {
+		return nil, fmt.Errorf("ApplyUpdate: id must not be empty")
+	}
+
+	useWisp, err := u.isWispID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("ApplyUpdate %s: %w", id, err)
+	}
+
+	if spec.Claim {
+		if useWisp {
+			if _, err := u.ClaimWisp(ctx, id, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := u.ClaimIssue(ctx, id, actor); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if len(spec.Fields) > 0 {
+		if useWisp {
+			if err := u.UpdateWisp(ctx, id, spec.Fields, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.UpdateIssue(ctx, id, spec.Fields, actor); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if spec.SetLabels != nil {
+		if useWisp {
+			if err := u.labelUC.SetWispLabels(ctx, id, *spec.SetLabels, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.labelUC.SetLabels(ctx, id, *spec.SetLabels, actor); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if len(spec.AddLabels) > 0 {
+			if useWisp {
+				if err := u.labelUC.AddWispLabels(ctx, id, spec.AddLabels, actor); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := u.labelUC.AddLabels(ctx, id, spec.AddLabels, actor); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if len(spec.RemoveLabels) > 0 {
+			if useWisp {
+				if err := u.labelUC.RemoveWispLabels(ctx, id, spec.RemoveLabels, actor); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := u.labelUC.RemoveLabels(ctx, id, spec.RemoveLabels, actor); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	if spec.Reparent != nil {
+		if useWisp {
+			if err := u.depUC.ReparentWisp(ctx, id, *spec.Reparent, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.depUC.Reparent(ctx, id, *spec.Reparent, actor); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	var issue *types.Issue
+	if useWisp {
+		issue, err = u.GetWisp(ctx, id)
+	} else {
+		issue, err = u.GetIssue(ctx, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ApplyUpdate: re-fetch %s: %w", id, err)
+	}
+	return issue, nil
+}
+
+func (u *issueUseCaseImpl) isWispID(ctx context.Context, id string) (bool, error) {
+	found, err := u.issueRepo.Exists(ctx, id, IssueTableOpts{UseWispsTable: true})
+	if err != nil {
+		if dberrors.IsTableNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("probe wisps table: %w", err)
+	}
+	return found, nil
 }
 
 func (u *issueUseCaseImpl) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error) {

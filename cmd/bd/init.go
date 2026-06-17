@@ -120,6 +120,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if os.Getenv("BEADS_DOLT_PROXIED_SERVER") == "1" {
 			initProxiedServer = true
 		}
+		if initProxiedServer {
+			// Proxied-server mode has no local Dolt init lifecycle yet. When it
+			// is implemented, that path must mark any local .dolt/ it creates or
+			// acknowledges with doltserver.MarkDoltDirCompatible.
+			FatalError("--proxied-server is not yet implemented")
+		}
 		if initProxiedServer && initServerMode {
 			FatalError("--server and --proxied-server are mutually exclusive")
 		}
@@ -128,13 +134,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" {
 				FatalError("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
 			}
-		}
-		if initProxiedServer && !proxiedServerInitUngated() {
-			// Dark-launch gate (bd-6dnrw.44): stays until the remaining P1
-			// decisions land (TLS, auth). The env escape exists so the proxied
-			// integration suites and their CI lane can bootstrap real
-			// workspaces without opening the user surface.
-			FatalError("--proxied-server is not yet implemented")
 		}
 		if serverConfigPath != "" {
 			if !initProxiedServer {

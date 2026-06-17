@@ -46,8 +46,15 @@ type BlockingInfo struct {
 	Parent    map[string]string
 }
 
+type DepDeleteResult struct {
+	Found       bool
+	Type        types.DependencyType
+	DependsOnID string
+}
+
 type DependencySQLRepository interface {
 	Insert(ctx context.Context, dep *types.Dependency, actor string, opts DepInsertOpts) error
+	Delete(ctx context.Context, issueID, dependsOnID, actor string, opts DepInsertOpts) (DepDeleteResult, error)
 	HasCycle(ctx context.Context, issueID, dependsOnID string) (bool, error)
 	ListByIssueIDs(ctx context.Context, issueIDs []string, opts DepListOpts) (DepBulkResult, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string, opts DepCountsOpts) (map[string]*types.DependencyCounts, error)
@@ -58,12 +65,16 @@ type DependencySQLRepository interface {
 
 type DependencyUseCase interface {
 	AddDependency(ctx context.Context, dep *types.Dependency, actor string) error
+	RemoveDependency(ctx context.Context, issueID, dependsOnID, actor string) error
+	Reparent(ctx context.Context, childID, newParentID, actor string) error
 	ListByIssueIDs(ctx context.Context, issueIDs []string, filter DepListFilter) (DepBulkResult, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string) (map[string]*types.DependencyCounts, error)
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
 
 	AddWispDependency(ctx context.Context, dep *types.Dependency, actor string) error
+	RemoveWispDependency(ctx context.Context, wispID, dependsOnID, actor string) error
+	ReparentWisp(ctx context.Context, childWispID, newParentID, actor string) error
 	ListByWispIDs(ctx context.Context, wispIDs []string, filter DepListFilter) (DepBulkResult, error)
 	CountsByWispIDs(ctx context.Context, wispIDs []string) (map[string]*types.DependencyCounts, error)
 }
@@ -106,6 +117,81 @@ func (u *dependencyUseCaseImpl) add(ctx context.Context, dep *types.Dependency, 
 
 	if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 		return fmt.Errorf("add dep: insert: %w", err)
+	}
+	return nil
+}
+
+func (u *dependencyUseCaseImpl) RemoveDependency(ctx context.Context, issueID, dependsOnID, actor string) error {
+	return u.removeDep(ctx, issueID, dependsOnID, actor, false)
+}
+
+func (u *dependencyUseCaseImpl) RemoveWispDependency(ctx context.Context, wispID, dependsOnID, actor string) error {
+	return u.removeDep(ctx, wispID, dependsOnID, actor, true)
+}
+
+func (u *dependencyUseCaseImpl) removeDep(ctx context.Context, sourceID, dependsOnID, actor string, useWisp bool) error {
+	if sourceID == "" || dependsOnID == "" {
+		return fmt.Errorf("remove dep: sourceID and dependsOnID must not be empty")
+	}
+	if _, err := u.depRepo.Delete(ctx, sourceID, dependsOnID, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
+		return fmt.Errorf("remove dep %s -> %s: %w", sourceID, dependsOnID, err)
+	}
+	return nil
+}
+
+func (u *dependencyUseCaseImpl) Reparent(ctx context.Context, childID, newParentID, actor string) error {
+	return u.reparent(ctx, childID, newParentID, actor, false)
+}
+
+func (u *dependencyUseCaseImpl) ReparentWisp(ctx context.Context, childWispID, newParentID, actor string) error {
+	return u.reparent(ctx, childWispID, newParentID, actor, true)
+}
+
+func (u *dependencyUseCaseImpl) reparent(ctx context.Context, childID, newParentID, actor string, useWisp bool) error {
+	if childID == "" {
+		return fmt.Errorf("reparent: childID must not be empty")
+	}
+	if childID == newParentID {
+		return fmt.Errorf("reparent: %s cannot be its own parent", childID)
+	}
+
+	opts := DepInsertOpts{UseWispsTable: useWisp}
+	res, err := u.depRepo.ListByIssueIDs(ctx, []string{childID}, DepListOpts{
+		Types:         []types.DependencyType{types.DepParentChild},
+		Direction:     DepDirectionOut,
+		UseWispsTable: useWisp,
+	})
+	if err != nil {
+		return fmt.Errorf("reparent: list current parent: %w", err)
+	}
+
+	var oldParentID string
+	for _, dep := range res.Outgoing[childID] {
+		if dep.Type == types.DepParentChild {
+			oldParentID = dep.DependsOnID
+			break
+		}
+	}
+
+	if oldParentID == newParentID {
+		return nil
+	}
+
+	if oldParentID != "" {
+		if _, err := u.depRepo.Delete(ctx, childID, oldParentID, actor, opts); err != nil {
+			return fmt.Errorf("reparent: remove old parent %s: %w", oldParentID, err)
+		}
+	}
+
+	if newParentID != "" {
+		dep := &types.Dependency{
+			IssueID:     childID,
+			DependsOnID: newParentID,
+			Type:        types.DepParentChild,
+		}
+		if err := u.depRepo.Insert(ctx, dep, actor, opts); err != nil {
+			return fmt.Errorf("reparent: add new parent %s: %w", newParentID, err)
+		}
 	}
 	return nil
 }
