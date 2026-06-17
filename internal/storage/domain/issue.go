@@ -51,6 +51,19 @@ type IssueSQLRepository interface {
 	FindAllDependents(ctx context.Context, ids []string) ([]string, error)
 	AffectedByDeletion(ctx context.Context, issueIDs, wispIDs []string) (affectedIssues, affectedWisps []string, err error)
 	RecomputeIsBlocked(ctx context.Context, issueIDs, wispIDs []string) error
+	Close(ctx context.Context, id string, params CloseRowParams, actor string, opts IssueTableOpts) (CloseRowResult, error)
+	GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error)
+}
+
+type CloseRowParams struct {
+	Reason  string
+	Session string
+}
+
+type CloseRowResult struct {
+	Updated       bool
+	AlreadyClosed bool
+	IsWisp        bool
 }
 
 type DeleteIssuesParams struct {
@@ -173,6 +186,10 @@ type IssueUseCase interface {
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateIssue(ctx context.Context, id string, updates map[string]any, actor string) error
 	ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error)
+	ClaimIssueIfOpen(ctx context.Context, id, actor string) (ClaimResult, error)
+	CloseIssue(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error)
+	CountOpenChildren(ctx context.Context, id string) (int, error)
+	GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error)
 	ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error)
 	ApplyIssueGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
 	AsOf(ctx context.Context, id, ref string) (*types.Issue, error)
@@ -189,7 +206,21 @@ type IssueUseCase interface {
 	CreateWisps(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateWisp(ctx context.Context, id string, updates map[string]any, actor string) error
 	ClaimWisp(ctx context.Context, id, actor string) (ClaimResult, error)
+	ClaimWispIfOpen(ctx context.Context, id, actor string) (ClaimResult, error)
+	CloseWisp(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error)
+	CountOpenWispChildren(ctx context.Context, id string) (int, error)
+	GetNewlyUnblockedByCloseWisp(ctx context.Context, closedID string) ([]*types.Issue, error)
 	ApplyWispGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
+}
+
+type CloseIssueParams struct {
+	Reason  string
+	Session string
+}
+
+type CloseIssueResult struct {
+	Issue  *types.Issue
+	Closed bool
 }
 
 func NewIssueUseCase(
@@ -1111,4 +1142,89 @@ func (u *issueUseCaseImpl) mintTopLevelID(ctx context.Context, issue *types.Issu
 		}
 	}
 	return "", fmt.Errorf("failed to generate unique ID for prefix %q after lengths %d..%d with 10 nonces each", prefix, baseLength, cfg.MaxLength)
+}
+
+func (u *issueUseCaseImpl) CloseIssue(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error) {
+	return u.close(ctx, id, params, actor, false)
+}
+
+func (u *issueUseCaseImpl) CloseWisp(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error) {
+	return u.close(ctx, id, params, actor, true)
+}
+
+func (u *issueUseCaseImpl) close(ctx context.Context, id string, params CloseIssueParams, actor string, useWisp bool) (CloseIssueResult, error) {
+	if id == "" {
+		return CloseIssueResult{}, fmt.Errorf("close: id must not be empty")
+	}
+	if actor == "" {
+		return CloseIssueResult{}, fmt.Errorf("close: actor must not be empty")
+	}
+	row, err := u.issueRepo.Close(ctx, id, CloseRowParams{Reason: params.Reason, Session: params.Session}, actor, IssueTableOpts{UseWispsTable: useWisp})
+	if err != nil {
+		return CloseIssueResult{}, fmt.Errorf("close %s: %w", id, err)
+	}
+	issue, err := u.issueRepo.Get(ctx, id, IssueTableOpts{UseWispsTable: row.IsWisp})
+	if err != nil {
+		return CloseIssueResult{}, fmt.Errorf("close %s: reload: %w", id, err)
+	}
+	return CloseIssueResult{
+		Issue:  issue,
+		Closed: !row.AlreadyClosed,
+	}, nil
+}
+
+func (u *issueUseCaseImpl) ClaimIssueIfOpen(ctx context.Context, id, actor string) (ClaimResult, error) {
+	return u.claim(ctx, id, actor, false)
+}
+
+func (u *issueUseCaseImpl) ClaimWispIfOpen(ctx context.Context, id, actor string) (ClaimResult, error) {
+	return u.claim(ctx, id, actor, true)
+}
+
+func (u *issueUseCaseImpl) CountOpenChildren(ctx context.Context, id string) (int, error) {
+	return u.countOpenChildren(ctx, id, false)
+}
+
+func (u *issueUseCaseImpl) CountOpenWispChildren(ctx context.Context, id string) (int, error) {
+	return u.countOpenChildren(ctx, id, true)
+}
+
+func (u *issueUseCaseImpl) countOpenChildren(ctx context.Context, id string, useWisp bool) (int, error) {
+	if id == "" {
+		return 0, fmt.Errorf("CountOpenChildren: id must not be empty")
+	}
+	children, err := u.depRepo.ListWithIssueMetadata(ctx, id, DepListOpts{
+		Types:         []types.DependencyType{types.DepParentChild},
+		Direction:     DepDirectionIn,
+		UseWispsTable: useWisp,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("CountOpenChildren %s: %w", id, err)
+	}
+	open := 0
+	for _, child := range children {
+		if child.Status != types.StatusClosed {
+			open++
+		}
+	}
+	return open, nil
+}
+
+func (u *issueUseCaseImpl) GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error) {
+	return u.getNewlyUnblockedByClose(ctx, closedID)
+}
+
+func (u *issueUseCaseImpl) GetNewlyUnblockedByCloseWisp(ctx context.Context, closedID string) ([]*types.Issue, error) {
+	return u.getNewlyUnblockedByClose(ctx, closedID)
+}
+
+func (u *issueUseCaseImpl) getNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error) {
+	if closedID == "" {
+		return nil, fmt.Errorf("GetNewlyUnblockedByClose: closedID must not be empty")
+	}
+	out, err := u.issueRepo.GetNewlyUnblockedByClose(ctx, closedID)
+	if err != nil {
+		return nil, fmt.Errorf("GetNewlyUnblockedByClose %s: %w", closedID, err)
+	}
+	return out, nil
 }

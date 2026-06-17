@@ -712,4 +712,24 @@ func (r *issueSQLRepositoryImpl) AsOf(ctx context.Context, id, ref string) (*typ
 	return issueops.AsOfInTx(ctx, r.runner, id, ref)
 }
 
+func (r *issueSQLRepositoryImpl) Close(ctx context.Context, id string, params domain.CloseRowParams, actor string, opts domain.IssueTableOpts) (domain.CloseRowResult, error) {
+	res, err := issueops.CloseIssueInTx(ctx, r.runner, id, params.Reason, actor, params.Session)
+	if err != nil {
+		return domain.CloseRowResult{}, fmt.Errorf("db: IssueSQLRepository.Close %s: %w", id, err)
+	}
+	return domain.CloseRowResult{
+		Updated:       !res.AlreadyClosed,
+		AlreadyClosed: res.AlreadyClosed,
+		IsWisp:        res.IsWisp,
+	}, nil
+}
+
+func (r *issueSQLRepositoryImpl) GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error) {
+	out, err := issueops.GetNewlyUnblockedByCloseInTx(ctx, r.runner, closedID)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.GetNewlyUnblockedByClose %s: %w", closedID, err)
+	}
+	return out, nil
+}
+
 const deleteBatchSize = 200

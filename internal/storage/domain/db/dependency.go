@@ -750,3 +750,11 @@ func filterDepsByType(deps []*types.IssueWithDependencyMetadata, filter []types.
 	}
 	return out
 }
+
+func (r *dependencySQLRepositoryImpl) IsBlocked(ctx context.Context, issueID string, opts domain.DepListOpts) (bool, []string, error) {
+	blocked, blockers, err := issueops.IsBlockedInTx(ctx, r.runner, issueID)
+	if err != nil {
+		return false, nil, fmt.Errorf("db: DependencySQLRepository.IsBlocked %s: %w", issueID, err)
+	}
+	return blocked, blockers, nil
+}
