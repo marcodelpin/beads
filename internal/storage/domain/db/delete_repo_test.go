@@ -54,6 +54,11 @@ func (s *testSuite) TestLabelSQLRepositoryDelete() {
 		s.Run("RemovesLabelsForIDs", s.labelDeleteAllRemoves)
 		s.Run("RoutesToWispLabels", s.labelDeleteAllWispRouting)
 	})
+	s.Run("CountAllForIDs", func() {
+		s.Run("EmptySliceIsZero", s.labelCountAllEmpty)
+		s.Run("CountsLabelsForIDs", s.labelCountAllCounts)
+		s.Run("RoutesToWispLabels", s.labelCountAllWispRouting)
+	})
 }
 
 func (s *testSuite) TestEventsSQLRepositoryDelete() {
@@ -373,6 +378,40 @@ func (s *testSuite) labelDeleteAllWispRouting() {
 	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
 		"SELECT COUNT(*) FROM wisp_labels WHERE issue_id = ?", "bd-del-wlbl-1").Scan(&wispCount))
 	s.Equal(0, wispCount)
+}
+
+func (s *testSuite) labelCountAllEmpty() {
+	n, err := s.labelRepo().CountAllForIDs(s.Ctx(), nil, domain.LabelOpts{})
+	s.Require().NoError(err)
+	s.Equal(0, n)
+}
+
+func (s *testSuite) labelCountAllCounts() {
+	s.seedIssueRow("bd-del-lcnt-a")
+	s.seedIssueRow("bd-del-lcnt-b")
+	s.seedIssueRow("bd-del-lcnt-c")
+	r := s.labelRepo()
+	s.Require().NoError(r.Insert(s.Ctx(), "bd-del-lcnt-a", "x", "tester", domain.LabelOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(), "bd-del-lcnt-a", "y", "tester", domain.LabelOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(), "bd-del-lcnt-b", "z", "tester", domain.LabelOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(), "bd-del-lcnt-c", "ignored", "tester", domain.LabelOpts{}))
+
+	n, err := r.CountAllForIDs(s.Ctx(),
+		[]string{"bd-del-lcnt-a", "bd-del-lcnt-b"}, domain.LabelOpts{})
+	s.Require().NoError(err)
+	s.Equal(3, n)
+}
+
+func (s *testSuite) labelCountAllWispRouting() {
+	s.seedWispRow("bd-del-wlcnt-1")
+	r := s.labelRepo()
+	s.Require().NoError(r.Insert(s.Ctx(), "bd-del-wlcnt-1", "alpha", "tester",
+		domain.LabelOpts{UseWispsTable: true}))
+
+	n, err := r.CountAllForIDs(s.Ctx(), []string{"bd-del-wlcnt-1"},
+		domain.LabelOpts{UseWispsTable: true})
+	s.Require().NoError(err)
+	s.Equal(1, n, "wisp-routed count must read from wisp_labels")
 }
 
 func (s *testSuite) eventsDeleteAllEmpty() {

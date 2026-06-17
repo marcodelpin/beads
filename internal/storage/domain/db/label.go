@@ -7,6 +7,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -180,4 +181,22 @@ func (r *labelSQLRepositoryImpl) DeleteAllForIDs(ctx context.Context, ids []stri
 		total += int(n)
 	}
 	return total, nil
+}
+
+func (r *labelSQLRepositoryImpl) CountAllForIDs(ctx context.Context, ids []string, opts domain.LabelOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "labels"
+	if opts.UseWispsTable {
+		table = "wisp_labels"
+	}
+	count, err := issueops.CountRowsForIssueIDsInTx(ctx, r.runner, table, ids)
+	if err != nil {
+		if opts.UseWispsTable && dberrors.IsTableNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("db: LabelSQLRepository.CountAllForIDs: %w", err)
+	}
+	return count, nil
 }

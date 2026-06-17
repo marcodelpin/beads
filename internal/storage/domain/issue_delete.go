@@ -63,16 +63,6 @@ func (u *issueUseCaseImpl) deleteMany(ctx context.Context, params DeleteIssuesPa
 		return DeleteIssuesResult{}, fmt.Errorf("delete: partition: %w", err)
 	}
 
-	deletedSet := make(map[string]bool, len(allIDs))
-	for _, id := range allIDs {
-		deletedSet[id] = true
-	}
-
-	connected, connectedIsWisp, err := u.collectConnectedIssues(ctx, allIDs, deletedSet)
-	if err != nil {
-		return DeleteIssuesResult{}, err
-	}
-
 	result := DeleteIssuesResult{}
 
 	depIssue, err := u.depRepo.CountAllForIDs(ctx, regularIDs, DepCountsOpts{})
@@ -85,13 +75,13 @@ func (u *issueUseCaseImpl) deleteMany(ctx context.Context, params DeleteIssuesPa
 	}
 	result.DependenciesCount = depIssue + depWisp
 
-	labelIssue, err := u.sumLabelCount(ctx, regularIDs, false)
+	labelIssue, err := u.labelRepo.CountAllForIDs(ctx, regularIDs, LabelOpts{})
 	if err != nil {
-		return DeleteIssuesResult{}, err
+		return DeleteIssuesResult{}, fmt.Errorf("delete: count labels: %w", err)
 	}
-	labelWisp, err := u.sumLabelCount(ctx, wispIDs, true)
+	labelWisp, err := u.labelRepo.CountAllForIDs(ctx, wispIDs, LabelOpts{UseWispsTable: true})
 	if err != nil {
-		return DeleteIssuesResult{}, err
+		return DeleteIssuesResult{}, fmt.Errorf("delete: count wisp labels: %w", err)
 	}
 	result.LabelsCount = labelIssue + labelWisp
 
@@ -107,6 +97,19 @@ func (u *issueUseCaseImpl) deleteMany(ctx context.Context, params DeleteIssuesPa
 
 	if params.DryRun {
 		return result, nil
+	}
+
+	var connected map[string]*types.Issue
+	var connectedIsWisp map[string]bool
+	if params.UpdateTextReferences {
+		deletedSet := make(map[string]bool, len(allIDs))
+		for _, id := range allIDs {
+			deletedSet[id] = true
+		}
+		connected, connectedIsWisp, err = u.collectConnectedIssues(ctx, allIDs, deletedSet)
+		if err != nil {
+			return result, err
+		}
 	}
 
 	affectedIssues, affectedWisps, err := u.issueRepo.AffectedByDeletion(ctx, regularIDs, wispIDs)
@@ -282,29 +285,11 @@ func (u *issueUseCaseImpl) collectConnectedIssues(
 	return out, isWisp, nil
 }
 
-func (u *issueUseCaseImpl) sumLabelCount(ctx context.Context, ids []string, useWisp bool) (int, error) {
-	if len(ids) == 0 {
-		return 0, nil
-	}
-	res, err := u.labelRepo.ListByIssueIDs(ctx, ids, LabelOpts{UseWispsTable: useWisp})
-	if err != nil {
-		if useWisp && dberrors.IsTableNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("sumLabelCount: %w", err)
-	}
-	total := 0
-	for _, ls := range res {
-		total += len(ls)
-	}
-	return total, nil
-}
-
 func (u *issueUseCaseImpl) rewriteTextReferences(
 	ctx context.Context, deletedIDs []string,
 	connected map[string]*types.Issue, isWisp map[string]bool, actor string,
 ) (int, error) {
-	updatedCount := 0
+	touched := make(map[string]bool)
 	for _, id := range deletedIDs {
 		pattern := `(^|[^A-Za-z0-9_-])(` + regexp.QuoteMeta(id) + `)($|[^A-Za-z0-9_-])`
 		re := regexp.MustCompile(pattern)
@@ -328,9 +313,9 @@ func (u *issueUseCaseImpl) rewriteTextReferences(
 			}
 			opts := IssueTableOpts{UseWispsTable: isWisp[connID]}
 			if err := u.issueRepo.Update(ctx, connID, updates, actor, opts); err != nil {
-				return updatedCount, fmt.Errorf("rewrite refs %s: %w", connID, err)
+				return len(touched), fmt.Errorf("rewrite refs %s: %w", connID, err)
 			}
-			updatedCount++
+			touched[connID] = true
 			if desc, ok := updates["description"].(string); ok {
 				conn.Description = desc
 			}
@@ -345,5 +330,5 @@ func (u *issueUseCaseImpl) rewriteTextReferences(
 			}
 		}
 	}
-	return updatedCount, nil
+	return len(touched), nil
 }

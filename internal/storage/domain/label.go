@@ -15,6 +15,7 @@ type LabelSQLRepository interface {
 	List(ctx context.Context, issueID string, opts LabelOpts) ([]string, error)
 	ListByIssueIDs(ctx context.Context, issueIDs []string, opts LabelOpts) (map[string][]string, error)
 	DeleteAllForIDs(ctx context.Context, ids []string, opts LabelOpts) (int, error)
+	CountAllForIDs(ctx context.Context, ids []string, opts LabelOpts) (int, error)
 }
 
 type LabelUseCase interface {
