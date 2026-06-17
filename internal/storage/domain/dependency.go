@@ -65,6 +65,7 @@ type DependencySQLRepository interface {
 
 	GetBlockingInfo(ctx context.Context, issueIDs []string, opts DepListOpts) (BlockingInfo, error)
 	GetBlockingInfoAcrossIssuesAndWisps(ctx context.Context, issueIDs []string) (BlockingInfo, error)
+	IsBlocked(ctx context.Context, issueID string, opts DepListOpts) (bool, []string, error)
 
 	DeleteAllForIDs(ctx context.Context, ids []string, opts DepInsertOpts) (int, error)
 	CountAllForIDs(ctx context.Context, ids []string, opts DepCountsOpts) (int, error)
@@ -80,6 +81,7 @@ type DependencyUseCase interface {
 	CountByIssueID(ctx context.Context, issueID string, filter DepListFilter) (int64, error)
 	CountsByIssueIDs(ctx context.Context, issueIDs []string) (map[string]*types.DependencyCounts, error)
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
+	IsBlocked(ctx context.Context, issueID string) (bool, []string, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
 
 	AddWispDependency(ctx context.Context, dep *types.Dependency, actor string) error
@@ -90,6 +92,7 @@ type DependencyUseCase interface {
 	IterWispWithIssueMetadata(ctx context.Context, wispID string, filter DepListFilter) (storage.Iter[types.IssueWithDependencyMetadata], error)
 	CountByWispID(ctx context.Context, wispID string, filter DepListFilter) (int64, error)
 	CountsByWispIDs(ctx context.Context, wispIDs []string) (map[string]*types.DependencyCounts, error)
+	IsWispBlocked(ctx context.Context, wispID string) (bool, []string, error)
 }
 
 func NewDependencyUseCase(depRepo DependencySQLRepository) DependencyUseCase {
@@ -362,4 +365,23 @@ func (u *dependencyUseCaseImpl) GetBlockingInfo(ctx context.Context, issueIDs []
 
 func isBlockingDep(t types.DependencyType) bool {
 	return t == types.DepBlocks || t == types.DepConditionalBlocks
+}
+
+func (u *dependencyUseCaseImpl) IsBlocked(ctx context.Context, issueID string) (bool, []string, error) {
+	return u.isBlocked(ctx, issueID, false)
+}
+
+func (u *dependencyUseCaseImpl) IsWispBlocked(ctx context.Context, wispID string) (bool, []string, error) {
+	return u.isBlocked(ctx, wispID, true)
+}
+
+func (u *dependencyUseCaseImpl) isBlocked(ctx context.Context, id string, useWisp bool) (bool, []string, error) {
+	if id == "" {
+		return false, nil, fmt.Errorf("IsBlocked: id must not be empty")
+	}
+	blocked, blockers, err := u.depRepo.IsBlocked(ctx, id, DepListOpts{UseWispsTable: useWisp})
+	if err != nil {
+		return false, nil, fmt.Errorf("IsBlocked %s: %w", id, err)
+	}
+	return blocked, blockers, nil
 }

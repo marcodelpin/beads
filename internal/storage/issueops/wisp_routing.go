@@ -16,7 +16,7 @@ import (
 // For hot-path callers that partition a batch of IDs by wisp status,
 // prefer WispIDSetInTx + partitionByWispSet to amortize the per-ID
 // query cost into a single scoped query over the batch.
-func IsActiveWispInTx(ctx context.Context, tx *sql.Tx, id string) bool {
+func IsActiveWispInTx(ctx context.Context, tx DBTX, id string) bool {
 	var exists int
 	err := tx.QueryRowContext(ctx, "SELECT 1 FROM wisps WHERE id = ? LIMIT 1", id).Scan(&exists)
 	return err == nil
