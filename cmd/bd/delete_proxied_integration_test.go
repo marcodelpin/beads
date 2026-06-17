@@ -233,11 +233,6 @@ func TestProxiedServerDelete(t *testing.T) {
 			t.Errorf("parent status after deleting child: got %q, want non-closed", status)
 		}
 	})
-}
-
-func TestProxiedServerDeleteWisp(t *testing.T) {
-	requireProxiedServerEnv(t)
-	bd := buildEmbeddedBD(t)
 
 	t.Run("delete_always_cascades_dependents", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "dac")
@@ -462,6 +457,11 @@ func TestProxiedServerDeleteWisp(t *testing.T) {
 		db := openProxiedDB(t, p)
 		assertRowExists(t, db, "issues", issue.ID)
 	})
+}
+
+func TestProxiedServerDeleteWisp(t *testing.T) {
+	requireProxiedServerEnv(t)
+	bd := buildEmbeddedBD(t)
 
 	t.Run("delete_mixed_wisp_and_issue_partition", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "dmp")
@@ -532,6 +532,118 @@ func TestProxiedServerDeleteWisp(t *testing.T) {
 
 		assertRowAbsent(t, db, "wisps", wisp.ID)
 		assertRowExists(t, db, "issues", wisp.ID)
+	})
+
+	t.Run("delete_wisp_batch", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dwb")
+		a := bdProxiedCreate(t, bd, p.dir, "Wisp batch 1", "--ephemeral")
+		b := bdProxiedCreate(t, bd, p.dir, "Wisp batch 2", "--ephemeral")
+		c := bdProxiedCreate(t, bd, p.dir, "Wisp batch 3", "--ephemeral")
+
+		bdProxiedDelete(t, bd, p.dir, a.ID, b.ID, c.ID, "--force")
+
+		db := openProxiedDB(t, p)
+		for _, id := range []string{a.ID, b.ID, c.ID} {
+			assertRowAbsent(t, db, "wisps", id)
+		}
+	})
+
+	t.Run("delete_wisp_cascades_dependents", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dwc")
+		parent := bdProxiedCreate(t, bd, p.dir, "Wisp parent", "--ephemeral")
+		child := bdProxiedCreate(t, bd, p.dir, "Wisp child", "--ephemeral",
+			"--deps", "depends-on:"+parent.ID)
+
+		bdProxiedDelete(t, bd, p.dir, parent.ID, "--force")
+
+		db := openProxiedDB(t, p)
+		assertRowAbsent(t, db, "wisps", parent.ID)
+		assertRowAbsent(t, db, "wisps", child.ID)
+	})
+
+	t.Run("delete_wisp_cascade_spans_all_dep_types", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dws")
+		a := bdProxiedCreate(t, bd, p.dir, "Wisp A", "--ephemeral")
+		b := bdProxiedCreate(t, bd, p.dir, "Wisp B", "--ephemeral",
+			"--deps", "depends-on:"+a.ID)
+		c := bdProxiedCreate(t, bd, p.dir, "Wisp C", "--ephemeral",
+			"--parent", b.ID)
+
+		bdProxiedDelete(t, bd, p.dir, a.ID, "--force")
+
+		db := openProxiedDB(t, p)
+		for _, id := range []string{a.ID, b.ID, c.ID} {
+			assertRowAbsent(t, db, "wisps", id)
+		}
+	})
+
+	t.Run("delete_wisp_skips_dolt_commit", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dwdc")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp commit skip", "--ephemeral")
+
+		db := openProxiedDB(t, p)
+		var before string
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT HASHOF('HEAD')").Scan(&before); err != nil {
+			t.Fatalf("read HEAD before: %v", err)
+		}
+
+		bdProxiedDelete(t, bd, p.dir, wisp.ID, "--force")
+
+		var after string
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT HASHOF('HEAD')").Scan(&after); err != nil {
+			t.Fatalf("read HEAD after: %v", err)
+		}
+		if after != before {
+			t.Errorf("HEAD advanced for a wisp-only delete (wisps are dolt_ignored): before=%s after=%s",
+				before, after)
+		}
+	})
+
+	t.Run("delete_wisp_dry_run_does_not_mutate", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dwdr")
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp dry-run target", "--ephemeral")
+
+		got := bdProxiedDeleteJSON(t, bd, p.dir, "--json", wisp.ID, "--dry-run")
+		if _, ok := got["would_delete"]; !ok {
+			t.Errorf("dry-run JSON missing `would_delete`; got keys: %v", mapKeys(got))
+		}
+
+		db := openProxiedDB(t, p)
+		assertRowExists(t, db, "wisps", wisp.ID)
+	})
+
+	t.Run("delete_wisp_rewrites_text_references", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dwrt")
+		neighbor := bdProxiedCreate(t, bd, p.dir, "Wisp neighbor", "--ephemeral")
+		target := bdProxiedCreate(t, bd, p.dir, "Wisp target", "--ephemeral",
+			"--deps", "depends-on:"+neighbor.ID)
+		bdProxiedUpdateOne(t, bd, p.dir, neighbor.ID, "--description", "see "+target.ID+" for context")
+
+		bdProxiedDelete(t, bd, p.dir, target.ID, "--force")
+
+		db := openProxiedDB(t, p)
+		assertRowAbsent(t, db, "wisps", target.ID)
+		assertRowExists(t, db, "wisps", neighbor.ID)
+
+		var desc string
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT description FROM wisps WHERE id = ?", neighbor.ID).Scan(&desc); err != nil {
+			t.Fatalf("read wisp neighbor description: %v", err)
+		}
+		want := "[deleted:" + target.ID + "]"
+		if !strings.Contains(desc, want) {
+			t.Errorf("wisp neighbor description: got %q, want substring %q", desc, want)
+		}
+	})
+
+	t.Run("delete_wisp_nonexistent", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "dwn")
+		out := bdProxiedDeleteFail(t, bd, p.dir, "dwn-doesnotexist", "--force")
+		if !strings.Contains(strings.ToLower(out), "not found") {
+			t.Errorf("expected `not found` error for bogus wisp id, got: %s", out)
+		}
 	})
 }
 
