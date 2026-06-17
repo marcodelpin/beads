@@ -32,6 +32,7 @@ type closeProxiedOutcome struct {
 	id     string
 	before *types.Issue
 	after  *types.Issue
+	closed bool
 }
 
 func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
@@ -103,6 +104,9 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 			FatalErrorRespectJSON("commit close: %v", err)
 		}
 		for _, o := range outcomes {
+			if !o.closed {
+				continue
+			}
 			if err := fireProxiedCloseHooks(ctx, o.before, o.after); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 			}
@@ -232,7 +236,7 @@ func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, 
 
 	autoCloseProxiedCompletedMolecule(ctx, uw, id, actor, in.session, in.jsonOut)
 
-	return closeProxiedOutcome{id: id, before: current, after: res.Issue}, true
+	return closeProxiedOutcome{id: id, before: current, after: res.Issue, closed: res.Closed}, true
 }
 
 func closeProxiedCommitMessage(outcomes []closeProxiedOutcome, claimed *types.Issue, cont *ContinueResult) string {
