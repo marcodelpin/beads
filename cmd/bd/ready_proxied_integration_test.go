@@ -112,6 +112,45 @@ func TestProxiedServerReady(t *testing.T) {
 		}
 	})
 
+	t.Run("limit_zero_returns_full_set_and_suppresses_hint", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "rdl0")
+		const n = 4
+		want := make(map[string]bool, n)
+		for i := 0; i < n; i++ {
+			issue := bdProxiedCreate(t, bd, p.dir, fmt.Sprintf("L0 item %d", i), "--label", "l0")
+			want[issue.ID] = true
+		}
+		stdout, stderr, err := bdProxiedRunBuffers(t, bd, p.dir,
+			"ready", "--json", "--limit", "0", "--label", "l0")
+		if err != nil {
+			t.Fatalf("bd ready --json --limit 0 failed: %v\nstderr: %s", err, stderr)
+		}
+		if strings.Contains(stderr, "Use --limit 0 for all") {
+			t.Errorf("--limit 0 must not emit truncation hint, got stderr: %s", stderr)
+		}
+		s := strings.TrimSpace(stdout)
+		start := strings.Index(s, "[")
+		if start < 0 {
+			t.Fatalf("no JSON array in stdout: %s", stdout)
+		}
+		var got []*types.IssueWithCounts
+		if err := json.Unmarshal([]byte(s[start:]), &got); err != nil {
+			t.Fatalf("parse JSON: %v\n%s", err, s[start:])
+		}
+		gotIDs := map[string]bool{}
+		for _, r := range got {
+			gotIDs[r.ID] = true
+		}
+		for id := range want {
+			if !gotIDs[id] {
+				t.Errorf("expected %s in --limit 0 result", id)
+			}
+		}
+		if len(got) < n {
+			t.Errorf("got %d issues under --limit 0, want >=%d", len(got), n)
+		}
+	})
+
 	t.Run("limit_truncation_hint_on_stderr", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "rdl")
 		for i := 0; i < 4; i++ {
