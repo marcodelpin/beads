@@ -69,6 +69,7 @@ type DependencySQLRepository interface {
 
 	DeleteAllForIDs(ctx context.Context, ids []string, opts DepInsertOpts) (int, error)
 	CountAllForIDs(ctx context.Context, ids []string, opts DepCountsOpts) (int, error)
+	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
 }
 
 type DependencyUseCase interface {
@@ -83,6 +84,7 @@ type DependencyUseCase interface {
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
 	IsBlocked(ctx context.Context, issueID string) (bool, []string, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
+	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
 
 	AddWispDependency(ctx context.Context, dep *types.Dependency, actor string) error
 	RemoveWispDependency(ctx context.Context, wispID, dependsOnID, actor string) error
@@ -384,4 +386,12 @@ func (u *dependencyUseCaseImpl) isBlocked(ctx context.Context, id string, useWis
 		return false, nil, fmt.Errorf("IsBlocked %s: %w", id, err)
 	}
 	return blocked, blockers, nil
+}
+
+func (u *dependencyUseCaseImpl) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {
+	out, err := u.depRepo.DetectCycles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("DetectCycles: %w", err)
+	}
+	return out, nil
 }

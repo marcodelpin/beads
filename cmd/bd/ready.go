@@ -36,6 +36,15 @@ Use --claim to atomically claim the first ready issue matching the filters:
 
 This is useful for agents executing molecules to see which steps can run next.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runReadyProxiedServer(cmd, rootCtx)
+			return
+		}
+
+		if offset, _ := cmd.Flags().GetInt("offset"); offset > 0 {
+			FatalError("--offset is only supported under --proxied-server")
+		}
+
 		claimReady, _ := cmd.Flags().GetBool("claim")
 
 		// Handle --gated flag (gate-resume discovery)
@@ -321,6 +330,10 @@ var blockedCmd = &cobra.Command{
 	Use:   "blocked",
 	Short: "Show blocked issues",
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runBlockedProxiedServer(cmd, rootCtx)
+			return
+		}
 		// Use global jsonOutput set by PersistentPreRun (respects config.yaml + env vars)
 		// Use factory to respect backend configuration (bd-m2jr: SQLite fallback fix)
 		ctx := rootCtx
@@ -731,6 +744,7 @@ type MoleculeReadyOutput struct {
 
 func init() {
 	readyCmd.Flags().IntP("limit", "n", 100, "Maximum issues to show (use 0 for unlimited)")
+	readyCmd.Flags().Int("offset", 0, "Skip the first N matching results (0-based). Only supported under --proxied-server.")
 	readyCmd.Flags().IntP("priority", "p", 0, "Filter by priority")
 	readyCmd.Flags().StringP("assignee", "a", "", "Filter by assignee")
 	readyCmd.Flags().BoolP("unassigned", "u", false, "Show only unassigned issues")
