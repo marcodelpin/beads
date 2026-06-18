@@ -261,22 +261,25 @@ func (s *testSuite) readyCollisionError() {
 
 func (s *testSuite) readyOffsetSkipsLeadingRows() {
 	r := s.issueRepo()
+	labelRepo := NewLabelSQLRepository(s.Runner())
+	const isoLabel = "rdy-off-isolate"
 	for i := 1; i <= 5; i++ {
-		iss := newTestIssue(fmt.Sprintf("bd-rdy-off-p%d", i), fmt.Sprintf("p%d", i))
+		id := fmt.Sprintf("bd-rdy-off-p%d", i)
+		iss := newTestIssue(id, fmt.Sprintf("p%d", i))
 		iss.Priority = i
 		s.Require().NoError(r.Insert(s.Ctx(), iss, "tester", domain.InsertIssueOpts{}))
+		s.Require().NoError(labelRepo.Insert(s.Ctx(), id, isoLabel, "tester", domain.LabelOpts{}))
 	}
 
 	out, err := r.GetReadyWork(s.Ctx(), types.WorkFilter{
 		Offset:     2,
 		Limit:      2,
 		SortPolicy: types.SortPolicyPriority,
-		Labels:     nil,
+		Labels:     []string{isoLabel},
 	})
 	s.Require().NoError(err)
 	got := issueIDsFrom(out)
 
-	got = filterPrefix(got, "bd-rdy-off-")
 	s.Require().Len(got, 2, "expected exactly 2 paginated results, got %v", got)
 	s.Equal("bd-rdy-off-p3", got[0], "Offset=2 must skip p1+p2")
 	s.Equal("bd-rdy-off-p4", got[1], "Limit=2 must stop after p4")
