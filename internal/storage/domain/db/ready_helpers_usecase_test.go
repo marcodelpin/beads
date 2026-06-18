@@ -1,6 +1,8 @@
 package db
 
 import (
+	"fmt"
+
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -33,6 +35,10 @@ func (s *testSuite) TestDependencyUseCase_DetectCycles() {
 	s.Run("NoEdgesReturnsEmpty", s.ucCyclesEmpty)
 	s.Run("CycleDetected", s.ucCyclesDetected)
 	s.Run("AcyclicReturnsEmpty", s.ucCyclesAcyclic)
+}
+
+func (s *testSuite) TestIssueUseCase_GetReadyWork_Pagination() {
+	s.Run("OffsetAndLimitRoundTripThroughUC", s.ucReadyWorkPaginationRoundTrip)
 }
 
 // ---------- ClaimReadyIssue UC ----------
@@ -272,4 +278,28 @@ func (s *testSuite) ucCyclesAcyclic() {
 	out, err := s.depUseCase().DetectCycles(s.Ctx())
 	s.Require().NoError(err)
 	s.Empty(out)
+}
+
+func (s *testSuite) ucReadyWorkPaginationRoundTrip() {
+	s.resetDB()
+	uc := s.issueUseCase()
+	r := s.issueRepo()
+	labelRepo := NewLabelSQLRepository(s.Runner())
+	const isoLabel = "uc-rdy-pag-isolate"
+	const n = 5
+	for i := 1; i <= n; i++ {
+		id := fmt.Sprintf("bd-ucrdypag-p%d", i)
+		iss := newTestIssue(id, fmt.Sprintf("p%d", i))
+		iss.Priority = i
+		s.Require().NoError(r.Insert(s.Ctx(), iss, "tester", domain.InsertIssueOpts{}))
+		s.Require().NoError(labelRepo.Insert(s.Ctx(), id, isoLabel, "tester", domain.LabelOpts{}))
+	}
+	base := types.WorkFilter{Labels: []string{isoLabel}, SortPolicy: types.SortPolicyPriority}
+
+	page, err := uc.GetReadyWork(s.Ctx(), withOffsetLimit(base, 2, 2))
+	s.Require().NoError(err)
+	s.Require().Len(page.Items, 2, "Limit=2 must cap at 2 items")
+	s.Equal("bd-ucrdypag-p3", page.Items[0].ID, "Offset=2 must skip p1+p2")
+	s.Equal("bd-ucrdypag-p4", page.Items[1].ID, "second item must be p4")
+	s.True(page.HasMore, "HasMore must propagate up from the repo (p5 remains)")
 }

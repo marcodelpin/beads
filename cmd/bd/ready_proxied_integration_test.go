@@ -168,6 +168,89 @@ func TestProxiedServerReady(t *testing.T) {
 		if !strings.Contains(stderr, "Use --limit 0 for all") {
 			t.Fatalf("expected truncation hint on stderr, got: %q", stderr)
 		}
+		if !strings.Contains(stderr, "more matched but were hidden by --limit") {
+			t.Errorf("expected HasMore-based hint wording on stderr, got: %q", stderr)
+		}
+	})
+
+	t.Run("offset_with_large_finite_limit", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "rdofflz")
+		for i := 0; i < 4; i++ {
+			bdProxiedCreate(t, bd, p.dir,
+				fmt.Sprintf("Lz item %d", i), "--label", "rdofflz")
+		}
+		got := bdProxiedReadyJSON(t, bd, p,
+			"--offset", "1", "--limit", "1000", "--label", "rdofflz")
+		if len(got) != 3 {
+			t.Errorf("expected 3 items (4 created, offset 1, loose limit), got %d", len(got))
+		}
+	})
+
+	t.Run("offset_zero_equals_no_offset", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "rdoff0")
+		for i := 0; i < 3; i++ {
+			bdProxiedCreate(t, bd, p.dir,
+				fmt.Sprintf("Eq item %d", i), "--label", "rdoff0")
+		}
+		baseline := bdProxiedReadyJSON(t, bd, p,
+			"--limit", "10", "--label", "rdoff0")
+		withZero := bdProxiedReadyJSON(t, bd, p,
+			"--offset", "0", "--limit", "10", "--label", "rdoff0")
+		if len(baseline) != len(withZero) {
+			t.Fatalf("--offset 0 must equal no --offset, lengths differ: %d vs %d", len(baseline), len(withZero))
+		}
+		for i := range baseline {
+			if baseline[i].ID != withZero[i].ID {
+				t.Errorf("position %d: baseline=%s, withZero=%s", i, baseline[i].ID, withZero[i].ID)
+			}
+		}
+	})
+
+	t.Run("offset_combo_guards", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "rdoffg")
+		bdProxiedCreate(t, bd, p.dir, "Seed")
+		cases := []struct {
+			name string
+			args []string
+		}{
+			{"offset_claim", []string{"--offset", "1", "--claim"}},
+			{"offset_mol", []string{"--offset", "1", "--mol", "x"}},
+			{"offset_gated", []string{"--offset", "1", "--gated"}},
+			{"offset_explain", []string{"--offset", "1", "--explain"}},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				out := bdProxiedReadyFail(t, bd, p, c.args...)
+				if !strings.Contains(out, "--offset cannot be combined") {
+					t.Errorf("expected '--offset cannot be combined' error, got: %s", out)
+				}
+			})
+		}
+	})
+
+	t.Run("offset_skips_leading_results", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "rdoff")
+		ids := make([]string, 4)
+		for i := 0; i < 4; i++ {
+			issue := bdProxiedCreate(t, bd, p.dir,
+				fmt.Sprintf("Off item %d", i), "-p", "1", "--label", "rdoff")
+			ids[i] = issue.ID
+		}
+		got := bdProxiedReadyJSON(t, bd, p,
+			"--offset", "2", "--limit", "2", "--label", "rdoff")
+		if len(got) != 2 {
+			t.Fatalf("expected exactly 2 items after offset+limit, got %d: %+v", len(got), got)
+		}
+		gotIDs := []string{got[0].ID, got[1].ID}
+		first := bdProxiedReadyJSON(t, bd, p, "--limit", "0", "--label", "rdoff")
+		if len(first) < 4 {
+			t.Fatalf("baseline returned %d, need 4 to assert ordering", len(first))
+		}
+		wantA, wantB := first[2].ID, first[3].ID
+		if gotIDs[0] != wantA || gotIDs[1] != wantB {
+			t.Errorf("offset=2 limit=2 returned %v, want [%s %s] (the 3rd+4th of the unpaginated set)",
+				gotIDs, wantA, wantB)
+		}
 	})
 
 	t.Run("claim_json_no_match_returns_empty_array", func(t *testing.T) {

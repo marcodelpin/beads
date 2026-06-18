@@ -16,6 +16,7 @@ import (
 type readyInput struct {
 	filter       types.WorkFilter
 	limit        int
+	offset       int
 	claim        bool
 	gated        bool
 	molID        string
@@ -38,6 +39,13 @@ func gatherReadyInput(cmd *cobra.Command) readyInput {
 	in.jsonOut = jsonOutput
 
 	in.limit, _ = cmd.Flags().GetInt("limit")
+	if cmd.Flags().Changed("offset") {
+		offset, _ := cmd.Flags().GetInt("offset")
+		if offset < 0 {
+			FatalError("--offset must be >= 0")
+		}
+		in.offset = offset
+	}
 	assignee, _ := cmd.Flags().GetString("assignee")
 	unassigned, _ := cmd.Flags().GetBool("unassigned")
 	sortPolicy, _ := cmd.Flags().GetString("sort")
@@ -73,6 +81,18 @@ func gatherReadyInput(cmd *cobra.Command) readyInput {
 	if in.claim && in.explain {
 		FatalErrorRespectJSON("--claim cannot be combined with --explain")
 	}
+	if in.offset > 0 && in.claim {
+		FatalErrorRespectJSON("--offset cannot be combined with --claim")
+	}
+	if in.offset > 0 && in.gated {
+		FatalErrorRespectJSON("--offset cannot be combined with --gated")
+	}
+	if in.offset > 0 && in.molID != "" {
+		FatalErrorRespectJSON("--offset cannot be combined with --mol")
+	}
+	if in.offset > 0 && in.explain {
+		FatalErrorRespectJSON("--offset cannot be combined with --explain")
+	}
 
 	labels = utils.NormalizeLabels(labels)
 	labelsAny = utils.NormalizeLabels(labelsAny)
@@ -98,6 +118,7 @@ func gatherReadyInput(cmd *cobra.Command) readyInput {
 		Status:           "open",
 		Type:             issueType,
 		Limit:            in.limit,
+		Offset:           in.offset,
 		Unassigned:       unassigned,
 		SortPolicy:       types.SortPolicy(sortPolicy),
 		Labels:           labels,

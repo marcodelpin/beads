@@ -94,23 +94,12 @@ func runReadyProxiedList(ctx context.Context, uw uow.UnitOfWork, in readyInput) 
 			FatalError("%v", err)
 		}
 		results := page.Items
-		totalReady := len(results)
-		truncated := false
-		if in.filter.Limit > 0 && len(results) == in.filter.Limit {
-			countFilter := in.filter
-			countFilter.Limit = 0
-			all, countErr := uw.IssueUseCase().GetReadyWorkWithCounts(ctx, countFilter)
-			if countErr == nil && len(all.Items) > len(results) {
-				totalReady = len(all.Items)
-				truncated = true
-			}
-		}
 		if results == nil {
 			results = []*types.IssueWithCounts{}
 		}
 		outputJSON(results)
-		if truncated {
-			fmt.Fprintf(os.Stderr, "Showing %d of %d ready issues. Use --limit 0 for all, or --limit N to raise the cap.\n", len(results), totalReady)
+		if page.HasMore && in.filter.Limit > 0 {
+			fmt.Fprintf(os.Stderr, "Showing %d ready issues; more matched but were hidden by --limit. Use --limit 0 for all, or --limit N to raise the cap.\n", len(results))
 		}
 		return
 	}
@@ -120,18 +109,7 @@ func runReadyProxiedList(ctx context.Context, uw uow.UnitOfWork, in readyInput) 
 		FatalError("%v", err)
 	}
 	issues := page.Items
-
-	totalReady := len(issues)
-	truncated := false
-	if in.filter.Limit > 0 && len(issues) == in.filter.Limit {
-		countFilter := in.filter
-		countFilter.Limit = 0
-		allPage, countErr := uw.IssueUseCase().GetReadyWork(ctx, countFilter)
-		if countErr == nil && len(allPage.Items) > len(issues) {
-			totalReady = len(allPage.Items)
-			truncated = true
-		}
-	}
+	truncated := page.HasMore && in.filter.Limit > 0
 
 	maybeShowUpgradeNotification()
 
@@ -171,7 +149,7 @@ func runReadyProxiedList(ctx context.Context, uw uow.UnitOfWork, in readyInput) 
 	}
 
 	if truncated {
-		fmt.Printf("%s\n\n", ui.RenderMuted(fmt.Sprintf("Showing %d of %d ready issues. Use -n to show more.", len(issues), totalReady)))
+		fmt.Printf("%s\n\n", ui.RenderMuted(fmt.Sprintf("Showing %d ready issues; more matched but were hidden by --limit. Use --limit 0 for all, or --limit N to raise the cap.", len(issues))))
 	}
 }
 
