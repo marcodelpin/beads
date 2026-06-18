@@ -19,6 +19,12 @@ This is more explicit than 'bd update --status open' and emits a Reopened event.
 	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("reopen")
+
+		if usesProxiedServer() {
+			runReopenProxiedServer(cmd, rootCtx, args)
+			return
+		}
+
 		reason, _ := cmd.Flags().GetString("reason")
 		ctx := rootCtx
 
