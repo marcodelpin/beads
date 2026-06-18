@@ -70,7 +70,7 @@ func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 			FatalErrorRespectJSON("commit reopen: %v", err)
 		}
 		for _, o := range outcomes {
-			if err := fireProxiedReopenHooks(ctx, o.before, o.after); err != nil {
+			if err := fireProxiedReopenHooks(ctx, o.after); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 			}
 		}
@@ -90,8 +90,8 @@ func reopenProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string)
 		fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
 		return reopenProxiedOutcome{}, false
 	}
-	if current.Status == types.StatusOpen {
-		fmt.Fprintf(os.Stderr, "%s is already open\n", id)
+	if current.Status != types.StatusClosed {
+		fmt.Fprintf(os.Stderr, "%s is already %s\n", id, current.Status)
 		return reopenProxiedOutcome{id: id, before: current, after: current, reopened: false}, true
 	}
 
@@ -126,7 +126,7 @@ func reopenProxiedCommitMessage(outcomes []reopenProxiedOutcome) string {
 	return "bd: reopen " + strings.Join(ids, ", ")
 }
 
-func fireProxiedReopenHooks(ctx context.Context, before, after *types.Issue) error {
+func fireProxiedReopenHooks(ctx context.Context, after *types.Issue) error {
 	if after == nil {
 		return nil
 	}
