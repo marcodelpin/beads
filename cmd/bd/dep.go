@@ -143,6 +143,10 @@ Examples:
 			CheckReadonly("dep --blocks")
 
 			ctx := rootCtx
+			if usesProxiedServer() {
+				runDepBlocksProxiedServer(cmd, ctx, blockerID, blocksID)
+				return
+			}
 			depType := "blocks"
 
 			// Resolve partial IDs with routing support. The source issue's store
@@ -275,6 +279,10 @@ Examples:
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("dep add")
+		if usesProxiedServer() {
+			runDepAddProxiedServer(cmd, rootCtx, args)
+			return
+		}
 		depType, _ := cmd.Flags().GetString("type")
 		file, _ := cmd.Flags().GetString("file")
 
@@ -691,6 +699,10 @@ Examples:
   bd dep list gt-abc --direction=up -t tracks  # Show what tracks gt-abc (convoy tracking)`,
 	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runDepListProxiedServer(cmd, rootCtx, args)
+			return
+		}
 		ctx := rootCtx
 		direction, _ := cmd.Flags().GetString("direction")
 		typeFilter, _ := cmd.Flags().GetString("type")
@@ -885,6 +897,10 @@ var depRemoveCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("dep remove")
+		if usesProxiedServer() {
+			runDepRemoveProxiedServer(cmd, rootCtx, args)
+			return
+		}
 		ctx := rootCtx
 
 		// Resolve partial IDs with routing support. The source issue's store is
@@ -969,6 +985,10 @@ Examples:
   bd dep tree gt-0iqq --depth=3          # Limit to 3 levels deep`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runDepTreeProxiedServer(cmd, rootCtx, args)
+			return
+		}
 		ctx := rootCtx
 
 		// Resolve partial ID with routing support
@@ -1086,6 +1106,10 @@ var depCyclesCmd = &cobra.Command{
 	Use:   "cycles",
 	Short: "Detect dependency cycles",
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runDepCyclesProxiedServer(cmd, rootCtx)
+			return
+		}
 
 		ctx := rootCtx
 		cycles, err := store.DetectCycles(ctx)
