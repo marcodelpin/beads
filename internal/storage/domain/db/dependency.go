@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -615,4 +616,145 @@ func combineArgs(a, b []any) []any {
 	out = append(out, a...)
 	out = append(out, b...)
 	return out
+}
+
+func (r *dependencySQLRepositoryImpl) DeleteAllForIDs(ctx context.Context, ids []string, opts domain.DepInsertOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "dependencies"
+	if opts.UseWispsTable {
+		table = "wisp_dependencies"
+	}
+	total := 0
+	for start := 0; start < len(ids); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, 2*len(batch))
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		ph := strings.Join(placeholders, ",")
+		//nolint:gosec // G201: table is one of two hardcoded constants; ? placeholders only.
+		res, err := r.runner.ExecContext(ctx,
+			fmt.Sprintf("DELETE FROM %s WHERE issue_id IN (%s) OR %s IN (%s)", table, ph, issueops.DepTargetExpr, ph),
+			args...)
+		if err != nil {
+			if opts.UseWispsTable && dberrors.IsTableNotExist(err) {
+				return total, nil
+			}
+			return total, fmt.Errorf("db: DependencySQLRepository.DeleteAllForIDs from %s: %w", table, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("db: DependencySQLRepository.DeleteAllForIDs rows affected: %w", err)
+		}
+		total += int(n)
+	}
+	return total, nil
+}
+
+func (r *dependencySQLRepositoryImpl) CountAllForIDs(ctx context.Context, ids []string, opts domain.DepCountsOpts) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	table := "dependencies"
+	if opts.UseWispsTable {
+		table = "wisp_dependencies"
+	}
+	total := 0
+	for start := 0; start < len(ids); start += deleteBatchSize {
+		end := start + deleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, 2*len(batch))
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		ph := strings.Join(placeholders, ",")
+		var count int
+		//nolint:gosec // G201: table is one of two hardcoded constants; ? placeholders only.
+		err := r.runner.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE issue_id IN (%s) OR %s IN (%s)", table, ph, issueops.DepTargetExpr, ph),
+			args...).Scan(&count)
+		if err != nil {
+			if opts.UseWispsTable && dberrors.IsTableNotExist(err) {
+				return total, nil
+			}
+			return total, fmt.Errorf("db: DependencySQLRepository.CountAllForIDs from %s: %w", table, err)
+		}
+		total += count
+	}
+	return total, nil
+}
+
+func (r *dependencySQLRepositoryImpl) ListWithIssueMetadata(ctx context.Context, sourceID string, opts domain.DepListOpts) ([]*types.IssueWithDependencyMetadata, error) {
+	var out []*types.IssueWithDependencyMetadata
+	if opts.Direction == domain.DepDirectionOut || opts.Direction == domain.DepDirectionBoth {
+		deps, err := issueops.GetDependenciesWithMetadataInTx(ctx, r.runner, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filterDepsByType(deps, opts.Types)...)
+	}
+	if opts.Direction == domain.DepDirectionIn || opts.Direction == domain.DepDirectionBoth {
+		deps, err := issueops.GetDependentsWithMetadataInTx(ctx, r.runner, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filterDepsByType(deps, opts.Types)...)
+	}
+	return out, nil
+}
+
+func (r *dependencySQLRepositoryImpl) IterWithIssueMetadata(ctx context.Context, sourceID string, opts domain.DepListOpts) (storage.Iter[types.IssueWithDependencyMetadata], error) {
+	items, err := r.ListWithIssueMetadata(ctx, sourceID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return storage.NewSliceIter(items), nil
+}
+
+func (r *dependencySQLRepositoryImpl) CountByID(ctx context.Context, sourceID string, opts domain.DepListOpts) (int64, error) {
+	return issueops.CountDependencyEdgesInTx(ctx, r.runner, sourceID, opts.Direction, opts.Types)
+}
+
+func filterDepsByType(deps []*types.IssueWithDependencyMetadata, filter []types.DependencyType) []*types.IssueWithDependencyMetadata {
+	if len(filter) == 0 {
+		return deps
+	}
+	allowed := make(map[types.DependencyType]struct{}, len(filter))
+	for _, t := range filter {
+		allowed[t] = struct{}{}
+	}
+	out := make([]*types.IssueWithDependencyMetadata, 0, len(deps))
+	for _, d := range deps {
+		if _, ok := allowed[d.DependencyType]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func (r *dependencySQLRepositoryImpl) IsBlocked(ctx context.Context, issueID string, opts domain.DepListOpts) (bool, []string, error) {
+	blocked, blockers, err := issueops.IsBlockedInTx(ctx, r.runner, issueID)
+	if err != nil {
+		return false, nil, fmt.Errorf("db: DependencySQLRepository.IsBlocked %s: %w", issueID, err)
+	}
+	return blocked, blockers, nil
 }

@@ -12,7 +12,7 @@ import (
 // GetLabelsInTx retrieves all labels for an issue within an existing transaction.
 // Automatically routes to wisp_labels if the ID is an active wisp.
 // Returns labels sorted alphabetically.
-func GetLabelsInTx(ctx context.Context, tx *sql.Tx, table, issueID string) ([]string, error) {
+func GetLabelsInTx(ctx context.Context, tx DBTX, table, issueID string) ([]string, error) {
 	if table == "" {
 		isWisp := IsActiveWispInTx(ctx, tx, issueID)
 		_, table, _, _ = WispTableRouting(isWisp)

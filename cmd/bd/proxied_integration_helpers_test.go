@@ -208,6 +208,63 @@ func bdProxiedShow(t *testing.T, bd, dir, id string) *types.Issue {
 	return parseIssueJSON(t, out)
 }
 
+func bdProxiedShowRaw(t *testing.T, bd, dir string, args ...string) string {
+	t.Helper()
+	fullArgs := append([]string{"show"}, args...)
+	out, err := bdProxiedRun(t, bd, dir, fullArgs...)
+	if err != nil {
+		t.Fatalf("bd show %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+func bdProxiedShowFail(t *testing.T, bd, dir string, args ...string) (string, string) {
+	t.Helper()
+	fullArgs := append([]string{"show"}, args...)
+	stdout, stderr, err := bdProxiedRunBuffers(t, bd, dir, fullArgs...)
+	if err == nil {
+		t.Fatalf("bd show %s should have failed; got stdout:\n%s\nstderr:\n%s",
+			strings.Join(args, " "), stdout, stderr)
+	}
+	return stdout, stderr
+}
+
+func bdProxiedShowDetailsAll(t *testing.T, bd, dir string, args ...string) []map[string]interface{} {
+	t.Helper()
+	fullArgs := append([]string{"show", "--json"}, args...)
+	out, err := bdProxiedRun(t, bd, dir, fullArgs...)
+	if err != nil {
+		t.Fatalf("bd show --json %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	s := strings.TrimSpace(string(out))
+	start := strings.IndexAny(s, "[{")
+	if start < 0 {
+		t.Fatalf("no JSON in show output: %s", s)
+	}
+	s = s[start:]
+	if strings.HasPrefix(s, "[") {
+		var arr []map[string]interface{}
+		if err := json.Unmarshal([]byte(s), &arr); err != nil {
+			t.Fatalf("parse show JSON array: %v\n%s", err, s)
+		}
+		return arr
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("parse show JSON: %v\n%s", err, s)
+	}
+	return []map[string]interface{}{m}
+}
+
+func bdProxiedShowDetailsFirst(t *testing.T, bd, dir string, args ...string) map[string]interface{} {
+	t.Helper()
+	arr := bdProxiedShowDetailsAll(t, bd, dir, args...)
+	if len(arr) == 0 {
+		t.Fatalf("bd show --json %s returned empty array", strings.Join(args, " "))
+	}
+	return arr[0]
+}
+
 type proxiedProject struct {
 	dir       string
 	beadsDir  string
