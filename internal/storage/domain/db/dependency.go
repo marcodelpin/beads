@@ -758,3 +758,11 @@ func (r *dependencySQLRepositoryImpl) IsBlocked(ctx context.Context, issueID str
 	}
 	return blocked, blockers, nil
 }
+
+func (r *dependencySQLRepositoryImpl) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {
+	out, err := issueops.DetectCyclesInTx(ctx, r.runner)
+	if err != nil {
+		return nil, fmt.Errorf("db: DependencySQLRepository.DetectCycles: %w", err)
+	}
+	return out, nil
+}

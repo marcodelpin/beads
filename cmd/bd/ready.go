@@ -36,6 +36,11 @@ Use --claim to atomically claim the first ready issue matching the filters:
 
 This is useful for agents executing molecules to see which steps can run next.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runReadyProxiedServer(cmd, rootCtx)
+			return
+		}
+
 		claimReady, _ := cmd.Flags().GetBool("claim")
 
 		// Handle --gated flag (gate-resume discovery)
@@ -321,6 +326,10 @@ var blockedCmd = &cobra.Command{
 	Use:   "blocked",
 	Short: "Show blocked issues",
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runBlockedProxiedServer(cmd, rootCtx)
+			return
+		}
 		// Use global jsonOutput set by PersistentPreRun (respects config.yaml + env vars)
 		// Use factory to respect backend configuration (bd-m2jr: SQLite fallback fix)
 		ctx := rootCtx
