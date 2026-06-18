@@ -256,7 +256,7 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 	fmt.Printf("%s Added %d dependencies\n", ui.RenderPass("✓"), len(deps))
 }
 
-func runDepRemoveProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
+func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []string) {
 	fromID := args[0]
 	toID := args[1]
 	if strings.HasPrefix(toID, "external:") {
