@@ -52,7 +52,12 @@ type IssueSQLRepository interface {
 	AffectedByDeletion(ctx context.Context, issueIDs, wispIDs []string) (affectedIssues, affectedWisps []string, err error)
 	RecomputeIsBlocked(ctx context.Context, issueIDs, wispIDs []string) error
 	Close(ctx context.Context, id string, params CloseRowParams, actor string, opts IssueTableOpts) (CloseRowResult, error)
+	Reopen(ctx context.Context, id string, params ReopenRowParams, actor string, opts IssueTableOpts) (ReopenRowResult, error)
 	GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error)
+	ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error)
+	ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error)
+	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
+	GetStatistics(ctx context.Context) (*types.Statistics, error)
 }
 
 type CloseRowParams struct {
@@ -64,6 +69,16 @@ type CloseRowResult struct {
 	Updated       bool
 	AlreadyClosed bool
 	IsWisp        bool
+}
+
+type ReopenRowParams struct {
+	Reason string
+}
+
+type ReopenRowResult struct {
+	Updated     bool
+	AlreadyOpen bool
+	IsWisp      bool
 }
 
 type DeleteIssuesParams struct {
@@ -164,6 +179,11 @@ type ClaimResult struct {
 	PriorAssignee  string
 }
 
+type ClaimReadyResult struct {
+	Issue   *types.Issue
+	Claimed bool
+}
+
 type UpdateSpec struct {
 	Fields       map[string]any
 	Claim        bool
@@ -181,6 +201,9 @@ type IssueUseCase interface {
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
 	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
+	ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (ClaimReadyResult, error)
+	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
+	GetStatistics(ctx context.Context) (*types.Statistics, error)
 
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
@@ -188,6 +211,7 @@ type IssueUseCase interface {
 	ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error)
 	ClaimIssueIfOpen(ctx context.Context, id, actor string) (ClaimResult, error)
 	CloseIssue(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error)
+	ReopenIssue(ctx context.Context, id string, params ReopenIssueParams, actor string) (ReopenIssueResult, error)
 	CountOpenChildren(ctx context.Context, id string) (int, error)
 	GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error)
 	ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error)
@@ -208,9 +232,11 @@ type IssueUseCase interface {
 	ClaimWisp(ctx context.Context, id, actor string) (ClaimResult, error)
 	ClaimWispIfOpen(ctx context.Context, id, actor string) (ClaimResult, error)
 	CloseWisp(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error)
+	ReopenWisp(ctx context.Context, id string, params ReopenIssueParams, actor string) (ReopenIssueResult, error)
 	CountOpenWispChildren(ctx context.Context, id string) (int, error)
 	GetNewlyUnblockedByCloseWisp(ctx context.Context, closedID string) ([]*types.Issue, error)
 	ApplyWispGraph(ctx context.Context, plan GraphPlan, actor string) (GraphApplyResult, error)
+	ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (ClaimReadyResult, error)
 }
 
 type CloseIssueParams struct {
@@ -221,6 +247,15 @@ type CloseIssueParams struct {
 type CloseIssueResult struct {
 	Issue  *types.Issue
 	Closed bool
+}
+
+type ReopenIssueParams struct {
+	Reason string
+}
+
+type ReopenIssueResult struct {
+	Issue    *types.Issue
+	Reopened bool
 }
 
 func NewIssueUseCase(
@@ -1173,6 +1208,35 @@ func (u *issueUseCaseImpl) close(ctx context.Context, id string, params CloseIss
 	}, nil
 }
 
+func (u *issueUseCaseImpl) ReopenIssue(ctx context.Context, id string, params ReopenIssueParams, actor string) (ReopenIssueResult, error) {
+	return u.reopen(ctx, id, params, actor, false)
+}
+
+func (u *issueUseCaseImpl) ReopenWisp(ctx context.Context, id string, params ReopenIssueParams, actor string) (ReopenIssueResult, error) {
+	return u.reopen(ctx, id, params, actor, true)
+}
+
+func (u *issueUseCaseImpl) reopen(ctx context.Context, id string, params ReopenIssueParams, actor string, useWisp bool) (ReopenIssueResult, error) {
+	if id == "" {
+		return ReopenIssueResult{}, fmt.Errorf("reopen: id must not be empty")
+	}
+	if actor == "" {
+		return ReopenIssueResult{}, fmt.Errorf("reopen: actor must not be empty")
+	}
+	row, err := u.issueRepo.Reopen(ctx, id, ReopenRowParams{Reason: params.Reason}, actor, IssueTableOpts{UseWispsTable: useWisp})
+	if err != nil {
+		return ReopenIssueResult{}, fmt.Errorf("reopen %s: %w", id, err)
+	}
+	issue, err := u.issueRepo.Get(ctx, id, IssueTableOpts{UseWispsTable: row.IsWisp})
+	if err != nil {
+		return ReopenIssueResult{}, fmt.Errorf("reopen %s: reload: %w", id, err)
+	}
+	return ReopenIssueResult{
+		Issue:    issue,
+		Reopened: !row.AlreadyOpen,
+	}, nil
+}
+
 func (u *issueUseCaseImpl) ClaimIssueIfOpen(ctx context.Context, id, actor string) (ClaimResult, error) {
 	return u.claim(ctx, id, actor, false)
 }
@@ -1225,6 +1289,49 @@ func (u *issueUseCaseImpl) getNewlyUnblockedByClose(ctx context.Context, closedI
 	out, err := u.issueRepo.GetNewlyUnblockedByClose(ctx, closedID)
 	if err != nil {
 		return nil, fmt.Errorf("GetNewlyUnblockedByClose %s: %w", closedID, err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (ClaimReadyResult, error) {
+	return u.claimReady(ctx, filter, actor, false)
+}
+
+func (u *issueUseCaseImpl) ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (ClaimReadyResult, error) {
+	return u.claimReady(ctx, filter, actor, true)
+}
+
+func (u *issueUseCaseImpl) claimReady(ctx context.Context, filter types.WorkFilter, actor string, useWisp bool) (ClaimReadyResult, error) {
+	var (
+		issue *types.Issue
+		err   error
+	)
+	if useWisp {
+		issue, err = u.issueRepo.ClaimReadyWisp(ctx, filter, actor)
+	} else {
+		issue, err = u.issueRepo.ClaimReadyIssue(ctx, filter, actor)
+	}
+	if err != nil {
+		if useWisp {
+			return ClaimReadyResult{}, fmt.Errorf("ClaimReadyWisp: %w", err)
+		}
+		return ClaimReadyResult{}, fmt.Errorf("ClaimReadyIssue: %w", err)
+	}
+	return ClaimReadyResult{Issue: issue, Claimed: issue != nil}, nil
+}
+
+func (u *issueUseCaseImpl) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
+	out, err := u.issueRepo.GetBlockedIssues(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("GetBlockedIssues: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) GetStatistics(ctx context.Context) (*types.Statistics, error) {
+	out, err := u.issueRepo.GetStatistics(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetStatistics: %w", err)
 	}
 	return out, nil
 }

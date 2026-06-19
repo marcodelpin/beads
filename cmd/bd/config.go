@@ -187,6 +187,11 @@ var configSetCmd = &cobra.Command{
 			return
 		}
 
+		if usesProxiedServer() {
+			runConfigSetProxiedServer(rootCtx, key, value)
+			return
+		}
+
 		// Database-stored config requires direct mode
 		if err := ensureDirectMode("config set requires direct database access"); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -273,6 +278,11 @@ var configGetCmd = &cobra.Command{
 			return
 		}
 
+		if usesProxiedServer() {
+			runConfigGetProxiedServer(rootCtx, key)
+			return
+		}
+
 		// Database-stored config requires direct mode
 		if err := ensureDirectMode("config get requires direct database access"); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -309,6 +319,11 @@ var configListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configuration",
 	Run: func(cmd *cobra.Command, args []string) {
+		if usesProxiedServer() {
+			runConfigListProxiedServer(rootCtx)
+			return
+		}
+
 		// Config operations work in direct mode only
 		if err := ensureDirectMode("config list requires direct database access"); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -464,6 +479,11 @@ var configUnsetCmd = &cobra.Command{
 			} else {
 				fmt.Printf("Unset %s (in git config)\n", key)
 			}
+			return
+		}
+
+		if usesProxiedServer() {
+			runConfigUnsetProxiedServer(rootCtx, key)
 			return
 		}
 
@@ -730,19 +750,29 @@ Examples:
 
 		// Phase 6: Write DB keys in batch
 		if len(dbPairs) > 0 {
-			if err := ensureDirectMode("config set-many requires direct database access"); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			ctx := rootCtx
-			for _, p := range dbPairs {
-				if err := store.SetConfig(ctx, p.key, p.value); err != nil {
-					fmt.Fprintf(os.Stderr, "Error setting config %s: %v\n", p.key, err)
+			if usesProxiedServer() {
+				keys := make([]string, len(dbPairs))
+				values := make([]string, len(dbPairs))
+				for i, p := range dbPairs {
+					keys[i] = p.key
+					values[i] = p.value
+				}
+				runConfigSetManyProxiedServer(rootCtx, keys, values)
+			} else {
+				if err := ensureDirectMode("config set-many requires direct database access"); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
+
+				ctx := rootCtx
+				for _, p := range dbPairs {
+					if err := store.SetConfig(ctx, p.key, p.value); err != nil {
+						fmt.Fprintf(os.Stderr, "Error setting config %s: %v\n", p.key, err)
+						os.Exit(1)
+					}
+				}
+				commandDidWrite.Store(true)
 			}
-			commandDidWrite.Store(true)
 		}
 
 		// Phase 7: Output results

@@ -53,6 +53,20 @@ type DepDeleteResult struct {
 	DependsOnID string
 }
 
+type DepTreeOpts struct {
+	MaxDepth     int
+	ShowAllPaths bool
+	Direction    DepDirection
+}
+
+type BulkAddDepsOpts struct {
+	SkipPerEdgeCycleCheck bool
+}
+
+type BulkAddDepsResult struct {
+	Added []*types.Dependency
+}
+
 type DependencySQLRepository interface {
 	Insert(ctx context.Context, dep *types.Dependency, actor string, opts DepInsertOpts) error
 	Delete(ctx context.Context, issueID, dependsOnID, actor string, opts DepInsertOpts) (DepDeleteResult, error)
@@ -69,6 +83,12 @@ type DependencySQLRepository interface {
 
 	DeleteAllForIDs(ctx context.Context, ids []string, opts DepInsertOpts) (int, error)
 	CountAllForIDs(ctx context.Context, ids []string, opts DepCountsOpts) (int, error)
+	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
+
+	GetTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
+	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
+	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
+	GetWispDependencyRecordsForIDs(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error)
 }
 
 type DependencyUseCase interface {
@@ -83,6 +103,14 @@ type DependencyUseCase interface {
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
 	IsBlocked(ctx context.Context, issueID string) (bool, []string, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
+	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
+
+	GetDependencyTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
+	AddDependencies(ctx context.Context, deps []*types.Dependency, actor string, opts BulkAddDepsOpts) (BulkAddDepsResult, error)
+	GetIssueDependencyRecords(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
+
+	AddWispDependencies(ctx context.Context, deps []*types.Dependency, actor string, opts BulkAddDepsOpts) (BulkAddDepsResult, error)
+	GetWispDependencyRecords(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error)
 
 	AddWispDependency(ctx context.Context, dep *types.Dependency, actor string) error
 	RemoveWispDependency(ctx context.Context, wispID, dependsOnID, actor string) error
@@ -384,4 +412,99 @@ func (u *dependencyUseCaseImpl) isBlocked(ctx context.Context, id string, useWis
 		return false, nil, fmt.Errorf("IsBlocked %s: %w", id, err)
 	}
 	return blocked, blockers, nil
+}
+
+func (u *dependencyUseCaseImpl) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {
+	out, err := u.depRepo.DetectCycles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("DetectCycles: %w", err)
+	}
+	return out, nil
+}
+
+func (u *dependencyUseCaseImpl) GetDependencyTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error) {
+	if rootID == "" {
+		return nil, fmt.Errorf("GetDependencyTree: rootID must not be empty")
+	}
+	out, err := u.depRepo.GetTree(ctx, rootID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("GetDependencyTree: %w", err)
+	}
+	return out, nil
+}
+
+func (u *dependencyUseCaseImpl) AddDependencies(ctx context.Context, deps []*types.Dependency, actor string, opts BulkAddDepsOpts) (BulkAddDepsResult, error) {
+	return u.addBulk(ctx, deps, actor, opts, false)
+}
+
+func (u *dependencyUseCaseImpl) AddWispDependencies(ctx context.Context, deps []*types.Dependency, actor string, opts BulkAddDepsOpts) (BulkAddDepsResult, error) {
+	return u.addBulk(ctx, deps, actor, opts, true)
+}
+
+func (u *dependencyUseCaseImpl) addBulk(ctx context.Context, deps []*types.Dependency, actor string, opts BulkAddDepsOpts, useWisp bool) (BulkAddDepsResult, error) {
+	if len(deps) == 0 {
+		return BulkAddDepsResult{Added: []*types.Dependency{}}, nil
+	}
+	insertOpts := DepInsertOpts{UseWispsTable: useWisp}
+	for i, dep := range deps {
+		if dep == nil {
+			return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: dep must not be nil", i)
+		}
+		if dep.IssueID == "" || dep.DependsOnID == "" {
+			return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: IssueID and DependsOnID must be non-empty", i)
+		}
+		if !opts.SkipPerEdgeCycleCheck && isBlockingDep(dep.Type) {
+			cycle, err := u.depRepo.HasCycle(ctx, dep.IssueID, dep.DependsOnID)
+			if err != nil {
+				return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: cycle check: %w", i, err)
+			}
+			if cycle {
+				return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: adding %s -> %s would create a cycle", i, dep.IssueID, dep.DependsOnID)
+			}
+		}
+		if err := u.depRepo.Insert(ctx, dep, actor, insertOpts); err != nil {
+			return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: insert: %w", i, err)
+		}
+	}
+	if opts.SkipPerEdgeCycleCheck {
+		var pairs [][2]string
+		for _, dep := range deps {
+			if !isBlockingDep(dep.Type) {
+				continue
+			}
+			pairs = append(pairs, [2]string{dep.IssueID, dep.DependsOnID})
+		}
+		if len(pairs) > 0 {
+			cyclePath, err := u.depRepo.CycleThroughEdges(ctx, pairs)
+			if err != nil {
+				return BulkAddDepsResult{}, fmt.Errorf("add deps: final cycle check: %w", err)
+			}
+			if cyclePath != "" {
+				return BulkAddDepsResult{}, fmt.Errorf("add deps: dependency cycle would be created: %s", cyclePath)
+			}
+		}
+	}
+	return BulkAddDepsResult{Added: deps}, nil
+}
+
+func (u *dependencyUseCaseImpl) GetIssueDependencyRecords(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error) {
+	if len(issueIDs) == 0 {
+		return map[string][]*types.Dependency{}, nil
+	}
+	out, err := u.depRepo.GetDependencyRecordsForIssues(ctx, issueIDs)
+	if err != nil {
+		return nil, fmt.Errorf("GetIssueDependencyRecords: %w", err)
+	}
+	return out, nil
+}
+
+func (u *dependencyUseCaseImpl) GetWispDependencyRecords(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error) {
+	if len(wispIDs) == 0 {
+		return map[string][]*types.Dependency{}, nil
+	}
+	out, err := u.depRepo.GetWispDependencyRecordsForIDs(ctx, wispIDs)
+	if err != nil {
+		return nil, fmt.Errorf("GetWispDependencyRecords: %w", err)
+	}
+	return out, nil
 }

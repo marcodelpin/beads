@@ -73,6 +73,33 @@ func (r *configSQLRepositoryImpl) SetConfig(ctx context.Context, key, value stri
 	return nil
 }
 
+func (r *configSQLRepositoryImpl) DeleteConfig(ctx context.Context, key string) error {
+	if _, err := r.runner.ExecContext(ctx, "DELETE FROM config WHERE `key` = ?", key); err != nil {
+		return fmt.Errorf("db: DeleteConfig %s: %w", key, err)
+	}
+	return nil
+}
+
+func (r *configSQLRepositoryImpl) GetAllConfig(ctx context.Context) (map[string]string, error) {
+	rows, err := r.runner.QueryContext(ctx, "SELECT `key`, value FROM config")
+	if err != nil {
+		return nil, fmt.Errorf("db: GetAllConfig: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("db: GetAllConfig: scan: %w", err)
+		}
+		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: GetAllConfig: read: %w", err)
+	}
+	return out, nil
+}
+
 func (r *configSQLRepositoryImpl) GetCustomTypes(ctx context.Context) ([]string, error) {
 	fromTable, err := r.readCustomTypesTable(ctx)
 	if err != nil {

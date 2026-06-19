@@ -25,6 +25,24 @@ func (s *testSuite) TestConfigSQLRepository() {
 		s.Run("IssuePrefixTrimsTrailingHyphen", s.configSetConfigIssuePrefixTrim)
 		s.Run("IssuePrefixWithoutHyphenUnchanged", s.configSetConfigIssuePrefixUnchanged)
 	})
+	s.Run("DeleteConfig", func() {
+		s.Run("RemovesExistingKey", s.configDeleteConfigRemovesExisting)
+		s.Run("MissingKeyIsNoop", s.configDeleteConfigMissingKey)
+	})
+	s.Run("GetAllConfig", func() {
+		s.Run("EmptyReturnsEmptyMap", s.configGetAllConfigEmpty)
+		s.Run("ReturnsAllRows", s.configGetAllConfigAllRows)
+	})
+	s.Run("UseCase", func() {
+		s.Run("GetConfigMissingKey", s.configUseCaseGetConfigMissing)
+		s.Run("GetConfigRoundTrip", s.configUseCaseGetConfigRoundTrip)
+		s.Run("SetConfigOverwrite", s.configUseCaseSetConfigOverwrite)
+		s.Run("SetConfigIssuePrefixTrim", s.configUseCaseSetConfigIssuePrefixTrim)
+		s.Run("DeleteConfigRemovesExisting", s.configUseCaseDeleteConfigRemoves)
+		s.Run("DeleteConfigMissingKeyIsNoop", s.configUseCaseDeleteConfigMissing)
+		s.Run("GetAllConfigEmpty", s.configUseCaseGetAllConfigEmpty)
+		s.Run("GetAllConfigReturnsAllRows", s.configUseCaseGetAllConfigAllRows)
+	})
 	s.Run("GetCustomTypes", func() {
 		s.Run("MissingKeyReturnsNil", s.configGetCustomTypesMissing)
 		s.Run("EmptyValueReturnsNil", s.configGetCustomTypesEmpty)
@@ -128,6 +146,45 @@ func (s *testSuite) configSetConfigIssuePrefixTrim() {
 	v, err := r.GetConfig(s.Ctx(), "issue_prefix")
 	s.Require().NoError(err)
 	s.Equal("bd", v)
+}
+
+func (s *testSuite) configDeleteConfigRemovesExisting() {
+	r := s.configRepo()
+	s.Require().NoError(r.SetConfig(s.Ctx(), "jira.url", "https://example.atlassian.net"))
+	s.Require().NoError(r.DeleteConfig(s.Ctx(), "jira.url"))
+	v, err := r.GetConfig(s.Ctx(), "jira.url")
+	s.Require().NoError(err)
+	s.Equal("", v)
+}
+
+func (s *testSuite) configDeleteConfigMissingKey() {
+	r := s.configRepo()
+	s.Require().NoError(r.DeleteConfig(s.Ctx(), "no_such_key"))
+}
+
+func (s *testSuite) configGetAllConfigEmpty() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM config")
+	s.Require().NoError(err)
+	got, err := s.configRepo().GetAllConfig(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal(map[string]string{}, got)
+}
+
+func (s *testSuite) configGetAllConfigAllRows() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM config")
+	s.Require().NoError(err)
+	r := s.configRepo()
+	s.Require().NoError(r.SetConfig(s.Ctx(), "jira.url", "https://example.atlassian.net"))
+	s.Require().NoError(r.SetConfig(s.Ctx(), "jira.project", "PROJ"))
+	s.Require().NoError(r.SetConfig(s.Ctx(), "export.auto", "true"))
+
+	got, err := r.GetAllConfig(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal(map[string]string{
+		"jira.url":     "https://example.atlassian.net",
+		"jira.project": "PROJ",
+		"export.auto":  "true",
+	}, got)
 }
 
 func (s *testSuite) configSetConfigIssuePrefixUnchanged() {
@@ -318,6 +375,77 @@ func (s *testSuite) configUseCaseListAllStatusNames() {
 	s.Equal([]string{
 		"open", "in_progress", "blocked", "deferred", "closed", "pinned", "hooked",
 		"audit",
+	}, got)
+}
+
+func (s *testSuite) configUC() domain.ConfigUseCase {
+	return domain.NewConfigUseCase(NewConfigSQLRepository(s.Runner()))
+}
+
+func (s *testSuite) configUseCaseGetConfigMissing() {
+	v, err := s.configUC().GetConfig(s.Ctx(), "no_such_key")
+	s.Require().NoError(err)
+	s.Equal("", v)
+}
+
+func (s *testSuite) configUseCaseGetConfigRoundTrip() {
+	uc := s.configUC()
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "team.sync_branch", "main"))
+	v, err := uc.GetConfig(s.Ctx(), "team.sync_branch")
+	s.Require().NoError(err)
+	s.Equal("main", v)
+}
+
+func (s *testSuite) configUseCaseSetConfigOverwrite() {
+	uc := s.configUC()
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "k", "v1"))
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "k", "v2"))
+	v, err := uc.GetConfig(s.Ctx(), "k")
+	s.Require().NoError(err)
+	s.Equal("v2", v)
+}
+
+func (s *testSuite) configUseCaseSetConfigIssuePrefixTrim() {
+	uc := s.configUC()
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "issue_prefix", "bd-"))
+	v, err := uc.GetConfig(s.Ctx(), "issue_prefix")
+	s.Require().NoError(err)
+	s.Equal("bd", v)
+}
+
+func (s *testSuite) configUseCaseDeleteConfigRemoves() {
+	uc := s.configUC()
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "jira.url", "https://example.atlassian.net"))
+	s.Require().NoError(uc.DeleteConfig(s.Ctx(), "jira.url"))
+	v, err := uc.GetConfig(s.Ctx(), "jira.url")
+	s.Require().NoError(err)
+	s.Equal("", v)
+}
+
+func (s *testSuite) configUseCaseDeleteConfigMissing() {
+	s.Require().NoError(s.configUC().DeleteConfig(s.Ctx(), "no_such_key"))
+}
+
+func (s *testSuite) configUseCaseGetAllConfigEmpty() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM config")
+	s.Require().NoError(err)
+	got, err := s.configUC().GetAllConfig(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal(map[string]string{}, got)
+}
+
+func (s *testSuite) configUseCaseGetAllConfigAllRows() {
+	_, err := s.Runner().ExecContext(s.Ctx(), "DELETE FROM config")
+	s.Require().NoError(err)
+	uc := s.configUC()
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "jira.url", "https://example.atlassian.net"))
+	s.Require().NoError(uc.SetConfig(s.Ctx(), "jira.project", "PROJ"))
+
+	got, err := uc.GetAllConfig(s.Ctx())
+	s.Require().NoError(err)
+	s.Equal(map[string]string{
+		"jira.url":     "https://example.atlassian.net",
+		"jira.project": "PROJ",
 	}, got)
 }
 

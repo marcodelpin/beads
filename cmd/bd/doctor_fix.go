@@ -255,7 +255,16 @@ func applyFixList(path string, fixes []doctorCheck) {
 		case "Gitignore":
 			err = doctor.FixGitignore(path)
 		case "Project Gitignore":
-			err = doctor.FixProjectGitignore(path)
+			// Stealth / no-git-ops repos must not get a tracked .gitignore; route the patterns into
+			// .git/info/exclude instead (matches bd init --stealth) and strip any beads section a
+			// previous run leaked into the tracked .gitignore so stealth leaves no trace.
+			if isStealthRepo(path) {
+				if err = addProjectPatternsToGitExclude(path, doctor.ProjectGitignorePatterns, false); err == nil {
+					_, err = removeBeadsProjectGitignoreSection(path)
+				}
+			} else {
+				err = doctor.FixProjectGitignore(path)
+			}
 		case "Redirect Tracking":
 			err = doctor.FixRedirectTracking(path)
 		case "Last-Touched Tracking":
@@ -294,6 +303,8 @@ func applyFixList(path string, fixes []doctorCheck) {
 		case "Untracked Files":
 			fmt.Printf("  ⚠ Untracked JSONL fix removed (Dolt-native storage)\n")
 			continue
+		case "Cross-Table Duplicates":
+			err = fix.CrossTableDuplicates(path, doctorVerbose)
 		case "Orphaned Dependencies":
 			err = fix.OrphanedDependencies(path, doctorVerbose)
 		case "Dependency Keys":

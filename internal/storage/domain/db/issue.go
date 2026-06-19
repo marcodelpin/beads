@@ -724,12 +724,68 @@ func (r *issueSQLRepositoryImpl) Close(ctx context.Context, id string, params do
 	}, nil
 }
 
+func (r *issueSQLRepositoryImpl) Reopen(ctx context.Context, id string, params domain.ReopenRowParams, actor string, opts domain.IssueTableOpts) (domain.ReopenRowResult, error) {
+	res, err := issueops.ReopenIssueInTx(ctx, r.runner, id, params.Reason, actor)
+	if err != nil {
+		return domain.ReopenRowResult{}, fmt.Errorf("db: IssueSQLRepository.Reopen %s: %w", id, err)
+	}
+	return domain.ReopenRowResult{
+		Updated:     !res.AlreadyOpen,
+		AlreadyOpen: res.AlreadyOpen,
+		IsWisp:      res.IsWisp,
+	}, nil
+}
+
 func (r *issueSQLRepositoryImpl) GetNewlyUnblockedByClose(ctx context.Context, closedID string) ([]*types.Issue, error) {
 	out, err := issueops.GetNewlyUnblockedByCloseInTx(ctx, r.runner, closedID)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.GetNewlyUnblockedByClose %s: %w", closedID, err)
 	}
 	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
+	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.ClaimReadyIssue: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
+	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.ClaimReadyWisp: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
+	out, err := issueops.GetBlockedIssuesInTx(ctx, r.runner, filter)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.GetBlockedIssues: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) GetStatistics(ctx context.Context) (*types.Statistics, error) {
+	stats := &types.Statistics{}
+	if err := issueops.ScanIssueCountsInTx(ctx, r.runner, stats); err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.GetStatistics: scan counts: %w", err)
+	}
+	var blocked int
+	if err := r.runner.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM issues
+		WHERE is_blocked = 1 AND status <> 'closed' AND status <> 'pinned'
+	`).Scan(&blocked); err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.GetStatistics: count blocked: %w", err)
+	}
+	stats.BlockedIssues = blocked
+	stats.ReadyIssues = stats.OpenIssues - blocked
+	if stats.ReadyIssues < 0 {
+		stats.ReadyIssues = 0
+	}
+	return stats, nil
 }
 
 const deleteBatchSize = 200

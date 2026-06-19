@@ -758,3 +758,69 @@ func (r *dependencySQLRepositoryImpl) IsBlocked(ctx context.Context, issueID str
 	}
 	return blocked, blockers, nil
 }
+
+func (r *dependencySQLRepositoryImpl) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {
+	out, err := issueops.DetectCyclesInTx(ctx, r.runner)
+	if err != nil {
+		return nil, fmt.Errorf("db: DependencySQLRepository.DetectCycles: %w", err)
+	}
+	return out, nil
+}
+
+func (r *dependencySQLRepositoryImpl) GetTree(ctx context.Context, rootID string, opts domain.DepTreeOpts) ([]*types.TreeNode, error) {
+	if rootID == "" {
+		return nil, errors.New("db: DependencySQLRepository.GetTree: rootID must not be empty")
+	}
+	if opts.Direction == domain.DepDirectionBoth {
+		return nil, errors.New("db: DependencySQLRepository.GetTree: DepDirectionBoth not supported; callers must invoke once per direction and merge")
+	}
+	maxDepth := opts.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 50
+	}
+	reverse := opts.Direction == domain.DepDirectionIn
+	out, err := issueops.GetDependencyTreeInTx(ctx, r.runner, rootID, maxDepth, opts.ShowAllPaths, reverse)
+	if err != nil {
+		return nil, fmt.Errorf("db: DependencySQLRepository.GetTree: %w", err)
+	}
+	return out, nil
+}
+
+func (r *dependencySQLRepositoryImpl) CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error) {
+	if len(edges) == 0 {
+		return "", nil
+	}
+	graph := make(map[string][]string)
+	if err := issueops.AppendBlockingGraphInTx(ctx, r.runner, []string{"dependencies"}, graph); err != nil {
+		return "", fmt.Errorf("db: DependencySQLRepository.CycleThroughEdges: %w", err)
+	}
+	if err := issueops.AppendBlockingGraphInTx(ctx, r.runner, []string{"wisp_dependencies"}, graph); err != nil && !dberrors.IsTableNotExist(err) {
+		return "", fmt.Errorf("db: DependencySQLRepository.CycleThroughEdges (wisps): %w", err)
+	}
+	return issueops.CycleThroughEdgesInGraph(graph, edges), nil
+}
+
+func (r *dependencySQLRepositoryImpl) GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error) {
+	if len(issueIDs) == 0 {
+		return map[string][]*types.Dependency{}, nil
+	}
+	out, err := issueops.GetDependencyRecordsForIssuesInTx(ctx, r.runner, issueIDs)
+	if err != nil {
+		return nil, fmt.Errorf("db: DependencySQLRepository.GetDependencyRecordsForIssues: %w", err)
+	}
+	return out, nil
+}
+
+func (r *dependencySQLRepositoryImpl) GetWispDependencyRecordsForIDs(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error) {
+	if len(wispIDs) == 0 {
+		return map[string][]*types.Dependency{}, nil
+	}
+	out, err := issueops.GetDependencyRecordsForIssuesFromTableInTx(ctx, r.runner, "wisp_dependencies", wispIDs)
+	if err != nil {
+		if dberrors.IsTableNotExist(err) {
+			return map[string][]*types.Dependency{}, nil
+		}
+		return nil, fmt.Errorf("db: DependencySQLRepository.GetWispDependencyRecordsForIDs: %w", err)
+	}
+	return out, nil
+}
