@@ -156,9 +156,7 @@ Examples:
 		}
 		ctx := rootCtx
 
-		// Write-intent: comments add writes through the routed target store,
-		// matching the `bd comment` shorthand (#4141).
-		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, issueID)
+		result, err := resolveAndGetIssueForMutation(ctx, store, issueID)
 		if err != nil {
 			if result != nil {
 				result.Close()

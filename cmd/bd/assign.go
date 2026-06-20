@@ -27,9 +27,7 @@ Examples:
 
 		ctx := rootCtx
 
-		// Write-intent routing: a prefix-routed target must open writable so the
-		// assignee update commits on the target head (#4141).
-		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
+		result, err := resolveAndGetIssueForMutation(ctx, store, id)
 		if err != nil {
 			if result != nil {
 				result.Close()

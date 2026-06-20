@@ -1641,6 +1641,18 @@ func (s *DoltStore) Path() string {
 	return s.dbPath
 }
 
+// IsReadOnly reports whether the store was opened in read-only mode. It is a
+// test-facing accessor: production read-only enforcement comes from the
+// read-only open mode itself (the readOnly field guards every write path), not
+// from callers consulting this method. Tests such as
+// TestDepRoutedTargetOpensReadOnly use it to assert that routed
+// dependency/link target resolution opens a by-ID target read-only, so
+// resolving it never opens a foreign project writable or runs open-time
+// migrations into its history (bd-6dnrw.32, GH#3231).
+func (s *DoltStore) IsReadOnly() bool {
+	return s.readOnly
+}
+
 // CLIDir returns the directory for dolt CLI operations (push/pull/remote/fetch).
 // The actual database lives in a subdirectory of Path() named after the database.
 // Use this instead of Path() when running dolt CLI commands that target the
