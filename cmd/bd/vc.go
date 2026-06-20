@@ -68,8 +68,13 @@ Examples:
 				}
 				// Conclude the merge: an unresolved-then-resolved working set
 				// stays uncommitted otherwise, and the merged-in writes
-				// bypassed every is_blocked hook (bd-578h9.11).
-				if err := store.Commit(ctx, fmt.Sprintf("Resolve merge conflicts from %s using %s strategy", branchName, vcMergeStrategy)); err != nil {
+				// bypassed every is_blocked hook (bd-578h9.11). Use
+				// CommitMergeResolution, not Commit: server-mode Commit excludes
+				// config (GH#2455), so a resolved config conflict — routine now
+				// that kv.* user data syncs through config — would be silently
+				// dropped, leaving the merge unconcluded and re-wedging the next
+				// pull/sync (GH#2474).
+				if err := store.CommitMergeResolution(ctx, fmt.Sprintf("Resolve merge conflicts from %s using %s strategy", branchName, vcMergeStrategy)); err != nil {
 					FatalErrorRespectJSON("conflicts resolved but commit failed: %v", err)
 				}
 				if rs, ok := store.(interface {

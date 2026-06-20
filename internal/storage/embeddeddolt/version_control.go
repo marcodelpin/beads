@@ -113,6 +113,15 @@ func (s *EmbeddedDoltStore) CommitWithConfig(ctx context.Context, message string
 	return s.Commit(ctx, message)
 }
 
+// CommitMergeResolution concludes an operator --strategy merge resolution with
+// config included. Embedded Commit already stages everything via DOLT_COMMIT
+// ('-Am'), so config is never dropped here the way server-mode Commit drops it
+// (GH#2455); this alias satisfies the VersionControl interface so cmd/bd can
+// conclude bd vc merge --strategy uniformly across both stores.
+func (s *EmbeddedDoltStore) CommitMergeResolution(ctx context.Context, message string) error {
+	return s.Commit(ctx, message)
+}
+
 func (s *EmbeddedDoltStore) AddRemote(ctx context.Context, name, url string) error {
 	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 		_, err := db.ExecContext(ctx, "CALL DOLT_REMOTE('add', ?, ?)", name, url)

@@ -43,6 +43,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
@@ -1702,6 +1703,30 @@ func (s *DoltStore) commitAuthorString() string {
 	return fmt.Sprintf("%s <%s>", s.committerName, s.committerEmail)
 }
 
+// configCommitMode controls how commitWorkingSet treats the config table, which
+// holds both internal keys (issue_prefix) and synced user data (kv.* keys,
+// including kv.memory.* persistent memories).
+type configCommitMode int
+
+const (
+	// configExclude skips config entirely (GH#2455): a plain Commit must not
+	// sweep a concurrent writer's half-applied issue_prefix change into an
+	// unrelated commit.
+	configExclude configCommitMode = iota
+	// configIncludeUserKVOnly stages config for the pre-pull auto-commit, but
+	// only when every dirty config row is this clone's own user KV data (the
+	// kv.* namespace, which includes kv.memory.* memories). Any other dirty
+	// config key — an internal key such as issue_prefix above all — aborts the
+	// commit with operator guidance so the pull never auto-commits unsafe
+	// config (GH#2455 + GH#2474).
+	configIncludeUserKVOnly
+	// configIncludeAll stages every dirty config row. Used only to conclude a
+	// merge whose conflicts the operator resolved explicitly (bd federation
+	// sync --strategy): that resolution is intentional, so a resolved
+	// issue_prefix (or any config row) must be committed, not dropped.
+	configIncludeAll
+)
+
 // Commit creates a Dolt commit with the given message.
 //
 // GH#2455: Stages all dirty tables EXCEPT config, then commits with '-m'.
@@ -1711,7 +1736,59 @@ func (s *DoltStore) commitAuthorString() string {
 //
 // Callers that intentionally modify config (e.g., CommitPending after
 // 'bd config set') must call CommitWithConfig instead.
-func (s *DoltStore) Commit(ctx context.Context, message string) (retErr error) {
+func (s *DoltStore) Commit(ctx context.Context, message string) error {
+	return s.commitWorkingSet(ctx, message, configExclude)
+}
+
+// commitBeforePull commits the working set ahead of a pull's merge, INCLUDING
+// config. The pre-pull auto-commit (GH#2474) must include config because user
+// KV data lives there as kv.* rows (persistent memories are the kv.memory.*
+// subset) and Commit() deliberately skips config (GH#2455): without this those
+// rows sit permanently uncommitted, so the "clean the working set before
+// merging" step leaves config dirty and DOLT_MERGE refuses to start ("cannot
+// merge with uncommitted changes").
+//
+// It includes ONLY this clone's own user kv.* rows: if any other config key is
+// dirty (an internal key such as issue_prefix above all) it refuses rather than
+// auto-committing it, so the stale-config corruption GH#2455 guards against is
+// never re-opened by a pull. Auto-*resolution* of a config conflict stays
+// narrower still — only convergent kv.memory.* keys (see
+// configConflictsAreMemoryConvergent) — so widening the commit screen to the
+// whole kv. namespace cannot auto-resolve a genuine kv.* conflict; it only stops
+// generic `bd kv set` writes from wedging the pull. Config is staged explicitly
+// (via DOLT_ADD in commitWorkingSet) rather than through CommitWithConfig's
+// DOLT_COMMIT('-Am'), which was observed not to stage config reliably under the
+// server-mode stored-procedure path. Committing this clone's own kv.* rows as the
+// merge basis is the same explicit, user-initiated action CommitPending ('bd dolt
+// commit') already performs, so it does not widen the concurrent-writer race
+// GH#2455 guards against.
+func (s *DoltStore) commitBeforePull(ctx context.Context, message string) error {
+	return s.commitWorkingSet(ctx, message, configIncludeUserKVOnly)
+}
+
+// CommitMergeResolution concludes a merge whose conflicts were resolved by an
+// explicit operator strategy (bd federation sync --strategy / bd vc merge
+// --strategy ours|theirs), committing the resolved working set INCLUDING config.
+// Plain Commit excludes config (GH#2455), so a config-only resolution — exactly
+// the case this change makes routine by syncing kv.* through config — would be
+// silently dropped, leaving the merge unconcluded and re-wedging the next
+// pull/sync. Unlike commitBeforePull it does not screen config keys: the operator
+// chose this resolution, so whichever config rows it touched (issue_prefix
+// included) are committed as-is. It satisfies storage.VersionControl so cmd/bd
+// concludes bd vc merge --strategy through the same config-inclusive commit
+// instead of the config-excluding Commit that would drop the resolution.
+func (s *DoltStore) CommitMergeResolution(ctx context.Context, message string) error {
+	return s.commitWorkingSet(ctx, message, configIncludeAll)
+}
+
+// commitWorkingSet stages the dirty tables reported by dolt_status and commits
+// them with '-m'. The config table is staged according to mode: configExclude
+// skips it (GH#2455) so a concurrent writer's half-applied issue_prefix change
+// is never swept into an unrelated commit; configIncludeUserKVOnly stages it for
+// the pre-pull path but refuses when any non-kv. (internal) config key is dirty;
+// configIncludeAll stages every dirty config row to conclude an explicit merge
+// resolution.
+func (s *DoltStore) commitWorkingSet(ctx context.Context, message string, mode configCommitMode) (retErr error) {
 	ctx, span := doltTracer.Start(ctx, "dolt.commit",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(s.doltSpanAttrs()...),
@@ -1725,28 +1802,43 @@ func (s *DoltStore) Commit(ctx context.Context, message string) (retErr error) {
 	}
 	defer conn.Close()
 
-	// GH#2455: Stage all dirty tables EXCEPT config. Query dolt_status for
-	// dirty tables and stage each one individually, skipping config to avoid
-	// sweeping up stale issue_prefix changes from concurrent operations.
+	// GH#2455: stage each dirty table individually, skipping config unless the
+	// mode opts it in, to avoid sweeping up stale issue_prefix changes from
+	// concurrent operations. Query dolt_status first.
 	rows, err := conn.QueryContext(ctx, "SELECT table_name FROM dolt_status")
 	if err != nil {
 		// If dolt_status fails, fall back to nothing (rare edge case).
 		return fmt.Errorf("failed to query dolt_status: %w", err)
 	}
 	var tables []string
+	configDirty := false
 	for rows.Next() {
 		var table string
 		if err := rows.Scan(&table); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("failed to scan dolt_status: %w", err)
 		}
-		if table != "config" {
-			tables = append(tables, table)
+		if table == "config" {
+			configDirty = true
+			if mode == configExclude {
+				continue
+			}
 		}
+		tables = append(tables, table)
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("failed to iterate dolt_status: %w", err)
+	}
+
+	// GH#2455 + GH#2474: the pre-pull auto-commit includes config so user kv.*
+	// writes sync, but it must NOT auto-commit any internal (non-kv.) config key.
+	// Refuse before staging anything so the merge is never concluded over an
+	// unsafe config row; the operator commits those explicitly.
+	if configDirty && mode == configIncludeUserKVOnly {
+		if err := s.assertDirtyConfigUserKVOnly(ctx, conn); err != nil {
+			return err
+		}
 	}
 
 	if len(tables) == 0 {
@@ -1755,6 +1847,12 @@ func (s *DoltStore) Commit(ctx context.Context, message string) (retErr error) {
 
 	for _, table := range tables {
 		if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD(?)", table); err != nil {
+			// config when the mode intentionally includes it is the whole reason
+			// we stage here: silently skipping a failed DOLT_ADD('config') would
+			// leave config dirty and re-wedge the merge, so surface it instead.
+			if table == "config" && mode != configExclude {
+				return fmt.Errorf("failed to stage config before commit: %w", err)
+			}
 			// Best effort: some tables may be dolt_ignore'd (e.g., wisps).
 			// DOLT_ADD fails for ignored tables; skip silently.
 			continue
@@ -1770,6 +1868,48 @@ func (s *DoltStore) Commit(ctx context.Context, message string) (retErr error) {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
+	return nil
+}
+
+// assertDirtyConfigUserKVOnly returns an error unless every config row dirty in
+// the working set is this clone's own user KV data (the kv.* namespace, which
+// includes kv.memory.* memories). The pre-pull auto-commit opts config into the
+// staged set so user KV writes sync and stop wedging DOLT_MERGE (GH#2474), but
+// auto-committing an unrelated dirty internal config key such as issue_prefix
+// would re-open the GH#2455 stale-config corruption — that is the operator's
+// explicit `bd dolt commit` to make, not the pull's. Screening on the whole kv.
+// namespace (not just kv.memory.*) un-wedges generic `bd kv set` writes too: a
+// kv.* row is this clone's own data, exactly as safe to auto-commit as a memory,
+// and a genuine kv.* merge conflict is still left for the operator because
+// auto-resolution stays kv.memory.*-only (configConflictsAreMemoryConvergent).
+// config's primary key is `key`, so dolt_diff exposes to_key/from_key; an add or
+// delete leaves one side NULL, so COALESCE picks whichever key the change carries.
+func (s *DoltStore) assertDirtyConfigUserKVOnly(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx,
+		"SELECT COALESCE(to_key, from_key) FROM dolt_diff('HEAD', 'WORKING', 'config')")
+	if err != nil {
+		return fmt.Errorf("inspect dirty config before pull: %w", err)
+	}
+	defer rows.Close()
+
+	var unsafe []string
+	for rows.Next() {
+		var key sql.NullString
+		if err := rows.Scan(&key); err != nil {
+			return fmt.Errorf("scan dirty config key: %w", err)
+		}
+		if key.Valid && !strings.HasPrefix(key.String, kvkeys.Prefix) {
+			unsafe = append(unsafe, key.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate dirty config diff: %w", err)
+	}
+	if len(unsafe) > 0 {
+		return fmt.Errorf("refusing to auto-commit %d dirty internal config key(s) before pull: %s; "+
+			"only user %s* keys auto-commit before a pull (GH#2455) — commit or revert "+
+			"these explicitly with `bd dolt commit` first", len(unsafe), strings.Join(unsafe, ", "), kvkeys.Prefix)
+	}
 	return nil
 }
 
@@ -2308,7 +2448,7 @@ func (s *DoltStore) pullFromRemote(ctx context.Context, remote string) (retErr e
 	// (schema init, molecule loading, metadata writes) can dirty the working
 	// set before the user's pull command runs.
 	if !s.readOnly {
-		if err := s.Commit(ctx, "auto-commit before pull"); err != nil {
+		if err := s.commitBeforePull(ctx, "auto-commit before pull"); err != nil {
 			// "nothing to commit" is fine — working set is already clean
 			if !isDoltNothingToCommit(err) {
 				return fmt.Errorf("failed to commit pending changes before pull: %w", err)
@@ -2705,7 +2845,8 @@ func (s *DoltStore) autoResolveConflictsAfterCLIPull(ctx context.Context) (bool,
 
 // tryAutoResolveMergeConflicts auto-resolves merge conflicts that are safe to
 // resolve without operator input (GH#2466 metadata, #4259 audit-only
-// dependency edges, bd-6dnrw.29 schema_migrations vintage rows), returning
+// dependency edges, bd-6dnrw.29 schema_migrations vintage rows, GH#2474
+// convergent kv.memory.* config rows), returning
 // (true, nil) only if ALL conflicts were resolved. The implementation is
 // shared with the embedded pull path (bd-6dnrw.40); see
 // versioncontrolops.TryAutoResolveMergeConflicts for the full contract.

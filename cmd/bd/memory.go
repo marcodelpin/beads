@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 )
 
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
-const memoryPrefix = "memory."
+const memoryPrefix = kvkeys.MemoryPrefix
 
 // memoryKeyFlag allows explicit key override for bd remember.
 var memoryKeyFlag string
@@ -129,7 +131,7 @@ Examples:
 		}
 
 		// Filter for kv.memory.* keys
-		fullPrefix := kvPrefix + memoryPrefix
+		fullPrefix := kvkeys.MemoryConfigKeyPrefix
 		memories := make(map[string]string)
 		for k, v := range allConfig {
 			if strings.HasPrefix(k, fullPrefix) {

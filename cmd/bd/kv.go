@@ -7,10 +7,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 )
 
 // kvPrefix is prepended to all user keys to separate them from internal config
-const kvPrefix = "kv."
+const kvPrefix = kvkeys.Prefix
 
 // validateKVKey checks if a key is valid for the KV store.
 // Returns an error if the key is invalid.
@@ -22,8 +24,17 @@ func validateKVKey(key string) error {
 		return fmt.Errorf("key cannot be only whitespace")
 	}
 	// Prevent keys that would create nested kv.kv.* prefixes
-	if strings.HasPrefix(key, "kv.") {
+	if strings.HasPrefix(key, kvPrefix) {
 		return fmt.Errorf("key cannot start with 'kv.' (would create nested prefix)")
+	}
+	// Reserve the persistent-memory namespace: a generic memory.* key would
+	// store to kv.memory.*, indistinguishable from a `bd remember` memory, and
+	// the merge resolver auto-resolves kv.memory.* conflicts with --theirs
+	// (GH#2474). Without this guard a user's deliberate kv value could be
+	// silently overridden by a remote on pull. Keep the namespace owned by
+	// bd remember / bd forget.
+	if strings.HasPrefix(key, kvkeys.MemoryPrefix) {
+		return fmt.Errorf("key cannot start with %q (reserved for persistent memories; use 'bd remember' / 'bd forget')", kvkeys.MemoryPrefix)
 	}
 	// Prevent keys that look like internal config
 	if strings.HasPrefix(key, "sync.") || strings.HasPrefix(key, "conflict.") ||
