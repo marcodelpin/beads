@@ -488,6 +488,7 @@ var doltMetrics struct {
 	circuitTrips        metric.Int64Counter
 	circuitRejected     metric.Int64Counter
 	serializationErrors metric.Int64Counter
+	writeRetries        metric.Int64Counter
 	connAcquireMs       metric.Float64Histogram
 	poolWaitCount       metric.Int64Counter
 	poolWaitMs          metric.Float64Histogram
@@ -514,6 +515,10 @@ func init() {
 	doltMetrics.serializationErrors, _ = m.Int64Counter("bd.db.serialization_errors",
 		metric.WithDescription("Serialization failures (MySQL 1213/1205) before retry"),
 		metric.WithUnit("{error}"),
+	)
+	doltMetrics.writeRetries, _ = m.Int64Counter("bd.write_retries_total",
+		metric.WithDescription("Write-tx retries in withRetryTx (label: type=serialization|connection)"),
+		metric.WithUnit("{retry}"),
 	)
 	doltMetrics.connAcquireMs, _ = m.Float64Histogram("bd.db.conn_acquire_ms",
 		metric.WithDescription("Time to acquire a pooled connection for a Dolt transaction"),
@@ -632,14 +637,28 @@ func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 	}
 	return backoff.Retry(func() error {
 		err := s.withWriteTx(ctx, fn)
-		if err != nil && isSerializationError(err) {
+		if err == nil {
+			return nil
+		}
+		// Serialization failures (1213/1205) guarantee a server-side rollback,
+		// so the write never landed — safe to replay at any phase.
+		if isSerializationError(err) {
 			doltMetrics.serializationErrors.Add(ctx, 1)
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "serialization")))
 			return err // retryable
 		}
-		if err != nil {
-			return backoff.Permanent(err)
+		// Connection failures are only safe to replay BEFORE commit (BeginTx or
+		// the body): nothing was committed. A failure tagged errCommitPhase is
+		// ambiguous — the commit may have landed before the connection dropped —
+		// so replaying could double-apply the write. Surface it instead.
+		if isRetryableError(err) {
+			if errors.Is(err, errCommitPhase) {
+				return backoff.Permanent(fmt.Errorf("write commit result indeterminate after connection loss (not retried to avoid double-apply): %w", err))
+			}
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "connection")))
+			return err // pre-commit transient: retryable
 		}
-		return nil
+		return backoff.Permanent(err)
 	}, backoff.WithContext(bo, ctx))
 }
 
@@ -655,7 +674,9 @@ func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 		return errors.Join(err, tx.Rollback())
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit write tx: %w", err)
+		// Tag commit-phase failures so withRetryTx can tell an ambiguous commit
+		// loss apart from a safe-to-replay pre-commit failure.
+		return fmt.Errorf("commit write tx: %w (%w)", err, errCommitPhase)
 	}
 	return nil
 }

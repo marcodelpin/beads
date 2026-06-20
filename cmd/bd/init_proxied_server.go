@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/fs"
 	"github.com/steveyegge/beads/internal/storage/git"
+	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -149,12 +150,6 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		FatalError("failed to open uow provider: %v", err)
 	}
 
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		FatalError("failed to open unit of work: %v", err)
-	}
-	defer uw.Close(ctx)
-
 	bootstrapParams := domain.BootstrapProjectParams{
 		Prefix:         prefix,
 		ProjectID:      projectID,
@@ -177,12 +172,11 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		bootstrapParams.RemoteURL = remoteURL
 	}
 
-	if _, err := uw.BootstrapUseCase().BootstrapProject(ctx, bootstrapParams); err != nil {
-		FatalError("bootstrap project: %v", err)
-	}
-
-	if err := uw.Commit(ctx, "bd init"); err != nil {
-		FatalError("commit init: %v", err)
+	if err := uow.RunInTx(ctx, uowProvider, "bd init", func(uw uow.UnitOfWork) error {
+		_, err := uw.BootstrapUseCase().BootstrapProject(ctx, bootstrapParams)
+		return err
+	}); err != nil {
+		FatalError("init: %v", err)
 	}
 
 	runInitProxiedServerTail(cmd, ctx, in, runInitTailContext{
