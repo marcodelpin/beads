@@ -79,6 +79,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema-reshaping merges fall back to a full recompute; conflicted pulls skip
   it until the operator resolves. (bd-6dnrw.3, PR 4107 follow-up)
 
+- **Stale `is_blocked` is now repairable — `bd recompute-blocked`.** The
+  post-pull recompute above is scoped to the merge diff and is skipped when a
+  re-pull merges nothing (`HEAD` unchanged), so a recompute that failed *after*
+  its merge committed — or a conflicted pull resolved by hand (which skips the
+  recompute) — could leave `is_blocked` stale with no way to repair it: rerunning
+  `bd dolt pull` merged nothing and recomputed nothing. The new
+  `bd recompute-blocked` command runs a full, unconditional recompute over every
+  issue and wisp and commits the result; it is idempotent and works in **both**
+  embedded and server mode (unlike `bd doctor`, which is server-mode only).
+  Server-mode `bd doctor` also gains a read-only **Blocked State** check that
+  reports stale rows and a `bd doctor --fix` that runs the same repair.
+  (bd-6dnrw.37)
+
 - **Deterministic history-table primary keys (cross-clone merge-safety).**
   Migration `0037` converted the legacy BIGINT primary keys of `events`,
   `comments`, `issue_snapshots` and `compaction_snapshots` by backfilling

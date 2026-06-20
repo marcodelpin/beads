@@ -624,6 +624,16 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	// Check 10c: is_blocked consistency — derived flags a skipped post-pull
+	// recompute can leave stale (bd-6dnrw.37). `bd ready` trusts is_blocked, so
+	// staleness silently hides ready work; the full recompute repairs it.
+	// Warn-only (does not fail OverallOK): this is a new check shipping in a
+	// patch, and is_blocked is self-healing via 'bd doctor --fix' / the next
+	// pull's recompute — surface it as actionable without turning doctor red
+	// across the fleet if an unforeseen dependency shape trips the predicate.
+	blockedConsistencyCheck := convertWithCategory(doctor.CheckBlockedConsistencyWithStore(sharedStore), doctor.CategoryData)
+	result.Checks = append(result.Checks, blockedConsistencyCheck)
+
 	// Check 11: Claude integration
 	claudeCheck := convertWithCategory(doctor.CheckClaude(path), doctor.CategoryIntegration)
 	result.Checks = append(result.Checks, claudeCheck)

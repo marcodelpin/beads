@@ -2719,6 +2719,45 @@ func (s *DoltStore) recomputeBlockedAfterPull(ctx context.Context, fromCommit st
 	return nil
 }
 
+// RecomputeAllBlocked recomputes is_blocked for every issue and wisp in one full
+// pass and returns the number of rows it corrected. It is the mode-independent
+// repair behind 'bd recompute-blocked' and 'bd doctor --fix' (bd-6dnrw.37): the
+// scoped post-pull recompute is skipped when a re-pull merges nothing, so a
+// recompute that failed after its merge committed — or a conflicted pull the
+// operator resolved by hand — leaves is_blocked stale until this full pass runs.
+// Idempotent: a consistent database corrects nothing.
+func (s *DoltStore) RecomputeAllBlocked(ctx context.Context) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin is_blocked recompute: %w", err)
+	}
+	// Refuse to derive and commit is_blocked from a dirty graph: the recompute
+	// reads the current working set and stages only `issues`, so pre-existing
+	// dirty issue/dependency edits would otherwise be swept into — or silently
+	// inform — the repair commit (bd-6dnrw.37). Checked inside this tx so it
+	// sees the same working set the recompute will read.
+	if err := issueops.GuardBlockedRecomputeWorkingSet(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	changed, err := issueops.RecomputeAllIsBlockedInTx(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit is_blocked recompute: %w", err)
+	}
+	if changed > 0 {
+		// Stage only issues — the synced table is_blocked lives on (wisps are
+		// dolt_ignore'd) — so an unrelated dirty working set is not swept in.
+		if err := s.doltAddAndCommit(ctx, []string{"issues"}, "bd: recompute is_blocked (full)"); err != nil {
+			return int(changed), err
+		}
+	}
+	return int(changed), nil
+}
+
 // recomputeBlockedTx runs the post-merge is_blocked recompute in its own
 // transaction.
 func (s *DoltStore) recomputeBlockedTx(ctx context.Context, fromCommit string) error {

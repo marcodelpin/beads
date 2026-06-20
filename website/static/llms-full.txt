@@ -2750,7 +2750,7 @@ For these use cases, consider GitHub Issues, Linear, or Jira.
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --list` and `bd help --doc <command>`.
 
-This reference covers all 106 live top-level `bd` commands. Regenerate it with:
+This reference covers all 107 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -2835,6 +2835,7 @@ This reference covers all 106 live top-level `bd` commands. Regenerate it with:
 - [`bd quickstart`](./quickstart.md)
 - [`bd ready`](./ready.md)
 - [`bd recall`](./recall.md)
+- [`bd recompute-blocked`](./recompute-blocked.md)
 - [`bd remember`](./remember.md)
 - [`bd rename`](./rename.md)
 - [`bd rename-prefix`](./rename-prefix.md)
@@ -8776,6 +8777,38 @@ Examples:
 
 ```
 bd recall <key>
+```
+
+</document>
+
+<document path="docs/cli-reference/recompute-blocked.md">
+
+
+<!-- AUTO-GENERATED: do not edit manually -->
+Generated from `bd help --doc recompute-blocked`
+
+## bd recompute-blocked
+
+Recompute the denormalized is_blocked flag for every issue and wisp.
+
+is_blocked is derived from the dependency graph and maintained automatically by
+local writes and by a post-pull recompute scoped to what the merge changed. If
+that scoped recompute is skipped — a recompute that failed after its merge
+committed, or a conflicted pull resolved by hand — the flag can go stale, and a
+later pull that merges nothing will not refresh it (bd-6dnrw.37). 'bd ready'
+trusts the flag, so stale values silently hide ready work or surface blocked
+work.
+
+This command runs the full recompute unconditionally and commits the result.
+It is idempotent: on a consistent database it changes nothing. Works in both
+embedded and server mode (unlike 'bd doctor', which is server-mode only).
+
+Examples:
+  bd recompute-blocked          # Repair stale is_blocked flags
+  bd recompute-blocked --json   # Machine-parseable &#123;"rows_corrected": N&#125;
+
+```
+bd recompute-blocked
 ```
 
 </document>

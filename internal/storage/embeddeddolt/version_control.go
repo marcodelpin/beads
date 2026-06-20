@@ -254,6 +254,37 @@ func (s *EmbeddedDoltStore) RecomputeBlockedAfterMerge(ctx context.Context, from
 	return s.recomputeBlockedAfterPull(ctx, fromCommit)
 }
 
+// RecomputeAllBlocked recomputes is_blocked for every issue and wisp in one full
+// pass and returns the number of rows it corrected. This is the embedded path
+// of the mode-independent repair (bd-6dnrw.37); see DoltStore.RecomputeAllBlocked.
+func (s *EmbeddedDoltStore) RecomputeAllBlocked(ctx context.Context) (int, error) {
+	var changed int64
+	if err := s.withConn(ctx, true, func(tx *sql.Tx) error {
+		// Refuse to derive and commit is_blocked from a dirty graph (see
+		// DoltStore.RecomputeAllBlocked); checked inside the recompute tx so it
+		// sees the same working set the recompute will read (bd-6dnrw.37).
+		if e := issueops.GuardBlockedRecomputeWorkingSet(ctx, tx); e != nil {
+			return e
+		}
+		var e error
+		changed, e = issueops.RecomputeAllIsBlockedInTx(ctx, tx)
+		return e
+	}); err != nil {
+		return 0, err
+	}
+	if changed > 0 {
+		// Stage only issues (wisps are dolt_ignore'd), matching the post-pull
+		// recompute, so an unrelated dirty working set is not swept in.
+		if err := s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
+			return versioncontrolops.StageAndCommit(ctx, db,
+				map[string]bool{"issues": true}, "bd: recompute is_blocked (full)", commitAuthor)
+		}); err != nil {
+			return int(changed), err
+		}
+	}
+	return int(changed), nil
+}
+
 func (s *EmbeddedDoltStore) GetConflicts(ctx context.Context) ([]storage.Conflict, error) {
 	var conflicts []storage.Conflict
 	err := s.withDBConn(ctx, func(db versioncontrolops.DBConn) error {
