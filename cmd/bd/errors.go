@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/steveyegge/beads/internal/metrics"
 )
 
 type exitError struct {
@@ -119,9 +121,20 @@ func SilentExit() error {
 }
 
 // FatalError writes an error message to stderr (structured JSON when --json is
-// set) and exits with code 1. Retained for the proxied-server code paths that
-// run outside cobra's RunE error-return convention; the RunE-converted commands
-// use HandleError and friends instead.
+// set) and exits with code 1.
+//
+// It is retained ONLY for the proxied-server code paths, which run outside
+// cobra's RunE error-return convention; every RunE-converted command uses
+// HandleError and friends instead. Because FatalError calls os.Exit it bypasses
+// the per-command deferred metrics CloseEventAndAdd and main()'s
+// metrics.Global().Close()/MaybeSpawnFlusher, so a command that exits through a
+// proxied-server FatalError* path records no usage event. That telemetry gap is
+// latent today: proxied-server mode cannot be entered ("bd init --proxied-server"
+// is rejected as "not yet implemented", see init.go), so usesProxiedServer() is
+// never true and these paths never run (verified by
+// TestInitProxiedServerRejectedKeepsMetricsGapLatent). When proxied-server mode
+// is completed, convert these helpers to return errors up through RunE — like
+// HandleError — so the deferred metrics close/flush is preserved.
 func FatalError(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if jsonOutput {
@@ -172,9 +185,17 @@ func WarnError(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "Warning: "+format+"\n", args...)
 }
 
+// CheckReadonly aborts the command when bd is running in read-only mode (the
+// worker-sandbox posture, see readonlyMode). Like the proxied-server FatalError*
+// family above, it exits via os.Exit and so cannot run the per-command deferred
+// CloseEventAndAdd — a command blocked here records no cli_command event of its
+// own (it never actually ran). It does flush metrics first, so events already
+// queued earlier in this run are still written and scheduled for upload rather
+// than stranded until the next clean exit.
 func CheckReadonly(operation string) {
 	if readonlyMode {
 		fmt.Fprintf(os.Stderr, "Error: operation '%s' is not allowed in read-only mode\n", operation)
+		metrics.CloseAndFlush()
 		os.Exit(1)
 	}
 }

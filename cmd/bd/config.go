@@ -244,6 +244,29 @@ var configGetCmd = &cobra.Command{
 		key := args[0]
 
 		if config.IsYamlOnlyKey(key) {
+			// User-global keys (e.g. metrics.*) must be read from the user-global
+			// config.yaml only — the same source the runtime uses for metrics
+			// consent and endpoint. Reading the merged value here would let a
+			// project's .beads/config.yaml shadow the effective value and report the
+			// opposite of what `bd metrics` actually honors.
+			if config.IsUserGlobalKey(key) {
+				value := config.GetUserYamlConfig(key)
+				location := config.UserConfigYamlPath()
+				if jsonOutput {
+					return outputJSON(map[string]interface{}{
+						"key":      key,
+						"value":    value,
+						"location": location,
+					})
+				}
+				if value == "" {
+					fmt.Printf("%s (not set in %s)\n", key, location)
+				} else {
+					fmt.Printf("%s\n", value)
+				}
+				return nil
+			}
+
 			value := config.GetYamlConfig(key)
 
 			if jsonOutput {

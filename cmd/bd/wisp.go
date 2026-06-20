@@ -107,7 +107,9 @@ func runWisp(cmd *cobra.Command, args []string) error {
 		_ = cmd.Help()
 		return nil
 	}
-	return runWispCreate(cmd, args)
+	// Delegate to the non-emitting core so `bd wisp <name>` records exactly one
+	// cli_command event ("wisp"), not also "wisp-create".
+	return runWispCreateCore(cmd, args)
 }
 
 // wispCreateCmd instantiates a proto as an ephemeral wisp (kept for backwards compat)
@@ -143,14 +145,22 @@ Examples:
 }
 
 func runWispCreate(cmd *cobra.Command, args []string) error {
-	CheckReadonly("wisp create")
-
 	evt := metrics.NewCommandEvent("wisp-create")
 	defer func() {
 		if c := metrics.Global(); c != nil {
 			c.CloseEventAndAdd(evt)
 		}
 	}()
+
+	return runWispCreateCore(cmd, args)
+}
+
+// runWispCreateCore instantiates a proto as a wisp without emitting a metrics
+// event, so the caller owns emission: the standalone `bd mol wisp create`
+// entrypoint records "wisp-create", while the bare `bd wisp <name>` alias records
+// "wisp". This keeps each invocation to exactly one cli_command event.
+func runWispCreateCore(cmd *cobra.Command, args []string) error {
+	CheckReadonly("wisp create")
 
 	ctx := rootCtx
 

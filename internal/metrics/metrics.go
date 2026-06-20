@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/dolthub/eventkit"
 )
@@ -75,6 +76,28 @@ func Init(version string, enable bool, metricsEndpoint string) (func(context.Con
 
 func Global() *eventkit.Collector {
 	return eventkit.Global()
+}
+
+// closeFlushTimeout bounds how long CloseAndFlush waits for the collector to
+// write queued events before detaching the uploader; it mirrors the budget
+// main() has always used for its post-command metrics tail.
+const closeFlushTimeout = 500 * time.Millisecond
+
+// CloseAndFlush finalizes any queued events on the global collector (bounded by
+// closeFlushTimeout) and then detaches the background flusher. It is the single
+// metrics shutdown path shared by main()'s normal post-Execute tail and the
+// reachable os.Exit guards (CheckReadonly and the pre-run gates in main), so
+// events already queued earlier in this run are still written to disk and
+// scheduled for upload even when a command exits without returning through the
+// RunE/ExecuteC path. It is a no-op when metrics are disabled or uninitialized,
+// and the BD_IS_FLUSHER guard in MaybeSpawnFlusher keeps it from recursing.
+func CloseAndFlush() {
+	if c := Global(); c != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), closeFlushTimeout)
+		_ = c.Close(ctx)
+		cancel()
+	}
+	MaybeSpawnFlusher()
 }
 
 func NewCommandEvent(command string) *eventkit.Event {

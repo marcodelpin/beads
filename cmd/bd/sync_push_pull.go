@@ -31,7 +31,9 @@ var adoPushCmd = &cobra.Command{
 
 Accepts bead IDs as positional arguments.
 Equivalent to: bd ado sync --push-only --issues <ids>`,
-	RunE: runADOPush,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runADOPush,
 }
 
 var adoPullCmd = &cobra.Command{
@@ -41,7 +43,9 @@ var adoPullCmd = &cobra.Command{
 
 Accepts bead IDs or external references as positional arguments.
 Equivalent to: bd ado sync --pull-only --issues <refs>`,
-	RunE: runADOPull,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runADOPull,
 }
 
 // --- Jira push/pull ---
@@ -105,7 +109,9 @@ var githubPushCmd = &cobra.Command{
 
 Accepts bead IDs as positional arguments.
 Equivalent to: bd github sync --push-only --issues <ids>`,
-	RunE: runGitHubPush,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runGitHubPush,
 }
 
 var githubPullCmd = &cobra.Command{
@@ -115,7 +121,9 @@ var githubPullCmd = &cobra.Command{
 
 Accepts bead IDs or external references as positional arguments.
 Equivalent to: bd github sync --pull-only --issues <refs>`,
-	RunE: runGitHubPull,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runGitHubPull,
 }
 
 // --- GitLab push/pull ---
@@ -127,7 +135,9 @@ var gitlabPushCmd = &cobra.Command{
 
 Accepts bead IDs as positional arguments.
 Equivalent to: bd gitlab sync --push-only --issues <ids>`,
-	RunE: runGitLabPush,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runGitLabPush,
 }
 
 var gitlabPullCmd = &cobra.Command{
@@ -137,7 +147,9 @@ var gitlabPullCmd = &cobra.Command{
 
 Accepts bead IDs or external references as positional arguments.
 Equivalent to: bd gitlab sync --pull-only --issues <refs>`,
-	RunE: runGitLabPull,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runGitLabPull,
 }
 
 // --- Notion push/pull ---
@@ -149,7 +161,9 @@ var notionPushCmd = &cobra.Command{
 
 Accepts bead IDs as positional arguments.
 Equivalent to: bd notion sync --push --issues <ids>`,
-	RunE: runNotionPush,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runNotionPush,
 }
 
 var notionPullCmd = &cobra.Command{
@@ -159,7 +173,9 @@ var notionPullCmd = &cobra.Command{
 
 Accepts bead IDs or external references as positional arguments.
 Equivalent to: bd notion sync --pull --issues <refs>`,
-	RunE: runNotionPull,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runNotionPull,
 }
 
 func init() {

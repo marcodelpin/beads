@@ -37,7 +37,9 @@ TODOs can be promoted to full issues by changing type or priority:
 			}
 		}()
 
-		return listTodosCmd.RunE(cmd, args)
+		// Delegate to the shared, non-emitting list core so a single `bd todo`
+		// records exactly one cli_command event ("todo"), not also "todo-list".
+		return runTodoListCore(cmd, args)
 	},
 }
 
@@ -108,52 +110,59 @@ var listTodosCmd = &cobra.Command{
 			}
 		}()
 
-		showAll, _ := cmd.Flags().GetBool("all")
-
-		ctx := rootCtx
-
-		taskType := types.TypeTask
-		filter := types.IssueFilter{
-			IssueType: &taskType,
-		}
-		if !showAll {
-			openStatus := types.StatusOpen
-			filter.Status = &openStatus
-		}
-
-		issues, err := getStore().SearchIssues(ctx, "", filter)
-		if err != nil {
-			return HandleError("failed to list TODOs: %v", err)
-		}
-
-		if jsonOutput {
-			data, err := json.MarshalIndent(issues, "", "  ")
-			if err != nil {
-				return HandleError("failed to marshal JSON: %v", err)
-			}
-			fmt.Println(string(data))
-			return nil
-		}
-		if len(issues) == 0 {
-			fmt.Println("No TODOs found")
-			return nil
-		}
-
-		todoSortIssues(issues)
-
-		for _, issue := range issues {
-			statusIcon := ui.RenderStatusIcon(string(issue.Status))
-			priority := ui.RenderPriority(issue.Priority)
-			fmt.Printf("  %s %s  %-40s  %s  %s\n",
-				statusIcon,
-				ui.RenderID(issue.ID),
-				todoTruncate(issue.Title, 40),
-				priority,
-				issue.Status)
-		}
-		fmt.Printf("\nTotal: %d TODOs\n", len(issues))
-		return nil
+		return runTodoListCore(cmd, args)
 	},
+}
+
+// runTodoListCore lists TODO (task) issues. It deliberately emits no metrics
+// event so callers own event emission: `bd todo list` emits "todo-list" and the
+// bare `bd todo` alias emits "todo", each exactly once.
+func runTodoListCore(cmd *cobra.Command, _ []string) error {
+	showAll, _ := cmd.Flags().GetBool("all")
+
+	ctx := rootCtx
+
+	taskType := types.TypeTask
+	filter := types.IssueFilter{
+		IssueType: &taskType,
+	}
+	if !showAll {
+		openStatus := types.StatusOpen
+		filter.Status = &openStatus
+	}
+
+	issues, err := getStore().SearchIssues(ctx, "", filter)
+	if err != nil {
+		return HandleError("failed to list TODOs: %v", err)
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(issues, "", "  ")
+		if err != nil {
+			return HandleError("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+	if len(issues) == 0 {
+		fmt.Println("No TODOs found")
+		return nil
+	}
+
+	todoSortIssues(issues)
+
+	for _, issue := range issues {
+		statusIcon := ui.RenderStatusIcon(string(issue.Status))
+		priority := ui.RenderPriority(issue.Priority)
+		fmt.Printf("  %s %s  %-40s  %s  %s\n",
+			statusIcon,
+			ui.RenderID(issue.ID),
+			todoTruncate(issue.Title, 40),
+			priority,
+			issue.Status)
+	}
+	fmt.Printf("\nTotal: %d TODOs\n", len(issues))
+	return nil
 }
 
 var doneTodoCmd = &cobra.Command{

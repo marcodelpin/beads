@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/metrics"
 )
 
 var (
@@ -24,9 +25,18 @@ var (
 )
 
 var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Print version information",
+	Use:           "version",
+	Short:         "Print version information",
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("version")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		commit := resolveCommitHash()
 		branch := resolveBranch()
 

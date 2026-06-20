@@ -467,187 +467,196 @@ var listCmd = &cobra.Command{
 			}
 		}()
 
-		in, err := gatherListInput(cmd)
-		if err != nil {
-			return err
-		}
+		return runListCore(cmd, args)
+	},
+}
 
-		if usesProxiedServer() {
-			if err := runListProxiedServer(cmd, rootCtx, in); err != nil {
-				return HandleError("%v", err)
-			}
-			return nil
-		}
+// runListCore runs the list query and rendering without emitting a metrics
+// event, so the caller owns emission: `bd list` emits "list" exactly once, and
+// the `bd children` alias emits "children" exactly once. children sets listCmd's
+// flags and calls this core directly rather than listCmd.RunE, which would emit
+// a second "list" event for a single user command.
+func runListCore(cmd *cobra.Command, _ []string) error {
+	in, err := gatherListInput(cmd)
+	if err != nil {
+		return err
+	}
 
-		if in.offset > 0 {
-			return HandleError("--offset is only supported under --proxied-server")
+	if usesProxiedServer() {
+		if err := runListProxiedServer(cmd, rootCtx, in); err != nil {
+			return HandleError("%v", err)
 		}
+		return nil
+	}
 
-		cfg, err := loadDirectListFilterConfig(rootCtx, store)
+	if in.offset > 0 {
+		return HandleError("--offset is only supported under --proxied-server")
+	}
+
+	cfg, err := loadDirectListFilterConfig(rootCtx, store)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	filter, err := buildListFilter(in, cfg)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+
+	ctx := rootCtx
+
+	activeStore := store
+	routedStore, routed, err := openRoutedReadStore(ctx, activeStore)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	if routed {
+		defer func() { _ = routedStore.Close() }()
+		activeStore = routedStore
+	}
+
+	if in.watchMode {
+		watchIssues(ctx, activeStore, filter, in.readyFlag, in.parentID, in.sortBy, in.reverse, in.effectiveLimit)
+		return nil
+	}
+
+	if jsonOutput {
+		var iwc []*types.IssueWithCounts
+		var err error
+		if in.readyFlag {
+			iwc, err = activeStore.GetReadyWorkWithCounts(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
+		} else {
+			iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", withFetchOneExtra(filter))
+		}
 		if err != nil {
 			return HandleError("%v", err)
 		}
-		filter, err := buildListFilter(in, cfg)
-		if err != nil {
-			return HandleError("%v", err)
+		sortIssuesWithCounts(iwc, in.sortBy, in.reverse)
+		truncated := in.effectiveLimit > 0 && len(iwc) > in.effectiveLimit
+		if truncated {
+			iwc = iwc[:in.effectiveLimit]
 		}
-
-		ctx := rootCtx
-
-		activeStore := store
-		routedStore, routed, err := openRoutedReadStore(ctx, activeStore)
-		if err != nil {
-			return HandleError("%v", err)
+		if iwc == nil {
+			iwc = []*types.IssueWithCounts{}
 		}
-		if routed {
-			defer func() { _ = routedStore.Close() }()
-			activeStore = routedStore
-		}
-
-		if in.watchMode {
-			watchIssues(ctx, activeStore, filter, in.readyFlag, in.parentID, in.sortBy, in.reverse, in.effectiveLimit)
-			return nil
-		}
-
-		if jsonOutput {
-			var iwc []*types.IssueWithCounts
-			var err error
-			if in.readyFlag {
-				iwc, err = activeStore.GetReadyWorkWithCounts(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
-			} else {
-				iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", withFetchOneExtra(filter))
-			}
-			if err != nil {
-				return HandleError("%v", err)
-			}
-			sortIssuesWithCounts(iwc, in.sortBy, in.reverse)
-			truncated := in.effectiveLimit > 0 && len(iwc) > in.effectiveLimit
-			if truncated {
-				iwc = iwc[:in.effectiveLimit]
-			}
-			if iwc == nil {
-				iwc = []*types.IssueWithCounts{}
-			}
-			if in.skipLabels {
-				if err := outputJSON(newSkipLabelsListJSONResponse(iwc)); err != nil {
-					return err
-				}
-				printTruncationHint(truncated, in.effectiveLimit)
-				return nil
-			}
-			if err := outputJSON(iwc); err != nil {
+		if in.skipLabels {
+			if err := outputJSON(newSkipLabelsListJSONResponse(iwc)); err != nil {
 				return err
 			}
 			printTruncationHint(truncated, in.effectiveLimit)
 			return nil
 		}
+		if err := outputJSON(iwc); err != nil {
+			return err
+		}
+		printTruncationHint(truncated, in.effectiveLimit)
+		return nil
+	}
 
-		var issues []*types.Issue
-		if in.readyFlag {
-			wf := readyWorkFilterFromIssueFilter(withFetchOneExtra(filter))
-			var err error
-			issues, err = activeStore.GetReadyWork(ctx, wf)
+	var issues []*types.Issue
+	if in.readyFlag {
+		wf := readyWorkFilterFromIssueFilter(withFetchOneExtra(filter))
+		var err error
+		issues, err = activeStore.GetReadyWork(ctx, wf)
+		if err != nil {
+			return HandleError("%v", err)
+		}
+	} else {
+		var err error
+		issues, err = activeStore.SearchIssues(ctx, "", withFetchOneExtra(filter))
+		if err != nil {
+			return HandleError("%v", err)
+		}
+	}
+
+	sortIssues(issues, in.sortBy, in.reverse)
+
+	truncated := in.effectiveLimit > 0 && len(issues) > in.effectiveLimit
+	if truncated {
+		issues = issues[:in.effectiveLimit]
+	}
+
+	if in.prettyFormat && !jsonOutput {
+		if in.parentID != "" && !in.readyFlag {
+			treeIssues, err := getHierarchicalChildren(ctx, activeStore, "", in.parentID, filter)
 			if err != nil {
 				return HandleError("%v", err)
 			}
-		} else {
-			var err error
-			issues, err = activeStore.SearchIssues(ctx, "", withFetchOneExtra(filter))
-			if err != nil {
-				return HandleError("%v", err)
-			}
-		}
 
-		sortIssues(issues, in.sortBy, in.reverse)
-
-		truncated := in.effectiveLimit > 0 && len(issues) > in.effectiveLimit
-		if truncated {
-			issues = issues[:in.effectiveLimit]
-		}
-
-		if in.prettyFormat && !jsonOutput {
-			if in.parentID != "" && !in.readyFlag {
-				treeIssues, err := getHierarchicalChildren(ctx, activeStore, "", in.parentID, filter)
-				if err != nil {
-					return HandleError("%v", err)
-				}
-
-				if len(treeIssues) == 0 {
-					fmt.Printf("Issue '%s' has no children\n", in.parentID)
-					return nil
-				}
-
-				allDeps, _ := activeStore.GetAllDependencyRecords(ctx)
-				displayPrettyListWithDeps(treeIssues, false, allDeps)
-				printSkipLabelsFooter(in.skipLabels)
+			if len(treeIssues) == 0 {
+				fmt.Printf("Issue '%s' has no children\n", in.parentID)
 				return nil
 			}
 
 			allDeps, _ := activeStore.GetAllDependencyRecords(ctx)
-			displayPrettyListWithDeps(issues, false, allDeps)
-			printTruncationHint(truncated, in.effectiveLimit)
+			displayPrettyListWithDeps(treeIssues, false, allDeps)
 			printSkipLabelsFooter(in.skipLabels)
 			return nil
 		}
 
-		if in.formatStr != "" {
-			depsByIssueID, _ := activeStore.GetAllDependencyRecords(ctx)
-			if err := outputFormattedList(issues, depsByIssueID, in.formatStr); err != nil {
-				return HandleError("%v", err)
-			}
-			printTruncationHint(truncated, in.effectiveLimit)
-			return nil
-		}
-
-		maybeShowUpgradeNotification()
-
-		issueIDs := make([]string, len(issues))
-		labelsMap := make(map[string][]string, len(issues))
-		for i, issue := range issues {
-			issueIDs[i] = issue.ID
-			if len(issue.Labels) > 0 {
-				labelsMap[issue.ID] = issue.Labels
-			}
-		}
-
-		blockedByMap, blocksMap, parentMap, _ := activeStore.GetBlockingInfoForIssues(ctx, issueIDs)
-
-		var buf strings.Builder
-		if ui.IsAgentMode() {
-			for _, issue := range issues {
-				formatAgentIssue(&buf, issue, blockedByMap[issue.ID], blocksMap[issue.ID], parentMap[issue.ID])
-			}
-			fmt.Print(buf.String())
-			printTruncationHint(truncated, in.effectiveLimit)
-			return nil
-		} else if in.longFormat {
-			buf.WriteString(fmt.Sprintf("\nFound %d issues:\n\n", len(issues)))
-			for _, issue := range issues {
-				labels := labelsMap[issue.ID]
-				formatIssueLong(&buf, issue, labels, in.skipLabels)
-			}
-		} else {
-			for _, issue := range issues {
-				labels := labelsMap[issue.ID]
-				formatIssueCompact(&buf, issue, labels, blockedByMap[issue.ID], blocksMap[issue.ID], parentMap[issue.ID])
-			}
-		}
-
-		if in.skipLabels && !isQuiet() {
-			buf.WriteString(skipLabelsFooterText())
-		}
-
-		if err := ui.ToPager(buf.String(), ui.PagerOptions{NoPager: in.noPager}); err != nil {
-			if _, writeErr := fmt.Fprint(os.Stdout, buf.String()); writeErr != nil {
-				fmt.Fprintf(os.Stderr, "Error writing output: %v\n", writeErr)
-			}
-		}
-
+		allDeps, _ := activeStore.GetAllDependencyRecords(ctx)
+		displayPrettyListWithDeps(issues, false, allDeps)
 		printTruncationHint(truncated, in.effectiveLimit)
-
-		maybeShowTip(store)
+		printSkipLabelsFooter(in.skipLabels)
 		return nil
-	},
+	}
+
+	if in.formatStr != "" {
+		depsByIssueID, _ := activeStore.GetAllDependencyRecords(ctx)
+		if err := outputFormattedList(issues, depsByIssueID, in.formatStr); err != nil {
+			return HandleError("%v", err)
+		}
+		printTruncationHint(truncated, in.effectiveLimit)
+		return nil
+	}
+
+	maybeShowUpgradeNotification()
+
+	issueIDs := make([]string, len(issues))
+	labelsMap := make(map[string][]string, len(issues))
+	for i, issue := range issues {
+		issueIDs[i] = issue.ID
+		if len(issue.Labels) > 0 {
+			labelsMap[issue.ID] = issue.Labels
+		}
+	}
+
+	blockedByMap, blocksMap, parentMap, _ := activeStore.GetBlockingInfoForIssues(ctx, issueIDs)
+
+	var buf strings.Builder
+	if ui.IsAgentMode() {
+		for _, issue := range issues {
+			formatAgentIssue(&buf, issue, blockedByMap[issue.ID], blocksMap[issue.ID], parentMap[issue.ID])
+		}
+		fmt.Print(buf.String())
+		printTruncationHint(truncated, in.effectiveLimit)
+		return nil
+	} else if in.longFormat {
+		buf.WriteString(fmt.Sprintf("\nFound %d issues:\n\n", len(issues)))
+		for _, issue := range issues {
+			labels := labelsMap[issue.ID]
+			formatIssueLong(&buf, issue, labels, in.skipLabels)
+		}
+	} else {
+		for _, issue := range issues {
+			labels := labelsMap[issue.ID]
+			formatIssueCompact(&buf, issue, labels, blockedByMap[issue.ID], blocksMap[issue.ID], parentMap[issue.ID])
+		}
+	}
+
+	if in.skipLabels && !isQuiet() {
+		buf.WriteString(skipLabelsFooterText())
+	}
+
+	if err := ui.ToPager(buf.String(), ui.PagerOptions{NoPager: in.noPager}); err != nil {
+		if _, writeErr := fmt.Fprint(os.Stdout, buf.String()); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "Error writing output: %v\n", writeErr)
+		}
+	}
+
+	printTruncationHint(truncated, in.effectiveLimit)
+
+	maybeShowTip(store)
+	return nil
 }
 
 func init() {

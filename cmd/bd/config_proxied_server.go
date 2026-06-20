@@ -39,7 +39,7 @@ func runConfigSetProxiedServer(ctx context.Context, key, value string) {
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]string{
+		_ = outputJSON(map[string]string{
 			"key":   key,
 			"value": value,
 		})
@@ -59,7 +59,7 @@ func runConfigGetProxiedServer(ctx context.Context, key string) {
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]string{
+		_ = outputJSON(map[string]string{
 			"key":   key,
 			"value": value,
 		})
@@ -82,7 +82,7 @@ func runConfigListProxiedServer(ctx context.Context) {
 	}
 
 	if jsonOutput {
-		outputJSON(cfg)
+		_ = outputJSON(cfg)
 		return
 	}
 
@@ -118,7 +118,7 @@ func runConfigUnsetProxiedServer(ctx context.Context, key string) {
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]string{
+		_ = outputJSON(map[string]string{
 			"key": key,
 		})
 	} else {

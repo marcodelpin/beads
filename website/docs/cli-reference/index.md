@@ -9,7 +9,7 @@ sidebar_position: 0
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --list` and `bd help --doc <command>`.
 
-This reference covers all 107 live top-level `bd` commands. Regenerate it with:
+This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -76,6 +76,7 @@ This reference covers all 107 live top-level `bd` commands. Regenerate it with:
 - [`bd mail`](./mail.md)
 - [`bd memories`](./memories.md)
 - [`bd merge-slot`](./merge-slot.md)
+- [`bd metrics`](./metrics.md)
 - [`bd migrate`](./migrate.md)
 - [`bd mol`](./mol.md)
 - [`bd note`](./note.md)

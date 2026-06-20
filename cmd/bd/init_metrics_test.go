@@ -369,3 +369,282 @@ func TestInitMetricsDisabledSuppresses(t *testing.T) {
 		}
 	}
 }
+
+// allCommandEvents returns the `command` attribute of every cli_command event
+// across all queued .evtq files, so a test can assert the exact emission
+// cardinality of a single bd invocation (one user command must record exactly
+// one cli_command event).
+func allCommandEvents(t *testing.T, home string) []string {
+	t.Helper()
+	dir := filepath.Join(home, ".beads", "eventsData")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var cmds []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".evtq") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read evtq %s: %v", e.Name(), err)
+		}
+		var got metricsEvent
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("unmarshal evtq %s: %v\n%s", e.Name(), err, body)
+		}
+		for _, ev := range got.Events {
+			if ev.Name != "cli_command" {
+				continue
+			}
+			for _, a := range ev.Attributes {
+				if a.Key == "command" {
+					cmds = append(cmds, a.Value)
+				}
+			}
+		}
+	}
+	return cmds
+}
+
+func runBdForMetrics(t *testing.T, bd, repo, home string, args ...string) (stdout, stderr string) {
+	t.Helper()
+	cmd := exec.Command(bd, args...)
+	cmd.Dir = repo
+	cmd.Env = metricsTestEnv(home)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	_ = cmd.Run()
+	return outBuf.String(), errBuf.String()
+}
+
+// TestMetricsTodoAliasEmitsSingleEvent is the double-emit regression for PR
+// #4419: bare `bd todo` delegates to the todo-list behavior, but it must record
+// exactly one cli_command event ("todo"), not also a phantom "todo-list".
+func TestMetricsTodoAliasEmitsSingleEvent(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	home, err := testTempDir("bd-metrics-todo-home-*")
+	if err != nil {
+		t.Fatalf("temp home: %v", err)
+	}
+	repo, err := testTempDir("bd-metrics-todo-repo-*")
+	if err != nil {
+		t.Fatalf("temp repo: %v", err)
+	}
+	initGitRepoAt(t, repo)
+
+	// A store is needed so `bd todo` (which lists task issues) reaches its RunE.
+	if _, errOut := runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet"); errOut != "" {
+		// init may print warnings; only fail later if todo produces no event.
+		_ = errOut
+	}
+
+	// Isolate the next invocation by dropping init's queued event.
+	if err := os.RemoveAll(filepath.Join(home, ".beads", "eventsData")); err != nil {
+		t.Fatalf("clear eventsData: %v", err)
+	}
+
+	_, errOut := runBdForMetrics(t, bd, repo, home, "todo")
+
+	got := allCommandEvents(t, home)
+	if len(got) != 1 || got[0] != "todo" {
+		t.Errorf("bd todo emitted %v, want exactly [todo] (double-emit regression)\nstderr:\n%s", got, errOut)
+	}
+}
+
+// TestMetricsReadyGatedAliasEmitsSingleEvent is the double-emit regression for
+// PR #4419: `bd ready --gated` delegates to the gate-ready molecule discovery,
+// but it must record exactly one cli_command event ("ready"), not also a phantom
+// "mol-ready-gated".
+func TestMetricsReadyGatedAliasEmitsSingleEvent(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	home, err := testTempDir("bd-metrics-readygated-home-*")
+	if err != nil {
+		t.Fatalf("temp home: %v", err)
+	}
+	repo, err := testTempDir("bd-metrics-readygated-repo-*")
+	if err != nil {
+		t.Fatalf("temp repo: %v", err)
+	}
+	initGitRepoAt(t, repo)
+
+	// A store is needed so `bd ready --gated` reaches its discovery body.
+	if _, errOut := runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet"); errOut != "" {
+		_ = errOut
+	}
+
+	// Isolate the next invocation by dropping init's queued event.
+	if err := os.RemoveAll(filepath.Join(home, ".beads", "eventsData")); err != nil {
+		t.Fatalf("clear eventsData: %v", err)
+	}
+
+	_, errOut := runBdForMetrics(t, bd, repo, home, "ready", "--gated")
+
+	got := allCommandEvents(t, home)
+	if len(got) != 1 || got[0] != "ready" {
+		t.Errorf("bd ready --gated emitted %v, want exactly [ready] (double-emit regression)\nstderr:\n%s", got, errOut)
+	}
+}
+
+// TestMetricsWispAliasEmitsSingleEvent is the double-emit regression for PR
+// #4419: bare `bd mol wisp <proto>` delegates to the wisp-create behavior, but it
+// must record exactly one cli_command event ("wisp"), not also a phantom
+// "wisp-create". The proto does not exist, so the command fails after the event
+// is recorded; the event count is what this guards.
+func TestMetricsWispAliasEmitsSingleEvent(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	home, err := testTempDir("bd-metrics-wisp-home-*")
+	if err != nil {
+		t.Fatalf("temp home: %v", err)
+	}
+	repo, err := testTempDir("bd-metrics-wisp-repo-*")
+	if err != nil {
+		t.Fatalf("temp repo: %v", err)
+	}
+	initGitRepoAt(t, repo)
+
+	// A store is needed so `bd mol wisp <proto>` reaches its RunE body.
+	if _, errOut := runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet"); errOut != "" {
+		_ = errOut
+	}
+
+	// Isolate the next invocation by dropping init's queued event.
+	if err := os.RemoveAll(filepath.Join(home, ".beads", "eventsData")); err != nil {
+		t.Fatalf("clear eventsData: %v", err)
+	}
+
+	// A non-existent proto makes the create fail, but the "wisp" event is still
+	// recorded before delegation, which is exactly what this regression checks.
+	_, errOut := runBdForMetrics(t, bd, repo, home, "mol", "wisp", "mol-nonexistent-proto")
+
+	got := allCommandEvents(t, home)
+	if len(got) != 1 || got[0] != "wisp" {
+		t.Errorf("bd mol wisp <proto> emitted %v, want exactly [wisp] (double-emit regression)\nstderr:\n%s", got, errOut)
+	}
+}
+
+// TestMetricsRootVersionFlagSuppressesFirstRunNotice is the fresh-home regression
+// for PR #4419: `bd --version` and `bd -V` are version probes (like the `version`
+// subcommand) and must not print the one-time consent notice to stderr or mark it
+// shown, even on a brand-new home with metrics enabled. A positive control proves
+// the harness can still fire the notice for a non-suppressed command, so a missing
+// notice below reflects real suppression rather than a dead test.
+func TestMetricsRootVersionFlagSuppressesFirstRunNotice(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	const noticeMarker = "anonymous usage metrics"
+
+	noticeShown := func(home string) bool {
+		b, err := os.ReadFile(filepath.Join(home, ".config", "bd", "config.yaml"))
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(b), "notice_shown")
+	}
+
+	// Positive control: a non-suppressed command on a fresh home prints the notice
+	// (the consent notice fires before the no-database exit), so the negative
+	// assertions below are meaningful.
+	control, err := testTempDir("bd-metrics-version-control-home-*")
+	if err != nil {
+		t.Fatalf("temp home: %v", err)
+	}
+	controlRepo, err := testTempDir("bd-metrics-version-control-repo-*")
+	if err != nil {
+		t.Fatalf("temp repo: %v", err)
+	}
+	if _, errOut := runBdForMetrics(t, bd, controlRepo, control, "list"); !strings.Contains(errOut, noticeMarker) {
+		t.Fatalf("positive control: `bd list` on a fresh home should print the first-run notice; stderr:\n%s", errOut)
+	}
+
+	for _, flag := range []string{"--version", "-V"} {
+		flag := flag
+		t.Run("root "+flag+" suppresses notice", func(t *testing.T) {
+			home, err := testTempDir("bd-metrics-version-home-*")
+			if err != nil {
+				t.Fatalf("temp home: %v", err)
+			}
+			repo, err := testTempDir("bd-metrics-version-repo-*")
+			if err != nil {
+				t.Fatalf("temp repo: %v", err)
+			}
+			stdout, errOut := runBdForMetrics(t, bd, repo, home, flag)
+			if !strings.Contains(stdout, "bd version") {
+				t.Errorf("`bd %s` should print version to stdout, got stdout:\n%s\nstderr:\n%s", flag, stdout, errOut)
+			}
+			if strings.Contains(errOut, noticeMarker) {
+				t.Errorf("`bd %s` printed the first-run metrics notice to stderr (must be suppressed):\n%s", flag, errOut)
+			}
+			if noticeShown(home) {
+				t.Errorf("`bd %s` marked metrics.notice_shown in user config (must not for a version probe)", flag)
+			}
+		})
+	}
+}
+
+// TestInitProxiedServerRejectedKeepsMetricsGapLatent documents and tests the
+// containment of the proxied-server metrics-flush gap flagged on PR #4419:
+// proxied-server handlers exit via FatalError*/os.Exit, which would bypass the
+// deferred per-command metrics close. That gap is harmless only while
+// proxied-server mode cannot be entered. This asserts `bd init --proxied-server`
+// is rejected as "not yet implemented", so usesProxiedServer() is never true and
+// those FatalError* paths never run. See the FatalError doc comment in errors.go.
+func TestInitProxiedServerRejectedKeepsMetricsGapLatent(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	home, err := testTempDir("bd-proxied-gate-home-*")
+	if err != nil {
+		t.Fatalf("temp home: %v", err)
+	}
+	repo, err := testTempDir("bd-proxied-gate-repo-*")
+	if err != nil {
+		t.Fatalf("temp repo: %v", err)
+	}
+	initGitRepoAt(t, repo)
+
+	cmd := exec.Command(bd, "init", "--non-interactive", "--quiet", "--proxied-server")
+	cmd.Dir = repo
+	cmd.Env = metricsTestEnv(home)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	if runErr == nil {
+		t.Fatalf("bd init --proxied-server unexpectedly succeeded; proxied-server mode must stay gated off\nstdout:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "not yet implemented") {
+		t.Errorf("bd init --proxied-server stderr = %q, want it to contain %q", stderr.String(), "not yet implemented")
+	}
+}
+
+// metrics off must not queue a usage event, honoring the "No usage data will be
+// collected or sent" promise even though metrics are still enabled for the
+// off invocation itself.
+func TestMetricsOffEmitsNoEvent(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	home, err := testTempDir("bd-metrics-off-home-*")
+	if err != nil {
+		t.Fatalf("temp home: %v", err)
+	}
+	repo, err := testTempDir("bd-metrics-off-repo-*")
+	if err != nil {
+		t.Fatalf("temp repo: %v", err)
+	}
+	initGitRepoAt(t, repo)
+
+	// Establish the metrics-enabled baseline and confirm a normal command emits.
+	runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet")
+	if got := allCommandEvents(t, home); len(got) == 0 {
+		t.Fatalf("precondition: metrics-enabled `bd init` produced no event; env may be misconfigured")
+	}
+	if err := os.RemoveAll(filepath.Join(home, ".beads", "eventsData")); err != nil {
+		t.Fatalf("clear eventsData: %v", err)
+	}
+
+	_, errOut := runBdForMetrics(t, bd, repo, home, "metrics", "off")
+
+	if got := allCommandEvents(t, home); len(got) != 0 {
+		t.Errorf("bd metrics off emitted %v, want no events\nstderr:\n%s", got, errOut)
+	}
+}

@@ -643,7 +643,15 @@ var rootCmd = &cobra.Command{
 			debug.Logf("warning: telemetry init failed: %v", err)
 		}
 
-		if cmd.Name() != metrics.SendMetricsSubcommand {
+		// Materialize the user-level metrics config only when metrics are
+		// actually enabled. When metrics are disabled (BD_DISABLE_METRICS or a
+		// user-global metrics.disabled), there is nothing to bootstrap. The
+		// send-metrics flusher is exempt so it never recurses into bootstrap.
+		// This mirrors the resolveMetricsEnabled() gate on the first-run notice
+		// below. (~/.config/bd/ lives outside the repo, so this write is not a
+		// stealth/per-repository trace; stealth init is handled by suppressing
+		// the first-run notice, not by skipping this user-global bootstrap.)
+		if cmd.Name() != metrics.SendMetricsSubcommand && resolveMetricsEnabled() {
 			if err := metrics.EnsureUserConfigDefaults(); err != nil {
 				debug.Logf("warning: ensure user config defaults failed: %v", err)
 			}
@@ -656,11 +664,6 @@ var rootCmd = &cobra.Command{
 		if cmd.Name() == metrics.SendMetricsSubcommand {
 			return nil
 		}
-
-		// One-time friendly heads-up about anonymous usage metrics. No-op after
-		// the first run; suppressed in JSON/hook/quiet/metrics contexts so it
-		// can never corrupt machine-readable output.
-		maybeShowMetricsFirstRunNotice(cmd)
 
 		// Start root span for this command. rootCtx now carries the span, so
 		// all downstream DB and AI calls become child spans automatically.
@@ -834,6 +837,13 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
+		// One-time friendly heads-up about anonymous usage metrics. Placed after
+		// the config-derived json/quiet rebind and command classification above so
+		// it can read the real output mode and command identity — that is how it
+		// stays suppressed in JSON/hook/protocol/quiet/stealth contexts and never
+		// corrupts machine-readable output. No-op after the first run.
+		maybeShowMetricsFirstRunNotice(cmd)
+
 		// Commands that skip store initialization still need early config/env
 		// setup before they inspect server mode or per-project Dolt settings.
 		// Rebind them to the selected workspace so explicit --db / BEADS_DB
@@ -918,6 +928,7 @@ var rootCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "Error: no beads database found\n")
 					fmt.Fprintf(os.Stderr, "Hint: %s\n", diagHint())
 					fmt.Fprintf(os.Stderr, "      or set BEADS_DIR to point to your .beads directory\n")
+					metrics.CloseAndFlush()
 					os.Exit(1)
 				}
 				// For import/setup commands, set default database path
@@ -1108,6 +1119,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			// Check for fresh clone scenario
 			if handleFreshCloneError(err) {
+				metrics.CloseAndFlush()
 				os.Exit(1)
 			}
 			// Schema skew gets dedicated UX with actionable rebuild instructions.
@@ -1118,6 +1130,7 @@ var rootCmd = &cobra.Command{
 				} else {
 					fmt.Fprint(os.Stderr, skewErr.UserMessage())
 				}
+				metrics.CloseAndFlush()
 				os.Exit(1)
 			}
 			// #4259: the remote-migrate gate blocks silent in-place migration of a
@@ -1129,6 +1142,7 @@ var rootCmd = &cobra.Command{
 				} else {
 					fmt.Fprint(os.Stderr, gateErr.UserMessage())
 				}
+				metrics.CloseAndFlush()
 				os.Exit(1)
 			}
 			return HandleError("failed to open database: %v", err)
@@ -1436,6 +1450,7 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 		fmt.Fprintf(os.Stderr, "Recovery: run 'bd doctor --fix' or 'bd bootstrap' to reconcile workspace metadata with the authoritative database when shared-server metadata drifted.\n")
 		fmt.Fprintf(os.Stderr, "To diagnose: bd context --json\n")
 		fmt.Fprintf(os.Stderr, "To override: set BEADS_SKIP_IDENTITY_CHECK=1\n")
+		metrics.CloseAndFlush()
 		os.Exit(1)
 	}
 }
@@ -1456,12 +1471,10 @@ func main() {
 
 	executedCmd, err := rootCmd.ExecuteC()
 
-	metricsCloseCtx, metricsCloseCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	if c := metrics.Global(); c != nil {
-		_ = c.Close(metricsCloseCtx)
-	}
-	metricsCloseCancel()
-	metrics.MaybeSpawnFlusher()
+	// Finalize queued metrics and detach the uploader. Shared with the os.Exit
+	// guards (CheckReadonly and the pre-run gates) so every exit path flushes the
+	// same way instead of only the clean RunE/ExecuteC return.
+	metrics.CloseAndFlush()
 
 	if err != nil {
 		if code, ok := exitCodeFromError(err); ok {
@@ -1478,14 +1491,23 @@ func resolveMetricsEnabled() bool {
 	if v, ok := os.LookupEnv(metrics.EnvDisableMetrics); ok {
 		return !envTruthyValue(v)
 	}
-	return !config.GetBool("metrics.disabled")
+	// Consent is the user's own global choice: resolve it from the user-global
+	// config only, never merged project/BEADS_DIR config. Otherwise a
+	// repository's .beads/config.yaml (highest viper precedence) could re-enable
+	// metrics for a user who ran `bd metrics off`.
+	return !config.MetricsDisabledByUserConfig()
 }
 
 func resolveMetricsEndpoint() string {
 	if v := os.Getenv(metrics.EnvEndpoint); v != "" {
 		return v
 	}
-	return config.GetString("metrics.endpoint")
+	// Like enablement, the endpoint is resolved from env + user-global config
+	// only so a repository can never redirect where a user's metrics are sent.
+	if ep := config.UserMetricsEndpoint(); ep != "" {
+		return ep
+	}
+	return metrics.DefaultEndpoint
 }
 
 func envTruthyValue(v string) bool {

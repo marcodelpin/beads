@@ -25,14 +25,17 @@ Example:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		CheckReadonly("create")
-
+		// Create the event before the readonly guard so the operation label
+		// matches this command ("q", not "create") and the readonly exit path
+		// still flushes queued metrics via CheckReadonly's CloseAndFlush.
 		evt := metrics.NewCommandEvent("q")
 		defer func() {
 			if c := metrics.Global(); c != nil {
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		CheckReadonly("q")
 
 		title := strings.Join(args, " ")
 

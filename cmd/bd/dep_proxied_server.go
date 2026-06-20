@@ -98,7 +98,7 @@ func runDepBlocksProxiedServer(cmd *cobra.Command, ctx context.Context, blockerI
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]interface{}{
+		_ = outputJSON(map[string]interface{}{
 			"status":     "added",
 			"blocker_id": blockerID,
 			"blocked_id": blockedID,
@@ -176,7 +176,7 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]interface{}{
+		_ = outputJSON(map[string]interface{}{
 			"status":        "added",
 			"issue_id":      fromID,
 			"depends_on_id": toID,
@@ -245,7 +245,7 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 				"type":          string(dep.Type),
 			})
 		}
-		outputJSON(map[string]interface{}{
+		_ = outputJSON(map[string]interface{}{
 			"status":       "added",
 			"count":        len(deps),
 			"dependencies": out,
@@ -280,7 +280,7 @@ func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []str
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]interface{}{
+		_ = outputJSON(map[string]interface{}{
 			"status":        "removed",
 			"issue_id":      fromID,
 			"depends_on_id": toID,
@@ -323,7 +323,7 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 			if allDeps == nil {
 				allDeps = []*types.Dependency{}
 			}
-			outputJSON(allDeps)
+			_ = outputJSON(allDeps)
 			return
 		}
 		for _, id := range args {
@@ -370,7 +370,7 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 		if allIssues == nil {
 			allIssues = []*types.IssueWithDependencyMetadata{}
 		}
-		outputJSON(allIssues)
+		_ = outputJSON(allIssues)
 		return
 	}
 
@@ -484,7 +484,7 @@ func runDepTreeProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 		if tree == nil {
 			tree = []*types.TreeNode{}
 		}
-		outputJSON(tree)
+		_ = outputJSON(tree)
 		return
 	}
 
@@ -526,7 +526,7 @@ func runDepCyclesProxiedServer(_ *cobra.Command, ctx context.Context) {
 		if cycles == nil {
 			cycles = [][]*types.Issue{}
 		}
-		outputJSON(cycles)
+		_ = outputJSON(cycles)
 		return
 	}
 

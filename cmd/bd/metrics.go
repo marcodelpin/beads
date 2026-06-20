@@ -44,7 +44,8 @@ any user-supplied text.
 				c.CloseEventAndAdd(evt)
 			}
 		}()
-		return runMetricsStatus(cmd)
+		runMetricsStatus(cmd)
+		return nil
 	},
 }
 
@@ -54,11 +55,17 @@ var metricsOnCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("metrics-on")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
 		if err := setMetricsDisabled(false); err != nil {
 			return HandleError("failed to update metrics setting: %v", err)
 		}
 		out := cmd.OutOrStdout()
-		fmt.Fprintln(out, "✅ Anonymous usage metrics are now ON. Thank you — this genuinely helps us make bd better!")
+		fmt.Fprintln(out, "✓ Anonymous usage metrics are now ON. Thank you — this genuinely helps us make bd better!")
 		fmt.Fprintln(out, "   See what's sent with `bd metrics example`, or turn it off again with `bd metrics off`.")
 		warnIfMetricsEnvOverride(cmd, false)
 		return nil
@@ -71,6 +78,13 @@ var metricsOffCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Opt-out is intentionally the one command that emits no cli_command
+		// event. Metrics are still enabled for this invocation (the saved config
+		// only takes effect next time), so recording a `metrics-off` event would
+		// queue telemetry the user just declined — and if they re-enable later it
+		// would flush — directly contradicting the "No usage data will be
+		// collected or sent" promise printed below. So we write the opt-out and
+		// add nothing to the collector.
 		if err := setMetricsDisabled(true); err != nil {
 			return HandleError("failed to update metrics setting: %v", err)
 		}
@@ -88,7 +102,14 @@ var metricsExampleCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMetricsExample(cmd)
+		evt := metrics.NewCommandEvent("metrics-example")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+		runMetricsExample(cmd)
+		return nil
 	},
 }
 
@@ -109,9 +130,11 @@ func setMetricsDisabled(disabled bool) error {
 }
 
 // metricsEnabledByConfig reports the config-driven state (ignoring the env
-// override), which is what `bd metrics on/off` controls.
+// override), which is what `bd metrics on/off` controls. It reads the
+// user-global config only — the same store `bd metrics on/off` writes — so a
+// project config can never skew the reported "saved" state.
 func metricsEnabledByConfig() bool {
-	return !config.GetBool("metrics.disabled")
+	return !config.MetricsDisabledByUserConfig()
 }
 
 // warnIfMetricsEnvOverride tells the user when BD_DISABLE_METRICS is set and
@@ -132,7 +155,7 @@ func warnIfMetricsEnvOverride(cmd *cobra.Command, wantDisabled bool) {
 		metrics.EnvDisableMetrics, v, metrics.EnvDisableMetrics)
 }
 
-func runMetricsStatus(cmd *cobra.Command) error {
+func runMetricsStatus(cmd *cobra.Command) {
 	out := cmd.OutOrStdout()
 	effective := resolveMetricsEnabled()
 	state := "OFF"
@@ -158,13 +181,12 @@ func runMetricsStatus(cmd *cobra.Command) error {
 		if envTruthyValue(v) == metricsEnabledByConfig() {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"\nNote: %s=%s is overriding your saved config (which is %q) for this shell.\n",
-				metrics.EnvDisableMetrics, v, map[bool]string{true: "off", false: "on"}[metricsEnabledByConfig()])
+				metrics.EnvDisableMetrics, v, map[bool]string{true: "on", false: "off"}[metricsEnabledByConfig()])
 		}
 	}
-	return nil
 }
 
-func runMetricsExample(cmd *cobra.Command) error {
+func runMetricsExample(cmd *cobra.Command) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "bd sends one kind of anonymous event: a `cli_command` record — one per")
 	fmt.Fprintln(out, "command you run. Each batch carries a machine-derived, HMAC-protected distinct")
@@ -194,7 +216,6 @@ func runMetricsExample(cmd *cobra.Command) error {
 		fmt.Fprintln(out, "and re-run `bd metrics example` to see the exact payloads buffered on your")
 		fmt.Fprintln(out, "machine before they are sent.")
 	}
-	return nil
 }
 
 // marshalIndentNoEscape is json.MarshalIndent without Go's default HTML escaping,
@@ -241,6 +262,7 @@ func showQueuedEvents(out interface{ Write([]byte) (int, error) }) int {
 		if shown >= maxShow {
 			break
 		}
+		// #nosec G304 -- dir is bd's own metrics data dir and name comes from os.ReadDir of that same dir, not user input
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			continue
@@ -262,10 +284,6 @@ func showQueuedEvents(out interface{ Write([]byte) (int, error) }) int {
 	return shown
 }
 
-// maybeShowMetricsFirstRunNotice prints a one-time, friendly heads-up the first
-// time bd runs with metrics enabled, then records that it was shown so it never
-// repeats. It writes to stderr and is suppressed in JSON / hook / quiet
-// contexts so it can never corrupt machine-readable output.
 // isMetricsCommandContext reports whether cmd is `bd metrics` or one of its
 // subcommands — contexts where the first-run notice should not fire because the
 // user is already looking at / managing metrics.
@@ -273,32 +291,102 @@ func isMetricsCommandContext(cmd *cobra.Command) bool {
 	return cmd.Name() == "metrics" || (cmd.Parent() != nil && cmd.Parent().Name() == "metrics")
 }
 
+// topLevelCommandName returns the name of cmd's top-level ancestor — the command
+// directly under the root "bd" command. For `bd hooks run` it returns "hooks";
+// for a top-level command it returns that command's own name. This lets context
+// checks match a whole command subtree (e.g. all of `bd hooks ...`) by the
+// top-level name even when cmd is a nested leaf.
+func topLevelCommandName(cmd *cobra.Command) string {
+	c := cmd
+	for c.Parent() != nil && c.Parent().Parent() != nil {
+		c = c.Parent()
+	}
+	return c.Name()
+}
+
+// firstRunNoticeSuppressedCommands are top-level command names whose contexts are
+// machine-facing or hook/protocol bridges, so the friendly first-run metrics
+// notice must never write to their stderr (it could corrupt a hook envelope or
+// surprise a non-interactive caller). Matched by top-level name so nested
+// subcommands like `bd hooks run` are covered too.
+var firstRunNoticeSuppressedCommands = map[string]bool{
+	metrics.SendMetricsSubcommand: true,
+	"prime":                       true,
+	"version":                     true,
+	"completion":                  true,
+	"__complete":                  true,
+	"__completeNoDesc":            true,
+	"hook":                        true, // bd hook bridge (manages its own store/protocol lifecycle)
+	"hooks":                       true, // bd hooks ... (git-hook management/runner)
+	"codex-hook":                  true, // codex protocol bridge
+	"bash":                        true,
+	"zsh":                         true,
+	"fish":                        true,
+	"powershell":                  true,
+}
+
+// firstRunNoticeSuppressedByContext reports whether the current command/output
+// context must never emit the friendly first-run metrics notice. This is the
+// pure context decision — independent of whether metrics are enabled or the
+// notice was already shown — so it stays unit-testable. It suppresses machine
+// output (JSON/quiet/hook-json), git-hook execution (BD_GIT_HOOK), the metrics
+// command itself, hook/protocol/completion/shell-init commands, the root
+// --version/-V probe, and stealth init.
+func firstRunNoticeSuppressedByContext(cmd *cobra.Command) bool {
+	if jsonOutput || quietFlag || primeHookJSONMode {
+		return true
+	}
+	if os.Getenv("BD_GIT_HOOK") == "1" {
+		return true
+	}
+	if isMetricsCommandContext(cmd) {
+		return true
+	}
+	if firstRunNoticeSuppressedCommands[topLevelCommandName(cmd)] {
+		return true
+	}
+	// `bd --version` / `bd -V` is a version probe just like the `version`
+	// subcommand, so it must not emit (or mark shown) the one-time consent notice.
+	// The root flag path has top-level command name "bd" and so slips past the
+	// suppressed-command map above; check the flag directly. GetBool errors for
+	// commands that do not define a "version" flag, which the err guard ignores.
+	if v, err := cmd.Flags().GetBool("version"); err == nil && v {
+		return true
+	}
+	// `bd init --stealth` configures invisible per-repository usage; a visible
+	// consent notice on stderr would contradict that, so suppress it there.
+	if stealth, err := cmd.Flags().GetBool("stealth"); err == nil && stealth {
+		return true
+	}
+	return false
+}
+
+// maybeShowMetricsFirstRunNotice prints a one-time, friendly heads-up the first
+// time bd runs with metrics enabled, then records that it was shown so it never
+// repeats. It writes to stderr and is suppressed in JSON / hook / protocol /
+// quiet / stealth contexts (see firstRunNoticeSuppressedByContext) so it can
+// never corrupt machine-readable output.
 func maybeShowMetricsFirstRunNotice(cmd *cobra.Command) {
 	if !resolveMetricsEnabled() {
 		return
 	}
-	if config.GetBool("metrics.notice_shown") {
+	// Resolve the "already shown" marker from user-global config only. Reading it
+	// from merged config would let a repository's .beads/config.yaml set
+	// metrics.notice_shown: true and suppress this one-time disclosure for a user
+	// who has never seen it — the same project-override hole closed for consent
+	// and endpoint resolution.
+	if config.MetricsNoticeShownByUserConfig() {
 		return
 	}
-	// Never interfere with structured output or hook envelopes.
-	if jsonOutput || quietFlag || primeHookJSONMode {
-		return
-	}
-	// Suppress for the metrics command and its subcommands (the user is already
-	// managing metrics) and for completion/version/prime contexts.
-	if isMetricsCommandContext(cmd) {
-		return
-	}
-	switch cmd.Name() {
-	case metrics.SendMetricsSubcommand, "prime", "version", "completion", "__complete", "__completeNoDesc":
+	if firstRunNoticeSuppressedByContext(cmd) {
 		return
 	}
 
-	fmt.Fprintln(os.Stderr, "✨ Thanks for using bd! Quick heads-up: bd shares anonymous usage metrics —")
+	fmt.Fprintln(os.Stderr, "Thanks for using bd! Quick heads-up: bd shares anonymous usage metrics —")
 	fmt.Fprintln(os.Stderr, "   just which commands get run (plus the bd version and OS platform), never your")
 	fmt.Fprintln(os.Stderr, "   issues, paths, remotes, identity, or anything you type. Seeing how people use")
 	fmt.Fprintln(os.Stderr, "   bd is how we decide what to improve next, so it genuinely makes bd better for")
-	fmt.Fprintln(os.Stderr, "   everyone. 💜")
+	fmt.Fprintln(os.Stderr, "   everyone.")
 	fmt.Fprintln(os.Stderr, "      Curious what's sent?   bd metrics example")
 	fmt.Fprintln(os.Stderr, "      Prefer to opt out?     bd metrics off    (one command, no restart needed)")
 	fmt.Fprintln(os.Stderr, "")

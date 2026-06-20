@@ -56,6 +56,15 @@ func runMolReadyGated(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	return runMolReadyGatedCore(cmd, args)
+}
+
+// runMolReadyGatedCore runs the gate-ready molecule discovery and rendering
+// without emitting a metrics event, so the caller owns emission. `bd ready
+// --gated` delegates here after recording its own "ready" event, while the
+// standalone runMolReadyGated entrypoint records "mol-ready-gated"; this keeps a
+// single `bd ready --gated` invocation to exactly one cli_command event.
+func runMolReadyGatedCore(_ *cobra.Command, _ []string) error {
 	ctx := rootCtx
 
 	if store == nil {
