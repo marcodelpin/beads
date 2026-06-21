@@ -69,6 +69,13 @@ type Storage interface {
 	// Work queries
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
+	// CountReadyWork returns the count of ready issues matching filter WITHOUT
+	// hydrating rows (single COUNT(*) over the ready predicate). filter.Limit is
+	// ignored — the count is over the whole matching set. Used by the `bd ready`
+	// truncation footer to avoid re-running GetReadyWorkWithCounts with Limit=0
+	// (sys-56cls: that hydrated every ready row via the counts mega-query just to
+	// learn the cardinality, ~21s for `bd ready -n5 --json` on a 1600-issue db).
+	CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error)
 	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
 

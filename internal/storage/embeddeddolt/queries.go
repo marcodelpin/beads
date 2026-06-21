@@ -30,6 +30,18 @@ func (s *EmbeddedDoltStore) GetReadyWorkWithCounts(ctx context.Context, filter t
 	return result, err
 }
 
+// CountReadyWork returns the count of ready issues matching filter without
+// hydrating rows — a single COUNT(*) over the ready predicate (sys-56cls).
+func (s *EmbeddedDoltStore) CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error) {
+	var n int
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		n, err = issueops.CountReadyWorkInTx(ctx, tx, filter)
+		return err
+	})
+	return n, err
+}
+
 func (s *EmbeddedDoltStore) GetMoleculeProgress(ctx context.Context, moleculeID string) (*types.MoleculeProgressStats, error) {
 	var result *types.MoleculeProgressStats
 	err := s.withConn(ctx, false, func(tx *sql.Tx) error {

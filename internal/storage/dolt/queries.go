@@ -41,6 +41,20 @@ func (s *DoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) (
 	return result, err
 }
 
+// CountReadyWork returns the number of ready issues (plus ready wisps) matching
+// filter WITHOUT hydrating rows — a single COUNT(*) over the ready predicate.
+// Used by the `bd ready` truncation footer instead of re-running
+// GetReadyWorkWithCounts with Limit=0 (sys-56cls perf fix).
+func (s *DoltStore) CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error) {
+	var n int
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		n, err = issueops.CountReadyWorkInTx(ctx, tx, filter)
+		return err
+	})
+	return n, err
+}
+
 func (s *DoltStore) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
 	var result []*types.IssueWithCounts
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {

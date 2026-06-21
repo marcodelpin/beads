@@ -240,11 +240,12 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			totalReady := len(results)
 			truncated := false
 			if filter.Limit > 0 && len(results) == filter.Limit {
-				countFilter := filter
-				countFilter.Limit = 0
-				all, countErr := activeStore.GetReadyWorkWithCounts(ctx, countFilter)
-				if countErr == nil && len(all) > len(results) {
-					totalReady = len(all)
+				// sys-56cls: count the full ready set with a cheap COUNT(*) instead
+				// of re-running the counts mega-query (GetReadyWorkWithCounts) with
+				// Limit=0, which hydrated every ready row (labels/deps JSON, 5
+				// full-table GROUP BY LEFT JOINs) just to learn the cardinality.
+				if all, countErr := activeStore.CountReadyWork(ctx, filter); countErr == nil && all > len(results) {
+					totalReady = all
 					truncated = true
 				}
 			}
@@ -266,11 +267,10 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		totalReady := len(issues)
 		truncated := false
 		if !jsonOutput && filter.Limit > 0 && len(issues) == filter.Limit {
-			countFilter := filter
-			countFilter.Limit = 0
-			allIssues, countErr := activeStore.GetReadyWork(ctx, countFilter)
-			if countErr == nil && len(allIssues) > len(issues) {
-				totalReady = len(allIssues)
+			// sys-56cls: cheap COUNT(*) for the truncation footer instead of a
+			// second GetReadyWork(Limit=0) that materialized every ready row.
+			if all, countErr := activeStore.CountReadyWork(ctx, filter); countErr == nil && all > len(issues) {
+				totalReady = all
 				truncated = true
 			}
 		}

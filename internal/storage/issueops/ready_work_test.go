@@ -96,6 +96,83 @@ func TestBuildSQLInClause(t *testing.T) {
 	}
 }
 
+// TestCountReadyWorkInTx_UsesCountStarNotHydration is the sys-56cls regression
+// guard. The truncation footer ("Showing N of M ready issues") must learn the
+// total ready cardinality with a single COUNT(*) over the ready predicate —
+// NEVER by re-hydrating every ready row through the counts mega-query
+// (GetReadyWorkWithCounts with Limit=0). That old path made `bd ready -n5 --json`
+// take ~21s on the System db (1636 ready issues) because the mega-query runs 5
+// full-table GROUP BY LEFT JOINs + JSON aggregation per call.
+//
+// This test asserts CountReadyWorkInTx emits exactly the cheap COUNT(*) and
+// touches NONE of the hydration machinery (no ORDER BY, no LIMIT, no
+// JSON_ARRAYAGG over labels/dependencies/comments). A regression that reroutes
+// the footer through hydration would fail the unmet-expectations check (the
+// mega-query SQL would not match the single COUNT(*) expectation).
+func TestCountReadyWorkInTx_UsesCountStarNotHydration(t *testing.T) {
+	t.Parallel()
+
+	_, mock, tx := beginMockTx(t)
+
+	// No deferred parents → the predicate builder probes both issue tables and
+	// finds none, so the ready WHERE clause carries no deferred-child IN list.
+	mock.ExpectQuery(deferredParentProbeRegex("issues")).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	mock.ExpectQuery(deferredParentProbeRegex("wisps")).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	// THE assertion: a single COUNT(*) over the issues table. The query must be
+	// a plain count — not the counts mega-query (which would contain
+	// JSON_ARRAYAGG / LEFT JOIN labels|dependencies|comments). sqlmock matches
+	// by regex substring, and ExpectationsWereMet fails on any unmatched query.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM issues WHERE`).
+		WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(1636))
+
+	// Ready-wisp count path: probe finds the wisps table empty → short-circuits,
+	// no wisp hydration. (getReadyWispsInTx → wispsTableEmptyOrMissingInTx)
+	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).
+		WillReturnError(sql.ErrNoRows)
+
+	got, err := CountReadyWorkInTx(context.Background(), tx, types.WorkFilter{Limit: 5})
+	if err != nil {
+		t.Fatalf("CountReadyWorkInTx: %v", err)
+	}
+	if got != 1636 {
+		t.Fatalf("count = %d, want 1636 (issue COUNT(*) + 0 ready wisps)", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations (footer must use COUNT(*), not hydration): %v", err)
+	}
+}
+
+// TestCountReadyWorkInTx_IgnoresLimit verifies the count is over the whole
+// matching set, not a page — filter.Limit must not leak a LIMIT into the
+// COUNT(*) query (sys-56cls: the footer total is by definition unbounded).
+func TestCountReadyWorkInTx_IgnoresLimit(t *testing.T) {
+	t.Parallel()
+
+	_, mock, tx := beginMockTx(t)
+	mock.ExpectQuery(deferredParentProbeRegex("issues")).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	mock.ExpectQuery(deferredParentProbeRegex("wisps")).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM issues WHERE`).
+		WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(42))
+	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).
+		WillReturnError(sql.ErrNoRows)
+
+	got, err := CountReadyWorkInTx(context.Background(), tx, types.WorkFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("CountReadyWorkInTx: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("count = %d, want 42 (Limit must be ignored for a total count)", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 	t.Parallel()
 

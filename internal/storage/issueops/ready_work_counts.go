@@ -7,8 +7,69 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+// CountReadyWorkInTx returns the number of ready issues (plus ready wisps)
+// matching filter, WITHOUT hydrating any rows. It builds the SAME ready WHERE
+// clause GetReadyWork uses (via sqlbuild.BuildReadyWorkWhere) and runs a single
+// `SELECT COUNT(*) FROM issues WHERE <ready predicate>` — no ORDER BY, no LIMIT,
+// no labels/deps/comment JSON aggregation.
+//
+// This is the cheap path the truncation footer ("Showing N of M ready issues")
+// needs: the old code re-ran GetReadyWorkWithCounts with Limit=0, which forced
+// the counts mega-query (5 full-table GROUP BY LEFT JOINs) to hydrate ALL ready
+// rows just to learn their cardinality (sys-56cls: ~12s of a 21s `bd ready -n5
+// --json` on the System db's 1636 ready issues). The filter's Limit is ignored
+// here — a count is over the whole matching set by definition.
+//
+// NOTE: it builds the WHERE args itself (BuildReadyWorkWhere) rather than reusing
+// buildReadyWorkPredicates, because the latter appends ORDER BY args to its arg
+// slice; a COUNT(*) has no ORDER BY, so those surplus args would mismatch the ?
+// placeholders.
+func CountReadyWorkInTx(ctx context.Context, tx DBTX, filter types.WorkFilter) (int, error) {
+	countFilter := filter
+	countFilter.Limit = 0 // count the whole matching set, never a page
+
+	var inputs sqlbuild.ReadyWorkWhereInputs
+	if !countFilter.IncludeDeferred {
+		deferredChildIDs, dcErr := getChildrenOfDeferredParentsInTx(ctx, tx)
+		if dcErr != nil {
+			return 0, fmt.Errorf("count ready work: compute deferred parent children: %w", dcErr)
+		}
+		inputs.DeferredChildIDs = deferredChildIDs
+	}
+	if countFilter.ParentID != nil {
+		descendantIDs, descErr := GetDescendantIDsInTx(ctx, tx, *countFilter.ParentID, 0)
+		if descErr != nil {
+			return 0, fmt.Errorf("count ready work: get parent descendants: %w", descErr)
+		}
+		inputs.ParentDescendantIDs = descendantIDs
+	}
+
+	whereSQL, args, err := sqlbuild.BuildReadyWorkWhere(countFilter, IssuesFilterTables, inputs)
+	if err != nil {
+		return 0, fmt.Errorf("count ready work: build where: %w", err)
+	}
+
+	//nolint:gosec // G201: whereSQL is built from hardcoded fragments + ? placeholders.
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM issues %s", whereSQL)
+	var issueCount int
+	if err := tx.QueryRowContext(ctx, countSQL, args...).Scan(&issueCount); err != nil {
+		return 0, fmt.Errorf("count ready work: %w", err)
+	}
+
+	// Ready wisps get the same in-Go filtering GetReadyWork applies, so reuse it
+	// rather than a divergent COUNT. On a wisp-free db (the common case) the wisp
+	// probe short-circuits to empty, so this adds one cheap LIMIT-1 probe.
+	wisps, err := getReadyWispsInTx(ctx, tx, countFilter, inputs.DeferredChildIDs)
+	if err != nil {
+		return 0, fmt.Errorf("count ready work: ready wisps: %w", err)
+	}
+
+	return issueCount + len(wisps), nil
+}
 
 func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
 	wispDepsExist, err := optionalTableExistsInTx(ctx, tx, "wisp_dependencies")

@@ -334,6 +334,16 @@ func (s *InstrumentedStorage) GetReadyWorkWithCounts(ctx context.Context, filter
 	return v, err
 }
 
+func (s *InstrumentedStorage) CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error) {
+	ctx, span, t := s.op(ctx, "CountReadyWork")
+	v, err := s.inner.CountReadyWork(ctx, filter)
+	if err == nil {
+		span.SetAttributes(attribute.Int("bd.result.count", v))
+	}
+	s.done(ctx, span, t, err)
+	return v, err
+}
+
 func (s *InstrumentedStorage) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
 	ctx, span, t := s.op(ctx, "GetBlockedIssues")
 	v, err := s.inner.GetBlockedIssues(ctx, filter)
