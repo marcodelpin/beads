@@ -49,9 +49,7 @@ var createCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			if err := runCreateProxiedServer(cmd, rootCtx, in); err != nil {
-				return HandleError("%v", err)
-			}
+			runCreateProxiedServer(cmd, rootCtx, in)
 			return nil
 		}
 		file, _ := cmd.Flags().GetString("file")
