@@ -283,7 +283,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 
 		if initProxiedServer {
-			return runInitProxiedServer(cmd, rootCtx, initProxiedServerInput{
+			if err := runInitProxiedServer(cmd, rootCtx, initProxiedServerInput{
 				prefix:            prefix,
 				database:          database,
 				roleFlag:          roleFlag,
@@ -303,7 +303,10 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				team:              team,
 				fromJSONL:         fromJSONL,
 				nonInteractive:    nonInteractive,
-			})
+			}); err != nil {
+				return err
+			}
+			return nil
 		}
 
 		// Propagate --shared-server flag to env so that IsSharedServerMode(),
