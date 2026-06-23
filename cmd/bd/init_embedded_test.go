@@ -89,7 +89,13 @@ func bdEnv(dir string) []string {
 		}
 		env = append(env, e)
 	}
-	return append(env, "HOME="+dir, "BEADS_DOLT_AUTO_START=0", "BEADS_NO_DAEMON=1")
+	return append(env,
+		"HOME="+dir,
+		"BEADS_DOLT_AUTO_START=0",
+		"BEADS_NO_DAEMON=1",
+		"BD_DISABLE_METRICS=1",
+		"BD_DISABLE_EVENT_FLUSH=1",
+	)
 }
 
 func isEmbeddedLockOutput(out string) bool {

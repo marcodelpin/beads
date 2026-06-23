@@ -310,13 +310,11 @@ func TestLocalOnlyInitSkipsConfigureButPersistsExplicitRemote(t *testing.T) {
 	if err := persistInitSyncRemote(beadsDir, remote, remote, false, true, false); err != nil {
 		t.Fatalf("persistInitSyncRemote failed: %v", err)
 	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	if !strings.Contains(string(data), `sync.remote: "git+ssh://git@example.com/org/project.git"`) &&
-		!strings.Contains(string(data), "sync.remote: git+ssh://git@example.com/org/project.git") {
-		t.Fatalf("sync.remote was not persisted under local-only config:\n%s", data)
+	got := config.GetStringFromDir(beadsDir, "sync.remote")
+	if got != remote {
+		data, _ := os.ReadFile(configPath)
+		t.Fatalf("sync.remote was not persisted under local-only config: got %q, want %q\nfile:\n%s",
+			got, remote, data)
 	}
 }
 

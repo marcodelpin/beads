@@ -196,7 +196,7 @@ func runShowProxiedAsOf(ctx context.Context, uw uow.UnitOfWork, in *showProxiedI
 		fmt.Println()
 	}
 	if jsonOutput && len(jsonIssues) > 0 {
-		outputJSON(jsonIssues)
+		_ = outputJSON(jsonIssues)
 	}
 }
 
@@ -221,7 +221,7 @@ func runShowProxiedRefs(ctx context.Context, uw uow.UnitOfWork, in *showProxiedI
 	}
 
 	if jsonOutput {
-		outputJSON(allRefs)
+		_ = outputJSON(allRefs)
 		return
 	}
 	for id, refs := range allRefs {
@@ -284,7 +284,7 @@ func runShowProxiedChildren(ctx context.Context, uw uow.UnitOfWork, in *showProx
 	}
 
 	if jsonOutput {
-		outputJSON(allChildren)
+		_ = outputJSON(allChildren)
 		return
 	}
 	for id, kids := range allChildren {
@@ -460,7 +460,7 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 
 	if jsonOutput {
 		if len(allDetails) > 0 {
-			outputJSON(allDetails)
+			_ = outputJSON(allDetails)
 		} else {
 			FatalErrorRespectJSON("no issues found matching the provided IDs")
 		}

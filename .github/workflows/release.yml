@@ -17,6 +17,10 @@ permissions:
   id-token: write
   attestations: write
 
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
 jobs:
   # Pre-publish gate: refuse to publish a release whose version constants and
   # Docusaurus docs snapshot disagree. This blocks the failure mode where a tag
