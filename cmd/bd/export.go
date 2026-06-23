@@ -30,7 +30,7 @@ For supported full backup/restore flows, use 'bd backup init', 'bd backup sync',
 and 'bd backup restore'.
 
 By default, exports only regular issues (excluding infrastructure beads
-like agents, rigs, roles, and messages). Use --all to include everything.
+like agents, roles, and messages). Use --all to include everything.
 
 Memories (from 'bd remember') are excluded by default because they may
 contain sensitive agent context. Use --include-memories or --all to
@@ -58,7 +58,7 @@ var (
 func init() {
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "Output file path (default: stdout)")
 	exportCmd.Flags().BoolVar(&exportAll, "all", false, "Include all records (infra, templates, gates, memories)")
-	exportCmd.Flags().BoolVar(&exportIncludeInfra, "include-infra", false, "Include infrastructure beads (agents, rigs, roles, messages)")
+	exportCmd.Flags().BoolVar(&exportIncludeInfra, "include-infra", false, "Include infrastructure beads (agents, roles, messages)")
 	exportCmd.Flags().BoolVar(&exportScrub, "scrub", false, "Exclude test/pollution records")
 	exportCmd.Flags().BoolVar(&exportIncludeMemories, "include-memories", false, "Include persistent memories (from 'bd remember') in the export")
 	exportCmd.Flags().BoolVar(&exportNoMemories, "no-memories", false, "Exclude persistent memories (deprecated: now the default)")
@@ -92,7 +92,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	// Build filter for issues table. Export all statuses by default.
 	filter := types.IssueFilter{Limit: 0}
 
-	// Exclude infra types by default (agents, rigs, roles, messages)
+	// Exclude infra types by default (agents, roles, messages).
 	if !exportAll && !exportIncludeInfra {
 		var infraTypes []string
 		if store != nil {
