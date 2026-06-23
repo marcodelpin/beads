@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -79,7 +80,16 @@ Consent flow (recommended):
   # orchestrator (e.g. Claude AskUserQuestion) curates the IDs/keys
   bd gc --force --only=sys-1234,old-fact-key,...     # delete ONLY the curated subset
   Use 'bd gc --force' alone for the legacy wholesale path (warns when N>5).`,
-	Run: func(cmd *cobra.Command, _ []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		evt := metrics.NewCommandEvent("gc")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		if !gcDryRun && !gcPlan && !gcPlanSummary {
 			CheckReadonly("gc")
 		}
@@ -87,14 +97,14 @@ Consent flow (recommended):
 		start := time.Now()
 
 		if gcOlderThan < 0 {
-			FatalError("--older-than must be non-negative")
+			return HandleErrorRespectJSON("--older-than must be non-negative")
 		}
 
 		if gcPlan && gcForce {
-			FatalError("--plan and --force are mutually exclusive (use --plan first to inspect, then --force --only=... to delete)")
+			return HandleError("--plan and --force are mutually exclusive (use --plan first to inspect, then --force --only=... to delete)")
 		}
 		if gcPlanSummary && (gcPlan || gcForce) {
-			FatalError("--plan-summary is read-only and mutually exclusive with --plan and --force (use --plan-summary alone to eyeball candidates, --plan for JSON)")
+			return HandleError("--plan-summary is read-only and mutually exclusive with --plan and --force (use --plan-summary alone to eyeball candidates, --plan for JSON)")
 		}
 
 		// Parse --only allowlist (set of issue IDs and/or memory keys).
@@ -113,19 +123,19 @@ Consent flow (recommended):
 		// --plan mode: collect candidates and emit plan, exit early without modifying anything.
 		if gcPlan {
 			runGCPlan(gcOlderThan)
-			return
+			return nil
 		}
 		// --plan-summary mode: same data as --plan, but tabular human view.
 		if gcPlanSummary {
 			runGCPlanSummary(gcOlderThan)
-			return
+			return nil
 		}
 
 		// Fork safety net: refuse very small --older-than values unless explicitly allowed.
 		// Defends against accidental destructive runs and the unresolved upstream issue
 		// gastownhall/beads#3543 (same-day-closed beads deleted by --older-than 30).
 		if !gcSkipDecay && !gcAllowRecent && gcOlderThan < gcMinOlderThanFloor {
-			FatalErrorWithHint(
+			return HandleErrorWithHint(
 				fmt.Sprintf("--older-than %d is below the safety floor of %d days", gcOlderThan, gcMinOlderThanFloor),
 				"Pass --allow-recent to bypass the floor (only after auditing what will be deleted with --dry-run).")
 		}
@@ -138,7 +148,6 @@ Consent flow (recommended):
 		}
 		var results []phaseResult
 
-		// ── Phase 1: DECAY ──
 		if gcSkipDecay {
 			results = append(results, phaseResult{name: "Decay", skipped: true})
 		} else {
@@ -156,7 +165,7 @@ Consent flow (recommended):
 
 			closedIssues, err := store.SearchIssues(ctx, "", filter)
 			if err != nil {
-				FatalError("searching closed issues: %v", err)
+				return HandleErrorRespectJSON("searching closed issues: %v", err)
 			}
 
 			// Upstream now performs the null-safe closed_at + pinned defense natively
@@ -193,7 +202,7 @@ Consent flow (recommended):
 					results = append(results, phaseResult{name: "Decay", detail: fmt.Sprintf("%d issues (dry-run)", len(closedIssues))})
 				} else {
 					if !gcForce {
-						FatalErrorWithHint(
+						return HandleErrorWithHintRespectJSON(
 							fmt.Sprintf("would delete %d closed issue(s) older than %d days", len(closedIssues), cutoffDays),
 							"Run 'bd gc --plan' to inspect candidates as JSON, then 'bd gc --force --only=ID1,ID2,...' to delete only the curated subset. Or 'bd gc --force' to delete all (legacy).")
 					}
@@ -276,7 +285,6 @@ Consent flow (recommended):
 			}
 		}
 
-		// ── Phase 2: COMPACT (report only — actual squashing is bd flatten) ──
 		if !jsonOutput {
 			fmt.Println("Phase 2/3: Compact (Dolt commit history info)")
 		}
@@ -309,7 +317,6 @@ Consent flow (recommended):
 			}
 		}
 
-		// ── Phase 3: Dolt GC ──
 		if gcSkipDolt {
 			results = append(results, phaseResult{name: "Dolt GC", skipped: true})
 		} else {
@@ -346,7 +353,6 @@ Consent flow (recommended):
 
 		elapsed := time.Since(start)
 
-		// ── Summary ──
 		if jsonOutput {
 			summaryMap := make(map[string]interface{})
 			summaryMap["dry_run"] = gcDryRun
@@ -363,8 +369,7 @@ Consent flow (recommended):
 				phases = append(phases, p)
 			}
 			summaryMap["phases"] = phases
-			outputJSON(summaryMap)
-			return
+			return outputJSON(summaryMap)
 		}
 
 		mode := "✓ GC complete"
@@ -379,6 +384,7 @@ Consent flow (recommended):
 				fmt.Printf("  %s: %s\n", r.name, r.detail)
 			}
 		}
+		return nil
 	},
 }
 

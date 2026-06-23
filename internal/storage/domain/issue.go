@@ -794,7 +794,10 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 	// already-existing dependencies in the store. This must run before any
 	// dep inserts to catch the violation before we've written anything.
 	parentDepPairs := graphParentDepPairs(plan.Nodes, keyToID)
-	if err := u.validatePlannedBlockingPaths(ctx, plan, keyToID, parentDepPairs, useWisp); err != nil {
+	if err := u.validatePlannedBlockingPaths(ctx, plan, keyToID, parentDepPairs); err != nil {
+		return GraphApplyResult{}, err
+	}
+	if err := u.validatePlannedBlockingCycles(ctx, plan, keyToID); err != nil {
 		return GraphApplyResult{}, err
 	}
 
@@ -803,14 +806,10 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 	//   - Same pair, different type   → error (conflicting edge over a parent-child link).
 	//   - Reverse pair, blocking type → error (creates a parent → child blocking cycle).
 	//
-	// Cycle-check skip optimization (matches embedded executeGraphApply):
-	// when every cycle-relevant edge in the plan is fully local (both
-	// endpoints by key, neither by ID), the CLI-side local cycle validator
-	// has already proven the planned subgraph is acyclic and
-	// validatePlannedBlockingPaths has covered parent-child paths against
-	// live deps. In that case the per-edge HasCycle SQL probe is skipped.
-	// Edges that reference external IDs always pay for HasCycle.
-	planCanSkipCycleCheck := applyGraphPlanCanSkipSQLCycleChecks(plan)
+	// Blocking cycles are already proven absent by validatePlannedBlockingCycles
+	// above (whole-graph preflight over planned + existing blocking edges, the
+	// same strategy as embedded executeGraphApply), so the edge insert loop no
+	// longer runs a per-edge HasCycle SQL probe.
 	for i, edge := range plan.Edges {
 		fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
 		if fromID == "" {
@@ -833,16 +832,6 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 		}
 		if parentDepPairs[depPairKey(toID, fromID)] && cycleRelevantDepType(depType) {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
-		}
-
-		if cycleRelevantDepType(depType) && !(planCanSkipCycleCheck && applyGraphEdgeCanSkipSQLCycleCheck(edge, depType)) {
-			cycle, err := u.depRepo.HasCycle(ctx, fromID, toID)
-			if err != nil {
-				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d cycle check: %w", i, err)
-			}
-			if cycle {
-				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d (%s -> %s): would create a cycle", i, fromID, toID)
-			}
 		}
 
 		dep := &types.Dependency{
@@ -932,37 +921,15 @@ func cycleRelevantDepType(t types.DependencyType) bool {
 	return t == types.DepBlocks || t == types.DepConditionalBlocks
 }
 
-// applyGraphPlanCanSkipSQLCycleChecks returns true when every cycle-relevant
-// edge in the plan is purely local (both endpoints by key, neither by ID).
-// In that case the CLI-side local cycle validator has already proven the
-// planned subgraph is acyclic, and no per-edge SQL HasCycle probe is needed
-// in applyGraph's edge pass. Non-cycle-relevant edges (e.g. "related") do
-// not gate the skip. Mirrors embedded graphApplyPlanCanSkipSQLCycleChecks.
-func applyGraphPlanCanSkipSQLCycleChecks(plan GraphPlan) bool {
-	for _, edge := range plan.Edges {
-		depType := edge.Type
-		if depType == "" {
-			depType = types.DepBlocks
-		}
-		if !cycleRelevantDepType(depType) {
-			continue
-		}
-		if !applyGraphEdgeCanSkipSQLCycleCheck(edge, depType) {
-			return false
-		}
-	}
-	return true
-}
-
-// applyGraphEdgeCanSkipSQLCycleCheck returns true when the edge is fully
-// local (both endpoints by key, neither by ID) and the dep type is
-// cycle-relevant. An edge that references an external ID always pays for
-// HasCycle because the local validator never saw the external graph.
-func applyGraphEdgeCanSkipSQLCycleCheck(edge GraphEdge, depType types.DependencyType) bool {
-	if edge.FromKey == "" || edge.ToKey == "" || edge.FromID != "" || edge.ToID != "" {
-		return false
-	}
-	return cycleRelevantDepType(depType)
+// readyPathDepType reports whether a dependency type affects ready-work. It is
+// the broad predicate used when walking existing deps for parent→child
+// blocking-path validation, in contrast to the blocking-only
+// cycleRelevantDepType used for pure blocking-cycle detection. The two must
+// stay distinct: narrowing the parent-path walk would miss real ready-work
+// deadlocks, while broadening the blocking-cycle walk would reject edges that
+// plain `bd dep add` accepts.
+func readyPathDepType(t types.DependencyType) bool {
+	return t.AffectsReadyWork()
 }
 
 // resolveEdgeRef returns the ID for an edge endpoint: the keyToID lookup
@@ -987,7 +954,6 @@ func (u *issueUseCaseImpl) validatePlannedBlockingPaths(
 	plan GraphPlan,
 	keyToID map[string]string,
 	parentDepPairs map[string]bool,
-	useWisp bool,
 ) error {
 	adj := make(map[string][]string)
 	for pair := range parentDepPairs {
@@ -1001,7 +967,7 @@ func (u *issueUseCaseImpl) validatePlannedBlockingPaths(
 		if depType == "" {
 			depType = types.DepBlocks
 		}
-		if !depType.AffectsReadyWork() {
+		if !readyPathDepType(depType) {
 			continue
 		}
 		fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
@@ -1029,7 +995,7 @@ func (u *issueUseCaseImpl) validatePlannedBlockingPaths(
 		if childID == "" || parentID == "" {
 			continue
 		}
-		hasPath, err := u.graphHasPath(ctx, adj, depCache, parentID, childID, useWisp)
+		hasPath, err := u.graphHasPath(ctx, adj, depCache, parentID, childID, readyPathDepType)
 		if err != nil {
 			return err
 		}
@@ -1040,16 +1006,79 @@ func (u *issueUseCaseImpl) validatePlannedBlockingPaths(
 	return nil
 }
 
+// validatePlannedBlockingCycles rejects planned blocking edges that would close
+// a blocking-dependency cycle, evaluated whole-graph before any insert. It
+// mirrors embedded validateGraphApplyPlannedBlockingCycles and the storage
+// per-edge SQL cycle check (depRepo.HasCycle): both the planned adjacency and
+// the existing-dep walk are restricted to blocks/conditional-blocks via
+// cycleRelevantDepType, so graph-apply stays consistent with `bd dep add` and
+// does not reject a blocking edge whose return path runs through an existing
+// parent-child or waits-for dep.
+func (u *issueUseCaseImpl) validatePlannedBlockingCycles(
+	ctx context.Context,
+	plan GraphPlan,
+	keyToID map[string]string,
+) error {
+	type plannedEdge struct {
+		index  int
+		fromID string
+		toID   string
+	}
+
+	adj := make(map[string][]string)
+	checks := make([]plannedEdge, 0, len(plan.Edges))
+	for i, edge := range plan.Edges {
+		depType := edge.Type
+		if depType == "" {
+			depType = types.DepBlocks
+		}
+		if !cycleRelevantDepType(depType) {
+			continue
+		}
+		fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
+		toID := resolveEdgeRef(edge.ToKey, edge.ToID, keyToID)
+		if fromID == "" || toID == "" {
+			continue
+		}
+		if fromID == toID {
+			return fmt.Errorf("applyGraph: edge %d %s->%s creates a blocking dependency cycle", i, fromID, toID)
+		}
+		adj[fromID] = append(adj[fromID], toID)
+		checks = append(checks, plannedEdge{index: i, fromID: fromID, toID: toID})
+	}
+
+	depCache := make(map[string][]*types.Dependency)
+	for _, edge := range checks {
+		hasPath, err := u.graphHasPath(ctx, adj, depCache, edge.toID, edge.fromID, cycleRelevantDepType)
+		if err != nil {
+			return fmt.Errorf("applyGraph: edge %d %s->%s: checking planned blocking cycle: %w", edge.index, edge.fromID, edge.toID, err)
+		}
+		if hasPath {
+			return fmt.Errorf("applyGraph: edge %d %s->%s creates a blocking dependency cycle", edge.index, edge.fromID, edge.toID)
+		}
+	}
+	return nil
+}
+
 // graphHasPath returns true if fromID can reach toID by following the
 // in-memory adjacency (planned parent-child + planned blocking edges) and
-// existing AffectsReadyWork deps loaded lazily from the store. Per-node
-// dep fetches are cached so each visited node hits the DB at most once.
+// existing deps loaded lazily from the store. followExistingDep selects which
+// existing dep types the walk traverses, so callers can mirror either the
+// blocking-only SQL cycle check or the broader ready-work graph. Per-node dep
+// fetches are cached so each visited node hits the DB at most once.
+//
+// Existing deps are loaded from BOTH dependency tables. The per-edge
+// depRepo.HasCycle probe this walk replaced traversed dependencies ∪
+// wisp_dependencies (and the embedded path's GetDependencyRecords selects the
+// table per node), so a blocking cycle that closes through the other table —
+// e.g. an existing wisp edge reached during a regular graph-apply — must still
+// be detected regardless of which table this graph-apply primarily writes.
 func (u *issueUseCaseImpl) graphHasPath(
 	ctx context.Context,
 	adj map[string][]string,
 	depCache map[string][]*types.Dependency,
 	fromID, toID string,
-	useWisp bool,
+	followExistingDep func(types.DependencyType) bool,
 ) (bool, error) {
 	seen := make(map[string]bool)
 	var visit func(string) (bool, error)
@@ -1069,18 +1098,25 @@ func (u *issueUseCaseImpl) graphHasPath(
 		}
 		deps, ok := depCache[id]
 		if !ok {
-			res, err := u.depRepo.ListByIssueIDs(ctx, []string{id}, DepListOpts{
+			regular, err := u.depRepo.ListByIssueIDs(ctx, []string{id}, DepListOpts{
 				Direction:     DepDirectionOut,
-				UseWispsTable: useWisp,
+				UseWispsTable: false,
 			})
 			if err != nil {
 				return false, fmt.Errorf("applyGraph: read existing deps for %s: %w", id, err)
 			}
-			deps = res.Outgoing[id]
+			wisp, err := u.depRepo.ListByIssueIDs(ctx, []string{id}, DepListOpts{
+				Direction:     DepDirectionOut,
+				UseWispsTable: true,
+			})
+			if err != nil {
+				return false, fmt.Errorf("applyGraph: read existing wisp deps for %s: %w", id, err)
+			}
+			deps = append(regular.Outgoing[id], wisp.Outgoing[id]...)
 			depCache[id] = deps
 		}
 		for _, dep := range deps {
-			if !dep.Type.AffectsReadyWork() {
+			if !followExistingDep(dep.Type) {
 				continue
 			}
 			found, err := visit(dep.DependsOnID)

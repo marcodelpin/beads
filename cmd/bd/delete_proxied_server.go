@@ -113,7 +113,7 @@ func runDeleteProxiedPreview(ctx context.Context, issueUC domain.IssueUseCase, i
 	}
 
 	if in.jsonOutput {
-		outputJSON(map[string]any{
+		_ = outputJSON(map[string]any{
 			"would_delete":         res.DeletedCount,
 			"dependencies_removed": res.DependenciesCount,
 			"labels_removed":       res.LabelsCount,
@@ -168,7 +168,7 @@ func renderDeletePreview(in *deleteInput, preview domain.DeletePreview, res doma
 
 func renderDeleteProxiedResult(in *deleteInput, res domain.DeleteIssuesResult) {
 	if in.jsonOutput {
-		outputJSON(map[string]any{
+		_ = outputJSON(map[string]any{
 			"deleted":              in.ids,
 			"deleted_count":        res.DeletedCount,
 			"dependencies_removed": res.DependenciesCount,

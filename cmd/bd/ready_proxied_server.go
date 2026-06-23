@@ -65,7 +65,7 @@ func runBlockedProxiedServer(cmd *cobra.Command, ctx context.Context) {
 		if blocked == nil {
 			blocked = []*types.BlockedIssue{}
 		}
-		outputJSON(blocked)
+		_ = outputJSON(blocked)
 		return
 	}
 	if len(blocked) == 0 {
@@ -97,7 +97,7 @@ func runReadyProxiedList(ctx context.Context, uw uow.UnitOfWork, in readyInput) 
 		if results == nil {
 			results = []*types.IssueWithCounts{}
 		}
-		outputJSON(results)
+		_ = outputJSON(results)
 		if page.HasMore && in.filter.Limit > 0 {
 			fmt.Fprintf(os.Stderr, "Showing %d ready issues; more matched but were hidden by --limit. Use --limit 0 for all, or --limit N to raise the cap.\n", len(results))
 		}
@@ -162,7 +162,7 @@ func runReadyProxiedClaim(ctx context.Context, uw uow.UnitOfWork, in readyInput)
 	}
 	if !res.Claimed {
 		if in.jsonOut {
-			outputJSON([]*types.IssueWithCounts{})
+			_ = outputJSON([]*types.IssueWithCounts{})
 		} else {
 			fmt.Printf("\n%s No ready work to claim\n\n", ui.RenderWarn("○"))
 		}
@@ -180,7 +180,7 @@ func runReadyProxiedClaim(ctx context.Context, uw uow.UnitOfWork, in readyInput)
 	SetLastTouchedID(res.Issue.ID)
 
 	if in.jsonOut {
-		outputJSON(jsonPayload)
+		_ = outputJSON(jsonPayload)
 	} else {
 		fmt.Printf("%s Claimed issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(res.Issue.ID, res.Issue.Title))
 	}
@@ -253,7 +253,7 @@ func runReadyProxiedExplain(ctx context.Context, uw uow.UnitOfWork, _ readyInput
 	explanation := types.BuildReadyExplanation(readyIssues, blockedIssues, depCounts, allDeps, blockerMap, cycles)
 
 	if jsonOutput {
-		outputJSON(explanation)
+		_ = outputJSON(explanation)
 		return
 	}
 
@@ -338,7 +338,7 @@ func runReadyProxiedMolecule(ctx context.Context, uw uow.UnitOfWork, in readyInp
 			Steps:          readySteps,
 			ParallelGroups: analysis.ParallelGroups,
 		}
-		outputJSON(output)
+		_ = outputJSON(output)
 		return
 	}
 
@@ -475,7 +475,7 @@ func runReadyProxiedGated(ctx context.Context, uw uow.UnitOfWork, _ readyInput) 
 		if output.Molecules == nil {
 			output.Molecules = []*GatedMolecule{}
 		}
-		outputJSON(output)
+		_ = outputJSON(output)
 		return
 	}
 	if len(molecules) == 0 {
@@ -493,7 +493,7 @@ func runReadyProxiedGated(ctx context.Context, uw uow.UnitOfWork, _ readyInput) 
 
 func emitGatedEmpty() {
 	if jsonOutput {
-		outputJSON(GatedReadyOutput{Molecules: []*GatedMolecule{}})
+		_ = outputJSON(GatedReadyOutput{Molecules: []*GatedMolecule{}})
 		return
 	}
 	fmt.Printf("\n%s No closed gates found — nothing to dispatch\n\n", ui.RenderPass("✨"))

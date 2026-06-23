@@ -14,10 +14,12 @@ import (
 
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/execx"
+	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 )
 
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
-const memoryPrefix = "memory."
+const memoryPrefix = kvkeys.MemoryPrefix
 
 // memoryKeyFlag allows explicit key override for bd remember.
 var memoryKeyFlag string
@@ -186,18 +188,27 @@ Examples:
   bd remember "temp workaround for upstream bug" --valid-for=2w --expire-policy=delete
   bd remember "always run tests with -race"            # deduped onto first entry
   bd remember "always run tests with -race"  --no-dedup  # creates a sibling key`,
-	GroupID: "setup",
-	Args:    cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	GroupID:       "setup",
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("remember")
 
+		evt := metrics.NewCommandEvent("remember")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		if err := ensureDirectMode("remember requires direct database access"); err != nil {
-			FatalError("%v", err)
+			return HandleError("%v", err)
 		}
 
 		insight := args[0]
 		if strings.TrimSpace(insight) == "" {
-			FatalErrorRespectJSON("memory content cannot be empty")
+			return HandleErrorRespectJSON("memory content cannot be empty")
 		}
 
 		// Generate or use provided key.
@@ -221,7 +232,7 @@ Examples:
 			}
 		}
 		if key == "" {
-			FatalErrorRespectJSON("could not generate key from content; use --key to specify one")
+			return HandleErrorRespectJSON("could not generate key from content; use --key to specify one")
 		}
 
 		// Parse fact-validity flags. Any flag set means we'll store an
@@ -287,7 +298,6 @@ Examples:
 
 		ctx := rootCtx
 
-		// Check if updating an existing memory
 		existing, _ := store.GetConfig(ctx, storageKey)
 		verb := "Remembered"
 		if existing != "" {
@@ -298,7 +308,7 @@ Examples:
 		}
 
 		if err := store.SetConfig(ctx, storageKey, storedValue); err != nil {
-			FatalErrorRespectJSON("storing memory: %v", err)
+			return HandleErrorRespectJSON("storing memory: %v", err)
 		}
 		commandDidWrite.Store(true)
 
@@ -323,19 +333,19 @@ Examples:
 					result["expire_policy"] = env.ExpirePolicy
 				}
 			}
-			outputJSON(result)
-		} else {
-			suffix := ""
-			if hasValidity {
-				env := parseStoredMemory(storedValue)
-				if env.ValidUntil != "" {
-					suffix = fmt.Sprintf(" (valid until %s, policy=%s)", env.ValidUntil, env.effectivePolicy())
-				} else if env.ExpirePolicy != "" {
-					suffix = fmt.Sprintf(" (policy=%s)", env.effectivePolicy())
-				}
-			}
-			fmt.Printf("%s [%s]: %s%s\n", verb, key, truncateMemory(insight, 80), suffix)
+			return outputJSON(result)
 		}
+		suffix := ""
+		if hasValidity {
+			env := parseStoredMemory(storedValue)
+			if env.ValidUntil != "" {
+				suffix = fmt.Sprintf(" (valid until %s, policy=%s)", env.ValidUntil, env.effectivePolicy())
+			} else if env.ExpirePolicy != "" {
+				suffix = fmt.Sprintf(" (policy=%s)", env.effectivePolicy())
+			}
+		}
+		fmt.Printf("%s [%s]: %s%s\n", verb, key, truncateMemory(insight, 80), suffix)
+		return nil
 	},
 }
 
@@ -505,20 +515,30 @@ Examples:
   bd memories --include-expired
   bd memories --gc-plan
   bd memories --gc --gc-only=stale-1,stale-2`,
-	GroupID: "setup",
-	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	GroupID:       "setup",
+	Args:          cobra.MaximumNArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("memories")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		if memoriesGCFlag {
 			CheckReadonly("memories --gc")
 		}
+
 		if err := ensureDirectMode("memories requires direct database access"); err != nil {
-			FatalError("%v", err)
+			return HandleError("%v", err)
 		}
 
 		ctx := rootCtx
 		allConfig, err := store.GetAllConfig(ctx)
 		if err != nil {
-			FatalErrorRespectJSON("listing memories: %v", err)
+			return HandleErrorRespectJSON("listing memories: %v", err)
 		}
 
 		// Filter for kv.memory.* keys and parse envelopes.
@@ -600,8 +620,7 @@ Examples:
 			} else {
 				plan["hint_next_step"] = "Pass approved keys via 'bd memories --gc --gc-only=<csv>' to delete only the curated subset."
 			}
-			outputJSON(plan)
-			return
+			return outputJSON(plan)
 		}
 
 		if memoriesGCFlag {
@@ -709,8 +728,7 @@ Examples:
 				"hidden_expired": hiddenExpired,
 				"gc_deleted":     gcKeys,
 			}
-			outputJSON(payload)
-			return
+			return outputJSON(payload)
 		}
 
 		if memoriesGCFlag && len(gcKeys) > 0 {
@@ -729,7 +747,7 @@ Examples:
 				fmt.Printf(" (%d expired hidden — use --include-expired to show)", hiddenExpired)
 			}
 			fmt.Println()
-			return
+			return nil
 		}
 
 		if search != "" {
@@ -751,6 +769,7 @@ Examples:
 			fmt.Printf("  %s%s\n", m.key, marker)
 			fmt.Printf("    %s\n\n", truncateMemory(m.content, 120))
 		}
+		return nil
 	},
 }
 
@@ -765,13 +784,22 @@ Use 'bd memories' to see available keys.
 Examples:
   bd forget dolt-phantoms
   bd forget auth-jwt`,
-	GroupID: "setup",
-	Args:    cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	GroupID:       "setup",
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("forget")
 
+		evt := metrics.NewCommandEvent("forget")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		if err := ensureDirectMode("forget requires direct database access"); err != nil {
-			FatalError("%v", err)
+			return HandleError("%v", err)
 		}
 
 		key := args[0]
@@ -779,33 +807,34 @@ Examples:
 
 		ctx := rootCtx
 
-		// Check if it exists first
 		existing, _ := store.GetConfig(ctx, storageKey)
 		if existing == "" {
 			if jsonOutput {
-				outputJSON(map[string]string{
+				if jerr := outputJSON(map[string]string{
 					"key":   key,
 					"found": "false",
-				})
-				os.Exit(1)
+				}); jerr != nil {
+					return jerr
+				}
+				return SilentExit()
 			}
 			fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
-			os.Exit(1)
+			return SilentExit()
 		}
 
 		if err := store.DeleteConfig(ctx, storageKey); err != nil {
-			FatalErrorRespectJSON("forgetting memory: %v", err)
+			return HandleErrorRespectJSON("forgetting memory: %v", err)
 		}
 		commandDidWrite.Store(true)
 
 		if jsonOutput {
-			outputJSON(map[string]string{
+			return outputJSON(map[string]string{
 				"key":     key,
 				"deleted": "true",
 			})
-		} else {
-			fmt.Printf("Forgot [%s]: %s\n", key, truncateMemory(existing, 80))
 		}
+		fmt.Printf("Forgot [%s]: %s\n", key, truncateMemory(existing, 80))
+		return nil
 	},
 }
 
@@ -818,11 +847,20 @@ var recallCmd = &cobra.Command{
 Examples:
   bd recall dolt-phantoms
   bd recall auth-jwt`,
-	GroupID: "setup",
-	Args:    cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	GroupID:       "setup",
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("recall")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		if err := ensureDirectMode("recall requires direct database access"); err != nil {
-			FatalError("%v", err)
+			return HandleError("%v", err)
 		}
 
 		key := args[0]
@@ -831,7 +869,7 @@ Examples:
 		ctx := rootCtx
 		value, err := store.GetConfig(ctx, storageKey)
 		if err != nil {
-			FatalErrorRespectJSON("recalling memory: %v", err)
+			return HandleErrorRespectJSON("recalling memory: %v", err)
 		}
 
 		// Decode envelope so recall always returns the user-facing content
@@ -868,17 +906,20 @@ Examples:
 			if createdAt != "" {
 				result["created_at"] = createdAt
 			}
-			outputJSON(result)
-			if value == "" {
-				os.Exit(1)
+			if jerr := outputJSON(result); jerr != nil {
+				return jerr
 			}
-		} else {
 			if value == "" {
-				fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
-				os.Exit(1)
+				return SilentExit()
 			}
-			fmt.Printf("%s\n", content)
+			return nil
 		}
+		if value == "" {
+			fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
+			return SilentExit()
+		}
+		fmt.Printf("%s\n", content)
+		return nil
 	},
 }
 

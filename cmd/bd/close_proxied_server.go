@@ -131,13 +131,13 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	if in.jsonOut && len(closedIssues) > 0 {
 		switch {
 		case len(unblocked) > 0:
-			outputJSON(map[string]interface{}{"closed": closedIssues, "unblocked": unblocked})
+			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "unblocked": unblocked})
 		case continueResult != nil:
-			outputJSON(map[string]interface{}{"closed": closedIssues, "continue": continueResult})
+			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "continue": continueResult})
 		case claimedNextIssue != nil:
-			outputJSON(map[string]interface{}{"closed": closedIssues, "claimed": claimedNextIssue})
+			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "claimed": claimedNextIssue})
 		default:
-			outputJSON(closedIssues)
+			_ = outputJSON(closedIssues)
 		}
 	}
 

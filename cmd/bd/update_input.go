@@ -69,13 +69,21 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) *updateInput {
 		assignee, _ := cmd.Flags().GetString("assignee")
 		in.fields["assignee"] = assignee
 	}
-	if description, changed := getDescriptionFlag(cmd); changed {
-		if err := validateDescriptionUpdate(cmd, description, changed); err != nil {
+	description, descChanged, err := getDescriptionFlag(cmd)
+	if err != nil {
+		FatalErrorRespectJSON("%v", err)
+	}
+	if descChanged {
+		if err := validateDescriptionUpdate(cmd, description, descChanged); err != nil {
 			FatalErrorRespectJSON("%v", err)
 		}
 		in.fields["description"] = description
 	}
-	if design, changed := getDesignFlag(cmd); changed {
+	design, designChanged, err := getDesignFlag(cmd)
+	if err != nil {
+		FatalErrorRespectJSON("%v", err)
+	}
+	if designChanged {
 		in.fields["design"] = design
 	}
 	if cmd.Flags().Changed("notes") && cmd.Flags().Changed("append-notes") {

@@ -45,6 +45,8 @@ func bdProxiedEnv(dir string) []string {
 		"HOME="+dir,
 		"BEADS_DOLT_PROXIED_SERVER=1",
 		"BEADS_NO_DAEMON=1",
+		"BD_DISABLE_METRICS=1",
+		"BD_DISABLE_EVENT_FLUSH=1",
 	)
 }
 
