@@ -85,7 +85,9 @@ from Dolt version history, which can only be displayed, not applied.`,
 				os.Exit(1)
 			}
 			if jsonOutput {
-				outputJSON(restored)
+				if err := outputJSON(restored); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
 				return
 			}
 			fmt.Printf("%s Restored %s from archived snapshot (compaction level %d → %d)\n",
@@ -98,7 +100,9 @@ from Dolt version history, which can only be displayed, not applied.`,
 		if snap != nil {
 			view := snapshotView(issue, snap)
 			if jsonOutput {
-				outputJSON(view)
+				if err := outputJSON(view); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
 			} else {
 				displayRestoredIssue(view, "archived snapshot")
 				fmt.Printf("%s\n", ui.RenderMuted("Run 'bd restore "+issueID+" --apply' to write this content back."))
@@ -138,7 +142,9 @@ from Dolt version history, which can only be displayed, not applied.`,
 		}
 
 		if jsonOutput {
-			outputJSON(best.Issue)
+			if err := outputJSON(best.Issue); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			hashDisplay := best.CommitHash
 			if len(hashDisplay) > 8 {
