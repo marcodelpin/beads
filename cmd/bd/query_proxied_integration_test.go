@@ -185,6 +185,22 @@ func TestProxiedServerQuery(t *testing.T) {
 		}
 	})
 
+	t.Run("offset_rejected_with_sort", func(t *testing.T) {
+		for _, sortField := range []string{"priority", "created", "id"} {
+			out := bdProxiedQueryFail(t, bd, p, "priority>=0", "--all", "--sort", sortField, "--offset", "1")
+			if !strings.Contains(out, "--offset is not supported with --sort") {
+				t.Errorf("expected --sort %s + offset rejection, got: %s", sortField, out)
+			}
+		}
+	})
+
+	t.Run("negative_offset_rejected", func(t *testing.T) {
+		out := bdProxiedQueryFail(t, bd, p, "priority>=0", "--offset=-1")
+		if !strings.Contains(out, "--offset must be non-negative") {
+			t.Errorf("expected negative-offset rejection, got: %s", out)
+		}
+	})
+
 	t.Run("parse_only_short_circuits", func(t *testing.T) {
 		stdout, _ := bdProxiedQueryCapture(t, bd, p, "status=open AND priority<=1", "--parse-only")
 		if !strings.Contains(stdout, "Parsed query:") {

@@ -105,6 +105,9 @@ Examples:
 		reverse, _ := cmd.Flags().GetBool("reverse")
 		parseOnly, _ := cmd.Flags().GetBool("parse-only")
 		offset, _ := cmd.Flags().GetInt("offset")
+		if offset < 0 {
+			return HandleErrorRespectJSON("--offset must be non-negative")
+		}
 		if offset > 0 {
 			return HandleErrorRespectJSON("--offset is only supported under --proxied-server")
 		}

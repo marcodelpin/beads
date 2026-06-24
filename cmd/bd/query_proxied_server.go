@@ -31,6 +31,9 @@ func runQueryProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	reverse, _ := cmd.Flags().GetBool("reverse")
 	parseOnly, _ := cmd.Flags().GetBool("parse-only")
 	offset, _ := cmd.Flags().GetInt("offset")
+	if offset < 0 {
+		return HandleErrorRespectJSON("--offset must be non-negative")
+	}
 
 	node, err := query.Parse(queryStr)
 	if err != nil {
@@ -58,6 +61,10 @@ func runQueryProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 
 	if !allFlag && result.Filter.Status == nil && !hasExplicitStatusFilter(node) {
 		result.Filter.ExcludeStatus = append(result.Filter.ExcludeStatus, types.StatusClosed)
+	}
+
+	if offset > 0 && sortBy != "" {
+		return HandleErrorRespectJSON("--offset is not supported with --sort (query applies --sort client-side, which cannot be paginated)")
 	}
 
 	searchFilter := result.Filter
