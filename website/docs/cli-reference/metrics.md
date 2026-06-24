@@ -24,7 +24,7 @@ any user-supplied text.
   bd metrics example    show real examples of the events bd sends
 
 ```
-bd metrics
+bd metrics [flags]
 ```
 
 ### bd metrics example
@@ -32,7 +32,7 @@ bd metrics
 Show real examples of the anonymous metrics bd sends
 
 ```
-bd metrics example
+bd metrics example [flags]
 ```
 
 ### bd metrics off
@@ -40,7 +40,7 @@ bd metrics example
 Turn anonymous usage metrics off
 
 ```
-bd metrics off
+bd metrics off [flags]
 ```
 
 ### bd metrics on
@@ -48,5 +48,5 @@ bd metrics off
 Turn anonymous usage metrics on
 
 ```
-bd metrics on
+bd metrics on [flags]
 ```

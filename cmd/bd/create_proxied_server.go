@@ -97,7 +97,9 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		}
 		previewIssue := buildCreateIssueFromInput(in)
 		if in.jsonOutput {
-			outputJSON(previewIssue)
+			if err := outputJSON(previewIssue); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			renderCreateDryRunPreview(previewIssue, previewLabels, in.deps)
 		}
@@ -153,7 +155,9 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 
 	switch {
 	case in.jsonOutput:
-		outputJSON(result.Issue)
+		if err := outputJSON(result.Issue); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 	case in.silent:
 		fmt.Println(result.Issue.ID)
 	default:
@@ -303,7 +307,9 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 	}
 
 	if in.jsonOutput {
-		outputJSON(result.Issues)
+		if err := outputJSON(result.Issues); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -376,7 +382,9 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 		if err := validateGraphApplyPlan(&plan, resolveProxiedCustomTypes(cctx.CustomTypes)); err != nil {
 			FatalError("invalid graph plan: %v", err)
 		}
-		emitGraphApplyDryRun(&plan)
+		if err := emitGraphApplyDryRun(&plan); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -409,7 +417,9 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 	}
 
 	if in.jsonOutput {
-		outputJSON(GraphApplyResult{IDs: result.IDs})
+		if err := outputJSON(GraphApplyResult{IDs: result.IDs}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 

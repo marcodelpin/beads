@@ -259,7 +259,9 @@ func runCompactSingle(ctx context.Context, compactor *compact.Compactor, store s
 					"total_content_bytes": originalSize,
 				},
 			}
-			outputJSON(output)
+			if err := outputJSON(output); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 
@@ -308,7 +310,9 @@ func runCompactSingle(ctx context.Context, compactor *compact.Compactor, store s
 			"reduction_pct":  float64(savingBytes) / float64(originalSize) * 100,
 			"elapsed_ms":     elapsed.Milliseconds(),
 		}
-		outputJSON(output)
+		if err := outputJSON(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -345,11 +349,13 @@ func runCompactAll(ctx context.Context, compactor *compact.Compactor, store stor
 
 	if len(candidates) == 0 {
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"success": true,
 				"count":   0,
 				"message": "No eligible candidates",
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 		fmt.Println("No eligible candidates for compaction")
@@ -401,7 +407,9 @@ func runCompactAll(ctx context.Context, compactor *compact.Compactor, store stor
 					"total_content_bytes": totalSize,
 				},
 			}
-			outputJSON(output)
+			if err := outputJSON(output); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 
@@ -460,7 +468,9 @@ func runCompactAll(ctx context.Context, compactor *compact.Compactor, store stor
 			"original_size": totalOriginal,
 			"elapsed_ms":    elapsed.Milliseconds(),
 		}
-		outputJSON(output)
+		if err := outputJSON(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -508,7 +518,9 @@ func runCompactStats(ctx context.Context, store storage.DoltStorage) {
 				"implemented": false,
 			},
 		}
-		outputJSON(output)
+		if err := outputJSON(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -622,7 +634,9 @@ func runCompactAnalyze(ctx context.Context, store storage.DoltStorage) {
 				"total_content_bytes": totalSize,
 			},
 		}
-		outputJSON(output)
+		if err := outputJSON(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -745,7 +759,9 @@ func runCompactApply(ctx context.Context, store storage.DoltStorage) {
 			"reduction_pct":  reductionPct,
 			"elapsed_ms":     elapsed.Milliseconds(),
 		}
-		outputJSON(output)
+		if err := outputJSON(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -774,7 +790,9 @@ func runCompactDolt() {
 					"dolt_path": doltPath,
 					"available": false,
 				}
-				outputJSON(output)
+				if err := outputJSON(output); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
 				return
 			}
 			fmt.Printf("DRY RUN - Dolt garbage collection\n\n")
@@ -802,7 +820,9 @@ func runCompactDolt() {
 				"size_before":  sizeBefore,
 				"size_display": formatBytes(sizeBefore),
 			}
-			outputJSON(output)
+			if err := outputJSON(output); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 		fmt.Printf("DRY RUN - Dolt garbage collection\n\n")
@@ -858,7 +878,9 @@ func runCompactDolt() {
 			"freed_display": formatBytes(freed),
 			"elapsed_ms":    elapsed.Milliseconds(),
 		}
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 

@@ -695,7 +695,9 @@ reachability, server version, and database.`,
 // is exercised by TestRunExternalDoltStatus_Unreachable).
 func renderLocalDoltStatus(state *doltserver.State, serverDir string) {
 	if jsonOutput {
-		outputJSON(state)
+		if err := outputJSON(state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 	if state == nil || !state.Running {
@@ -817,7 +819,9 @@ func runExternalDoltStatus(beadsDir string, cfg *configfile.Config) {
 	}
 
 	if jsonOutput {
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -850,7 +854,7 @@ func showEmbeddedDoltStatus(beadsDir string) {
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]interface{}{
+		if err := outputJSON(map[string]interface{}{
 			"mode": "embedded",
 			// Embedded mode has an active in-process engine, but no
 			// separate server process. Use a server-specific field so
@@ -858,7 +862,9 @@ func showEmbeddedDoltStatus(beadsDir string) {
 			"server_running":  false,
 			"data_dir":        dataDir,
 			"data_dir_exists": dataDirExists,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -1132,7 +1138,7 @@ var doltRemoteAddCmd = &cobra.Command{
 		result, err := ensureDoltRemote(ctx, st, name, url, confirmDoltRemoteOverwrite)
 		if err != nil {
 			if jsonOutput {
-				outputJSONError(err, "remote_add_failed")
+				_ = outputJSONError(err, "remote_add_failed")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error adding remote: %v\n", err)
 			}
@@ -1153,10 +1159,12 @@ var doltRemoteAddCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"name": name,
 				"url":  url,
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			fmt.Printf("Added remote %q → %s\n", name, url)
 		}
@@ -1177,7 +1185,7 @@ var doltRemoteListCmd = &cobra.Command{
 		remotes, err := st.ListRemotes(ctx)
 		if err != nil {
 			if jsonOutput {
-				outputJSONError(err, "remote_list_failed")
+				_ = outputJSONError(err, "remote_list_failed")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error listing remotes: %v\n", err)
 			}
@@ -1185,7 +1193,9 @@ var doltRemoteListCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			outputJSON(formatDoltRemoteListJSON(remotes))
+			if err := outputJSON(formatDoltRemoteListJSON(remotes)); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 
@@ -1236,7 +1246,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 
 		if err := st.RemoveRemote(ctx, name); err != nil {
 			if jsonOutput {
-				outputJSONError(err, "remote_remove_failed")
+				_ = outputJSONError(err, "remote_remove_failed")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error removing remote: %v\n", err)
 			}
@@ -1255,10 +1265,12 @@ var doltRemoteRemoveCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"name":    name,
 				"removed": true,
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			fmt.Printf("Removed remote %q\n", name)
 		}
@@ -1366,7 +1378,9 @@ func showDoltConfig(testConnection bool) {
 				}
 			}
 		}
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -1537,11 +1551,13 @@ func setDoltConfig(key, value string, updateConfig bool) {
 			os.Exit(1)
 		}
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"key":      "shared-server",
 				"value":    lower,
 				"location": "config.yaml",
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 		if lower == "true" {
@@ -1577,7 +1593,9 @@ func setDoltConfig(key, value string, updateConfig bool) {
 		if updateConfig {
 			result["config_yaml_updated"] = true
 		}
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -1619,11 +1637,13 @@ func testDoltConnection() {
 
 	if jsonOutput {
 		ok := testServerConnection(host, port)
-		outputJSON(map[string]interface{}{
+		if err := outputJSON(map[string]interface{}{
 			"host":          host,
 			"port":          port,
 			"connection_ok": ok,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		if !ok {
 			os.Exit(1)
 		}
