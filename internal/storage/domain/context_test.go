@@ -176,6 +176,18 @@ func TestContextUseCase_RoleUnset(t *testing.T) {
 	}
 }
 
+func TestContextUseCase_RoleNotEmittedWhenNotDetermined(t *testing.T) {
+	repo := &fakeContextRepo{role: "contributor", roleOK: false}
+
+	info, err := NewContextUseCase(repo, "v0").GetContextInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetContextInfo: %v", err)
+	}
+	if info.Role != "" {
+		t.Errorf("Role = %q, want empty when hasRole is false", info.Role)
+	}
+}
+
 func TestContextUseCase_ErrorPropagation(t *testing.T) {
 	sentinel := errors.New("boom")
 

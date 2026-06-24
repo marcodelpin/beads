@@ -76,7 +76,7 @@ func (r *contextRepositoryImpl) ProxiedServerRoot(ctx context.Context) (string, 
 	if p := envOrAbsJoin("BEADS_PROXIED_SERVER_ROOT_PATH", beadsDir); p != "" {
 		return p, nil
 	}
-	info, err := configfile.LoadProxiedServerClientInfo(beadsDir)
+	info, err := r.fsRepo.ReadProxiedServerClientInfo(ctx)
 	if err != nil {
 		return "", err
 	}

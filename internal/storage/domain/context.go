@@ -73,7 +73,7 @@ func (u *contextUseCaseImpl) GetContextInfo(ctx context.Context) (ContextInfo, e
 		return ContextInfo{}, err
 	}
 
-	role, _, err := u.repo.Role(ctx)
+	role, hasRole, err := u.repo.Role(ctx)
 	if err != nil {
 		return ContextInfo{}, err
 	}
@@ -89,13 +89,16 @@ func (u *contextUseCaseImpl) GetContextInfo(ctx context.Context) (ContextInfo, e
 		CWDRepoRoot:  paths.CWDRepoRoot,
 		IsRedirected: paths.IsRedirected,
 		IsWorktree:   paths.IsWorktree,
-		Role:         role,
 		Backend:      configfile.BackendDolt,
 		DoltMode:     backend.DoltMode,
 		Database:     backend.Database,
 		ProjectID:    backend.ProjectID,
 		DataDir:      backend.DataDir,
 		BdVersion:    u.version,
+	}
+
+	if hasRole {
+		info.Role = role
 	}
 
 	if backend.IsServerMode {
