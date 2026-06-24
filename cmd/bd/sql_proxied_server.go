@@ -7,13 +7,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
-func runSQLProxiedServer(cmd *cobra.Command, ctx context.Context, query string, csvOutput bool) error {
+func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) error {
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
 	isRead := strings.HasPrefix(trimmed, "SELECT") ||
 		strings.HasPrefix(trimmed, "EXPLAIN") ||

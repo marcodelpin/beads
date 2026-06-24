@@ -48,7 +48,7 @@ WARNING: Direct database access bypasses the storage layer. Use with caution.`,
 		csvOutput, _ := cmd.Flags().GetBool("csv")
 
 		if usesProxiedServer() {
-			return runSQLProxiedServer(cmd, rootCtx, query, csvOutput)
+			return runSQLProxiedServer(rootCtx, query, csvOutput)
 		}
 
 		if store == nil {
