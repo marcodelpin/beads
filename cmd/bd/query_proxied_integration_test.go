@@ -384,4 +384,38 @@ func TestProxiedServerQuery(t *testing.T) {
 			t.Errorf("default query should include permanent issue %s", seed.openBug)
 		}
 	})
+
+	t.Run("ephemeral_and_label_filters_wisps", func(t *testing.T) {
+		const label = "wq-compound"
+		wisp := bdProxiedCreate(t, bd, p.dir, "Labeled wisp", "--ephemeral", "--label", label)
+		perm := bdProxiedCreate(t, bd, p.dir, "Labeled permanent", "--label", label)
+
+		issues := bdProxiedQueryJSON(t, bd, p, "ephemeral=true AND label="+label, "--limit", "0")
+		if !containsID(issues, wisp.ID) {
+			t.Errorf("ephemeral=true AND label=%s should return wisp %s, got %v", label, wisp.ID, listIssueIDs(issues))
+		}
+		if containsID(issues, perm.ID) {
+			t.Errorf("ephemeral=true AND label=%s must not return permanent issue %s", label, perm.ID)
+		}
+		for _, issue := range issues {
+			if issue.Issue == nil || !issue.Ephemeral {
+				t.Errorf("compound ephemeral+label query returned non-wisp %s", issue.ID)
+			}
+		}
+	})
+
+	t.Run("ephemeral_and_parent_filters_wisps", func(t *testing.T) {
+		parent := bdProxiedCreate(t, bd, p.dir, "Parent wisp", "--ephemeral")
+		child := bdProxiedCreate(t, bd, p.dir, "Child wisp", "--ephemeral", "--parent", parent.ID)
+
+		issues := bdProxiedQueryJSON(t, bd, p, "ephemeral=true AND parent="+parent.ID, "--limit", "0")
+		if !containsID(issues, child.ID) {
+			t.Errorf("ephemeral=true AND parent=%s should return child wisp %s, got %v", parent.ID, child.ID, listIssueIDs(issues))
+		}
+		for _, issue := range issues {
+			if issue.Issue == nil || !issue.Ephemeral {
+				t.Errorf("compound ephemeral+parent query returned non-wisp %s", issue.ID)
+			}
+		}
+	})
 }
