@@ -146,6 +146,41 @@ func TestEmbeddedMemory(t *testing.T) {
 		}
 	})
 
+	// Footgun guard: `bd remember <existing-key>` (treating remember as a getter) must NOT
+	// silently overwrite that memory with its own key as content.
+	t.Run("remember_guard_blocks_key_as_content", func(t *testing.T) {
+		bdRemember(t, bd, dir, "the real insight worth keeping", "--key", "guard-key")
+		// Now fat-finger a "read": positional arg is the existing bare key.
+		out := bdRememberFail(t, bd, dir, "guard-key")
+		if !strings.Contains(out, "recall") {
+			t.Errorf("expected guard error to suggest `bd recall`, got: %s", out)
+		}
+		// The original content must be intact, not clobbered to "guard-key".
+		recalled := bdRecall(t, bd, dir, "guard-key")
+		if !strings.Contains(recalled, "the real insight worth keeping") {
+			t.Errorf("guard must preserve original content, got: %s", recalled)
+		}
+	})
+
+	t.Run("remember_guard_bypass_with_explicit_key", func(t *testing.T) {
+		bdRemember(t, bd, dir, "original", "--key", "bypass-key")
+		// Explicit --key signals deliberate intent and bypasses the guard.
+		bdRemember(t, bd, dir, "bypass-key", "--key", "bypass-key")
+		out := bdRecall(t, bd, dir, "bypass-key")
+		if !strings.Contains(out, "bypass-key") {
+			t.Errorf("explicit --key should bypass guard and overwrite, got: %s", out)
+		}
+	})
+
+	t.Run("remember_guard_allows_new_slug_content", func(t *testing.T) {
+		// Slug-shaped content is fine when no memory by that key exists yet (no overwrite).
+		bdRemember(t, bd, dir, "brand-new-slug-memory")
+		out := bdRecall(t, bd, dir, "brand-new-slug-memory")
+		if !strings.Contains(out, "brand-new-slug-memory") {
+			t.Errorf("expected new slug-keyed memory to be stored, got: %s", out)
+		}
+	})
+
 	// ===== Memories List =====
 
 	t.Run("memories_list", func(t *testing.T) {

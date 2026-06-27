@@ -98,6 +98,22 @@ Examples:
 			verb = "Updated"
 		}
 
+		// Footgun guard: `bd remember <x>` is a WRITE whose positional arg is the CONTENT, not a
+		// key. A common slip is treating it like a getter -- `bd remember some-existing-key` --
+		// which slugifies the bare key back to itself and SILENTLY OVERWRITES that memory. Refuse
+		// when (a) no explicit --key was given, (b) the content round-trips through slugify
+		// unchanged (so it is already a bare slug, the tell-tale of a mistyped read), and (c) a
+		// memory with that key already exists. Existing keys are themselves slugify outputs, so
+		// this precisely catches "content names an existing memory" with ~zero false positives on
+		// real prose insights. Passing --key explicitly bypasses the guard (deliberate intent).
+		if memoryKeyFlag == "" && existing != "" && slugify(insight) == insight {
+			return HandleErrorRespectJSON(
+				"refusing to overwrite existing memory %q with its own key as content -- "+
+					"`bd remember` WRITES (its positional arg is CONTENT, not a key). "+
+					"To read it: `bd recall %s`. To overwrite anyway: `bd remember \"<new content>\" --key %s`",
+				key, key, key)
+		}
+
 		if err := store.SetConfig(ctx, storageKey, insight); err != nil {
 			return HandleErrorRespectJSON("storing memory: %v", err)
 		}
