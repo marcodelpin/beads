@@ -38,7 +38,7 @@ func ScanIssueFrom(s IssueScanner, extra ...any) (*types.Issue, error) {
 	var sender, wispType, molType, eventKind, actor, target, payload sql.NullString
 	var awaitType, awaitID, waiters sql.NullString
 	var ephemeral, noHistory, pinned, isTemplate sql.NullInt64
-	var metadata sql.NullString
+	var metadata, commitHash sql.NullString
 
 	dests := []any{
 		&issue.ID, &contentHash, &issue.Title, &issue.Description, &issue.Design,
@@ -52,6 +52,7 @@ func ScanIssueFrom(s IssueScanner, extra ...any) (*types.Issue, error) {
 		&eventKind, &actor, &target, &payload,
 		&dueAt, &deferUntil,
 		&workType, &sourceSystem, &metadata,
+		&commitHash,
 	}
 	dests = append(dests, extra...)
 	if err := s.Scan(dests...); err != nil {
@@ -170,6 +171,10 @@ func ScanIssueFrom(s IssueScanner, extra ...any) (*types.Issue, error) {
 	// Custom metadata field (GH#1406)
 	if metadata.Valid && metadata.String != "" && metadata.String != "{}" {
 		issue.Metadata = []byte(metadata.String)
+	}
+	// sys-kjdc7: first-class commit_hash column.
+	if commitHash.Valid && commitHash.String != "" {
+		issue.CommitHash = &commitHash.String
 	}
 
 	return &issue, nil

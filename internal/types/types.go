@@ -64,6 +64,14 @@ type Issue struct {
 	CompactedAtCommit *string    `json:"compacted_at_commit,omitempty"` // Git commit hash when compacted
 	OriginalSize      int        `json:"original_size,omitempty"`
 
+	// ===== Audit Trail (sys-kjdc7) =====
+	// CommitHash is the git/forge commit SHA that resolves this issue —
+	// typically set on close via `bd close --commit=<sha>` so the work
+	// carries its audit trail as a first-class field (was previously
+	// free-text in notes). NULL = unresolved/unlinked. Queryable via
+	// `bd ready --no-commit-link` to find work missing the trail.
+	CommitHash *string `json:"commit_hash,omitempty"`
+
 	// ===== Internal Routing (not synced via git) =====
 	SourceRepo     string `json:"-"` // Which repo owns this issue (multi-repo support)
 	IDPrefix       string `json:"-"` // Override prefix for ID generation (appends to config prefix)
@@ -1364,6 +1372,12 @@ type WorkFilter struct {
 	// Metadata field filtering (GH#1406)
 	MetadataFields map[string]string // Top-level key=value equality; AND semantics (all must match)
 	HasMetadataKey string            // Existence check: issue has this top-level key set (non-null)
+
+	// Audit-trail filter (sys-kjdc7): MissingCommitHash excludes issues whose
+	// commit_hash column is NULL. Powers `bd ready --no-commit-link` to surface
+	// work missing its audit-trail SHA (typically work that was never linked
+	// to a closing commit). When true, the SQL emits `commit_hash IS NULL`.
+	MissingCommitHash bool
 
 	Offset int
 }

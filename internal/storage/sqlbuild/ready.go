@@ -179,5 +179,13 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 		return "", nil, err
 	}
 
+	// sys-kjdc7: when --no-commit-link is requested, exclude issues that
+	// already carry a commit_hash. NULL or empty are both treated as
+	// "unlinked" (the storage layer writes NULL for unset, but legacy rows
+	// may carry an empty string if imported from a pre-migration export).
+	if filter.MissingCommitHash {
+		whereClauses = append(whereClauses, "(commit_hash IS NULL OR commit_hash = '')")
+	}
+
 	return "WHERE " + strings.Join(whereClauses, " AND "), args, nil
 }

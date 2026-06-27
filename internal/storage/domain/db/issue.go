@@ -43,6 +43,7 @@ var allowedUpdateFields = map[string]struct{}{
 	"mol_type": {}, "event_kind": {}, "actor": {}, "target": {}, "payload": {},
 	"due_at": {}, "defer_until": {}, "await_id": {}, "waiters": {},
 	"metadata": {},
+	"commit_hash": {}, // sys-kjdc7
 }
 
 func (r *issueSQLRepositoryImpl) Insert(ctx context.Context, issue *types.Issue, actor string, opts domain.InsertIssueOpts) error {
@@ -408,7 +409,8 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			mol_type, work_type, source_system, source_repo, close_reason,
 			event_kind, actor, target, payload,
 			await_type, await_id, timeout_ns, waiters,
-			due_at, defer_until, metadata
+			due_at, defer_until, metadata,
+			commit_hash
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
@@ -418,7 +420,8 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?
+			?, ?, ?,
+			?
 		)
 		ON DUPLICATE KEY UPDATE
 			content_hash = VALUES(content_hash),
@@ -438,7 +441,8 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			external_ref = VALUES(external_ref),
 			source_repo = VALUES(source_repo),
 			close_reason = VALUES(close_reason),
-			metadata = VALUES(metadata)
+			metadata = VALUES(metadata),
+			commit_hash = VALUES(commit_hash)
 	`, table),
 		issue.ID, issue.ContentHash, issue.Title, issue.Description, issue.Design, issue.AcceptanceCriteria, issue.Notes,
 		string(issue.Status), issue.Priority, string(issue.IssueType), nullString(issue.Assignee), nullIntPtr(issue.EstimatedMinutes),
@@ -449,6 +453,7 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 		issue.EventKind, issue.Actor, issue.Target, issue.Payload,
 		issue.AwaitType, issue.AwaitID, issue.Timeout.Nanoseconds(), formatJSONStringArray(issue.Waiters),
 		issue.DueAt, issue.DeferUntil, jsonMetadata(issue.Metadata),
+		nullStringPtr(issue.CommitHash),
 	)
 	if err != nil {
 		return fmt.Errorf("db: insert into %s: %w", table, err)

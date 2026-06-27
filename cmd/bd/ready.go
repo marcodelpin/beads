@@ -34,6 +34,11 @@ Use --gated to find molecules ready for gate-resume dispatch:
 Use --claim to atomically claim the first ready issue matching the filters:
   bd ready --claim --json
 
+Use --no-commit-link to find ready work that has not yet been linked to a
+closing commit (sys-kjdc7). Useful for surfacing audit-trail gaps before
+release readiness reviews.
+  bd ready --no-commit-link
+
 This is useful for agents executing molecules to see which steps can run next.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		claimReady, _ := cmd.Flags().GetBool("claim")
@@ -84,6 +89,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		includeDeferred, _ := cmd.Flags().GetBool("include-deferred")
 		includeEphemeral, _ := cmd.Flags().GetBool("include-ephemeral")
 		excludeTypeStrs, _ := cmd.Flags().GetStringSlice("exclude-type")
+		noCommitLink, _ := cmd.Flags().GetBool("no-commit-link") // sys-kjdc7
 		var molType *types.MolType
 		if molTypeStr != "" {
 			mt := types.MolType(molTypeStr)
@@ -131,6 +137,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			IncludeDeferred:  includeDeferred,  // GH#820: respect --include-deferred flag
 			IncludeEphemeral: includeEphemeral, // bd-i5k5x: allow ephemeral issues (e.g., merge-requests)
 			ExcludeTypes:     excludeTypes,
+			MissingCommitHash: noCommitLink,    // sys-kjdc7
 		}
 		// Use Changed() to properly handle P0 (priority=0)
 		if cmd.Flags().Changed("priority") {
@@ -753,6 +760,7 @@ func init() {
 	// Metadata filtering (GH#1406)
 	readyCmd.Flags().StringArray("metadata-field", nil, "Filter by metadata field (key=value, repeatable)")
 	readyCmd.Flags().String("has-metadata-key", "", "Filter issues that have this metadata key set")
+	readyCmd.Flags().Bool("no-commit-link", false, "Show only ready issues without a commit_hash audit link (sys-kjdc7)")
 	rootCmd.AddCommand(readyCmd)
 	blockedCmd.Flags().String("parent", "", "Filter to descendants of this bead/epic")
 	rootCmd.AddCommand(blockedCmd)
