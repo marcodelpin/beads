@@ -100,7 +100,16 @@ Examples:
 		updates := map[string]interface{}{
 			"notes": combined,
 		}
-		if err := issueStore.UpdateIssue(ctx, result.ResolvedID, updates, actor); err != nil {
+		if err := writeWithSpool(ctx, "note",
+			spoolPayload(map[string]interface{}{
+				"id":      result.ResolvedID,
+				"updates": updates,
+				"actor":   actor,
+			}),
+			func() error {
+				return issueStore.UpdateIssue(ctx, result.ResolvedID, updates, actor)
+			},
+		); err != nil {
 			return HandleErrorRespectJSON("updating %s: %v", id, err)
 		}
 		if err := commitPendingIfEmbedded(ctx, issueStore, actor, doltAutoCommitParams{

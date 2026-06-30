@@ -185,6 +185,10 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd rules](#bd-rules) — Audit and compact Claude rules
   - [bd rules audit](#bd-rules-audit) — Scan rules for contradictions and merge opportunities
   - [bd rules compact](#bd-rules-compact) — Merge related rules into composites
+- [bd spool](#bd-spool) — Manage the offline write spool
+  - [bd spool clear](#bd-spool-clear) — Wipe the spool (requires --confirm)
+  - [bd spool drain](#bd-spool-drain) — Force-drain the spool now (replay all pending entries into Dolt)
+  - [bd spool status](#bd-spool-status) — Show spool queue depth, oldest entry timestamp, and disk usage
 - [bd sql](#bd-sql) — Execute raw SQL against the beads database
 - [bd upgrade](#bd-upgrade) — Check and manage bd version upgrades
   - [bd upgrade ack](#bd-upgrade-ack) — Acknowledge the current bd version
@@ -4383,6 +4387,56 @@ bd rules compact [flags]
       --dry-run         Preview without applying
       --group strings   Rule names to merge
       --path string     Path to rules directory (default ".claude/rules/")
+```
+
+### bd spool
+
+Manage the offline write-spool (.beads/spool/).
+
+The spool buffers bd write commands (create/update/note/close) when Dolt is
+temporarily unreachable. Entries are replayed automatically at the start of
+the next bd command (MaybeDrain), or you can trigger a drain manually.
+
+Subcommands:
+  status   Show queue depth, oldest entry, and disk usage
+  drain    Force-drain the spool now (replay all pending entries)
+  clear    Wipe the spool (requires --confirm)
+
+```
+bd spool
+```
+
+#### bd spool clear
+
+Clear all pending spool entries. This permanently discards any queued writes
+that have not yet been replayed into Dolt. Use with caution.
+
+You must pass --confirm to proceed.
+
+```
+bd spool clear [flags]
+```
+
+**Flags:**
+
+```
+      --confirm   Required: confirms you want to permanently discard pending spool entries
+```
+
+#### bd spool drain
+
+Force-drain the spool now (replay all pending entries into Dolt)
+
+```
+bd spool drain
+```
+
+#### bd spool status
+
+Show spool queue depth, oldest entry timestamp, and disk usage
+
+```
+bd spool status
 ```
 
 ### bd sql

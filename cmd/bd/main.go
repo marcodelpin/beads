@@ -28,6 +28,7 @@ import (
 	"github.com/steveyegge/beads/internal/hooks"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/molecules"
+	"github.com/steveyegge/beads/internal/spool"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -1206,6 +1207,20 @@ var rootCmd = &cobra.Command{
 
 		// Sync all state to CommandContext for unified access.
 		syncCommandContext()
+
+		// Opportunistic spool replay: if there are pending writes from a
+		// previous offline session, drain them now before the command runs.
+		// Non-blocking (TryLock): if another process is draining, skip.
+		// Errors are logged but never fatal -- the command proceeds normally.
+		if store != nil && !useReadOnly && beadsDir != "" {
+			go func() {
+				spoolDir := filepath.Join(beadsDir, "spool")
+				sp := spoolSingleton(spoolDir)
+				if err := spool.MaybeDrain(rootCtx, sp, spoolDispatch(rootCtx)); err != nil {
+					debug.Logf("spool MaybeDrain: %v", err)
+				}
+			}()
+		}
 
 		// Tips (including sync conflict proactive checks) are shown via maybeShowTip()
 		// after successful command execution, not in PreRun

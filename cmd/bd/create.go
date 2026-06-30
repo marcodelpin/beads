@@ -545,7 +545,15 @@ var createCmd = &cobra.Command{
 			// If error getting parent or parent has no source_repo, continue with default
 		}
 
-		if err := store.CreateIssue(ctx, issue, actor); err != nil {
+		if err := writeWithSpool(ctx, "create",
+			spoolPayload(map[string]interface{}{
+				"issue": issue,
+				"actor": actor,
+			}),
+			func() error {
+				return store.CreateIssue(ctx, issue, actor)
+			},
+		); err != nil {
 			return HandleError("%v", err)
 		}
 
