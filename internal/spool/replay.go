@@ -48,7 +48,7 @@ func MaybeDrain(ctx context.Context, s *Spool, dispatch DispatchFunc) error {
 	// Quick check: is there anything to drain?
 	queueHasContent, err := fileHasContent(s.QueueFile())
 	if err != nil {
-		return nil // spool dir missing → nothing to do
+		return nil // spool dir missing -> nothing to do
 	}
 	inflightHasContent, err := fileHasContent(s.InflightFile())
 	if err != nil {
@@ -60,7 +60,7 @@ func MaybeDrain(ctx context.Context, s *Spool, dispatch DispatchFunc) error {
 
 	_, err = drainInternal(ctx, s, dispatch, true)
 	if errors.Is(err, ErrLockHeld) {
-		return nil // another process is draining — not an error
+		return nil // another process is draining -- not an error
 	}
 	return err
 }
@@ -80,7 +80,7 @@ func drainInternal(ctx context.Context, s *Spool, dispatch DispatchFunc, tryLock
 	if err != nil {
 		return result, fmt.Errorf("open lock: %w", err)
 	}
-	defer lk.Unlock()
+	defer func() { _ = lk.Unlock() }()
 
 	if tryLock {
 		if err := lk.TryLock(); err != nil {
@@ -166,7 +166,7 @@ func drainInternal(ctx context.Context, s *Spool, dispatch DispatchFunc, tryLock
 
 		// Write remaining entries to inflight. If replayEntries hit a transient
 		// failure without returning err (entry appended to remaining + break),
-		// `remaining` contains the failed entry — writing it back to inflight
+		// `remaining` contains the failed entry -- writing it back to inflight
 		// preserves the retry state. If `remaining` is empty (all dispatched
 		// successfully), this writes nil = clears inflight.
 		if err := s.WriteInflight(remaining); err != nil {
@@ -250,7 +250,7 @@ func replayEntries(ctx context.Context, entries []Entry, dispatch DispatchFunc, 
 			break
 		}
 
-		// Permanent: dead-letter. Stop processing this batch — entries
+		// Permanent: dead-letter. Stop processing this batch -- entries
 		// after the failed one stay in queue for the next drain cycle.
 		e.LastError = err.Error()
 		if dlErr := s.AppendDeadLetter(e); dlErr != nil {
@@ -265,14 +265,14 @@ func replayEntries(ctx context.Context, entries []Entry, dispatch DispatchFunc, 
 
 // computeProcessedOffset returns the byte offset after the entries that were
 // actually processed (acked or dead-lettered). This is the batch entries minus
-// the remaining entries — i.e., the entries at the start of sorted that were
+// the remaining entries -- i.e., the entries at the start of sorted that were
 // handled before a failure or completion.
 func computeProcessedOffset(queuePath string, startOffset int64, batch, remaining []Entry) int64 {
 	processed := len(batch) - len(remaining)
 	if processed <= 0 {
 		return startOffset
 	}
-	f, err := os.Open(queuePath)
+	f, err := os.Open(queuePath) // #nosec G304 - internal spool path
 	if err != nil {
 		return startOffset
 	}
@@ -302,13 +302,13 @@ type SeenSet struct {
 	path string
 }
 
-// loadSeenSet reads the seen-set file into memory. Missing file → empty set.
+// loadSeenSet reads the seen-set file into memory. Missing file -> empty set.
 func loadSeenSet(path string) *SeenSet {
 	ss := &SeenSet{
 		ids:  make(map[string]bool),
 		path: path,
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 - internal spool path
 	if err != nil {
 		return ss
 	}
@@ -359,7 +359,7 @@ func (ss *SeenSet) Save() error {
 	sort.Strings(ids)
 
 	tmp := ss.path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.Create(tmp) // #nosec G304 - internal spool path
 	if err != nil {
 		return fmt.Errorf("create seen tmp: %w", err)
 	}
@@ -368,12 +368,12 @@ func (ss *SeenSet) Save() error {
 		fmt.Fprintln(w, id)
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("flush seen: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, ss.path)
@@ -388,7 +388,7 @@ func (ss *SeenSet) Size() int {
 
 // Prune removes op_ids older than maxAge from the seen set by rewriting the
 // file without them. Since SeenSet entries don't carry timestamps, this is a
-// full reset — the caller should only invoke this during CleanupAcked cycles
+// full reset -- the caller should only invoke this during CleanupAcked cycles
 // when acked/ retention guarantees all seen op_ids have durable history.
 func (ss *SeenSet) Prune() {
 	ss.mu.Lock()
@@ -399,7 +399,7 @@ func (ss *SeenSet) Prune() {
 // fileHasContent returns true if the file exists and has at least one
 // non-empty line. Used by MaybeDrain for a cheap pre-check.
 func fileHasContent(path string) (bool, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 - internal spool path
 	if err != nil {
 		return false, err
 	}

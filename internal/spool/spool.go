@@ -91,7 +91,7 @@ func (s *Spool) SaveCursor(c *Cursor) error {
 		return fmt.Errorf("marshal cursor: %w", err)
 	}
 	tmp := s.cursorFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write cursor tmp: %w", err)
 	}
 	if err := os.Rename(tmp, s.cursorFile); err != nil {
@@ -103,7 +103,7 @@ func (s *Spool) SaveCursor(c *Cursor) error {
 // readJSONLEntries reads every line of path as Entry. Empty/missing -> empty slice.
 // Malformed lines are skipped (drainer must not block on a poison row).
 func readJSONLEntries(path string) ([]Entry, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 - internal spool path
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -152,7 +152,7 @@ func (s *Spool) WriteInflight(entries []Entry) error {
 		return nil
 	}
 	tmp := s.inflightFile + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.Create(tmp) // #nosec G304 - internal spool path
 	if err != nil {
 		return fmt.Errorf("create inflight tmp: %w", err)
 	}
@@ -160,20 +160,20 @@ func (s *Spool) WriteInflight(entries []Entry) error {
 	for _, e := range entries {
 		b, err := json.Marshal(e)
 		if err != nil {
-			f.Close()
-			os.Remove(tmp)
+			_ = f.Close()
+			_ = os.Remove(tmp)
 			return fmt.Errorf("marshal entry %s: %w", e.OpID, err)
 		}
-		w.Write(b)
-		w.WriteByte('\n')
+		_, _ = w.Write(b)
+		_ = w.WriteByte('\n')
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("flush inflight: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("close inflight: %w", err)
 	}
 	if err := os.Rename(tmp, s.inflightFile); err != nil {
@@ -185,7 +185,7 @@ func (s *Spool) WriteInflight(entries []Entry) error {
 // PullBatch reads up to batchSize entries from queue.jsonl starting at the
 // cursor's offset. Returns (entries, newOffset, queueSize, error).
 func (s *Spool) PullBatch(startOffset int64, batchSize int) ([]Entry, int64, int64, error) {
-	f, err := os.Open(s.queueFile)
+	f, err := os.Open(s.queueFile) // #nosec G304 - internal spool path
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, startOffset, 0, nil
@@ -251,13 +251,13 @@ func (s *Spool) AppendDeadLetter(e Entry) error {
 	return appendJSONL(s.deadFile, e)
 }
 
-// appendJSONL appends one JSON-marshalled entry + newline to path.
+// appendJSONL appends one JSON-marshaled entry + newline to path.
 func appendJSONL(path string, e Entry) error {
 	b, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 - internal spool path
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
@@ -270,7 +270,7 @@ func appendJSONL(path string, e Entry) error {
 
 // QueueLineCount returns the current line count of queue.jsonl. Missing -> 0.
 func (s *Spool) QueueLineCount() (int64, error) {
-	f, err := os.Open(s.queueFile)
+	f, err := os.Open(s.queueFile) // #nosec G304 - internal spool path
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, nil
@@ -304,7 +304,7 @@ func (s *Spool) QueueDiskBytes() (int64, error) {
 
 // DeadLetterCount returns the number of entries in dead-letter.jsonl.
 func (s *Spool) DeadLetterCount() (int64, error) {
-	f, err := os.Open(s.deadFile)
+	f, err := os.Open(s.deadFile) // #nosec G304 - internal spool path
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, nil
@@ -342,7 +342,7 @@ func (s *Spool) WriteDeadLetter(entries []Entry) error {
 		return nil
 	}
 	tmp := s.deadFile + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.Create(tmp) // #nosec G304 - internal spool path
 	if err != nil {
 		return fmt.Errorf("create dead-letter tmp: %w", err)
 	}
@@ -350,27 +350,27 @@ func (s *Spool) WriteDeadLetter(entries []Entry) error {
 	for _, e := range entries {
 		b, err := json.Marshal(e)
 		if err != nil {
-			f.Close()
-			os.Remove(tmp)
+			_ = f.Close()
+			_ = os.Remove(tmp)
 			return fmt.Errorf("marshal: %w", err)
 		}
-		w.Write(b)
-		w.WriteByte('\n')
+		_, _ = w.Write(b)
+		_ = w.WriteByte('\n')
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, s.deadFile)
 }
 
 // AppendQueue writes one entry back to queue.jsonl. Does NOT enforce
-// MaxQueueBytes — callers using this directly know what they're doing.
+// MaxQueueBytes -- callers using this directly know what they're doing.
 func (s *Spool) AppendQueue(e Entry) error {
 	if err := s.EnsureDir(); err != nil {
 		return err

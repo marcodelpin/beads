@@ -31,9 +31,9 @@ type FileLock interface {
 var ErrLockHeld = fmt.Errorf("spool: lock held by another process")
 
 // OpenLock opens (or creates) the file at path and returns a FileLock
-// handle. The file is NOT locked on return — call Lock or TryLock.
+// handle. The file is NOT locked on return -- call Lock or TryLock.
 func OpenLock(path string) (FileLock, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 - internal lock path
 	if err != nil {
 		return nil, fmt.Errorf("open lock file %s: %w", path, err)
 	}

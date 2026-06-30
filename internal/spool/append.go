@@ -32,7 +32,7 @@ func (s *Spool) Append(ctx context.Context, op string, payload []byte, sync bool
 		return Entry{}, fmt.Errorf("ensure dir: %w", err)
 	}
 
-	// Disk cap gate — STAT before write, refuse loud if at limit.
+	// Disk cap gate -- STAT before write, refuse loud if at limit.
 	if size, err := s.QueueDiskBytes(); err != nil {
 		return Entry{}, fmt.Errorf("stat queue for cap check: %w", err)
 	} else if size >= MaxQueueBytes {
@@ -77,7 +77,7 @@ func newID() (string, error) {
 
 // IsTransientErr classifies an error from a Dolt/storage call. True means
 // the producer should fall back to spool. False means surface the error
-// directly (permanent failure — spooling would just dead-letter).
+// directly (permanent failure -- spooling would just dead-letter).
 //
 // Transient: context deadline/canceled, net timeouts, Dolt i/o timeout,
 // connection refused, EOF, 5xx HTTP.
@@ -110,7 +110,7 @@ func IsTransientErr(err error) bool {
 		"i/o timeout",
 		"connection refused",
 		"connection reset",
-		"EOF",
+		"eof",
 		"broken pipe",
 		"driver: bad connection",
 	} {
@@ -120,7 +120,7 @@ func IsTransientErr(err error) bool {
 	}
 	// SQL constraint violations are permanent (dead-letter).
 	// Case-insensitive match: MySQL/Dolt errors capitalize "Duplicate entry"
-	// while SQLite uses "UNIQUE constraint" — normalize to compare reliably.
+	// while SQLite uses "UNIQUE constraint" -- normalize to compare reliably.
 	msgLower := strings.ToLower(msg)
 	for _, pat := range []string{
 		"duplicate entry",
@@ -132,9 +132,12 @@ func IsTransientErr(err error) bool {
 			return false
 		}
 	}
-	// Conservative default: if we can't classify, treat as transient.
-	// Better to spool (and potentially dead-letter later) than to drop.
-	return true
+	// Default: an unclassified error is PERMANENT -- surface it, do not spool.
+	// Only the KNOWN-transient signatures above are queued for replay. Spooling an
+	// unclassified error (e.g. a validation/logic failure like an invalid --type)
+	// would swallow it and report a false success. A genuinely new transient
+	// signature must be ADDED to the lists above, not caught by a blanket default.
+	return false
 }
 
 // HTTPStatusErr wraps a non-2xx HTTP response so callers can fold status
