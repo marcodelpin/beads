@@ -146,19 +146,19 @@ func TestEmbeddedMemory(t *testing.T) {
 		}
 	})
 
-	// Footgun guard: `bd remember <existing-key>` (treating remember as a getter) must NOT
-	// silently overwrite that memory with its own key as content.
-	t.Run("remember_guard_blocks_key_as_content", func(t *testing.T) {
+	// Desire path: `bd remember <existing-key>` (treating remember as a getter) is a READ --
+	// it recalls the memory instead of overwriting it with its own key as content.
+	t.Run("remember_bare_existing_key_recalls", func(t *testing.T) {
 		bdRemember(t, bd, dir, "the real insight worth keeping", "--key", "guard-key")
-		// Now fat-finger a "read": positional arg is the existing bare key.
-		out := bdRememberFail(t, bd, dir, "guard-key")
-		if !strings.Contains(out, "recall") {
-			t.Errorf("expected guard error to suggest `bd recall`, got: %s", out)
+		// Fat-finger a "read": positional arg is the existing bare key. Succeeds as a recall.
+		out := bdRemember(t, bd, dir, "guard-key")
+		if !strings.Contains(out, "the real insight worth keeping") {
+			t.Errorf("expected bare existing key to recall the memory content, got: %s", out)
 		}
 		// The original content must be intact, not clobbered to "guard-key".
 		recalled := bdRecall(t, bd, dir, "guard-key")
 		if !strings.Contains(recalled, "the real insight worth keeping") {
-			t.Errorf("guard must preserve original content, got: %s", recalled)
+			t.Errorf("recall-instead-of-write must preserve original content, got: %s", recalled)
 		}
 	})
 
@@ -172,12 +172,23 @@ func TestEmbeddedMemory(t *testing.T) {
 		}
 	})
 
-	t.Run("remember_guard_allows_new_slug_content", func(t *testing.T) {
-		// Slug-shaped content is fine when no memory by that key exists yet (no overwrite).
-		bdRemember(t, bd, dir, "brand-new-slug-memory")
+	t.Run("remember_bare_slug_without_memory_refuses", func(t *testing.T) {
+		// A bare slug naming NO existing memory is a mistyped read (or junk content) --
+		// refuse rather than silently creating a memory whose content is its own key.
+		out := bdRememberFail(t, bd, dir, "brand-new-slug-memory")
+		if !strings.Contains(out, "memories") {
+			t.Errorf("expected refusal to point at `bd memories`, got: %s", out)
+		}
+		// Nothing may have been stored.
+		bdRecallFail(t, bd, dir, "brand-new-slug-memory")
+	})
+
+	t.Run("remember_new_slug_with_explicit_key_stores", func(t *testing.T) {
+		// --key states write intent: slug-like content stores fine.
+		bdRemember(t, bd, dir, "brand-new-slug-memory", "--key", "brand-new-slug-memory")
 		out := bdRecall(t, bd, dir, "brand-new-slug-memory")
 		if !strings.Contains(out, "brand-new-slug-memory") {
-			t.Errorf("expected new slug-keyed memory to be stored, got: %s", out)
+			t.Errorf("expected --key to store slug content, got: %s", out)
 		}
 	})
 

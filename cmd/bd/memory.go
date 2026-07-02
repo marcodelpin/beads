@@ -53,10 +53,16 @@ var rememberCmd = &cobra.Command{
 Memories are injected at prime time (bd prime) so you have them
 in every session without manual loading.
 
+The positional arg is the memory CONTENT (the key is auto-generated from it
+unless --key is given). As a convenience, if the arg is a bare key naming an
+existing memory, it is RECALLED instead of stored (same as 'bd recall');
+a bare key naming nothing is refused. Use --key to store slug-like content.
+
 Examples:
   bd remember "always run tests with -race flag"
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
-  bd remember "auth module uses JWT not sessions" --key auth-jwt`,
+  bd remember "auth module uses JWT not sessions" --key auth-jwt
+  bd remember dolt-phantoms        # bare existing key: reads it (= bd recall)`,
 	GroupID:       "setup",
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
@@ -98,20 +104,36 @@ Examples:
 			verb = "Updated"
 		}
 
-		// Footgun guard: `bd remember <x>` is a WRITE whose positional arg is the CONTENT, not a
-		// key. A common slip is treating it like a getter -- `bd remember some-existing-key` --
-		// which slugifies the bare key back to itself and SILENTLY OVERWRITES that memory. Refuse
-		// when (a) no explicit --key was given, (b) the content round-trips through slugify
-		// unchanged (so it is already a bare slug, the tell-tale of a mistyped read), and (c) a
-		// memory with that key already exists. Existing keys are themselves slugify outputs, so
-		// this precisely catches "content names an existing memory" with ~zero false positives on
-		// real prose insights. Passing --key explicitly bypasses the guard (deliberate intent).
-		if memoryKeyFlag == "" && existing != "" && slugify(insight) == insight {
+		// Desire path + footgun guard: `bd remember <x>` is a WRITE whose positional arg is
+		// the CONTENT, not a key -- but "remember X" reads as a getter in English, so agents
+		// routinely type `bd remember some-key` meaning "do you remember X?". The tell-tale of
+		// a mistyped read is content that round-trips through slugify unchanged (a bare slug);
+		// real prose insights never do. When that happens and no explicit --key was given:
+		//   - the key EXISTS  -> pave the desire path: recall it instead of writing
+		//   - no such key     -> refuse; storing a key-like token as its own content would
+		//                        create a junk memory that hides the mistake
+		// Passing --key states write intent and bypasses both branches.
+		if memoryKeyFlag == "" && slugify(insight) == insight {
+			if existing != "" {
+				if jsonOutput {
+					return outputJSON(map[string]interface{}{
+						"key":    key,
+						"value":  existing,
+						"found":  true,
+						"action": "recalled",
+					})
+				}
+				fmt.Fprintf(os.Stderr,
+					"(recalled %q -- a bare existing key READS. To overwrite: `bd remember \"<new content>\" --key %s`)\n",
+					key, key)
+				fmt.Printf("%s\n", existing)
+				return nil
+			}
 			return HandleErrorRespectJSON(
-				"refusing to overwrite existing memory %q with its own key as content -- "+
+				"no memory named %q to recall -- and refusing to store a bare key-like token as its own content. "+
 					"`bd remember` WRITES (its positional arg is CONTENT, not a key). "+
-					"To read it: `bd recall %s`. To overwrite anyway: `bd remember \"<new content>\" --key %s`",
-				key, key, key)
+					"To store it anyway: `bd remember %q --key %s`. To browse keys: `bd memories`",
+				key, insight, key)
 		}
 
 		if err := store.SetConfig(ctx, storageKey, insight); err != nil {
