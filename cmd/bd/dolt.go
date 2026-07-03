@@ -573,10 +573,10 @@ var doltStatusCmd = &cobra.Command{
 In embedded mode, reports that the Dolt engine runs in-process and shows
 the on-disk data directory. For beads-managed (local) servers, displays
 PID, port, and data directory from the local PID file. For externally-
-managed servers — either a remote dolt_server_host or a local server
-managed outside bd (dolt.auto-start: false, e.g. an orchestrator-shared
-sql-server) — pings the configured endpoint via SQL and reports
-reachability, server version, and database.`,
+managed servers — a shared server (dolt.shared-server: true), a remote
+dolt_server_host, or a local server managed outside bd (dolt.auto-start:
+false, e.g. an orchestrator-shared sql-server) — pings the configured
+endpoint via SQL and reports reachability, server version, and database.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
@@ -608,7 +608,7 @@ reachability, server version, and database.`,
 			// — which is the exact failure mode this PR addresses.
 			fmt.Fprintf(os.Stderr, "Warning: cannot load .beads config (%v); falling back to PID-file status path\n", cfgErr)
 		}
-		if cfg != nil && shouldUseExternalDoltStatus(cfg, doltserver.IsAutoStartDisabled()) {
+		if cfg != nil && shouldUseExternalDoltStatus(cfg, doltserver.IsAutoStartDisabled(), doltserver.IsSharedServerMode()) {
 			runExternalDoltStatus(beadsDir, cfg)
 			return
 		}
@@ -659,6 +659,18 @@ func renderLocalDoltStatus(state *doltserver.State, serverDir string) {
 // shouldUseExternalDoltStatus reports whether bd dolt status should treat
 // the server as externally-managed and probe via SQL instead of consulting
 // the local PID file. Returns true when:
+//   - shared-server mode is enabled (and not proxied) — a shared server's
+//     lifecycle is owned by something other than bd (a Homebrew service,
+//     systemd/launchd unit, or a sibling clone), so bd has no PID file for
+//     it even when the host is local and auto-start is enabled. Without this
+//     branch, status reports "not running" while bd CRUD commands, bd dolt
+//     test, and bd dolt show all connect to the server fine (GH#3218). This
+//     is checked BEFORE the server-mode guard because shared-server mode
+//     wins over a stale metadata.json that still pins dolt_mode="embedded"
+//     — mirroring the loadServerMode override in main.go (GH#2946). That
+//     stale-metadata case (dolt.shared-server: true in config.yaml, which
+//     IsDoltServerMode does not consult) is exactly where the residual
+//     GH#3218 bug lived.
 //   - dolt_mode=server with a non-local host (Hosted Dolt, remote shared
 //     sql-server) — the PID file is on a different machine.
 //   - dolt_mode=server with a local host but bd auto-start is disabled —
@@ -670,10 +682,23 @@ func renderLocalDoltStatus(state *doltserver.State, serverDir string) {
 // When false, the caller falls back to the PID-file path that reports
 // PID, port, log path, and data directory for bd-managed servers.
 //
-// autoStartDisabled is passed in (rather than read here) so the predicate
-// is pure and unit-testable without manipulating package-level config.
-func shouldUseExternalDoltStatus(cfg *configfile.Config, autoStartDisabled bool) bool {
-	if cfg == nil || !cfg.IsDoltServerMode() {
+// autoStartDisabled and sharedServerMode are passed in (rather than read
+// here) so the predicate is pure and unit-testable without manipulating
+// package-level config or process env.
+func shouldUseExternalDoltStatus(cfg *configfile.Config, autoStartDisabled, sharedServerMode bool) bool {
+	if cfg == nil {
+		return false
+	}
+	// Shared-server mode wins even over an explicit metadata.json
+	// dolt_mode="embedded" (loadServerMode override, main.go, GH#2946), so
+	// this must precede the IsDoltServerMode guard — otherwise a workspace
+	// with dolt.shared-server: true in config.yaml and stale embedded
+	// metadata still falls through to the PID-file "not running" path.
+	// Proxied-server mode is excluded, matching that override's !psm guard.
+	if sharedServerMode && !cfg.IsDoltProxiedServerMode() {
+		return true
+	}
+	if !cfg.IsDoltServerMode() {
 		return false
 	}
 	if !isLocalHost(cfg.GetDoltServerHost()) {
