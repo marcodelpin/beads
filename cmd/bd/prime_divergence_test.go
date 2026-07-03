@@ -10,7 +10,7 @@ import (
 
 const markerBlock = "<!-- BEGIN BEADS INTEGRATION v:1 profile:agents hash:abc -->\nbody\n<!-- END BEADS INTEGRATION -->\n"
 
-func writeFile(t *testing.T, path, content string) {
+func writePrimeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
@@ -19,8 +19,8 @@ func writeFile(t *testing.T, path, content string) {
 
 func TestPrimeDivergenceReminder_BothIndependentWithMarker(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "AGENTS.md"), "# Agents\n"+markerBlock)
-	writeFile(t, filepath.Join(dir, "CLAUDE.md"), "# Claude\n"+markerBlock)
+	writePrimeTestFile(t, filepath.Join(dir, "AGENTS.md"), "# Agents\n"+markerBlock)
+	writePrimeTestFile(t, filepath.Join(dir, "CLAUDE.md"), "# Claude\n"+markerBlock)
 
 	got := primeDivergenceReminder(dir)
 	if got == "" {
@@ -36,7 +36,7 @@ func TestPrimeDivergenceReminder_BothIndependentWithMarker(t *testing.T) {
 
 func TestPrimeDivergenceReminder_MissingOneFile(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "AGENTS.md"), "# Agents\n"+markerBlock)
+	writePrimeTestFile(t, filepath.Join(dir, "AGENTS.md"), "# Agents\n"+markerBlock)
 	// CLAUDE.md absent.
 	if got := primeDivergenceReminder(dir); got != "" {
 		t.Fatalf("expected empty when one file missing, got %q", got)
@@ -45,8 +45,8 @@ func TestPrimeDivergenceReminder_MissingOneFile(t *testing.T) {
 
 func TestPrimeDivergenceReminder_MarkerMissingInOne(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "AGENTS.md"), "# Agents\n"+markerBlock)
-	writeFile(t, filepath.Join(dir, "CLAUDE.md"), "# Claude without marker\n")
+	writePrimeTestFile(t, filepath.Join(dir, "AGENTS.md"), "# Agents\n"+markerBlock)
+	writePrimeTestFile(t, filepath.Join(dir, "CLAUDE.md"), "# Claude without marker\n")
 	if got := primeDivergenceReminder(dir); got != "" {
 		t.Fatalf("expected empty when one file lacks marker, got %q", got)
 	}
@@ -56,7 +56,7 @@ func TestPrimeDivergenceReminder_Symlink(t *testing.T) {
 	dir := t.TempDir()
 	agents := filepath.Join(dir, "AGENTS.md")
 	claude := filepath.Join(dir, "CLAUDE.md")
-	writeFile(t, agents, "# Agents\n"+markerBlock)
+	writePrimeTestFile(t, agents, "# Agents\n"+markerBlock)
 	if err := os.Symlink(agents, claude); err != nil {
 		if runtime.GOOS == "windows" {
 			t.Skipf("symlink unsupported: %v", err)
@@ -73,13 +73,13 @@ func TestPrimeDivergenceReminder_Hardlink(t *testing.T) {
 	dir := t.TempDir()
 	agents := filepath.Join(dir, "AGENTS.md")
 	claude := filepath.Join(dir, "CLAUDE.md")
-	writeFile(t, agents, "# Agents\n"+markerBlock)
+	writePrimeTestFile(t, agents, "# Agents\n"+markerBlock)
 	if err := os.Link(agents, claude); err != nil {
-		t.Skipf("hardlink unsupported: %v", err)
+		t.Skipf("shared-inode link unsupported: %v", err)
 	}
 	// Same inode: independent-files condition fails, so no reminder.
 	if got := primeDivergenceReminder(dir); got != "" {
-		t.Fatalf("expected empty when files are hardlinked, got %q", got)
+		t.Fatalf("expected empty when files share an inode, got %q", got)
 	}
 }
 

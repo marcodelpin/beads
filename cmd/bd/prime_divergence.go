@@ -12,7 +12,7 @@ const beadsIntegrationMarker = "BEGIN BEADS INTEGRATION"
 
 // primeDivergenceReminder returns a one-line reminder when both AGENTS.md and
 // CLAUDE.md in workspaceDir exist as independent regular files (not symlinks,
-// not hardlinked to each other) that each contain the bd integration marker.
+// not sharing an inode) that each contain the bd integration marker.
 //
 // In every other case it returns the empty string and performs no work beyond
 // a couple of cheap Lstat calls, so the common case (the condition does not
@@ -45,7 +45,7 @@ func primeDivergenceReminder(workspaceDir string) string {
 		return ""
 	}
 
-	// Independent files: not hardlinked to the same inode. Since neither is a
+	// Independent files: not sharing the same inode. Since neither is a
 	// symlink, the Lstat results are equivalent to Stat and carry the sys
 	// identity os.SameFile compares.
 	if os.SameFile(agentsInfo, claudeInfo) {
@@ -56,7 +56,7 @@ func primeDivergenceReminder(workspaceDir string) string {
 		return ""
 	}
 
-	return "\n> **Note**: AGENTS.md and CLAUDE.md are independent files (not symlinked or hardlinked). Mirror substantive edits across both, or symlink one to the other.\n"
+	return "\n> **Note**: AGENTS.md and CLAUDE.md are independent files (not symlinked and not sharing an inode). Mirror substantive edits across both, or symlink one to the other.\n"
 }
 
 // fileContainsMarker reports whether the file at path contains the bd
