@@ -208,6 +208,14 @@ type Config struct {
 	Database       string // Database name within Dolt (default: "beads")
 	ReadOnly       bool   // Open in read-only mode (skip schema init)
 
+	// LenientOpen opens the store leniently: embedded mode only. A migration
+	// gate refusal (#4259) or a dirty-working-set refusal (#4566) skips the
+	// migration instead of failing the open. Set for working-set-reconcile
+	// commands (bd dolt commit, bd vc commit; #4566), whose entire purpose is
+	// to clear the working set that the migration would otherwise refuse to
+	// touch. Ignored in server mode.
+	LenientOpen bool
+
 	// Server connection options
 	ServerSocket   string // Unix domain socket path (overrides Host/Port when set)
 	ServerHost     string // Server host (default: 127.0.0.1)
@@ -1181,12 +1189,17 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 		autoStartedServerDir: autoStartedDir,
 	}
 
-	if cfg.ReadOnly {
-		if err := schema.CheckForwardDrift(ctx, db); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-	} else {
+	// Forward-drift guard runs on read-only AND writable opens. A binary older
+	// than the database's schema cannot migrate it forward: MigrateUp no-ops
+	// when the DB is already past the binary's latest migration (atLatest uses
+	// >=), so without this guard a writable open would proceed and later queries
+	// would fail with cryptic unknown-column errors instead of a clear
+	// "upgrade bd" message (the stale-binary incident behind #4135/#4137).
+	if err := schema.CheckForwardDrift(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if !cfg.ReadOnly {
 		if err := store.initSchema(ctx); err != nil {
 			return nil, fmt.Errorf("failed to initialize schema: %w", err)
 		}

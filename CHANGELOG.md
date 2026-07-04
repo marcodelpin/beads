@@ -7,6 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-04
+
+First stable release of the 1.1.0 line. It consolidates everything from
+[1.1.0-rc.1] and [1.1.0-rc.2] (see those sections below for the full feature
+set) plus the post-rc.2 migration-recovery fixes listed here. The theme of
+1.1.0 is a safe schema-migration and upgrade path: it repairs the v52/v53
+drift classes that broke real-world rc.1/rc.2 upgrades, makes an interrupted
+migration recoverable in-tool instead of a dead end, and turns the
+remote-migrate gate from a blunt block into a state-aware one.
+
+### Upgrade Notes
+
+- **Back up before migrating** (`bd export --all -o backup.jsonl`) before
+  running `bd migrate` on an older, especially remote-backed, database. The
+  fixes below repair databases that reached a migration with drifted state;
+  an export is cheap insurance while such drift is being repaired.
+
+### Changed
+
+- **The state-aware remote-migrate gate is now on by default.** rc.2 shipped
+  the smart gate behind an opt-in env var, but nothing in the gate's block
+  message or docs surfaced that the var existed, so in practice everyone kept
+  hitting the blunt always-block behavior. The provably-safe first-mover case
+  (remote at the same schema version as this clone) now auto-migrates without
+  `BD_ALLOW_REMOTE_MIGRATE`; remote-ahead still stops with an adopt directive
+  and content skew still stops for a human. Set `BD_SMART_GATE=0` to opt out
+  and restore the unconditional block
+  ([#4516](https://github.com/gastownhall/beads/issues/4516)).
+
+### Fixed
+
+- **A failed v53 migration no longer traps the database, and the v53 repair
+  now covers `wisp_dependencies` split-column drift.** rc.2 repaired the
+  `issues` rig columns, but a database coming from schema v49 could still fail
+  v53 when its `wisp_dependencies` table was missing the split target columns
+  (`depends_on_issue_id`, `depends_on_wisp_id`, `depends_on_external`) — and a
+  half-applied v53 then bricked every subsequent command on open
+  ([#4555](https://github.com/gastownhall/beads/issues/4555)). The migration
+  runner now adds and backfills the missing split columns before v53, and a
+  narrow recovery gate lets an already-failed-v53 database self-heal on the
+  next open — including the `issue_snapshots` / `compaction_snapshots` tables
+  that migration 0051 leaves dirty during a single-pass v49→v53 upgrade
+  ([#4558](https://github.com/gastownhall/beads/pull/4558)).
+- **A dirty working set no longer deadlocks migration recovery in embedded
+  mode.** Every store open runs the migration, which correctly refuses to
+  alter tables that have uncommitted working-set changes — but the documented
+  recovery (commit the working set) is itself a command that opens the store
+  and hits the same refusal, a deadlock with no in-tool escape
+  ([#4566](https://github.com/gastownhall/beads/issues/4566)). `bd dolt commit`
+  and `bd vc commit` now open past that guard, commit at the current schema,
+  after which a normal `bd migrate` applies cleanly; the refusal message now
+  names the recovery path
+  ([#4567](https://github.com/gastownhall/beads/pull/4567)).
+
+## [1.1.0-rc.2] - 2026-07-02
+
+Second release candidate for 1.1.0. Fixes the two upgrade-breaking migration
+regressions reported against rc.1 (#4502, #4534), hardens the remote-migrate
+gate that rc.1 introduced, and ships the validated upgrade documentation.
+
+### Upgrade Notes
+
+- **Back up before migrating.** The upgrade guide's remote-backed recipes now
+  start with a JSONL export (`bd export --all -o ...`) before
+  `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate`. The two fixes below repair real
+  databases that reached a migration with drifted state; an export is the
+  cheap insurance while such drift is being repaired.
+
+### Fixed
+
+- **v53 migration no longer fails on pre-rig `issues` tables.** The rig/agent
+  columns (`hook_bead`, `role_bead`, `agent_state`, `last_activity`,
+  `role_type`, `rig`) were only ever added to the squashed bootstrap
+  `0001_create_issues`, so a database bootstrapped before they existed sits at
+  schema v52 without them — and migration 0053, which copies those columns
+  from `wisps`, failed with `Unknown column 'agent_state' in 'issues'` even
+  with zero rig wisps to repair
+  ([#4502](https://github.com/gastownhall/beads/issues/4502)). The migration
+  runner now repairs the drift in code immediately before applying v53,
+  adding whichever of the six columns are missing (databases in the wild may
+  have some but not all). Shipped migration files stay frozen — the repair
+  lives in the runner because a failing migration can never be fixed forward
+  by a later migration file.
+- **One orphaned `child_counters` row no longer bricks every `bd create`.**
+  Migration 0039 dropped `fk_counter_parent` and clone-local migration 0002
+  re-added it under `FOREIGN_KEY_CHECKS = 0`, so a counter row orphaned during
+  the FK-less window (an interrupted create, a parent deleted without cascade)
+  survived the constraint's return — and Dolt then failed constraint
+  validation on every subsequent insert, including brand-new top-level issues,
+  on an otherwise healthy database
+  ([#4534](https://github.com/gastownhall/beads/issues/4534)). A new
+  clone-local migration moves any live-wisp counters to `wisp_child_counters`
+  and deletes rows dangling from `issues` — the same rows the FK's
+  `ON DELETE CASCADE` would have removed had it been in force. Runs
+  automatically on the next command with the new binary; already-bitten
+  databases are healed in place.
+- **Old binaries fail fast on writable opens of a schema-newer database**
+  instead of proceeding against a schema they do not understand
+  ([#4531](https://github.com/gastownhall/beads/pull/4531)) — the guard rail
+  for the mixed-version window during multi-clone upgrades.
+- **Prerelease GitHub releases now ship prerelease-correct install
+  instructions.** The release notes header previously showed the stable
+  install methods (brew, install scripts), three of which do not deliver a
+  prerelease ([#4530](https://github.com/gastownhall/beads/pull/4530)).
+- **`bd remember` no longer clobbers a memory whose content is its own key**,
+  and a bare `bd remember <existing-key>` now recalls instead of overwriting.
+
+### Added
+
+- **Smarter remote-migrate gate.** The gate introduced in rc.1 is now
+  state-aware and agent-safe: cases that are provably safe to migrate
+  auto-resolve instead of stopping every agent at the wall, while genuinely
+  risky states still require the designated migrator
+  ([#4515](https://github.com/gastownhall/beads/pull/4515),
+  [#4516](https://github.com/gastownhall/beads/pull/4516)).
+- **Backend-agnostic storage conformance test suite**
+  ([#4414](https://github.com/gastownhall/beads/pull/4414)).
+
+### Documentation
+
+- **Validated upgrade recipe for remote-backed / multi-clone databases** in
+  the upgrade guide, exercised end-to-end on a live database
+  ([#4514](https://github.com/gastownhall/beads/pull/4514)), plus a
+  consolidated Homebrew tap-migration snippet across install docs, a README
+  pointer to the upgrade guide, and a pre-migrate backup step in the
+  recipes (this release).
+
 ## [1.1.0-rc.1] - 2026-06-23
 
 ### Upgrade Notes

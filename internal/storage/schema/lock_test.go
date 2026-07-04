@@ -162,6 +162,19 @@ func expectOnePendingMigration(t *testing.T, mock sqlmock.Sqlmock) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	expectContentHashColumnExists(mock)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", latest-1)
+	if latest == 53 {
+		// The v53 pre-repair probes the six rig/agent columns on issues and
+		// then the local wisp_dependencies table; this mocked world has all
+		// issue columns and no local wisp_dependencies table, so no ALTERs follow.
+		for _, col := range []string{"hook_bead", "role_bead", "agent_state", "last_activity", "role_type", "rig"} {
+			mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS`).
+				WithArgs("issues", col).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+		}
+		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES`).
+			WithArgs("wisp_dependencies").
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	}
 	mock.ExpectExec("(?s).*").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT IGNORE INTO schema_migrations (version, content_hash) VALUES (?, ?)")).
