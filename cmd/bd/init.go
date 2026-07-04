@@ -2315,10 +2315,6 @@ func shouldConfigureInitDoltRemote(syncURL string, syncFromRemote, syncURLFromCo
 	return !localOnly && shouldWireInitRemote(syncURL, syncFromRemote, syncURLFromConfig, syncURLFromGitOrigin)
 }
 
-func isDoltLocalOnly() bool {
-	return config.GetBool("dolt.local-only")
-}
-
 // handleRemoteSafetyDecision applies a CheckRemoteSafety decision at an init
 // remote-divergence checkpoint. It returns (bootstrap, err): bootstrap is true
 // when the caller should clone/bootstrap from the remote, and err is a non-nil

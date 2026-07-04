@@ -183,6 +183,12 @@ Add a Dolt remote
 bd dolt remote add <name> <url> [flags]
 ```
 
+**Flags:**
+
+```
+      --allow-git-origin   Allow adding a Dolt remote whose URL matches the git origin (proceed with a warning instead of aborting)
+```
+
 #### bd dolt remote list
 
 List configured Dolt remotes
