@@ -208,12 +208,14 @@ type Config struct {
 	Database       string // Database name within Dolt (default: "beads")
 	ReadOnly       bool   // Open in read-only mode (skip schema init)
 
-	// LenientOpen opens the store leniently: embedded mode only. A migration
-	// gate refusal (#4259) or a dirty-working-set refusal (#4566) skips the
-	// migration instead of failing the open. Set for working-set-reconcile
-	// commands (bd dolt commit, bd vc commit; #4566), whose entire purpose is
-	// to clear the working set that the migration would otherwise refuse to
-	// touch. Ignored in server mode.
+	// LenientOpen opens the store leniently (embedded AND server mode). A
+	// migration gate refusal (#4259) or a dirty-working-set refusal (#4566)
+	// skips the migration instead of failing the open. Set for
+	// working-set-reconcile commands (bd dolt commit, bd vc commit; #4566),
+	// whose entire purpose is to clear the working set that the migration would
+	// otherwise refuse to touch. In server mode dolt.New attempts initSchema and
+	// warns-and-continues on the #4259/#4566 refusal; the embedded path uses
+	// embeddeddolt.OpenForWorkingSetReconcile.
 	LenientOpen bool
 
 	// Server connection options
@@ -1201,7 +1203,28 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	}
 	if !cfg.ReadOnly {
 		if err := store.initSchema(ctx); err != nil {
-			return nil, fmt.Errorf("failed to initialize schema: %w", err)
+			// #4567 (server-mode extension): working-set-reconcile commands
+			// (bd dolt commit / bd vc commit) must not be bricked by a
+			// dirty-table (#4566) or remote-migrate-gate (#4259) refusal — their
+			// whole purpose is to clear the working set the migration refuses to
+			// touch, and the documented recovery for the dirty-table refusal IS
+			// that very commit, so failing the open here deadlocks against the
+			// only command that can satisfy it (#4566). Mirror the embedded
+			// embeddeddolt.openWorkingSetReconcile: attempt the migration, but on
+			// those two specific refusals warn and open anyway on the current
+			// schema (the store stays writable, readOnly unchanged). Any other
+			// error still fails the open. A later strict open runs the migration
+			// once the working set is clean.
+			var dirtyErr *schema.DirtyTablesError
+			if cfg.LenientOpen && (errors.As(err, &dirtyErr) || schema.IsRemoteMigrateGateError(err)) {
+				fmt.Fprintf(os.Stderr,
+					"Warning: %v\n"+
+						"  Committing the working set at the current schema; when it completes,\n"+
+						"  re-run 'bd migrate'.\n",
+					err)
+			} else {
+				return nil, fmt.Errorf("failed to initialize schema: %w", err)
+			}
 		}
 	}
 
