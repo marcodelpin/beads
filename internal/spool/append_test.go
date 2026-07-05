@@ -90,7 +90,8 @@ func TestIsTransientErr(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
-		{"context.Canceled", context.Canceled, true},
+		// Canceled = operator stopped the process: surface, never spool (D4).
+		{"context.Canceled", context.Canceled, false},
 		{"HTTPStatusErr 500", &HTTPStatusErr{Status: 500, Body: "bad gateway"}, true},
 		{"HTTPStatusErr 503", &HTTPStatusErr{Status: 503, Body: "unavailable"}, true},
 		{"HTTPStatusErr 400", &HTTPStatusErr{Status: 400, Body: "bad request"}, false},
@@ -101,6 +102,12 @@ func TestIsTransientErr(t *testing.T) {
 		{"duplicate entry", fmt.Errorf("Error 1062: Duplicate entry 'x' for key 'PRIMARY'"), false},
 		{"foreign key", fmt.Errorf("cannot add or update a child row: a foreign key constraint fails"), false},
 		{"UNIQUE constraint", fmt.Errorf("UNIQUE constraint failed: issues.id"), false},
+		{"store shutting down sentinel", ErrStoreShuttingDown, true},
+		// Permanent signatures win over transient substrings: a duplicate-key
+		// VALUE embedding "eof" must dead-letter, not respool forever.
+		{"eof inside duplicate-entry value", fmt.Errorf("Error 1062: Duplicate entry 'xeofy' for key 'PRIMARY'"), false},
+		// "eof" matches as a word, not as a substring inside another token.
+		{"eof embedded in a word", fmt.Errorf("reofactor failed"), false},
 		{"unknown error", fmt.Errorf("something weird happened"), false}, // unclassified defaults to PERMANENT (62e4af8df)
 	}
 

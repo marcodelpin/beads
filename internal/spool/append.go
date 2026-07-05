@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -85,9 +86,12 @@ var ErrStoreShuttingDown = fmt.Errorf("spool: store shutting down, entry stays q
 // the producer should fall back to spool. False means surface the error
 // directly (permanent failure -- spooling would just dead-letter).
 //
-// Transient: context deadline/canceled, net timeouts, Dolt i/o timeout,
-// connection refused, EOF, 5xx HTTP.
-// Permanent: SQL constraint violations, schema errors, 4xx HTTP.
+// Transient: context deadline (internal retry budget), net timeouts, Dolt
+// i/o timeout, connection refused, EOF, 5xx HTTP.
+// Permanent: context CANCELED (a Ctrl-C'd foreground write must surface,
+// not queue and silently execute later -- GH#4378-review D4; the drain-side
+// teardown cancel is handled by replayEntries' own ctx check), SQL
+// constraint violations, schema errors, 4xx HTTP.
 func IsTransientErr(err error) bool {
 	if err == nil {
 		return false
@@ -98,8 +102,14 @@ func IsTransientErr(err error) bool {
 	if errors.Is(err, ErrStoreShuttingDown) {
 		return true
 	}
-	// Context errors are transient (drainer retries under its own budget).
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	// Deadline expiry is a timeout (retry-worthy). Cancellation is NOT: on
+	// this codebase's ctx plumbing (rootCtx threaded into every write op)
+	// context.Canceled means the operator stopped the process (SIGINT/
+	// SIGTERM), never an internal retry budget -- surface it.
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	// HTTPStatusErr: 5xx transient, 4xx permanent.
@@ -116,26 +126,15 @@ func IsTransientErr(err error) bool {
 	if t, ok := err.(tempI); ok && t.Temporary() {
 		return true
 	}
-	// Dolt-specific transient strings (i/o timeout, connection refused, EOF).
-	// "store shutting down" is bd's own guard in spoolDispatch: the process is
-	// tearing down mid-drain, the entry must stay queued for the next command.
+	// PERMANENT signatures are checked BEFORE the transient substrings: a
+	// permanent SQL error whose message happens to embed a transient-looking
+	// token (e.g. a duplicate-key VALUE containing "eof") must dead-letter,
+	// not respool forever. Misclassifying to permanent is recoverable
+	// (dead-letter is inspectable); misclassifying to transient stalls the
+	// whole queue behind an entry that can never succeed.
+	// Case-insensitive: MySQL/Dolt capitalize "Duplicate entry", SQLite
+	// uses "UNIQUE constraint".
 	msg := err.Error()
-	for _, pat := range []string{
-		"i/o timeout",
-		"connection refused",
-		"connection reset",
-		"eof",
-		"broken pipe",
-		"driver: bad connection",
-		"store shutting down",
-	} {
-		if strings.Contains(strings.ToLower(msg), pat) {
-			return true
-		}
-	}
-	// SQL constraint violations are permanent (dead-letter).
-	// Case-insensitive match: MySQL/Dolt errors capitalize "Duplicate entry"
-	// while SQLite uses "UNIQUE constraint" -- normalize to compare reliably.
 	msgLower := strings.ToLower(msg)
 	for _, pat := range []string{
 		"duplicate entry",
@@ -147,6 +146,26 @@ func IsTransientErr(err error) bool {
 			return false
 		}
 	}
+	// Dolt-specific transient strings (i/o timeout, connection refused, EOF).
+	// "store shutting down" is bd's own guard in spoolDispatch: the process is
+	// tearing down mid-drain, the entry must stay queued for the next command.
+	// "eof" matches as a WORD (io.EOF, "unexpected EOF"), not as a substring
+	// -- a value like "xeofy" inside an error message must not classify.
+	for _, pat := range []string{
+		"i/o timeout",
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+		"driver: bad connection",
+		"store shutting down",
+	} {
+		if strings.Contains(msgLower, pat) {
+			return true
+		}
+	}
+	if eofWordRE.MatchString(msgLower) {
+		return true
+	}
 	// Default: an unclassified error is PERMANENT -- surface it, do not spool.
 	// Only the KNOWN-transient signatures above are queued for replay. Spooling an
 	// unclassified error (e.g. a validation/logic failure like an invalid --type)
@@ -154,6 +173,11 @@ func IsTransientErr(err error) bool {
 	// signature must be ADDED to the lists above, not caught by a blanket default.
 	return false
 }
+
+// eofWordRE matches "eof" as a standalone word (start/end or non-letter
+// neighbors), so io.EOF and "unexpected EOF" classify transient while an
+// arbitrary value embedding the letters (e.g. "xeofy") does not.
+var eofWordRE = regexp.MustCompile(`(^|[^a-z])eof($|[^a-z])`)
 
 // HTTPStatusErr wraps a non-2xx HTTP response so callers can fold status
 // code into IsTransientErr classification.

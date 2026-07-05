@@ -601,3 +601,73 @@ func TestReplayEntriesJournalsSeenPerDispatch(t *testing.T) {
 		t.Fatal("successful dispatch not durably journaled per-dispatch")
 	}
 }
+
+// TestDrainStopsOnZeroProgress is the regression guard for the D2 infinite
+// loop: with a FULL batch (>= batchSize entries) and a server that stays
+// down (transient dispatch failure, nil error from replayEntries), the old
+// Phase-2 loop re-pulled the same batch forever. The zero-forward-progress
+// guard must end the cycle after ONE dispatch attempt.
+func TestDrainStopsOnZeroProgress(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSpool(dir)
+	if err := s.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	// More entries than one batch (batchSize=10).
+	for i := 0; i < 12; i++ {
+		if _, err := s.Append(context.Background(), "note", []byte(fmt.Sprintf(`{"id":"x-%d"}`, i)), false, "test"); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	calls := 0
+	res, err := Drain(context.Background(), s, func(Entry) error {
+		calls++
+		return fmt.Errorf("dial tcp 127.0.0.1:1: connect: connection refused")
+	})
+	if err != nil {
+		t.Fatalf("Drain: %v (transient path must return nil)", err)
+	}
+	if res.Drained != 0 || res.Dead != 0 {
+		t.Fatalf("progress = %+v, want none", res)
+	}
+	if calls != 1 {
+		t.Fatalf("dispatch calls = %d, want 1 (fail fast, batch preserved for next drain)", calls)
+	}
+	// The batch must be preserved in inflight for the next cycle.
+	inflight, err := s.LoadInflight()
+	if err != nil {
+		t.Fatalf("LoadInflight: %v", err)
+	}
+	if len(inflight) == 0 {
+		t.Fatal("inflight empty -- failed batch lost instead of preserved")
+	}
+}
+
+// TestReplayCanceledDrainKeepsEntryQueued: a dispatch aborted by the drain
+// context being canceled (process teardown via joinSpoolDrain) must take the
+// TRANSIENT path (entry stays queued) even though context.Canceled itself
+// now classifies PERMANENT for foreground writes (D4).
+func TestReplayCanceledDrainKeepsEntryQueued(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSpool(dir)
+	if err := s.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	seen := loadSeenSet(filepath.Join(dir, "seen.set"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	e := Entry{OpID: "22bb", Op: "note", Payload: []byte(`{}`)}
+	remaining, dr, dead, err := replayEntries(ctx, []Entry{e}, func(Entry) error {
+		cancel() // teardown fires mid-dispatch
+		return fmt.Errorf("query aborted: %w", context.Canceled)
+	}, seen, s)
+	if err != nil {
+		t.Fatalf("replayEntries: %v", err)
+	}
+	if dead != 0 {
+		t.Fatalf("dead = %d -- canceled-drain dispatch must NOT dead-letter", dead)
+	}
+	if dr != 0 || len(remaining) != 1 {
+		t.Fatalf("dr=%d remaining=%d, want entry kept queued", dr, len(remaining))
+	}
+}

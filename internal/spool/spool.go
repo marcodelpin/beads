@@ -91,8 +91,25 @@ func (s *Spool) SaveCursor(c *Cursor) error {
 		return fmt.Errorf("marshal cursor: %w", err)
 	}
 	tmp := s.cursorFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 - internal spool path
+	if err != nil {
+		return fmt.Errorf("create cursor tmp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write cursor tmp: %w", err)
+	}
+	// fsync BEFORE the rename (see WriteInflight): a torn cursor after a
+	// hard crash would silently reset or corrupt the drain position.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync cursor tmp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close cursor tmp: %w", err)
 	}
 	if err := os.Rename(tmp, s.cursorFile); err != nil {
 		return fmt.Errorf("rename cursor: %w", err)
@@ -171,6 +188,14 @@ func (s *Spool) WriteInflight(entries []Entry) error {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("flush inflight: %w", err)
+	}
+	// fsync BEFORE the rename: Flush only reaches the page cache; on a
+	// hard crash the rename can become durable with empty/partial DATA
+	// (journaling fs) -- exactly the crash class the spool must survive.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync inflight: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
@@ -358,6 +383,13 @@ func (s *Spool) WriteDeadLetter(entries []Entry) error {
 		_ = w.WriteByte('\n')
 	}
 	if err := w.Flush(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	// fsync BEFORE the rename (see WriteInflight): dead-letter is the
+	// forensic record of failed writes -- it must survive a hard crash.
+	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err

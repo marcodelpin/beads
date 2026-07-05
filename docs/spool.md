@@ -24,12 +24,14 @@ The spool activates automatically when a write op returns a *transient* error.
 Transient errors include:
 
 - Network timeouts and connection-refused (Dolt remote temporarily down)
-- `context.DeadlineExceeded` / `context.Canceled`
+- `context.DeadlineExceeded` (internal retry budget expiring)
 - `io timeout`, `connection reset`, `EOF`, `broken pipe`
 - HTTP 5xx responses from a remote Dolt endpoint
 - `driver: bad connection` from the Go SQL driver
 
-Permanent errors — SQL constraint violations (`UNIQUE`, `FOREIGN KEY`), 4xx HTTP,
+Permanent errors — `context.Canceled` (a Ctrl-C'd write surfaces instead of
+queuing and silently executing later), SQL constraint violations (`UNIQUE`,
+`FOREIGN KEY`), 4xx HTTP,
 schema errors — are **not** spooled. They surface immediately because replaying
 them would just land in the dead-letter queue anyway.
 

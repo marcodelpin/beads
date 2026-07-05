@@ -181,6 +181,16 @@ func drainInternal(ctx context.Context, s *Spool, dispatch DispatchFunc, tryLock
 			return result, fmt.Errorf("save cursor: %w", err)
 		}
 
+		// Zero forward progress: a transient dispatch failure keeps the
+		// whole batch in remaining (replayEntries returns nil err for it),
+		// so with a full batch the loop would re-pull the same entries
+		// forever while the server stays down (GH#4378-review D2). Stop
+		// this cycle -- inflight already holds the batch, the next drain
+		// retries it.
+		if dr == 0 && dead == 0 && len(remaining) == len(entries) {
+			break
+		}
+
 		if len(entries) < batchSize {
 			break // last batch
 		}
@@ -240,8 +250,13 @@ func replayEntries(ctx context.Context, entries []Entry, dispatch DispatchFunc, 
 			continue
 		}
 
-		// Classify error.
-		if IsTransientErr(err) {
+		// Classify error. A canceled drain context (process teardown via
+		// joinSpoolDrain, or Ctrl-C during a drain) is ALWAYS the transient
+		// path regardless of how the wrapped SQL error classifies:
+		// context.Canceled is no longer in IsTransientErr's transient set
+		// (a canceled FOREGROUND write must not be spooled), but a dispatch
+		// aborted by drain-cancel must stay queued, never dead-letter.
+		if IsTransientErr(err) || ctx.Err() != nil {
 			// Transient: keep this + all subsequent in remaining.
 			e.Attempts++
 			e.LastError = err.Error()
@@ -408,6 +423,14 @@ func (ss *SeenSet) Save() error {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("flush seen: %w", err)
+	}
+	// fsync BEFORE the rename (see WriteInflight): losing seen.set to a
+	// torn write would re-open the duplicate-replay window the durable
+	// journal exists to close.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync seen: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
