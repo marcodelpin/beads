@@ -49,9 +49,9 @@ func TestBuildCreateDepsEmptySideConvention(t *testing.T) {
 // structs are not mutated (copies are returned).
 func TestResolveSpooledDepsSubstitutesNewID(t *testing.T) {
 	in := []*types.Dependency{
-		{DependsOnID: "epic-1", Type: types.DepParentChild},              // new -> epic-1
-		{IssueID: "dep-3", Type: types.DepBlocks},                       // dep-3 -> new
-		nil,                                                             // tolerated
+		{DependsOnID: "epic-1", Type: types.DepParentChild}, // new -> epic-1
+		{IssueID: "dep-3", Type: types.DepBlocks},           // dep-3 -> new
+		nil, // tolerated
 	}
 	out := resolveSpooledDeps(in, "new-9")
 	if len(out) != 2 {

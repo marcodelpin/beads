@@ -101,7 +101,7 @@ func TestIsTransientErr(t *testing.T) {
 		{"duplicate entry", fmt.Errorf("Error 1062: Duplicate entry 'x' for key 'PRIMARY'"), false},
 		{"foreign key", fmt.Errorf("cannot add or update a child row: a foreign key constraint fails"), false},
 		{"UNIQUE constraint", fmt.Errorf("UNIQUE constraint failed: issues.id"), false},
-		{"unknown error", fmt.Errorf("something weird happened"), true}, // conservative default
+		{"unknown error", fmt.Errorf("something weird happened"), false}, // unclassified defaults to PERMANENT (62e4af8df)
 	}
 
 	for _, tt := range tests {
