@@ -204,20 +204,32 @@ var doltIgnorePatterns = []string{
 }
 
 // seedDoltIgnorePatterns idempotently asserts the canonical dolt_ignore
-// patterns. INSERT IGNORE leaves existing rows untouched, so a healthy
-// database sees no working-set change and an explicit operator override
-// (pattern present with ignored=false) is respected. On an under-seeded
-// database the new rows land in the working set, take effect immediately, and
-// are committed by the next migration pass: MigrateUp exempts dolt_ignore from
+// patterns and reports whether it actually changed anything. INSERT IGNORE
+// leaves existing rows untouched, so a healthy database sees no working-set
+// change and an explicit operator override (pattern present with
+// ignored=false) is respected. On an under-seeded database the new rows land
+// in the working set and take effect immediately; who commits them depends on
+// the pass: when migration work is needed, MigrateUp exempts dolt_ignore from
 // the pre-existing-dirty guards as pass-owned state (same treatment as the
-// aux-rekey tables), so stageSchemaTables picks it up.
-func seedDoltIgnorePatterns(ctx context.Context, db DBConn) error {
+// aux-rekey tables) and stageSchemaTables commits it with the pass; on the
+// no-work short-circuit, MigrateUp commits the seed itself in a scoped,
+// labeled commit (keyed off the changed return value) so the heal converges
+// in one pass instead of riding along inside an unrelated later commit.
+func seedDoltIgnorePatterns(ctx context.Context, db DBConn) (bool, error) {
+	changed := false
 	for _, pattern := range doltIgnorePatterns {
-		if _, err := db.ExecContext(ctx, "INSERT IGNORE INTO dolt_ignore VALUES (?, true)", pattern); err != nil {
-			return fmt.Errorf("seeding dolt_ignore pattern %q: %w", pattern, err)
+		res, err := db.ExecContext(ctx, "INSERT IGNORE INTO dolt_ignore VALUES (?, true)", pattern)
+		if err != nil {
+			return changed, fmt.Errorf("seeding dolt_ignore pattern %q: %w", pattern, err)
+		}
+		// A RowsAffected error degrades to changed=false for that row: the
+		// seed then stays an uncommitted working-set diff swept up by the
+		// next commit, exactly the pre-scoped-commit behavior.
+		if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
+			changed = true
 		}
 	}
-	return nil
+	return changed, nil
 }
 
 func LatestVersion() int {
@@ -293,7 +305,8 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	// whose migration cursors arrived at-latest without executing the seeding
 	// migrations (out-of-band table copy) reports no work needed and
 	// would otherwise never be healed.
-	if err := seedDoltIgnorePatterns(ctx, db); err != nil {
+	seedChanged, err := seedDoltIgnorePatterns(ctx, db)
+	if err != nil {
 		return 0, err
 	}
 
@@ -302,6 +315,19 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 		return 0, fmt.Errorf("checking schema migration work: %w", err)
 	}
 	if !needed {
+		// No migration pass will run, so nothing downstream commits the seed:
+		// it would sit as an uncommitted working-set diff until an unrelated
+		// write/pull sweeps it into its commit (and a read-only repo carries
+		// it indefinitely). Commit it here, scoped and labeled, so the
+		// out-of-band-copy heal converges in one pass.
+		if seedChanged {
+			if _, err := db.ExecContext(ctx, "CALL DOLT_ADD('dolt_ignore')"); err != nil {
+				return 0, fmt.Errorf("staging seeded dolt_ignore patterns: %w", err)
+			}
+			if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'schema: seed dolt_ignore patterns')"); err != nil {
+				return 0, fmt.Errorf("committing seeded dolt_ignore patterns: %w", err)
+			}
+		}
 		return 0, nil
 	}
 
