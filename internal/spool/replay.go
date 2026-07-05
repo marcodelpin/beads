@@ -231,6 +231,11 @@ func replayEntries(ctx context.Context, entries []Entry, dispatch DispatchFunc, 
 				return nil, drained, dead, fmt.Errorf("ack entry %s: %w", e.OpID, ackErr)
 			}
 			seen.Add(e.OpID)
+			// Make the dedup durable per-dispatch, not only at end-of-drain:
+			// a drain cut between this dispatch and the final seen.Save must
+			// not replay the entry. Best-effort -- on failure we degrade to
+			// the pre-journal behavior (end-of-drain Save only).
+			_ = seen.AppendDurable(e.OpID)
 			drained++
 			continue
 		}
@@ -302,23 +307,28 @@ type SeenSet struct {
 	path string
 }
 
-// loadSeenSet reads the seen-set file into memory. Missing file -> empty set.
+// loadSeenSet reads the seen-set file into memory, then unions the durable
+// per-dispatch journal (seen.set.log) written by AppendDurable: after a crash
+// or an unwaited early exit the journal carries op_ids acked after the last
+// full Save, so replay never re-applies them. Missing files -> empty set.
 func loadSeenSet(path string) *SeenSet {
 	ss := &SeenSet{
 		ids:  make(map[string]bool),
 		path: path,
 	}
-	f, err := os.Open(path) // #nosec G304 - internal spool path
-	if err != nil {
-		return ss
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		id := strings.TrimSpace(sc.Text())
-		if id != "" {
-			ss.ids[id] = true
+	for _, p := range []string{path, path + ".log"} {
+		f, err := os.Open(p) // #nosec G304 - internal spool path
+		if err != nil {
+			continue
 		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			id := strings.TrimSpace(sc.Text())
+			if id != "" {
+				ss.ids[id] = true
+			}
+		}
+		_ = f.Close()
 	}
 	return ss
 }
@@ -337,7 +347,34 @@ func (ss *SeenSet) Add(opID string) {
 	ss.ids[opID] = true
 }
 
-// Save persists the set to disk atomically (write-temp + rename).
+// AppendDurable records op_id in the fsync'd journal (seen.set.log) so the
+// dedup survives a process exit BEFORE the end-of-drain Save. Without this,
+// a drain cut mid-cycle (crash, or a fast command exiting under the old
+// un-awaited goroutine) would replay already-dispatched entries on the next
+// run. The journal is folded back into seen.set (and removed) by Save.
+func (ss *SeenSet) AppendDurable(opID string) error {
+	if ss.path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(ss.path+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) // #nosec G304 - internal spool path
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(f, opID); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// Save persists the set to disk atomically (write-temp + rename), then
+// removes the AppendDurable journal: its op_ids are in memory (Add precedes
+// AppendDurable) and therefore in the freshly-written set. A crash between
+// rename and remove is harmless -- loadSeenSet unions both files.
 func (ss *SeenSet) Save() error {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
@@ -376,7 +413,11 @@ func (ss *SeenSet) Save() error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, ss.path)
+	if err := os.Rename(tmp, ss.path); err != nil {
+		return err
+	}
+	_ = os.Remove(ss.path + ".log")
+	return nil
 }
 
 // Size returns the number of entries in the set.

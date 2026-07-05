@@ -100,7 +100,7 @@ Examples:
 		updates := map[string]interface{}{
 			"notes": combined,
 		}
-		if err := writeWithSpool(ctx, "note",
+		if _, err := writeWithSpool(ctx, "note",
 			spoolPayload(map[string]interface{}{
 				"id":      result.ResolvedID,
 				"updates": updates,

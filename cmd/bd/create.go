@@ -545,16 +545,49 @@ var createCmd = &cobra.Command{
 			// If error getting parent or parent has no source_repo, continue with default
 		}
 
-		if err := writeWithSpool(ctx, "create",
+		// Build ALL dependency edges up front (validation errors surface
+		// BEFORE the write) so a spooled create carries them in its payload
+		// and replay can apply them once the store-generated ID exists. An
+		// EMPTY IssueID/DependsOnID side means "the new issue" (ID unknown
+		// until the write lands) -- see resolveSpooledDeps.
+		pendingDeps, depErr := buildCreateDeps(parentID, deps, waitsFor, waitsForGate)
+		if depErr != nil {
+			return depErr
+		}
+
+		res, err := writeWithSpool(ctx, "create",
 			spoolPayload(map[string]interface{}{
-				"issue": issue,
-				"actor": actor,
+				"issue":        issue,
+				"actor":        actor,
+				"dependencies": pendingDeps,
 			}),
 			func() error {
 				return store.CreateIssue(ctx, issue, actor)
 			},
-		); err != nil {
+		)
+		if err != nil {
 			return HandleError("%v", err)
+		}
+
+		if res.Spooled {
+			// The create is QUEUED, not applied: no issue ID exists yet (it
+			// is generated server-side at replay) and the dependency edges
+			// ride in the spool payload. Report an honest queued outcome
+			// instead of a fake success with an empty ID (GH#4378-review D1).
+			if jsonOutput {
+				return outputJSON(map[string]interface{}{
+					"spooled": true,
+					"op_id":   res.OpID,
+					"title":   issue.Title,
+				})
+			}
+			if silent {
+				fmt.Printf("QUEUED %s\n", res.OpID)
+				return nil
+			}
+			fmt.Printf("%s Queued for replay (server unreachable): %s\n", ui.RenderWarn("!"), issue.Title)
+			fmt.Printf("  No issue ID yet -- it is assigned when the write replays (op_id: %s)\n", res.OpID)
+			return nil
 		}
 
 		// Track whether any post-create writes occurred. CreateIssue commits
@@ -563,104 +596,11 @@ var createCmd = &cobra.Command{
 		// commit is needed to persist them (GH#2009).
 		postCreateWrites := false
 
-		// If parent was specified, add parent-child dependency
-		if parentID != "" {
-			dep := &types.Dependency{
-				IssueID:     issue.ID,
-				DependsOnID: parentID,
-				Type:        types.DepParentChild,
-			}
+		// Apply the dependency edges now that the ID exists (empty side =
+		// the new issue). Failures stay warn-only, as before.
+		for _, dep := range resolveSpooledDeps(pendingDeps, issue.ID) {
 			if err := store.AddDependency(ctx, dep, actor); err != nil {
-				WarnError("failed to add parent-child dependency %s -> %s: %v", issue.ID, parentID, err)
-			} else {
-				postCreateWrites = true
-			}
-		}
-
-		// Add dependencies if specified (format: type:id or just id for default "blocks" type)
-		for _, depSpec := range deps {
-			depSpec = strings.TrimSpace(depSpec)
-			if depSpec == "" {
-				continue
-			}
-
-			var depType types.DependencyType
-			var dependsOnID string
-			swapDirection := false
-
-			if strings.Contains(depSpec, ":") {
-				parts := strings.SplitN(depSpec, ":", 2)
-				if len(parts) != 2 {
-					WarnError("invalid dependency format '%s', expected 'type:id' or 'id'", depSpec)
-					continue
-				}
-				rawType := types.DependencyType(strings.TrimSpace(parts[0]))
-				dependsOnID = strings.TrimSpace(parts[1])
-
-				switch rawType {
-				case "depends-on", "blocked-by":
-					// Alias: the new issue depends on the target. Store as a blocks edge.
-					depType = types.DepBlocks
-				case types.DepBlocks:
-					// Explicit "blocks:X" means the new issue blocks X, so store X -> new issue.
-					depType = types.DepBlocks
-					swapDirection = true
-				default:
-					depType = rawType
-				}
-			} else {
-				depType = types.DepBlocks
-				dependsOnID = depSpec
-			}
-
-			if !depType.IsValid() {
-				return HandleErrorRespectJSON("invalid dependency type %q (must be non-empty, max 50 chars); valid types: %s", depType, createDepsAcceptedTypeList())
-			}
-			if !depType.IsWellKnown() {
-				return HandleErrorRespectJSON("unknown dependency type %q; valid types: %s", depType, createDepsAcceptedTypeList())
-			}
-
-			dep := &types.Dependency{
-				IssueID:     issue.ID,
-				DependsOnID: dependsOnID,
-				Type:        depType,
-			}
-			if swapDirection {
-				dep.IssueID = dependsOnID
-				dep.DependsOnID = issue.ID
-			}
-			if err := store.AddDependency(ctx, dep, actor); err != nil {
-				WarnError("failed to add dependency %s -> %s: %v", issue.ID, dependsOnID, err)
-			} else {
-				postCreateWrites = true
-			}
-		}
-
-		if waitsFor != "" {
-			gate := waitsForGate
-			if gate == "" {
-				gate = types.WaitsForAllChildren
-			}
-			if gate != types.WaitsForAllChildren && gate != types.WaitsForAnyChildren {
-				return HandleError("invalid --waits-for-gate value '%s' (valid: all-children, any-children)", gate)
-			}
-
-			meta := types.WaitsForMeta{
-				Gate: gate,
-			}
-			metaJSON, err := json.Marshal(meta)
-			if err != nil {
-				return HandleError("failed to serialize waits-for metadata: %v", err)
-			}
-
-			dep := &types.Dependency{
-				IssueID:     issue.ID,
-				DependsOnID: waitsFor,
-				Type:        types.DepWaitsFor,
-				Metadata:    string(metaJSON),
-			}
-			if err := store.AddDependency(ctx, dep, actor); err != nil {
-				WarnError("failed to add waits-for dependency %s -> %s: %v", issue.ID, waitsFor, err)
+				WarnError("failed to add %s dependency %s -> %s: %v", dep.Type, dep.IssueID, dep.DependsOnID, err)
 			} else {
 				postCreateWrites = true
 			}
@@ -709,6 +649,108 @@ var createCmd = &cobra.Command{
 		SetLastTouchedID(issue.ID)
 		return nil
 	},
+}
+
+// buildCreateDeps parses --parent, --deps and --waits-for into dependency
+// edges BEFORE the create write happens. Sides that reference the
+// not-yet-created issue are left EMPTY; they are resolved via
+// resolveSpooledDeps after the ID exists -- immediately on the live path,
+// or at spool replay for a queued create. Validation failures return a
+// Handle*'d error so they surface before any write.
+func buildCreateDeps(parentID string, depSpecs []string, waitsFor string, waitsForGate string) ([]*types.Dependency, error) {
+	var out []*types.Dependency
+
+	// Parent-child edge from --parent.
+	if parentID != "" {
+		out = append(out, &types.Dependency{
+			DependsOnID: parentID,
+			Type:        types.DepParentChild,
+		})
+	}
+
+	// Edges from --deps (format: type:id, or just id for the default
+	// "blocks" type).
+	for _, depSpec := range depSpecs {
+		depSpec = strings.TrimSpace(depSpec)
+		if depSpec == "" {
+			continue
+		}
+
+		var depType types.DependencyType
+		var dependsOnID string
+		swapDirection := false
+
+		if strings.Contains(depSpec, ":") {
+			parts := strings.SplitN(depSpec, ":", 2)
+			if len(parts) != 2 {
+				WarnError("invalid dependency format '%s', expected 'type:id' or 'id'", depSpec)
+				continue
+			}
+			rawType := types.DependencyType(strings.TrimSpace(parts[0]))
+			dependsOnID = strings.TrimSpace(parts[1])
+
+			switch rawType {
+			case "depends-on", "blocked-by":
+				// Alias: the new issue depends on the target. Store as a blocks edge.
+				depType = types.DepBlocks
+			case types.DepBlocks:
+				// Explicit "blocks:X" means the new issue blocks X, so store X -> new issue.
+				depType = types.DepBlocks
+				swapDirection = true
+			default:
+				depType = rawType
+			}
+		} else {
+			depType = types.DepBlocks
+			dependsOnID = depSpec
+		}
+
+		if !depType.IsValid() {
+			return nil, HandleErrorRespectJSON("invalid dependency type %q (must be non-empty, max 50 chars); valid types: %s", depType, createDepsAcceptedTypeList())
+		}
+		if !depType.IsWellKnown() {
+			return nil, HandleErrorRespectJSON("unknown dependency type %q; valid types: %s", depType, createDepsAcceptedTypeList())
+		}
+
+		dep := &types.Dependency{
+			DependsOnID: dependsOnID,
+			Type:        depType,
+		}
+		if swapDirection {
+			// X -> new issue: the target is the IssueID side, the new
+			// issue (empty) is the DependsOnID side.
+			dep.IssueID = dependsOnID
+			dep.DependsOnID = ""
+		}
+		out = append(out, dep)
+	}
+
+	// Waits-for edge from --waits-for.
+	if waitsFor != "" {
+		gate := waitsForGate
+		if gate == "" {
+			gate = types.WaitsForAllChildren
+		}
+		if gate != types.WaitsForAllChildren && gate != types.WaitsForAnyChildren {
+			return nil, HandleError("invalid --waits-for-gate value '%s' (valid: all-children, any-children)", gate)
+		}
+
+		meta := types.WaitsForMeta{
+			Gate: gate,
+		}
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return nil, HandleError("failed to serialize waits-for metadata: %v", err)
+		}
+
+		out = append(out, &types.Dependency{
+			DependsOnID: waitsFor,
+			Type:        types.DepWaitsFor,
+			Metadata:    string(metaJSON),
+		})
+	}
+
+	return out, nil
 }
 
 type createIssueParams struct {

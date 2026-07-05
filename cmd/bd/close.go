@@ -149,7 +149,7 @@ the flags appear in the command line.`,
 				}
 			}
 
-			if err := writeWithSpool(ctx, "close",
+			if _, err := writeWithSpool(ctx, "close",
 				spoolPayload(map[string]interface{}{
 					"id":      id,
 					"reason":  reason,

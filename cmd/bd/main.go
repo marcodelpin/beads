@@ -58,6 +58,13 @@ var (
 	storeMutex  sync.Mutex // Protects store access from background goroutine
 	storeActive = false    // Tracks if store is available
 
+	// Opportunistic spool-drain lifecycle: PersistentPreRun launches the
+	// drain in a goroutine; PersistentPostRunE cancels it and WAITS on
+	// spoolDrainDone before closing the store, so the drain never races
+	// store.Close() (GH#4378-review D3).
+	spoolDrainDone   chan struct{}
+	spoolDrainCancel context.CancelFunc
+
 	// Version upgrade tracking
 	versionUpgradeDetected = false // Set to true if bd version changed since last run
 	previousVersion        = ""    // The last bd version user had (empty = first run or unknown)
@@ -1232,13 +1239,22 @@ var rootCmd = &cobra.Command{
 		// Opportunistic spool replay: if there are pending writes from a
 		// previous offline session, drain them now before the command runs.
 		// Non-blocking (TryLock): if another process is draining, skip.
-		// Errors are logged but never fatal — the command proceeds normally.
+		// The goroutine is JOINED in PersistentPostRunE (cancel + wait on
+		// spoolDrainDone) before the store closes; per-dispatch SeenSet
+		// journaling makes an interrupted drain safe to resume.
 		if store != nil && !useReadOnly && beadsDir != "" {
+			drainCtx, cancel := context.WithCancel(rootCtx)
+			spoolDrainCancel = cancel
+			done := make(chan struct{})
+			spoolDrainDone = done
 			go func() {
+				defer close(done)
 				spoolDir := filepath.Join(beadsDir, "spool")
 				sp := spoolSingleton(spoolDir)
-				if err := spool.MaybeDrain(rootCtx, sp, spoolDispatch(rootCtx)); err != nil {
-					debug.Logf("spool MaybeDrain: %v", err)
+				if err := spool.MaybeDrain(drainCtx, sp, spoolDispatch(drainCtx)); err != nil {
+					// Visible by default: a stuck spool is actionable state
+					// the operator must see, not a debug-only event.
+					fmt.Fprintf(os.Stderr, "Warning: spool replay: %v\n", err)
 				}
 			}()
 		}
@@ -1308,6 +1324,23 @@ var rootCmd = &cobra.Command{
 			// and metadata writes on commands like bd list/show/ready (GH#2191).
 			if !isReadOnlyCommand(cmd.Name()) {
 				maybeAutoPush(rootCtx)
+			}
+
+			// Join the opportunistic spool drain BEFORE tearing down the
+			// store: cancel it (aborts between entries, and mid-query via
+			// ctx) and wait bounded so an in-flight dispatch can finish its
+			// fsync'd ack. Canceled entries stay queued for the next command.
+			if spoolDrainDone != nil {
+				if spoolDrainCancel != nil {
+					spoolDrainCancel()
+				}
+				select {
+				case <-spoolDrainDone:
+				case <-time.After(10 * time.Second):
+					fmt.Fprintf(os.Stderr, "Warning: spool replay still running at shutdown; proceeding with store close\n")
+				}
+				spoolDrainDone = nil
+				spoolDrainCancel = nil
 			}
 
 			// Signal that store is closing (prevents background flush from accessing closed store)

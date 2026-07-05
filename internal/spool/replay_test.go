@@ -540,3 +540,64 @@ func marshalEntryLine(e Entry) []byte {
 	b, _ := json.Marshal(e)
 	return append(b, '\n')
 }
+
+// TestSeenSetDurableJournal verifies the per-dispatch journal: an op_id
+// recorded via AppendDurable survives a process cut BEFORE Save (a fresh
+// loadSeenSet must see it via seen.set.log), and Save folds the journal
+// into seen.set and removes it.
+func TestSeenSetDurableJournal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "seen.set")
+
+	ss := loadSeenSet(path)
+	ss.Add("op-aaa")
+	if err := ss.AppendDurable("op-aaa"); err != nil {
+		t.Fatalf("AppendDurable: %v", err)
+	}
+	// Simulate a cut before Save: a fresh load must still dedup op-aaa.
+	ss2 := loadSeenSet(path)
+	if !ss2.Contains("op-aaa") {
+		t.Fatal("journaled op_id lost without Save -- crash-window dedup broken")
+	}
+
+	// Save folds the journal into seen.set and removes the log.
+	if err := ss2.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := os.Stat(path + ".log"); !os.IsNotExist(err) {
+		t.Fatalf("seen.set.log should be removed after Save, stat err=%v", err)
+	}
+	ss3 := loadSeenSet(path)
+	if !ss3.Contains("op-aaa") {
+		t.Fatal("op_id lost after Save compaction")
+	}
+}
+
+// TestReplayEntriesJournalsSeenPerDispatch verifies that a successful
+// dispatch is journaled durably IMMEDIATELY (not only at end-of-drain
+// Save): a fresh SeenSet loaded mid-batch already dedups the entry.
+func TestReplayEntriesJournalsSeenPerDispatch(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSpool(dir)
+	if err := s.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+
+	seenPath := filepath.Join(dir, "seen.set")
+	seen := loadSeenSet(seenPath)
+
+	e := Entry{OpID: "11aa", Op: "create", Payload: []byte(`{}`)}
+	dispatched := 0
+	remaining, drained, dead, err := replayEntries(context.Background(), []Entry{e},
+		func(Entry) error { dispatched++; return nil }, seen, s)
+	if err != nil || len(remaining) != 0 || drained != 1 || dead != 0 || dispatched != 1 {
+		t.Fatalf("replayEntries: remaining=%d drained=%d dead=%d dispatched=%d err=%v",
+			len(remaining), drained, dead, dispatched, err)
+	}
+
+	// WITHOUT calling seen.Save(): a fresh load must already contain the op.
+	fresh := loadSeenSet(seenPath)
+	if !fresh.Contains("11aa") {
+		t.Fatal("successful dispatch not durably journaled per-dispatch")
+	}
+}

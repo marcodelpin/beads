@@ -420,7 +420,7 @@ create, update, show, or close operation).`,
 				regularUpdates["notes"] = combined
 			}
 			if len(regularUpdates) > 0 {
-				if err := writeWithSpool(ctx, "update",
+				if _, err := writeWithSpool(ctx, "update",
 					spoolPayload(map[string]interface{}{
 						"id":      result.ResolvedID,
 						"updates": regularUpdates,

@@ -105,6 +105,8 @@ func IsTransientErr(err error) bool {
 		return true
 	}
 	// Dolt-specific transient strings (i/o timeout, connection refused, EOF).
+	// "store shutting down" is bd's own guard in spoolDispatch: the process is
+	// tearing down mid-drain, the entry must stay queued for the next command.
 	msg := err.Error()
 	for _, pat := range []string{
 		"i/o timeout",
@@ -113,6 +115,7 @@ func IsTransientErr(err error) bool {
 		"eof",
 		"broken pipe",
 		"driver: bad connection",
+		"store shutting down",
 	} {
 		if strings.Contains(strings.ToLower(msg), pat) {
 			return true
