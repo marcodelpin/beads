@@ -191,14 +191,12 @@ func TestPartialReplay(t *testing.T) {
 	}
 }
 
-// TestDedupOnRetry verifies that the same op_id dispatched twice is only
-// executed once (SeenSet dedup).
-//
-// Scenario:
-//  1. Write 2 entries to queue with distinct op_ids.
-//  2. Drain — both dispatched.
-//  3. Write same 2 entries again to queue (simulating a retry scenario).
-//  4. Drain again — both skipped (SeenSet), dispatched count = 0.
+// TestDedupOnRetry verifies SeenSet dedup across drains WHILE the spool is
+// not fully drained -- the window where dedup matters. (Once queue AND
+// inflight are empty the seen-set intentionally resets, see drainInternal:
+// nothing it remembers can recur through the spool's own flows.) e3 fails
+// transiently so inflight stays non-empty and the seen-set survives into
+// the second drain, which must dedup an externally re-enqueued e1.
 func TestDedupOnRetry(t *testing.T) {
 	dir := t.TempDir()
 	s := NewSpool(filepath.Join(dir, "spool"))
@@ -207,19 +205,23 @@ func TestDedupOnRetry(t *testing.T) {
 	e1.OpID = "dedup-op-0001"
 	e2 := makeEntry("note", `{"id":"bd-dedup-2","notes":"second"}`)
 	e2.OpID = "dedup-op-0002"
+	e3 := makeEntry("note", `{"id":"bd-dedup-3","notes":"third"}`)
+	e3.OpID = "dedup-op-0003"
 
-	if err := s.AppendQueue(e1); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AppendQueue(e2); err != nil {
-		t.Fatal(err)
+	for _, e := range []Entry{e1, e2, e3} {
+		if err := s.AppendQueue(e); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	var callCount int32
 
-	// First drain: both should execute.
+	// Drain 1: e1+e2 succeed, e3 fails transiently and stays inflight.
 	dr1, err := Drain(context.Background(), s, func(e Entry) error {
 		atomic.AddInt32(&callCount, 1)
+		if e.OpID == e3.OpID {
+			return fmt.Errorf("dial tcp: connection refused")
+		}
 		return nil
 	})
 	if err != nil {
@@ -229,20 +231,14 @@ func TestDedupOnRetry(t *testing.T) {
 		t.Errorf("drain 1 drained: got %d, want 2", dr1.Drained)
 	}
 
-	// Re-append same entries to queue (simulating external re-enqueue).
+	// External re-enqueue of an already-dispatched entry.
 	if err := s.AppendQueue(e1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendQueue(e2); err != nil {
-		t.Fatal(err)
-	}
 
-	// Reset cursor so Drain reads from start.
-	if err := s.SaveCursor(&Cursor{}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Second drain: both should be skipped (SeenSet).
+	// Drain 2: e3 retries from inflight (dispatch succeeds now); the
+	// re-enqueued e1 is deduped by the seen-set (counts as drained,
+	// does NOT re-dispatch).
 	dr2, err := Drain(context.Background(), s, func(e Entry) error {
 		atomic.AddInt32(&callCount, 1)
 		return nil
@@ -250,15 +246,15 @@ func TestDedupOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Drain 2: %v", err)
 	}
-	// All 4 entries processed: 2 dispatched + 2 deduped (SeenSet).
-	// Deduped entries still count as drained.
-	if dr2.Drained != 4 {
-		t.Errorf("drain 2 drained: got %d, want 4 (2 dispatched + 2 deduped)", dr2.Drained)
+	if dr2.Drained != 2 {
+		t.Errorf("drain 2 drained: got %d, want 2 (e3 dispatched + e1 deduped)", dr2.Drained)
 	}
 
 	totalCalls := atomic.LoadInt32(&callCount)
-	if totalCalls != 2 {
-		t.Errorf("dispatch called %d times, want 2 (only first drain)", totalCalls)
+	// Drain 1: e1, e2, e3(transient fail) = 3 calls; drain 2: e3 retry = 1.
+	// The re-enqueued e1 must NOT re-dispatch.
+	if totalCalls != 4 {
+		t.Errorf("dispatch called %d times, want 4 (e1 dedup must not re-dispatch)", totalCalls)
 	}
 }
 

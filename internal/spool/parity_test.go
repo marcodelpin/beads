@@ -266,8 +266,13 @@ func TestFullRoundtripBothPlatforms(t *testing.T) {
 	if cursor.LastDrainTS == "" {
 		t.Error("cursor.LastDrainTS should be set after drain")
 	}
-	if cursor.LastAckedOffset == 0 {
-		t.Error("cursor.LastAckedOffset should be > 0 after drain")
+	// Post-compaction contract: a fully-drained cycle drops the consumed
+	// queue and resets the cursor (GH#4378-review D5).
+	if cursor.LastAckedOffset != 0 {
+		t.Errorf("cursor.LastAckedOffset = %d, want 0 after a fully-drained cycle (compaction)", cursor.LastAckedOffset)
+	}
+	if has, err := fileHasContent(s.QueueFile()); err == nil && has {
+		t.Error("queue.jsonl should be compacted away after a fully-drained cycle")
 	}
 }
 
