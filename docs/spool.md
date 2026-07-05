@@ -277,3 +277,52 @@ Known residuals:
   path: failing the entry after `CreateIssue` succeeded would re-run the
   create on the next drain and duplicate the issue. A lost edge is
   re-attachable by hand; a duplicated issue is worse.
+
+## Storage hygiene (compaction + retention)
+
+At the end of every successful drain (under the drain lock):
+
+- **Compaction**: the consumed prefix of `queue.jsonl` is dropped (fully
+  consumed queue -> file removed; partially consumed -> unconsumed tail
+  rewritten atomically) and the cursor resets to 0. The 100MB `MaxQueueBytes`
+  cap and `bd spool status`'s pending count therefore measure the actual
+  BACKLOG, not lifetime appended volume.
+- **Retention**: `acked/YYYY-MM-DD.jsonl` files older than 7 days are removed
+  (the retention this doc always promised). When the spool is fully empty
+  (no queue backlog, no inflight) the seen-set resets too -- its dedup window
+  only matters while entries can still replay.
+
+Producers and the compactor coordinate through `.append.lock`: the disk-cap
+check + append are atomic per producer (no cap overshoot under concurrent
+bursts), and compaction never swaps `queue.jsonl` under a writer.
+
+Malformed queue lines (corruption, hand-edits) are moved to `poison.jsonl`
+with a stderr warning instead of being silently skipped; a trailing line
+without its newline (a producer's append still in flight, or a torn final
+write) is left un-consumed for the next pull.
+
+## Dead-letter recovery: `bd spool requeue`
+
+`bd spool requeue --op-id <id>` (or `--all`) moves dead-letter entries back
+into the live queue with a reset attempt counter -- the recovery path after
+fixing whatever dead-lettered them (a misclassified error, a since-resolved
+constraint conflict). Invalid entries stay dead-lettered with a warning.
+`bd spool clear` and `requeue` both take the drain lock: they refuse to run
+while a drain is replaying.
+
+## Locking assumptions
+
+All spool coordination uses OS advisory file locks (`flock(2)` on Unix,
+`LockFileEx` on Windows) on `.drain.lock` (drainers, clear, requeue) and
+`.append.lock` (producers, compaction). These guarantees assume a LOCAL
+filesystem. On network filesystems the guarantees weaken or vanish:
+
+- **NFS**: `flock` semantics depend on the server's lock daemon (lockd/
+  rpc.statd); on some configurations locks are local-only no-ops.
+- **SMB/CIFS**: byte-range lock behavior depends on server-side oplock/lease
+  support.
+
+Keep `.beads/spool/` on a local disk. If a repo lives on a synced/network
+share accessed from MULTIPLE hosts, concurrent drains from different hosts
+are NOT mutually excluded -- the SeenSet dedup limits the blast radius
+(duplicate replay), but do not rely on it as a lock.

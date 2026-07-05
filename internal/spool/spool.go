@@ -31,6 +31,8 @@ type Spool struct {
 	inflightFile string
 	deadFile     string
 	cursorFile   string
+	appendLock   string
+	poisonFile   string
 }
 
 // NewSpool prepares a Spool rooted at dir. The directory tree is created
@@ -43,7 +45,25 @@ func NewSpool(dir string) *Spool {
 		inflightFile: filepath.Join(dir, "inflight.jsonl"),
 		deadFile:     filepath.Join(dir, "dead-letter.jsonl"),
 		cursorFile:   filepath.Join(dir, "cursor.json"),
+		appendLock:   filepath.Join(dir, ".append.lock"),
+		poisonFile:   filepath.Join(dir, "poison.jsonl"),
 	}
+}
+
+// withAppendLock runs fn while holding the producer-side append lock. It
+// serializes concurrent producers (cap check + append become atomic, closing
+// the stat-then-write TOCTOU on MaxQueueBytes) and lets the drainer's
+// Compact swap queue.jsonl without racing an in-flight append.
+func (s *Spool) withAppendLock(fn func() error) error {
+	lk, err := OpenLock(s.appendLock)
+	if err != nil {
+		return fmt.Errorf("open append lock: %w", err)
+	}
+	if err := lk.Lock(); err != nil {
+		return fmt.Errorf("acquire append lock: %w", err)
+	}
+	defer func() { _ = lk.Unlock() }()
+	return fn()
 }
 
 // QueueFile / InflightFile / DeadFile / CursorFile expose the resolved paths
@@ -235,16 +255,30 @@ func (s *Spool) PullBatch(startOffset int64, batchSize int) ([]Entry, int64, int
 
 	r := bufio.NewReader(f)
 	var out []Entry
+	var poisoned int
 	cur := startOffset
 	for len(out) < batchSize {
 		line, err := r.ReadString('\n')
 		if len(line) > 0 {
+			// A tail WITHOUT its newline is a producer's append still in
+			// flight (or a torn final write): do NOT consume it -- leave
+			// the offset before it so the next pull re-reads the completed
+			// line. Consuming half an entry would silently lose the write.
+			if err != nil && !strings.HasSuffix(line, "\n") {
+				break
+			}
 			cur += int64(len(line))
 			trim := strings.TrimSpace(line)
 			if trim != "" {
 				var e Entry
 				if jerr := json.Unmarshal([]byte(trim), &e); jerr == nil {
 					out = append(out, e)
+				} else {
+					// Newline-terminated but unparseable (corruption,
+					// hand-edit): quarantine with a visible trace instead
+					// of silently discarding. The cursor advances past it.
+					s.quarantinePoison(trim)
+					poisoned++
 				}
 			}
 		}
@@ -255,7 +289,150 @@ func (s *Spool) PullBatch(startOffset int64, batchSize int) ([]Entry, int64, int
 			return out, cur, queueSize, fmt.Errorf("read queue: %w", err)
 		}
 	}
+	if poisoned > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: spool: %d malformed queue line(s) moved to %s\n", poisoned, s.poisonFile)
+	}
 	return out, cur, queueSize, nil
+}
+
+// quarantinePoison appends a malformed queue line to poison.jsonl.
+// Best-effort: a quarantine failure must not block the drain; the warning
+// in PullBatch is the operator's signal either way.
+func (s *Spool) quarantinePoison(line string) {
+	f, err := os.OpenFile(s.poisonFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) // #nosec G304 - internal spool path
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintln(f, line)
+	_ = f.Sync()
+	_ = f.Close()
+}
+
+// Compact drops the consumed prefix of queue.jsonl (everything before
+// cur.LastAckedOffset) and resets the cursor, so the MaxQueueBytes cap and
+// `bd spool status` measure the actual BACKLOG instead of lifetime appended
+// volume (GH#4378-review D5). The caller must hold the DRAIN lock; Compact
+// takes the APPEND lock for the swap so no concurrent producer append is
+// lost. A crash between the queue swap and the cursor save leaves the
+// cursor past EOF -- PullBatch resets that to 0 and the SeenSet dedups any
+// re-read entries.
+func (s *Spool) Compact(cur *Cursor) error {
+	if cur == nil || cur.LastAckedOffset <= 0 {
+		return nil
+	}
+	return s.withAppendLock(func() error {
+		f, err := os.Open(s.queueFile) // #nosec G304 - internal spool path
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				cur.LastAckedOffset = 0
+				return s.SaveCursor(cur)
+			}
+			return fmt.Errorf("open queue for compact: %w", err)
+		}
+		stat, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return fmt.Errorf("stat queue for compact: %w", err)
+		}
+		size := stat.Size()
+		off := cur.LastAckedOffset
+		if off >= size {
+			// Fully consumed: drop the file (Append recreates it).
+			_ = f.Close()
+			if err := os.Remove(s.queueFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove consumed queue: %w", err)
+			}
+			cur.LastAckedOffset = 0
+			return s.SaveCursor(cur)
+		}
+		// Partially consumed: rewrite the unconsumed tail atomically.
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("seek queue for compact: %w", err)
+		}
+		tmp := s.queueFile + ".tmp"
+		out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // #nosec G304 - internal spool path
+		if err != nil {
+			_ = f.Close()
+			return fmt.Errorf("create queue tmp: %w", err)
+		}
+		if _, err := io.Copy(out, f); err != nil {
+			_ = out.Close()
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return fmt.Errorf("copy queue tail: %w", err)
+		}
+		_ = f.Close()
+		if err := out.Sync(); err != nil {
+			_ = out.Close()
+			_ = os.Remove(tmp)
+			return fmt.Errorf("sync queue tmp: %w", err)
+		}
+		if err := out.Close(); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("close queue tmp: %w", err)
+		}
+		if err := os.Rename(tmp, s.queueFile); err != nil {
+			return fmt.Errorf("rename compacted queue: %w", err)
+		}
+		cur.LastAckedOffset = 0
+		return s.SaveCursor(cur)
+	})
+}
+
+// fullyEmpty reports whether the spool has nothing left to replay: no
+// unconsumed queue backlog and no inflight batch. Missing files count as
+// empty.
+func (s *Spool) fullyEmpty() bool {
+	if has, err := fileHasContent(s.queueFile); err == nil && has {
+		return false
+	}
+	if has, err := fileHasContent(s.inflightFile); err == nil && has {
+		return false
+	}
+	return true
+}
+
+// Requeue moves dead-letter entries back into the live queue -- the
+// recovery path for misclassified or since-fixed permanent failures
+// (previously only a hand-edit could resurrect them). opID selects one
+// entry; all=true moves everything valid. Returns the number requeued.
+// The CLI takes the drain lock around this so a concurrent drain never
+// observes dead-letter.jsonl mid-rewrite.
+func (s *Spool) Requeue(opID string, all bool) (int, error) {
+	entries, err := s.LoadDeadLetter()
+	if err != nil {
+		return 0, fmt.Errorf("load dead-letter: %w", err)
+	}
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	var keep []Entry
+	var moved int
+	for _, e := range entries {
+		if !all && e.OpID != opID {
+			keep = append(keep, e)
+			continue
+		}
+		if err := ValidateEntry(e); err != nil {
+			// An invalid entry can never replay; keep it dead-lettered.
+			fmt.Fprintf(os.Stderr, "Warning: spool requeue: %s invalid, kept in dead-letter: %v\n", e.OpID, err)
+			keep = append(keep, e)
+			continue
+		}
+		e.Attempts = 0
+		e.LastError = ""
+		if err := s.AppendQueue(e); err != nil {
+			return moved, fmt.Errorf("requeue %s: %w", e.OpID, err)
+		}
+		moved++
+	}
+	if moved > 0 {
+		if err := s.WriteDeadLetter(keep); err != nil {
+			return moved, fmt.Errorf("rewrite dead-letter: %w", err)
+		}
+	}
+	return moved, nil
 }
 
 // AppendAcked writes one entry to acked/YYYY-MM-DD.jsonl (today's UTC date).
@@ -407,7 +584,11 @@ func (s *Spool) AppendQueue(e Entry) error {
 	if err := s.EnsureDir(); err != nil {
 		return err
 	}
-	return appendJSONL(s.queueFile, e)
+	// Same append-lock discipline as Append: never write while Compact is
+	// swapping the file.
+	return s.withAppendLock(func() error {
+		return appendJSONL(s.queueFile, e)
+	})
 }
 
 // InflightOldestAge returns seconds since the oldest inflight entry's TS.

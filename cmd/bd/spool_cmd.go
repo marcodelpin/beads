@@ -24,6 +24,7 @@ the next bd command (MaybeDrain), or you can trigger a drain manually.
 Subcommands:
   status   Show queue depth, oldest entry, and disk usage
   drain    Force-drain the spool now (replay all pending entries)
+  requeue  Move dead-letter entries back into the queue
   clear    Wipe the spool (requires --confirm)`,
 }
 
@@ -128,6 +129,17 @@ You must pass --confirm to proceed.`,
 			return err
 		}
 
+		// Take the drain lock: clearing while a drain is replaying would
+		// discard entries the drainer still references (GH#4378-review D5).
+		lk, err := spool.OpenLock(filepath.Join(sp.Dir, ".drain.lock"))
+		if err != nil {
+			return fmt.Errorf("open drain lock: %w", err)
+		}
+		if err := lk.TryLock(); err != nil {
+			return fmt.Errorf("a drain is in progress (lock held); retry when it finishes: %w", err)
+		}
+		defer func() { _ = lk.Unlock() }()
+
 		// Remove queue.jsonl, inflight.jsonl, cursor.json.
 		// Leave acked/ and dead-letter.jsonl (audit trail).
 		var removed []string
@@ -147,6 +159,59 @@ You must pass --confirm to proceed.`,
 			fmt.Println("Spool already empty.")
 		} else {
 			fmt.Printf("Cleared: %v\n", removed)
+		}
+		return nil
+	},
+}
+
+var (
+	spoolRequeueOpID string
+	spoolRequeueAll  bool
+)
+
+// spoolRequeueCmd moves dead-letter entries back into the live queue -- the
+// recovery path for misclassified or since-fixed permanent failures.
+var spoolRequeueCmd = &cobra.Command{
+	Use:   "requeue",
+	Short: "Move dead-letter entries back into the live queue (--op-id <id> | --all)",
+	Long: `Requeue dead-lettered spool entries for another replay attempt.
+
+Use this after fixing the condition that dead-lettered them (e.g. a
+misclassified transient error, or a constraint conflict resolved server-side).
+Entries re-enter queue.jsonl with a reset attempt counter and replay on the
+next drain. Invalid entries stay in the dead-letter file.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if spoolRequeueOpID == "" && !spoolRequeueAll {
+			return fmt.Errorf("nothing selected: pass --op-id <id> or --all")
+		}
+		sp, err := openSpool()
+		if err != nil {
+			return err
+		}
+
+		// Serialize against a running drain (it rewrites dead-letter too).
+		lk, err := spool.OpenLock(filepath.Join(sp.Dir, ".drain.lock"))
+		if err != nil {
+			return fmt.Errorf("open drain lock: %w", err)
+		}
+		if err := lk.TryLock(); err != nil {
+			return fmt.Errorf("a drain is in progress (lock held); retry when it finishes: %w", err)
+		}
+		defer func() { _ = lk.Unlock() }()
+
+		moved, err := sp.Requeue(spoolRequeueOpID, spoolRequeueAll)
+		if err != nil {
+			return fmt.Errorf("requeue: %w", err)
+		}
+		if jsonOutput {
+			fmt.Printf(`{"requeued":%d}`+"\n", moved)
+			return nil
+		}
+		if moved == 0 {
+			fmt.Println("Nothing requeued (no matching dead-letter entries).")
+		} else {
+			fmt.Printf("Requeued %d entr%s -- they replay on the next drain (or run 'bd spool drain').\n",
+				moved, map[bool]string{true: "y", false: "ies"}[moved == 1])
 		}
 		return nil
 	},
@@ -172,9 +237,13 @@ func openSpool() (*spool.Spool, error) {
 func init() {
 	spoolClearCmd.Flags().BoolVar(&spoolClearConfirm, "confirm", false, "Required: confirms you want to permanently discard pending spool entries")
 
+	spoolRequeueCmd.Flags().StringVar(&spoolRequeueOpID, "op-id", "", "Requeue the single dead-letter entry with this op_id")
+	spoolRequeueCmd.Flags().BoolVar(&spoolRequeueAll, "all", false, "Requeue every valid dead-letter entry")
+
 	spoolCmd.AddCommand(spoolStatusCmd)
 	spoolCmd.AddCommand(spoolDrainCmd)
 	spoolCmd.AddCommand(spoolClearCmd)
+	spoolCmd.AddCommand(spoolRequeueCmd)
 
 	rootCmd.AddCommand(spoolCmd)
 }

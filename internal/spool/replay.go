@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// ackedRetainDays is the acked/ history retention the package doc promises;
+// CleanupAcked enforces it at the end of every successful drain.
+const ackedRetainDays = 7
+
 // DrainResult holds counters from a Drain cycle.
 type DrainResult struct {
 	Drained int // entries successfully dispatched
@@ -199,6 +203,28 @@ func drainInternal(ctx context.Context, s *Spool, dispatch DispatchFunc, tryLock
 	// Final cursor save.
 	if err := s.SaveCursor(cursor); err != nil {
 		return result, fmt.Errorf("save cursor final: %w", err)
+	}
+
+	// Storage hygiene (GH#4378-review D5): drop the consumed queue prefix
+	// so MaxQueueBytes and `bd spool status` measure BACKLOG, not lifetime
+	// appended volume. Runs under the drain lock; Compact takes the append
+	// lock for the file swap.
+	if err := s.Compact(cursor); err != nil {
+		return result, fmt.Errorf("compact queue: %w", err)
+	}
+
+	// Retention: enforce the 7-day acked/ contract the package doc
+	// promises (was never wired). Best-effort -- retention failures must
+	// not fail a successful drain.
+	if _, errs := s.CleanupAcked(ackedRetainDays); len(errs) > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: spool: acked cleanup: %d error(s)\n", len(errs))
+	}
+	// The seen-set's dedup window only matters while entries can still
+	// replay: once queue AND inflight are empty nothing it remembers can
+	// recur, so reset it before it grows unbounded.
+	if s.fullyEmpty() {
+		seen.Prune()
+		_ = seen.Save()
 	}
 
 	return result, nil

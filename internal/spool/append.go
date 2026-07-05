@@ -33,13 +33,6 @@ func (s *Spool) Append(ctx context.Context, op string, payload []byte, sync bool
 		return Entry{}, fmt.Errorf("ensure dir: %w", err)
 	}
 
-	// Disk cap gate -- STAT before write, refuse loud if at limit.
-	if size, err := s.QueueDiskBytes(); err != nil {
-		return Entry{}, fmt.Errorf("stat queue for cap check: %w", err)
-	} else if size >= MaxQueueBytes {
-		return Entry{}, ErrSpoolFull
-	}
-
 	hash, err := CanonicalHash(payload)
 	if err != nil {
 		return Entry{}, fmt.Errorf("canonical hash: %w", err)
@@ -61,8 +54,22 @@ func (s *Spool) Append(ctx context.Context, op string, payload []byte, sync bool
 		Origin:        origin,
 	}
 
-	if err := appendJSONL(s.queueFile, e); err != nil {
-		return Entry{}, fmt.Errorf("append queue: %w", err)
+	// Cap check + append run under the producer append lock: the
+	// stat-then-write pair is atomic across concurrent bd processes (no
+	// TOCTOU past MaxQueueBytes) and Compact never swaps the file under a
+	// writer mid-append.
+	if err := s.withAppendLock(func() error {
+		if size, err := s.QueueDiskBytes(); err != nil {
+			return fmt.Errorf("stat queue for cap check: %w", err)
+		} else if size >= MaxQueueBytes {
+			return ErrSpoolFull
+		}
+		if err := appendJSONL(s.queueFile, e); err != nil {
+			return fmt.Errorf("append queue: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Entry{}, err
 	}
 	return e, nil
 }
