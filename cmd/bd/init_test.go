@@ -768,6 +768,9 @@ func TestSetupGlobalGitIgnore_ReadOnly(t *testing.T) {
 		if runtime.GOOS == "darwin" {
 			t.Skip("macOS allows file owner to write to read-only (0444) files")
 		}
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission tests when running as root (mode bits are not enforced)")
+		}
 		tmpDir := t.TempDir()
 		setupIsolatedGitConfig(t, tmpDir)
 
@@ -800,6 +803,9 @@ func TestSetupGlobalGitIgnore_ReadOnly(t *testing.T) {
 	t.Run("symlink to read-only file", func(t *testing.T) {
 		if runtime.GOOS == "darwin" {
 			t.Skip("macOS allows file owner to write to read-only (0444) files")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission tests when running as root (mode bits are not enforced)")
 		}
 		tmpDir := t.TempDir()
 		setupIsolatedGitConfig(t, tmpDir)
