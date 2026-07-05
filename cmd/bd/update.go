@@ -420,7 +420,7 @@ create, update, show, or close operation).`,
 				regularUpdates["notes"] = combined
 			}
 			if len(regularUpdates) > 0 {
-				if _, err := writeWithSpool(ctx, "update",
+				res, err := writeWithSpool(ctx, "update",
 					spoolPayload(map[string]interface{}{
 						"id":      result.ResolvedID,
 						"updates": regularUpdates,
@@ -429,8 +429,20 @@ create, update, show, or close operation).`,
 					func() error {
 						return issueStore.UpdateIssue(ctx, result.ResolvedID, regularUpdates, actor)
 					},
-				); err != nil {
+				)
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
+					closeIfUnmutated(result)
+					continue
+				}
+				if res.Spooled {
+					// The update is QUEUED, not applied: skip the audit log
+					// (it would record a change that has not happened yet)
+					// and the label/success bookkeeping for this id; the
+					// replay lands it later. Label ops are skipped too --
+					// they are unspooled direct writes that would fail
+					// against the same unreachable server anyway.
+					fmt.Printf("%s Queued update for replay (server unreachable): %s\n", ui.RenderWarn("!"), result.ResolvedID)
 					closeIfUnmutated(result)
 					continue
 				}

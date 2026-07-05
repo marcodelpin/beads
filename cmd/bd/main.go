@@ -1266,6 +1266,13 @@ var rootCmd = &cobra.Command{
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
 		defer restoreChangeDirSelection()
 
+		// Join the opportunistic spool drain FIRST, before any of the
+		// fallible post-run store work below (whose early returns would
+		// skip a later join) and before store teardown. main() calls this
+		// again as an idempotent backstop for the paths where Cobra skips
+		// PersistentPostRunE entirely (RunE returned an error).
+		joinSpoolDrain()
+
 		if proxiedServerMode {
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
@@ -1324,23 +1331,6 @@ var rootCmd = &cobra.Command{
 			// and metadata writes on commands like bd list/show/ready (GH#2191).
 			if !isReadOnlyCommand(cmd.Name()) {
 				maybeAutoPush(rootCtx)
-			}
-
-			// Join the opportunistic spool drain BEFORE tearing down the
-			// store: cancel it (aborts between entries, and mid-query via
-			// ctx) and wait bounded so an in-flight dispatch can finish its
-			// fsync'd ack. Canceled entries stay queued for the next command.
-			if spoolDrainDone != nil {
-				if spoolDrainCancel != nil {
-					spoolDrainCancel()
-				}
-				select {
-				case <-spoolDrainDone:
-				case <-time.After(10 * time.Second):
-					fmt.Fprintf(os.Stderr, "Warning: spool replay still running at shutdown; proceeding with store close\n")
-				}
-				spoolDrainDone = nil
-				spoolDrainCancel = nil
 			}
 
 			// Signal that store is closing (prevents background flush from accessing closed store)
@@ -1524,6 +1514,29 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 	}
 }
 
+// joinSpoolDrain cancels the opportunistic spool drain launched in
+// PersistentPreRunE and waits (bounded) for its goroutine to exit, so the
+// process never tears down the store -- or exits -- while a dispatch is in
+// flight. Canceled entries stay queued; per-dispatch SeenSet journaling
+// makes an interrupted drain safe to resume. Idempotent: called from
+// PersistentPostRunE (primary) and from main() as a backstop for error
+// paths where Cobra skips PostRun. Runs on the main goroutine only.
+func joinSpoolDrain() {
+	if spoolDrainDone == nil {
+		return
+	}
+	if spoolDrainCancel != nil {
+		spoolDrainCancel()
+	}
+	select {
+	case <-spoolDrainDone:
+	case <-time.After(10 * time.Second):
+		fmt.Fprintf(os.Stderr, "Warning: spool replay still running at shutdown; proceeding\n")
+	}
+	spoolDrainDone = nil
+	spoolDrainCancel = nil
+}
+
 func main() {
 	// chg-8hnz: bridge GUI-subsystem child → parent's conhost (if any). Must
 	// run BEFORE any stdio is touched, so the very first line of main().
@@ -1545,6 +1558,12 @@ func main() {
 	registerHelpAllFlag()
 
 	executedCmd, err := rootCmd.ExecuteC()
+
+	// Backstop join for the opportunistic spool drain: when a command's RunE
+	// returns an error, Cobra SKIPS PersistentPostRunE, so the primary join
+	// there never runs -- without this the process would exit while the drain
+	// goroutine may be mid-dispatch. Idempotent (no-op if already joined).
+	joinSpoolDrain()
 
 	// Finalize queued metrics and detach the uploader. Shared with the os.Exit
 	// guards (CheckReadonly and the pre-run gates) so every exit path flushes the

@@ -75,6 +75,12 @@ func newID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// ErrStoreShuttingDown is returned by the replay dispatcher when the bd
+// process is tearing down its store mid-drain: the entry is NOT failed, it
+// must stay queued for the next command. Classified transient by typed
+// identity (errors.Is), not by string matching.
+var ErrStoreShuttingDown = fmt.Errorf("spool: store shutting down, entry stays queued")
+
 // IsTransientErr classifies an error from a Dolt/storage call. True means
 // the producer should fall back to spool. False means surface the error
 // directly (permanent failure -- spooling would just dead-letter).
@@ -85,6 +91,12 @@ func newID() (string, error) {
 func IsTransientErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	// The dispatcher's own teardown guard: the process is shutting down
+	// mid-drain, the entry must stay queued for the next command. Typed
+	// check first -- no reliance on the string list below.
+	if errors.Is(err, ErrStoreShuttingDown) {
+		return true
 	}
 	// Context errors are transient (drainer retries under its own budget).
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {

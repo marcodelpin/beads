@@ -253,3 +253,25 @@ non-zero `Dead-letter` after draining.
 - `bd dolt push` / `bd dolt pull` — explicit Dolt sync
 - [docs/DOLT.md](DOLT.md) — Dolt backend overview
 - [docs/adr/0001-multi-remote-approach.md](adr/0001-multi-remote-approach.md) — ADR for multi-remote strategy
+
+## Spooled `create` semantics (GH#4378-review follow-up)
+
+A `bd create` whose write gets spooled has **no issue ID yet** -- the ID is
+generated server-side when the entry replays. The CLI reports an honest
+queued outcome instead of a success with an empty ID: `--json` emits
+`{"spooled": true, "op_id": ..., "title": ...}`, `--silent` prints
+`QUEUED <op_id>`, and the default output says so explicitly. Dependency
+edges from `--parent`/`--deps`/`--waits-for` ride inside the spool payload
+(an empty side means "the new issue") and are applied at replay, after the
+ID exists. Spooled `close`/`update`/`note` likewise report a queued outcome
+and skip their success side effects (audit log, cascades) until replay.
+
+Known residuals:
+- **Mixed-version fleet**: an OLD (pre-fix) binary replaying a NEW create
+  payload silently ignores the `dependencies` field (Go JSON decoding) --
+  the create lands, its edges are dropped. Upgrade all drain sites together
+  when rolling this out.
+- **Edge failures at replay are warn-only** (stderr), mirroring the live
+  path: failing the entry after `CreateIssue` succeeded would re-run the
+  create on the next drain and duplicate the issue. A lost edge is
+  re-attachable by hand; a duplicated issue is worse.

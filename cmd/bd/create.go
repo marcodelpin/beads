@@ -705,6 +705,14 @@ func buildCreateDeps(parentID string, depSpecs []string, waitsFor string, waitsF
 			dependsOnID = depSpec
 		}
 
+		// Reject an empty target explicitly: with the empty-side-means-new-
+		// issue convention, letting "type:" through would resolve BOTH sides
+		// to the new ID and produce a self-referencing edge.
+		if dependsOnID == "" {
+			WarnError("invalid dependency '%s': empty target id", depSpec)
+			continue
+		}
+
 		if !depType.IsValid() {
 			return nil, HandleErrorRespectJSON("invalid dependency type %q (must be non-empty, max 50 chars); valid types: %s", depType, createDepsAcceptedTypeList())
 		}

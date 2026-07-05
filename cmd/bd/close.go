@@ -149,7 +149,7 @@ the flags appear in the command line.`,
 				}
 			}
 
-			if _, err := writeWithSpool(ctx, "close",
+			res, err := writeWithSpool(ctx, "close",
 				spoolPayload(map[string]interface{}{
 					"id":      id,
 					"reason":  reason,
@@ -159,8 +159,20 @@ the flags appear in the command line.`,
 				func() error {
 					return activeStore.CloseIssue(ctx, id, reason, actor, session)
 				},
-			); err != nil {
+			)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error closing %s: %v\n", id, err)
+				continue
+			}
+			if res.Spooled {
+				// The close is QUEUED, not applied: skip the success side
+				// effects (audit log, molecule auto-close, closedCount that
+				// gates the --suggest-next/--claim-next cascade) until the
+				// replay actually lands it. Report an honest queued outcome.
+				if !jsonOutput {
+					fmt.Printf("%s Queued close for replay (server unreachable): %s\n",
+						ui.RenderWarn("!"), formatFeedbackID(id, issueTitleOrEmpty(issue)))
+				}
 				continue
 			}
 			mutatedStores[activeStore] = append(mutatedStores[activeStore], id)

@@ -97,16 +97,17 @@ func spoolSingleton(dir string) *spool.Spool {
 // map + actor), so a single decoder handles both.
 func spoolDispatch(ctx context.Context) spool.DispatchFunc {
 	return func(e spool.Entry) error {
-		// Guard against the command-teardown race: PersistentPostRunE joins
-		// the drain goroutine before closing the store, but if that wait
-		// times out this check keeps a late dispatch from touching a closed
-		// store. The error text matches IsTransientErr's "store shutting
-		// down" signature so the entry stays queued instead of dead-lettering.
+		// Guard against the command-teardown race: joinSpoolDrain waits for
+		// this goroutine before the store closes, but if that wait times
+		// out this check keeps a late dispatch from touching a closed
+		// store. The typed sentinel classifies as TRANSIENT (errors.Is in
+		// IsTransientErr) so the entry stays queued instead of
+		// dead-lettering.
 		lockStore()
 		active := isStoreActive() && getStore() != nil
 		unlockStore()
 		if !active || store == nil {
-			return fmt.Errorf("store shutting down; entry stays queued")
+			return spool.ErrStoreShuttingDown
 		}
 		switch e.Op {
 		case "create":

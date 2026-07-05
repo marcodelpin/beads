@@ -100,7 +100,7 @@ Examples:
 		updates := map[string]interface{}{
 			"notes": combined,
 		}
-		if _, err := writeWithSpool(ctx, "note",
+		res, err := writeWithSpool(ctx, "note",
 			spoolPayload(map[string]interface{}{
 				"id":      result.ResolvedID,
 				"updates": updates,
@@ -109,8 +109,23 @@ Examples:
 			func() error {
 				return issueStore.UpdateIssue(ctx, result.ResolvedID, updates, actor)
 			},
-		); err != nil {
+		)
+		if err != nil {
 			return HandleErrorRespectJSON("updating %s: %v", id, err)
+		}
+		if res.Spooled {
+			// The note is QUEUED, not applied: skip the embedded commit
+			// and the success message until the replay lands it.
+			SetLastTouchedID(result.ResolvedID)
+			if jsonOutput {
+				return outputJSON(map[string]interface{}{
+					"spooled": true,
+					"op_id":   res.OpID,
+					"id":      result.ResolvedID,
+				})
+			}
+			fmt.Printf("%s Queued note for replay (server unreachable): %s\n", ui.RenderWarn("!"), result.ResolvedID)
+			return nil
 		}
 		if err := commitPendingIfEmbedded(ctx, issueStore, actor, doltAutoCommitParams{
 			Command:  "note",
