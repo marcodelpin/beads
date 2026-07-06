@@ -25,6 +25,7 @@ func (u *stubUOW) IssueUseCase() domain.IssueUseCase           { panic("not impl
 func (u *stubUOW) DependencyUseCase() domain.DependencyUseCase { panic("not implemented") }
 func (u *stubUOW) LabelUseCase() domain.LabelUseCase           { panic("not implemented") }
 func (u *stubUOW) CommentUseCase() domain.CommentUseCase       { panic("not implemented") }
+func (u *stubUOW) RawSQLUseCase() domain.RawSQLUseCase         { panic("not implemented") }
 
 // controlledProvider lets tests inject errors per-attempt.
 type controlledProvider struct {
