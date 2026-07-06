@@ -12,15 +12,7 @@ import (
 )
 
 func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) error {
-	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	isRead := strings.HasPrefix(trimmed, "SELECT") ||
-		strings.HasPrefix(trimmed, "EXPLAIN") ||
-		strings.HasPrefix(trimmed, "PRAGMA") ||
-		strings.HasPrefix(trimmed, "SHOW") ||
-		strings.HasPrefix(trimmed, "DESCRIBE") ||
-		strings.HasPrefix(trimmed, "WITH")
-
-	if isRead {
+	if sqlQueryIsRead(query) {
 		uw, err := openProxiedListUOW(ctx)
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
@@ -35,6 +27,10 @@ func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) erro
 	}
 
 	CheckReadonly("sql")
+
+	if uowProvider == nil {
+		FatalError("proxied-server UOW provider not initialized")
+	}
 
 	var affected int64
 	err := uow.RunInTxMsg(ctx, uowProvider, func(uw uow.UnitOfWork) (string, error) {
@@ -57,6 +53,59 @@ func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) erro
 
 	fmt.Printf("OK, %d rows affected\n", affected)
 	return nil
+}
+
+func sqlQueryIsRead(query string) bool {
+	trimmed := strings.TrimSpace(strings.ToUpper(query))
+	switch {
+	case strings.HasPrefix(trimmed, "SELECT"),
+		strings.HasPrefix(trimmed, "EXPLAIN"),
+		strings.HasPrefix(trimmed, "PRAGMA"),
+		strings.HasPrefix(trimmed, "SHOW"),
+		strings.HasPrefix(trimmed, "DESCRIBE"):
+		return true
+	case strings.HasPrefix(trimmed, "WITH"):
+		return withOuterStatementIsRead(trimmed)
+	default:
+		return false
+	}
+}
+
+func withOuterStatementIsRead(upperTrimmed string) bool {
+	depth := 0
+	var quote byte
+	closedCTE := false
+	for i := 0; i < len(upperTrimmed); i++ {
+		c := upperTrimmed[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				closedCTE = true
+			}
+		case ' ', '\t', '\n', '\r', ',':
+			if c == ',' && depth == 0 {
+				closedCTE = false
+			}
+		default:
+			if depth == 0 && closedCTE {
+				rest := strings.TrimLeft(upperTrimmed[i:], " \t\n\r")
+				return strings.HasPrefix(rest, "SELECT") ||
+					strings.HasPrefix(rest, "EXPLAIN")
+			}
+		}
+	}
+	return true
 }
 
 func renderRawSQLResult(result *domain.RawSQLResult, csvOutput bool) error {
