@@ -337,6 +337,10 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 		whereClauses = append(whereClauses, "LOWER(external_ref) LIKE ?")
 		args = append(args, "%"+strings.ToLower(filter.ExternalRefContains)+"%")
 	}
+	if filter.ExternalRef != nil {
+		whereClauses = append(whereClauses, "external_ref = ?")
+		args = append(args, *filter.ExternalRef)
+	}
 
 	// Status
 	if filter.Status != nil {
