@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
-	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
 func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) error {
@@ -32,17 +31,19 @@ func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) erro
 		FatalError("proxied-server UOW provider not initialized")
 	}
 
-	var affected int64
-	err := uow.RunInTxMsg(ctx, uowProvider, func(uw uow.UnitOfWork) (string, error) {
-		n, err := uw.RawSQLUseCase().Exec(ctx, query)
-		if err != nil {
-			return "", err
-		}
-		affected = n
-		return "bd sql: " + query, nil
-	})
+	uw, err := uowProvider.NewUOW(ctx)
+	if err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
+	defer uw.Close(ctx)
+
+	affected, err := uw.RawSQLUseCase().Exec(ctx, query)
 	if err != nil {
 		return HandleErrorRespectJSON("exec error: %v", err)
+	}
+
+	if err := uw.Commit(ctx, "bd sql: "+query); err != nil && !isDoltNothingToCommit(err) {
+		return HandleErrorRespectJSON("commit: %v", err)
 	}
 
 	if jsonOutput {
