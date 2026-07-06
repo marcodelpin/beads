@@ -1107,6 +1107,8 @@ var rootCmd = &cobra.Command{
 			}
 			uowProvider = p
 
+			reconcileVersionProxiedServer(rootCtx)
+
 			syncCommandContext()
 			return nil
 		}
