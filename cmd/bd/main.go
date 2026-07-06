@@ -284,7 +284,7 @@ func loadServerModeFromBeadsDir(beadsDir string) error {
 	}
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
-		return fmt.Errorf("load %s: %w (refusing to guess the storage mode; the embedded fallback would mask server-backed data)", configfile.ConfigPath(beadsDir), err)
+		return fmt.Errorf("load %s: %w (storage mode unknown; data commands will refuse to run rather than fall back to the embedded store)", configfile.ConfigPath(beadsDir), err)
 	}
 	if cfg == nil {
 		return nil
@@ -426,7 +426,11 @@ func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
 	}
 	config.CheckBeadsDirPermissions(beadsDir)
 	if err := loadServerModeFromBeadsDir(beadsDir); err != nil {
-		FatalError("%v", err)
+		// Warn, don't fatal: this context also serves no-DB commands —
+		// doctor, init, bootstrap, config — which are exactly the repair
+		// paths for a corrupt metadata.json. Data commands stay protected
+		// by the hard error at store init and in the store factories.
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 }
 
@@ -886,7 +890,11 @@ var rootCmd = &cobra.Command{
 			if beadsDir := os.Getenv("BEADS_DIR"); beadsDir == "" {
 				loadEnvironment()
 				if err := loadServerModeFromConfig(); err != nil {
-					FatalError("%v", err)
+					// Warn, don't fatal: skipsStoreInit commands (doctor,
+					// init, bootstrap, version, ...) never select a store,
+					// and several of them are the repair path for the very
+					// corruption being reported.
+					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 				}
 			}
 			if _, err := getDoltAutoCommitMode(); err != nil {
@@ -1099,10 +1107,8 @@ var rootCmd = &cobra.Command{
 				cmdCtx.ServerMode = doltCfg.ServerMode
 			}
 		}
-		// If config parse failed (cfgErr != nil), still default the database
-		// name so the store-open error is about the real problem (the parse
-		// failure warning already printed) rather than a confusing "database
-		// name must not be empty" downstream.
+		// Defensive: embeddeddolt.New rejects an empty database name, so
+		// default it even on paths that never set one.
 		if doltCfg.Database == "" {
 			doltCfg.Database = configfile.DefaultDoltDatabase
 		}
