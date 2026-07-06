@@ -2,15 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/steveyegge/beads/internal/debug"
 )
 
 func reconcileVersionProxiedServer(ctx context.Context) {
-	if !versionUpgradeDetected {
-		return
-	}
-	if uowProvider == nil {
+	if !versionUpgradeDetected || uowProvider == nil {
 		return
 	}
 
@@ -26,6 +24,12 @@ func reconcileVersionProxiedServer(ctx context.Context) {
 		debug.Logf("reconcile-version: %v", err)
 		return
 	}
+
+	if err := uw.Commit(ctx, fmt.Sprintf("bd: reconcile version -> %s", res.Current)); err != nil && !isDoltNothingToCommit(err) {
+		debug.Logf("reconcile-version: commit: %v", err)
+		return
+	}
+
 	switch {
 	case res.Downgrade:
 		debug.Logf("reconcile-version: refused downgrade to %s (db at %s)", Version, res.Previous)
