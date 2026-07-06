@@ -25,3 +25,13 @@ func Open(_ context.Context, _, _, _ string) (*EmbeddedDoltStore, error) {
 func OpenReadOnly(_ context.Context, _, _, _ string) (*EmbeddedDoltStore, error) {
 	return nil, errNoCGO
 }
+
+// OpenForReadOnlyCommand returns an error when CGO is not enabled.
+func OpenForReadOnlyCommand(_ context.Context, _, _, _ string) (*EmbeddedDoltStore, error) {
+	return nil, errNoCGO
+}
+
+// OpenForWorkingSetReconcile returns an error when CGO is not enabled.
+func OpenForWorkingSetReconcile(_ context.Context, _, _, _ string) (*EmbeddedDoltStore, error) {
+	return nil, errNoCGO
+}

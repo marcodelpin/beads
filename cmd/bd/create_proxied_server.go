@@ -97,15 +97,17 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		}
 		previewIssue := buildCreateIssueFromInput(in)
 		if in.jsonOutput {
-			outputJSON(previewIssue)
+			if err := outputJSON(previewIssue); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			renderCreateDryRunPreview(previewIssue, previewLabels, in.deps)
 		}
 		return
 	}
 
-	uw, cctx := proxiedOpenUOW(ctx)
-	defer uw.Close(ctx)
+	// Load create context (read-only) to validate input before the write tx.
+	configUW, cctx := proxiedOpenUOW(ctx)
 
 	customTypes := resolveProxiedCustomTypes(cctx.CustomTypes)
 	if in.issueType != "" {
@@ -114,6 +116,16 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 			FatalError("invalid type %q (allowed: built-ins plus configured custom types)", in.issueType)
 		}
 	}
+	if in.status != "" {
+		customStatuses, err := configUW.ConfigUseCase().GetCustomStatuses(ctx)
+		if err != nil {
+			FatalError("failed to get custom statuses: %v", err)
+		}
+		if !types.Status(in.status).IsValidWithCustom(types.CustomStatusNames(customStatuses)) {
+			FatalErrorRespectJSON("invalid status %q (built-in: open, in_progress, blocked, deferred, closed, pinned, hooked; or configure custom statuses via 'bd config set status.custom')", in.status)
+		}
+	}
+	configUW.Close(ctx)
 	if in.explicitID != "" {
 		effectivePrefix := overlayYAMLPrefix(cctx.IssuePrefix)
 		if err := validation.ValidateIDPrefixAllowed(in.explicitID, effectivePrefix, cctx.AllowedPrefixes, in.force); err != nil {
@@ -135,22 +147,26 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 	}
 
 	var result domain.CreateIssueResult
-	if issue.Ephemeral {
-		result, err = uw.IssueUseCase().CreateWisp(ctx, params, in.createdBy)
-	} else {
-		result, err = uw.IssueUseCase().CreateIssue(ctx, params, in.createdBy)
-	}
-	if err != nil {
+	if err := uow.RunInTxMsg(ctx, uowProvider, func(uw uow.UnitOfWork) (string, error) {
+		var e error
+		if issue.Ephemeral {
+			result, e = uw.IssueUseCase().CreateWisp(ctx, params, in.createdBy)
+		} else {
+			result, e = uw.IssueUseCase().CreateIssue(ctx, params, in.createdBy)
+		}
+		if e != nil {
+			return "", e
+		}
+		return fmt.Sprintf("bd: create %s", result.Issue.ID), nil
+	}); err != nil {
 		FatalError("%v", err)
-	}
-
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: create %s", result.Issue.ID)); err != nil && !isDoltNothingToCommit(err) {
-		FatalError("commit: %v", err)
 	}
 
 	switch {
 	case in.jsonOutput:
-		outputJSON(result.Issue)
+		if err := outputJSON(result.Issue); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 	case in.silent:
 		fmt.Println(result.Issue.ID)
 	default:
@@ -201,6 +217,7 @@ func buildCreateIssueFromInput(in createInput) *types.Issue {
 		Actor:              in.eventActor,
 		Target:             in.eventTarget,
 		Payload:            in.eventPayload,
+		InitialStatus:      in.status,
 		DueAt:              in.dueAt,
 		DeferUntil:         in.deferUntil,
 		Metadata:           in.metadata,
@@ -246,8 +263,8 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 		builds = append(builds, templateBuild{template: t, deps: deps})
 	}
 
-	uw, cctx := proxiedOpenUOW(ctx)
-	defer uw.Close(ctx)
+	configUW, cctx := proxiedOpenUOW(ctx)
+	configUW.Close(ctx)
 
 	customTypes := resolveProxiedCustomTypes(cctx.CustomTypes)
 	for _, b := range builds {
@@ -284,22 +301,25 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 	}
 
 	var result domain.CreateIssuesResult
-	if in.ephemeral {
-		result, err = uw.IssueUseCase().CreateWisps(ctx, paramsList, in.createdBy)
-	} else {
-		result, err = uw.IssueUseCase().CreateIssues(ctx, paramsList, in.createdBy)
-	}
-	if err != nil {
+	if err := uow.RunInTxMsg(ctx, uowProvider, func(uw uow.UnitOfWork) (string, error) {
+		var e error
+		if in.ephemeral {
+			result, e = uw.IssueUseCase().CreateWisps(ctx, paramsList, in.createdBy)
+		} else {
+			result, e = uw.IssueUseCase().CreateIssues(ctx, paramsList, in.createdBy)
+		}
+		if e != nil {
+			return "", e
+		}
+		return fmt.Sprintf("bd: create %d issue(s) from %s", len(result.Issues), in.markdownFile), nil
+	}); err != nil {
 		FatalError("creating issues from markdown: %v", err)
 	}
 
-	commitMsg := fmt.Sprintf("bd: create %d issue(s) from %s", len(result.Issues), in.markdownFile)
-	if err := uw.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
-		FatalError("commit: %v", err)
-	}
-
 	if in.jsonOutput {
-		outputJSON(result.Issues)
+		if err := outputJSON(result.Issues); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -372,7 +392,9 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 		if err := validateGraphApplyPlan(&plan, resolveProxiedCustomTypes(cctx.CustomTypes)); err != nil {
 			FatalError("invalid graph plan: %v", err)
 		}
-		emitGraphApplyDryRun(&plan)
+		if err := emitGraphApplyDryRun(&plan); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -405,7 +427,9 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 	}
 
 	if in.jsonOutput {
-		outputJSON(GraphApplyResult{IDs: result.IDs})
+		if err := outputJSON(GraphApplyResult{IDs: result.IDs}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 

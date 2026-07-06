@@ -94,6 +94,12 @@ npm install -g @beads/bd     # Node.js users
 
 **Requirements:** macOS, Linux, Windows, or FreeBSD. See [docs/INSTALLING.md](docs/INSTALLING.md) for complete installation guide.
 
+**Upgrading?** Replacing the binary is not always the whole story: releases can
+carry schema migrations, and a database that syncs to a Dolt remote must be
+migrated by exactly one designated clone. Back up first (`bd export --all`),
+then follow the [upgrade guide](https://gastownhall.github.io/beads/docs/getting-started/upgrading)
+(also summarized in [docs/INSTALLING.md](docs/INSTALLING.md#updating-bd)).
+
 ### Security And Verification
 
 Before trusting any downloaded binary, verify its checksum against the release `checksums.txt`.
@@ -149,6 +155,31 @@ is useful in sandboxed environments (e.g., Claude Code) where file-level
 access control is simpler than network allowlists. The Dolt server must be
 started with `dolt sql-server --socket <path>`. Auto-start is not supported
 in socket mode.
+
+### Maintenance — `bd prune` and `bd purge`
+
+`bd prune` permanently deletes closed non-ephemeral beads to reclaim storage
+and shrink auto-exports. `bd purge` does the same for ephemeral beads (wisps,
+transient molecules). Both require `--force` to execute.
+
+```bash
+bd prune --older-than 30d              # Preview closed beads >30d old
+bd prune --older-than 30d --force      # Delete them
+bd prune --older-than 90d --dry-run    # Detailed preview with stats
+bd purge --force                       # Delete all closed ephemeral beads
+```
+
+**Reference-aware protection:** `bd prune` automatically skips closed beads
+whose ID appears in the description, notes, or comments of any open or
+in-progress bead. This prevents accidental deletion of ADR, decision, and
+verification beads that downstream work still cites. Use `--ignore-references`
+to override when cleaning up known-stale references:
+
+```bash
+bd prune --older-than 90d --ignore-references --force
+```
+
+`bd purge` is unaffected — ephemeral beads' references are themselves transient.
 
 ### Backup & Migration
 
