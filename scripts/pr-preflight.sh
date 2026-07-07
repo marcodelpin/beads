@@ -213,16 +213,16 @@ fi
 # every open PR inherits the red checks, "failures are pre-existing" becomes
 # the default reasoning, and new failures ride in under that cover. Cancelled
 # runs (superseded by a newer push) carry no signal, so judge by the newest
-# completed run that actually finished with success or failure.
+# completed run that finished with a decisive green or red conclusion.
 base_ref=$(jq -r .baseRefName <<<"$json")
 base_runs=$(gh run list --repo "$repo" --branch "$base_ref" --status completed \
   --limit 30 --json conclusion,workflowName,createdAt,url 2>/dev/null) || base_runs=""
 # Latest decisive run per workflow, so a green unrelated workflow that happened
 # to run last cannot mask a red test workflow (and vice versa).
 base_latest_per_wf=$(jq '[group_by(.workflowName)[]
-  | [.[] | select(.conclusion == "success" or .conclusion == "failure")][0]
+  | [.[] | select((.conclusion // "") == "success" or ((.conclusion // "") | test("^(failure|timed_out|action_required)$")))][0]
   | select(. != null)]' <<<"${base_runs:-[]}")
-base_red=$(jq '[.[] | select(.conclusion == "failure")]' <<<"$base_latest_per_wf")
+base_red=$(jq '[.[] | select((.conclusion // "") | test("^(failure|timed_out|action_required)$"))]' <<<"$base_latest_per_wf")
 base_red_count=$(jq 'length' <<<"$base_red")
 base_green_count=$(jq '[.[] | select(.conclusion == "success")] | length' <<<"$base_latest_per_wf")
 if [[ "$base_red_count" -gt 0 ]]; then
