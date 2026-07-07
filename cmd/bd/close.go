@@ -46,8 +46,7 @@ the flags appear in the command line.`,
 		}()
 
 		if usesProxiedServer() {
-			runCloseProxiedServer(cmd, rootCtx, args)
-			return nil
+			return runCloseProxiedServer(cmd, rootCtx, args)
 		}
 
 		// If no IDs provided, use last touched issue

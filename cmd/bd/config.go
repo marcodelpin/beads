@@ -190,8 +190,7 @@ var configSetCmd = &cobra.Command{
 		}
 
 		if usesProxiedServer() {
-			runConfigSetProxiedServer(rootCtx, key, value)
-			return nil
+			return runConfigSetProxiedServer(rootCtx, key, value)
 		}
 
 		// Database-stored config requires direct mode
@@ -307,8 +306,7 @@ var configGetCmd = &cobra.Command{
 		}
 
 		if usesProxiedServer() {
-			runConfigGetProxiedServer(rootCtx, key)
-			return nil
+			return runConfigGetProxiedServer(rootCtx, key)
 		}
 
 		// Database-stored config requires direct mode
@@ -355,8 +353,7 @@ var configListCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			runConfigListProxiedServer(rootCtx)
-			return nil
+			return runConfigListProxiedServer(rootCtx)
 		}
 
 		// Config operations work in direct mode only
@@ -529,8 +526,7 @@ var configUnsetCmd = &cobra.Command{
 		}
 
 		if usesProxiedServer() {
-			runConfigUnsetProxiedServer(rootCtx, key)
-			return nil
+			return runConfigUnsetProxiedServer(rootCtx, key)
 		}
 
 		// Database-stored config requires direct mode
@@ -809,7 +805,9 @@ Examples:
 					keys[i] = p.key
 					values[i] = p.value
 				}
-				runConfigSetManyProxiedServer(rootCtx, keys, values)
+				if err := runConfigSetManyProxiedServer(rootCtx, keys, values); err != nil {
+					return err
+				}
 			} else {
 				if err := ensureDirectMode("config set-many requires direct database access"); err != nil {
 					return HandleError("%v", err)

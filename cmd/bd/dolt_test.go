@@ -1732,8 +1732,7 @@ func TestNoPushSkipsDoltPush(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() error {
-		doltPushCmd.Run(doltPushCmd, nil)
-		return nil
+		return doltPushCmd.RunE(doltPushCmd, nil)
 	})
 
 	if fake.pushCalled {
@@ -1770,8 +1769,7 @@ func TestNoPushDoesNotSkipDoltPull(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() error {
-		doltPullCmd.Run(doltPullCmd, nil)
-		return nil
+		return doltPullCmd.RunE(doltPullCmd, nil)
 	})
 
 	if !fake.pullCalled {

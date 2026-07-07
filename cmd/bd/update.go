@@ -41,8 +41,7 @@ create, update, show, or close operation).`,
 		}()
 
 		if usesProxiedServer() {
-			runUpdateProxiedServer(cmd, rootCtx, args)
-			return nil
+			return runUpdateProxiedServer(cmd, rootCtx, args)
 		}
 
 		// If no IDs provided, use last touched issue

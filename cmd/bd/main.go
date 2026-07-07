@@ -1016,8 +1016,7 @@ var rootCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "Error: no beads database found\n")
 					fmt.Fprintf(os.Stderr, "Hint: %s\n", diagHint())
 					fmt.Fprintf(os.Stderr, "      or set BEADS_DIR to point to your .beads directory\n")
-					metrics.CloseAndFlush()
-					os.Exit(1)
+					return SilentExit()
 				}
 
 				if dbPath == "" {
@@ -1105,7 +1104,7 @@ var rootCmd = &cobra.Command{
 		// the fresh-repo embedded default below.
 		cfg, cfgErr := configfile.Load(beadsDir)
 		if cfgErr != nil {
-			FatalError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
+			return HandleError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
 		}
 		if cfg != nil {
 			warnSharedServerEmbeddedMismatch(cfg)
@@ -1232,8 +1231,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			// Check for fresh clone scenario
 			if handleFreshCloneError(err) {
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
 			// Schema skew gets dedicated UX with actionable rebuild instructions.
 			var skewErr *schema.SchemaSkewError
@@ -1243,8 +1241,7 @@ var rootCmd = &cobra.Command{
 				} else {
 					fmt.Fprint(os.Stderr, skewErr.UserMessage())
 				}
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
 			// #4259: the remote-migrate gate blocks silent in-place migration of a
 			// remote-backed database and tells the operator to migrate-or-adopt.
@@ -1255,8 +1252,7 @@ var rootCmd = &cobra.Command{
 				} else {
 					fmt.Fprint(os.Stderr, gateErr.UserMessage())
 				}
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
 			return HandleError("failed to open database: %v", err)
 		}
@@ -1283,7 +1279,9 @@ var rootCmd = &cobra.Command{
 		// Skip for --global: the global database uses a sentinel project ID
 		// that won't match any project's metadata.json.
 		if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
-			validateWorkspaceIdentity(rootCtx, beadsDir)
+			if err := validateWorkspaceIdentity(rootCtx, beadsDir); err != nil {
+				return err
+			}
 		}
 
 		// Initialize hook runner
@@ -1568,25 +1566,25 @@ func flushBatchCommitOnShutdown() {
 // 1. Read commands are safe even against wrong databases (no data mutation)
 // 2. The check requires an open store connection
 // 3. New databases won't have _project_id yet (bootstrap case)
-func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
+func validateWorkspaceIdentity(ctx context.Context, beadsDir string) error {
 	if store == nil {
-		return // No store connection, nothing to validate
+		return nil // No store connection, nothing to validate
 	}
 
 	// Load project_id from metadata.json
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil || cfg == nil {
-		return // No config, skip validation (fresh init)
+		return nil // No config, skip validation (fresh init)
 	}
 	configProjectID := cfg.ProjectID
 	if configProjectID == "" {
-		return // No project_id in config (pre-identity era)
+		return nil // No project_id in config (pre-identity era)
 	}
 
 	// Get project_id from database
 	dbProjectID, err := store.GetMetadata(ctx, "_project_id")
 	if err != nil || dbProjectID == "" {
-		return // No project_id in DB (new or pre-identity database)
+		return nil // No project_id in DB (new or pre-identity database)
 	}
 
 	// Compare: mismatch means drift
@@ -1602,9 +1600,9 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 		fmt.Fprintf(os.Stderr, "Recovery: run 'bd doctor --fix' or 'bd bootstrap' to reconcile workspace metadata with the authoritative database when shared-server metadata drifted.\n")
 		fmt.Fprintf(os.Stderr, "To diagnose: bd context --json\n")
 		fmt.Fprintf(os.Stderr, "To override: set BEADS_SKIP_IDENTITY_CHECK=1\n")
-		metrics.CloseAndFlush()
-		os.Exit(1)
+		return SilentExit()
 	}
+	return nil
 }
 
 func main() {

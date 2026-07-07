@@ -49,8 +49,7 @@ var createCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			runCreateProxiedServer(cmd, rootCtx, in)
-			return nil
+			return runCreateProxiedServer(cmd, rootCtx, in)
 		}
 		file, _ := cmd.Flags().GetString("file")
 		graphFile, _ := cmd.Flags().GetString("graph")

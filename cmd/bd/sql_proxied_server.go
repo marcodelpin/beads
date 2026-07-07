@@ -28,7 +28,7 @@ func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) erro
 	CheckReadonly("sql")
 
 	if uowProvider == nil {
-		FatalError("proxied-server UOW provider not initialized")
+		return HandleError("proxied-server UOW provider not initialized")
 	}
 
 	uw, err := uowProvider.NewUOW(ctx)

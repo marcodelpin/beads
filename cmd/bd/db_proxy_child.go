@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -71,7 +70,7 @@ not intended to be invoked directly by users.`,
 		})
 		if err := p.ListenAndServe(cmd.Context()); err != nil {
 			if errors.Is(err, proxy.ErrLockHeld) {
-				os.Exit(proxy.LockHeldExitCode)
+				return &exitError{Code: proxy.LockHeldExitCode}
 			}
 			return err
 		}
