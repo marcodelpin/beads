@@ -24,7 +24,7 @@ func runDoltRemoteRemoveProxied(ctx context.Context, name string) error {
 		} else {
 			fmt.Fprintf(os.Stderr, "Error removing remote: %v\n", err)
 		}
-		os.Exit(1)
+		return SilentExit()
 	}
 
 	if err := uw.Commit(ctx, fmt.Sprintf("bd: remove remote %s", name)); err != nil && !isDoltNothingToCommit(err) {

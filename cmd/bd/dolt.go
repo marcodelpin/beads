@@ -106,8 +106,7 @@ Examples:
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !usesSQLServer() {
-			fmt.Fprintln(os.Stderr, "Error: 'bd dolt set' is not supported in embedded mode (no Dolt server)")
-			os.Exit(1)
+			return HandleError("'bd dolt set' is not supported in embedded mode (no Dolt server)")
 		}
 		key := args[0]
 		value := args[1]
@@ -130,8 +129,7 @@ This verifies that:
 Use this before switching to server mode to ensure the server is running.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !usesSQLServer() {
-			fmt.Fprintln(os.Stderr, "Error: 'bd dolt test' is not supported in embedded mode (no Dolt server)")
-			os.Exit(1)
+			return HandleError("'bd dolt test' is not supported in embedded mode (no Dolt server)")
 		}
 		return testDoltConnection()
 	},
@@ -328,8 +326,10 @@ func printDivergedHistoryGuidance(operation string) {
 }
 
 var doltPushCmd = &cobra.Command{
-	Use:   "push",
-	Short: "Push commits to Dolt remote",
+	Use:           "push",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "Push commits to Dolt remote",
 	Long: `Push local Dolt commits to the configured remote.
 
 Requires a Dolt remote to be configured in the database directory.
@@ -341,28 +341,27 @@ uncommitted changes in its working set).
 
 Use --remote to push to a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if config.GetBool("no-push") {
 			fmt.Println("skipping push: rig is local-only (no-push: true)")
-			return
+			return nil
 		}
 		if isDoltLocalOnly() {
 			if jsonOutput {
 				if err := outputJSONRaw(map[string]string{"status": "disabled", "reason": "dolt.local-only=true"}); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				}
-				return
+				return nil
 			}
 			fmt.Println("Remote sync is disabled for this project (dolt.local-only=true).")
 			fmt.Println("Your issues are stored locally in .beads/.")
 			fmt.Println("To re-enable remote sync: bd config unset dolt.local-only")
-			return
+			return nil
 		}
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			return HandleError("no store available")
 		}
 		force, _ := cmd.Flags().GetBool("force")
 		remote, _ := cmd.Flags().GetString("remote")
@@ -379,14 +378,13 @@ The remote must already exist (see 'bd dolt remote add').`,
 				} else if isDivergedHistoryErr(err) {
 					printDivergedHistoryGuidance("push --force")
 				}
-				os.Exit(1)
+				return SilentExit()
 			}
 			fmt.Println("Push complete.")
-			return
+			return nil
 		}
 		if adopted, err := adoptGitOriginRemoteForPush(ctx, st); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to adopt git origin as Dolt remote: %v\n", err)
-			os.Exit(1)
+			return HandleError("failed to adopt git origin as Dolt remote: %v", err)
 		} else if adopted {
 			fmt.Println("Configured Dolt remote origin from git origin.")
 		}
@@ -401,7 +399,7 @@ The remote must already exist (see 'bd dolt remote add').`,
 		if pushErr != nil {
 			if isConfirmedNoRemote(ctx, st, pushErr) {
 				printNoRemoteGuidance()
-				return
+				return nil
 			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", pushErr)
 			if isAncestorPKMismatchErr(pushErr) {
@@ -413,15 +411,18 @@ The remote must already exist (see 'bd dolt remote add').`,
 				}
 				printDivergedHistoryGuidance(op)
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 		fmt.Println("Push complete.")
+		return nil
 	},
 }
 
 var doltPullCmd = &cobra.Command{
-	Use:   "pull",
-	Short: "Pull commits from Dolt remote",
+	Use:           "pull",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "Pull commits from Dolt remote",
 	Long: `Pull commits from the configured Dolt remote into the local database.
 
 Requires a Dolt remote to be configured in the database directory.
@@ -430,24 +431,23 @@ variables for authentication.
 
 Use --remote to pull from a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if isDoltLocalOnly() {
 			if jsonOutput {
 				if err := outputJSONRaw(map[string]string{"status": "disabled", "reason": "dolt.local-only=true"}); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				}
-				return
+				return nil
 			}
 			fmt.Println("Remote sync is disabled for this project (dolt.local-only=true).")
 			fmt.Println("Nothing to pull.")
 			fmt.Println("To re-enable remote sync: bd config unset dolt.local-only")
-			return
+			return nil
 		}
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			return HandleError("no store available")
 		}
 		remote, _ := cmd.Flags().GetString("remote")
 		if remote != "" {
@@ -463,16 +463,16 @@ The remote must already exist (see 'bd dolt remote add').`,
 				} else if isDivergedHistoryErr(err) {
 					printDivergedHistoryGuidance("pull")
 				}
-				os.Exit(1)
+				return SilentExit()
 			}
 			fmt.Println("Pull complete.")
-			return
+			return nil
 		}
 		fmt.Println("Pulling from Dolt remote...")
 		if err := st.Pull(ctx); err != nil {
 			if isConfirmedNoRemote(ctx, st, err) {
 				printNoRemoteGuidance()
-				return
+				return nil
 			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			if isAncestorPKMismatchErr(err) {
@@ -480,9 +480,10 @@ The remote must already exist (see 'bd dolt remote add').`,
 			} else if isDivergedHistoryErr(err) {
 				printDivergedHistoryGuidance("pull")
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 		fmt.Println("Pull complete.")
+		return nil
 	},
 }
 
@@ -499,12 +500,13 @@ Also useful before push operations that require a clean working set, or when
 auto-commit was off or changes were made externally.
 
 For more options (--stdin, custom messages), see: bd vc commit`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			return HandleError("no store available")
 		}
 		msg, _ := cmd.Flags().GetString("message")
 		if msg == "" {
@@ -513,13 +515,13 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 		if err := st.Commit(ctx, msg); err != nil {
 			if isDoltNothingToCommit(err) {
 				fmt.Println("Nothing to commit.")
-				return
+				return nil
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return HandleError("%v", err)
 		}
 		commandDidExplicitDoltCommit = true
 		fmt.Println("Committed.")
+		return nil
 	},
 }
 
@@ -537,8 +539,7 @@ The server auto-starts transparently when needed, so manual start is rarely
 required. Use this command for explicit control or diagnostics.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !usesSQLServer() {
-			fmt.Fprintln(os.Stderr, "Error: 'bd dolt start' is not supported in embedded mode (no Dolt server)")
-			os.Exit(1)
+			return HandleError("'bd dolt start' is not supported in embedded mode (no Dolt server)")
 		}
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
@@ -552,8 +553,7 @@ required. Use this command for explicit control or diagnostics.`,
 				fmt.Println(err)
 				return nil
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return HandleError("%v", err)
 		}
 
 		fmt.Printf("Dolt server started (PID %d, port %d)\n", state.PID, state.Port)
@@ -582,8 +582,7 @@ This sends a graceful shutdown signal. The server will restart automatically
 on the next bd command unless auto-start is disabled.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !usesSQLServer() {
-			fmt.Fprintln(os.Stderr, "Error: 'bd dolt stop' is not supported in embedded mode (no Dolt server)")
-			os.Exit(1)
+			return HandleError("'bd dolt stop' is not supported in embedded mode (no Dolt server)")
 		}
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
@@ -593,8 +592,7 @@ on the next bd command unless auto-start is disabled.`,
 		force, _ := cmd.Flags().GetBool("force")
 
 		if err := doltserver.StopWithForce(serverDir, force); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return HandleError("%v", err)
 		}
 		fmt.Println("Dolt server stopped.")
 		return nil
@@ -655,8 +653,7 @@ endpoint via SQL and reports reachability, server version, and database.`,
 
 		state, err := doltserver.IsRunning(serverDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return HandleError("%v", err)
 		}
 		renderLocalDoltStatus(state, serverDir)
 		return nil
@@ -894,10 +891,11 @@ orphans and will be killed.
 In standalone mode, only dolt sql-server processes using the current
 project's Dolt data directory are eligible for cleanup. Other projects'
 servers are preserved.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if !usesSQLServer() {
-			fmt.Fprintln(os.Stderr, "Error: 'bd dolt killall' is not supported in embedded mode (no Dolt server)")
-			os.Exit(1)
+			return HandleError("'bd dolt killall' is not supported in embedded mode (no Dolt server)")
 		}
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
@@ -906,8 +904,7 @@ servers are preserved.`,
 
 		killed, err := doltserver.KillStaleServers(beadsDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return HandleError("%v", err)
 		}
 
 		if len(killed) == 0 {
@@ -915,6 +912,7 @@ servers are preserved.`,
 		} else {
 			fmt.Printf("Killed %d orphan dolt server(s): %v\n", len(killed), killed)
 		}
+		return nil
 	},
 }
 
@@ -962,8 +960,7 @@ These waste server memory and can degrade performance under concurrent load.
 Use --dry-run to see what would be dropped without actually dropping.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !usesSQLServer() {
-			fmt.Fprintln(os.Stderr, "Error: 'bd dolt clean-databases' is not supported in embedded mode (no Dolt server)")
-			os.Exit(1)
+			return HandleError("'bd dolt clean-databases' is not supported in embedded mode (no Dolt server)")
 		}
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
@@ -980,8 +977,7 @@ Use --dry-run to see what would be dropped without actually dropping.`,
 
 		rows, err := db.QueryContext(listCtx, "SHOW DATABASES")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error listing databases: %v\n", err)
-			os.Exit(1)
+			return HandleError("listing databases: %v", err)
 		}
 		defer rows.Close()
 
@@ -1040,7 +1036,7 @@ Use --dry-run to see what would be dropped without actually dropping.`,
 			if failures >= maxConsecFailures {
 				fmt.Fprintf(os.Stderr, "\n✗ Aborting: %d consecutive failures suggest server is unhealthy.\n", failures)
 				fmt.Fprintf(os.Stderr, "  Dropped %d/%d before stopping.\n", dropped, len(stale))
-				os.Exit(1)
+				return SilentExit()
 			}
 
 			// Per-operation timeout: DROP DATABASE can be slow on Dolt
@@ -1163,7 +1159,7 @@ var doltRemoteAddCmd = &cobra.Command{
 		if isDoltLocalOnly() {
 			fmt.Fprintln(os.Stderr, "Error: cannot add Dolt remote: remote sync is disabled (dolt.local-only=true).")
 			fmt.Fprintln(os.Stderr, "To re-enable remote sync: bd config unset dolt.local-only")
-			os.Exit(1)
+			return SilentExit()
 		}
 		allowGitOrigin, _ := cmd.Flags().GetBool("allow-git-origin")
 		if doltRemoteMatchesGitOrigin(args[1]) {
@@ -1171,15 +1167,14 @@ var doltRemoteAddCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "Error: refusing to add %q as a Dolt remote — this URL matches the git origin.\n", args[1])
 				fmt.Fprintln(os.Stderr, "  Hint: use --allow-git-origin to proceed anyway (e.g. monorepo layout).")
 				fmt.Fprintln(os.Stderr, "  Hint: or set dolt.local-only=true to disable remote sync entirely.")
-				os.Exit(1)
+				return SilentExit()
 			}
 			fmt.Fprintf(os.Stderr, "Warning: %q matches the git origin — proceeding because --allow-git-origin is set.\n", args[1])
 		}
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			return HandleError("no store available")
 		}
 		name, url := args[0], args[1]
 
@@ -1190,7 +1185,7 @@ var doltRemoteAddCmd = &cobra.Command{
 			} else {
 				fmt.Fprintf(os.Stderr, "Error adding remote: %v\n", err)
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 		if result.Canceled {
 			fmt.Println("Canceled.")
@@ -1221,14 +1216,15 @@ var doltRemoteAddCmd = &cobra.Command{
 }
 
 var doltRemoteListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List configured Dolt remotes",
-	Run: func(cmd *cobra.Command, args []string) {
+	Use:           "list",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "List configured Dolt remotes",
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			return HandleError("no store available")
 		}
 
 		remotes, err := st.ListRemotes(ctx)
@@ -1238,24 +1234,25 @@ var doltRemoteListCmd = &cobra.Command{
 			} else {
 				fmt.Fprintf(os.Stderr, "Error listing remotes: %v\n", err)
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 
 		if jsonOutput {
 			if err := outputJSON(formatDoltRemoteListJSON(remotes)); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			}
-			return
+			return nil
 		}
 
 		if len(remotes) == 0 {
 			fmt.Println("No remotes configured.")
-			return
+			return nil
 		}
 
 		for _, r := range remotes {
 			fmt.Printf("%-20s %s\n", r.Name, r.URL)
 		}
+		return nil
 	},
 }
 
@@ -1296,8 +1293,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			return HandleError("no store available")
 		}
 
 		if err := st.RemoveRemote(ctx, name); err != nil {
@@ -1306,7 +1302,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 			} else {
 				fmt.Fprintf(os.Stderr, "Error removing remote: %v\n", err)
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 
 		if name == "origin" {
@@ -1401,8 +1397,7 @@ func showDoltConfig(testConnection bool) error {
 
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return HandleError("loading config: %v", err)
 	}
 	if cfg == nil {
 		cfg = configfile.DefaultConfig()
@@ -1507,16 +1502,14 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return HandleError("loading config: %v", err)
 	}
 	if cfg == nil {
 		cfg = configfile.DefaultConfig()
 	}
 
 	if cfg.GetBackend() != configfile.BackendDolt {
-		fmt.Fprintf(os.Stderr, "Error: not using Dolt backend\n")
-		os.Exit(1)
+		return HandleError("not using Dolt backend")
 	}
 
 	var yamlKey string
@@ -1525,21 +1518,18 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 	case "mode":
 		// Mode will be configurable again when embedded Dolt support returns.
 		// For now, server mode is required (embedded driver not yet re-integrated).
-		fmt.Fprintf(os.Stderr, "Error: mode is not yet configurable; embedded mode is coming soon\n")
-		os.Exit(1)
+		return HandleError("mode is not yet configurable; embedded mode is coming soon")
 
 	case "database":
 		if value == "" {
-			fmt.Fprintf(os.Stderr, "Error: database name cannot be empty\n")
-			os.Exit(1)
+			return HandleError("database name cannot be empty")
 		}
 		cfg.DoltDatabase = value
 		yamlKey = "dolt.database"
 
 	case "host":
 		if value == "" {
-			fmt.Fprintf(os.Stderr, "Error: host cannot be empty\n")
-			os.Exit(1)
+			return HandleError("host cannot be empty")
 		}
 		cfg.DoltServerHost = value
 		yamlKey = "dolt.host"
@@ -1547,8 +1537,7 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 	case "port":
 		port, err := strconv.Atoi(value)
 		if err != nil || port <= 0 || port > 65535 {
-			fmt.Fprintf(os.Stderr, "Error: port must be a valid port number (1-65535)\n")
-			os.Exit(1)
+			return HandleError("port must be a valid port number (1-65535)")
 		}
 		cfg.DoltServerPort = port
 		yamlKey = "dolt.port"
@@ -1560,8 +1549,7 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 
 	case "user":
 		if value == "" {
-			fmt.Fprintf(os.Stderr, "Error: user cannot be empty\n")
-			os.Exit(1)
+			return HandleError("user cannot be empty")
 		}
 		cfg.DoltServerUser = value
 		yamlKey = "dolt.user"
@@ -1578,15 +1566,14 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 			fmt.Fprintf(os.Stderr, "from the configured database '%s'.\n", cfg.GetDoltDatabase())
 			fmt.Fprintf(os.Stderr, "\nTo change which database to use:\n")
 			fmt.Fprintf(os.Stderr, "  bd dolt set database <name>\n")
-			os.Exit(1)
+			return SilentExit()
 		}
 		if value == "" {
 			// Allow clearing the custom data dir (revert to default .beads/dolt)
 			cfg.DoltDataDir = ""
 		} else {
 			if !filepath.IsAbs(value) {
-				fmt.Fprintf(os.Stderr, "Error: data-dir must be an absolute path\n")
-				os.Exit(1)
+				return HandleError("data-dir must be an absolute path")
 			}
 			cfg.DoltDataDir = value
 			// Absolute paths are machine-specific and won't be persisted to
@@ -1601,13 +1588,11 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 	case "shared-server":
 		lower := strings.ToLower(value)
 		if lower != "true" && lower != "false" {
-			fmt.Fprintf(os.Stderr, "Error: shared-server must be 'true' or 'false'\n")
-			os.Exit(1)
+			return HandleError("shared-server must be 'true' or 'false'")
 		}
 		// shared-server is yaml-only (not stored in metadata.json)
 		if err := config.SetYamlConfig("dolt.shared-server", lower); err != nil {
-			fmt.Fprintf(os.Stderr, "Error setting shared-server: %v\n", err)
-			os.Exit(1)
+			return HandleError("setting shared-server: %v", err)
 		}
 		if jsonOutput {
 			if err := outputJSON(map[string]interface{}{
@@ -1631,7 +1616,7 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown key '%s'\n", key)
 		fmt.Fprintf(os.Stderr, "Valid keys: database, host, port, socket, user, data-dir, shared-server\n")
-		os.Exit(1)
+		return SilentExit()
 	}
 
 	// Audit log: record who changed what
@@ -1639,8 +1624,7 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 
 	// Save to metadata.json
 	if err := cfg.Save(beadsDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		os.Exit(1)
+		return HandleError("saving config: %v", err)
 	}
 
 	if jsonOutput {
@@ -1679,16 +1663,14 @@ func testDoltConnection() error {
 
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return HandleError("loading config: %v", err)
 	}
 	if cfg == nil {
 		cfg = configfile.DefaultConfig()
 	}
 
 	if cfg.GetBackend() != configfile.BackendDolt {
-		fmt.Fprintf(os.Stderr, "Error: not using Dolt backend\n")
-		os.Exit(1)
+		return HandleError("not using Dolt backend")
 	}
 
 	host := cfg.GetDoltServerHost()
@@ -1705,7 +1687,7 @@ func testDoltConnection() error {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
 		if !ok {
-			os.Exit(1)
+			return SilentExit()
 		}
 		return nil
 	}
@@ -1717,7 +1699,7 @@ func testDoltConnection() error {
 	} else {
 		fmt.Printf("%s\n", ui.RenderWarn("✗ Connection failed"))
 		fmt.Println("\nStart the server with: bd dolt start")
-		os.Exit(1)
+		return SilentExit()
 	}
 
 	// Test remote connectivity
@@ -1850,8 +1832,7 @@ func openDoltServerConnection() (*sql.DB, func(), error) {
 
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return nil, nil, HandleError("loading config: %v", err)
 	}
 	if cfg == nil {
 		cfg = configfile.DefaultConfig()
@@ -1872,8 +1853,7 @@ func openDoltServerConnection() (*sql.DB, func(), error) {
 
 	db, err := sql.Open("mysql", connStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to Dolt server: %v\n", err)
-		os.Exit(1)
+		return nil, nil, HandleError("connecting to Dolt server: %v", err)
 	}
 
 	db.SetMaxOpenConns(2)
@@ -1887,7 +1867,7 @@ func openDoltServerConnection() (*sql.DB, func(), error) {
 		_ = db.Close()
 		fmt.Fprintf(os.Stderr, "Error: cannot reach Dolt server at %s:%d: %v\n", host, port, err)
 		fmt.Fprintln(os.Stderr, "Start the server with: bd dolt start")
-		os.Exit(1)
+		return nil, nil, SilentExit()
 	}
 
 	return db, func() { _ = db.Close() }, nil

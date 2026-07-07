@@ -55,7 +55,7 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		_ = outputJSON(updated)
 	}
 	if !anyUpdated {
-		os.Exit(1)
+		return SilentExit()
 	}
 	return nil
 }

@@ -79,13 +79,12 @@ Examples:
 
 		if jsonOutput && len(unclaimedIssues) > 0 {
 			if err := outputJSON(unclaimedIssues); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
+				return HandleError("%v", err)
 			}
 		}
 
 		if hasError {
-			os.Exit(1)
+			return SilentExit()
 		}
 		return nil
 	},

@@ -470,7 +470,7 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 			return HandleErrorRespectJSON("no issues found matching the provided IDs")
 		}
 	} else if foundCount == 0 {
-		os.Exit(1)
+		return SilentExit()
 	}
 	return nil
 }

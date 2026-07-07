@@ -142,7 +142,7 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	}
 
 	if len(args) > 0 && len(outcomes) == 0 {
-		os.Exit(1)
+		return SilentExit()
 	}
 	return nil
 }
