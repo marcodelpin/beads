@@ -10,13 +10,11 @@ import (
 
 func runDoltRemoteRemoveProxied(ctx context.Context, name string) {
 	if uowProvider == nil {
-		fmt.Fprintf(os.Stderr, "Error: proxied-server UOW provider not initialized\n")
-		os.Exit(1)
+		FatalError("proxied-server UOW provider not initialized")
 	}
 	uw, err := uowProvider.NewUOW(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening unit of work: %v\n", err)
-		os.Exit(1)
+		FatalErrorRespectJSON("open unit of work: %v", err)
 	}
 	defer uw.Close(ctx)
 
@@ -30,8 +28,7 @@ func runDoltRemoteRemoveProxied(ctx context.Context, name string) {
 	}
 
 	if err := uw.Commit(ctx, fmt.Sprintf("bd: remove remote %s", name)); err != nil && !isDoltNothingToCommit(err) {
-		fmt.Fprintf(os.Stderr, "Error committing remote removal: %v\n", err)
-		os.Exit(1)
+		FatalErrorRespectJSON("commit: %v", err)
 	}
 
 	if name == "origin" {

@@ -83,5 +83,9 @@ func TestProxiedServerDoltRemoteRemove(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error removing nonexistent remote, got:\n%s", out)
 		}
+		s := string(out)
+		if !strings.Contains(s, "removing remote") || !strings.Contains(s, "ghost") {
+			t.Errorf("expected a remove-failure error naming %q, got:\n%s", "ghost", s)
+		}
 	})
 }
