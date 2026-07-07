@@ -866,9 +866,9 @@ Examples:
 // Keys under custom.* are always accepted (user-extensible).
 var recognizedConfigPrefixes = []string{
 	"export.", "import.", "dolt.", "jira.", "linear.", "github.", "custom.",
-	"status.", "doctor.suppress.", "routing.", "sync.", "git.",
+	"status.", "types.", "doctor.suppress.", "routing.", "sync.", "git.",
 	"directory.", "repos.", "external_projects.", "validation.",
-	"hierarchy.", "ai.", "backup.", "federation.", "metrics.",
+	"hierarchy.", "ai.", "backup.", "federation.", "metrics.", "agent.",
 }
 
 // recognizedConfigKeys lists valid non-namespaced config keys.

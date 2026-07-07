@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // warmupCobraFlags forces cobra/pflag's lazy mergePersistentFlags() to run once,
@@ -67,6 +68,18 @@ var testTempRoot string
 // directories get reaped by testMainInner's deferred cleanup.
 func testTempDir(pattern string) (string, error) {
 	return os.MkdirTemp(testTempRoot, pattern)
+}
+
+// runTestsAndSweep runs the suite and then best-effort reaps any dolt
+// sql-server left running under testTempRoot (e.g. auto-started by a CLI
+// test's embedded `bd` invocation, if a SIGKILLed run left one behind).
+// This is the suite most likely to leak — most e2e tests here run a real
+// `bd` binary against a `.beads` dir under testTempRoot with auto-start
+// enabled. See gastownhall/beads mybd-q6cz.
+func runTestsAndSweep(m *testing.M) int {
+	code := m.Run()
+	doltserver.SweepOrphanedTestServers(testTempRoot)
+	return code
 }
 
 // Guardrail: ensure the cmd/bd test suite does not touch the real repo .beads state.
@@ -158,17 +171,17 @@ func testMainInner(m *testing.M) int {
 	warmupCobraFlags()
 
 	if os.Getenv("BEADS_TEST_GUARD_DISABLE") != "" {
-		return m.Run()
+		return runTestsAndSweep(m)
 	}
 
 	repoRoot := findRepoRootFrom(origWD)
 	if repoRoot == "" {
-		return m.Run()
+		return runTestsAndSweep(m)
 	}
 
 	repoBeadsDir := filepath.Join(repoRoot, ".beads")
 	if _, err := os.Stat(repoBeadsDir); err != nil {
-		return m.Run()
+		return runTestsAndSweep(m)
 	}
 
 	watch := []string{
@@ -185,7 +198,7 @@ func testMainInner(m *testing.M) int {
 	}
 
 	before := snapshotFiles(repoBeadsDir, watch)
-	code := m.Run()
+	code := runTestsAndSweep(m)
 	after := snapshotFiles(repoBeadsDir, watch)
 
 	if diff := diffSnapshots(before, after); diff != "" {

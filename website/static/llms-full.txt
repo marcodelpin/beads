@@ -13350,37 +13350,47 @@ bd restore bd-42 --to-file issue.json
 
 ## Database Inspection
 
+`bd sql` requires Dolt server mode (`bd dolt start`, see Performance Tuning
+below); it is not available against the default embedded-mode database.
+
 ```bash
 # Schema info
 bd info --schema --json
 
-# Raw database query (advanced — requires dolt sql-server running)
-bd dolt sql "SELECT * FROM issues LIMIT 5"
+# Raw database query (server mode only)
+bd sql "SELECT * FROM issues LIMIT 5"
 ```
 
-## Custom Tables
+## Extension Data
 
-Extend the database with custom tables:
-
-```go
-// In Go code using beads as library
-storage.UnderlyingDB().Exec(`
-  CREATE TABLE IF NOT EXISTS custom_table (...)
-`)
-```
-
-See the [bd-example-extension-go example](https://github.com/gastownhall/beads/blob/main/examples/bd-example-extension-go/README.md) for a working extension.
-
-## Event System
-
-Subscribe to beads events:
+For Dolt-backed projects, keep extension state outside the beads database and
+connect it to beads through stable CLI surfaces:
 
 ```bash
-# View recent events
-bd events list --since 1h
+# Query issues for integration workflows
+bd list --json
+bd query "status=open AND priority<=2" --json
 
-# Watch events in real-time
-bd events watch
+# Run direct SQL for inspection (server mode only)
+bd sql "SELECT id, title, status FROM issues LIMIT 5"
+```
+
+Custom tables through direct storage access are a legacy SQLite-only pattern.
+See the [bd-example-extension-go example](https://github.com/gastownhall/beads/blob/main/examples/bd-example-extension-go/README.md)
+only if you are maintaining a SQLite-backed extension.
+
+## Audit Data
+
+Beads records issue lifecycle events in the database for audit and recovery
+workflows. There is no standalone `bd events` command; inspect current issue
+state through JSON output, or query the audit tables directly when needed:
+
+```bash
+# Current issue state
+bd show bd-a1b2 --json
+
+# Recent stored events for one issue (server mode only)
+bd sql "SELECT event_type, actor, created_at FROM events WHERE issue_id = 'bd-a1b2' ORDER BY created_at DESC LIMIT 20"
 ```
 
 Events:
@@ -13415,17 +13425,22 @@ bd list --label "sprint-1" --status open --json | \
   xargs -I {} bd close {} --reason "Sprint complete"
 ```
 
-## API Access
+## Integration Access
 
-Use beads as a Go library:
+Use the CLI as the supported integration boundary:
 
-```go
-import "github.com/steveyegge/beads/internal/storage/embeddeddolt"
+```bash
+# Machine-readable issue data
+bd show bd-a1b2 --json
 
-store, _ := embeddeddolt.New(ctx, ".beads", "beads", "main")
-defer store.Close()
-issue, _ := store.GetIssue(ctx, "bd-a1b2")
+# Ready-work queue for automation
+bd ready --json
+
+# Direct SQL inspection against the active Dolt database (server mode only)
+bd sql "SELECT id, priority, status FROM issues WHERE status != 'closed'"
 ```
+
+The storage packages under `internal/` are not a public Go API.
 
 ## Performance Tuning
 
@@ -14172,17 +14187,27 @@ bd doctor --fix
 
 ## Protected Branches
 
-Dolt stores data under `refs/dolt/data`, separate from Git refs. This means beads data doesn't conflict with protected Git branches — no special branch flag is needed. On new projects with a git `origin`, `bd init` configures that origin as the Dolt remote automatically.
+Dolt stores data under `refs/dolt/data`, separate from Git refs. This means
+beads data does not conflict with protected Git branches, and no separate
+`beads-sync` branch or protected-branch exception is needed. On new projects
+with a Git `origin`, `bd init` configures that origin as the Dolt remote
+automatically.
 
 ## Git Worktrees
 
-Beads works in git worktrees using embedded mode:
+Beads works in Git worktrees without extra setup. Linked worktrees discover the
+repository's `.beads` workspace and sync issue data through Dolt:
 
 ```bash
-# In worktree — just run commands directly
+# In a linked worktree
 bd create "Task"
 bd list
+bd dolt pull
+bd dolt push
 ```
+
+Older beads versions documented a `sync.branch` workflow that created hidden
+Git worktrees. That workflow has been removed; current sync uses Dolt remotes.
 
 ## Branch Workflows
 
@@ -14227,7 +14252,7 @@ bd duplicates --auto-merge
 1. **Install hooks** - `bd hooks install`
 2. **Push regularly** - `bd dolt push` at session end
 3. **Pull before work** - `bd dolt pull` to get latest issues
-4. **Worktrees use embedded mode automatically**
+4. **Use normal Git worktrees** - no sync branch is required
 
 </document>
 
