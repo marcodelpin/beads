@@ -126,7 +126,6 @@ Memory injection caps:
 		primeMaxMemoriesSet = cmd.Flags().Changed("max-memories")
 		primeMaxMemoryCharsSet = cmd.Flags().Changed("max-memory-chars")
 
-
 		emit := func(content string) {
 			if primeHookJSONMode {
 				_ = outputHookJSON(os.Stdout, content)
