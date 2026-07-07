@@ -56,6 +56,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd todo add](#bd-todo-add) — Add a new TODO item
   - [bd todo done](#bd-todo-done) — Mark TODO(s) as done
   - [bd todo list](#bd-todo-list) — List TODO items
+- [bd unclaim](#bd-unclaim) — Release a claimed issue
 - [bd update](#bd-update) — Update one or more issues
 
 ### Views & Reports:
@@ -244,6 +245,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd formula](#bd-formula) — Manage workflow formulas
   - [bd formula convert](#bd-formula-convert) — Convert formula from JSON to TOML
   - [bd formula list](#bd-formula-list) — List available formulas
+  - [bd formula schema](#bd-formula-schema) — Show the formula schema index (every exported struct in types.go)
   - [bd formula show](#bd-formula-show) — Show formula details
 - [bd github](#bd-github) — GitHub integration commands
   - [bd github pull](#bd-github-pull) — Pull specific items from GitHub
@@ -1510,6 +1512,28 @@ bd todo list [flags]
       --all   Show all TODOs including completed
 ```
 
+### bd unclaim
+
+Release a claimed issue by clearing the assignee and resetting status to 'open'.
+
+Use this when an agent crashes mid-work or you need to abandon a claimed task.
+The issue becomes available for re-claiming by other agents.
+
+Examples:
+  bd unclaim bd-123
+  bd unclaim bd-123 --reason "Agent crashed"
+  bd unclaim bd-123 bd-456
+
+```
+bd unclaim [id...] [flags]
+```
+
+**Flags:**
+
+```
+  -r, --reason string   Reason for unclaiming
+```
+
 ### bd update
 
 Update one or more issues.
@@ -1709,7 +1733,11 @@ Section requirements by type:
   task:     Acceptance Criteria
   feature:  Acceptance Criteria
   epic:     Success Criteria
+  decision: Decision, Rationale, Alternatives Considered
+  spike:    Goal, Findings
+  story:    Acceptance Criteria
   chore:    (none)
+  milestone: (none)
 
 Examples:
   bd lint                    # Lint all open issues
@@ -4312,7 +4340,7 @@ bd preflight [flags]
 
 ```
       --check       Run checks automatically
-      --fix         Auto-fix issues where possible (not yet implemented)
+      --fix         Auto-fix issues where possible (vendorHash, version sync)
       --json        Output results as JSON
       --skip-lint   Skip lint check explicitly
 ```
@@ -5697,8 +5725,16 @@ Search paths (in order):
   4. $GT_ROOT/.beads/formulas/ (shared workspace root, if GT_ROOT set)
 
 Commands:
-  list   List available formulas from all search paths
-  show   Show formula details, steps, and composition rules
+  list    List available formulas from all search paths
+  show    Show formula details, steps, and composition rules
+  schema  Show the formula schema index (alias: primitives)
+
+Discovering primitives:
+  bd formula schema                 # list every declared formula struct
+  bd formula schema loop            # show LoopSpec fields, types, and tags
+  bd formula primitives gate        # alias; same handler as 'schema'
+  examples/formulas/primitives/     # curated, smoke-tested wired fixtures
+  website/docs/workflows/formulas.md  # narrative reference
 
 ```
 bd formula
@@ -5747,6 +5783,9 @@ Search paths (in order of priority):
 
 Formulas in earlier paths shadow those with the same name in later paths.
 
+To list the declared formula schema structs an agent can write inside a .formula.toml,
+use 'bd formula schema' (alias: 'bd formula primitives').
+
 Examples:
   bd formula list
   bd formula list --json
@@ -5763,6 +5802,30 @@ bd formula list [flags]
       --type string   Filter by type (workflow, expansion, aspect, convoy)
 ```
 
+#### bd formula schema
+
+Show the formula schema index: every exported struct declared
+in a .formula.toml/.formula.json, with field names, types, and tags.
+
+The index is generated from internal/formula/types.go via go:generate; the
+struct definitions are the source of truth, so this list cannot drift. It is
+structural reference, not proof that every declared runtime behavior is wired.
+
+Examples:
+  bd formula schema                 # list every declared schema struct
+  bd formula schema loop            # show LoopSpec fields
+  bd formula primitives gate        # alias; shows Gate fields
+  bd formula schema --json          # machine-readable index
+
+Curated smoke-tested fixtures for wired primitives live in
+examples/formulas/primitives/ (with a smoke harness that proves they work).
+
+```
+bd formula schema [primitive]
+```
+
+**Aliases:** primitives
+
 #### bd formula show
 
 Show detailed information about a formula.
@@ -5773,6 +5836,9 @@ Displays:
   - Steps with dependencies
   - Composition rules (extends, aspects, expansions)
   - Bond points for external composition
+
+To inspect the structure of an individual primitive (e.g. LoopSpec, Gate)
+rather than a user-authored formula, use 'bd formula schema &lt;primitive&gt;'.
 
 Examples:
   bd formula show shiny
