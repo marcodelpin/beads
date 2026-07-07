@@ -23,6 +23,11 @@ Config options:
 - no-git-ops: When true, outputs stealth mode (no git commands in session close protocol).
   Set via: bd config set no-git-ops true
   Useful when you want to control when commits happen manually.
+- agent.profile: Explicit policy profile for git/commit authority wording
+  (conservative | minimal | team-maintainer; default conservative).
+  Set via: bd config set agent.profile team-maintainer
+  Or per-session: BD_AGENT_PROFILE=team-maintainer (env var takes precedence).
+  See docs/SETUP.md#policy-profiles for what each profile means.
 
 	Workflow customization:
 	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default output entirely.
