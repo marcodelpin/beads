@@ -10,9 +10,11 @@ import (
 )
 
 var unclaimCmd = &cobra.Command{
-	Use:     "unclaim [id...]",
-	GroupID: "issues",
-	Short:   "Release a claimed issue",
+	Use:           "unclaim [id...]",
+	GroupID:       "issues",
+	Short:         "Release a claimed issue",
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	Long: `Release a claimed issue by clearing the assignee and resetting status to 'open'.
 
 Use this when an agent crashes mid-work or you need to abandon a claimed task.
@@ -23,7 +25,7 @@ Examples:
   bd unclaim bd-123 --reason "Agent crashed"
   bd unclaim bd-123 bd-456`,
 	Args: cobra.MinimumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("unclaim")
 		reason, _ := cmd.Flags().GetString("reason")
 		ctx := rootCtx
@@ -31,7 +33,7 @@ Examples:
 		unclaimedIssues := []*types.Issue{}
 		hasError := false
 		if store == nil {
-			FatalErrorWithHint("database not initialized",
+			return HandleErrorWithHint("database not initialized",
 				diagHint())
 		}
 		for _, id := range args {
@@ -85,6 +87,7 @@ Examples:
 		if hasError {
 			os.Exit(1)
 		}
+		return nil
 	},
 }
 

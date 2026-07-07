@@ -152,7 +152,7 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 
 	uw, err := uowProvider.NewUOW(ctx)
 	if err != nil {
-		FatalError("failed to open unit of work: %v", err)
+		return HandleError("failed to open unit of work: %v", err)
 	}
 	defer uw.Close(ctx)
 
@@ -179,11 +179,11 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 	}
 
 	if _, err := uw.BootstrapUseCase().BootstrapProject(ctx, bootstrapParams); err != nil {
-		FatalError("bootstrap project: %v", err)
+		return HandleError("bootstrap project: %v", err)
 	}
 
 	if err := uw.Commit(ctx, "bd init"); err != nil {
-		FatalError("commit init: %v", err)
+		return HandleError("commit init: %v", err)
 	}
 
 	return runInitProxiedServerTail(cmd, ctx, in, runInitTailContext{

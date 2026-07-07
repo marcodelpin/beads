@@ -36,8 +36,10 @@ var (
 )
 
 var compactCmd = &cobra.Command{
-	Use:   "compact",
-	Short: "Compact old closed issues to save space",
+	Use:           "compact",
+	Short:         "Compact old closed issues to save space",
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	Long: `Compact old closed issues using semantic summarization.
 
 Compaction reduces database size by summarizing closed issues that are no longer
@@ -78,11 +80,11 @@ Examples:
   # Statistics
   bd compact --stats                       # Show statistics
 `,
-	Run: func(_ *cobra.Command, _ []string) {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		// Block mutating operations in embedded mode; allow --stats, --analyze, --dry-run read-only paths.
 		if !compactStats && !compactAnalyze && !compactDryRun {
 			if err := requireServerMode("compact"); err != nil {
-				FatalError("%v", err)
+				return HandleError("%v", err)
 			}
 		}
 		// Compact modifies data unless --stats or --analyze or --dry-run or --dolt with --dry-run
@@ -94,13 +96,12 @@ Examples:
 		// Handle compact stats first
 		if compactStats {
 			runCompactStats(ctx, store)
-			return
+			return nil
 		}
 
 		// Handle dolt GC mode
 		if compactDolt {
-			runCompactDolt()
-			return
+			return runCompactDolt()
 		}
 
 		// Count active modes
@@ -140,7 +141,7 @@ Examples:
 				os.Exit(1)
 			}
 			runCompactAnalyze(ctx, store)
-			return
+			return nil
 		}
 
 		// Handle apply mode (requires direct database access)
@@ -159,7 +160,7 @@ Examples:
 				os.Exit(1)
 			}
 			runCompactApply(ctx, store)
-			return
+			return nil
 		}
 
 		// Handle auto mode (legacy)
@@ -202,11 +203,12 @@ Examples:
 
 			if compactID != "" {
 				runCompactSingle(ctx, compactor, store, compactID)
-				return
+				return nil
 			}
 
 			runCompactAll(ctx, compactor, store)
 		}
+		return nil
 	},
 }
 
@@ -771,13 +773,13 @@ func runCompactApply(ctx context.Context, store storage.DoltStorage) {
 }
 
 // runCompactDolt runs Dolt garbage collection on the .beads/dolt directory
-func runCompactDolt() {
+func runCompactDolt() error {
 	start := time.Now()
 
 	// Find beads directory
 	beadsDir := beads.FindBeadsDir()
 	if beadsDir == "" {
-		FatalErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 	}
 
 	// Check for dolt directory
@@ -793,12 +795,12 @@ func runCompactDolt() {
 				if err := outputJSON(output); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				}
-				return
+				return nil
 			}
 			fmt.Printf("DRY RUN - Dolt garbage collection\n\n")
 			fmt.Printf("Dolt directory: %s\n", doltPath)
 			fmt.Printf("No local Dolt directory found; nothing to collect.\n")
-			return
+			return nil
 		}
 		fmt.Fprintf(os.Stderr, "Error: Dolt directory not found at %s\n", doltPath)
 		fmt.Fprintf(os.Stderr, "Hint: --dolt flag is only for repositories using the Dolt backend\n")
@@ -823,13 +825,13 @@ func runCompactDolt() {
 			if err := outputJSON(output); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			}
-			return
+			return nil
 		}
 		fmt.Printf("DRY RUN - Dolt garbage collection\n\n")
 		fmt.Printf("Dolt directory: %s\n", doltPath)
 		fmt.Printf("Current size: %s\n", formatBytes(sizeBefore))
 		fmt.Printf("\nRun without --dry-run to perform garbage collection.\n")
-		return
+		return nil
 	}
 
 	// Check if dolt command is available
@@ -881,12 +883,13 @@ func runCompactDolt() {
 		if err := outputJSON(result); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
-		return
+		return nil
 	}
 
 	fmt.Printf("✓ Dolt garbage collection complete\n")
 	fmt.Printf("  %s → %s (freed %s)\n", formatBytes(sizeBefore), formatBytes(sizeAfter), formatBytes(freed))
 	fmt.Printf("  Time: %v\n", elapsed)
+	return nil
 }
 
 // getDirSize calculates the total size of a directory recursively

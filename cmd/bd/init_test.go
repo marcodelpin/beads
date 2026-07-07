@@ -2037,7 +2037,7 @@ func setupBareParentInitWorktree(t *testing.T) (string, string) {
 // TestInitDatabaseFlag tests the --database flag for bd init.
 // Uses subprocess execution because:
 //   - init manipulates extensive Cobra global state that's difficult to reset
-//   - FatalError calls os.Exit(1) for validation errors, which kills in-process tests
+//   - init validation paths call os.Exit(1), which kills in-process tests
 //
 // Each subtest runs bd init in a temp directory and verifies metadata.json.
 func TestInitDatabaseFlag(t *testing.T) {

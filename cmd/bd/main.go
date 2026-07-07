@@ -1062,7 +1062,7 @@ var rootCmd = &cobra.Command{
 		// the fresh-repo embedded default below.
 		cfg, cfgErr := configfile.Load(beadsDir)
 		if cfgErr != nil {
-			FatalError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
+			return HandleError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
 		}
 		if cfg != nil {
 			warnSharedServerEmbeddedMismatch(cfg)
