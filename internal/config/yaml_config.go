@@ -71,6 +71,7 @@ var YamlOnlyKeys = map[string]bool{
 	"backup.git-repo": true,
 
 	// Import settings
+	"import.auto": true,
 	"import.path": true,
 
 	// Dolt server settings
