@@ -11,7 +11,9 @@ import (
 // CheckCircuitBreaker checks for stale circuit breaker state files that may
 // block all bd operations. Returns a fixable DoctorCheck if stale files exist.
 func CheckCircuitBreaker() DoctorCheck {
-	dir := "/tmp/beads-circuit"
+	// Must match internal/storage/dolt circuitBreakerDir: os.TempDir()-based,
+	// not a literal "/tmp" (drive-relative C:\tmp on Windows, GH#4636).
+	dir := filepath.Join(os.TempDir(), "beads-circuit")
 	pattern := filepath.Join(dir, "beads-dolt-circuit-*.json")
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {

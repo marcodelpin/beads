@@ -83,9 +83,11 @@ func maybeNewCircuitBreaker(host string, port int, database string) *circuitBrea
 }
 
 // circuitBreakerDir is the dedicated directory for circuit breaker state files.
-// Using a subdirectory avoids scanning all of /tmp (which may contain millions
-// of entries) when cleaning up stale breaker files on startup.
-const circuitBreakerDir = "/tmp/beads-circuit"
+// Using a subdirectory avoids scanning all of the temp dir (which may contain
+// millions of entries) when cleaning up stale breaker files on startup.
+// os.TempDir() resolves to /tmp on Unix (TMPDIR-aware) and %TMP% on Windows —
+// a literal "/tmp" on Windows is drive-relative and lands in C:\tmp (GH#4636).
+var circuitBreakerDir = filepath.Join(os.TempDir(), "beads-circuit")
 
 // newCircuitBreaker creates a circuit breaker for the given Dolt server
 // host:port:database. The database name is included in the file path so each
@@ -324,9 +326,9 @@ func (cb *circuitBreaker) writeState(state circuitState) {
 //
 // Called during init to ensure a clean starting state (GH#2598).
 func CleanStaleCircuitBreakerFiles() {
-	// Remove legacy files that lived directly in /tmp (before the subdirectory move).
-	// Direct path removal — no directory scan needed.
-	_ = os.Remove("/tmp/beads-dolt-circuit-0.json")
+	// Remove legacy files that lived directly in the temp dir (before the
+	// subdirectory move). Direct path removal — no directory scan needed.
+	_ = os.Remove(filepath.Join(os.TempDir(), "beads-dolt-circuit-0.json"))
 
 	// Clean stale files in the dedicated subdirectory (fast — typically 0-2 files).
 	_ = os.MkdirAll(circuitBreakerDir, 0755)

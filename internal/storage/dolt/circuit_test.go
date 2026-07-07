@@ -429,6 +429,17 @@ func TestCircuitBreakerDir_UsesSubdirectory(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerDir_RootedUnderOSTempDir(t *testing.T) {
+	// Regression guard for GH#4636: a literal "/tmp" path is drive-relative on
+	// Windows and lands in C:\tmp (or <cwd-drive>:\tmp). The state dir must be
+	// rooted under os.TempDir() on every platform.
+	want := filepath.Join(os.TempDir(), "beads-circuit")
+	if circuitBreakerDir != want {
+		t.Fatalf("circuitBreakerDir = %q, want %q (os.TempDir()-rooted, GH#4636)",
+			circuitBreakerDir, want)
+	}
+}
+
 func TestIsConnectionError(t *testing.T) {
 	tests := []struct {
 		name     string
