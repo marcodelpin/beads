@@ -8582,13 +8582,15 @@ bd prime [flags]
 **Flags:**
 
 ```
-      --export          Output default content (ignores PRIME.md override)
-      --full            Force full CLI output (ignore MCP detection)
-      --hook-json       Wrap output in the SessionStart hook JSON envelope (Claude Code, Gemini CLI, Codex)
-      --mcp             Force MCP mode (minimal output)
-      --memories-only   Output only persistent memories for compact hook contexts
-      --no-memories     Omit the persistent memories section (ignored when --memories-only is set, which wins)
-      --stealth         Stealth mode (no git operations, flush only)
+      --export                 Output default content (ignores PRIME.md override)
+      --full                   Force full CLI output (ignore MCP detection)
+      --hook-json              Wrap output in the SessionStart hook JSON envelope (Claude Code, Gemini CLI, Codex)
+      --max-memories int       Cap injected persistent memories to N entries (0 = unlimited; falls back to the prime.max-memories config key)
+      --max-memory-chars int   Cap the total bytes of injected memory entries, at whole-memory boundaries; section header and banner are not counted (0 = unlimited; falls back to the prime.max-memory-chars config key)
+      --mcp                    Force MCP mode (minimal output)
+      --memories-only          Output only persistent memories for compact hook contexts
+      --no-memories            Omit the persistent memories section (ignored when --memories-only is set, which wins)
+      --stealth                Stealth mode (no git operations, flush only)
 ```
 
 </document>
