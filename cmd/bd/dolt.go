@@ -1262,12 +1262,18 @@ var doltRemoteRemoveCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
+		name := args[0]
+
+		if usesProxiedServer() {
+			runDoltRemoteRemoveProxied(ctx, name)
+			return
+		}
+
 		st := getStore()
 		if st == nil {
 			fmt.Fprintf(os.Stderr, "Error: no store available\n")
 			os.Exit(1)
 		}
-		name := args[0]
 
 		if err := st.RemoveRemote(ctx, name); err != nil {
 			if jsonOutput {
