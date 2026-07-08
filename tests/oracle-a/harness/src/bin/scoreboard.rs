@@ -72,8 +72,13 @@ fn main() {
     };
     let golden_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/golden");
 
+    // Curated scenarios always run. The enumerated catalog (the deep tier) is
+    // pulled in only under ORACLE_CATALOG — symmetric with capture_golden, so a
+    // default (fast) run scores exactly the curated set with no no-golden noise.
     let mut scens = scenarios::all();
-    scens.extend(scenarios::catalog());
+    if std::env::var("ORACLE_CATALOG").is_ok() {
+        scens.extend(scenarios::catalog());
+    }
 
     let (mut in_pass, mut in_fail, mut oos_pass, mut oos_fail, mut nogolden) = (0u32, 0, 0, 0, 0);
     let mut in_fail_by_verb: BTreeMap<String, u32> = BTreeMap::new();

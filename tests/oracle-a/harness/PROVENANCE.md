@@ -4,9 +4,14 @@ The Rust sources under `src/` are a self-contained conformance harness for `bd`:
 
 - `src/differential.rs` — the scenario runner, `normalize()` (volatile-value
   collapsing), and the JSON-aware `diff()`.
-- `src/scenarios.rs` — the curated scenario set (`all()`), plus an optional
-  `catalog()` loader for an enumerated set if one is present (absent here, so
-  `catalog()` returns empty and is handled gracefully).
+- `src/scenarios.rs` — the curated scenario set (`all()`, always run) plus
+  `catalog()`, which loads the enumerated deep-tier set from
+  `scenarios/enumerated.json` (~500 deterministic scenarios covering the wider bd
+  CLI surface) when `ORACLE_CATALOG` is set. Non-deterministic and
+  already-curated entries are filtered out automatically.
+- `scenarios/enumerated.json` — the committed deep-tier catalog data (name /
+  prefix / steps / deterministic per entry; `notes`/`pins` are documentation the
+  runner ignores).
 - `src/bin/capture_golden.rs` — records one `<scenario>.trace.json` per scenario
   from the reference `bd` (`ORACLE_REFERENCE_BD`).
 - `src/bin/scoreboard.rs` — replays every scenario against the candidate `bd`

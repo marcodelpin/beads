@@ -13,9 +13,14 @@
 # (see harness/PROVENANCE.md); the harness is pointed at two Go bd binaries and
 # treats each as a black box.
 #
+# Two tiers: by default it runs the curated scenarios (fast, ~2-7 min). Set
+# ORACLE_CATALOG=1 to ALSO run the enumerated catalog (~500 deterministic
+# scenarios, `harness/scenarios/enumerated.json`) — the deep tier (~10-15 min).
+#
 # Usage:
 #   tests/oracle-a/run-oracle-a.sh              # ref = merge-base(HEAD, origin/main), candidate = working tree
 #   REF_REF=<gitref> tests/oracle-a/run-oracle-a.sh   # override the reference ref
+#   ORACLE_CATALOG=1 tests/oracle-a/run-oracle-a.sh   # deep tier: also run the ~500-scenario enumerated catalog
 #   KEEP_ARTIFACTS=1 tests/oracle-a/run-oracle-a.sh    # keep the scratch build dir
 #
 # Requirements: cargo (Rust), a CGO toolchain (gcc), go. See README.md.
@@ -36,6 +41,15 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 # Override with REF_REF for a deliberate comparison (a release tag, origin/main tip).
 if [ -z "${REF_REF:-}" ]; then
   REF_REF="$(git -C "$REPO_ROOT" merge-base HEAD origin/main 2>/dev/null || echo origin/main)"
+fi
+
+# Deep tier toggle. capture_golden and scoreboard both treat ANY set ORACLE_CATALOG
+# value (even empty) as "on", so export it only when it is non-empty and otherwise
+# unset it — then both child processes inherit a consistent view of the tier.
+if [ -n "${ORACLE_CATALOG:-}" ]; then
+  export ORACLE_CATALOG
+else
+  unset ORACLE_CATALOG 2>/dev/null || true
 fi
 
 # gms_pure_go is mandatory per docs/ICU-POLICY.md; CGO is required for embedded Dolt.
@@ -151,40 +165,41 @@ log "capturing goldens from REFERENCE bd ..."
 ORACLE_REFERENCE_BD="$REF_BIN" "$CAPTURE" \
   || die "golden capture failed"
 
-# --- 4b. FLOOR ASSERTIONS — goldens must represent WORKING behavior ------------------
-# Without a floor, green proves nothing: goldens captured from a stub that fails
-# every step (e.g. broken workspace init in CI, missing HOME, sandboxed Dolt file
-# locks) still score 100% because the diff is empty on both sides. capture_golden
-# only fails on process-spawn IO errors, not on bd exit codes. So before scoring,
-# assert the reference actually did the work: every scenario's `create` steps must
-# exit 0 and produce a parseable JSON object carrying an "id". A floor violation is
-# a SETUP error (exit 2), never a pass — it means the environment, not the branch,
-# is what the goldens captured.
+# --- 4b. FLOOR ASSERTION — the reference goldens must represent a WORKING bd ----------
+# Without a floor, green proves nothing: goldens captured from a totally broken
+# reference (init fails in CI, missing HOME, sandboxed Dolt file locks) that fails
+# EVERY step still score 100%, because the diff is empty on both sides.
+# capture_golden only fails on process-spawn IO errors, not on bd exit codes.
+#
+# The floor guards against that TOTAL-breakage mode: it requires the reference to
+# have produced at least one fully-successful create (exit 0 + a parseable JSON id),
+# proving bd can init a workspace and create an issue. It deliberately does NOT
+# require EVERY scenario's create to succeed — the enumerated catalog
+# (ORACLE_CATALOG=1) intentionally includes error-path scenarios whose creates
+# SHOULD exit non-zero (invalid priority/type, missing title, unknown flag, ...) and
+# cases that print a bare id without --json. Those are the reference's correct
+# behavior and are validated by the ref-vs-candidate diff, not the floor. A floor
+# violation is a SETUP error (exit 2), never a pass.
 GOLDEN_DIR="$HARNESS_DIR/testdata/golden"
-command -v jq >/dev/null 2>&1 || die "jq not found (required for floor assertions)"
-log "checking golden floor (reference create steps must exit 0 with an id) ..."
-floor_violations=0
+command -v jq >/dev/null 2>&1 || die "jq not found (required for the floor assertion)"
+log "checking golden floor (reference must produce >= 1 successful create) ..."
+total_ok=0
 shopt -s nullglob
 for trace in "$GOLDEN_DIR"/*.trace.json; do
-  scen="$(basename "$trace" .trace.json)"
-  # number of create steps, and how many of them exited 0 with a JSON object id.
-  n_create="$(jq '[.steps[] | select(.args[0]=="create")] | length' "$trace")"
+  # create steps that exited 0 AND emitted a JSON object/array carrying an "id".
   n_ok="$(jq '[.steps[]
                 | select(.args[0]=="create")
                 | select(.exit==0)
                 | select((.stdout | length) > 0)
                 | select((.stdout | fromjson? | if type=="array" then .[0] else . end | .id? // empty) != "")]
               | length' "$trace")"
-  if [ "$n_create" -gt 0 ] && [ "$n_ok" -lt "$n_create" ]; then
-    warn "  FLOOR: $scen — $((n_create - n_ok))/$n_create create step(s) did not exit 0 with a JSON id"
-    floor_violations=$((floor_violations + 1))
-  fi
+  total_ok=$((total_ok + n_ok))
 done
 shopt -u nullglob
-if [ "$floor_violations" -gt 0 ]; then
-  die "golden floor FAILED: $floor_violations scenario(s) captured broken reference behavior — the environment, not the branch, is under test. Refusing to score."
+if [ "$total_ok" -eq 0 ]; then
+  die "golden floor FAILED: the reference bd produced ZERO successful creates across all scenarios — the environment, not the branch, is what the goldens captured. Refusing to score."
 fi
-log "golden floor OK — reference create steps all exit 0 with an id."
+log "golden floor OK — reference produced $total_ok successful create step(s)."
 
 # --- 5. score the candidate against the reference goldens ----------------------------
 log "scoring CANDIDATE bd against reference goldens ..."

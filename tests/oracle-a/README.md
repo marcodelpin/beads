@@ -33,8 +33,23 @@ Overrides:
 
 - `REF_REF=<gitref>` — compare against something other than the merge-base
   (e.g. a release tag, or `origin/main`'s tip).
+- `ORACLE_CATALOG=1` — **deep tier**: in addition to the curated scenarios, run
+  the full enumerated catalog (`harness/scenarios/enumerated.json`, ~500
+  deterministic scenarios covering the wider `bd` CLI surface). Much broader
+  coverage, ~10–15 min. Off by default so the everyday gate stays fast.
 - `KEEP_ARTIFACTS=1` — keep the scratch build dir (binaries, goldens, scoreboard
   output) for inspection instead of deleting it on exit.
+
+## Two tiers
+
+- **Curated** (default) — the hand-maintained scenarios in `harness/src/scenarios.rs`:
+  a small, always-green set targeting the highest-value contract behaviors. Fast
+  enough to run on every change.
+- **Enumerated catalog** (`ORACLE_CATALOG=1`) — ~500 deterministic scenarios in
+  `harness/scenarios/enumerated.json`, generated to sweep the wider CLI surface as
+  data. Non-deterministic entries (ID minting, non-reproducible init output) are
+  excluded automatically; entries already covered by the curated set are de-duped.
+  The in-scope predicate (below) applies identically to both tiers.
 
 ## Prerequisites
 
@@ -51,10 +66,11 @@ Overrides:
 
 Dominated by the **cold reference build** (a full `bd` compile, ~1 min on a warm
 module cache, several minutes cold). The candidate build reuses the local build
-cache and is fast. Harness build is ~10 s. Golden capture + scoring run all the
+cache and is fast. Harness build is ~10 s. Golden capture + scoring run the
 curated scenarios as real `bd` processes (~30–60 s). End-to-end: **~2–7 minutes**
-depending on Go build-cache warmth. There is no Dolt *server* in the loop — every
-scenario uses embedded Dolt in its own tempdir.
+depending on Go build-cache warmth (the **deep tier**, `ORACLE_CATALOG=1`, adds the
+~500-scenario catalog for **~10–15 minutes** total). There is no Dolt *server* in
+the loop — every scenario uses embedded Dolt in its own tempdir.
 
 ## What green PROVES
 

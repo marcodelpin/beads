@@ -2,9 +2,10 @@
 //! Run against the reference `bd` they become the golden ground truth; run
 //! against the candidate `bd` they are the differential parity test.
 //!
-//! `all()` are the curated, maintained scenarios. `catalog()` optionally loads
-//! an enumerated set (`../../docs/scenarios/enumerated.json`) if present, so the
-//! wider bd CLI surface can be wired as data; absent here, it returns empty.
+//! `all()` are the curated, maintained scenarios that always run. `catalog()`
+//! loads the much larger enumerated set (`scenarios/enumerated.json`, ~500
+//! deterministic scenarios covering the wider bd CLI surface as data) — the
+//! opt-in deep tier, pulled in only when `ORACLE_CATALOG` is set.
 
 use crate::differential::Scenario;
 use serde::Deserialize;
@@ -28,7 +29,7 @@ fn yes() -> bool {
 /// asserted via properties elsewhere, not byte-diff.
 pub fn catalog() -> Vec<Scenario> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/scenarios/enumerated.json");
+        .join("scenarios/enumerated.json");
     let data = match std::fs::read_to_string(&path) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
