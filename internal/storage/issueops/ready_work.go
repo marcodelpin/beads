@@ -42,7 +42,7 @@ func buildReadyWorkOrder(policy types.SortPolicy) readyWorkOrder {
 	case types.SortPolicyOldest:
 		return readyWorkOrder{sql: "ORDER BY created_at ASC, id ASC"}
 	case types.SortPolicyPriority:
-		return readyWorkOrder{sql: "ORDER BY priority ASC, created_at DESC, id ASC"}
+		return readyWorkOrder{sql: "ORDER BY priority ASC, created_at ASC, id ASC"}
 	case types.SortPolicyHybrid, "":
 		recentCutoff := time.Now().UTC().Add(-48 * time.Hour)
 		return readyWorkOrder{
@@ -53,7 +53,7 @@ func buildReadyWorkOrder(policy types.SortPolicy) readyWorkOrder {
 			args: []interface{}{recentCutoff, recentCutoff},
 		}
 	default:
-		return readyWorkOrder{sql: "ORDER BY priority ASC, created_at DESC, id ASC"}
+		return readyWorkOrder{sql: "ORDER BY priority ASC, created_at ASC, id ASC"}
 	}
 }
 
@@ -595,7 +595,7 @@ func issuePriorityBefore(a, b *types.Issue) bool {
 		return a.Priority < b.Priority
 	}
 	if !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.After(b.CreatedAt)
+		return a.CreatedAt.Before(b.CreatedAt)
 	}
 	return a.ID < b.ID
 }
