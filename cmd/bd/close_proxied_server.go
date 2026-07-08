@@ -35,35 +35,35 @@ type closeProxiedOutcome struct {
 	closed bool
 }
 
-func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
+func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		FatalErrorRespectJSON("no issue ID provided")
+		return HandleErrorRespectJSON("no issue ID provided")
 	}
 
 	reasons, updatedArgs, err := resolveCloseReasons(cmd, args)
 	if err != nil {
-		FatalErrorRespectJSON("%v", err)
+		return HandleErrorRespectJSON("%v", err)
 	}
 	args = updatedArgs
 	if err := validateCloseReasons(reasons); err != nil {
-		FatalErrorRespectJSON("%v", err)
+		return HandleErrorRespectJSON("%v", err)
 	}
 
 	in := gatherCloseProxiedInput(cmd)
 
 	if in.continueOn && len(args) > 1 {
-		FatalErrorRespectJSON("--continue only works when closing a single issue")
+		return HandleErrorRespectJSON("--continue only works when closing a single issue")
 	}
 	if in.suggestNext && len(args) > 1 {
-		FatalErrorRespectJSON("--suggest-next only works when closing a single issue")
+		return HandleErrorRespectJSON("--suggest-next only works when closing a single issue")
 	}
 
 	if uowProvider == nil {
-		FatalError("proxied-server UOW provider not initialized")
+		return HandleError("proxied-server UOW provider not initialized")
 	}
 	uw, err := uowProvider.NewUOW(ctx)
 	if err != nil {
-		FatalErrorRespectJSON("open unit of work: %v", err)
+		return HandleErrorRespectJSON("open unit of work: %v", err)
 	}
 	defer uw.Close(ctx)
 
@@ -101,7 +101,7 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	if len(outcomes) > 0 {
 		msg := closeProxiedCommitMessage(outcomes, claimedNextIssue, continueResult)
 		if err := uw.Commit(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
-			FatalErrorRespectJSON("commit close: %v", err)
+			return HandleErrorRespectJSON("commit close: %v", err)
 		}
 		for _, o := range outcomes {
 			if !o.closed {
@@ -142,8 +142,9 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	}
 
 	if len(args) > 0 && len(outcomes) == 0 {
-		os.Exit(1)
+		return SilentExit()
 	}
+	return nil
 }
 
 func gatherCloseProxiedInput(cmd *cobra.Command) closeProxiedInput {

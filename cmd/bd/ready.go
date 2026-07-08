@@ -47,8 +47,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		}()
 
 		if usesProxiedServer() {
-			runReadyProxiedServer(cmd, rootCtx)
-			return nil
+			return runReadyProxiedServer(cmd, rootCtx)
 		}
 
 		if offset, _ := cmd.Flags().GetInt("offset"); offset > 0 {
@@ -333,8 +332,7 @@ var blockedCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			runBlockedProxiedServer(cmd, rootCtx)
-			return nil
+			return runBlockedProxiedServer(cmd, rootCtx)
 		}
 		// Use global jsonOutput set by PersistentPreRun (respects config.yaml + env vars)
 		// Use factory to respect backend configuration (bd-m2jr: SQLite fallback fix)

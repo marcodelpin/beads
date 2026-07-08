@@ -84,8 +84,7 @@ func runPreflight(cmd *cobra.Command, args []string) error {
 	skipLint, _ := cmd.Flags().GetBool("skip-lint")
 
 	if fix {
-		runFixes(jsonOutput)
-		return nil
+		return runFixes(jsonOutput)
 	}
 
 	if check {
@@ -578,7 +577,7 @@ type fixResult struct {
 }
 
 // runFixes executes auto-fix operations for fixable preflight checks.
-func runFixes(jsonOutput bool) {
+func runFixes(jsonOutput bool) error {
 	var results []fixResult
 	hasError := false
 
@@ -615,9 +614,9 @@ func runFixes(jsonOutput bool) {
 			fmt.Fprintf(os.Stderr, "Error encoding fix results: %v\n", err)
 		}
 		if hasError {
-			os.Exit(1)
+			return SilentExit()
 		}
-		return
+		return nil
 	}
 
 	for _, r := range results {
@@ -636,8 +635,9 @@ func runFixes(jsonOutput bool) {
 	}
 
 	if hasError {
-		os.Exit(1)
+		return SilentExit()
 	}
+	return nil
 }
 
 // fixNixHash computes and updates the vendorHash in default.nix.
