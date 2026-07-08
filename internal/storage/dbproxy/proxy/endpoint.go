@@ -81,6 +81,9 @@ func GetCreateDatabaseProxyServerEndpoint(rootDir string, opts OpenOpts) (Endpoi
 	if err := opts.Backend.Validate(); err != nil {
 		return Endpoint{}, fmt.Errorf("OpenOpts.Backend: %w", err)
 	}
+	if opts.Port != 0 && (opts.Port < 1 || opts.Port > 65535) {
+		return Endpoint{}, fmt.Errorf("OpenOpts.Port: must be 0 or 1-65535, got %d", opts.Port)
+	}
 	switch opts.Backend {
 	case BackendLocalServer:
 		if opts.ConfigFilePath == "" {
