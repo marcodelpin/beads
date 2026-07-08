@@ -22,26 +22,27 @@ import (
 )
 
 type initProxiedServerInput struct {
-	prefix            string
-	database          string
-	roleFlag          string
-	initRemote        string
-	initRemoteChanged bool
-	destroyToken      string
-	serverConfigPath  string
-	serverLogPath     string
-	serverRootPath    string
-	serverProxyPort   int
-	externalConfig    *configfile.ExternalDoltConfig
-	quiet             bool
-	stealth           bool
-	skipHooks         bool
-	skipAgents        bool
-	reinitLocal       bool
-	contributor       bool
-	team              bool
-	fromJSONL         bool
-	nonInteractive    bool
+	prefix                 string
+	database               string
+	roleFlag               string
+	initRemote             string
+	initRemoteChanged      bool
+	destroyToken           string
+	serverConfigPath       string
+	serverLogPath          string
+	serverRootPath         string
+	serverProxyPort        int
+	serverProxyIdleTimeout time.Duration
+	externalConfig         *configfile.ExternalDoltConfig
+	quiet                  bool
+	stealth                bool
+	skipHooks              bool
+	skipAgents             bool
+	reinitLocal            bool
+	contributor            bool
+	team                   bool
+	fromJSONL              bool
+	nonInteractive         bool
 }
 
 func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxiedServerInput) error {
@@ -120,7 +121,7 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 	}
 	configYAMLBody := renderInitConfigYAML("", false)
 
-	clientInfo, err := buildProxiedServerClientInfo(in.serverRootPath, in.serverConfigPath, in.serverLogPath, in.serverProxyPort, in.externalConfig)
+	clientInfo, err := buildProxiedServerClientInfo(in.serverRootPath, in.serverConfigPath, in.serverLogPath, in.serverProxyPort, in.serverProxyIdleTimeout, in.externalConfig)
 	if err != nil {
 		return err
 	}
@@ -256,7 +257,7 @@ func composeProxiedServerMetadataJSON(in proxiedMetadataInputs) ([]byte, error) 
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
-func buildProxiedServerClientInfo(rootPath, configPath, logPath string, port int, external *configfile.ExternalDoltConfig) (*configfile.ProxiedServerClientInfo, error) {
+func buildProxiedServerClientInfo(rootPath, configPath, logPath string, port int, idleTimeout time.Duration, external *configfile.ExternalDoltConfig) (*configfile.ProxiedServerClientInfo, error) {
 	if rootPath == "" && configPath == "" && logPath == "" && external == nil {
 		return nil, nil
 	}
@@ -287,11 +288,12 @@ func buildProxiedServerClientInfo(rootPath, configPath, logPath string, port int
 		}
 	}
 	return &configfile.ProxiedServerClientInfo{
-		RootPath:   rootAbs,
-		ConfigPath: configAbs,
-		LogPath:    logAbs,
-		Port:       port,
-		External:   external,
+		RootPath:    rootAbs,
+		ConfigPath:  configAbs,
+		LogPath:     logAbs,
+		Port:        port,
+		IdleTimeout: idleTimeout,
+		External:    external,
 	}, nil
 }
 
