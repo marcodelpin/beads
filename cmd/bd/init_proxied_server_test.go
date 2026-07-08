@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,35 @@ func TestBuildProxiedServerClientInfo(t *testing.T) {
 		info, err := buildProxiedServerClientInfo("", "", "", 0, 0, nil)
 		require.NoError(t, err)
 		assert.Nil(t, info)
+	})
+
+	t.Run("port alone is persisted", func(t *testing.T) {
+		info, err := buildProxiedServerClientInfo("", "", "", 3306, 0, nil)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, 3306, info.Port)
+		assert.Zero(t, info.IdleTimeout)
+	})
+
+	t.Run("idle timeout alone is persisted", func(t *testing.T) {
+		info, err := buildProxiedServerClientInfo("", "", "", 0, 5*time.Minute, nil)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, 5*time.Minute, info.IdleTimeout)
+		assert.Zero(t, info.Port)
+	})
+
+	t.Run("port and idle timeout survive a round-trip via SaveProxiedServerClientInfo", func(t *testing.T) {
+		dir := t.TempDir()
+		info, err := buildProxiedServerClientInfo("", "", "", 3306, 5*time.Minute, nil)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.NoError(t, configfile.SaveProxiedServerClientInfo(dir, info))
+		loaded, err := configfile.LoadProxiedServerClientInfo(dir)
+		require.NoError(t, err)
+		require.NotNil(t, loaded)
+		assert.Equal(t, 3306, loaded.Port)
+		assert.Equal(t, 5*time.Minute, loaded.IdleTimeout)
 	})
 
 	t.Run("absolute paths pass through cleaned", func(t *testing.T) {

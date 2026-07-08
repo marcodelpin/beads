@@ -195,7 +195,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				return fmt.Errorf("--proxied-server-idle-timeout requires --proxied-server")
 			}
 			if serverProxyIdleTimeout < 0 {
-				return fmt.Errorf("--proxied-server-idle-timeout must be a positive duration, got %s", serverProxyIdleTimeout)
+				return fmt.Errorf("--proxied-server-idle-timeout must be a non-negative duration, got %s", serverProxyIdleTimeout)
 			}
 		}
 
