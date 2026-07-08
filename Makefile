@@ -9,7 +9,8 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check
+.PHONY: all build doctor-build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration corpus-regen bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short
+.PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
 all: build
@@ -61,6 +62,43 @@ ifeq ($(shell uname),Darwin)
 endif
 endif
 
+# Diagnose the local build environment for the gms_pure_go/CGO build trap
+# (mybd-t7mk.1). A bare `CGO_ENABLED=1 go build ./cmd/bd` without
+# -tags=gms_pure_go fails with a C-linker error from go-icu-regex
+# (unicode/uregex.h: No such file or directory) because go-mysql-server
+# links ICU by default under cgo; CGO_ENABLED=0 avoids that but can't open
+# embedded Dolt at runtime. See docs/ICU-POLICY.md.
+doctor-build:
+	@echo "Build environment diagnostic (doctor-build):"
+	@GOFLAGS_VAL="$$(go env GOFLAGS)"; \
+	CGO_VAL="$$(go env CGO_ENABLED)"; \
+	CC_VAL="$$(go env CC)"; \
+	echo "  GOFLAGS:     $${GOFLAGS_VAL:-<empty>}"; \
+	echo "  CGO_ENABLED: $$CGO_VAL"; \
+	echo "  CC:          $$CC_VAL"; \
+	if command -v "$$CC_VAL" >/dev/null 2>&1; then \
+		echo "  CC on PATH:  yes ($$(command -v "$$CC_VAL"))"; \
+	else \
+		echo "  CC on PATH:  NO - $$CC_VAL not found"; \
+	fi; \
+	echo ""; \
+	EFFECTIVE_TAGS="$$(printf '%s\n' "$$GOFLAGS_VAL" | tr ' ' '\n' | sed -n 's/^-tags=//p' | tail -n 1)"; \
+	case ",$$EFFECTIVE_TAGS," in \
+		*,gms_pure_go,*) \
+			echo "PASS: GOFLAGS carries -tags=gms_pure_go; bare 'go build'/'go test' are safe." ;; \
+		*) \
+			echo "WARN: GOFLAGS is missing -tags=gms_pure_go."; \
+			echo "      A bare 'CGO_ENABLED=1 go build ./cmd/bd' will fail with a C-linker error"; \
+			echo "      (unicode/uregex.h: No such file or directory) from go-icu-regex, because"; \
+			echo "      go-mysql-server links ICU by default under cgo."; \
+			echo ""; \
+			echo "      Remedy - persist the tag so bare go commands pick it up:"; \
+			echo "        go env -w GOFLAGS=-tags=gms_pure_go"; \
+			echo "      Or build explicitly this once (CGO_ENABLED=1 is required for"; \
+			echo "      embedded Dolt at runtime; CGO_ENABLED=0 cannot open it):"; \
+			echo "        CGO_ENABLED=1 go build -tags gms_pure_go ./cmd/bd" ;; \
+	esac
+
 # Run all tests (skips known broken tests listed in .test-skip)
 test:
 	@echo "Running tests..."
@@ -78,6 +116,24 @@ test-icu-path:
 test-full-cgo:
 	@echo "WARNING: make test-full-cgo is deprecated; use make test-icu-path for the explicit ICU-only path." >&2
 	@$(MAKE) test-icu-path
+
+ci-pr-core:
+	@./scripts/ci/pr-core.sh
+
+ci-pr-policy:
+	@./scripts/ci/pr-policy.sh
+
+ci-pr-lint:
+	@./scripts/ci/pr-lint.sh
+
+ci-package-mcp:
+	@./scripts/ci/package-mcp.sh
+
+ci-package-npm:
+	@./scripts/ci/package-npm.sh
+
+ci-website:
+	@./scripts/ci/website.sh
 
 # Run differential regression tests (baseline v0.49.6 vs current worktree).
 # Downloads baseline binary on first run; cached in ~/Library/Caches/beads-regression/.
@@ -109,6 +165,13 @@ test-cross-version: build
 test-migration: build
 	@echo "Running migration test harness..."
 	@CANDIDATE_BIN=./bd ./scripts/migration-test/run.sh
+
+# Regenerate the golden-JSON contract corpus (cmd/bd/protocol/testdata/corpus/).
+# Run after any deliberate bd --json wire change; review the diff, then commit.
+# Gas City vendors this corpus to detect cross-version drift. Needs Docker (Dolt).
+corpus-regen:
+	@echo "Regenerating contract corpus..."
+	go test -tags "$(BUILD_TAGS)" ./cmd/bd/protocol -run TestCorpusGolden -corpus.update -count=1
 
 
 # Run performance benchmarks against Dolt storage backend
@@ -188,6 +251,11 @@ check-docs:
 	@echo "Building bd for docs checks..."
 	@CGO_ENABLED=0 go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd ./cmd/bd
 	@./scripts/check-doc-flags.sh ./bd
+	@./scripts/check-doc-freshness.sh
+
+# Ensure -short is not used as an implicit CI tier boundary.
+check-testing-short:
+	@./scripts/check-testing-short.sh
 
 # Clean build artifacts and benchmark profiles
 clean:
@@ -208,9 +276,16 @@ clean-test-tmp:
 help:
 	@echo "Beads Makefile targets:"
 	@echo "  make build        - Build the bd binary"
+	@echo "  make doctor-build - Diagnose build env (GOFLAGS/CGO/CC) for the ICU build trap"
 	@echo "  make test         - Run all tests"
 	@echo "  make test-icu-path - Run opt-in ICU regex path tests (maintainer-only)"
 	@echo "  make test-full-cgo - Deprecated alias for make test-icu-path"
+	@echo "  make ci-pr-core  - Run required PR core Go test wrapper"
+	@echo "  make ci-pr-policy - Run required PR policy wrapper"
+	@echo "  make ci-pr-lint  - Run required PR formatting and lint wrapper"
+	@echo "  make ci-package-mcp - Run MCP Python package gate"
+	@echo "  make ci-package-npm - Run npm package gate"
+	@echo "  make ci-website - Run website typecheck/build gate"
 	@echo "  make test-regression - Run differential regression tests (baseline vs candidate)"
 	@echo "  make test-upgrade  - Run upgrade smoke tests (release stability gate)"
 	@echo "  make test-cross-version - Run cross-version smoke tests (last 30 tags)"

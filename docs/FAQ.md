@@ -201,6 +201,8 @@ bd dolt pull    # Pull changes from Dolt remote
 
 The `bd export` command exists for issue portability and interchange. For backup and restore, use `bd backup init <path>` / `bd backup sync` to push Dolt-native backups, and `bd backup restore <path>` to restore from them. None of these are needed for day-to-day Dolt sync.
 
+For the full conceptual model — why the local Dolt database is the source of truth, what `issues.jsonl` is and is not for, and which sync patterns to avoid — see [SYNC_CONCEPTS.md](SYNC_CONCEPTS.md).
+
 ### What if my database feels stale after a colleague pushes changes?
 
 Pull from the Dolt remote:
@@ -451,7 +453,7 @@ git worktree prune
 bd config set sync.branch ""
 ```
 
-See [WORKTREES.md#beads-created-worktrees-sync-branch](WORKTREES.md#beads-created-worktrees-sync-branch) for full details.
+See [WORKTREES.md#legacy-cleanup](WORKTREES.md#legacy-cleanup) for full details.
 
 ### What's the difference between database corruption and ID collisions?
 
