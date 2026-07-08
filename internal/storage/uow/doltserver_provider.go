@@ -22,6 +22,7 @@ func NewDoltServerUOWProvider(
 	rootUser string,
 	rootPassword string,
 	doltBinExec string,
+	proxyPort int,
 ) (UnitOfWorkProvider, error) {
 	if database == "" {
 		return nil, fmt.Errorf("uow: database name must not be empty (caller should default to %q)", "beads")
@@ -54,7 +55,9 @@ func NewDoltServerUOWProvider(
 		ConfigFilePath: serverConfigFilePath,
 		LogFilePath:    serverLogFilePath,
 		DoltBinPath:    absDoltBinExec,
+		Database:       database,
 		IdleTimeout:    defaultProxyIdleTimeout,
+		Port:           proxyPort,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)

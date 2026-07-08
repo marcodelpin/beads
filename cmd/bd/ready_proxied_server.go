@@ -179,7 +179,7 @@ func runReadyProxiedClaim(ctx context.Context, uw uow.UnitOfWork, in readyInput)
 		jsonPayload = buildReadyIssueOutputProxied(ctx, uw, []*types.Issue{res.Issue})
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: ready --claim %s", res.Issue.ID)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: ready --claim %s", res.Issue.ID)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 	SetLastTouchedID(res.Issue.ID)

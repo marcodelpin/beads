@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/fs"
 	"github.com/steveyegge/beads/internal/storage/git"
+	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -30,6 +31,7 @@ type initProxiedServerInput struct {
 	serverConfigPath  string
 	serverLogPath     string
 	serverRootPath    string
+	serverProxyPort   int
 	externalConfig    *configfile.ExternalDoltConfig
 	quiet             bool
 	stealth           bool
@@ -118,7 +120,7 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 	}
 	configYAMLBody := renderInitConfigYAML("", false)
 
-	clientInfo, err := buildProxiedServerClientInfo(in.serverRootPath, in.serverConfigPath, in.serverLogPath, in.externalConfig)
+	clientInfo, err := buildProxiedServerClientInfo(in.serverRootPath, in.serverConfigPath, in.serverLogPath, in.serverProxyPort, in.externalConfig)
 	if err != nil {
 		return err
 	}
@@ -182,7 +184,7 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		return HandleError("bootstrap project: %v", err)
 	}
 
-	if err := uw.Commit(ctx, "bd init"); err != nil {
+	if err := uow.CommitWithRetries(ctx, uw, "bd init"); err != nil {
 		return HandleError("commit init: %v", err)
 	}
 
@@ -254,7 +256,7 @@ func composeProxiedServerMetadataJSON(in proxiedMetadataInputs) ([]byte, error) 
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
-func buildProxiedServerClientInfo(rootPath, configPath, logPath string, external *configfile.ExternalDoltConfig) (*configfile.ProxiedServerClientInfo, error) {
+func buildProxiedServerClientInfo(rootPath, configPath, logPath string, port int, external *configfile.ExternalDoltConfig) (*configfile.ProxiedServerClientInfo, error) {
 	if rootPath == "" && configPath == "" && logPath == "" && external == nil {
 		return nil, nil
 	}
@@ -288,6 +290,7 @@ func buildProxiedServerClientInfo(rootPath, configPath, logPath string, external
 		RootPath:   rootAbs,
 		ConfigPath: configAbs,
 		LogPath:    logAbs,
+		Port:       port,
 		External:   external,
 	}, nil
 }

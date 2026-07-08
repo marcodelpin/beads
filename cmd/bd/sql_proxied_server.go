@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
 func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) error {
@@ -42,7 +43,7 @@ func runSQLProxiedServer(ctx context.Context, query string, csvOutput bool) erro
 		return HandleErrorRespectJSON("exec error: %v", err)
 	}
 
-	if err := uw.Commit(ctx, "bd sql: "+query); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, "bd sql: "+query); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("commit: %v", err)
 	}
 

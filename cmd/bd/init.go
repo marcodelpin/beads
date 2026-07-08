@@ -113,6 +113,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverConfigPath, _ := cmd.Flags().GetString("proxied-server-config-path")
 		serverLogPath, _ := cmd.Flags().GetString("proxied-server-log-path")
 		serverRootPath, _ := cmd.Flags().GetString("proxied-server-root-path")
+		serverProxyPort, _ := cmd.Flags().GetInt("proxied-server-port")
 		externalHost, _ := cmd.Flags().GetString("proxied-server-external-host")
 		externalPort, _ := cmd.Flags().GetInt("proxied-server-external-port")
 		externalSocketPath, _ := cmd.Flags().GetString("proxied-server-external-socket-path")
@@ -178,6 +179,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 			if err := validateProxiedServerRootPath(serverRootPath); err != nil {
 				return fmt.Errorf("--proxied-server-root-path %v", err)
+			}
+		}
+		if serverProxyPort != 0 {
+			if !initProxiedServer {
+				return fmt.Errorf("--proxied-server-port requires --proxied-server")
+			}
+			if serverProxyPort < 1 || serverProxyPort > 65535 {
+				return fmt.Errorf("--proxied-server-port must be between 1 and 65535, got %d", serverProxyPort)
 			}
 		}
 
@@ -293,6 +302,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				serverConfigPath:  serverConfigPath,
 				serverLogPath:     serverLogPath,
 				serverRootPath:    serverRootPath,
+				serverProxyPort:   serverProxyPort,
 				externalConfig:    externalConfig,
 				quiet:             quiet,
 				stealth:           stealth,
@@ -1767,6 +1777,7 @@ func init() {
 	initCmd.Flags().String("proxied-server-config-path", "", "[EXPERIMENTAL] Absolute path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-log-path", "", "[EXPERIMENTAL] Absolute path to the proxied dolt sql-server log file (proxied-server mode only). Default: <beadsDir>/proxieddb/server.log. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-root-path", "", "[EXPERIMENTAL] Absolute directory holding the proxied dolt sql-server's lockfiles, pidfiles, and child .dolt repository (proxied-server mode only). Default: <beadsDir>/proxieddb. May not exist yet — bd will create it. Relative paths are rejected.")
+	initCmd.Flags().Int("proxied-server-port", 0, "[EXPERIMENTAL] Fixed TCP port for the proxy's loopback listener (proxied-server mode only). Default 0 = an OS-assigned free port. Startup fails if the port is already in use.")
 	initCmd.Flags().String("proxied-server-external-host", "", "[EXPERIMENTAL] Hostname or IP of an externally-managed dolt sql-server the proxy should front (proxied-server mode only). Mutually exclusive with --proxied-server-external-socket-path.")
 	initCmd.Flags().Int("proxied-server-external-port", 0, "[EXPERIMENTAL] TCP port of the externally-managed dolt sql-server (proxied-server mode only). Required when --proxied-server-external-host is set.")
 	initCmd.Flags().String("proxied-server-external-socket-path", "", "[EXPERIMENTAL] Absolute unix socket path of the externally-managed dolt sql-server (proxied-server mode only). Mutually exclusive with --proxied-server-external-host. Relative paths are rejected.")

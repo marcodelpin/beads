@@ -13,6 +13,7 @@ type ProxiedServerClientInfo struct {
 	RootPath   string              `json:"root_path,omitempty"`
 	ConfigPath string              `json:"config_path,omitempty"`
 	LogPath    string              `json:"log_path,omitempty"`
+	Port       int                 `json:"port,omitempty"`
 	External   *ExternalDoltConfig `json:"external,omitempty"`
 }
 

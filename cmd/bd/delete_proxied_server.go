@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -88,7 +89,7 @@ func runDeleteProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	}
 
 	commitMsg := fmt.Sprintf("bd: delete %d issue(s)", res.DeletedCount)
-	if err := uw.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, commitMsg); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("commit: %v", err)
 	}
 

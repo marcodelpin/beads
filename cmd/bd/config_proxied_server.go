@@ -37,7 +37,7 @@ func runConfigSetProxiedServer(ctx context.Context, key, value string) error {
 		return HandleErrorRespectJSON("Error setting config: %v", err)
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: config set %s", key)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: config set %s", key)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 
@@ -128,7 +128,7 @@ func runConfigUnsetProxiedServer(ctx context.Context, key string) error {
 		return HandleErrorRespectJSON("Error deleting config: %v", err)
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: config unset %s", key)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: config unset %s", key)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func runConfigSetManyProxiedServer(ctx context.Context, keys, values []string) e
 		}
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: config set-many (%d keys)", len(keys))); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: config set-many (%d keys)", len(keys))); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 	return nil

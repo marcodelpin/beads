@@ -54,6 +54,8 @@ type OpenOpts struct {
 	ConfigFilePath string
 	LogFilePath    string
 	DoltBinPath    string
+	Database       string
+	Port           int
 	External       configfile.ExternalDoltConfig
 }
 
@@ -169,9 +171,12 @@ func spawnAndHandoff(rootDir string, opts OpenOpts, deadline time.Time, lock *ut
 		}
 	}
 
-	port, err := PickFreePort()
-	if err != nil {
-		return Endpoint{}, fmt.Errorf("pick port: %w", err)
+	port := opts.Port
+	if port == 0 {
+		var err error
+		if port, err = PickFreePort(); err != nil {
+			return Endpoint{}, fmt.Errorf("pick port: %w", err)
+		}
 	}
 
 	handedOff = true
@@ -237,6 +242,9 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 	}
 	if opts.DoltBinPath != "" {
 		args = append(args, "--dolt-bin", opts.DoltBinPath)
+	}
+	if opts.Database != "" {
+		args = append(args, "--database", opts.Database)
 	}
 	if opts.Backend == BackendExternal {
 		ext := opts.External

@@ -160,7 +160,7 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		return HandleError("%v", err)
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: create %s", result.Issue.ID)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: create %s", result.Issue.ID)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleError("commit: %v", err)
 	}
 
@@ -318,7 +318,7 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 	}
 
 	commitMsg := fmt.Sprintf("bd: create %d issue(s) from %s", len(result.Issues), in.markdownFile)
-	if err := uw.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, commitMsg); err != nil && !isDoltNothingToCommit(err) {
 		return HandleError("commit: %v", err)
 	}
 
@@ -435,7 +435,7 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 		commitMsg = fmt.Sprintf("bd: graph-apply %d nodes", len(plan.Nodes))
 	}
 
-	if err := uw.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, commitMsg); err != nil && !isDoltNothingToCommit(err) {
 		return HandleError("commit: %v", err)
 	}
 

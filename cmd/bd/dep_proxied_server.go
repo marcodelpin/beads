@@ -96,7 +96,7 @@ func runDepBlocksProxiedServer(cmd *cobra.Command, ctx context.Context, blockerI
 	blockerTitle := proxiedLookupTitle(ctx, uw, blockerID)
 	blockedTitle := proxiedLookupTitle(ctx, uw, blockedID)
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: dep add %s %s", blockedID, blockerID)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: dep add %s %s", blockedID, blockerID)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	fromTitle := proxiedLookupTitle(ctx, uw, fromID)
 	toTitle := proxiedLookupTitle(ctx, uw, toID)
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: dep add %s %s", fromID, toID)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: dep add %s %s", fromID, toID)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 		proxiedWarnCycles(ctx, uw)
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("dependency: add %d edges", len(deps))); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("dependency: add %d edges", len(deps))); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 
@@ -289,7 +289,7 @@ func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []str
 	fromTitle := proxiedLookupTitle(ctx, uw, fromID)
 	toTitle := proxiedLookupTitle(ctx, uw, toID)
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: dep remove %s %s", fromID, toID)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: dep remove %s %s", fromID, toID)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("failed to commit: %v", err)
 	}
 

@@ -100,7 +100,7 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 
 	if len(outcomes) > 0 {
 		msg := closeProxiedCommitMessage(outcomes, claimedNextIssue, continueResult)
-		if err := uw.Commit(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
+		if err := uow.CommitWithRetries(ctx, uw, msg); err != nil && !isDoltNothingToCommit(err) {
 			return HandleErrorRespectJSON("commit close: %v", err)
 		}
 		for _, o := range outcomes {
