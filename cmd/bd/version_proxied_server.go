@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/debug"
+	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
 func reconcileVersionProxiedServer(ctx context.Context) {
@@ -25,7 +26,7 @@ func reconcileVersionProxiedServer(ctx context.Context) {
 		return
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: reconcile version -> %s", res.Current)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: reconcile version -> %s", res.Current)); err != nil && !isDoltNothingToCommit(err) {
 		debug.Logf("reconcile-version: commit: %v", err)
 		return
 	}

@@ -24,17 +24,22 @@ func newProxiedServerUOWProvider(ctx context.Context, beadsDir string) (uow.Unit
 	}
 
 	info, _ := configfile.LoadProxiedServerClientInfo(beadsDir)
+	var proxyPort int
+	if info != nil {
+		proxyPort = info.Port
+	}
 	if info != nil && info.External != nil {
-		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External)
+		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External, proxyPort)
 	}
 
-	return newManagedProxiedServerUOWProvider(ctx, beadsDir, database)
+	return newManagedProxiedServerUOWProvider(ctx, beadsDir, database, proxyPort)
 }
 
 func newExternalProxiedServerUOWProvider(
 	ctx context.Context,
 	beadsDir, database string,
 	external *configfile.ExternalDoltConfig,
+	proxyPort int,
 ) (uow.UnitOfWorkProvider, error) {
 	rootPath, err := resolveProxiedServerRootPath(beadsDir)
 	if err != nil {
@@ -66,12 +71,14 @@ func newExternalProxiedServerUOWProvider(
 		*external,
 		external.ResolvedUser(),
 		os.Getenv(configfile.ExternalDoltPasswordEnvVar),
+		proxyPort,
 	)
 }
 
 func newManagedProxiedServerUOWProvider(
 	ctx context.Context,
 	beadsDir, database string,
+	proxyPort int,
 ) (uow.UnitOfWorkProvider, error) {
 	doltBin, err := exec.LookPath("dolt")
 	if err != nil {
@@ -111,5 +118,6 @@ func newManagedProxiedServerUOWProvider(
 		"root",
 		"", // proxy is loopback-only, no auth
 		doltBin,
+		proxyPort,
 	)
 }

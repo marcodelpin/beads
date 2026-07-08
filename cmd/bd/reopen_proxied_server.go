@@ -66,7 +66,7 @@ func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 
 	if len(outcomes) > 0 {
 		msg := reopenProxiedCommitMessage(outcomes)
-		if err := uw.Commit(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
+		if err := uow.CommitWithRetries(ctx, uw, msg); err != nil && !isDoltNothingToCommit(err) {
 			return HandleErrorRespectJSON("commit reopen: %v", err)
 		}
 		for _, o := range outcomes {
