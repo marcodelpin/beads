@@ -360,7 +360,7 @@ func emitTarget(buf *bytes.Buffer, info *pkgInfo, tg target, methods []method, u
 	fmt.Fprintf(buf, "// %s is the generated typed-unsupported shell for storage.%s.\n", tg.typeName, tg.iface) //nolint:gosec // generator emits trusted type/interface names into generated source
 	fmt.Fprintf(buf, "// Every method returns *storage.ErrUnsupported; embed it and override the\n")
 	fmt.Fprintf(buf, "// real slice. DO NOT hand-edit — regenerate with `go generate ./...`.\n")
-	fmt.Fprintf(buf, "type %s struct{}\n\n", tg.typeName)
+	fmt.Fprintf(buf, "type %s struct{}\n\n", tg.typeName) //nolint:gosec // generator emits trusted type names into generated source
 
 	skipped := 0
 	for _, m := range methods {
@@ -386,11 +386,11 @@ func emitTarget(buf *bytes.Buffer, info *pkgInfo, tg target, methods []method, u
 			results = renderFieldList(info, rewritten.Results, false, true /*named results*/)
 		}
 
-		fmt.Fprintf(buf, "func (%s) %s(%s)", tg.typeName, m.name, params)
+		fmt.Fprintf(buf, "func (%s) %s(%s)", tg.typeName, m.name, params) //nolint:gosec // generator emits trusted type/method names into generated source
 		if results != "" {
 			// Named results are always parenthesized (even a single one), which
 			// is required because we give it a name (_ or err).
-			fmt.Fprintf(buf, " (%s)", results)
+			fmt.Fprintf(buf, " (%s)", results) //nolint:gosec // generator emits trusted result names into generated source
 		}
 		buf.WriteString(" {\n")
 		if hasErr {
