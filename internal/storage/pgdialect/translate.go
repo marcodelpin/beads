@@ -42,6 +42,7 @@ func Translate(sql string) (string, error) {
 	out = replaceIdentAll(out, "NOW()", "(CURRENT_TIMESTAMP AT TIME ZONE 'utc')")
 	out = rewriteLiteralJSONUnquote(out)
 	out = rewriteDynamicJSONPath(out)
+	out = rewriteCollateBinary(out)
 	out = rewriteInsertIgnore(out)
 	out = rewriteReplaceInto(out)
 	out = rewriteOnDuplicateKey(out)
@@ -328,6 +329,13 @@ func rewriteInsertIgnore(sql string) string {
 		out = strings.TrimRight(out, " \n\t") + " ON CONFLICT DO NOTHING"
 	}
 	return out
+}
+
+// rewriteCollateBinary makes the shared label ordering explicit on Postgres by
+// translating the MySQL binary collation used in canonical queries to the
+// database-code-point collation Postgres understands.
+func rewriteCollateBinary(sql string) string {
+	return replaceIdentAll(sql, "COLLATE utf8mb4_0900_bin", `COLLATE "C"`)
 }
 
 // rewriteReplaceInto converts MySQL `REPLACE INTO t (c1, c2, …) VALUES …` into

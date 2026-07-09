@@ -78,6 +78,11 @@ func TestTranslate(t *testing.T) {
 			in:   `SELECT 1 WHERE JSON_UNQUOTE(JSON_EXTRACT(d.metadata, '$.gate')) = 'any-children'`,
 			want: `SELECT 1 WHERE (d.metadata #>> '{gate}') = 'any-children'`,
 		},
+		{
+			name: "binary label collation",
+			in:   `SELECT label FROM labels WHERE issue_id = ? ORDER BY label COLLATE utf8mb4_0900_bin`,
+			want: `SELECT label FROM labels WHERE issue_id = $1 ORDER BY label COLLATE "C"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

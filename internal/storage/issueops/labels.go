@@ -17,7 +17,7 @@ func GetLabelsInTx(ctx context.Context, tx DBTX, table, issueID string) ([]strin
 		_, table, _, _ = WispTableRouting(isWisp)
 	}
 	//nolint:gosec // G201: table is from WispTableRouting ("labels" or "wisp_labels")
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT label FROM %s WHERE issue_id = ? ORDER BY label`, table), issueID)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT label FROM %s WHERE issue_id = ? ORDER BY label COLLATE utf8mb4_0900_bin`, table), issueID)
 	if err != nil {
 		return nil, fmt.Errorf("get labels: %w", err)
 	}
@@ -107,7 +107,7 @@ func getLabelsIntoFromTable(ctx context.Context, tx DBTX, labelTable string, ids
 			args[i] = id
 		}
 		rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-			`SELECT issue_id, label FROM %s WHERE issue_id IN (%s) ORDER BY issue_id, label`,
+			`SELECT issue_id, label FROM %s WHERE issue_id IN (%s) ORDER BY issue_id, label COLLATE utf8mb4_0900_bin`,
 			labelTable, strings.Join(placeholders, ",")), args...)
 		if err != nil {
 			return fmt.Errorf("get labels for issues from %s: %w", labelTable, err)
