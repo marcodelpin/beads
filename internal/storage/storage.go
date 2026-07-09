@@ -302,6 +302,17 @@ type BackupStore interface {
 	RestoreDatabase(ctx context.Context, dir string, force bool) error
 }
 
+// ReadyWorkCounter sizes the total ready-work count for a filter without
+// materializing the counts mega-query. It is identical to
+// len(GetReadyWorkWithCounts(filter with Limit=0)) but computed with cheap
+// indexed COUNT(*)s over the ready predicate. `bd ready --json` type-asserts to
+// this (via UnwrapStore) to render the "Showing X of N" total when a page is
+// capped, and falls back to the unbounded GetReadyWorkWithCounts when a store
+// does not implement it.
+type ReadyWorkCounter interface {
+	CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error)
+}
+
 // Transaction provides atomic multi-operation support within a single database transaction.
 //
 // The Transaction interface exposes a subset of storage methods that execute within

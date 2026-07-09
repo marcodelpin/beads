@@ -11,7 +11,9 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"testing"
 	"time"
@@ -66,6 +68,9 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("ReadyUnblockedByClose", func(t *testing.T) { testReadyUnblockedByClose(t, factory) })
 	t.Run("BlockedIssues", func(t *testing.T) { testBlockedIssues(t, factory) })
 	t.Run("EpicsEligibleForClosure", func(t *testing.T) { testEpicsEligible(t, factory) })
+	t.Run("ReadyCountsPageEquivalence", func(t *testing.T) { testReadyCountsPageEquivalence(t, factory) })
+	t.Run("ReadyCountsWithWisps", func(t *testing.T) { testReadyCountsWithWisps(t, factory) })
+	t.Run("ReadyCountsPageChunking", func(t *testing.T) { testReadyCountsPageChunking(t, factory) })
 
 	// Labels
 	t.Run("Labels", func(t *testing.T) { testLabels(t, factory) })
@@ -697,4 +702,129 @@ func testTransaction(t *testing.T, f Factory) {
 	if !found {
 		t.Errorf("label 'from-tx' not found, got %v", labels)
 	}
+}
+
+// --- Ready-work counts equivalence (perf/ready-counts) ---
+
+// marshalCounts renders a counts slice to JSON for byte-equivalence comparison
+// between the page-pushed and unbounded queries.
+func marshalCounts(t *testing.T, items []*types.IssueWithCounts) string {
+	t.Helper()
+	b, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal counts: %v", err)
+	}
+	return string(b)
+}
+
+// assertReadyCountsEquivalence checks the two central claims of the ready-counts
+// fast path against a real backend: (a) each bounded page — which resolves a
+// page of IDs then hydrates counts constrained to those IDs — is byte-identical
+// to the same-length prefix of the unbounded predicate query, and (b)
+// CountReadyWork equals len(unbounded) regardless of the page cap.
+func assertReadyCountsEquivalence(t *testing.T, s storage.DoltStorage, base types.WorkFilter, pages []int) {
+	t.Helper()
+	c := ctx()
+
+	unboundedFilter := base
+	unboundedFilter.Limit = 0
+	unbounded, err := s.GetReadyWorkWithCounts(c, unboundedFilter)
+	if err != nil {
+		t.Fatalf("GetReadyWorkWithCounts(unbounded): %v", err)
+	}
+
+	counter, ok := s.(storage.ReadyWorkCounter)
+	if !ok {
+		t.Fatalf("store does not implement storage.ReadyWorkCounter")
+	}
+
+	for _, page := range pages {
+		pf := base
+		pf.Limit = page
+
+		got, err := s.GetReadyWorkWithCounts(c, pf)
+		if err != nil {
+			t.Fatalf("GetReadyWorkWithCounts(limit=%d): %v", page, err)
+		}
+		want := unbounded
+		if page > 0 && page < len(unbounded) {
+			want = unbounded[:page]
+		}
+		if gj, wj := marshalCounts(t, got), marshalCounts(t, want); gj != wj {
+			t.Fatalf("ready counts page (limit=%d) not byte-identical to unbounded prefix:\n got: %s\nwant: %s", page, gj, wj)
+		}
+
+		n, err := counter.CountReadyWork(c, pf)
+		if err != nil {
+			t.Fatalf("CountReadyWork(limit=%d): %v", page, err)
+		}
+		if n != len(unbounded) {
+			t.Fatalf("CountReadyWork(limit=%d) = %d, want %d (len unbounded)", page, n, len(unbounded))
+		}
+	}
+}
+
+func testReadyCountsPageEquivalence(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+
+	// 12 ready issues with varied priority.
+	for i := 1; i <= 12; i++ {
+		id := fmt.Sprintf("rc-%02d", i)
+		must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: id, Title: id, Priority: i % 4, Status: types.StatusOpen}), "a"))
+	}
+	// A closed blocker leaves rc-01 ready but with DependencyCount=1, so the
+	// hydrated counts are non-trivial (not all zero).
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "rc-dep", Title: "dep", Status: types.StatusOpen}), "a"))
+	must(t, s.AddDependency(c, &types.Dependency{IssueID: "rc-01", DependsOnID: "rc-dep", Type: types.DepBlocks}, "a"))
+	must(t, s.CloseIssue(c, "rc-dep", "done", "a", "s"))
+	// A still-open blocker keeps rc-blocked out of the ready set (rc-blk stays ready).
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "rc-blk", Title: "blk", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "rc-blocked", Title: "blocked", Status: types.StatusOpen}), "a"))
+	must(t, s.AddDependency(c, &types.Dependency{IssueID: "rc-blocked", DependsOnID: "rc-blk", Type: types.DepBlocks}, "a"))
+	// Comment, label, and parent-child so those columns vary across rows.
+	must(t, s.AddComment(c, "rc-02", "a", "hi"))
+	must(t, s.AddLabel(c, "rc-03", "urgent", "a"))
+	must(t, s.AddDependency(c, &types.Dependency{IssueID: "rc-04", DependsOnID: "rc-01", Type: types.DepParentChild}, "a"))
+
+	// Ready set: rc-01..rc-12 plus rc-blk = 13. Page < ready exercises the
+	// by-IDs path; page == and > ready exercise the boundary.
+	assertReadyCountsEquivalence(t, s, types.WorkFilter{SortPolicy: types.SortPolicyOldest}, []int{1, 5, 13, 50})
+}
+
+func testReadyCountsWithWisps(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+
+	// Durable ready issues.
+	for i := 1; i <= 4; i++ {
+		id := fmt.Sprintf("wc-i%02d", i)
+		must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: id, Title: id, Priority: i % 3, Status: types.StatusOpen}), "a"))
+	}
+	// Ready ephemeral wisps (routed to the wisps table).
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("wc-w%02d", i)
+		must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: id, Title: id, Priority: i % 3, Status: types.StatusOpen, Ephemeral: true}), "a"))
+	}
+
+	// IncludeEphemeral makes the ready set the issues∪wisps union the counts path
+	// merges, exercising CountReadyWork's two-family COUNT(*) + overlap path.
+	assertReadyCountsEquivalence(t, s, types.WorkFilter{SortPolicy: types.SortPolicyOldest, IncludeEphemeral: true}, []int{1, 3, 7, 20})
+}
+
+func testReadyCountsPageChunking(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+
+	// A page larger than sqlbuild.QueryBatchSize (200) forces the by-IDs
+	// hydration to chunk its IN-list; the merged result must still match the
+	// unbounded query byte-for-byte.
+	const n = 205
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("ch-%04d", i)
+		must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: id, Title: id, Status: types.StatusOpen}), "a"))
+	}
+
+	// limit=100 stays within one chunk; limit=205 and 250 span two chunks.
+	assertReadyCountsEquivalence(t, s, types.WorkFilter{SortPolicy: types.SortPolicyOldest}, []int{100, n, 250})
 }
