@@ -19,7 +19,7 @@ func TestTranslate(t *testing.T) {
 		{"json_arrayagg", "SELECT JSON_ARRAYAGG(x)", "json_group_array(x)", "JSON_ARRAYAGG"},
 		{"json_unquote unwrap", "SELECT JSON_UNQUOTE(JSON_EXTRACT(m, '$.k'))", "JSON_EXTRACT(m, '$.k')", "JSON_UNQUOTE"},
 		{"date_format", "SELECT DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ')", "strftime('%Y-%m-%dT%H:%M:%SZ', created_at)", "DATE_FORMAT"},
-		{"binary label collation", "SELECT label FROM labels WHERE issue_id = ? ORDER BY label COLLATE utf8mb4_0900_bin", "ORDER BY label COLLATE BINARY", "utf8mb4_0900_bin"},
+		{"binary label collation", "SELECT label FROM labels WHERE issue_id = ? ORDER BY label", "ORDER BY label COLLATE BINARY", "utf8mb4_0900_bin"},
 		{"update alias", "UPDATE issues i SET i.is_blocked = 1 WHERE i.id IN (?)", "UPDATE issues AS i SET", ""},
 		{"on duplicate key", "INSERT INTO issues (id) VALUES (?) ON DUPLICATE KEY UPDATE title = VALUES(title)", "ON CONFLICT (id) DO UPDATE SET title = excluded.title", "DUPLICATE"},
 		{"greatest", "SELECT GREATEST(last_child, ?)", "max(last_child, ?)", "GREATEST"},

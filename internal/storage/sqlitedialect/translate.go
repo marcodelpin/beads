@@ -40,7 +40,7 @@ func Translate(sql string) string {
 	// SQLite CURRENT_TIMESTAMP is UTC, matching bd's naive-UTC storage discipline.
 	out = replaceIdentAll(out, "UTC_TIMESTAMP()", "CURRENT_TIMESTAMP")
 	out = replaceIdentAll(out, "NOW()", "CURRENT_TIMESTAMP")
-	out = rewriteCollateBinary(out)
+	out = rewriteLabelOrderBy(out)
 	out = rewriteInsertIgnore(out)     // INSERT IGNORE -> INSERT OR IGNORE
 	out = rewriteOnDuplicateKey(out)   // ON DUPLICATE KEY UPDATE -> ON CONFLICT ...
 	out = addUpdateAlias(out)          // UPDATE t alias SET -> UPDATE t AS alias SET (SQLite needs AS)
@@ -81,8 +81,9 @@ func replaceIdentAll(sql, token, repl string) string {
 	return b.String()
 }
 
-func rewriteCollateBinary(sql string) string {
-	return replaceIdentAll(sql, "COLLATE utf8mb4_0900_bin", "COLLATE BINARY")
+func rewriteLabelOrderBy(sql string) string {
+	sql = replaceIdentAll(sql, "ORDER BY issue_id, label", "ORDER BY issue_id, label COLLATE BINARY")
+	return replaceIdentAll(sql, "ORDER BY label", "ORDER BY label COLLATE BINARY")
 }
 
 var insertIgnoreRe = regexp.MustCompile(`(?i)\bINSERT\s+IGNORE\s+INTO\b`)

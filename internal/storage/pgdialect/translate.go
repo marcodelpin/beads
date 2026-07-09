@@ -42,7 +42,7 @@ func Translate(sql string) (string, error) {
 	out = replaceIdentAll(out, "NOW()", "(CURRENT_TIMESTAMP AT TIME ZONE 'utc')")
 	out = rewriteLiteralJSONUnquote(out)
 	out = rewriteDynamicJSONPath(out)
-	out = rewriteCollateBinary(out)
+	out = rewriteLabelOrderBy(out)
 	out = rewriteInsertIgnore(out)
 	out = rewriteReplaceInto(out)
 	out = rewriteOnDuplicateKey(out)
@@ -331,11 +331,13 @@ func rewriteInsertIgnore(sql string) string {
 	return out
 }
 
-// rewriteCollateBinary makes the shared label ordering explicit on Postgres by
-// translating the MySQL binary collation used in canonical queries to the
-// database-code-point collation Postgres understands.
-func rewriteCollateBinary(sql string) string {
-	return replaceIdentAll(sql, "COLLATE utf8mb4_0900_bin", `COLLATE "C"`)
+// rewriteLabelOrderBy makes label sorting explicit on Postgres. The shared
+// query text stays raw (`ORDER BY label` / `ORDER BY issue_id, label`) so the
+// Dolt reference path remains unchanged; the SQL backends translate it to a
+// code-point collation here.
+func rewriteLabelOrderBy(sql string) string {
+	sql = replaceIdentAll(sql, "ORDER BY issue_id, label", `ORDER BY issue_id, label COLLATE "C"`)
+	return replaceIdentAll(sql, "ORDER BY label", `ORDER BY label COLLATE "C"`)
 }
 
 // rewriteReplaceInto converts MySQL `REPLACE INTO t (c1, c2, …) VALUES …` into

@@ -80,7 +80,7 @@ func TestTranslate(t *testing.T) {
 		},
 		{
 			name: "binary label collation",
-			in:   `SELECT label FROM labels WHERE issue_id = ? ORDER BY label COLLATE utf8mb4_0900_bin`,
+			in:   `SELECT label FROM labels WHERE issue_id = ? ORDER BY label`,
 			want: `SELECT label FROM labels WHERE issue_id = $1 ORDER BY label COLLATE "C"`,
 		},
 	}
