@@ -400,6 +400,12 @@ var (
 	// Onboarding tips are random (probabilistic, BEADS_TIP_SEED-seeded) and not part
 	// of the storage contract — strip them so they never cause a false divergence.
 	reTip = regexp.MustCompile(`\n*💡 Tip:[^\n]*`)
+	// The beads.role config nudge (GH#2950) is written to stderr when the workspace's
+	// git config has no beads.role. Whether it fires depends on the runner's git-config
+	// state (it appears on CI but not on a dev box), not on the storage backend, so it
+	// is cross-env noise like the tip banner rather than a storage divergence. Strip the
+	// whole 3-line block so a role nudge on one backend's run never reads as a mismatch.
+	reRoleWarn = regexp.MustCompile(`(?m)^warning: beads\.role not configured \(GH#2950\)\.\n(?:^  (?:Fix|Or): .*\n?)*`)
 )
 
 // normalize removes cross-backend and cross-run noise: workspace path, schema handle,
@@ -411,6 +417,7 @@ func normalize(s string, ws *Workspace) string {
 	}
 	s = reTimestamp.ReplaceAllString(s, "<TS>")
 	s = reTip.ReplaceAllString(s, "")
+	s = reRoleWarn.ReplaceAllString(s, "")
 	return strings.TrimRight(s, "\n")
 }
 
