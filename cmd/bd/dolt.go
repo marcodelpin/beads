@@ -618,6 +618,13 @@ endpoint via SQL and reports reachability, server version, and database.`,
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 		}
+		// A non-Dolt backend (postgres/mysql/sqlite) has no Dolt engine at all;
+		// report the backend rather than misdescribing an embedded Dolt server
+		// (parity with `bd dolt show`, which already special-cases this).
+		if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() != configfile.BackendDolt {
+			fmt.Printf("Backend: %s (no Dolt engine)\n", cfg.GetBackend())
+			return nil
+		}
 		if !usesSQLServer() {
 			showEmbeddedDoltStatus(beadsDir)
 			return nil
