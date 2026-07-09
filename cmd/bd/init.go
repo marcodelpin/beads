@@ -22,6 +22,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/templates/agents"
@@ -113,6 +114,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverConfigPath, _ := cmd.Flags().GetString("proxied-server-config-path")
 		serverLogPath, _ := cmd.Flags().GetString("proxied-server-log-path")
 		serverRootPath, _ := cmd.Flags().GetString("proxied-server-root-path")
+		serverProxyPort, _ := cmd.Flags().GetInt("proxied-server-port")
+		serverProxyIdleTimeout, _ := cmd.Flags().GetDuration("proxied-server-idle-timeout")
+		idleTimeoutSet := cmd.Flags().Changed("proxied-server-idle-timeout")
 		externalHost, _ := cmd.Flags().GetString("proxied-server-external-host")
 		externalPort, _ := cmd.Flags().GetInt("proxied-server-external-port")
 		externalSocketPath, _ := cmd.Flags().GetString("proxied-server-external-socket-path")
@@ -178,6 +182,25 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 			if err := validateProxiedServerRootPath(serverRootPath); err != nil {
 				return fmt.Errorf("--proxied-server-root-path %v", err)
+			}
+		}
+		if serverProxyPort != 0 {
+			if !initProxiedServer {
+				return fmt.Errorf("--proxied-server-port requires --proxied-server")
+			}
+			if serverProxyPort < 1 || serverProxyPort > 65535 {
+				return fmt.Errorf("--proxied-server-port must be between 1 and 65535, got %d", serverProxyPort)
+			}
+		}
+		if idleTimeoutSet {
+			if !initProxiedServer {
+				return fmt.Errorf("--proxied-server-idle-timeout requires --proxied-server")
+			}
+			if serverProxyIdleTimeout < 0 {
+				return fmt.Errorf("--proxied-server-idle-timeout must be 0 (never) or a positive duration, got %s", serverProxyIdleTimeout)
+			}
+			if serverProxyIdleTimeout == 0 {
+				serverProxyIdleTimeout = proxy.IdleTimeoutNever
 			}
 		}
 
@@ -295,25 +318,27 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 
 		if initProxiedServer {
 			if err := runInitProxiedServer(cmd, rootCtx, initProxiedServerInput{
-				prefix:            prefix,
-				database:          database,
-				roleFlag:          roleFlag,
-				initRemote:        initRemote,
-				initRemoteChanged: initRemoteChanged,
-				destroyToken:      destroyToken,
-				serverConfigPath:  serverConfigPath,
-				serverLogPath:     serverLogPath,
-				serverRootPath:    serverRootPath,
-				externalConfig:    externalConfig,
-				quiet:             quiet,
-				stealth:           stealth,
-				skipHooks:         skipHooks,
-				skipAgents:        skipAgents,
-				reinitLocal:       reinitLocal,
-				contributor:       contributor,
-				team:              team,
-				fromJSONL:         fromJSONL,
-				nonInteractive:    nonInteractive,
+				prefix:                 prefix,
+				database:               database,
+				roleFlag:               roleFlag,
+				initRemote:             initRemote,
+				initRemoteChanged:      initRemoteChanged,
+				destroyToken:           destroyToken,
+				serverConfigPath:       serverConfigPath,
+				serverLogPath:          serverLogPath,
+				serverRootPath:         serverRootPath,
+				serverProxyPort:        serverProxyPort,
+				serverProxyIdleTimeout: serverProxyIdleTimeout,
+				externalConfig:         externalConfig,
+				quiet:                  quiet,
+				stealth:                stealth,
+				skipHooks:              skipHooks,
+				skipAgents:             skipAgents,
+				reinitLocal:            reinitLocal,
+				contributor:            contributor,
+				team:                   team,
+				fromJSONL:              fromJSONL,
+				nonInteractive:         nonInteractive,
 			}); err != nil {
 				return err
 			}
@@ -1042,7 +1067,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if bootstrappedFromRemote {
 					// Leave the workspace in the same finalized state the
 					// bd bootstrap sync path produces (GH#3201) so
-					// `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate` and
+					// `bd migrate --force` (or BD_ALLOW_REMOTE_MIGRATE=1) and
 					// `bd dolt push` can open the cloned database.
 					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
 					if ferr := finalizeSyncedBootstrap(beadsDir, syncURL, fcfg, dbName); ferr != nil {
@@ -1788,6 +1813,8 @@ func init() {
 	initCmd.Flags().String("proxied-server-config-path", "", "[EXPERIMENTAL] Absolute path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-log-path", "", "[EXPERIMENTAL] Absolute path to the proxied dolt sql-server log file (proxied-server mode only). Default: <beadsDir>/proxieddb/server.log. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-root-path", "", "[EXPERIMENTAL] Absolute directory holding the proxied dolt sql-server's lockfiles, pidfiles, and child .dolt repository (proxied-server mode only). Default: <beadsDir>/proxieddb. May not exist yet — bd will create it. Relative paths are rejected.")
+	initCmd.Flags().Int("proxied-server-port", 0, "[EXPERIMENTAL] Fixed TCP port for the proxy's loopback listener (proxied-server mode only). Default 0 = an OS-assigned free port. Startup fails if the port is already in use.")
+	initCmd.Flags().Duration("proxied-server-idle-timeout", 0, "[EXPERIMENTAL] Idle duration after which the proxy shuts down its loopback listener and backend (proxied-server mode only). Omit for the built-in default (30s); 0 keeps the proxy and backend alive indefinitely; a positive value sets the window.")
 	initCmd.Flags().String("proxied-server-external-host", "", "[EXPERIMENTAL] Hostname or IP of an externally-managed dolt sql-server the proxy should front (proxied-server mode only). Mutually exclusive with --proxied-server-external-socket-path.")
 	initCmd.Flags().Int("proxied-server-external-port", 0, "[EXPERIMENTAL] TCP port of the externally-managed dolt sql-server (proxied-server mode only). Required when --proxied-server-external-host is set.")
 	initCmd.Flags().String("proxied-server-external-socket-path", "", "[EXPERIMENTAL] Absolute unix socket path of the externally-managed dolt sql-server (proxied-server mode only). Mutually exclusive with --proxied-server-external-host. Relative paths are rejected.")

@@ -136,7 +136,7 @@ func runPurgeOrPruneProxied(cmd *cobra.Command, scope purgeScope) error {
 		return HandleErrorRespectJSON("%s failed: %v", scope.cmdName, err)
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: %s %d bead(s)", scope.cmdName, result.DeletedCount)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: %s %d bead(s)", scope.cmdName, result.DeletedCount)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("commit: %v", err)
 	}
 

@@ -29,14 +29,14 @@ Examples:
   bd snapshot --json              # structured output for orchestration
 
 Fork-only — bda-c7h.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		windowHours, _ := cmd.Flags().GetInt("window-hours")
 		capN, _ := cmd.Flags().GetInt("cap")
 		if windowHours < 1 {
-			FatalError("--window-hours must be at least 1")
+			return HandleError("--window-hours must be at least 1")
 		}
 		if capN < 1 {
-			FatalError("--cap must be at least 1")
+			return HandleError("--cap must be at least 1")
 		}
 		ctx := rootCtx
 		now := time.Now()
@@ -49,7 +49,7 @@ Fork-only — bda-c7h.`,
 			Limit:  capN,
 		})
 		if err != nil {
-			FatalError("snapshot: in_progress query: %v", err)
+			return HandleError("snapshot: in_progress query: %v", err)
 		}
 
 		// Section 2: recently closed
@@ -60,7 +60,7 @@ Fork-only — bda-c7h.`,
 			Limit:       capN,
 		})
 		if err != nil {
-			FatalError("snapshot: closed query: %v", err)
+			return HandleError("snapshot: closed query: %v", err)
 		}
 
 		// Section 3: recently created (any status)
@@ -69,7 +69,7 @@ Fork-only — bda-c7h.`,
 			Limit:        capN,
 		})
 		if err != nil {
-			FatalError("snapshot: created query: %v", err)
+			return HandleError("snapshot: created query: %v", err)
 		}
 
 		// Stats: counts by status; for open also break down by priority.
@@ -86,9 +86,10 @@ Fork-only — bda-c7h.`,
 				"stats":           stats,
 				"in_progress_cap": capN,
 			})
-			return
+			return nil
 		}
 		displaySnapshot(ipIssues, closedIssues, createdIssues, stats, windowHours, now)
+		return nil
 	},
 }
 

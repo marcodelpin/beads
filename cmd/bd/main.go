@@ -174,6 +174,35 @@ func isWorkingSetReconcileCommand(cmd *cobra.Command) bool {
 	return parent.Name() == "dolt" || parent.Name() == "vc"
 }
 
+// isForcedMigrate reports whether cmd is `bd migrate` or `bd migrate schema`
+// invoked with --force: the operator confirming they are the single designated
+// migrator, so the remote-migrate gate (#4259) must not block this run's store
+// opens. Consulted in the root PersistentPreRunE because the gate fires during
+// store open (and during autoMigrateOnVersionBump), long before the migrate
+// command's own RunE.
+func isForcedMigrate(cmd *cobra.Command) bool {
+	if cmd != migrateCmd && cmd != migrateSchemaCmd {
+		return false
+	}
+	force, _ := cmd.Flags().GetBool("force")
+	return force
+}
+
+// forcedMigratePreviewFlag returns the name of a preview flag (--dry-run,
+// --inspect) that conflicts with --force on a forced migrate invocation, or ""
+// when there is no conflict. The combination must be rejected BEFORE the store
+// opens: with the gate override set, the open itself applies pending schema
+// migrations, so the preview flag would be honored only after the destructive
+// work it exists to prevent had already happened.
+func forcedMigratePreviewFlag(cmd *cobra.Command) string {
+	for _, name := range []string{"dry-run", "inspect"} {
+		if v, err := cmd.Flags().GetBool(name); err == nil && v {
+			return name
+		}
+	}
+	return ""
+}
+
 // loadBeadsEnvFile loads .beads/.env into process environment for per-project
 // Dolt credentials (GH#2520). Uses gotenv.Load which is non-overriding —
 // existing shell env vars always take precedence.
@@ -976,15 +1005,22 @@ var rootCmd = &cobra.Command{
 					return nil
 				}
 
-				// GH#3686: `bd create --repo=<local path>` targets a different
+				// GH#3686: `bd create --repo=<path-or-URL>` targets a different
 				// repo's workspace. Without this, PreRun exits with "no beads
 				// database found" before create.go's --repo handling runs, even
-				// when the target repo has a valid .beads/. Resolve the target
-				// workspace here so store initialization points at it. Remote
-				// --repo URLs are handled by create.go via the remote cache, so
-				// only local paths are resolved here.
+				// when the target has a valid workspace of its own. Resolve
+				// local targets here so store initialization points at them.
+				// Remote --repo URLs need no local database at all: create.go
+				// opens the remote store itself via the remote cache and never
+				// touches the local `store` global on that path (a gap left by
+				// #4615, which only handled local paths), so skip local
+				// discovery entirely instead of falling through to the "no
+				// beads database found" exit below.
 				if cmd.Name() == "create" && cmd.Flags().Changed("repo") {
-					if repoVal, _ := cmd.Flags().GetString("repo"); repoVal != "" && !remotecache.IsRemoteURL(repoVal) {
+					if repoVal, _ := cmd.Flags().GetString("repo"); repoVal != "" {
+						if remotecache.IsRemoteURL(repoVal) {
+							return nil
+						}
 						targetBeadsDir := filepath.Join(routing.ExpandPath(repoVal), ".beads")
 						dbPath = utils.CanonicalizePath(filepath.Join(targetBeadsDir, beads.CanonicalDatabaseName))
 					}
@@ -995,8 +1031,7 @@ var rootCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "Error: no beads database found\n")
 					fmt.Fprintf(os.Stderr, "Hint: %s\n", diagHint())
 					fmt.Fprintf(os.Stderr, "      or set BEADS_DIR to point to your .beads directory\n")
-					metrics.CloseAndFlush()
-					os.Exit(1)
+					return SilentExit()
 				}
 
 				if dbPath == "" {
@@ -1040,6 +1075,20 @@ var rootCmd = &cobra.Command{
 		// the database (which breaks file watchers).
 		useReadOnly := isReadOnlyCommand(cmd.Name())
 
+		// If the operator passed --force on `bd migrate` or `bd migrate schema`,
+		// set the programmatic gate override before both autoMigrateOnVersionBump
+		// and the main store open — both open their own store connections and the
+		// gate fires on each.
+		forcedMigrate := isForcedMigrate(cmd)
+		if forcedMigrate {
+			if name := forcedMigratePreviewFlag(cmd); name != "" {
+				return HandleError("--force cannot be combined with --%s: opening the store with the gate overridden applies pending migrations before the preview runs", name)
+			}
+		}
+		// Unconditional set-or-clear keeps the override self-clearing should the
+		// root command ever be re-run in-process (tests, a future server mode).
+		schema.SetForceAllowRemoteMigrate(forcedMigrate)
+
 		// Auto-migrate database on version bump (bd-jgxi).
 		// Runs for ALL commands (including read-only ones) because the migration
 		// opens its own store connection, writes the version metadata, commits it,
@@ -1070,7 +1119,7 @@ var rootCmd = &cobra.Command{
 		// the fresh-repo embedded default below.
 		cfg, cfgErr := configfile.Load(beadsDir)
 		if cfgErr != nil {
-			FatalError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
+			return HandleError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
 		}
 		if cfg != nil {
 			warnSharedServerEmbeddedMismatch(cfg)
@@ -1197,8 +1246,7 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			// Check for fresh clone scenario
 			if handleFreshCloneError(err) {
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
 			// Schema skew gets dedicated UX with actionable rebuild instructions.
 			var skewErr *schema.SchemaSkewError
@@ -1208,8 +1256,7 @@ var rootCmd = &cobra.Command{
 				} else {
 					fmt.Fprint(os.Stderr, skewErr.UserMessage())
 				}
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
 			// #4259: the remote-migrate gate blocks silent in-place migration of a
 			// remote-backed database and tells the operator to migrate-or-adopt.
@@ -1220,8 +1267,7 @@ var rootCmd = &cobra.Command{
 				} else {
 					fmt.Fprint(os.Stderr, gateErr.UserMessage())
 				}
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
 			return HandleError("failed to open database: %v", err)
 		}
@@ -1248,7 +1294,9 @@ var rootCmd = &cobra.Command{
 		// Skip for --global: the global database uses a sentinel project ID
 		// that won't match any project's metadata.json.
 		if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
-			validateWorkspaceIdentity(rootCtx, beadsDir)
+			if err := validateWorkspaceIdentity(rootCtx, beadsDir); err != nil {
+				return err
+			}
 		}
 
 		// Initialize hook runner
@@ -1563,25 +1611,25 @@ func flushBatchCommitOnShutdown() {
 // 1. Read commands are safe even against wrong databases (no data mutation)
 // 2. The check requires an open store connection
 // 3. New databases won't have _project_id yet (bootstrap case)
-func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
+func validateWorkspaceIdentity(ctx context.Context, beadsDir string) error {
 	if store == nil {
-		return // No store connection, nothing to validate
+		return nil // No store connection, nothing to validate
 	}
 
 	// Load project_id from metadata.json
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil || cfg == nil {
-		return // No config, skip validation (fresh init)
+		return nil // No config, skip validation (fresh init)
 	}
 	configProjectID := cfg.ProjectID
 	if configProjectID == "" {
-		return // No project_id in config (pre-identity era)
+		return nil // No project_id in config (pre-identity era)
 	}
 
 	// Get project_id from database
 	dbProjectID, err := store.GetMetadata(ctx, "_project_id")
 	if err != nil || dbProjectID == "" {
-		return // No project_id in DB (new or pre-identity database)
+		return nil // No project_id in DB (new or pre-identity database)
 	}
 
 	// Compare: mismatch means drift
@@ -1597,9 +1645,9 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 		fmt.Fprintf(os.Stderr, "Recovery: run 'bd doctor --fix' or 'bd bootstrap' to reconcile workspace metadata with the authoritative database when shared-server metadata drifted.\n")
 		fmt.Fprintf(os.Stderr, "To diagnose: bd context --json\n")
 		fmt.Fprintf(os.Stderr, "To override: set BEADS_SKIP_IDENTITY_CHECK=1\n")
-		metrics.CloseAndFlush()
-		os.Exit(1)
+		return SilentExit()
 	}
+	return nil
 }
 
 // joinSpoolDrain cancels the opportunistic spool drain launched in

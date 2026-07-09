@@ -34,10 +34,10 @@ Examples:
 
 Fork-only — bda-9pc.`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		depth, _ := cmd.Flags().GetInt("depth")
 		if depth < 1 {
-			FatalError("--depth must be at least 1")
+			return HandleError("--depth must be at least 1")
 		}
 		ctx := rootCtx
 		targetID := args[0]
@@ -45,7 +45,7 @@ Fork-only — bda-9pc.`,
 		// Resolve target.
 		target, err := store.GetIssue(ctx, targetID)
 		if err != nil || target == nil {
-			FatalError("issue %q not found: %v", targetID, err)
+			return HandleError("issue %q not found: %v", targetID, err)
 		}
 
 		ancestors := walkAncestors(ctx, target.ID, depth)
@@ -69,9 +69,10 @@ Fork-only — bda-9pc.`,
 				"siblings":      siblings,
 				"referenced_by": xrefs,
 			})
-			return
+			return nil
 		}
 		displayCohort(target, ancestors, descendants, siblings, xrefs)
+		return nil
 	},
 }
 

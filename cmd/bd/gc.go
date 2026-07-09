@@ -122,13 +122,11 @@ Consent flow (recommended):
 
 		// --plan mode: collect candidates and emit plan, exit early without modifying anything.
 		if gcPlan {
-			runGCPlan(gcOlderThan)
-			return nil
+			return runGCPlan(gcOlderThan)
 		}
 		// --plan-summary mode: same data as --plan, but tabular human view.
 		if gcPlanSummary {
-			runGCPlanSummary(gcOlderThan)
-			return nil
+			return runGCPlanSummary(gcOlderThan)
 		}
 
 		// Fork safety net: refuse very small --older-than values unless explicitly allowed.
@@ -219,7 +217,7 @@ Consent flow (recommended):
 					if !gcNoBackup {
 						backupPath, err := writeGCBackup(closedIssues)
 						if err != nil {
-							FatalError("failed to write GC backup: %v (refusing to delete)", err)
+							return HandleError("failed to write GC backup: %v (refusing to delete)", err)
 						}
 						if !jsonOutput {
 							fmt.Printf("  Backup: %s (%d issue(s))\n", backupPath, len(closedIssues))
@@ -434,7 +432,7 @@ type gcPlanOutput struct {
 //
 // Fork-only — implements the user-consent flow requested by the bd owner:
 // "non mi va bene che bd cancelli le cose vecchie senza chiedere".
-func runGCPlan(olderThanDays int) {
+func runGCPlan(olderThanDays int) error {
 	now := time.Now()
 	cutoff := now.AddDate(0, 0, -olderThanDays)
 	statusClosed := types.StatusClosed
@@ -444,7 +442,7 @@ func runGCPlan(olderThanDays int) {
 		ClosedBefore: &cutoff,
 	})
 	if err != nil {
-		FatalError("plan: searching closed issues: %v", err)
+		return HandleError("plan: searching closed issues: %v", err)
 	}
 
 	plan := gcPlanOutput{
@@ -471,7 +469,7 @@ func runGCPlan(olderThanDays int) {
 
 	memCands, err := listExpiredMemoryCandidates(now)
 	if err != nil {
-		FatalError("plan: listing expired memories: %v", err)
+		return HandleError("plan: listing expired memories: %v", err)
 	}
 	if memCands != nil {
 		plan.Memories = memCands
@@ -488,15 +486,16 @@ func runGCPlan(olderThanDays int) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(plan); err != nil {
-		FatalError("plan: encode JSON: %v", err)
+		return HandleError("plan: encode JSON: %v", err)
 	}
+	return nil
 }
 
 // runGCPlanSummary implements `bd gc --plan-summary`. Same candidate set as
 // runGCPlan, but emits a human-readable tabular view (sorted by age desc)
 // instead of JSON. Fork-only — for eyeballing the GC backlog without piping
 // to jq. The JSON contract via --plan stays untouched.
-func runGCPlanSummary(olderThanDays int) {
+func runGCPlanSummary(olderThanDays int) error {
 	now := time.Now()
 	cutoff := now.AddDate(0, 0, -olderThanDays)
 	statusClosed := types.StatusClosed
@@ -506,7 +505,7 @@ func runGCPlanSummary(olderThanDays int) {
 		ClosedBefore: &cutoff,
 	})
 	if err != nil {
-		FatalError("plan-summary: searching closed issues: %v", err)
+		return HandleError("plan-summary: searching closed issues: %v", err)
 	}
 
 	type issueRow struct {
@@ -538,7 +537,7 @@ func runGCPlanSummary(olderThanDays int) {
 
 	memCands, err := listExpiredMemoryCandidates(now)
 	if err != nil {
-		FatalError("plan-summary: listing expired memories: %v", err)
+		return HandleError("plan-summary: listing expired memories: %v", err)
 	}
 
 	fmt.Printf("GC candidates (older-than %dd, %d issues + %d memories):\n\n",
@@ -602,6 +601,7 @@ func runGCPlanSummary(olderThanDays int) {
 	} else {
 		fmt.Println("Nothing to do.")
 	}
+	return nil
 }
 
 // writeGCBackup serializes the given issues to a JSONL file inside .beads/

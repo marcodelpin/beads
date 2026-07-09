@@ -145,18 +145,18 @@ func resolveGroupMembers(raw []string) []string {
 var groupCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create/extend a group gate: park members behind one deferred gate",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("group create")
 		focus := strings.TrimSpace(flagString(cmd, "focus"))
 		if focus == "" {
-			FatalErrorRespectJSON("--focus is required")
+			return HandleErrorRespectJSON("--focus is required")
 		}
 		raw, err := parseGroupMembers(flagString(cmd, "members"))
 		if err != nil {
-			FatalErrorRespectJSON("%v", err)
+			return HandleErrorRespectJSON("%v", err)
 		}
 		if len(raw) == 0 {
-			FatalErrorRespectJSON("no members supplied (--members)")
+			return HandleErrorRespectJSON("no members supplied (--members)")
 		}
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		gateTitle := strings.TrimSpace(flagString(cmd, "gate-title"))
@@ -164,11 +164,11 @@ var groupCreateCmd = &cobra.Command{
 
 		members := resolveGroupMembers(raw)
 		if len(members) == 0 {
-			FatalErrorRespectJSON("no members resolved (all ids unresolvable)")
+			return HandleErrorRespectJSON("no members resolved (all ids unresolvable)")
 		}
 		gate, err := findGroupGate(focus)
 		if err != nil {
-			FatalErrorRespectJSON("looking up gate: %v", err)
+			return HandleErrorRespectJSON("looking up gate: %v", err)
 		}
 
 		// Phase 1: find-or-create the GATE, then ALWAYS assert it is deferred (self-heals a
@@ -188,7 +188,7 @@ var groupCreateCmd = &cobra.Command{
 				fmt.Printf("DRY: dep add %s blocked-by %s ; label add %s %s\n", m, gate, m, groupParkedLabel(focus))
 			}
 			fmt.Printf("DRY: gate=%s focus=%s members=%d\n", gate, focus, len(members))
-			return
+			return nil
 		}
 		if freshGate {
 			title := gateTitle
@@ -208,7 +208,7 @@ var groupCreateCmd = &cobra.Command{
 				Owner:       getOwner(),
 			})
 			if err := store.CreateIssue(ctx, gateIssue, actor); err != nil {
-				FatalErrorRespectJSON("creating gate: %v", err)
+				return HandleErrorRespectJSON("creating gate: %v", err)
 			}
 			gate = gateIssue.ID
 		}
@@ -217,7 +217,7 @@ var groupCreateCmd = &cobra.Command{
 			"status": string(types.StatusDeferred),
 			"notes":  "meta-gate hub focus:" + focus + " — not real work (deferred: hidden from ready, still blocks)",
 		}, actor); err != nil {
-			FatalErrorRespectJSON("deferring gate %s: %v", gate, err)
+			return HandleErrorRespectJSON("deferring gate %s: %v", gate, err)
 		}
 		commandDidWrite.Store(true)
 		if !jsonOutput {
@@ -232,7 +232,7 @@ var groupCreateCmd = &cobra.Command{
 		// existing dependents tells us which members are already wired (idempotent re-run).
 		existing, err := gateDependentIDs(gate)
 		if err != nil {
-			FatalErrorRespectJSON("reading gate dependents: %v", err)
+			return HandleErrorRespectJSON("reading gate dependents: %v", err)
 		}
 		parked := groupParkedLabel(focus)
 		wiredNew, already := 0, 0
@@ -259,7 +259,7 @@ var groupCreateCmd = &cobra.Command{
 			return nil
 		})
 		if err != nil {
-			FatalErrorRespectJSON("group create: %v", err)
+			return HandleErrorRespectJSON("group create: %v", err)
 		}
 		commandDidWrite.Store(true)
 		warnIfCyclesExist(store)
@@ -269,21 +269,22 @@ var groupCreateCmd = &cobra.Command{
 				"gate": gate, "focus": focus, "members": len(members),
 				"wired_new": wiredNew, "already": already,
 			})
-			return
+			return nil
 		}
 		fmt.Printf("%s gate=%s focus=%s members=%d wired_new=%d already=%d\n",
 			ui.RenderPass("✓"), gate, focus, len(members), wiredNew, already)
+		return nil
 	},
 }
 
 var groupReleaseCmd = &cobra.Command{
 	Use:   "release",
 	Short: "Release a group: close the gate, unblock + un-park all members",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("group release")
 		focus := strings.TrimSpace(flagString(cmd, "focus"))
 		if focus == "" {
-			FatalErrorRespectJSON("--focus is required")
+			return HandleErrorRespectJSON("--focus is required")
 		}
 		keepLabels, _ := cmd.Flags().GetBool("keep-labels")
 		keepDeps, _ := cmd.Flags().GetBool("keep-deps")
@@ -292,10 +293,10 @@ var groupReleaseCmd = &cobra.Command{
 
 		gate, err := findGroupGate(focus)
 		if err != nil {
-			FatalErrorRespectJSON("looking up gate: %v", err)
+			return HandleErrorRespectJSON("looking up gate: %v", err)
 		}
 		if gate == "" {
-			FatalErrorRespectJSON("no gate found for focus:%s", focus)
+			return HandleErrorRespectJSON("no gate found for focus:%s", focus)
 		}
 
 		// Reconcile BOTH sources of truth so divergence (a hand-removed label, a partially
@@ -303,11 +304,11 @@ var groupReleaseCmd = &cobra.Command{
 		// (authoritative for deps) ∪ members carrying the parked label (authoritative for labels).
 		depSet, err := gateDependentIDs(gate)
 		if err != nil {
-			FatalErrorRespectJSON("reading gate dependents: %v", err)
+			return HandleErrorRespectJSON("reading gate dependents: %v", err)
 		}
 		labelMembers, err := groupParkedMembers(focus)
 		if err != nil {
-			FatalErrorRespectJSON("listing parked members: %v", err)
+			return HandleErrorRespectJSON("listing parked members: %v", err)
 		}
 		parked := groupParkedLabel(focus)
 		union := map[string]bool{}
@@ -328,7 +329,7 @@ var groupReleaseCmd = &cobra.Command{
 				fmt.Printf("DRY: dep remove %s %s ; label remove %s %s\n", m, gate, m, parked)
 			}
 			fmt.Printf("DRY: close %s → %d members unblocked\n", gate, len(members))
-			return
+			return nil
 		}
 
 		commitMsg := fmt.Sprintf("bd: group release focus:%s — unblock %d issue(s) + close %s", focus, len(members), gate)
@@ -354,47 +355,49 @@ var groupReleaseCmd = &cobra.Command{
 			return nil
 		})
 		if err != nil {
-			FatalErrorRespectJSON("group release: %v", err)
+			return HandleErrorRespectJSON("group release: %v", err)
 		}
 		commandDidWrite.Store(true)
 
 		if jsonOutput {
 			outputJSON(map[string]interface{}{"gate": gate, "focus": focus, "released": len(members)})
-			return
+			return nil
 		}
 		fmt.Printf("%s closed gate %s → %d members unblocked (focus:%s)\n",
 			ui.RenderPass("✓"), gate, len(members), focus)
+		return nil
 	},
 }
 
 var groupStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show the gate and parked members for a focus",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		focus := strings.TrimSpace(flagString(cmd, "focus"))
 		if focus == "" {
-			FatalErrorRespectJSON("--focus is required")
+			return HandleErrorRespectJSON("--focus is required")
 		}
 		gate, err := findGroupGate(focus)
 		if err != nil {
-			FatalErrorRespectJSON("looking up gate: %v", err)
+			return HandleErrorRespectJSON("looking up gate: %v", err)
 		}
 		members, err := groupParkedMembers(focus)
 		if err != nil {
-			FatalErrorRespectJSON("listing parked members: %v", err)
+			return HandleErrorRespectJSON("listing parked members: %v", err)
 		}
 		if jsonOutput {
 			outputJSON(map[string]interface{}{"gate": gate, "focus": focus, "parked": members})
-			return
+			return nil
 		}
 		if gate == "" {
 			fmt.Printf("no gate for focus:%s\n", focus)
-			return
+			return nil
 		}
 		fmt.Printf("%s GATE %s (focus:%s) — %d parked member(s):\n", ui.RenderAccent("●"), gate, focus, len(members))
 		for _, m := range members {
 			fmt.Printf("  - %s\n", m)
 		}
+		return nil
 	},
 }
 

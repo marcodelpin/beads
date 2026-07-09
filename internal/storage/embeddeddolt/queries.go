@@ -30,8 +30,10 @@ func (s *EmbeddedDoltStore) GetReadyWorkWithCounts(ctx context.Context, filter t
 	return result, err
 }
 
-// CountReadyWork returns the count of ready issues matching filter without
-// hydrating rows — a single COUNT(*) over the ready predicate (sys-56cls).
+// CountReadyWork returns the total ready-work count for filter. It is identical
+// to len(GetReadyWorkWithCounts(filter with Limit=0)) but sizes the total with
+// cheap indexed COUNT(*)s instead of re-running the counts mega-query. Backs the
+// storage.ReadyWorkCounter capability.
 func (s *EmbeddedDoltStore) CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error) {
 	var n int
 	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
