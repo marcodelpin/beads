@@ -32,6 +32,12 @@ jobs:
           POSTGRES_USER: bts
           POSTGRES_PASSWORD: bts
           POSTGRES_DB: bdwedge
+          # Code-point collation parity with Dolt (utf8mb4_0900_bin). The pg backend
+          # provisions per-workspace SCHEMAS inside this one database and can't set
+          # per-column COLLATE "C" (it breaks the shared recursive CTEs; see
+          # internal/storage/postgres/schema.go), so byte-order parity has to be
+          # guaranteed at DB-creation time via a C-locale cluster.
+          POSTGRES_INITDB_ARGS: "--lc-collate=C --lc-ctype=C"
         ports:
           - 5432:5432
         options: >-

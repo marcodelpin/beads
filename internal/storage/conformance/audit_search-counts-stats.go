@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -25,6 +26,7 @@ import (
 func RunAudit_search_counts_stats(t *testing.T, f Factory) {
 	t.Helper()
 	t.Run("SearchIssuesWithCounts", func(t *testing.T) { testAuditSearchIssuesWithCounts(t, f) })
+	t.Run("ReadyWorkDepCreatedAtParity", func(t *testing.T) { testAuditReadyWorkDepCreatedAtParity(t, f) })
 	t.Run("CountByPriority", func(t *testing.T) { testAuditCountByPriority(t, f) })
 	t.Run("CountByLabel", func(t *testing.T) { testAuditCountByLabel(t, f) })
 	t.Run("CountByAssigneeAndType", func(t *testing.T) { testAuditCountByAssigneeAndType(t, f) })
@@ -123,6 +125,57 @@ func testAuditSearchIssuesWithCounts(t *testing.T, f Factory) {
 	}
 	if c1.DependentCount != 1 {
 		t.Errorf("swc-c1 DependentCount = %d, want 1 (swc-b depends on it)", c1.DependentCount)
+	}
+}
+
+// The counts mega-query renders each dependency's created_at through
+// DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%sZ') into deps_json, and every backend must
+// reproduce the stored timestamp — not the zero time. This is the assertion the suite
+// was missing: DependencyCount only proves the edge exists, so a backend that rendered
+// the edge's created_at as NULL/zero stayed green. SQLite does exactly that when a
+// dependency created_at bound as a Go time.Time is stored in t.String() form and
+// strftime cannot parse it — the reason the DSN must set _time_format=datetime. The
+// batch/import path (CreateIssuesWithFullOptions, i.e. `bd import`) binds dep.CreatedAt
+// verbatim, so it is the path that exposes the divergence. GetDependencies returns the
+// target issues, not the edges, so it cannot witness the edge timestamp; assert the
+// rendered edge created_at equals the value that was imported.
+func testAuditReadyWorkDepCreatedAtParity(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	// A fixed non-zero past timestamp, whole-second to match DATE_FORMAT's granularity.
+	depCreatedAt := time.Date(2023, 5, 15, 10, 20, 30, 0, time.UTC)
+
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "dca-t", Title: "target"}), "a"))
+	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
+		withDefaults(&types.Issue{
+			ID:    "dca-s",
+			Title: "source",
+			Dependencies: []*types.Dependency{
+				{IssueID: "dca-s", DependsOnID: "dca-t", Type: types.DepBlocks, CreatedAt: depCreatedAt},
+			},
+		}),
+	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+
+	// Rendered path: SearchIssuesWithCounts (bd list --with-counts) and
+	// GetReadyWorkWithCounts (bd ready) share ScanReadyWorkRowWithCounts, which parses
+	// deps_json into issue.Dependencies. The rendered created_at must be the real
+	// imported timestamp, not the zero time a NULL DATE_FORMAT would unmarshal to.
+	items, err := s.SearchIssuesWithCounts(c, "", types.IssueFilter{})
+	must(t, err)
+	src := auditCountsByID(items)["dca-s"]
+	if src == nil {
+		t.Fatal("dca-s missing from SearchIssuesWithCounts result")
+	}
+	if len(src.Dependencies) != 1 {
+		t.Fatalf("dca-s rendered deps = %d, want 1", len(src.Dependencies))
+	}
+	got := src.Dependencies[0].CreatedAt
+	if got.IsZero() {
+		t.Fatal("rendered dependency created_at is the zero time: deps_json lost the timestamp " +
+			"(SQLite DATE_FORMAT/strftime parity break — DSN needs _time_format=datetime)")
+	}
+	if !got.Equal(depCreatedAt) {
+		t.Fatalf("rendered dependency created_at = %v, want %v (imported edge timestamp)", got, depCreatedAt)
 	}
 }
 

@@ -187,11 +187,20 @@ func (s *Store) DeleteIssuesBySourceRepo(ctx context.Context, sourceRepo string)
 
 // --- Batch create ---
 
-// CreateIssuesWithFullOptions mirrors the embedded-Dolt reference: an all-wisps batch is
-// created one issue per transaction (so callers' opts are threaded and the wisp tables are
-// used), and any batch containing a durable issue runs in a single transaction through
-// issueops.CreateIssuesInTx (orphan handling, conflict/stale policy, dependency validation,
-// is_blocked recompute).
+// CreateIssuesWithFullOptions mirrors the embedded-Dolt reference (dolt/issues.go):
+// an all-wisps batch marks every issue ephemeral (unless it is explicitly
+// no-history) so the rows route to the wisp tables, and EVERY batch — all-wisps or
+// mixed/durable — is created in a SINGLE transaction through
+// issueops.CreateIssuesInTx. That batch path is what threads opts, persists inline
+// dependencies, applies conflict/stale policy, reconciles child counters, and
+// recomputes is_blocked. The reference keeps two arms only to skip Dolt versioning
+// for the all-wisps case; sqlkit has no Dolt versioning, so the arms differ solely
+// in the ephemeral marking.
+//
+// Do NOT loop the single-issue issueops.CreateIssueInTx here: it never runs the
+// dependency-persist pass, so an all-wisps batch carrying inline dependencies would
+// silently drop every edge, and one transaction per issue would forfeit batch
+// atomicity.
 func (s *Store) CreateIssuesWithFullOptions(ctx context.Context, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
 	if len(issues) == 0 {
 		return nil
@@ -201,17 +210,7 @@ func (s *Store) CreateIssuesWithFullOptions(ctx context.Context, issues []*types
 			if !issue.NoHistory {
 				issue.Ephemeral = true
 			}
-			if err := s.withWriteTx(ctx, func(tx *sql.Tx) error {
-				bc, err := issueops.NewBatchContext(ctx, tx, opts)
-				if err != nil {
-					return err
-				}
-				return issueops.CreateIssueInTx(ctx, tx, bc, issue, actor)
-			}); err != nil {
-				return err
-			}
 		}
-		return nil
 	}
 	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
 		return issueops.CreateIssuesInTx(ctx, tx, issues, actor, opts)

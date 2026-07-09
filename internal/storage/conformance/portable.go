@@ -41,6 +41,7 @@ func RunPortableMethods(t *testing.T, factory Factory) {
 	t.Run("UpdateIssueID", func(t *testing.T) { testUpdateIssueID(t, factory) })
 	t.Run("DeleteIssuesBySourceRepo", func(t *testing.T) { testDeleteIssuesBySourceRepo(t, factory) })
 	t.Run("CreateIssuesWithFullOptions", func(t *testing.T) { testCreateIssuesWithFullOptions(t, factory) })
+	t.Run("ReconcileHierarchicalChildIDs", func(t *testing.T) { testReconcileHierarchicalChildIDs(t, factory) })
 	t.Run("Slots", func(t *testing.T) { testSlots(t, factory) })
 }
 
@@ -617,6 +618,50 @@ func testCreateIssuesWithFullOptions(t *testing.T, f Factory) {
 		"a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true, ConflictSkip: true}))
 	if got, _ := s.GetIssue(c, "test-keep"); got.Title != "Original" {
 		t.Errorf("ConflictSkip overwrote title to %q, want Original", got.Title)
+	}
+}
+
+// Batch-creating dotted hierarchical child IDs runs ReconcileChildCounters, which
+// emits `... ON DUPLICATE KEY UPDATE last_child = GREATEST(last_child, ?)` in the
+// child-counter upsert (issueops/create.go). That GREATEST path is reachable only
+// from batch create — the single-issue path never reconciles counters — so it was
+// dead in the rest of the suite, which is how a missing SQLite GREATEST translation
+// (child creation aborted with "no such function: GREATEST") shipped green. This
+// scenario mints x-1, x-1.1, x-1.2 through the batch path and asserts every backend
+// both creates the children and reconciles the counter to the max direct child.
+func testReconcileHierarchicalChildIDs(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "x-1", Title: "parent", IssueType: types.TypeEpic}), "a"))
+
+	// Two dotted children in one batch: this is the create that runs the GREATEST
+	// upsert. On a backend that cannot translate GREATEST the whole batch aborts.
+	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
+		withDefaults(&types.Issue{ID: "x-1.1", Title: "child one"}),
+		withDefaults(&types.Issue{ID: "x-1.2", Title: "child two"}),
+	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+
+	for _, id := range []string{"x-1.1", "x-1.2"} {
+		if _, err := s.GetIssue(c, id); err != nil {
+			t.Fatalf("hierarchical child %s not created via the GREATEST upsert path: %v", id, err)
+		}
+	}
+
+	// A grandchild (x-1.2.1) reconciles x-1.2's counter — the same GREATEST upsert
+	// one level deeper — and, being a grandchild, must not advance the x-1 counter.
+	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
+		withDefaults(&types.Issue{ID: "x-1.2.1", Title: "grandchild"}),
+	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+
+	// GetNextChildID reserves-and-advances, so call it once per parent. x-1 was
+	// reconciled to its max direct child (2, grandchild excluded) → next is x-1.3;
+	// x-1.2 was reconciled to 1 by the grandchild → next is x-1.2.2.
+	if next, err := s.GetNextChildID(c, "x-1"); err != nil || next != "x-1.3" {
+		t.Errorf("GetNextChildID(x-1) = (%q,%v), want (x-1.3,nil) — reconciled to 2, grandchild excluded", next, err)
+	}
+	if next, err := s.GetNextChildID(c, "x-1.2"); err != nil || next != "x-1.2.2" {
+		t.Errorf("GetNextChildID(x-1.2) = (%q,%v), want (x-1.2.2,nil) — grandchild counter reconciled", next, err)
 	}
 }
 

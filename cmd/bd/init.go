@@ -2263,17 +2263,15 @@ func alreadyInitialized(format string, args ...any) error {
 // A returned error that matches errWorkspaceAlreadyInitialized means a database
 // already exists (the benign, idempotent-skip case); any other error is
 // operational and must not be treated as success.
-func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
-	// Check if .beads directory exists
-	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-		return nil // No .beads directory, safe to init
-	}
-
-	// A Postgres workspace is marked by metadata.json alone (there is no local DB
-	// directory to inspect). Without this guard a plain `bd init` — which defaults to
-	// Dolt — silently repoints a live Postgres workspace to a new embedded Dolt DB and
-	// orphans its issues. --reinit-local/--force bypass this (handled by the caller).
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() == configfile.BackendPostgres {
+// checkExistingSQLBackend returns an "already initialized" guard error when cfg
+// selects a non-Dolt SQL backend (Postgres/MySQL/SQLite), each of which is marked
+// by metadata.json alone with no local DB directory to inspect. It returns nil for
+// the Dolt backend so the caller runs the directory/server checks instead. Split
+// out of checkExistingBeadsDataAt so the added SQL-backend branches don't inflate
+// that function's complexity.
+func checkExistingSQLBackend(cfg *configfile.Config) error {
+	switch cfg.GetBackend() {
+	case configfile.BackendPostgres:
 		return alreadyInitialized(`
 %s This workspace is already initialized with the Postgres backend (schema %q).
 
@@ -2284,9 +2282,7 @@ To re-initialize (Postgres provisioning is idempotent):
   bd init --backend=postgres --reinit-local ...
 
 Aborting.`, ui.RenderWarn("⚠"), cfg.GetPostgresSchema(), ui.RenderAccent("bd list"))
-	}
-
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() == configfile.BackendMySQL {
+	case configfile.BackendMySQL:
 		return alreadyInitialized(`
 %s This workspace is already initialized with the MySQL backend (database %q).
 
@@ -2297,9 +2293,7 @@ To re-initialize (MySQL provisioning is idempotent):
   bd init --backend=mysql --reinit-local ...
 
 Aborting.`, ui.RenderWarn("⚠"), cfg.GetMySQLDatabase(), ui.RenderAccent("bd list"))
-	}
-
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() == configfile.BackendSQLite {
+	case configfile.BackendSQLite:
 		return alreadyInitialized(`
 %s This workspace is already initialized with the SQLite backend (%q).
 
@@ -2311,8 +2305,30 @@ To re-initialize (SQLite provisioning is idempotent):
 
 Aborting.`, ui.RenderWarn("⚠"), cfg.GetSQLitePath(), ui.RenderAccent("bd list"))
 	}
+	return nil
+}
 
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() == configfile.BackendDolt {
+func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
+	// Check if .beads directory exists
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		return nil // No .beads directory, safe to init
+	}
+
+	// metadata.json is authoritative for the configured backend, so resolve it once
+	// and dispatch. A non-Dolt SQL backend (Postgres/MySQL/SQLite) is marked by
+	// metadata alone — there is no local DB directory to inspect — so a plain
+	// `bd init` (which defaults to Dolt) must not silently repoint a live SQL
+	// workspace to a fresh embedded Dolt DB and orphan its issues. --reinit-local
+	// /--force bypass this (handled by the caller). A config that fails to load falls
+	// through to the redirect/database-file checks below.
+	cfg, cfgErr := configfile.Load(beadsDir)
+	if cfgErr == nil && cfg != nil {
+		if guardErr := checkExistingSQLBackend(cfg); guardErr != nil {
+			return guardErr
+		}
+	}
+
+	if cfgErr == nil && cfg != nil && cfg.GetBackend() == configfile.BackendDolt {
 		if cfg.IsDoltProxiedServerMode() {
 			proxiedRoot, rootErr := resolveProxiedServerRootPath(beadsDir)
 			if rootErr != nil {

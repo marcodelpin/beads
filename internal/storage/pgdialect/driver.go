@@ -19,7 +19,9 @@ import (
 func Open(dsn, searchPath string) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, err
+		// pgx's ParseConfigError leaves ?password= URL query params cleartext; scrub
+		// before the error can reach any log.
+		return nil, ScrubDSNError(dsn, err)
 	}
 	if searchPath != "" {
 		if cfg.RuntimeParams == nil {
@@ -39,7 +41,8 @@ func Open(dsn, searchPath string) (*sql.DB, error) {
 func OpenRaw(dsn, searchPath string) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, err
+		// See Open: pgx does not redact query-param passwords in parse errors.
+		return nil, ScrubDSNError(dsn, err)
 	}
 	if searchPath != "" {
 		if cfg.RuntimeParams == nil {

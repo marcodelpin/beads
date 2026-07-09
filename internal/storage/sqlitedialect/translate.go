@@ -29,6 +29,13 @@ func Translate(sql string) string {
 	// MySQL JSON_ARRAYAGG(x) -> SQLite json_group_array(x). JSON_OBJECT/JSON_EXTRACT/
 	// JSON_ARRAY are native SQLite (same names), so they pass through.
 	out = rewriteFuncCalls(out, "JSON_ARRAYAGG", jsonArrayAggArgs)
+	// SQLite has no variadic GREATEST/LEAST, but its scalar max()/min() take the
+	// same (>=2 arg) form and return the largest/smallest argument. bd emits
+	// GREATEST(last_child, ?) in the child-counter upsert (issueops/create.go), so
+	// without this rewrite creating or importing any hierarchical dotted issue ID
+	// (e.g. x-1.2) fails on the SQLite backend with "no such function: GREATEST".
+	out = rewriteFuncCalls(out, "GREATEST", greatestArgs)      // GREATEST(a,b,…) -> max(a,b,…)
+	out = rewriteFuncCalls(out, "LEAST", leastArgs)            // LEAST(a,b,…)     -> min(a,b,…)
 	out = rewriteFuncCalls(out, "DATE_FORMAT", dateFormatArgs) // -> strftime (SQLite format codes)
 	// SQLite CURRENT_TIMESTAMP is UTC, matching bd's naive-UTC storage discipline.
 	out = replaceIdentAll(out, "UTC_TIMESTAMP()", "CURRENT_TIMESTAMP")
@@ -179,6 +186,32 @@ func concatArgs(args []string) string {
 		args[i] = strings.TrimSpace(args[i])
 	}
 	return "(" + strings.Join(args, " || ") + ")"
+}
+
+// greatestArgs: MySQL GREATEST(a, b, …) -> SQLite scalar max(a, b, …). SQLite's max
+// is the aggregate with a single argument and the scalar largest-of with two or
+// more, so only the multi-arg form is rewritten; a lone GREATEST(x) is left loud
+// so it fails at PREPARE rather than silently collapsing into an aggregate.
+func greatestArgs(args []string) string {
+	if len(args) < 2 {
+		return "GREATEST(" + strings.Join(args, ", ") + ")"
+	}
+	for i := range args {
+		args[i] = strings.TrimSpace(args[i])
+	}
+	return "max(" + strings.Join(args, ", ") + ")"
+}
+
+// leastArgs: MySQL LEAST(a, b, …) -> SQLite scalar min(a, b, …). Same one-vs-many
+// caveat as greatestArgs.
+func leastArgs(args []string) string {
+	if len(args) < 2 {
+		return "LEAST(" + strings.Join(args, ", ") + ")"
+	}
+	for i := range args {
+		args[i] = strings.TrimSpace(args[i])
+	}
+	return "min(" + strings.Join(args, ", ") + ")"
 }
 
 // locateArgs rewrites MySQL LOCATE(needle, haystack) -> SQLite INSTR(haystack, needle):

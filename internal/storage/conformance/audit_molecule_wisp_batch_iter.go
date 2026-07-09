@@ -32,6 +32,7 @@ func RunAudit_molecule_wisp_batch_iter(t *testing.T, f Factory) {
 	t.Run("DeleteBySourceRepoDependencyCascade", func(t *testing.T) { testAuditDeleteBySourceRepoDependencyCascade(t, f) })
 	t.Run("CreateRejectStaleUpserts", func(t *testing.T) { testAuditCreateRejectStaleUpserts(t, f) })
 	t.Run("CreateAllWispsFastPath", func(t *testing.T) { testAuditCreateAllWispsFastPath(t, f) })
+	t.Run("CreateAllWispsInlineDependencies", func(t *testing.T) { testAuditCreateAllWispsInlineDependencies(t, f) })
 	t.Run("CreateOrphanStrict", func(t *testing.T) { testAuditCreateOrphanStrict(t, f) })
 	t.Run("CreateCrossBucketDependency", func(t *testing.T) { testAuditCreateCrossBucketDependency(t, f) })
 	t.Run("CreateInBatchCycle", func(t *testing.T) { testAuditCreateInBatchCycle(t, f) })
@@ -414,8 +415,8 @@ func testAuditCreateRejectStaleUpserts(t *testing.T, f Factory) {
 	}
 }
 
-// An all-wisp batch takes the per-issue fast path and forces Ephemeral; the wisps
-// route to the wisp tables and are not visible as durable issues.
+// An all-wisp batch runs in a single batch transaction and forces Ephemeral; the
+// wisps route to the wisp tables and are not visible as durable issues.
 func testAuditCreateAllWispsFastPath(t *testing.T, f Factory) {
 	s := f(t)
 	c := ctx()
@@ -438,6 +439,66 @@ func testAuditCreateAllWispsFastPath(t *testing.T, f Factory) {
 	must(t, err)
 	if got := issueIDs(wisps); !slices.Equal(got, []string{"test-w1", "test-w2"}) {
 		t.Errorf("ListWisps = %v, want [test-w1 test-w2]", got)
+	}
+}
+
+// An all-wisp batch carrying inline dependencies persists those edges in the same
+// batch transaction (via the batch dependency-persist pass) and reports a
+// genuinely-unresolvable edge through OnSkippedDependency instead of dropping it
+// silently. Regression guard: the sqlkit all-wisps arm previously looped the
+// single-issue create, which runs no dependency-persist pass, so every inline edge
+// was silently lost with an empty skipped-dependency report. Mirrors the reachable
+// `bd import` options (RejectStaleUpserts off here; skip-on-validation + skip
+// callback on).
+func testAuditCreateAllWispsInlineDependencies(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+
+	var skipped [][2]string
+	opts := storage.BatchCreateOptions{
+		OrphanHandling:                 storage.OrphanAllow,
+		SkipPrefixValidation:           true,
+		SkipDependencyValidationErrors: true,
+		OnSkippedDependency: func(issueID, dependsOnID, _ string) {
+			skipped = append(skipped, [2]string{issueID, dependsOnID})
+		},
+	}
+
+	// test-w2 -> test-w1 is a valid in-batch inter-wisp edge (test-w1 is inserted
+	// before the dependency pass, so it resolves to the wisp bucket). test-w2 ->
+	// test-missing targets a nonexistent issue and must be reported skipped.
+	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
+		withDefaults(&types.Issue{ID: "test-w1", Title: "W1", Ephemeral: true}),
+		withDefaults(&types.Issue{ID: "test-w2", Title: "W2", Ephemeral: true, Dependencies: []*types.Dependency{
+			{IssueID: "test-w2", DependsOnID: "test-w1", Type: types.DepBlocks},
+			{IssueID: "test-w2", DependsOnID: "test-missing", Type: types.DepBlocks},
+		}}),
+	}, "a", opts))
+
+	// Both wisps persisted to the wisp bucket.
+	for _, id := range []string{"test-w1", "test-w2"} {
+		if got, err := s.GetIssue(c, id); err != nil || !got.Ephemeral {
+			t.Fatalf("%s after all-wisp batch = (%+v,%v), want ephemeral", id, got, err)
+		}
+	}
+
+	// The valid inter-wisp edge survives — this is exactly what the per-issue loop
+	// dropped on the SQL backends.
+	recs, _ := s.GetAllDependencyRecords(c)
+	if got := auditDepTargets(recs["test-w2"]); !slices.Equal(got, []string{"test-w1"}) {
+		t.Errorf("test-w2 deps = %v, want [test-w1] (inline all-wisp edge persisted)", got)
+	}
+
+	// The unresolvable edge was reported, not silently dropped, so the skipped
+	// accounting still reflects reality.
+	sawMissing := false
+	for _, e := range skipped {
+		if e[0] == "test-w2" && e[1] == "test-missing" {
+			sawMissing = true
+		}
+	}
+	if !sawMissing {
+		t.Errorf("skipped deps = %v, want to include (test-w2 -> test-missing)", skipped)
 	}
 }
 

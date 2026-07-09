@@ -58,6 +58,10 @@ func Provision(ctx context.Context, dsn, schema string) (storage.DoltStorage, er
 		_ = raw.Close()
 		return nil, fmt.Errorf("postgres: init schema: %w", err)
 	}
+	// Byte-order parity with Dolt depends on the database collation (text columns
+	// use the DB default; per-column COLLATE "C" breaks the shared recursive CTEs).
+	// Warn loudly when it is not code-point ordered, at init and on every open.
+	warnOnCollationDivergence(ctx, raw)
 	_ = raw.Close()
 
 	return New(ctx, Config{DSN: dsn, Schema: schema})

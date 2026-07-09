@@ -1,6 +1,7 @@
 package pgdialect
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -12,6 +13,10 @@ import (
 // kvPasswordRe matches a libpq keyword/value password token (password= or
 // sslpassword=), whose value is either single-quoted or a run of non-space chars.
 var kvPasswordRe = regexp.MustCompile(`(?i)(^|\s)(?:password|sslpassword)\s*=\s*(?:'(?:[^'\\]|\\.)*'|\S*)`)
+
+// pwValueRe captures the VALUE of a libpq keyword/value password token: group 1 is
+// the single-quoted body, group 2 is an unquoted run of non-space characters.
+var pwValueRe = regexp.MustCompile(`(?i)(?:^|\s)(?:password|sslpassword)\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S+))`)
 
 // RedactPassword returns dsn with the password removed, or an error if a password
 // cannot be safely removed. It strips every known password location — URL userinfo,
@@ -60,4 +65,66 @@ func stripPasswordBestEffort(dsn string) string {
 	// and collapse surrounding whitespace so the remainder still parses.
 	out := kvPasswordRe.ReplaceAllString(dsn, "$1")
 	return strings.TrimSpace(strings.Join(strings.Fields(out), " "))
+}
+
+// ScrubDSNError returns a new error whose message has every cleartext password
+// embedded in dsn removed. pgx's ParseConfigError redacts only URL userinfo, so a
+// `?password=`/`?sslpassword=` URL query param — the shape `bd init` connects with —
+// otherwise survives verbatim in the error text and leaks the secret to logs on any
+// parse or TLS-config failure. The returned error intentionally does NOT wrap err:
+// the pgx error's own Error() still contains the secret, so exposing it through the
+// unwrap chain would defeat the redaction. Non-nil in, non-nil out; nil passes through.
+func ScrubDSNError(dsn string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, secret := range dsnPasswordValues(dsn) {
+		msg = strings.ReplaceAll(msg, secret, "xxxxx")
+	}
+	return errors.New(msg)
+}
+
+// dsnPasswordValues returns every cleartext password embedded in dsn — URL userinfo,
+// URL query params (password, sslpassword), and libpq keyword/value tokens — in both
+// the raw (as-written) and percent-decoded forms, so a value matches however the
+// connection string is echoed back. Empty values are skipped, and results are
+// de-duplicated.
+func dsnPasswordValues(dsn string) []string {
+	seen := map[string]bool{}
+	var vals []string
+	add := func(v string) {
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		vals = append(vals, v)
+	}
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
+		if u.User != nil {
+			if pw, ok := u.User.Password(); ok {
+				add(pw)
+			}
+		}
+		// pgx echoes the raw query string back verbatim, so match the raw value;
+		// also add the decoded value in case a caller logs the parsed form.
+		for _, pair := range strings.Split(u.RawQuery, "&") {
+			key, val, ok := strings.Cut(pair, "=")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(key) {
+			case "password", "sslpassword":
+				add(val)
+				if dec, err := url.QueryUnescape(val); err == nil {
+					add(dec)
+				}
+			}
+		}
+	}
+	for _, m := range pwValueRe.FindAllStringSubmatch(dsn, -1) {
+		add(m[1]) // single-quoted body
+		add(m[2]) // unquoted token
+	}
+	return vals
 }
