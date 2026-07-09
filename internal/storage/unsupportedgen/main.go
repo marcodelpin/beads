@@ -394,7 +394,7 @@ func emitTarget(buf *bytes.Buffer, info *pkgInfo, tg target, methods []method, u
 		}
 		buf.WriteString(" {\n")
 		if hasErr {
-			fmt.Fprintf(buf, "\terr = errUnsupported(%q)\n", op)
+			fmt.Fprintf(buf, "\terr = errUnsupported(%q)\n", op) //nolint:gosec // generator emits trusted operation names into generated source
 			buf.WriteString("\treturn\n")
 		} else {
 			buf.WriteString("\t// NOTE: no error channel on this signature; returns the zero value.\n")
@@ -405,12 +405,12 @@ func emitTarget(buf *bytes.Buffer, info *pkgInfo, tg target, methods []method, u
 
 	if skipped == 0 {
 		// Full shell: the compile-time completeness assertion, exactly as before.
-		fmt.Fprintf(buf, "var _ storage.%s = %s{}\n\n", tg.iface, tg.typeName)
+		fmt.Fprintf(buf, "var _ storage.%s = %s{}\n\n", tg.iface, tg.typeName) //nolint:gosec // generator emits trusted interface/type names into generated source
 	} else {
 		// Partial shell: it cannot satisfy the interface alone, so the assertion
 		// moves to the embedding composite's `var _ storage.<iface> = (*Store)(nil)`,
 		// which proves union coverage (real methods + these stubs = full interface).
-		fmt.Fprintf(buf, "// NOTE: partial shell (%d methods skipped); the embedding composite must assert storage.%s itself.\n\n", skipped, tg.iface)
+		fmt.Fprintf(buf, "// NOTE: partial shell (%d methods skipped); the embedding composite must assert storage.%s itself.\n\n", skipped, tg.iface) //nolint:gosec // generator emits trusted interface names into generated source
 	}
 	return nil
 }
@@ -628,7 +628,7 @@ func writeImports(out *bytes.Buffer, info *pkgInfo, usedQualifiers map[string]bo
 	sort.Strings(list)
 	out.WriteString("import (\n")
 	for _, p := range list {
-		fmt.Fprintf(out, "\t%q\n", p)
+		fmt.Fprintf(out, "\t%q\n", p) //nolint:gosec // generator emits trusted import paths into generated source
 	}
 	out.WriteString(")\n\n")
 }
