@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +80,15 @@ var (
 
 	// credRunner runs the helper; a package var so tests can stub it without a shell.
 	credRunner = func(ctx context.Context, command string) ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		// POSIX shells parse the helper command; native Windows has no `sh`, so
+		// dispatch through cmd.exe there so a bare Windows bd does not hard-fail
+		// every *_PASSWORD_COMMAND / CREDENTIAL_COMMAND in the fail-closed ladder.
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.CommandContext(ctx, "cmd.exe", "/C", command)
+		} else {
+			cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

@@ -282,6 +282,14 @@ func instrArgs(args []string) string {
 	if len(args) != 2 {
 		return "INSTR(" + strings.Join(args, ", ") + ")" // leave loud
 	}
+	// POSITION reverses INSTR's arg order. Placeholder numbering runs later and
+	// left-to-right, so reordering two args that BOTH carry a `?` would swap their
+	// $-numbers relative to the caller's bound-arg order — a silent wrong-parameter
+	// mistranslation. bd only ever emits INSTR(col, ?), so guard the ambiguous case
+	// by leaving it loud to fail at PREPARE rather than swap bindings.
+	if strings.Contains(args[0], "?") && strings.Contains(args[1], "?") {
+		return "INSTR(" + strings.Join(args, ", ") + ")"
+	}
 	// MySQL INSTR(haystack, needle) — note the reversed order vs LOCATE.
 	return "POSITION(" + strings.TrimSpace(args[1]) + " IN " + strings.TrimSpace(args[0]) + ")"
 }

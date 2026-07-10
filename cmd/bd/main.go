@@ -742,7 +742,7 @@ var rootCmd = &cobra.Command{
 			oteltrace.WithAttributes(
 				attribute.String("bd.command", cmd.Name()),
 				attribute.String("bd.version", Version),
-				attribute.String("bd.args", strings.Join(os.Args[1:], " ")),
+				attribute.String("bd.args", scrubArgsForTelemetry(os.Args[1:])),
 			),
 		)
 
@@ -1157,7 +1157,12 @@ var rootCmd = &cobra.Command{
 			// failed. Mirrors applyResolvedConfig, which this hand-built doltCfg path
 			// bypasses. Server mode only: embedded stores never present a username, so the
 			// command must not run (or fail) embedded opens even when the env var is set.
-			if doltCfg.ServerMode {
+			// Dolt-only: the gateway credential command mints a Dolt server
+			// username. IsSharedServerMode() forces ServerMode true with no backend
+			// guard, so without this check a shared-server config in config.yaml
+			// would run (and fail closed) the command for postgres/mysql/sqlite
+			// workspaces, which never present a server username.
+			if doltCfg.ServerMode && cfg.GetBackend() == configfile.BackendDolt {
 				if _, credErr := dolt.ApplyGatewayCredential(rootCtx, cfg, doltCfg); credErr != nil {
 					return HandleError("resolving dolt credential command: %v", credErr)
 				}
@@ -1720,4 +1725,36 @@ func envTruthyValue(v string) bool {
 		return false
 	}
 	return true
+}
+
+// scrubArgsForTelemetry joins argv for the bd.args span attribute with any
+// credential-bearing values redacted. --pg-url/--mysql-url may carry a password
+// for init; RedactPassword protects metadata.json, but the raw argv would
+// otherwise leak the password into the telemetry root span and trace logs.
+func scrubArgsForTelemetry(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		parts[i] = scrubCredsInArg(a)
+	}
+	return strings.Join(parts, " ")
+}
+
+// scrubCredsInArg redacts the password in a URL/DSN-shaped argument
+// (postgres://user:PASS@host or user:PASS@tcp(...)), whether passed as
+// --flag=value or as a bare value; non-credential args pass through unchanged.
+func scrubCredsInArg(a string) string {
+	at := strings.LastIndexByte(a, '@')
+	if at < 0 {
+		return a
+	}
+	head := a[:at]
+	start := 0
+	if s := strings.LastIndex(head, "//"); s >= 0 {
+		start = s + 2 // userinfo begins after the scheme's "//"
+	}
+	colon := strings.IndexByte(head[start:], ':')
+	if colon < 0 {
+		return a // no "user:pass" userinfo, nothing to redact
+	}
+	return head[:start+colon+1] + "xxxxx" + a[at:]
 }

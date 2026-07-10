@@ -19,9 +19,15 @@ import "strings"
 // shape SQLite's date functions cannot parse — so the DATE_FORMAT(created_at,…) the
 // counts mega-query renders (translated to strftime by sqlitedialect) returns NULL and
 // deps_json exposes a zero created_at instead of the real timestamp. datetime stores
-// "2026-07-09 12:34:56", which strftime yields as "2026-07-09T12:34:56Z", matching
-// Dolt/MySQL datetime(0) granularity and unifying bound timestamps with the
-// DEFAULT CURRENT_TIMESTAMP rows into one sortable, strftime-parseable format.
+// "2026-07-09 12:34:56", which strftime yields as "2026-07-09T12:34:56Z", giving the
+// same whole-second GRANULARITY as Dolt/MySQL datetime(0) and unifying bound timestamps
+// with the DEFAULT CURRENT_TIMESTAMP rows into one sortable, strftime-parseable format.
+//
+// Note the granularity matches but the sub-second RULE does not: Go's Format truncates
+// the fraction, whereas Dolt/MySQL datetime(0) round half-up (Postgres keeps microseconds).
+// This sub-second divergence is an accepted, documented waiver — the portable contract is
+// a whole-second round-trip (see conformance.testAuditImportCommentSubSecond); forcing
+// round-down parity would only discard the SQL backends' native precision.
 func dsn(path string) string {
 	if strings.HasPrefix(path, "file:") {
 		return path

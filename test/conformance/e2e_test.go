@@ -312,6 +312,33 @@ func TestConformanceE2E(t *testing.T) {
 	if len(cands) == 0 {
 		t.Skip("no candidate backends available (set BEADS_PG_TEST_URL for the postgres profile)")
 	}
+	// Make coverage visible: sqlite's Available() is always true, so a run with
+	// BEADS_PG_TEST_URL/BEADS_MYSQL_TEST_URL unset compares only sqlite yet still
+	// passes green. Log the candidate set, and honor BEADS_CONFORMANCE_REQUIRE
+	// (comma-separated profile names) so CI hard-fails when an expected backend is
+	// absent rather than silently narrowing coverage.
+	names := make([]string, len(cands))
+	for i, c := range cands {
+		names[i] = c.Name
+	}
+	t.Logf("E2E differential candidates: %v (reference=%s)", names, ref.Name)
+	if req := strings.TrimSpace(os.Getenv("BEADS_CONFORMANCE_REQUIRE")); req != "" {
+		for _, want := range strings.Split(req, ",") {
+			if want = strings.TrimSpace(want); want == "" {
+				continue
+			}
+			found := false
+			for _, n := range names {
+				if n == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("BEADS_CONFORMANCE_REQUIRE lists %q but that candidate is unavailable (set its BEADS_*_TEST_URL)", want)
+			}
+		}
+	}
 	for _, sc := range corpus {
 		sc := sc
 		t.Run(sc.name, func(t *testing.T) {
@@ -397,6 +424,11 @@ func jsonID(raw json.RawMessage) string {
 
 var (
 	reTimestamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?`)
+	// A lost/zeroed timestamp (Go zero time 0001-01-01, or Unix epoch 1970-01-01)
+	// is timestamp-shaped, so reTimestamp alone would fold it to <TS> and make a
+	// backend that drops a timestamp byte-identical to one that preserved it. Map
+	// these to a distinct token FIRST so a lost timestamp reads as a divergence.
+	reZeroTS = regexp.MustCompile(`(?:0001-01-01|1970-01-01)[T ]00:00:00(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
 	// Onboarding tips are random (probabilistic, BEADS_TIP_SEED-seeded) and not part
 	// of the storage contract — strip them so they never cause a false divergence.
 	reTip = regexp.MustCompile(`\n*💡 Tip:[^\n]*`)
@@ -415,6 +447,7 @@ func normalize(s string, ws *Workspace) string {
 	if ws.Handle != "" {
 		s = strings.ReplaceAll(s, ws.Handle, "<SCHEMA>")
 	}
+	s = reZeroTS.ReplaceAllString(s, "<ZERO-TS>")
 	s = reTimestamp.ReplaceAllString(s, "<TS>")
 	s = reTip.ReplaceAllString(s, "")
 	s = reRoleWarn.ReplaceAllString(s, "")

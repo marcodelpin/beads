@@ -75,10 +75,25 @@ func stampSchemaVersion(ctx context.Context, db *sql.DB) (fresh bool, err error)
 	err = db.QueryRowContext(ctx, "SELECT `value` FROM metadata WHERE `key` = ?", schemaVersionKey).Scan(&stored)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := db.ExecContext(ctx, "INSERT INTO metadata (`key`, `value`) VALUES (?, ?)", schemaVersionKey, schemaVersion); err != nil {
-			return false, fmt.Errorf("sqlite: stamp schema version: %w", err)
+		// Provision runs on every open; two bd processes opening a not-yet-
+		// provisioned workspace concurrently can both reach here. INSERT OR
+		// IGNORE lets both succeed; only the opener that inserted the row
+		// (RowsAffected==1) is fresh and seeds defaults.
+		res, ierr := db.ExecContext(ctx, "INSERT OR IGNORE INTO metadata (`key`, `value`) VALUES (?, ?)", schemaVersionKey, schemaVersion)
+		if ierr != nil {
+			return false, fmt.Errorf("sqlite: stamp schema version: %w", ierr)
 		}
-		return true, nil
+		if n, _ := res.RowsAffected(); n == 1 {
+			return true, nil
+		}
+		// Lost the race: re-read what the winner stored and version-check it.
+		if rerr := db.QueryRowContext(ctx, "SELECT `value` FROM metadata WHERE `key` = ?", schemaVersionKey).Scan(&stored); rerr != nil {
+			return false, fmt.Errorf("sqlite: read schema version after conflict: %w", rerr)
+		}
+		if stored != schemaVersion {
+			return false, fmt.Errorf("sqlite: workspace schema version %s, this binary requires %s — recreate the workspace or use a matching binary", stored, schemaVersion)
+		}
+		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("sqlite: read schema version: %w", err)
 	case stored != schemaVersion:

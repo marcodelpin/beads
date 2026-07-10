@@ -111,10 +111,25 @@ func stampSchemaVersion(ctx context.Context, db *sql.DB) (fresh bool, err error)
 	err = db.QueryRowContext(ctx, "SELECT `value` FROM metadata WHERE `key` = ?", schemaVersionKey).Scan(&stored)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := db.ExecContext(ctx, "INSERT INTO metadata (`key`, `value`) VALUES (?, ?)", schemaVersionKey, schemaVersion); err != nil {
-			return false, fmt.Errorf("mysql: stamp schema version: %w", err)
+		// Provision runs on every open; concurrent first opens of the same
+		// workspace database can both reach here. INSERT IGNORE lets both
+		// succeed; only the opener that inserted the row (RowsAffected==1) is
+		// fresh and seeds defaults (seedDefaultConfig is already INSERT IGNORE).
+		res, ierr := db.ExecContext(ctx, "INSERT IGNORE INTO metadata (`key`, `value`) VALUES (?, ?)", schemaVersionKey, schemaVersion)
+		if ierr != nil {
+			return false, fmt.Errorf("mysql: stamp schema version: %w", ierr)
 		}
-		return true, nil
+		if n, _ := res.RowsAffected(); n == 1 {
+			return true, nil
+		}
+		// Lost the race: re-read what the winner stored and version-check it.
+		if rerr := db.QueryRowContext(ctx, "SELECT `value` FROM metadata WHERE `key` = ?", schemaVersionKey).Scan(&stored); rerr != nil {
+			return false, fmt.Errorf("mysql: read schema version after conflict: %w", rerr)
+		}
+		if stored != schemaVersion {
+			return false, fmt.Errorf("mysql: workspace schema version %s, this binary requires %s — no migrator in the proof-wedge, recreate the workspace or use a matching binary", stored, schemaVersion)
+		}
+		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("mysql: read schema version: %w", err)
 	case stored != schemaVersion:

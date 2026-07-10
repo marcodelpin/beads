@@ -13,10 +13,10 @@ import (
 // internal/storage/postgres/schema.sql. It is applied statement-by-statement by
 // InitSchema because the pgx extended protocol forbids multiple statements per
 // Exec.
-const ddl = `-- bd Postgres backend schema (Slice-5 proof-wedge).
--- Machine-translated from Dolt ` + "`" + `SHOW CREATE TABLE` + "`" + ` output at HEAD (all 53
--- migrations applied; see /data/tmp/pg-recon/5b/full-dolt-schema.txt) using the
--- conformance type-map from proposal_2.md section 3:
+const ddl = `-- bd Postgres backend schema.
+-- Machine-translated from Dolt ` + "`" + `SHOW CREATE TABLE` + "`" + ` output at HEAD (all
+-- migrations applied), using the conformance type map documented in
+-- docs/STORAGE-BACKENDS.md:
 --   varchar/char/text/longtext -> text   (see collation note below)
 --   datetime                   -> timestamp(0)       (naive whole-second UTC)
 --   tinyint(1)                 -> smallint
@@ -548,10 +548,25 @@ func stampSchemaVersion(ctx context.Context, conn *sql.Conn) (fresh bool, err er
 	err = conn.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = $1`, schemaVersionKey).Scan(&stored)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := conn.ExecContext(ctx, `INSERT INTO metadata (key, value) VALUES ($1, $2)`, schemaVersionKey, schemaVersion); err != nil {
-			return false, fmt.Errorf("postgres: stamp schema version: %w", err)
+		// Provision runs on every open, so concurrent first opens of the same
+		// workspace (e.g. the hosted server from two goroutines) can both land
+		// here. ON CONFLICT DO NOTHING lets both succeed; only the opener that
+		// actually inserted the row (RowsAffected==1) is fresh and seeds defaults.
+		res, ierr := conn.ExecContext(ctx, `INSERT INTO metadata (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`, schemaVersionKey, schemaVersion)
+		if ierr != nil {
+			return false, fmt.Errorf("postgres: stamp schema version: %w", ierr)
 		}
-		return true, nil
+		if n, _ := res.RowsAffected(); n == 1 {
+			return true, nil
+		}
+		// Lost the race: re-read what the winner stored and version-check it.
+		if rerr := conn.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = $1`, schemaVersionKey).Scan(&stored); rerr != nil {
+			return false, fmt.Errorf("postgres: read schema version after conflict: %w", rerr)
+		}
+		if stored != schemaVersion {
+			return false, fmt.Errorf("postgres: workspace schema version %s, this binary requires %s — no migrator in the proof-wedge, recreate the workspace or use a matching binary", stored, schemaVersion)
+		}
+		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("postgres: read schema version: %w", err)
 	case stored != schemaVersion:

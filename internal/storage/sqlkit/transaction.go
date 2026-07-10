@@ -90,9 +90,12 @@ func (t *sqlkitTx) UpdateIssue(ctx context.Context, id string, updates map[strin
 	return err
 }
 
-// CloseIssue closes an issue without recording an event (WithoutEvent variant).
+// CloseIssue closes an issue and records the close event, matching both Dolt
+// reference transactions (dolt/transaction.go:645, embeddeddolt/transaction.go:79),
+// which use the with-event CloseIssueInTx. The without-event variant dropped the
+// EventClosed row on bd batch / bd mol squash, diverging from the Dolt oracle.
 func (t *sqlkitTx) CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error {
-	_, err := issueops.CloseIssueWithoutEventInTx(ctx, t.tx, id, reason, actor, session)
+	_, err := issueops.CloseIssueInTx(ctx, t.tx, id, reason, actor, session)
 	return err
 }
 
@@ -206,27 +209,20 @@ func (t *sqlkitTx) CycleThroughEdges(ctx context.Context, edges [][2]string) (st
 	return issueops.CycleThroughEdgesInGraph(graph, edges), nil
 }
 
-// AddLabel adds a label with a bare INSERT IGNORE and no event row, mirroring
-// the Dolt reference transaction (dolt/transaction.go). Transaction label ops
-// are unevented on both backends; the evented store path lives in labels.go.
+// AddLabel adds a label and records the label-added event, matching both Dolt
+// reference transactions (dolt/transaction.go:784, embeddeddolt/transaction.go:148),
+// which delegate to issueops.AddLabelInTx. Empty table args let issueops route the
+// issue vs wisp label/event tables. The prior bare INSERT dropped the
+// EventLabelAdded row on every SQL-backend label mutation.
 func (t *sqlkitTx) AddLabel(ctx context.Context, issueID, label, actor string) error {
-	_, labelTable, _, _ := issueops.WispTableRouting(issueops.IsActiveWispInTx(ctx, t.tx, issueID))
-	//nolint:gosec // G201: labelTable is a fixed routing constant
-	_, err := t.tx.ExecContext(ctx, fmt.Sprintf(`
-		INSERT IGNORE INTO %s (issue_id, label) VALUES (?, ?)
-	`, labelTable), issueID, label)
-	return err
+	return issueops.AddLabelInTx(ctx, t.tx, "", "", issueID, label, actor)
 }
 
-// RemoveLabel removes a label with a bare DELETE and no event row, mirroring
-// the Dolt reference transaction (dolt/transaction.go).
+// RemoveLabel removes a label and records the label-removed event, matching both
+// Dolt reference transactions (dolt/transaction.go:824, embeddeddolt/transaction.go:153),
+// which delegate to issueops.RemoveLabelInTx.
 func (t *sqlkitTx) RemoveLabel(ctx context.Context, issueID, label, actor string) error {
-	_, labelTable, _, _ := issueops.WispTableRouting(issueops.IsActiveWispInTx(ctx, t.tx, issueID))
-	//nolint:gosec // G201: labelTable is a fixed routing constant
-	_, err := t.tx.ExecContext(ctx, fmt.Sprintf(`
-		DELETE FROM %s WHERE issue_id = ? AND label = ?
-	`, labelTable), issueID, label)
-	return err
+	return issueops.RemoveLabelInTx(ctx, t.tx, "", "", issueID, label, actor)
 }
 
 // GetLabels returns an issue's labels; empty table arg auto-routes wisps.
@@ -234,9 +230,26 @@ func (t *sqlkitTx) GetLabels(ctx context.Context, issueID string) ([]string, err
 	return issueops.GetLabelsInTx(ctx, t.tx, "", issueID)
 }
 
-// SetConfig sets a config value within the transaction.
+// SetConfig sets a config value within the transaction and syncs the normalized
+// custom_statuses/custom_types tables for the relevant keys, matching the
+// embedded-Dolt reference (embeddeddolt/transaction.go) and Store.SetConfig.
+// Without this, tx-path writes of status.custom/types.custom leave those tables
+// stale, so GetCustomStatuses/GetCustomTypes (which read them) diverge.
 func (t *sqlkitTx) SetConfig(ctx context.Context, key, value string) error {
-	return issueops.SetConfigInTx(ctx, t.tx, key, value)
+	if err := issueops.SetConfigInTx(ctx, t.tx, key, value); err != nil {
+		return err
+	}
+	switch key {
+	case "status.custom":
+		if err := issueops.SyncCustomStatusesTable(ctx, t.tx, value); err != nil {
+			return fmt.Errorf("syncing custom_statuses table: %w", err)
+		}
+	case "types.custom":
+		if err := issueops.SyncCustomTypesTable(ctx, t.tx, value); err != nil {
+			return fmt.Errorf("syncing custom_types table: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetConfig gets a config value within the transaction ("" when absent).
