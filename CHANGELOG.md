@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Work leases: claim-TTL, heartbeat, and reclaim for dead-worker recovery**
+  (schema v54, migration `0054`)
+  ([#4537](https://github.com/gastownhall/beads/pull/4537)). A claim was
+  previously permanent — a worker that died mid-task stranded its issue
+  `in_progress` forever. Claims now carry a lease:
+  - Claiming stamps `lease_expires_at = now + TTL` (default 5m) and
+    `heartbeat_at`.
+  - `bd heartbeat <id>` — owner-only; pushes the lease forward. Fails once
+    the lease is gone.
+  - `bd reclaim --older-than <dur>` — reverts `in_progress` issues whose
+    lease expired more than `<dur>` ago back to ready (clears
+    assignee/started_at, records a `lease_reclaimed` event). Default grace
+    2×TTL.
+
+  Because Dolt has no row locking and merges concurrent commits
+  cell-by-cell, every status/ownership/lease-mutating path also rewrites a
+  shared `row_lock` cell, forcing a racing heartbeat vs. reclaim to a
+  serialization conflict that the retry layer replays — instead of silently
+  cell-merging into a zombie claim. The same landing wraps the work-queue
+  hot paths (`bd ready --claim`, claim, update, close) in serialization-
+  conflict retry, so N concurrent workers draining one queue no longer
+  surface MySQL 1213/1205 errors.
 - `bd migrate --force` (and `bd migrate schema --force`): CLI flag twin of
   `BD_ALLOW_REMOTE_MIGRATE=1` for bypassing the remote-migrate gate (#4259)
   as the single designated migrator; process-local so it cannot leak into
