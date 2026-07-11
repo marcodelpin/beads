@@ -174,6 +174,10 @@ func buildCorpus(t *testing.T) []corpusStmt {
 		corpusStmt{"metadata/literal-gate", `SELECT id FROM issues WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.gate')) = ?`},
 		// Dep JSON aggregation in isolation (DATE_FORMAT + JSON_OBJECT + CAST).
 		corpusStmt{"dep-json/arrayagg", fmt.Sprintf(`SELECT issue_id, JSON_ARRAYAGG(%s) AS deps_json FROM dependencies GROUP BY issue_id`, sqlbuild.DepJSONObject)},
+		// Row-locking read (issueops GetIssueForUpdateInTx, the merge-op
+		// lost-update fix): FOR UPDATE is native Postgres and must survive
+		// translation with placeholder numbering intact.
+		corpusStmt{"get-issue/for-update", fmt.Sprintf(`SELECT %s FROM issues WHERE id = ? FOR UPDATE`, sqlbuild.IssueSelectColumns)},
 	)
 	return corpus
 }

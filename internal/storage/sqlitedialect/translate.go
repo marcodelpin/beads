@@ -45,7 +45,29 @@ func Translate(sql string) string {
 	out = rewriteOnDuplicateKey(out)   // ON DUPLICATE KEY UPDATE -> ON CONFLICT ...
 	out = addUpdateAlias(out)          // UPDATE t alias SET -> UPDATE t AS alias SET (SQLite needs AS)
 	out = rewriteUpdateSetTargets(out) // SET t.col -> SET col (SQLite forbids qualified)
+	out = stripForUpdate(out)          // SELECT ... FOR UPDATE -> SELECT ... (SQLite has no row locks)
 	return out
+}
+
+// forUpdateTailRe matches a statement-tail FOR UPDATE locking clause.
+var forUpdateTailRe = regexp.MustCompile(`(?i)\s+FOR\s+UPDATE\s*$`)
+
+// stripForUpdate removes a trailing FOR UPDATE clause: SQLite has no row-level
+// locks and rejects the syntax. Dropping it is safe, not a semantic change —
+// the shared layer emits FOR UPDATE on read-merge-write paths (issueops
+// GetIssueForUpdateInTx) and SQLite already serializes those whole write
+// transactions via the database write lock taken at BEGIN (_txlock=immediate,
+// see sqlite/dsn.go). Only a code-region tail is stripped; a match inside a
+// quoted literal is left alone via codeMask like every other rewrite here.
+func stripForUpdate(sql string) string {
+	loc := forUpdateTailRe.FindStringIndex(sql)
+	if loc == nil {
+		return sql
+	}
+	if m := codeMask(sql); !m[loc[0]] {
+		return sql
+	}
+	return sql[:loc[0]]
 }
 
 // updateAliasRe matches an aliased UPDATE target (`UPDATE issues i SET …`), which

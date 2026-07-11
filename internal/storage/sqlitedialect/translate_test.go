@@ -29,6 +29,11 @@ func TestTranslate(t *testing.T) {
 		// otherwise hierarchical dotted child IDs fail on SQLite.
 		{"child counter upsert", "INSERT INTO child_counters (parent_id, last_child) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_child = GREATEST(last_child, ?)", "ON CONFLICT (parent_id) DO UPDATE SET last_child = max(last_child, ?)", "GREATEST"},
 		{"passthrough select", "SELECT * FROM issues WHERE id = ?", "SELECT * FROM issues WHERE id = ?", ""},
+		// The row-locking read (issueops GetIssueForUpdateInTx): SQLite has no
+		// row locks and rejects the FOR UPDATE syntax, so it is stripped. Safe:
+		// _txlock=immediate already serializes the whole write transaction.
+		{"for update stripped", "SELECT id, title FROM issues WHERE id = ? FOR UPDATE", "SELECT id, title FROM issues WHERE id = ?", "FOR UPDATE"},
+		{"for update in string literal kept", "SELECT id FROM issues WHERE title = 'x FOR UPDATE'", "'x FOR UPDATE'", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
