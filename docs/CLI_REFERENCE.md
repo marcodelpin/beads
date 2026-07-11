@@ -429,6 +429,7 @@ Examples:
 
 ```
 bd comments [issue-id] [flags]
+bd comments [command]
 ```
 
 **Flags:**
@@ -645,7 +646,7 @@ Examples:
   bd gate resolve &lt;id&gt;   # Close a gate manually
 
 ```
-bd gate
+bd gate [command]
 ```
 
 #### bd gate add-waiter
@@ -849,7 +850,7 @@ bd heartbeat <id>
 Manage issue labels
 
 ```
-bd label
+bd label [command]
 ```
 
 #### bd label add
@@ -1007,7 +1008,7 @@ Examples:
   bd merge-slot release             # Release the slot
 
 ```
-bd merge-slot
+bd merge-slot [command]
 ```
 
 #### bd merge-slot acquire
@@ -1422,6 +1423,7 @@ Examples:
 
 ```
 bd state <issue-id> <dimension>
+bd state [command]
 ```
 
 #### bd state list
@@ -1469,6 +1471,7 @@ TODOs can be promoted to full issues by changing type or priority:
 
 ```
 bd todo
+bd todo [command]
 ```
 
 #### bd todo add
@@ -1883,6 +1886,7 @@ Examples:
 
 ```
 bd dep [issue-id] [flags]
+bd dep [command]
 ```
 
 **Flags:**
@@ -2093,7 +2097,7 @@ bd duplicates [flags]
 Epic management commands
 
 ```
-bd epic
+bd epic [command]
 ```
 
 #### bd epic close-eligible
@@ -2157,6 +2161,7 @@ Examples:
 
 ```
 bd graph [issue-id] [flags]
+bd graph [command]
 ```
 
 **Flags:**
@@ -2207,7 +2212,7 @@ A swarm is a structured body of work defined by an epic and its children,
 with dependencies forming a DAG (directed acyclic graph) of work.
 
 ```
-bd swarm
+bd swarm [command]
 ```
 
 #### bd swarm create
@@ -2337,7 +2342,7 @@ DoltHub is recommended for cloud backup:
   Set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD for authentication.
 
 ```
-bd backup
+bd backup [command]
 ```
 
 #### bd backup init
@@ -2614,7 +2619,7 @@ Note: 'bd history', 'bd diff', and 'bd branch' also work for quick access.
 This subcommand provides additional operations like merge and commit.
 
 ```
-bd vc
+bd vc [command]
 ```
 
 #### bd vc commit
@@ -2787,7 +2792,7 @@ Examples:
   bd config unset jira.url
 
 ```
-bd config
+bd config [command]
 ```
 
 #### bd config apply
@@ -3012,7 +3017,7 @@ Examples:
   bd dolt test
 
 ```
-bd dolt
+bd dolt [command]
 ```
 
 #### bd dolt clean-databases
@@ -3131,7 +3136,7 @@ Subcommands:
   remove &lt;name&gt;      Remove a remote
 
 ```
-bd dolt remote
+bd dolt remote [command]
 ```
 
 ##### bd dolt remote add
@@ -3288,7 +3293,7 @@ The hooks provide:
 - prepare-commit-msg: Add agent identity trailers for forensics
 
 ```
-bd hooks
+bd hooks [command]
 ```
 
 #### bd hooks install
@@ -3375,6 +3380,7 @@ SUBCOMMANDS:
 
 ```
 bd human
+bd human [command]
 ```
 
 #### bd human dismiss
@@ -3490,7 +3496,7 @@ and its storage (a Dolt database by default). Optionally specify a custom issue 
 
 Dolt is the default backend and the only one with version control (history,
 branching, sync). Select an alternative with --backend=&lt;postgres|mysql|sqlite&gt;;
-see docs/STORAGE-BACKENDS.md for the trade-offs and setup.
+see docs/architecture/storage-backends.md for the trade-offs and setup.
 
 Use --database to specify an existing server database name, overriding the
 default prefix-based naming. This is useful when an external tool (e.g. an orchestrator)
@@ -3592,7 +3598,7 @@ Examples:
   bd kv list                 # List all key-value pairs
 
 ```
-bd kv
+bd kv [command]
 ```
 
 #### bd kv clear
@@ -4198,6 +4204,7 @@ BD_ALLOW_REMOTE_MIGRATE=1 remains supported for scripted/CI use.
 
 ```
 bd migrate [flags]
+bd migrate [command]
 ```
 
 **Flags:**
@@ -4532,7 +4539,7 @@ bd rename-prefix <new-prefix> [flags]
 Audit and compact Claude rules
 
 ```
-bd rules
+bd rules [command]
 ```
 
 #### bd rules audit
@@ -4607,7 +4614,7 @@ The upgrade command helps you stay aware of bd version changes:
 Version tracking is automatic - bd updates metadata.json on every run.
 
 ```
-bd upgrade
+bd upgrade [command]
 ```
 
 #### bd upgrade ack
@@ -4680,7 +4687,7 @@ Examples:
   bd worktree info                          # Show info about current worktree
 
 ```
-bd worktree
+bd worktree [command]
 ```
 
 #### bd worktree create
@@ -4785,7 +4792,7 @@ For routine maintenance, prefer 'bd doctor --fix' which handles common repairs
 automatically. Use these admin commands for targeted database operations.
 
 ```
-bd admin
+bd admin [command]
 ```
 
 #### bd admin cleanup
@@ -4950,7 +4957,7 @@ Examples:
   bd jira status              # Show sync status
 
 ```
-bd jira
+bd jira [command]
 ```
 
 #### bd jira pull
@@ -5103,7 +5110,7 @@ Examples:
   bd linear status              # Show sync status
 
 ```
-bd linear
+bd linear [command]
 ```
 
 #### bd linear pull
@@ -5278,7 +5285,7 @@ Examples:
   bd repo sync                       # Sync from all configured repos
 
 ```
-bd repo
+bd repo [command]
 ```
 
 #### bd repo add
@@ -5373,7 +5380,7 @@ Configuration can be set via 'bd config' or environment variables:
   ado.url / AZURE_DEVOPS_URL              - Custom base URL (on-prem)
 
 ```
-bd ado
+bd ado [command]
 ```
 
 #### bd ado projects
@@ -5486,7 +5493,7 @@ bd history &lt;id&gt; --events. The JSONL sidecar is for explicit interaction ca
 Entries are append-only. Labeling creates a new "label" entry that references a parent entry.
 
 ```
-bd audit
+bd audit [command]
 ```
 
 #### bd audit label
@@ -5547,7 +5554,7 @@ See each sub-command's help for details on how to use the generated script.
 
 
 ```
-bd completion
+bd completion [command]
 ```
 
 #### bd completion bash
@@ -5784,10 +5791,10 @@ Discovering primitives:
   bd formula schema loop            # show LoopSpec fields, types, and tags
   bd formula primitives gate        # alias; same handler as 'schema'
   examples/formulas/primitives/     # curated, smoke-tested wired fixtures
-  website/docs/workflows/formulas.md  # narrative reference
+  docs/workflows/formulas.md          # narrative reference
 
 ```
-bd formula
+bd formula [command]
 ```
 
 #### bd formula convert
@@ -5911,7 +5918,7 @@ Configuration can be set via 'bd config' or environment variables:
   github.url / GITHUB_API_URL           - Custom API URL (GitHub Enterprise)
 
 ```
-bd github
+bd github [command]
 ```
 
 #### bd github pull
@@ -6003,7 +6010,7 @@ Configuration can be set via 'bd config' or environment variables:
   gitlab.default_project_id / GITLAB_DEFAULT_PROJECT_ID - Project for creating issues in group mode
 
 ```
-bd gitlab
+bd gitlab [command]
 ```
 
 #### bd gitlab projects
@@ -6227,6 +6234,7 @@ any user-supplied text.
 
 ```
 bd metrics
+bd metrics [command]
 ```
 
 #### bd metrics example
@@ -6279,7 +6287,7 @@ Commands:
 Use "bd formula list" to list available formulas.
 
 ```
-bd mol
+bd mol [command]
 ```
 
 **Aliases:** protomolecule
@@ -6739,6 +6747,7 @@ Subcommands:
 
 ```
 bd mol wisp [proto-id] [flags]
+bd mol wisp [command]
 ```
 
 **Flags:**
@@ -6868,7 +6877,7 @@ bd mol wisp list [flags]
 Commands for syncing issues between beads and Notion.
 
 ```
-bd notion
+bd notion [command]
 ```
 
 #### bd notion connect
