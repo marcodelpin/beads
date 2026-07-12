@@ -1,5 +1,6 @@
 ---
 title: Multi-Agent
+description: Coordinate beads across multiple agents and repositories with routing, cross-repo dependencies, and work handoff
 ---
 
 Beads supports coordination between multiple AI agents and repositories.

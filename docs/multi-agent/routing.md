@@ -1,5 +1,6 @@
 ---
 title: Multi-Repo Routing
+description: How bd create decides which repository each new bead lands in, with role detection and multi-repo hydration
 ---
 
 One agent often works across more than one repository: an OSS fork plus a

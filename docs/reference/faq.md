@@ -149,7 +149,7 @@ cd ~/project1 && bd init --prefix proj1
 cd ~/project2 && bd init --prefix proj2
 ```
 
-Each project gets its own `.beads/` directory and database, and `bd` auto-discovers the right one by walking up from your current directory (like git). Issues cannot reference issues in other projects; if you need cross-project tracking, initialize beads in a parent directory that contains both.
+Each project gets its own `.beads/` directory and database, and `bd` auto-discovers the right one by walking up from your current directory (like git). To link work across projects, hydrate the other repo into your database (`bd repo add`, then `bd repo sync`) and add normal dependencies, or depend on another project's capability with an `external:<project>:<capability>` target — see [cross-repo routing](/multi-agent/routing).
 
 In server mode, each project runs its own Dolt server by default. On machines with many projects you can opt into a single shared server (`bd init --shared-server`, or `export BEADS_DOLT_SHARED_SERVER=1`) that serves every project from `~/.beads/shared-server/`. See [Dolt architecture](/architecture/dolt).
 
@@ -222,19 +222,19 @@ bd setup aider    # Aider
 
 ### Can beads import from GitHub Issues?
 
-Yes — `bd github pull` imports issues and `bd github sync` keeps beads and GitHub in sync bidirectionally. See the [bd github reference](/cli-reference/github).
+Yes — `bd github sync --pull-only` imports issues in bulk (`bd github pull <refs>` cherry-picks specific ones), and `bd github sync` keeps beads and GitHub in sync bidirectionally. See the [bd github reference](/cli-reference/github).
 
 ## Migration
 
 ### How do I migrate from GitHub Issues, Jira, or Linear?
 
-Beads has built-in bidirectional sync for all three — `bd github`, `bd jira`, and `bd linear` each provide `pull`, `push`, and `sync` (GitLab, Azure DevOps, and Notion are covered by `bd gitlab`, `bd ado`, and `bd notion`). Configure credentials with `bd config set` per the [CLI reference](/cli-reference/index), then pull.
+Beads has built-in bidirectional sync for all three — `bd github`, `bd jira`, and `bd linear` each provide `sync` for bulk moves, plus `pull`/`push` for specific issues by ID (GitLab, Azure DevOps, and Notion are covered by `bd gitlab`, `bd ado`, and `bd notion`). Configure credentials with `bd config set` per the [CLI reference](/cli-reference/index), then run the sync in the pull direction: `bd github sync --pull-only`, `bd jira sync --pull`, or `bd linear sync --pull`.
 
 For any other tracker: export from it (usually CSV or JSON), convert to beads' JSONL format, and run `bd import <file>`. See [examples](https://github.com/gastownhall/beads/tree/main/examples) for scripting patterns.
 
 ### Can I export back out of beads?
 
-For GitHub, Jira, and Linear, use the same integrations in the push direction (`bd github push`, `bd jira push`, `bd linear push`). For anything else, `bd export -o issues.jsonl` produces JSONL you can convert with a script and feed to the target system's API.
+For GitHub, Jira, and Linear, use the same integrations in the push direction — `bd github sync --push-only`, `bd jira sync --push`, or `bd linear sync --push` for everything, or `bd <tracker> push <ids>` for specific beads. For anything else, `bd export -o issues.jsonl` produces JSONL you can convert with a script and feed to the target system's API.
 
 ## Performance
 

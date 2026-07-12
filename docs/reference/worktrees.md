@@ -1,5 +1,6 @@
 ---
 title: Git Worktrees Guide
+description: Using beads from Git worktrees, which share one .beads workspace, plus external BEADS_DIR setups and legacy sync-branch cleanup.
 ---
 
 Beads works from normal Git worktrees without a separate sync branch. Current
@@ -128,6 +129,6 @@ working the same issue concurrently.
 
 ## See Also
 
-- [PROTECTED_BRANCHES.md](/reference/protected-branches) - protected branch behavior
-- [GIT_INTEGRATION.md](/reference/git-integration) - general Git integration guide
-- [MULTI_REPO_MIGRATION.md](/multi-agent/multi-repo-migration) - multi-workspace patterns
+- [Protected Branches](/reference/protected-branches) - protected branch behavior
+- [Git Integration](/reference/git-integration) - general Git integration guide
+- [Multi-Repo Migration Guide](/multi-agent/multi-repo-migration) - multi-workspace patterns

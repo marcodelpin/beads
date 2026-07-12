@@ -1,5 +1,6 @@
 ---
 title: Configuration
+description: Complete reference for bd configuration across config.yaml and database-stored settings, with precedence, secrets, auto-commit, backup, and integrations.
 ---
 
 Complete configuration reference for beads.

@@ -1,5 +1,6 @@
 ---
 title: Windsurf
+description: Enable beads in Windsurf through a .windsurf/rules/beads.md rules file with workflow guidance
 ---
 
 Use Beads with Windsurf through a project rules file.

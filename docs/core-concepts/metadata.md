@@ -1,5 +1,6 @@
 ---
 title: Issue Metadata
+description: Storing arbitrary JSON on issues as the extension point for integrations and execution hints
 ---
 
 The `metadata` field on issues accepts arbitrary JSON. Any valid JSON value is stored as-is.

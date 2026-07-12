@@ -1,5 +1,6 @@
 ---
 title: Sync Setup Guide
+description: "Set up Dolt sync so issue data follows you across machines: remotes, bootstrapping a clone, and day-to-day push and pull"
 ---
 
 Set up beads with Dolt sync so your issues follow you across computers.
@@ -10,7 +11,7 @@ You need two tools installed on every machine:
 
 | Tool | Minimum Version | Install |
 |------|-----------------|---------|
-| **bd** (beads CLI) | 0.59.0+ | See [INSTALLING.md](/getting-started/installation) |
+| **bd** (beads CLI) | 0.59.0+ | See [Installation](/getting-started/installation) |
 | **Dolt** | 2.1.10+ | `brew install dolt` or [dolt install script](https://github.com/dolthub/dolt/releases/latest/download/install.sh) |
 
 Verify both are installed:
@@ -278,10 +279,10 @@ bd dolt start
 
 ## See Also
 
-- [SYNC_CONCEPTS.md](/core-concepts/sync-concepts) — The conceptual model behind this setup (why Dolt is the source of truth, what JSONL is for)
+- [Sync Concepts](/core-concepts/sync-concepts) — The conceptual model behind this setup (why Dolt is the source of truth, what JSONL is for)
 - [Quick Start](/getting-started/quickstart) — Getting started with beads
-- [DOLT.md](/architecture/dolt) — Dolt backend details, server modes, federation, remote types, and sync modes
-- [INSTALLING.md](/getting-started/installation) — Installation for all platforms
+- [Dolt Backend for Beads](/architecture/dolt) — Dolt backend details, server modes, federation, remote types, and sync modes
+- [Installation](/getting-started/installation) — Installation for all platforms
 
 ## Attribution
 

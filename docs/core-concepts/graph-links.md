@@ -1,5 +1,6 @@
 ---
 title: Graph Links in Beads
+description: "Non-blocking links between issues: replies-to threads, relates-to, duplicates, and supersedes chains"
 ---
 
 Beads supports several types of links between issues to create a knowledge graph. These links enable rich querying and traversal beyond simple blocking dependencies.

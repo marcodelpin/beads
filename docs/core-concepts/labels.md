@@ -1,5 +1,6 @@
 ---
 title: Labels
+description: Flexible tagging for cross-cutting concerns, filtering, and caching operational state on issues
 ---
 
 Labels provide flexible, multi-dimensional categorization for issues beyond the structured fields (status, priority, type). Use labels for cross-cutting concerns, technical metadata, and contextual tagging without schema changes.
@@ -747,7 +748,7 @@ The `set-state` command atomically:
 2. Removes the old dimension label if present
 3. Adds the new dimension:value label (cache)
 
-See [CLI_REFERENCE.md](/cli-reference/set-state) for full command reference.
+See [bd set-state](/cli-reference/set-state) for full command reference.
 
 ## Troubleshooting
 
@@ -788,4 +789,4 @@ bd doctor
 
 - [README.md](https://github.com/gastownhall/beads/blob/main/README.md) - Main documentation
 - [AGENTS.md](https://github.com/gastownhall/beads/blob/main/AGENTS.md) - AI agent integration guide
-- [ADVANCED.md](/reference/advanced) - Advanced features and configuration
+- [Advanced Features](/reference/advanced) - Advanced features and configuration

@@ -1,5 +1,6 @@
 ---
 title: Troubleshooting
+description: Fixes for common bd problems across installation, the database and Dolt server, sync, git hooks, dependencies, and platform-specific issues.
 ---
 
 Common issues and solutions. For step-by-step runbooks, see the

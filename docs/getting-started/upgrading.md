@@ -1,5 +1,6 @@
 ---
 title: Upgrading
+description: Upgrade the bd binary, refresh git hooks, run schema migrations, and handle remote-backed and cross-era databases
 ---
 
 How to upgrade bd and keep your projects in sync.

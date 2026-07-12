@@ -1,5 +1,6 @@
 ---
 title: GitHub Copilot
+description: Use beads from Copilot Chat in VS Code via the beads-mcp server to track issues in natural language
 ---
 
 Beads gives Copilot a persistent, structured memory for tracking work: with the MCP server configured, you create, update, and track issues in natural language without leaving the editor.

@@ -1,5 +1,6 @@
 ---
 title: Agent Coordination
+description: Assign and claim beads, hand off work, and serialize conflict-prone work with merge slots across multiple agents
 ---
 
 Patterns for coordinating work between multiple AI agents.

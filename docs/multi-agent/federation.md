@@ -1,5 +1,6 @@
 ---
 title: Federation Setup Guide
+description: Configure peer-to-peer sync of beads databases across workspaces with Dolt remotes, sovereignty tiers, and topologies
 ---
 
 Federation enables peer-to-peer synchronization of beads databases between
@@ -216,7 +217,7 @@ bd doctor --deep
 
 ## Reference
 
-- Configuration: See [CONFIG.md](/reference/configuration) for all federation settings
+- Configuration: See [Configuration](/reference/configuration) for all federation settings
 - Source: `cmd/bd/federation.go`
 - Storage interfaces: `internal/storage/versioned.go`
 - Dolt implementation: `internal/storage/dolt/store.go`

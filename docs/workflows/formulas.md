@@ -1,5 +1,6 @@
 ---
 title: Formulas
+description: Writing declarative TOML or JSON workflow templates with steps, variables, dependencies, gates, and aspects, then cooking them into protos.
 ---
 
 Formulas are declarative workflow templates.

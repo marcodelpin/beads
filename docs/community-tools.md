@@ -1,5 +1,6 @@
 ---
 title: Community Tools
+description: Community-built UIs, editor extensions, and integrations that work with the bd CLI, ranked by maturity
 ---
 
 A curated list of community-built UIs, extensions, and integrations for Beads. Ranked by activity and maturity.

@@ -1,5 +1,6 @@
 ---
 title: Integrations
+description: Browse every beads editor and agent integration, from bd setup recipes to MCP-based clients
 ---
 
 Beads integration pages are based on two sources of support in the repository:

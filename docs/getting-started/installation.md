@@ -1,5 +1,6 @@
 ---
 title: Installation
+description: Install the bd CLI, Claude Code plugin, and MCP server on macOS, Linux, Windows, and FreeBSD via Homebrew, npm, or go install
 ---
 
 Complete installation guide for all platforms.
@@ -71,7 +72,7 @@ The `-g` enables beads globally. To enable project-specific versions, omit it.
 
 Mise's Go backend follows the same caveats as `go install`; prefer the release backend above.
 
-### Quick Install Script (All Platforms)
+### Quick Install Script (macOS/Linux/FreeBSD)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash

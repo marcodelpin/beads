@@ -1,5 +1,6 @@
 ---
 title: Git Integration
+description: How bd uses git for hosting and hooks, including hook installation, external hook managers, worktrees, and branch workflows.
 ---
 
 How beads integrates with git.

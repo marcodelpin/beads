@@ -1,5 +1,6 @@
 ---
 title: Claude Code
+description: Wire beads into Claude Code with a SessionStart hook that primes context, using the CLI instead of MCP
 ---
 
 How to use beads with Claude Code.

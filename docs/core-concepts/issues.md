@@ -1,5 +1,6 @@
 ---
 title: "Issues & Dependencies"
+description: "The issue model: fields, types, priorities, and the dependencies that decide what work is ready"
 ---
 
 Understanding the issue model in beads.

@@ -1,5 +1,6 @@
 ---
 title: IDE Setup
+description: Configure bd setup recipes, hooks, and instruction files for Claude Code, Cursor, Gemini, Copilot, and other coding agents
 ---
 
 Configure your IDE or coding agent for optimal beads integration.

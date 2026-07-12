@@ -1,5 +1,6 @@
 ---
 title: Aider
+description: Set up beads with Aider's human-in-the-loop workflow, where the AI suggests bd commands you approve with /run
 ---
 
 How to use beads with Aider.

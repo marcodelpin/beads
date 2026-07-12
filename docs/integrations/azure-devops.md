@@ -1,5 +1,6 @@
 ---
 title: Azure DevOps (ADO) Integration Configuration
+description: Configuration reference for bd ado sync, which bidirectionally syncs beads issues with Azure DevOps work items
 ---
 
 Last reviewed: 2026-05-08

@@ -1,5 +1,6 @@
 ---
 title: Advanced Features
+description: Advanced bd operations for renaming issues and prefixes, merging duplicates, compaction, database redirects, and performance tuning.
 ---
 
 Advanced beads functionality.

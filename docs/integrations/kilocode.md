@@ -1,5 +1,6 @@
 ---
 title: Kilo Code
+description: Set up beads for Kilo Code by writing a .kilocode/rules/beads.md project rules file
 ---
 
 Use Beads with Kilo Code through a project rules file.

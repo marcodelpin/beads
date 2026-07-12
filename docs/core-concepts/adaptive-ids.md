@@ -1,5 +1,6 @@
 ---
 title: Adaptive ID Length
+description: How hash ID length scales with database size to stay short while avoiding collisions
 ---
 
 Beads uses adaptive hash ID lengths that automatically scale based on database size, optimizing for readability in small databases while preventing collisions as databases grow.
@@ -209,7 +210,7 @@ bd config set issue_id_mode hash
 - **Hash IDs** (this document): Collision-free across parallel branches and agents; IDs are less predictable but always unique.
 - **Counter IDs**: Human-friendly and sequential; require care in multi-branch workflows where counters can diverge.
 
-See [CONFIG.md](/reference/configuration) for full documentation on `issue_id_mode=counter`, including migration
+See [Configuration](/reference/configuration) for full documentation on `issue_id_mode=counter`, including migration
 guidance and per-prefix counter isolation.
 
 ## Related

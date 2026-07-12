@@ -1,5 +1,6 @@
 ---
 title: Uninstalling
+description: Remove beads from a repository with bd reset, uninstall git hooks, and delete the bd binary after backing up issue data
 ---
 
 This guide explains how to remove beads from a repository or remove the `bd`

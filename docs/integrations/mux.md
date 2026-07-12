@@ -1,5 +1,6 @@
 ---
 title: Mux
+description: Set up beads for Mux with a managed AGENTS.md section, optional layered instruction files, and Mux hooks
 ---
 
 Use Beads with Mux through `AGENTS.md`, optional layered Mux instruction files, and Mux hooks.

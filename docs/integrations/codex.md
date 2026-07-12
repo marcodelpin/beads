@@ -1,5 +1,6 @@
 ---
 title: Codex
+description: Set up beads for Codex with the beads skill, a managed AGENTS.md section, and native hooks that survive compaction
 ---
 
 Use Beads with Codex through the `beads` skill, managed `AGENTS.md` guidance, and native Codex hooks.

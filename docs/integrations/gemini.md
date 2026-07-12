@@ -1,5 +1,6 @@
 ---
 title: Gemini CLI
+description: Set up beads for Gemini CLI with SessionStart hooks that run bd prime and GEMINI.md workflow guidance
 ---
 
 Use Beads with Gemini CLI through SessionStart hooks and `GEMINI.md` guidance.

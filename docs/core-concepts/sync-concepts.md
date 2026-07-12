@@ -1,5 +1,6 @@
 ---
 title: Sync Concepts
+description: Why Dolt is the source of truth for sync and how the JSONL export differs from bd dolt push and pull
 ---
 
 Beads issue data lives in Dolt. The local Dolt database is the source of truth

@@ -1,5 +1,6 @@
 ---
 title: JSON Output Schema Contract
+description: The stable JSON output contract for bd --json commands, covering the schema_version envelope, per-command fields, and consumer guidelines.
 ---
 
 Last reviewed: 2026-05-08

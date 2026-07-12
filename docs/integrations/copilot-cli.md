@@ -1,10 +1,11 @@
 ---
 title: GitHub Copilot CLI Integration Design
+description: Design rationale and setup for the Copilot CLI integration, which uses a plugin manifest plus repository instructions
 ---
 
 This document explains design decisions for GitHub Copilot CLI integration in beads.
 
-For **VS Code + MCP**, see [COPILOT_INTEGRATION.md](/integrations/github-copilot).
+For **VS Code + MCP**, see [GitHub Copilot](/integrations/github-copilot).
 
 ## Integration Approach
 

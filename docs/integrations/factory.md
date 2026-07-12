@@ -1,5 +1,6 @@
 ---
 title: Factory.ai Droid
+description: Set up beads for Factory.ai Droid through a managed Beads section in AGENTS.md
 ---
 
 Use Beads with Factory.ai Droid through managed `AGENTS.md` guidance.

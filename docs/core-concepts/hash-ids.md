@@ -1,5 +1,6 @@
 ---
 title: Hash-based IDs
+description: Why beads uses collision-resistant hash IDs like bd-a1b2 so agents and branches never clash
 ---
 
 Understanding beads' collision-resistant ID system.

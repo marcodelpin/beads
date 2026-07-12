@@ -1,5 +1,6 @@
 ---
 title: Storage Backends
+description: Running bd on Dolt, Postgres, MySQL, or SQLite, and what version-control features each backend keeps
 ---
 
 Beads uses Dolt as its default storage backend, and Dolt remains the reference implementation. You can also point `bd` at Postgres, MySQL, or SQLite — every backend implements the full issue-tracking core, and the only thing you give up off Dolt is version control.
@@ -94,7 +95,7 @@ The backend is chosen once, at `bd init` time, and recorded in `.beads/metadata.
 bd init --prefix myproj
 ```
 
-Nothing changes. See [DOLT.md](/architecture/dolt) for embedded vs. server mode.
+Nothing changes. See [Dolt Backend for Beads](/architecture/dolt) for embedded vs. server mode.
 
 ### SQLite
 
@@ -275,4 +276,4 @@ BEADS_MYSQL_TEST_URL="user:pass@tcp(127.0.0.1:3306)/" \
 
 Adding a new backend is one declarative profile entry in `test/conformance/profiles.go` plus a store-factory arm; both tiers pick it up automatically.
 
-See [DOLT.md](/architecture/dolt) for the default backend, [CONFIG.md](/reference/configuration) for configuration, and [TROUBLESHOOTING.md](/reference/troubleshooting) if a connection misbehaves.
+See [Dolt Backend for Beads](/architecture/dolt) for the default backend, [Configuration](/reference/configuration) for configuration, and [Troubleshooting](/reference/troubleshooting) if a connection misbehaves.

@@ -1,5 +1,6 @@
 ---
 title: TODO Command
+description: The bd todo command for managing lightweight TODO items as ordinary task-type issues, with add, list, and done shortcuts.
 ---
 
 The `bd todo` command provides a lightweight interface for managing TODO items as task-type issues.

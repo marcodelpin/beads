@@ -1,5 +1,6 @@
 ---
 title: Multi-Repo Migration Guide
+description: Adopt multi-repo routing for OSS contributor, team, multi-phase, and multi-persona workflows with separate planning repos
 ---
 
 This guide helps you adopt beads' multi-repo workflow for OSS contributions, team collaboration, and multi-phase development.
@@ -398,7 +399,7 @@ bd list --json
 
 **Problem:** Multiple repos with conflicting changes.
 
-**Solution:** Dolt handles merge conflicts natively with cell-level merge. See [TROUBLESHOOTING.md](/reference/troubleshooting#merge-conflicts) for details.
+**Solution:** Dolt handles merge conflicts natively with cell-level merge. See [Troubleshooting](/reference/troubleshooting#merge-conflicts) for details.
 
 ### Discovered issues in wrong repository
 
@@ -475,8 +476,8 @@ bd create "Issue" -p 1
 ## Next Steps
 
 - **CLI Reference:** See [README.md](https://github.com/gastownhall/beads/blob/main/README.md) for command details
-- **Configuration Guide:** See [CONFIG.md](/reference/configuration) for all config options
-- **Troubleshooting:** See [TROUBLESHOOTING.md](/reference/troubleshooting)
+- **Configuration Guide:** See [Configuration](/reference/configuration) for all config options
+- **Troubleshooting:** See [Troubleshooting](/reference/troubleshooting)
 - **Multi-Repo Internals:** See [ROUTING.md#multi-repo-hydration](/multi-agent/routing#multi-repo-hydration)
 
 ## Related Issues

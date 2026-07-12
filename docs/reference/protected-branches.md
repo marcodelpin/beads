@@ -1,5 +1,6 @@
 ---
 title: Protected Branches
+description: Why beads needs no protected-branch workaround since Dolt stores issue data outside Git refs, plus team workflow and legacy sync-branch cleanup.
 ---
 
 Beads does not need a protected-branch workaround in current releases.
@@ -117,6 +118,6 @@ bd hooks install
 
 ## See Also
 
-- [WORKTREES.md](/reference/worktrees) - Git worktree behavior
-- [GIT_INTEGRATION.md](/reference/git-integration) - general Git integration guide
-- [RECOVERY.md](/recovery/init-safety) - recovery playbooks
+- [Git Worktrees Guide](/reference/worktrees) - Git worktree behavior
+- [Git Integration](/reference/git-integration) - general Git integration guide
+- [Recovery Playbooks](/recovery/init-safety) - recovery playbooks

@@ -1,5 +1,6 @@
 ---
 title: MCP Server
+description: Run the beads-mcp server for MCP-only environments like Claude Desktop where the bd CLI is unavailable
 ---
 
 Use beads in MCP-only environments.

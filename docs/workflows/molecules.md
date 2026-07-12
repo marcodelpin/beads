@@ -1,5 +1,6 @@
 ---
 title: Molecules
+description: Molecules are epics whose children flow through bd ready as ordered steps; covers creating, executing, bonding, and the molecule lifecycle.
 ---
 
 Molecules are work graphs: epics whose children flow through `bd ready` as

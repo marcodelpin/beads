@@ -1,5 +1,6 @@
 ---
 title: Beads Claude Code Plugin
+description: Install the beads Claude Code plugin for /beads slash commands, a bundled skill, and session lifecycle hooks
 ---
 
 AI-supervised issue tracker for coding workflows. Manage tasks, discover work, and maintain context with slash commands, a bundled skill, and lifecycle hooks.

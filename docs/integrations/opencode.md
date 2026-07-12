@@ -1,5 +1,6 @@
 ---
 title: OpenCode
+description: Give OpenCode beads workflow context via a managed Beads section in AGENTS.md
 ---
 
 Use Beads with OpenCode through managed `AGENTS.md` guidance.

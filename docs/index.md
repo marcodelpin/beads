@@ -1,5 +1,6 @@
 ---
 title: Introduction
+description: Dependency-aware, Dolt-backed issue tracker built for AI coding agents that survive context loss
 ---
 
 **Beads** (`bd`) is a Dolt-powered issue tracker designed for AI-supervised coding workflows.

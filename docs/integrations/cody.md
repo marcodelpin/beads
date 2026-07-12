@@ -1,5 +1,6 @@
 ---
 title: Sourcegraph Cody
+description: Add beads workflow guidance to Sourcegraph Cody through a .cody/rules/beads.md project rules file
 ---
 
 Use Beads with Sourcegraph Cody through a project rules file.

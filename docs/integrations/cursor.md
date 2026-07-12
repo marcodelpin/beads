@@ -1,5 +1,6 @@
 ---
 title: Cursor
+description: Set up beads for Cursor with an always-applied rules file, an agent skill, and hooks that restore context after compaction
 ---
 
 Use Beads with Cursor through a project rules file **and** agent lifecycle hooks.

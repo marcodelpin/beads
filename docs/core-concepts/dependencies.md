@@ -1,5 +1,6 @@
 ---
 title: Dependencies and Gates
+description: Ordering work with blocking and non-blocking dependencies, and gates that wait on PRs, CI, or timers
 ---
 
 Beads includes a full dependency system for ordering work and a gate system
@@ -322,7 +323,7 @@ bd ready                         # Only "Design" is ready
 ## See Also
 
 - [Quick Start](/getting-started/quickstart) — First steps with dependencies
-- [MOLECULES.md](/workflows/molecules) — Molecule workflows using gates and dependencies
-- [MULTI_REPO_AGENTS.md](/multi-agent/coordination) — Cross-repo dependency patterns
-- [DOLT.md](/architecture/dolt) — Dolt backend configuration
-- [CLI_REFERENCE.md](/cli-reference/index) — Full command reference
+- [Molecules](/workflows/molecules) — Molecule workflows using gates and dependencies
+- [Agent Coordination](/multi-agent/coordination) — Cross-repo dependency patterns
+- [Dolt Backend for Beads](/architecture/dolt) — Dolt backend configuration
+- [CLI Reference](/cli-reference/index) — Full command reference

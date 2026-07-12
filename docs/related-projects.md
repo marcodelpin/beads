@@ -1,10 +1,11 @@
 ---
 title: Related Projects
+description: Adjacent, independent projects that solve neighboring problems and compose well with beads
 ---
 
 Adjacent or complementary tools that solve different problems in the
 same neighborhood as Beads. These are not Beads integrations (see
-[COMMUNITY_TOOLS.md](/community-tools) for those) — they are
+[Community Tools](/community-tools) for those) — they are
 independent projects whose users may also find Beads useful, or vice
 versa.
 

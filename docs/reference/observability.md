@@ -1,5 +1,6 @@
 ---
 title: Observability (OpenTelemetry)
+description: Exporting bd metrics and traces over OpenTelemetry (OTLP), with a local VictoriaMetrics and Grafana stack, env vars, and a metric reference.
 ---
 
 Beads exports metrics via OTLP HTTP. Telemetry is **disabled by default** — zero overhead when no variable is set.

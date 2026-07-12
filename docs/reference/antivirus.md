@@ -1,5 +1,6 @@
 ---
 title: Antivirus False Positives
+description: Why antivirus tools flag the bd binary as a false positive, and how to verify checksums, add exclusions, and report it.
 ---
 
 ## Overview

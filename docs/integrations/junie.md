@@ -1,5 +1,6 @@
 ---
 title: Junie
+description: Set up beads for Junie, the JetBrains AI agent, with a guidelines file and an MCP server configuration
 ---
 
 How to use beads with Junie (JetBrains AI Agent).

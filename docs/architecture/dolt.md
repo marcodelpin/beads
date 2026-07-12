@@ -1,5 +1,6 @@
 ---
 title: Dolt Backend for Beads
+description: "How beads uses Dolt for versioned issue storage: embedded vs server mode, remotes, sync, and backups"
 ---
 
 Beads uses Dolt as its storage backend. Dolt provides a version-controlled SQL database with cell-level merge, native branching, and two deployment modes.
@@ -250,7 +251,7 @@ Federation lets independent Dolt-backed workspaces ("towns") sync issues
 directly with each other via `bd federation add-peer`/`sync`/`status`,
 without a central hub. Credentials are AES-256 encrypted and stored locally.
 
-See [FEDERATION.md](/multi-agent/federation) for the full setup guide, including
+See [Federation Setup Guide](/multi-agent/federation) for the full setup guide, including
 peer configuration, sovereignty tiers, sync/status/topology details, and
 troubleshooting.
 
@@ -786,10 +787,10 @@ rm .beads/*.backup-*.db
 
 ## See Also
 
-- [SYNC_CONCEPTS.md](/core-concepts/sync-concepts) - The conceptual model behind cross-machine sync (Dolt source of truth, wire format, anti-patterns)
-- [SYNC_SETUP.md](/getting-started/sync-setup) - Setting up sync across multiple computers
-- [FEDERATION.md](/multi-agent/federation) - Peer-to-peer federation setup
-- [CONFIG.md](/reference/configuration) - Full configuration reference
-- [DEPENDENCIES.md](/core-concepts/dependencies) - Dependencies and gates
-- [GIT_INTEGRATION.md](/reference/git-integration) - Git worktrees and protected branches
-- [TROUBLESHOOTING.md](/reference/troubleshooting) - General troubleshooting
+- [Sync Concepts](/core-concepts/sync-concepts) - The conceptual model behind cross-machine sync (Dolt source of truth, wire format, anti-patterns)
+- [Sync Setup Guide](/getting-started/sync-setup) - Setting up sync across multiple computers
+- [Federation Setup Guide](/multi-agent/federation) - Peer-to-peer federation setup
+- [Configuration](/reference/configuration) - Full configuration reference
+- [Dependencies and Gates](/core-concepts/dependencies) - Dependencies and gates
+- [Git Integration](/reference/git-integration) - Git worktrees and protected branches
+- [Troubleshooting](/reference/troubleshooting) - General troubleshooting

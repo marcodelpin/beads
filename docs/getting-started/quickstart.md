@@ -1,5 +1,6 @@
 ---
 title: Quick Start
+description: Initialize beads, create issues with dependencies, find ready work, and sync with your team in a few minutes
 ---
 
 Get up and running with Beads in a few minutes.
@@ -262,7 +263,7 @@ bd dolt pull
 
 When a teammate clones the repo, `bd bootstrap` auto-detects the existing database on `refs/dolt/data`, clones it, and wires `origin` for future `bd dolt push` / `bd dolt pull`.
 
-See [`bd dolt`](/cli-reference/dolt) for CLI details. For remote configuration and federation, see the repository docs [DOLT.md](https://github.com/gastownhall/beads/blob/main/docs/DOLT.md) and [FEDERATION-SETUP.md](https://github.com/gastownhall/beads/blob/main/FEDERATION-SETUP.md).
+See [`bd dolt`](/cli-reference/dolt) for CLI details. For remote configuration, see [Dolt architecture](/architecture/dolt); for federation, see [federation](/multi-agent/federation).
 
 ## Optional: Notion sync
 
