@@ -58,6 +58,10 @@ func TestMigrateUpReturnsDirtyTablesErrorForPreExistingDirtyTable(t *testing.T) 
 	}
 	defer db.Close()
 
+	// MigrateUp re-asserts the canonical dolt_ignore patterns before anything
+	// else (GH#4378); migration work IS needed here, so the pass (not a
+	// scoped commit) owns the seeded rows.
+	expectIgnorePatternSeed(mock)
 	// migrationWorkNeeded: mainSource.atLatest reads the current cursor; v42
 	// is behind LatestVersion(), so the || short-circuits before checking
 	// ignoredSource.atLatest or the content-hash/backfill probes.
