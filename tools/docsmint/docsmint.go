@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,10 @@ func run(root string) error {
 	}
 	sort.Strings(pages)
 
+	if err := neutralizeSingleFileReference(filepath.Join(root, "docs", "CLI_REFERENCE.md")); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
@@ -72,20 +77,30 @@ func run(root string) error {
 	return spliceCLINav(docsJSON, append([]string{"cli-reference/index"}, navPages...))
 }
 
-// transformPage converts one generic page to Mintlify form.
+// transformPage converts one generic page to Mintlify form. Every rewrite
+// skips fenced code blocks: fence contents are literal example text (an HTML
+// comment or relative link inside a fence must render verbatim).
 func transformPage(content string) string {
-	content = htmlCommentRE.ReplaceAllString(content, "{/* $1 */}")
-	content = relativePageLinkRE.ReplaceAllString(content, "](/cli-reference/$1)")
-	content = neutralizeESMHazards(content)
-	return content
+	lines := strings.Split(content, "\n")
+	inFence := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		line = htmlCommentRE.ReplaceAllString(line, "{/* $1 */}")
+		line = relativePageLinkRE.ReplaceAllString(line, "](/cli-reference/$1)")
+		lines[i] = neutralizeESMLine(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
-// neutralizeESMHazards wraps prose lines whose first token is `export` or
-// `import` in inline code spans. Such lines are legal CommonMark in bd's
-// generic output (indented example lines in help text), but Mintlify's
-// prebuild dedents them to column 0 and then parses them as MDX ESM blocks,
-// which fails the entire page (observed on cli-reference/mail). Lines inside
-// code fences are left untouched.
+// neutralizeESMHazards applies neutralizeESMLine to every line outside code
+// fences.
 func neutralizeESMHazards(content string) string {
 	lines := strings.Split(content, "\n")
 	inFence := false
@@ -98,16 +113,46 @@ func neutralizeESMHazards(content string) string {
 		if inFence {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "import ") {
-			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-			delim := "`"
-			if strings.Contains(trimmed, "`") {
-				delim = "``"
-			}
-			lines[i] = indent + delim + trimmed + delim
-		}
+		lines[i] = neutralizeESMLine(line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// neutralizeESMLine wraps a prose line whose first token is `export` or
+// `import` in an inline code span. Such lines are legal CommonMark in bd's
+// generic output (indented example lines in help text), but Mintlify's
+// prebuild dedents them to column 0 and then parses them as MDX ESM blocks,
+// which fails the entire page (observed on cli-reference/mail).
+func neutralizeESMLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "export ") && !strings.HasPrefix(trimmed, "import ") {
+		return line
+	}
+	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	delim := "`"
+	if strings.Contains(trimmed, "`") {
+		delim = "``"
+	}
+	return indent + delim + trimmed + delim
+}
+
+// neutralizeSingleFileReference applies the ESM-hazard neutralization to
+// docs/CLI_REFERENCE.md. bd emits it directly — without the per-page
+// transforms — but Mintlify still builds it as a hidden page, so a bare
+// indented `export ...` line fails it the same way.
+func neutralizeSingleFileReference(path string) error {
+	// #nosec G304: path is derived from the repo root argument this developer
+	// tool is invoked with; it only ever reads the repo's own generated file.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s (run `bd help --docs-root` first): %w", path, err)
+	}
+	out := neutralizeESMHazards(string(data))
+	if out == string(data) {
+		return nil
+	}
+	// #nosec G306: generated repository Markdown should be readable like source files.
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 func removeMarkdownFiles(dir string) error {
@@ -149,6 +194,10 @@ func spliceCLINav(docsJSONPath string, pages []string) error {
 		return fmt.Errorf("%s: \"CLI Reference\" group has no \"pages\" key", docsJSONPath)
 	}
 	pagesIdx += groupIdx
+	groupEnd := groupIdx + len(`"group": "CLI Reference"`)
+	if err := verifySiblingGap(s[groupEnd:pagesIdx]); err != nil {
+		return fmt.Errorf("%s: cannot safely locate the CLI Reference \"pages\" array: %w", docsJSONPath, err)
+	}
 	openIdx := strings.Index(s[pagesIdx:], "[")
 	if openIdx < 0 {
 		return fmt.Errorf("%s: \"CLI Reference\" pages key has no array", docsJSONPath)
@@ -194,6 +243,42 @@ func spliceCLINav(docsJSONPath string, pages []string) error {
 	b.WriteString(indent + "]")
 
 	out := s[:openIdx] + b.String() + s[closeIdx+1:]
+	var check any
+	if err := json.Unmarshal([]byte(out), &check); err != nil {
+		return fmt.Errorf("%s: splice produced invalid JSON, refusing to write: %w", docsJSONPath, err)
+	}
 	// #nosec G306: docs.json is repository source, readable like other source files.
 	return os.WriteFile(docsJSONPath, []byte(out), 0o644)
+}
+
+// verifySiblingGap ensures the "pages" key found after "group": "CLI
+// Reference" is a sibling key of the same object: the gap between them may
+// contain only scalar keys (strings, commas, whitespace). Any structural
+// brace or bracket outside a string means the textual forward search crossed
+// an object boundary — e.g. the group's keys were reordered so its own pages
+// array precedes it — and a splice there would rewrite the WRONG group's
+// pages. Fail closed instead.
+func verifySiblingGap(gap string) error {
+	inString := false
+	escaped := false
+	for _, r := range gap {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case r == '\\':
+				escaped = true
+			case r == '"':
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{', '}', '[', ']':
+			return fmt.Errorf("structural %q between the group key and the next \"pages\" key; reorder docs.json so the CLI Reference group's \"group\" key precedes its \"pages\" array", r)
+		}
+	}
+	return nil
 }

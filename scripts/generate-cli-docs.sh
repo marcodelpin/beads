@@ -67,7 +67,10 @@ trap cleanup EXIT
 
 if [ -n "$BD_ARG" ]; then
     BD="$BD_ARG"
-elif [ -x "$PROJECT_ROOT/bd" ]; then
+elif [ "$CHECK_MODE" -eq 0 ] && [ -x "$PROJECT_ROOT/bd" ]; then
+    # Convenience for regeneration only. --check never trusts a repo-root
+    # ./bd it wasn't explicitly given: the guard below detects CGO-ness, not
+    # staleness, so a stale pure-go ./bd would produce a false "fresh".
     BD="$PROJECT_ROOT/bd"
 else
     TMP_BUILD_DIR="$(mktemp -d)"

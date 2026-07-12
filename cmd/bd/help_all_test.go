@@ -294,6 +294,27 @@ func TestWriteGeneratedCLIDocsReplacesStaleStagingFiles(t *testing.T) {
 	}
 }
 
+// commandDocID collapses punctuation to dashes, so distinct commands like
+// `foo-bar` and `foo_bar` map to the same page file. The emitter must fail
+// loudly instead of letting the later write silently win.
+func TestWriteGenericCLIDocsDirFailsOnDocIDCollision(t *testing.T) {
+	root := &cobra.Command{Use: "bd"}
+	root.AddCommand(
+		testHelpCmd("foo-bar", "First"),
+		testHelpCmd("foo_bar", "Second"),
+	)
+
+	err := writeGenericCLIDocsDir(filepath.Join(t.TempDir(), "cli-docs"), root)
+	if err == nil {
+		t.Fatal("writeGenericCLIDocsDir() succeeded with colliding doc IDs; want error")
+	}
+	for _, want := range []string{"foo-bar", "foo_bar"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("collision error should name %q: %v", want, err)
+		}
+	}
+}
+
 func assertFileContains(t *testing.T, path, want string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

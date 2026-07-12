@@ -381,3 +381,60 @@ func TestEngdocsAndRootMarkdownLinks(t *testing.T) {
 		}
 	}
 }
+
+// TestMintRedirectsResolve: every entry in the docs.json redirects array must
+// be well-formed and point at a page that exists. Nothing else validates the
+// redirects, so a future page rename would otherwise dangle its redirect
+// invisibly. Dynamic destinations (path-to-regexp `:slug*` wildcards) are
+// checked for shape only.
+func TestMintRedirectsResolve(t *testing.T) {
+	root := repoRoot()
+	data, err := os.ReadFile(filepath.Join(root, "docs", "docs.json"))
+	if err != nil {
+		t.Fatalf("reading docs.json: %v", err)
+	}
+	var decoded struct {
+		Redirects []struct {
+			Source      string `json:"source"`
+			Destination string `json:"destination"`
+		} `json:"redirects"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("parsing docs.json: %v", err)
+	}
+	if len(decoded.Redirects) == 0 {
+		t.Fatal("docs.json has no redirects array; the old-route coverage is gone")
+	}
+
+	navPages := make(map[string]bool)
+	for _, p := range mintNavPages(t) {
+		navPages[strings.TrimSuffix(filepath.ToSlash(p), filepath.Ext(p))] = true
+	}
+
+	seen := make(map[string]bool)
+	for _, r := range decoded.Redirects {
+		if !strings.HasPrefix(r.Source, "/") || !strings.HasPrefix(r.Destination, "/") {
+			t.Errorf("redirect %q -> %q: source and destination must be root-relative", r.Source, r.Destination)
+			continue
+		}
+		if seen[r.Source] {
+			t.Errorf("duplicate redirect source %q", r.Source)
+		}
+		seen[r.Source] = true
+
+		if strings.Contains(r.Destination, ":") {
+			// Wildcard destination; requires a wildcard source.
+			if !strings.Contains(r.Source, ":") {
+				t.Errorf("redirect %q -> %q: static source with dynamic destination", r.Source, r.Destination)
+			}
+			continue
+		}
+		dest := strings.TrimPrefix(r.Destination, "/")
+		if navPages[dest] {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, "docs", filepath.FromSlash(dest)+".md")); err != nil {
+			t.Errorf("redirect %q -> %q: destination page does not exist", r.Source, r.Destination)
+		}
+	}
+}

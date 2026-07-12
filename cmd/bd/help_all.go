@@ -210,7 +210,7 @@ func writeCommandBody(w io.Writer, cmd *cobra.Command) {
 		fmt.Fprintf(w, "%s\n\n", escapeMDXText(cmd.Short))
 	}
 
-	// Usage — mirror 		: a runnable command shows its
+	// Usage — mirror the binary's --help output: a runnable command shows its
 	// UseLine; a command with subcommands also shows `<path> [command]`.
 	// UseLine() alone appends "[flags]" even on non-runnable parents, which
 	// the binary's help never prints.
@@ -315,12 +315,21 @@ func writeGenericCLIDocsDir(outDir string, root *cobra.Command) error {
 		return err
 	}
 
+	// commandDocID collapses punctuation, so distinct command names can map
+	// to the same page file; the later write would silently win.
+	seen := make(map[string]string, len(commands))
 	for _, name := range commands {
+		id := commandDocID(name)
+		if prev, ok := seen[id]; ok {
+			return fmt.Errorf("commands %q and %q both map to doc page %s.md; rename one", prev, name, id)
+		}
+		seen[id] = name
+
 		var out bytes.Buffer
 		if err := writeSingleCommandDoc(&out, root, name); err != nil {
 			return err
 		}
-		path := filepath.Join(outDir, commandDocID(name)+".md")
+		path := filepath.Join(outDir, id+".md")
 		if err := writeMarkdownFile(path, out.String()); err != nil {
 			return err
 		}

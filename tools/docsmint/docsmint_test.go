@@ -58,6 +58,10 @@ title: "bd create"
 
 Create an issue
 `)
+	writeFile(t, filepath.Join(root, "docs", "CLI_REFERENCE.md"), `# bd CLI reference
+
+Generated single-file reference.
+`)
 	writeFile(t, filepath.Join(root, "docs", "docs.json"), `{
   "name": "Beads Documentation",
   "navigation": {
@@ -217,6 +221,140 @@ Examples:
 	}
 	if !strings.Contains(string(data), "  export FENCED_STAYS_VERBATIM=1") {
 		t.Errorf("fenced export line must stay verbatim:\n%s", data)
+	}
+}
+
+// HTML comments and relative .md links inside code fences are literal example
+// content (e.g. a future cmd.Example demonstrating markdown) — the Mintlify
+// rewrites must not touch them.
+func TestRunLeavesFencedCommentAndLinkExamplesVerbatim(t *testing.T) {
+	root := t.TempDir()
+	seedStaging(t, root)
+	writeFile(t, filepath.Join(root, "build", "cli-docs", "fency.md"), `---
+title: "bd fency"
+---
+
+<!-- AUTO-GENERATED: do not edit manually -->
+
+See [the index](./index.md).
+
+`+"```"+`
+<!-- FENCED COMMENT STAYS -->
+[fenced link](./fenced.md)
+`+"```"+`
+`)
+
+	if err := run(root); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "docs", "cli-reference", "fency.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "<!-- FENCED COMMENT STAYS -->") {
+		t.Errorf("fenced HTML comment was rewritten; fenced examples must stay verbatim:\n%s", got)
+	}
+	if !strings.Contains(got, "[fenced link](./fenced.md)") {
+		t.Errorf("fenced relative link was rewritten; fenced examples must stay verbatim:\n%s", got)
+	}
+	if !strings.Contains(got, "{/* AUTO-GENERATED: do not edit manually */}") {
+		t.Errorf("out-of-fence HTML comment was not rewritten:\n%s", got)
+	}
+	if !strings.Contains(got, "](/cli-reference/index)") {
+		t.Errorf("out-of-fence relative link was not rewritten:\n%s", got)
+	}
+}
+
+// docs/CLI_REFERENCE.md is served by Mintlify as a hidden page but is emitted
+// by bd without docsmint's per-page transforms, so it carries the same MDX ESM
+// hazard (bare indented `export ...` from bd mail). docsmint must neutralize it.
+func TestRunNeutralizesSingleFileReferenceESMHazards(t *testing.T) {
+	root := t.TempDir()
+	seedStaging(t, root)
+	writeFile(t, filepath.Join(root, "docs", "CLI_REFERENCE.md"), `# bd CLI reference
+
+Examples:
+  export BEADS_MAIL_DELEGATE="gt mail"
+
+`+"```"+`
+  export FENCED_STAYS_VERBATIM=1
+`+"```"+`
+`)
+
+	if err := run(root); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "docs", "CLI_REFERENCE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "`export BEADS_MAIL_DELEGATE=\"gt mail\"`") {
+		t.Errorf("bare export line was not neutralized in CLI_REFERENCE.md:\n%s", got)
+	}
+	if !strings.Contains(got, "  export FENCED_STAYS_VERBATIM=1") {
+		t.Errorf("fenced export line must stay verbatim:\n%s", got)
+	}
+}
+
+func TestRunFailsLoudlyWithoutSingleFileReference(t *testing.T) {
+	root := t.TempDir()
+	seedStaging(t, root)
+	if err := os.Remove(filepath.Join(root, "docs", "CLI_REFERENCE.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run(root)
+	if err == nil {
+		t.Fatal("run() succeeded without docs/CLI_REFERENCE.md; want loud failure")
+	}
+	if !strings.Contains(err.Error(), "CLI_REFERENCE.md") {
+		t.Errorf("error should name the missing file: %v", err)
+	}
+}
+
+// If docs.json is ever reformatted so the CLI Reference group's own "pages"
+// key precedes its "group" key, a textual forward search finds the NEXT
+// group's pages array and silently rewrites the wrong group. The splice must
+// fail closed instead of corrupting navigation.
+func TestRunFailsClosedWhenPagesIsNotSiblingKey(t *testing.T) {
+	root := t.TempDir()
+	seedStaging(t, root)
+	reordered := `{
+  "navigation": {
+    "groups": [
+      {
+        "pages": [
+          "cli-reference/index"
+        ],
+        "group": "CLI Reference"
+      },
+      {
+        "group": "Other",
+        "pages": [
+          "other/index"
+        ]
+      }
+    ]
+  }
+}
+`
+	writeFile(t, filepath.Join(root, "docs", "docs.json"), reordered)
+
+	err := run(root)
+	if err == nil {
+		t.Fatal("run() succeeded with a reordered CLI Reference group; want fail-closed error")
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(root, "docs", "docs.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != reordered {
+		t.Errorf("docs.json was modified despite the fail-closed error:\n%s", data)
 	}
 }
 
