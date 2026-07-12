@@ -299,7 +299,7 @@ func TestSchemaMigrationRejectsChangedPreExistingDirtyTable(t *testing.T) {
 	// table mid-pass, which the changed-signature guard must reject.
 	// (Historically this test dirtied dolt_ignore and relied on the pass's
 	// pattern re-seed to flip it; dolt_ignore is now pass-owned state exempt
-	// from the guard — bda-0mu — so the canary is a real user table.)
+	// from the guard, so the canary is a real user table.)
 	if _, err := store.db.ExecContext(ctx,
 		"INSERT INTO custom_statuses (name, category) VALUES ('scratch', 'wip')",
 	); err != nil {
