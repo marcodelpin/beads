@@ -519,11 +519,9 @@ identifier (e.g. `1.1.0-rc.1`); Python tooling normalizes this to PEP 440 form
 - **PyPI** and **npm** publish jobs are **skipped**. The `publish-pypi` and
   `publish-npm` jobs are gated with `!contains(github.ref_name, '-')`, so a tag
   containing a `-` never reaches the stable package channels.
-- **The stable docs snapshot is not required.** `verify-version-consistency`
-  runs `scripts/check-versions.sh` without `BEADS_REQUIRE_RELEASE_DOCS=1` for
-  prerelease tags, and `scripts/check-docs-version.sh` treats a prerelease
-  canonical version as non-strict. The versioned docs stay on the latest stable
-  release until the base `X.Y.Z` ships.
+- **Docs are unaffected.** The docs site publishes from `main` via the
+  Mintlify GitHub integration; there is no release-time docs snapshot for
+  either prereleases or stable releases.
 
 ### Cut an RC
 
@@ -566,9 +564,9 @@ above. Tag creation is restricted to release maintainers; see
 - Install the RC from the GitHub prerelease assets and exercise the changes it
   is gating before promoting.
 - To promote to stable, bump to the base version with no suffix
-  (`./scripts/update-versions.sh 1.1.0`). The stable bump **does** require the
-  docs snapshot and **does** publish to Homebrew/PyPI/npm, so follow the
-  standard [Prepare Release](#1-prepare-release) steps from there.
+  (`./scripts/update-versions.sh 1.1.0`). The stable release **does** publish
+  to Homebrew/PyPI/npm, so follow the standard
+  [Prepare Release](#1-prepare-release) steps from there.
 
 ## Hotfix Releases
 

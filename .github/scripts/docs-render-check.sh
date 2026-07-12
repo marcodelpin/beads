@@ -16,16 +16,20 @@
 #
 # Exit codes:
 #   0 — no net-new page-link regressions
-#   1 — net-new page-link regressions found; details on stdout
+#   1 — net-new page-link regressions found (details on stdout), or the
+#       mint tool itself failed to produce a broken-links report
 #
-# Requires: git, npx (Node.js), jq
+# Requires: git, npx (Node.js)
 #
 set -euo pipefail
 
 DOCS_DIR="docs"
 DOCS_CONFIG="$DOCS_DIR/docs.json"
 BASE_REF="${1:-origin/main}"
-MINT_CMD="${MINT_CMD:-npx --yes mint@latest}"
+# Pinned so a floating release can't silently change the output format this
+# script parses (keep in sync with mint.sh).
+MINT_VERSION="${MINT_VERSION:-4.2.687}"
+MINT_CMD="${MINT_CMD:-npx --yes mint@$MINT_VERSION}"
 
 WORK_TMP="$(mktemp -d)"
 trap 'rm -rf "$WORK_TMP"' EXIT
@@ -36,28 +40,29 @@ if [[ ! -f "$DOCS_CONFIG" ]]; then
     exit 0
 fi
 
-# --- extract_page_links <mint-output-file> -----------------------------------
-# Parse `mint broken-links` output lines. Each broken link looks like:
+# Static-asset refs are excluded: mint over-reports in-tree images the
+# published build serves fine.
+ASSET_EXTS='\.png$|\.svg$|\.jpg$|\.jpeg$|\.gif$|\.ico$|\.webp$|\.woff2?$|\.ttf$|\.eot$'
+
+# has_report <mint-output-file> — did mint produce a broken-links report at
+# all (as opposed to dying on a registry outage / crash)?
+has_report() {
+    grep -qE '✗|broken' "$1" 2>/dev/null
+}
+
+# Parse `mint broken-links` report lines. Each broken link looks like:
 #   [broken-links]  tutorials/01-beads.md  ->  /tutorials/01-beads.md
 # or
 #   ✗  /tutorials/01-beads.md
-# We capture only page links (no static-asset extensions).
-ASSET_EXTS='\.png$|\.svg$|\.jpg$|\.jpeg$|\.gif$|\.ico$|\.webp$|\.woff2?$|\.ttf$|\.eot$'
-
-extract_page_links() {
-    local file="$1"
-    grep -oE '[^ ]+\.[a-z]+$|/[^ ]+' "$file" 2>/dev/null \
-        | grep -vE "$ASSET_EXTS" \
-        | sort -u || true
-}
-
-# Alternative simpler extraction: just lines with the broken-links marker.
+# Capture path-shaped tokens on report lines only — root-relative (/foo) or
+# relative with a slash — excluding URLs and static assets. The same parser
+# runs on both HEAD and BASE output, so residual noise cancels out in the
+# net-new comparison.
 parse_mint_broken_links() {
     local file="$1"
-    # mint outputs lines like: "  ✗  /path/to/page" or "  ✗  page-slug"
-    # or with indentation. Grab any token that looks like a link (starts with /).
-    grep -E '✗|broken|BROKEN|error|ERROR' "$file" 2>/dev/null \
-        | grep -oE '[/][^ )]+' \
+    grep -E '✗|broken' "$file" 2>/dev/null \
+        | grep -oE '[/][^ )]+|[A-Za-z0-9_.-]+/[^ )]+' \
+        | grep -vE '^https?:|^[A-Za-z0-9_.-]+\.[A-Za-z]{2,}/' \
         | grep -vE "$ASSET_EXTS" \
         | sort -u || true
 }
@@ -92,9 +97,19 @@ HEAD_LINKS="$WORK_TMP/head-links.txt"
 parse_mint_broken_links "$HEAD_OUT" | sort -u >"$HEAD_LINKS"
 
 if [[ ! -s "$HEAD_LINKS" ]]; then
-    # mint exited non-zero but no links we care about. Pass.
-    echo "docs-render-check: mint non-zero but no page-link regressions detected — PASS" >&2
-    exit 0
+    if has_report "$HEAD_OUT"; then
+        # mint produced a report, but every flagged link is a static asset
+        # we deliberately ignore. Pass.
+        echo "docs-render-check: mint flagged only static-asset links — PASS" >&2
+        exit 0
+    fi
+    # mint exited non-zero without producing a broken-links report at all
+    # (registry outage, crash, output-format change). Fail closed rather
+    # than let the gate silently stop enforcing.
+    echo "::error::docs-render-check: mint failed without producing a broken-links report — tool failure, not a clean run"
+    echo "mint output follows:" >&2
+    cat "$HEAD_OUT" >&2
+    exit 1
 fi
 
 # --- BASE check (baseline-aware) --------------------------------------------

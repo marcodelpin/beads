@@ -4,9 +4,21 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
+      # The docsync guard also validates engdocs/** and the curated root
+      # markdown files (rootDocFiles in test/docsync/docsync_test.go) — keep
+      # this filter in sync with that list, or a docs-breaking PR merges
+      # green and turns main red at the full test run.
       - 'docs/**'
+      - 'engdocs/**'
       - 'test/docsync/**'
       - 'mint.sh'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'AGENT_INSTRUCTIONS.md'
+      - 'CONTRIBUTING.md'
+      - 'CLAUDE.md'
+      - 'RELEASING.md'
+      - 'PR_MAINTAINER_GUIDELINES.md'
       - '.github/scripts/docs-render-check.sh'
       - '.github/workflows/docs-mintlify.yml'
 

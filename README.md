@@ -111,7 +111,7 @@ version: sync remote-backed databases with your current `bd`, back up with
 migration on a remote-backed database, exactly one designated clone runs
 `bd migrate --force` and `bd dolt push`; other clones install the new binary
 and run `bd bootstrap`. See the full
-[upgrade guide](https://gastownhall.github.io/beads/docs/getting-started/upgrading)
+[upgrade guide](https://gastownhall.github.io/beads/getting-started/upgrading)
 or [docs/getting-started/installation.md](docs/getting-started/installation.md#updating-bd).
 
 ### Security And Verification

@@ -45,15 +45,8 @@ jobs:
           fi
           echo "OK: tag and version.go agree on $code_version"
 
-      - name: Check version + docs consistency
-        run: |
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [[ "$tag_version" == *-* ]]; then
-            echo "Prerelease tag detected; stable docs snapshot may remain on latest stable release."
-            ./scripts/check-versions.sh
-          else
-            BEADS_REQUIRE_RELEASE_DOCS=1 ./scripts/check-versions.sh
-          fi
+      - name: Check version consistency
+        run: ./scripts/check-versions.sh
 
   release-package-mcp:
     name: Release Package Gate (MCP)

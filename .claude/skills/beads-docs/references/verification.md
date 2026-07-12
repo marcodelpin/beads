@@ -7,7 +7,7 @@ Run these before considering docs work complete. Ordered cheapest-first.
 ```bash
 # 1. Docs sync: docs.json nav <-> file consistency, link conventions
 #    (root-relative extensionless in docs/, exact paths in engdocs/ and
-#    curated root files), orphan detection with the stub allowlist.
+#    curated root files), orphan detection (only CLI_REFERENCE.md is exempt).
 go test ./test/docsync
 
 # 2. Generated CLI docs freshness: regenerates from the live command tree
@@ -57,9 +57,11 @@ all of:
 2. **Rewrite inbound links** — grep the whole repo, not just `docs/`:
    README.md, AGENTS.md, AGENT_INSTRUCTIONS.md, engdocs/, examples/,
    npm-package/, plugins/, integrations/, scripts, and Go comments.
-3. **Check released-binary output** — if `bd` prints the old path (grep
-   `cmd/` and `internal/templates/` for it), leave a pointer stub at the old
-   path and add it to the allowlist in `test/docsync/docsync_test.go`.
+3. **Check bd's printed output** — if `bd` prints the old path (grep `cmd/`
+   and `internal/templates/` for it), fix the Go source to print the new
+   path and regenerate the CLI docs. Do **not** create a pointer stub at the
+   old path — decision 6 (no pointer stubs; Mintlify redirects) accepts that
+   old GitHub links printed by already-released binaries 404.
 4. **Fix anchor text** — if a link's label named the old page, update the
    label too, and dedupe links that now collapse to the same target.
 

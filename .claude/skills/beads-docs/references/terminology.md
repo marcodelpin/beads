@@ -46,6 +46,8 @@ the binary still prints, the docs now lie.
   mechanically.
 - `.beads/issues.jsonl` — always described as a passive export. Never call it
   the database, the sync protocol, or a backup.
-- Paths released binaries print (`docs/RECOVERY.md`, `docs/PLUGIN.md`,
-  `docs/SETUP.md`, …) — the pointer stubs at those paths stay; see the
-  allowlist in `test/docsync/docsync_test.go`.
+- Paths `bd` prints (`docs/RECOVERY.md`, `docs/SETUP.md`, …) — never
+  recreate pointer stubs at old paths; moved pages are covered by the
+  `redirects` array in `docs/docs.json` (decision 6 of
+  `engdocs/decisions/2026-07-10-mintlify-docs-overhaul.md`). If bd prints an
+  old path, fix the Go source so it prints the new one and regenerate.

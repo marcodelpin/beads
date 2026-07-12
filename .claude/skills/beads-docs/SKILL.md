@@ -201,8 +201,8 @@ preview with `make docs-dev` (or `./mint.sh dev`) at `localhost:3000`.
 When you **move or remove a page**: add a redirect to the `redirects` array
 in `docs/docs.json`, rewrite inbound links repo-wide (README, engdocs/,
 examples/, npm-package/, plugin resources — grep, don't guess), and check
-whether released `bd` binaries print the old path (if so, leave a pointer
-stub; see the allowlist in `test/docsync/docsync_test.go`).
+whether `bd` prints the old path (if so, fix the Go source and regenerate —
+never a pointer stub; decision 6 covers old routes with redirects).
 
 ## 10. Review and commit discipline
 

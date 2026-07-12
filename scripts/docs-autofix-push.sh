@@ -46,11 +46,10 @@ PATCH_FILE="$(readlink -f "$PATCH_FILE")"
 COMMENT_MARKER="<!-- cli-docs-autofix -->"
 AUTOFIX_SUBJECT="docs: auto-regenerate CLI reference"
 
-# Files the doc generators may write - a superset of GEN_PATHSPECS in
-# scripts/check-cli-docs-drift.sh (generate-cli-docs.sh also refreshes the
-# versioned CLI snapshot). Anchored, single path segment where a wildcard
-# appears, conservative filename charset: no traversal, no nesting, no
-# metacharacters can slip through.
+# Files the doc generators may write - keep in sync with GEN_PATHSPECS in
+# scripts/check-cli-docs-drift.sh. Anchored, single path segment where a
+# wildcard appears, conservative filename charset: no traversal, no nesting,
+# no metacharacters can slip through.
 path_allowed() {
     case "$1" in *..*) return 1 ;; esac
     [[ "$1" == "docs/CLI_REFERENCE.md" ]] && return 0

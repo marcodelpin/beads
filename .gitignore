@@ -138,5 +138,5 @@ bd_test
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
-build/
+/build/
 node_modules/

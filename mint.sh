@@ -5,6 +5,9 @@ set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 docs_dir="$repo_dir/docs"
+# Pinned so local preview and CI parse the same tool (keep in sync with
+# .github/scripts/docs-render-check.sh).
+MINT_VERSION="${MINT_VERSION:-4.2.687}"
 args=("$@")
 if [[ ${#args[@]} -eq 0 ]]; then
   args=(dev)
@@ -37,13 +40,13 @@ find_node22_bin() {
 major=$(node_major)
 if [[ "$major" =~ ^[0-9]+$ ]] && (( major < 25 )); then
   cd "$docs_dir"
-  exec npx --yes mint@latest "${args[@]}"
+  exec npx --yes "mint@$MINT_VERSION" "${args[@]}"
 fi
 
 if node22_bin=$(find_node22_bin); then
   export PATH="$node22_bin:$PATH"
   cd "$docs_dir"
-  exec npx --yes mint@latest "${args[@]}"
+  exec npx --yes "mint@$MINT_VERSION" "${args[@]}"
 fi
 
 cat >&2 <<EOF
