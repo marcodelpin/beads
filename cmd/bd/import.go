@@ -208,6 +208,18 @@ func runImportFromReader(ctx context.Context, r io.Reader, source string) error 
 			return fmt.Errorf("failed to parse JSONL line: %w", err)
 		}
 
+		// Skip the optional beads-jsonl header record (§J1.3). A canonical
+		// export may prepend a provenance line, e.g.
+		// {"_schema":"beads-jsonl/1","_dolt_branch":"main","_sort":"stable-v1"}.
+		// It carries no _type and no issue fields; without this guard it falls
+		// through to the issue path, unmarshals into an empty Issue, and aborts
+		// the whole import with "title is required". parseJSONLFile (the
+		// bootstrap reader) has always skipped it; this loop — the one `bd
+		// import` and `bd import -` run through — did not.
+		if _, isHeader := peek["_schema"]; isHeader {
+			continue
+		}
+
 		if rawType, ok := peek["_type"]; ok {
 			var typeStr string
 			if err := json.Unmarshal(rawType, &typeStr); err == nil && typeStr == "memory" {
