@@ -628,36 +628,21 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 		if err := validateGraphApplyPlannedBlockingCycles(ctx, tx, plan, keyToID); err != nil {
 			return err
 		}
-
-		// Add dependencies from edges.
 		for i, edge := range plan.Edges {
 			fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
 			toID := resolveEdgeRef(edge.ToKey, edge.ToID, keyToID)
 			depType := graphApplyDependencyType(edge.Type)
-			if parentDepPairs[graphApplyDepPairKey(fromID, toID)] {
-				if depType == types.DepParentChild {
-					continue
-				}
+			if parentDepPairs[graphApplyDepPairKey(fromID, toID)] && depType != types.DepParentChild {
 				return fmt.Errorf("edge %d %s->%s duplicates a parent-child relationship with dependency type %q", i, fromID, toID, depType)
 			}
 			if parentDepPairs[graphApplyDepPairKey(toID, fromID)] && graphApplyCycleRelevantDependencyType(depType) {
 				return fmt.Errorf("edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
 			}
-			dep := &types.Dependency{
-				IssueID:     fromID,
-				DependsOnID: toID,
-				Type:        depType,
-			}
-			addOpts := storage.DependencyAddOptions{}
-			if graphApplyCycleRelevantDependencyType(depType) {
-				addOpts.SkipCycleCheck = true
-			}
-			if err := tx.AddDependencyWithOptions(ctx, dep, actor, addOpts); err != nil {
-				return fmt.Errorf("adding edge %s->%s: %w", fromID, toID, err)
-			}
 		}
 
-		// Add parent-child dependencies.
+		// Add node parent-child dependencies first. The explicit and inline
+		// dependency sources below are also processed parent-first, so every
+		// blocking edge sees the plan's full hierarchy in storage.
 		for i, node := range plan.Nodes {
 			parentKey := node.ParentKey
 			if parentKey == "" {
@@ -679,27 +664,64 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 			}
 		}
 
-		// Add per-node inline dependencies.
-		for i, node := range plan.Nodes {
-			for _, dep := range node.Deps {
-				depType := types.DependencyType(dep.Type)
-				if depType == "" {
-					depType = types.DepBlocks
+		for phase := 0; phase < 2; phase++ {
+			parentPhase := phase == 0
+			// Add explicit edges in stable order for this phase.
+			for i, edge := range plan.Edges {
+				fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
+				toID := resolveEdgeRef(edge.ToKey, edge.ToID, keyToID)
+				depType := graphApplyDependencyType(edge.Type)
+				if (depType == types.DepParentChild) != parentPhase {
+					continue
 				}
-				targetID := keyToID[dep.Target]
-				if targetID == "" {
-					targetID = dep.Target
+				if parentDepPairs[graphApplyDepPairKey(fromID, toID)] {
+					if depType == types.DepParentChild {
+						continue
+					}
+					return fmt.Errorf("edge %d %s->%s duplicates a parent-child relationship with dependency type %q", i, fromID, toID, depType)
 				}
-				if targetID == "" {
-					return fmt.Errorf("node %q: dep target %q not found", node.Key, dep.Target)
+				if parentDepPairs[graphApplyDepPairKey(toID, fromID)] && graphApplyCycleRelevantDependencyType(depType) {
+					return fmt.Errorf("edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
 				}
-				d := &types.Dependency{
-					IssueID:     issues[i].ID,
-					DependsOnID: targetID,
+				dep := &types.Dependency{
+					IssueID:     fromID,
+					DependsOnID: toID,
 					Type:        depType,
 				}
-				if err := tx.AddDependency(ctx, d, actor); err != nil {
-					return fmt.Errorf("node %q: adding dep to %q: %w", node.Key, dep.Target, err)
+				addOpts := storage.DependencyAddOptions{}
+				if graphApplyCycleRelevantDependencyType(depType) {
+					addOpts.SkipCycleCheck = true
+				}
+				if err := tx.AddDependencyWithOptions(ctx, dep, actor, addOpts); err != nil {
+					return fmt.Errorf("adding edge %s->%s: %w", fromID, toID, err)
+				}
+			}
+
+			// Add per-node inline dependencies in stable order for this phase.
+			for i, node := range plan.Nodes {
+				for _, dep := range node.Deps {
+					depType := types.DependencyType(dep.Type)
+					if depType == "" {
+						depType = types.DepBlocks
+					}
+					if (depType == types.DepParentChild) != parentPhase {
+						continue
+					}
+					targetID := keyToID[dep.Target]
+					if targetID == "" {
+						targetID = dep.Target
+					}
+					if targetID == "" {
+						return fmt.Errorf("node %q: dep target %q not found", node.Key, dep.Target)
+					}
+					d := &types.Dependency{
+						IssueID:     issues[i].ID,
+						DependsOnID: targetID,
+						Type:        depType,
+					}
+					if err := tx.AddDependency(ctx, d, actor); err != nil {
+						return fmt.Errorf("node %q: adding dep to %q: %w", node.Key, dep.Target, err)
+					}
 				}
 			}
 		}

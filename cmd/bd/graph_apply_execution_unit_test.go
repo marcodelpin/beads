@@ -133,6 +133,14 @@ func (tx *graphApplyFakeTx) AddDependency(ctx context.Context, dep *types.Depend
 
 func (tx *graphApplyFakeTx) AddDependencyWithOptions(_ context.Context, dep *types.Dependency, _ string, opts storage.DependencyAddOptions) error {
 	tx.store.addOpts = append(tx.store.addOpts, opts)
+	if isGraphApplyFakeBlocking(dep.Type) {
+		if tx.hasParentPath(dep.IssueID, dep.DependsOnID) {
+			return fmt.Errorf("%s cannot be blocked by its ancestor %s", dep.IssueID, dep.DependsOnID)
+		}
+		if tx.hasParentPath(dep.DependsOnID, dep.IssueID) {
+			return fmt.Errorf("%s cannot be blocked by its descendant %s", dep.IssueID, dep.DependsOnID)
+		}
+	}
 	for _, existing := range tx.store.deps {
 		if existing.IssueID == dep.IssueID && existing.DependsOnID == dep.DependsOnID {
 			if existing.Type == dep.Type {
@@ -150,6 +158,27 @@ func (tx *graphApplyFakeTx) AddDependencyWithOptions(_ context.Context, dep *typ
 	depCopy := *dep
 	tx.store.deps = append(tx.store.deps, &depCopy)
 	return nil
+}
+
+func (tx *graphApplyFakeTx) hasParentPath(fromID, toID string) bool {
+	seen := make(map[string]bool)
+	var visit func(string) bool
+	visit = func(id string) bool {
+		if id == toID {
+			return true
+		}
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+		for _, dep := range tx.store.deps {
+			if dep.IssueID == id && dep.Type == types.DepParentChild && visit(dep.DependsOnID) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(fromID)
 }
 
 func (tx *graphApplyFakeTx) GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error) {
@@ -281,12 +310,10 @@ func TestExecuteGraphApplyUnitSkipsSQLCycleChecksAfterGraphPreflight(t *testing.
 	}
 }
 
-// TestExecuteGraphApplyUnitAllowsBlockingThroughExistingParentChild pins the
-// rule that the whole-graph blocking-cycle preflight mirrors the storage SQL
-// cycle check: a planned blocking edge whose only return path runs through an
-// existing parent-child dep must be allowed (plain `bd dep add` allows it), so
-// the preflight's existing-edge walk is restricted to blocking dep types.
-func TestExecuteGraphApplyUnitAllowsBlockingThroughExistingParentChild(t *testing.T) {
+// TestExecuteGraphApplyUnitRejectsBlockingThroughExistingParentChild verifies
+// that graph apply still reaches the storage hierarchy guard after its
+// blocks-only whole-graph cycle preflight.
+func TestExecuteGraphApplyUnitRejectsBlockingThroughExistingParentChild(t *testing.T) {
 	ctx, fakeStore := withGraphApplyFakeStore(t)
 	for _, id := range []string{"ga-parent", "ga-child"} {
 		if err := fakeStore.CreateIssue(ctx, &types.Issue{
@@ -312,8 +339,60 @@ func TestExecuteGraphApplyUnitAllowsBlockingThroughExistingParentChild(t *testin
 		},
 	}
 
-	if _, err := executeGraphApply(ctx, plan, GraphApplyOptions{}); err != nil {
-		t.Fatalf("blocking edge closing a cycle only through an existing parent-child dep must be allowed, got: %v", err)
+	_, err := executeGraphApply(ctx, plan, GraphApplyOptions{})
+	if err == nil {
+		t.Fatal("expected blocking edge to own descendant to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cannot be blocked by its descendant") {
+		t.Fatalf("error = %q, want hierarchy rejection", err.Error())
+	}
+}
+
+func TestExecuteGraphApplyUnitRejectsBlockingThroughPlannedHierarchyRegardlessOfOrder(t *testing.T) {
+	tests := []struct {
+		name string
+		plan *GraphApplyPlan
+	}{
+		{
+			name: "explicit edges",
+			plan: &GraphApplyPlan{
+				Nodes: []GraphApplyNode{
+					{Key: "grand", Title: "Grand"},
+					{Key: "parent", Title: "Parent"},
+					{Key: "child", Title: "Child"},
+				},
+				Edges: []GraphApplyEdge{
+					{FromKey: "child", ToKey: "grand", Type: "conditional-blocks"}, // Deliberately first.
+					{FromKey: "child", ToKey: "parent", Type: "parent-child"},
+					{FromKey: "parent", ToKey: "grand", Type: "parent-child"},
+				},
+			},
+		},
+		{
+			name: "inline deps",
+			plan: &GraphApplyPlan{
+				Nodes: []GraphApplyNode{
+					{Key: "grand", Title: "Grand"},
+					{Key: "parent", Title: "Parent", Deps: []GraphApplyNodeDep{{Type: "parent-child", Target: "grand"}}},
+					{Key: "child", Title: "Child", Deps: []GraphApplyNodeDep{
+						{Type: "blocks", Target: "grand"}, // Deliberately first.
+						{Type: "parent-child", Target: "parent"},
+					}},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, fakeStore := withGraphApplyFakeStore(t)
+			_, err := executeGraphApply(ctx, tt.plan, GraphApplyOptions{})
+			if err == nil || !strings.Contains(err.Error(), "cannot be blocked by its ancestor") {
+				t.Fatalf("error = %v, want planned-ancestor rejection", err)
+			}
+			if len(fakeStore.issues) != 0 || len(fakeStore.deps) != 0 {
+				t.Fatalf("failed graph transaction leaked writes: issues=%d deps=%d", len(fakeStore.issues), len(fakeStore.deps))
+			}
+		})
 	}
 }
 

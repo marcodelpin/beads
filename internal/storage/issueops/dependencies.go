@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/depid"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -94,7 +95,7 @@ type AddDependencyOpts struct {
 // transaction. It handles:
 //   - Wisp routing (auto-detected or caller-provided)
 //   - Source/target existence validation
-//   - Cross-type blocking validation (GH#1495)
+//   - Hierarchy deadlock validation for blocking deps (GH#1495, bd-wg7ve)
 //   - Cycle detection via recursive CTE across both dependency tables
 //   - Idempotent same-type updates (metadata only)
 //   - Type conflict detection
@@ -158,16 +159,9 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		}
 	}
 
-	// Cross-type blocking validation (GH#1495): tasks can only block tasks,
-	// epics can only block epics.
-	if dep.Type == types.DepBlocks && targetType != "" {
-		sourceIsEpic := sourceType == string(types.TypeEpic)
-		targetIsEpic := targetType == string(types.TypeEpic)
-		if sourceIsEpic != targetIsEpic {
-			if sourceIsEpic {
-				return fmt.Errorf("epics can only block other epics, not tasks")
-			}
-			return fmt.Errorf("tasks can only block other tasks, not epics")
+	if targetType != "" {
+		if err := CheckBlockingHierarchyInTx(ctx, tx, dep, depTables); err != nil {
+			return err
 		}
 	}
 
@@ -370,6 +364,67 @@ func cycleReachabilityQuery(depTables []string) string {
 
 func cycleDetectionTables() []string {
 	return []string{"dependencies", "wisp_dependencies"}
+}
+
+// CheckBlockingHierarchyInTx rejects blocking dependencies between an issue
+// and its own ancestor or descendant. Cross-prefix/external targets must be
+// filtered by the caller because no local hierarchy can connect them.
+func CheckBlockingHierarchyInTx(ctx context.Context, tx DBTX, dep *types.Dependency, depTables []string) error {
+	if dep.Type != types.DepBlocks && dep.Type != types.DepConditionalBlocks {
+		return nil
+	}
+	if dep.IssueID == dep.DependsOnID {
+		return nil // The dedicated self-dependency check owns this error.
+	}
+	if len(depTables) == 0 {
+		depTables = cycleDetectionTables()
+	}
+	blockerIsAncestor, err := isAncestorInTx(ctx, tx, dep.IssueID, dep.DependsOnID, depTables)
+	if err != nil {
+		return fmt.Errorf("failed to check blocker ancestry: %w", err)
+	}
+	if blockerIsAncestor {
+		return &domain.DependencyHierarchyConflictError{
+			IssueID: dep.IssueID, BlockerID: dep.DependsOnID, BlockerIsAncestor: true,
+		}
+	}
+	blockerIsDescendant, err := isAncestorInTx(ctx, tx, dep.DependsOnID, dep.IssueID, depTables)
+	if err != nil {
+		return fmt.Errorf("failed to check blocker ancestry: %w", err)
+	}
+	if blockerIsDescendant {
+		return &domain.DependencyHierarchyConflictError{
+			IssueID: dep.IssueID, BlockerID: dep.DependsOnID,
+		}
+	}
+	return nil
+}
+
+// isAncestorInTx reports whether candidate is an ancestor of node along
+// parent-child dependency edges (walking child -> parent only, so siblings
+// and cousins in the same hierarchy do not match). Uses UNION distinct
+// recursion so diamond/cyclic parentage terminates by unique reachable node.
+func isAncestorInTx(ctx context.Context, tx DBTX, node, candidate string, depTables []string) (bool, error) {
+	var unions []string
+	for _, t := range depTables {
+		unions = append(unions, fmt.Sprintf("SELECT issue_id, %s AS parent_id FROM %s WHERE type = 'parent-child'", DepTargetExpr, t))
+	}
+	//nolint:gosec // G201: depTables are fixed dependency table names from cycleDetectionTables/opts.
+	query := fmt.Sprintf(`
+		WITH RECURSIVE ancestors(node) AS (
+			SELECT ?
+			UNION
+			SELECT d.parent_id
+			FROM ancestors a
+			JOIN (%s) d ON d.issue_id = a.node
+		)
+		SELECT COUNT(*) FROM ancestors WHERE node = ?
+	`, strings.Join(unions, " UNION "))
+	var n int
+	if err := tx.QueryRowContext(ctx, query, node, candidate).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func DeleteWispFromDependenciesInTx(ctx context.Context, tx *sql.Tx, wispID string) error {

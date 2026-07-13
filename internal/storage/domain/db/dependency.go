@@ -75,6 +75,11 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		metadata = "{}"
 	}
 
+	if !opts.HierarchyValidated {
+		if err := r.ValidateBlockingHierarchy(ctx, dep); err != nil {
+			return err
+		}
+	}
 	table := pickDepTable(opts.UseWispsTable)
 
 	var existingType string
@@ -160,6 +165,17 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked (affected): %w", err)
 	}
 	return nil
+}
+
+func (r *dependencySQLRepositoryImpl) ValidateBlockingHierarchy(ctx context.Context, dep *types.Dependency) error {
+	if dep == nil {
+		return errors.New("db: DependencySQLRepository.ValidateBlockingHierarchy: dep must not be nil")
+	}
+	if strings.HasPrefix(dep.DependsOnID, "external:") ||
+		types.ExtractPrefix(dep.IssueID) != types.ExtractPrefix(dep.DependsOnID) {
+		return nil
+	}
+	return issueops.CheckBlockingHierarchyInTx(ctx, r.runner, dep, nil)
 }
 
 // markDirectBlockedSource mirrors issueops.markDirectBlockingDependencySourceInTx:

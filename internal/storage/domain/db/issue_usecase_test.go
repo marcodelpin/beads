@@ -161,7 +161,8 @@ func (s *testSuite) TestIssueUseCase_ApplyGraph() {
 	s.Run("ExternalIDIntraBatchBlockingCycleErrors", s.applyGraphExternalIDBlockingCycle)
 	s.Run("RegularGraphCycleThroughExistingWispDepErrors", s.applyGraphRegularCycleThroughWispDep)
 	s.Run("WispGraphCycleThroughExistingRegularDepErrors", s.applyGraphWispCycleThroughRegularDep)
-	s.Run("AllowsBlockingThroughExistingParentChild", s.applyGraphAllowsBlockingThroughParentChild)
+	s.Run("RejectsBlockingThroughExistingParentChild", s.applyGraphRejectsBlockingThroughParentChild)
+	s.Run("RejectsBlockingThroughPlannedHierarchy", s.applyGraphRejectsBlockingThroughPlannedHierarchy)
 	s.Run("HealthyPlanRoundTrips", s.applyGraphHealthy)
 	s.Run("WispGraphRoutesToWispTables", s.applyGraphWispRouting)
 }
@@ -532,13 +533,11 @@ func (s *testSuite) applyGraphWispCycleThroughRegularDep() {
 		"no wisp blocking edge may be written when the cycle closes through an existing regular dep")
 }
 
-// applyGraphAllowsBlockingThroughParentChild mirrors the embedded
-// TestExecuteGraphApplyUnitAllowsBlockingThroughExistingParentChild on the
-// domain path: a planned blocking edge whose only return path is an existing
-// parent-child dep is allowed, because the blocking-cycle walk never follows
-// non-blocking dep types. This pins that the cycleRelevantDepType filter is not
-// silently widened on the server path.
-func (s *testSuite) applyGraphAllowsBlockingThroughParentChild() {
+// applyGraphRejectsBlockingThroughParentChild verifies that graph apply uses
+// the same hierarchy-deadlock guard as a single dependency add. This is not a
+// mixed-edge cycle check: the parent-child edge only establishes that the
+// proposed blocker is the source's own descendant.
+func (s *testSuite) applyGraphRejectsBlockingThroughParentChild() {
 	s.resetMintConfig("gK", "")
 	uc := s.issueUseCase()
 
@@ -550,23 +549,46 @@ func (s *testSuite) applyGraphAllowsBlockingThroughParentChild() {
 		newDep("gK-child", "gK-parent", types.DepParentChild), "seeder",
 		domain.DepInsertOpts{}))
 
-	// A planned blocking edge gK-parent -> gK-child. Its only "return path"
-	// gK-child -> gK-parent is parent-child, which the cycle walk must not
-	// follow, so this is allowed (matching bd dep add and embedded graph-apply).
+	// A planned blocking edge gK-parent -> gK-child would gate the parent on its
+	// own descendant and can never clear under blocked-state cascading.
 	_, err := uc.ApplyIssueGraph(s.Ctx(), domain.GraphPlan{
 		Edges: []domain.GraphEdge{
 			{FromID: "gK-parent", ToID: "gK-child", Type: types.DepBlocks},
 		},
 	}, "tester")
-	s.Require().NoError(err)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot be blocked by its descendant")
 
-	var blockingSeen bool
 	for _, d := range s.loadDepRows("dependencies", "gK-%") {
 		if d.depType == string(types.DepBlocks) && d.issueID == "gK-parent" && d.dependsOnID == "gK-child" {
-			blockingSeen = true
+			s.Fail("hierarchy-deadlocking blocking edge must not be written")
 		}
 	}
-	s.True(blockingSeen, "planned blocking edge gK-parent -> gK-child must be written when the only return path is a parent-child dep")
+}
+
+func (s *testSuite) applyGraphRejectsBlockingThroughPlannedHierarchy() {
+	s.resetMintConfig("gL", "")
+	uc := s.issueUseCase()
+
+	grand := newGraphNode("grand", "grand")
+	parent := newGraphNode("parent", "parent")
+	child := newGraphNode("child", "child")
+	_, err := uc.ApplyIssueGraph(s.Ctx(), domain.GraphPlan{
+		Nodes: []domain.GraphNode{grand, parent, child},
+		Edges: []domain.GraphEdge{
+			{FromKey: "child", ToKey: "grand", Type: types.DepConditionalBlocks}, // Deliberately first.
+			{FromKey: "child", ToKey: "parent", Type: types.DepParentChild},
+			{FromKey: "parent", ToKey: "grand", Type: types.DepParentChild},
+		},
+	}, "tester")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot be blocked by its ancestor")
+
+	for _, d := range s.loadDepRows("dependencies", "gL-%") {
+		if d.depType == string(types.DepConditionalBlocks) {
+			s.Fail("block-first graph edge must not escape planned hierarchy validation")
+		}
+	}
 }
 
 func (s *testSuite) applyGraphHealthy() {

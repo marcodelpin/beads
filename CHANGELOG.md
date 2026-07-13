@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-type blocking dependencies are now allowed** (bd-wg7ve,
+  [#4034](https://github.com/gastownhall/beads/pull/4034)).
+  `bd dep add <task> <epic>` — gating a work item on an epic (program)
+  completing — previously failed with a backwards-reading error ("tasks can
+  only block other tasks, not epics"). The blanket same-type rule (GH#1495)
+  is replaced by a hierarchy deadlock guard that rejects only the cases that
+  actually wedge the graph: gating an issue on its own ancestor (the ancestor
+  can't close until its descendants finish) or on its own descendant (blocked
+  status cascades down to the very issue that must close to clear the gate).
+  Sibling ordering edges stay allowed. The guard now also covers
+  `conditional-blocks`, which previously skipped cross-type validation
+  entirely. A task gated on an epic becomes ready when the epic itself is
+  closed, consistent with `bd ready`/`bd blocked`.
+
 ### Added
 
 - **Work leases: claim-TTL, heartbeat, and reclaim for dead-worker recovery**

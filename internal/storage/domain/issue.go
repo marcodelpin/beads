@@ -816,16 +816,9 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 	if err := u.validatePlannedBlockingCycles(ctx, plan, keyToID); err != nil {
 		return GraphApplyResult{}, err
 	}
-
-	// Pass 3 — insert edge deps. Deduplicate against the parent-child pairs:
-	//   - Same pair, parent-child type → skip (pass 4 will insert it).
-	//   - Same pair, different type   → error (conflicting edge over a parent-child link).
-	//   - Reverse pair, blocking type → error (creates a parent → child blocking cycle).
-	//
-	// Blocking cycles are already proven absent by validatePlannedBlockingCycles
-	// above (whole-graph preflight over planned + existing blocking edges, the
-	// same strategy as embedded executeGraphApply), so the edge insert loop no
-	// longer runs a per-edge HasCycle SQL probe.
+	// Preserve failure-before-write for explicit edges that conflict directly
+	// with an implicit node parent relationship. Parent-first mutation below is
+	// for transitive hierarchy visibility, not for deferring structural errors.
 	for i, edge := range plan.Edges {
 		fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
 		if fromID == "" {
@@ -839,28 +832,17 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 		if depType == "" {
 			depType = types.DepBlocks
 		}
-
-		if parentDepPairs[depPairKey(fromID, toID)] {
-			if depType == types.DepParentChild {
-				continue
-			}
+		if parentDepPairs[depPairKey(fromID, toID)] && depType != types.DepParentChild {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d %s->%s duplicates a parent-child relationship with dependency type %q", i, fromID, toID, depType)
 		}
 		if parentDepPairs[depPairKey(toID, fromID)] && cycleRelevantDepType(depType) {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
 		}
-
-		dep := &types.Dependency{
-			IssueID:     fromID,
-			DependsOnID: toID,
-			Type:        depType,
-		}
-		if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
-			return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d (%s -> %s): %w", i, fromID, toID, err)
-		}
 	}
 
-	// Pass 4 — insert parent-child deps now that all IDs are known.
+	// Pass 3 — insert node parent-child deps now that all IDs are known. These
+	// must be visible before any blocking edge in the same plan so the storage
+	// hierarchy guard evaluates existing + planned ancestry.
 	for _, node := range plan.Nodes {
 		parentID := node.ParentID
 		if node.ParentKey != "" {
@@ -877,6 +859,57 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 		}
 		if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: parent-child dep %s->%s: %w", node.Key, childID, parentID, err)
+		}
+	}
+
+	// Pass 4 — insert explicit edge deps in two stable phases: all additional
+	// parent-child edges first, then every other type. Deduplicate against the
+	// node parent-child pairs:
+	//   - Same pair, parent-child type → skip (pass 3 already inserted it).
+	//   - Same pair, different type   → error (conflicting edge over a parent-child link).
+	//   - Reverse pair, blocking type → error (creates a parent → child blocking cycle).
+	//
+	// Blocking cycles are already proven absent by validatePlannedBlockingCycles
+	// above (whole-graph preflight over planned + existing blocking edges, the
+	// same strategy as embedded executeGraphApply), so the edge insert loop no
+	// longer runs a per-edge HasCycle SQL probe.
+	for phase := 0; phase < 2; phase++ {
+		parentPhase := phase == 0
+		for i, edge := range plan.Edges {
+			fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
+			if fromID == "" {
+				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d references undefined from_key %q", i, edge.FromKey)
+			}
+			toID := resolveEdgeRef(edge.ToKey, edge.ToID, keyToID)
+			if toID == "" {
+				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d references undefined to_key %q", i, edge.ToKey)
+			}
+			depType := edge.Type
+			if depType == "" {
+				depType = types.DepBlocks
+			}
+			if (depType == types.DepParentChild) != parentPhase {
+				continue
+			}
+
+			if parentDepPairs[depPairKey(fromID, toID)] {
+				if depType == types.DepParentChild {
+					continue
+				}
+				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d %s->%s duplicates a parent-child relationship with dependency type %q", i, fromID, toID, depType)
+			}
+			if parentDepPairs[depPairKey(toID, fromID)] && cycleRelevantDepType(depType) {
+				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
+			}
+
+			dep := &types.Dependency{
+				IssueID:     fromID,
+				DependsOnID: toID,
+				Type:        depType,
+			}
+			if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
+				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d (%s -> %s): %w", i, fromID, toID, err)
+			}
 		}
 	}
 
