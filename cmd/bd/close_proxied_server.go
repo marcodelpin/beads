@@ -35,6 +35,14 @@ type closeProxiedOutcome struct {
 	closed bool
 }
 
+type closeProxiedTxResult struct {
+	outcomes         []closeProxiedOutcome
+	reasons          []string
+	unblocked        []*types.Issue
+	continueResult   *ContinueResult
+	claimedNextIssue *types.Issue
+}
+
 func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return HandleErrorRespectJSON("no issue ID provided")
@@ -61,87 +69,85 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	if uowProvider == nil {
 		return HandleError("proxied-server UOW provider not initialized")
 	}
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		return HandleErrorRespectJSON("open unit of work: %v", err)
-	}
-	defer uw.Close(ctx)
 
-	outcomes := make([]closeProxiedOutcome, 0, len(args))
-	closedIssues := []*types.Issue{}
-	for i, id := range args {
-		reason := reasonForCloseIndex(reasons, i)
-		outcome, ok := closeProxiedOne(ctx, uw, id, reason, in)
-		if !ok {
-			continue
-		}
-		outcomes = append(outcomes, outcome)
-		if in.jsonOut {
-			closedIssues = append(closedIssues, outcome.after)
-		} else {
-			fmt.Printf("%s Closed %s: %s\n", ui.RenderPass("✓"), formatFeedbackID(outcome.after.ID, outcome.after.Title), reason)
-		}
-	}
+	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (closeProxiedTxResult, string, error) {
+		var result closeProxiedTxResult
 
-	var unblocked []*types.Issue
-	if in.suggestNext && len(args) == 1 && len(outcomes) > 0 {
-		unblocked = closeProxiedSuggestNext(ctx, uw, args[0])
-	}
-
-	var continueResult *ContinueResult
-	if in.continueOn && len(args) == 1 && len(outcomes) > 0 {
-		continueResult = closeProxiedContinue(ctx, uw, args[0], !in.noAuto)
-	}
-
-	var claimedNextIssue *types.Issue
-	if in.claimNext && len(outcomes) > 0 && !in.continueOn {
-		claimedNextIssue = closeProxiedClaimNext(ctx, uw, in.jsonOut)
-	}
-
-	if len(outcomes) > 0 {
-		msg := closeProxiedCommitMessage(outcomes, claimedNextIssue, continueResult)
-		if err := uw.Commit(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
-			return HandleErrorRespectJSON("commit close: %v", err)
-		}
-		for _, o := range outcomes {
-			if !o.closed {
-				continue
+		for i, id := range args {
+			reason := reasonForCloseIndex(reasons, i)
+			outcome, ok := closeProxiedOne(ctx, uw, id, reason, in)
+			if ok {
+				result.outcomes = append(result.outcomes, outcome)
+				result.reasons = append(result.reasons, reason)
 			}
+		}
+
+		if in.suggestNext && len(args) == 1 && len(result.outcomes) > 0 {
+			result.unblocked = closeProxiedSuggestNext(ctx, uw, args[0])
+		}
+
+		if in.continueOn && len(args) == 1 && len(result.outcomes) > 0 {
+			result.continueResult = closeProxiedContinue(ctx, uw, args[0], !in.noAuto)
+		}
+
+		if in.claimNext && len(result.outcomes) > 0 && !in.continueOn {
+			result.claimedNextIssue = closeProxiedClaimNext(ctx, uw, in.jsonOut)
+		}
+
+		if len(result.outcomes) == 0 {
+			return result, "", nil
+		}
+
+		return result, closeProxiedCommitMessage(result.outcomes, result.claimedNextIssue, result.continueResult), nil
+	})
+	if err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
+
+	for i, o := range res.outcomes {
+		if o.closed {
 			if err := fireProxiedCloseHooks(ctx, o.before, o.after); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 			}
 		}
+		if !in.jsonOut {
+			fmt.Printf("%s Closed %s: %s\n", ui.RenderPass("✓"), formatFeedbackID(o.after.ID, o.after.Title), res.reasons[i])
+		}
 	}
 
 	if !in.jsonOut {
-		if len(unblocked) > 0 {
+		if len(res.unblocked) > 0 {
 			fmt.Printf("\nNewly unblocked:\n")
-			for _, issue := range unblocked {
+			for _, issue := range res.unblocked {
 				fmt.Printf("  • %s (P%d)\n", formatFeedbackID(issue.ID, issue.Title), issue.Priority)
 			}
 		}
-		if continueResult != nil {
-			PrintContinueResult(continueResult)
+		if res.continueResult != nil {
+			PrintContinueResult(res.continueResult)
 		}
-		if claimedNextIssue != nil {
-			fmt.Printf("%s Auto-claimed next ready issue: %s (P%d)\n", ui.RenderPass("✓"), formatFeedbackID(claimedNextIssue.ID, claimedNextIssue.Title), claimedNextIssue.Priority)
+		if res.claimedNextIssue != nil {
+			fmt.Printf("%s Auto-claimed next ready issue: %s (P%d)\n", ui.RenderPass("✓"), formatFeedbackID(res.claimedNextIssue.ID, res.claimedNextIssue.Title), res.claimedNextIssue.Priority)
 		}
 	}
 
-	if in.jsonOut && len(closedIssues) > 0 {
+	if in.jsonOut && len(res.outcomes) > 0 {
+		closedIssues := make([]*types.Issue, len(res.outcomes))
+		for i, o := range res.outcomes {
+			closedIssues[i] = o.after
+		}
 		switch {
-		case len(unblocked) > 0:
-			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "unblocked": unblocked})
-		case continueResult != nil:
-			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "continue": continueResult})
-		case claimedNextIssue != nil:
-			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "claimed": claimedNextIssue})
+		case len(res.unblocked) > 0:
+			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "unblocked": res.unblocked})
+		case res.continueResult != nil:
+			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "continue": res.continueResult})
+		case res.claimedNextIssue != nil:
+			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "claimed": res.claimedNextIssue})
 		default:
 			_ = outputJSON(closedIssues)
 		}
 	}
 
-	if len(args) > 0 && len(outcomes) == 0 {
+	if len(args) > 0 && len(res.outcomes) == 0 {
 		return SilentExit()
 	}
 	return nil

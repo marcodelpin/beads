@@ -23,6 +23,11 @@ type reopenProxiedOutcome struct {
 	reopened bool
 }
 
+type reopenProxiedTxResult struct {
+	outcomes []reopenProxiedOutcome
+	hasError bool
+}
+
 func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return HandleErrorRespectJSON("no issue ID provided")
@@ -33,53 +38,53 @@ func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	if uowProvider == nil {
 		return HandleError("proxied-server UOW provider not initialized")
 	}
-	uw, err := uowProvider.NewUOW(ctx)
+
+	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (reopenProxiedTxResult, string, error) {
+		var result reopenProxiedTxResult
+
+		for _, id := range args {
+			outcome, ok := reopenProxiedOne(ctx, uw, id, reason)
+			if !ok {
+				result.hasError = true
+				continue
+			}
+			if outcome.reopened {
+				result.outcomes = append(result.outcomes, outcome)
+			}
+		}
+
+		if len(result.outcomes) == 0 {
+			return result, "", nil
+		}
+
+		return result, reopenProxiedCommitMessage(result.outcomes), nil
+	})
 	if err != nil {
-		return HandleErrorRespectJSON("open unit of work: %v", err)
+		return HandleErrorRespectJSON("%v", err)
 	}
-	defer uw.Close(ctx)
 
-	outcomes := make([]reopenProxiedOutcome, 0, len(args))
-	reopenedIssues := []*types.Issue{}
-	hasError := false
-
-	for _, id := range args {
-		outcome, ok := reopenProxiedOne(ctx, uw, id, reason)
-		if !ok {
-			hasError = true
-			continue
+	for _, o := range res.outcomes {
+		if err := fireProxiedReopenHooks(ctx, o.after); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 		}
-		if !outcome.reopened {
-			continue
-		}
-		outcomes = append(outcomes, outcome)
-		if jsonOut {
-			reopenedIssues = append(reopenedIssues, outcome.after)
-		} else {
+		if !jsonOut {
 			suffix := ""
 			if reason != "" {
 				suffix = ": " + reason
 			}
-			fmt.Printf("%s Reopened %s%s\n", ui.RenderAccent("↻"), outcome.id, suffix)
+			fmt.Printf("%s Reopened %s%s\n", ui.RenderAccent("↻"), o.id, suffix)
 		}
 	}
 
-	if len(outcomes) > 0 {
-		msg := reopenProxiedCommitMessage(outcomes)
-		if err := uw.Commit(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
-			return HandleErrorRespectJSON("commit reopen: %v", err)
+	if jsonOut && len(res.outcomes) > 0 {
+		reopenedIssues := make([]*types.Issue, len(res.outcomes))
+		for i, o := range res.outcomes {
+			reopenedIssues[i] = o.after
 		}
-		for _, o := range outcomes {
-			if err := fireProxiedReopenHooks(ctx, o.after); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
-			}
-		}
-	}
-
-	if jsonOut && len(reopenedIssues) > 0 {
 		_ = outputJSON(reopenedIssues)
 	}
-	if hasError {
+
+	if res.hasError {
 		return SilentExit()
 	}
 	return nil
