@@ -365,12 +365,13 @@ type Transaction interface {
 	AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, opts DependencyAddOptions) error
 	RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error
 	GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error)
-	// CycleThroughEdges reports a rendered blocking-dependency cycle that
-	// traverses one of the given new edges (issueID -> dependsOnID pairs), or
+	// CycleThroughEdges reports a rendered cycle in the static scheduling set
+	// (blocks, conditional-blocks, parent-child; not waits-for) that traverses
+	// one of the given new edges (issueID -> dependsOnID pairs), or
 	// "" when none does. It sees the transaction's own uncommitted dependency
 	// writes, which must already include the edges. Lets bulk paths that add
-	// edges with SkipCycleCheck run one whole-graph check before commit and
-	// roll back instead of committing cycles (bd-6dnrw.8); pre-existing
+	// edges run one merged whole-graph check before commit and roll back instead
+	// of committing cycles (bd-6dnrw.8); pre-existing
 	// cycles not using any of the new edges never block (bd-578h9.9).
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 
@@ -402,8 +403,8 @@ type Transaction interface {
 // DependencyAddOptions controls transaction-scoped dependency insertion.
 type DependencyAddOptions struct {
 	// SkipCycleCheck bypasses the recursive pre-insert cycle check. Callers
-	// that set it MUST run Transaction.DetectCycles before commit and fail
-	// the transaction on new cycles — skipping the per-edge check trades
+	// that set it MUST run Transaction.CycleThroughEdges before commit and fail
+	// on new blocks/conditional-blocks/parent-child cycles (waits-for is excluded) — skipping the per-edge check trades
 	// per-edge cost for one whole-graph check, never graph integrity
 	// (bd-6dnrw.8).
 	SkipCycleCheck bool

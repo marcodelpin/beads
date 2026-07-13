@@ -622,6 +622,7 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 		}
 
 		parentDepPairs := graphApplyParentDepPairs(plan.Nodes, keyToID)
+		newSchedulingEdges := make([][2]string, 0, len(plan.Nodes)+len(plan.Edges))
 		if err := validateGraphApplyPlannedParentBlockingPaths(ctx, tx, plan, keyToID, parentDepPairs); err != nil {
 			return err
 		}
@@ -661,6 +662,7 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 				if err := tx.AddDependency(ctx, dep, actor); err != nil {
 					return fmt.Errorf("node %q: adding parent-child dep: %w", node.Key, err)
 				}
+				newSchedulingEdges = append(newSchedulingEdges, [2]string{dep.IssueID, dep.DependsOnID})
 			}
 		}
 
@@ -688,12 +690,11 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 					DependsOnID: toID,
 					Type:        depType,
 				}
-				addOpts := storage.DependencyAddOptions{}
-				if graphApplyCycleRelevantDependencyType(depType) {
-					addOpts.SkipCycleCheck = true
-				}
-				if err := tx.AddDependencyWithOptions(ctx, dep, actor, addOpts); err != nil {
+				if err := tx.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{}); err != nil {
 					return fmt.Errorf("adding edge %s->%s: %w", fromID, toID, err)
+				}
+				if graphApplySchedulingDependencyType(depType) {
+					newSchedulingEdges = append(newSchedulingEdges, [2]string{fromID, toID})
 				}
 			}
 
@@ -722,8 +723,16 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 					if err := tx.AddDependency(ctx, d, actor); err != nil {
 						return fmt.Errorf("node %q: adding dep to %q: %w", node.Key, dep.Target, err)
 					}
+					if graphApplySchedulingDependencyType(depType) {
+						newSchedulingEdges = append(newSchedulingEdges, [2]string{d.IssueID, d.DependsOnID})
+					}
 				}
 			}
+		}
+		if cyclePath, err := tx.CycleThroughEdges(ctx, newSchedulingEdges); err != nil {
+			return fmt.Errorf("final graph cycle check: %w", err)
+		} else if cyclePath != "" {
+			return fmt.Errorf("graph dependency cycle would be created: %s", cyclePath)
 		}
 
 		// Apply deferred assignees.
@@ -746,15 +755,9 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 
 // validateGraphApplyPlannedBlockingCycles rejects planned blocking edges that
 // would close a blocking-dependency cycle, evaluated whole-graph before any
-// insert. It mirrors the storage per-edge SQL cycle check
-// (issueops.CheckDependencyCycleInTx), which only traverses blocks and
-// conditional-blocks edges: both the planned adjacency and the existing-dep
-// walk are restricted to cycle-relevant types via
-// graphApplyCycleRelevantDependencyType. This is deliberately narrower than
-// the ready-work traversal used by validateGraphApplyPlannedParentBlockingPaths
-// — graph-apply must not reject a blocking edge whose only return path runs
-// through an existing parent-child or waits-for dep when plain `bd dep add`
-// would allow it.
+// insert. This early preflight is restricted to blocking edges for precise
+// plan errors. Each stored edge still runs issueops.CheckDependencyCycleInTx,
+// which enforces the combined blocks + conditional-blocks + parent-child graph.
 func validateGraphApplyPlannedBlockingCycles(ctx context.Context, tx storage.Transaction, plan *GraphApplyPlan, keyToID map[string]string) error {
 	type plannedEdge struct {
 		index  int
@@ -800,8 +803,8 @@ func validateGraphApplyPlannedBlockingCycles(ctx context.Context, tx storage.Tra
 // full AffectsReadyWork set (blocks, conditional-blocks, parent-child,
 // waits-for) because a parent→child path closed through any ready-affecting
 // dependency is a real ready-work deadlock. The two predicates must stay
-// distinct: narrowing this one would miss real deadlocks; broadening the
-// blocking-cycle walk would reject edges plain `bd dep add` accepts.
+// distinct: narrowing this one would miss real deadlocks, while this broader
+// walk may additionally reject a return path through waits-for.
 func validateGraphApplyPlannedParentBlockingPaths(ctx context.Context, tx storage.Transaction, plan *GraphApplyPlan, keyToID map[string]string, parentDepPairs map[string]bool) error {
 	adj := make(map[string][]string)
 	for pair := range parentDepPairs {
@@ -852,7 +855,7 @@ func validateGraphApplyPlannedParentBlockingPaths(ctx context.Context, tx storag
 // graphApplyHasPath reports whether fromID can reach toID by following the
 // in-memory planned adjacency plus existing store dependencies. followExistingDep
 // selects which existing dep types the walk traverses, letting callers mirror
-// either the blocking-only SQL cycle check or the broader ready-work graph.
+// either the early blocking-only preflight or the broader ready-work graph.
 func graphApplyHasPath(ctx context.Context, tx storage.Transaction, adj map[string][]string, depCache map[string][]*types.Dependency, fromID, toID string, followExistingDep func(types.DependencyType) bool) (bool, error) {
 	seen := make(map[string]bool)
 	var visit func(string) (bool, error)
@@ -896,8 +899,7 @@ func graphApplyHasPath(ctx context.Context, tx storage.Transaction, adj map[stri
 // graphApplyEdgeIsLocalCycleRelevant reports whether an edge participates in the
 // in-memory local cycle check run by validateGraphApplyLocalCycles: it must be a
 // fully-local edge (both endpoints addressed by key, neither by an existing ID)
-// of a cycle-relevant dependency type. The whole-graph preflight now always skips
-// the storage SQL cycle probe, so this no longer gates that skip.
+// of a cycle-relevant dependency type.
 func graphApplyEdgeIsLocalCycleRelevant(edge GraphApplyEdge, depType types.DependencyType) bool {
 	if edge.FromKey == "" || edge.ToKey == "" || edge.FromID != "" || edge.ToID != "" {
 		return false
@@ -914,6 +916,10 @@ func graphApplyDependencyType(depType string) types.DependencyType {
 
 func graphApplyCycleRelevantDependencyType(depType types.DependencyType) bool {
 	return depType == types.DepBlocks || depType == types.DepConditionalBlocks
+}
+
+func graphApplySchedulingDependencyType(depType types.DependencyType) bool {
+	return graphApplyCycleRelevantDependencyType(depType) || depType == types.DepParentChild
 }
 
 func graphApplyReadyPathDependencyType(depType types.DependencyType) bool {

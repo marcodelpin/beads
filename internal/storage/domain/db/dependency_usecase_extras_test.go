@@ -265,7 +265,7 @@ func (s *testSuite) ducAddBulkNonBlockingNoCheck() {
 	s.Require().NoError(depRepo.Insert(s.Ctx(),
 		newDep("bd-duc-nbnc-a", "bd-duc-nbnc-b", types.DepBlocks), "tester", domain.DepInsertOpts{}))
 
-	// related edge b -> a: cycle check is per-edge for blocking types only, so
+	// related edge b -> a: cycle checks cover only the static scheduling types, so
 	// this should always be accepted.
 	res, err := s.depUseCase().AddDependencies(s.Ctx(),
 		[]*types.Dependency{newDep("bd-duc-nbnc-b", "bd-duc-nbnc-a", types.DepRelated)},

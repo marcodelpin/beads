@@ -810,6 +810,7 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 	// already-existing dependencies in the store. This must run before any
 	// dep inserts to catch the violation before we've written anything.
 	parentDepPairs := graphParentDepPairs(plan.Nodes, keyToID)
+	newSchedulingEdges := make([][2]string, 0, len(plan.Nodes)+len(plan.Edges))
 	if err := u.validatePlannedBlockingPaths(ctx, plan, keyToID, parentDepPairs); err != nil {
 		return GraphApplyResult{}, err
 	}
@@ -860,6 +861,7 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 		if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: parent-child dep %s->%s: %w", node.Key, childID, parentID, err)
 		}
+		newSchedulingEdges = append(newSchedulingEdges, [2]string{childID, parentID})
 	}
 
 	// Pass 4 — insert explicit edge deps in two stable phases: all additional
@@ -869,10 +871,9 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 	//   - Same pair, different type   → error (conflicting edge over a parent-child link).
 	//   - Reverse pair, blocking type → error (creates a parent → child blocking cycle).
 	//
-	// Blocking cycles are already proven absent by validatePlannedBlockingCycles
-	// above (whole-graph preflight over planned + existing blocking edges, the
-	// same strategy as embedded executeGraphApply), so the edge insert loop no
-	// longer runs a per-edge HasCycle SQL probe.
+	// The blocking-only whole-graph preflight above gives early, edge-specific
+	// errors. Repository Insert remains the defensive authority for the broader
+	// blocks + conditional-blocks + parent-child scheduling graph.
 	for phase := 0; phase < 2; phase++ {
 		parentPhase := phase == 0
 		for i, edge := range plan.Edges {
@@ -910,7 +911,15 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 			if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d (%s -> %s): %w", i, fromID, toID, err)
 			}
+			if isSchedulingDep(depType) {
+				newSchedulingEdges = append(newSchedulingEdges, [2]string{fromID, toID})
+			}
 		}
+	}
+	if cyclePath, err := u.depRepo.CycleThroughEdges(ctx, newSchedulingEdges); err != nil {
+		return GraphApplyResult{}, fmt.Errorf("applyGraph: final cycle check: %w", err)
+	} else if cyclePath != "" {
+		return GraphApplyResult{}, fmt.Errorf("applyGraph: dependency cycle would be created: %s", cyclePath)
 	}
 
 	// Pass 5 — apply deferred assignees.
@@ -973,10 +982,9 @@ func cycleRelevantDepType(t types.DependencyType) bool {
 // readyPathDepType reports whether a dependency type affects ready-work. It is
 // the broad predicate used when walking existing deps for parent→child
 // blocking-path validation, in contrast to the blocking-only
-// cycleRelevantDepType used for pure blocking-cycle detection. The two must
+// cycleRelevantDepType used by the early pure-blocking preflight. The two must
 // stay distinct: narrowing the parent-path walk would miss real ready-work
-// deadlocks, while broadening the blocking-cycle walk would reject edges that
-// plain `bd dep add` accepts.
+// deadlocks, while it may additionally reject a return path through waits-for.
 func readyPathDepType(t types.DependencyType) bool {
 	return t.AffectsReadyWork()
 }
@@ -1057,12 +1065,9 @@ func (u *issueUseCaseImpl) validatePlannedBlockingPaths(
 
 // validatePlannedBlockingCycles rejects planned blocking edges that would close
 // a blocking-dependency cycle, evaluated whole-graph before any insert. It
-// mirrors embedded validateGraphApplyPlannedBlockingCycles and the storage
-// per-edge SQL cycle check (depRepo.HasCycle): both the planned adjacency and
-// the existing-dep walk are restricted to blocks/conditional-blocks via
-// cycleRelevantDepType, so graph-apply stays consistent with `bd dep add` and
-// does not reject a blocking edge whose return path runs through an existing
-// parent-child or waits-for dep.
+// mirrors embedded validateGraphApplyPlannedBlockingCycles. This early
+// preflight is intentionally restricted to blocking edges; repository Insert
+// subsequently enforces the combined scheduling graph for every stored edge.
 func (u *issueUseCaseImpl) validatePlannedBlockingCycles(
 	ctx context.Context,
 	plan GraphPlan,
@@ -1113,7 +1118,7 @@ func (u *issueUseCaseImpl) validatePlannedBlockingCycles(
 // in-memory adjacency (planned parent-child + planned blocking edges) and
 // existing deps loaded lazily from the store. followExistingDep selects which
 // existing dep types the walk traverses, so callers can mirror either the
-// blocking-only SQL cycle check or the broader ready-work graph. Per-node dep
+// early blocking-only preflight or the broader ready-work graph. Per-node dep
 // fetches are cached so each visited node hits the DB at most once.
 //
 // Existing deps are loaded from BOTH dependency tables. The per-edge

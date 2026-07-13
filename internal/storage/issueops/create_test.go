@@ -380,6 +380,9 @@ func TestPersistDependenciesValidatesPlannedHierarchyBeforeBlocking(t *testing.T
 		mock.ExpectQuery("SELECT 1 FROM issues WHERE id = \\?").
 			WithArgs(pair[1]).
 			WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+		mock.ExpectQuery("WITH RECURSIVE reachable").
+			WithArgs(pair[1], pair[0]).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("INSERT INTO dependencies").
 			WithArgs(depid.New(pair[0], pair[1]), pair[0], pair[1], types.DepParentChild, "tester", sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))

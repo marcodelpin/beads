@@ -305,32 +305,51 @@ func markDirectBlockingDependencySourceInTx(ctx context.Context, tx *sql.Tx, sou
 	return err
 }
 
-// CheckDependencyCycleInTx rejects self-dependencies and blocking dependency
-// cycles before a dependency insert. The caller may pass a restricted depTables
-// list for a known storage bucket; nil uses all dependency tables.
-func CheckDependencyCycleInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, depTables []string) error {
+// CheckDependencyCycleInTx rejects self-dependencies and cycles across the
+// combined blocks, conditional-blocks, and parent-child graph before insert.
+// The caller may pass a restricted depTables list for a known storage bucket;
+// nil uses all dependency tables.
+func CheckDependencyCycleInTx(ctx context.Context, tx DBTX, dep *types.Dependency, depTables []string) error {
 	if dep.IssueID == dep.DependsOnID {
 		return fmt.Errorf("cannot add self-dependency: %s cannot depend on itself", dep.IssueID)
 	}
-	if dep.Type != types.DepBlocks && dep.Type != types.DepConditionalBlocks {
+	if !isSchedulingEdge(dep.Type) {
 		return nil
 	}
-	if len(depTables) == 0 {
-		depTables = cycleDetectionTables()
-	}
-	var reachable int
-	query := cycleReachabilityQuery(depTables)
-	if err := tx.QueryRowContext(ctx, query, dep.DependsOnID, dep.IssueID).Scan(&reachable); err != nil {
+	wouldCycle, err := WouldCreateSchedulingCycleInTx(ctx, tx, dep.IssueID, dep.DependsOnID, depTables)
+	if err != nil {
 		return fmt.Errorf("failed to check for dependency cycle: %w", err)
 	}
-	if reachable > 0 {
+	if wouldCycle {
 		return fmt.Errorf("adding dependency would create a cycle")
 	}
 	return nil
 }
 
+// WouldCreateSchedulingCycleInTx reports whether adding issueID -> dependsOnID
+// would close a cycle in the combined scheduling graph. It is shared by the
+// classic and domain storage stacks so both traverse the same dependency types
+// and typed target columns.
+func WouldCreateSchedulingCycleInTx(ctx context.Context, tx DBTX, issueID, dependsOnID string, depTables []string) (bool, error) {
+	if len(depTables) == 0 {
+		depTables = cycleDetectionTables()
+	}
+	var reachable int
+	query := cycleReachabilityQuery(depTables)
+	if err := tx.QueryRowContext(ctx, query, dependsOnID, issueID).Scan(&reachable); err != nil {
+		return false, err
+	}
+	return reachable > 0, nil
+}
+
 // cycleReachabilityQuery uses UNION distinct recursion so cyclic and diamond
 // graphs terminate by unique reachable node instead of enumerating paths.
+//
+// The walked edge set is the union of scheduling-relevant edges: blocks,
+// conditional-blocks, and parent-child. Parent-child is included because a
+// blocked parent propagates its blocked state to its children in the
+// ready-work computation, so a chain mixing blocks and parent-child edges
+// can form a logical livelock that prevents anything from being ready.
 func cycleReachabilityQuery(depTables []string) string {
 	if len(depTables) == 1 {
 		return fmt.Sprintf(`
@@ -339,7 +358,7 @@ func cycleReachabilityQuery(depTables []string) string {
 				UNION
 				SELECT %s
 				FROM reachable r
-				JOIN %s d ON d.issue_id = r.node AND d.type IN ('blocks', 'conditional-blocks')
+				JOIN %s d ON d.issue_id = r.node AND d.type IN ('blocks', 'conditional-blocks', 'parent-child')
 			)
 			SELECT COUNT(*) FROM reachable WHERE node = ?
 		`, DepTargetExpr, depTables[0])
@@ -347,7 +366,7 @@ func cycleReachabilityQuery(depTables []string) string {
 
 	var unions []string
 	for _, t := range depTables {
-		unions = append(unions, fmt.Sprintf("SELECT issue_id, %s AS depends_on_id FROM %s WHERE type IN ('blocks', 'conditional-blocks')", DepTargetExpr, t))
+		unions = append(unions, fmt.Sprintf("SELECT issue_id, %s AS depends_on_id FROM %s WHERE type IN ('blocks', 'conditional-blocks', 'parent-child')", DepTargetExpr, t))
 	}
 	unionQuery := strings.Join(unions, " UNION ")
 	return fmt.Sprintf(`
@@ -364,6 +383,18 @@ func cycleReachabilityQuery(depTables []string) string {
 
 func cycleDetectionTables() []string {
 	return []string{"dependencies", "wisp_dependencies"}
+}
+
+// isSchedulingEdge reports whether a dependency type belongs to the static
+// combined-cycle set: blocks, conditional-blocks, and parent-child. Waits-for
+// also affects readiness but is intentionally outside this validation rule.
+func isSchedulingEdge(t types.DependencyType) bool {
+	switch t {
+	case types.DepBlocks, types.DepConditionalBlocks, types.DepParentChild:
+		return true
+	default:
+		return false
+	}
 }
 
 // CheckBlockingHierarchyInTx rejects blocking dependencies between an issue

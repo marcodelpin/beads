@@ -159,6 +159,7 @@ func (s *testSuite) TestIssueUseCase_ApplyGraph() {
 	s.Run("ReverseBlockingOverParentChildPairErrors", s.applyGraphReverseBlocking)
 	s.Run("LiveCycleThroughExistingDepsErrors", s.applyGraphLiveCycle)
 	s.Run("ExternalIDIntraBatchBlockingCycleErrors", s.applyGraphExternalIDBlockingCycle)
+	s.Run("CombinedSchedulingCycleErrors", s.applyGraphCombinedSchedulingCycle)
 	s.Run("RegularGraphCycleThroughExistingWispDepErrors", s.applyGraphRegularCycleThroughWispDep)
 	s.Run("WispGraphCycleThroughExistingRegularDepErrors", s.applyGraphWispCycleThroughRegularDep)
 	s.Run("RejectsBlockingThroughExistingParentChild", s.applyGraphRejectsBlockingThroughParentChild)
@@ -470,6 +471,31 @@ func (s *testSuite) applyGraphExternalIDBlockingCycle() {
 
 	deps := s.loadDepRows("dependencies", "gH-%")
 	s.Empty(deps, "no blocking edge may be written when an intra-batch external-ID cycle is detected")
+}
+
+func (s *testSuite) applyGraphCombinedSchedulingCycle() {
+	s.resetMintConfig("gM", "")
+	uc := s.issueUseCase()
+
+	_, err := uc.ApplyIssueGraph(s.Ctx(), domain.GraphPlan{
+		Nodes: []domain.GraphNode{
+			newGraphNode("a", "A"),
+			newGraphNode("b", "B"),
+			newGraphNode("c", "C"),
+		},
+		Edges: []domain.GraphEdge{
+			{FromKey: "a", ToKey: "b", Type: types.DepBlocks},
+			{FromKey: "b", ToKey: "c", Type: types.DepParentChild},
+			{FromKey: "c", ToKey: "a", Type: types.DepConditionalBlocks},
+		},
+	}, "tester")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cycle")
+	// This low-level suite calls the use case without its normal outer UOW, so
+	// earlier acyclic writes may remain. The edge that closes the cycle must not.
+	for _, d := range s.loadDepRows("dependencies", "gM-%") {
+		s.NotEqual(string(types.DepConditionalBlocks), d.depType, "cycle-closing edge must not be written: %+v", d)
+	}
 }
 
 // applyGraphRegularCycleThroughWispDep proves a regular graph-apply rejects a
