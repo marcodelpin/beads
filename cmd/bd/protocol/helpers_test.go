@@ -215,6 +215,11 @@ func (w *workspace) env() []string {
 		"HOME=" + w.dir,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"BEADS_TEST_MODE=1",
+		// HOME is the t.TempDir workspace, so the telemetry emitter writes its
+		// lock + event files under it — asynchronously, which races TempDir
+		// cleanup and fails the test with "directory not empty". Tests never
+		// want to emit metrics anyway.
+		"BD_DISABLE_METRICS=1",
 	}
 	if testDoltPort > 0 {
 		env = append(env, "BEADS_DOLT_PORT="+strconv.Itoa(testDoltPort))
