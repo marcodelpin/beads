@@ -44,6 +44,9 @@ BD_ALLOW_REMOTE_MIGRATE=1 remains supported for scripted/CI use.
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("migrate is not supported in proxied-server mode")
+		}
 		evt := metrics.NewCommandEvent("migrate")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -746,6 +749,9 @@ Example:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("migrate sync is not supported in proxied-server mode")
+		}
 		evt := metrics.NewCommandEvent("migrate-sync")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -777,6 +783,9 @@ Example:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("migrate schema is not supported in proxied-server mode")
+		}
 		CheckReadonly("migrate schema")
 
 		evt := metrics.NewCommandEvent("migrate-schema")

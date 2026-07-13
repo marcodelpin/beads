@@ -58,6 +58,9 @@ By default, shows only open gates. Use --all to include closed gates.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("gate list is not supported in proxied-server mode")
+		}
 		evt := metrics.NewCommandEvent("gate-list")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -226,6 +229,9 @@ This is used by 'bd done --phase-complete' to register for gate wake notificatio
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("gate add-waiter is not supported in proxied-server mode")
+		}
 		CheckReadonly("gate add-waiter")
 
 		evt := metrics.NewCommandEvent("gate-add-waiter")
@@ -297,6 +303,9 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("gate create is not supported in proxied-server mode")
+		}
 		CheckReadonly("gate create")
 
 		evt := metrics.NewCommandEvent("gate-create")
@@ -397,6 +406,9 @@ This is similar to 'bd show' but validates that the issue is a gate.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("gate show is not supported in proxied-server mode")
+		}
 		evt := metrics.NewCommandEvent("gate-show")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -462,6 +474,9 @@ Use --reason to provide context for why the gate was resolved.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("gate resolve is not supported in proxied-server mode")
+		}
 		CheckReadonly("gate resolve")
 
 		evt := metrics.NewCommandEvent("gate-resolve")
@@ -542,6 +557,9 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("gate check is not supported in proxied-server mode")
+		}
 		CheckReadonly("gate check")
 
 		evt := metrics.NewCommandEvent("gate-check")

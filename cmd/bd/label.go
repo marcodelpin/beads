@@ -121,6 +121,9 @@ var labelAddCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("label add is not supported in proxied-server mode")
+		}
 		CheckReadonly("label add")
 
 		evt := metrics.NewCommandEvent("label-add")
@@ -162,6 +165,9 @@ var labelRemoveCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("label remove is not supported in proxied-server mode")
+		}
 		CheckReadonly("label remove")
 
 		evt := metrics.NewCommandEvent("label-remove")
@@ -193,6 +199,9 @@ var labelListCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("label list is not supported in proxied-server mode")
+		}
 		evt := metrics.NewCommandEvent("label-list")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -236,6 +245,9 @@ var labelListAllCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("label list-all is not supported in proxied-server mode")
+		}
 		evt := metrics.NewCommandEvent("label-list-all")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -310,6 +322,9 @@ var labelPropagateCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("label propagate is not supported in proxied-server mode")
+		}
 		CheckReadonly("label propagate")
 
 		evt := metrics.NewCommandEvent("label-propagate")
