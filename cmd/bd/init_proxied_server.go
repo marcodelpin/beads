@@ -17,7 +17,6 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/fs"
 	"github.com/steveyegge/beads/internal/storage/git"
-	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -185,7 +184,7 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		return HandleError("bootstrap project: %v", err)
 	}
 
-	if err := uow.CommitWithRetries(ctx, uw, "bd init"); err != nil {
+	if err := uw.Commit(ctx, "bd init"); err != nil {
 		return HandleError("commit init: %v", err)
 	}
 

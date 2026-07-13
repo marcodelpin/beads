@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
 func runDoltRemoteRemoveProxied(ctx context.Context, name string) error {
@@ -28,7 +27,7 @@ func runDoltRemoteRemoveProxied(ctx context.Context, name string) error {
 		return SilentExit()
 	}
 
-	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: remove remote %s", name)); err != nil && !isDoltNothingToCommit(err) {
+	if err := uw.Commit(ctx, fmt.Sprintf("bd: remove remote %s", name)); err != nil && !isDoltNothingToCommit(err) {
 		return HandleErrorRespectJSON("commit: %v", err)
 	}
 
