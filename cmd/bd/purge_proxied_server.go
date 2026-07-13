@@ -16,18 +16,17 @@ import (
 )
 
 type purgeProxiedTxResult struct {
-	// Which output path to take
 	empty        bool
 	dryRun       bool
 	needsConfirm bool
 
-	// Data for output
 	issueIDs         []string
 	deleteResult     domain.DeleteIssuesResult
 	deleteErr        error
 	pinnedCount      int
 	referencedCount  int
 	referencedSample []string
+	safetyStats      closedDeletionCandidateStats
 }
 
 func runPurgeOrPruneProxied(cmd *cobra.Command, scope purgeScope) error {
@@ -88,10 +87,8 @@ func runPurgeOrPruneProxied(cmd *cobra.Command, scope purgeScope) error {
 			closedIssues = matched
 		}
 
-		var safetyStats closedDeletionCandidateStats
-		closedIssues, safetyStats = filterClosedDeletionCandidates(closedIssues, cutoff)
-		result.pinnedCount = safetyStats.PinnedSkipped
-		warnClosedDeletionSafetySkips(safetyStats)
+		closedIssues, result.safetyStats = filterClosedDeletionCandidates(closedIssues, cutoff)
+		result.pinnedCount = result.safetyStats.PinnedSkipped
 
 		if scope.cmdName == "prune" && !scope.ignoreReferences {
 			candidateIDs := make(map[string]bool, len(closedIssues))
@@ -153,6 +150,8 @@ func runPurgeOrPruneProxied(cmd *cobra.Command, scope purgeScope) error {
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
+
+	warnClosedDeletionSafetySkips(res.safetyStats)
 
 	switch {
 	case res.empty:

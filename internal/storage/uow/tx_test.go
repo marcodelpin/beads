@@ -27,14 +27,14 @@ func (m *mockUnitOfWork) Commit(ctx context.Context, message string) error {
 	return m.commitErr
 }
 
-func (m *mockUnitOfWork) ConfigUseCase() domain.ConfigUseCase       { return nil }
+func (m *mockUnitOfWork) ConfigUseCase() domain.ConfigUseCase         { return nil }
 func (m *mockUnitOfWork) DoltRemoteUseCase() domain.DoltRemoteUseCase { return nil }
-func (m *mockUnitOfWork) BootstrapUseCase() domain.BootstrapUseCase { return nil }
-func (m *mockUnitOfWork) IssueUseCase() domain.IssueUseCase         { return nil }
+func (m *mockUnitOfWork) BootstrapUseCase() domain.BootstrapUseCase   { return nil }
+func (m *mockUnitOfWork) IssueUseCase() domain.IssueUseCase           { return nil }
 func (m *mockUnitOfWork) DependencyUseCase() domain.DependencyUseCase { return nil }
-func (m *mockUnitOfWork) LabelUseCase() domain.LabelUseCase         { return nil }
-func (m *mockUnitOfWork) CommentUseCase() domain.CommentUseCase     { return nil }
-func (m *mockUnitOfWork) RawSQLUseCase() domain.RawSQLUseCase       { return nil }
+func (m *mockUnitOfWork) LabelUseCase() domain.LabelUseCase           { return nil }
+func (m *mockUnitOfWork) CommentUseCase() domain.CommentUseCase       { return nil }
+func (m *mockUnitOfWork) RawSQLUseCase() domain.RawSQLUseCase         { return nil }
 
 // mockUnitOfWorkProvider implements UnitOfWorkProvider for testing
 type mockUnitOfWorkProvider struct {
