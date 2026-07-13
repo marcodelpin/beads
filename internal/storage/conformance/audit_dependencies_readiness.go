@@ -24,7 +24,7 @@ func RunAudit_dependencies_readiness(t *testing.T, f Factory) {
 	t.Helper()
 	t.Run("SelfDependencyRejected", func(t *testing.T) { testAuditSelfDependencyRejected(t, f) })
 	t.Run("CycleRejection", func(t *testing.T) { testAuditCycleRejection(t, f) })
-	t.Run("CycleScopeNonBlocking", func(t *testing.T) { testAuditCycleScopeNonBlocking(t, f) })
+	t.Run("CycleScopeByDependencyType", func(t *testing.T) { testAuditCycleScopeByDependencyType(t, f) })
 	t.Run("IdempotencyVsTypeConflict", func(t *testing.T) { testAuditIdempotencyVsTypeConflict(t, f) })
 	t.Run("CrossTypeEpicTaskBlocking", func(t *testing.T) { testAuditCrossTypeEpicTaskBlocking(t, f) })
 	t.Run("MissingSourceTarget", func(t *testing.T) { testAuditMissingSourceTarget(t, f) })
@@ -118,17 +118,21 @@ func testAuditCycleRejection(t *testing.T, f Factory) {
 	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "d3", DependsOnID: "d4", Type: types.DepBlocks}, "a"))
 }
 
-func testAuditCycleScopeNonBlocking(t *testing.T, f Factory) {
+func testAuditCycleScopeByDependencyType(t *testing.T, f Factory) {
 	s := f(t)
 	for _, id := range []string{"ra", "rb", "pa", "pb"} {
 		must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: id, Title: id}), "a"))
 	}
-	// relates-to and parent-child edges skip the reachability probe, so graph
-	// cycles in those edge types form freely.
+	// Related edges remain outside scheduling-cycle validation.
 	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "ra", DependsOnID: "rb", Type: types.DepRelatesTo}, "a"))
 	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "rb", DependsOnID: "ra", Type: types.DepRelatesTo}, "a"))
+	// Parent-child participates in the scheduling graph, so the reverse edge is
+	// rejected and leaves the original hierarchy unchanged.
 	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "pa", DependsOnID: "pb", Type: types.DepParentChild}, "a"))
-	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "pb", DependsOnID: "pa", Type: types.DepParentChild}, "a"))
+	err := s.AddDependency(ctx(), &types.Dependency{IssueID: "pb", DependsOnID: "pa", Type: types.DepParentChild}, "a")
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("reverse parent-child err = %v, want a 'cycle' error", err)
+	}
 
 	raRecs, _ := s.GetDependencyRecords(ctx(), "ra")
 	if got := depTargets(raRecs); !slices.Equal(got, []string{"rb"}) {
@@ -137,6 +141,10 @@ func testAuditCycleScopeNonBlocking(t *testing.T, f Factory) {
 	rbRecs, _ := s.GetDependencyRecords(ctx(), "rb")
 	if got := depTargets(rbRecs); !slices.Equal(got, []string{"ra"}) {
 		t.Errorf("rb records = %v, want [ra]", got)
+	}
+	pbRecs, _ := s.GetDependencyRecords(ctx(), "pb")
+	if len(pbRecs) != 0 {
+		t.Errorf("pb records after rejected parent-child cycle = %v, want empty", depTargets(pbRecs))
 	}
 }
 

@@ -12,10 +12,14 @@ import (
 
 type graphApplyFakeStore struct {
 	storage.DoltStorage
-	issues  map[string]*types.Issue
-	deps    []*types.Dependency
-	addOpts []storage.DependencyAddOptions
-	nextID  int
+	issues     map[string]*types.Issue
+	deps       []*types.Dependency
+	addOpts    []storage.DependencyAddOptions
+	cycleEdges [][2]string
+	nextID     int
+	// Simulates Dolt's split regular/wisp transactions, where a per-edge probe
+	// may not see an uncommitted path in the other transaction snapshot.
+	blindPerEdgeCycleChecks bool
 }
 
 func newGraphApplyFakeStore() *graphApplyFakeStore {
@@ -83,16 +87,19 @@ func (s *graphApplyFakeStore) RunInTransaction(ctx context.Context, _ string, fn
 	s.issues = txStore.issues
 	s.deps = txStore.deps
 	s.addOpts = txStore.addOpts
+	s.cycleEdges = txStore.cycleEdges
 	s.nextID = txStore.nextID
 	return nil
 }
 
 func (s *graphApplyFakeStore) clone() *graphApplyFakeStore {
 	cp := &graphApplyFakeStore{
-		issues:  make(map[string]*types.Issue, len(s.issues)),
-		deps:    make([]*types.Dependency, 0, len(s.deps)),
-		addOpts: append([]storage.DependencyAddOptions(nil), s.addOpts...),
-		nextID:  s.nextID,
+		issues:                  make(map[string]*types.Issue, len(s.issues)),
+		deps:                    make([]*types.Dependency, 0, len(s.deps)),
+		addOpts:                 append([]storage.DependencyAddOptions(nil), s.addOpts...),
+		cycleEdges:              append([][2]string(nil), s.cycleEdges...),
+		nextID:                  s.nextID,
+		blindPerEdgeCycleChecks: s.blindPerEdgeCycleChecks,
 	}
 	for id, issue := range s.issues {
 		issueCopy := *issue
@@ -152,12 +159,22 @@ func (tx *graphApplyFakeTx) AddDependencyWithOptions(_ context.Context, dep *typ
 			return fmt.Errorf("dependency already exists with type %s", existing.Type)
 		}
 	}
-	if isGraphApplyFakeBlocking(dep.Type) && !opts.SkipCycleCheck && tx.hasBlockingPath(dep.DependsOnID, dep.IssueID) {
+	if isGraphApplyFakeScheduling(dep.Type) && !opts.SkipCycleCheck && !tx.store.blindPerEdgeCycleChecks && tx.hasSchedulingPath(dep.DependsOnID, dep.IssueID) {
 		return fmt.Errorf("adding dependency would create a cycle")
 	}
 	depCopy := *dep
 	tx.store.deps = append(tx.store.deps, &depCopy)
 	return nil
+}
+
+func (tx *graphApplyFakeTx) CycleThroughEdges(_ context.Context, edges [][2]string) (string, error) {
+	tx.store.cycleEdges = append([][2]string(nil), edges...)
+	for _, edge := range edges {
+		if tx.hasSchedulingPath(edge[1], edge[0]) {
+			return edge[0] + " → " + edge[1] + " → " + edge[0], nil
+		}
+	}
+	return "", nil
 }
 
 func (tx *graphApplyFakeTx) hasParentPath(fromID, toID string) bool {
@@ -173,6 +190,31 @@ func (tx *graphApplyFakeTx) hasParentPath(fromID, toID string) bool {
 		seen[id] = true
 		for _, dep := range tx.store.deps {
 			if dep.IssueID == id && dep.Type == types.DepParentChild && visit(dep.DependsOnID) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(fromID)
+}
+
+func isGraphApplyFakeScheduling(t types.DependencyType) bool {
+	return isGraphApplyFakeBlocking(t) || t == types.DepParentChild
+}
+
+func (tx *graphApplyFakeTx) hasSchedulingPath(fromID, toID string) bool {
+	seen := make(map[string]bool)
+	var visit func(string) bool
+	visit = func(id string) bool {
+		if id == toID {
+			return true
+		}
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+		for _, dep := range tx.store.deps {
+			if dep.IssueID == id && isGraphApplyFakeScheduling(dep.Type) && visit(dep.DependsOnID) {
 				return true
 			}
 		}
@@ -273,7 +315,7 @@ func TestExecuteGraphApplyUnitRejectsMixedLocalExternalBlockingCycle(t *testing.
 	}
 }
 
-func TestExecuteGraphApplyUnitSkipsSQLCycleChecksAfterGraphPreflight(t *testing.T) {
+func TestExecuteGraphApplyUnitKeepsStorageCycleChecksAfterGraphPreflight(t *testing.T) {
 	ctx, fakeStore := withGraphApplyFakeStore(t)
 	if err := fakeStore.CreateIssue(ctx, &types.Issue{
 		ID:        "ga-existing",
@@ -304,8 +346,8 @@ func TestExecuteGraphApplyUnitSkipsSQLCycleChecksAfterGraphPreflight(t *testing.
 		t.Fatalf("AddDependencyWithOptions calls = %d, want %d", len(fakeStore.addOpts), len(plan.Edges))
 	}
 	for i, opts := range fakeStore.addOpts {
-		if !opts.SkipCycleCheck {
-			t.Fatalf("edge %d SkipCycleCheck = false, want true", i)
+		if opts.SkipCycleCheck {
+			t.Fatalf("edge %d SkipCycleCheck = true, want false", i)
 		}
 	}
 }
@@ -648,6 +690,99 @@ func TestExecuteGraphApplyUnitRejectsReverseParentChildEdgeCycle(t *testing.T) {
 	}
 	if _, ok := fakeStore.issues["ga-1"]; ok {
 		t.Fatal("transaction committed graph issues after validation failure")
+	}
+}
+
+func TestExecuteGraphApplyUnitRejectsCombinedSchedulingCycle(t *testing.T) {
+	ctx, fakeStore := withGraphApplyFakeStore(t)
+	plan := &GraphApplyPlan{
+		Nodes: []GraphApplyNode{
+			{Key: "a", Title: "A", Type: "task"},
+			{Key: "b", Title: "B", Type: "task"},
+			{Key: "c", Title: "C", Type: "task"},
+		},
+		Edges: []GraphApplyEdge{
+			{FromKey: "a", ToKey: "b", Type: string(types.DepBlocks)},
+			{FromKey: "b", ToKey: "c", Type: string(types.DepParentChild)},
+			{FromKey: "c", ToKey: "a", Type: string(types.DepConditionalBlocks)},
+		},
+	}
+
+	_, err := executeGraphApply(ctx, plan, GraphApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("combined scheduling cycle error = %v, want rejection", err)
+	}
+	if len(fakeStore.issues) != 0 || len(fakeStore.deps) != 0 {
+		t.Fatalf("transaction committed after combined cycle: issues=%d deps=%d", len(fakeStore.issues), len(fakeStore.deps))
+	}
+}
+
+func TestExecuteGraphApplyUnitFinalGateCatchesCycleHiddenFromPerEdgeChecks(t *testing.T) {
+	plans := map[string]*GraphApplyPlan{
+		"explicit parent-child edge": {
+			Nodes: []GraphApplyNode{
+				{Key: "a", Title: "A", Type: "task"},
+				{Key: "b", Title: "B", Type: "task"},
+				{Key: "c", Title: "C", Type: "task"},
+			},
+			Edges: []GraphApplyEdge{
+				{FromKey: "a", ToKey: "b", Type: string(types.DepBlocks)},
+				{FromKey: "b", ToKey: "c", Type: string(types.DepParentChild)},
+				{FromKey: "c", ToKey: "a", Type: string(types.DepConditionalBlocks)},
+			},
+		},
+		"inline parent-child dependency": {
+			Nodes: []GraphApplyNode{
+				{Key: "a", Title: "A", Type: "task"},
+				{Key: "b", Title: "B", Type: "task", Deps: []GraphApplyNodeDep{{Type: string(types.DepParentChild), Target: "c"}}},
+				{Key: "c", Title: "C", Type: "task"},
+			},
+			Edges: []GraphApplyEdge{
+				{FromKey: "a", ToKey: "b", Type: string(types.DepBlocks)},
+				{FromKey: "c", ToKey: "a", Type: string(types.DepConditionalBlocks)},
+			},
+		},
+	}
+	for name, plan := range plans {
+		t.Run(name, func(t *testing.T) {
+			ctx, fakeStore := withGraphApplyFakeStore(t)
+			fakeStore.blindPerEdgeCycleChecks = true
+			_, err := executeGraphApply(ctx, plan, GraphApplyOptions{})
+			if err == nil || !strings.Contains(err.Error(), "graph dependency cycle") {
+				t.Fatalf("final merged cycle gate error = %v, want rejection", err)
+			}
+			if len(fakeStore.issues) != 0 || len(fakeStore.deps) != 0 {
+				t.Fatalf("transaction committed after final cycle gate: issues=%d deps=%d", len(fakeStore.issues), len(fakeStore.deps))
+			}
+		})
+	}
+}
+
+func TestExecuteGraphApplyUnitFinalGateIncludesImplicitNodeParent(t *testing.T) {
+	ctx, fakeStore := withGraphApplyFakeStore(t)
+	plan := &GraphApplyPlan{
+		Nodes: []GraphApplyNode{
+			{Key: "a", Title: "A", Type: "task"},
+			{Key: "b", Title: "B", Type: "task", ParentKey: "c"},
+			{Key: "c", Title: "C", Type: "task"},
+		},
+		Edges: []GraphApplyEdge{{FromKey: "a", ToKey: "b", Type: string(types.DepBlocks)}},
+	}
+	result, err := executeGraphApply(ctx, plan, GraphApplyOptions{})
+	if err != nil {
+		t.Fatalf("executeGraphApply: %v", err)
+	}
+	want := map[[2]string]bool{
+		{result.IDs["a"], result.IDs["b"]}: true,
+		{result.IDs["b"], result.IDs["c"]}: true,
+	}
+	if len(fakeStore.cycleEdges) != len(want) {
+		t.Fatalf("final cycle edges = %v, want explicit block plus implicit parent", fakeStore.cycleEdges)
+	}
+	for _, edge := range fakeStore.cycleEdges {
+		if !want[edge] {
+			t.Fatalf("unexpected final cycle edge %v; want %v", edge, want)
+		}
 	}
 }
 

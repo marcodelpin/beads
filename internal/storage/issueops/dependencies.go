@@ -316,18 +316,30 @@ func CheckDependencyCycleInTx(ctx context.Context, tx DBTX, dep *types.Dependenc
 	if !isSchedulingEdge(dep.Type) {
 		return nil
 	}
+	wouldCycle, err := WouldCreateSchedulingCycleInTx(ctx, tx, dep.IssueID, dep.DependsOnID, depTables)
+	if err != nil {
+		return fmt.Errorf("failed to check for dependency cycle: %w", err)
+	}
+	if wouldCycle {
+		return fmt.Errorf("adding dependency would create a cycle")
+	}
+	return nil
+}
+
+// WouldCreateSchedulingCycleInTx reports whether adding issueID -> dependsOnID
+// would close a cycle in the combined scheduling graph. It is shared by the
+// classic and domain storage stacks so both traverse the same dependency types
+// and typed target columns.
+func WouldCreateSchedulingCycleInTx(ctx context.Context, tx DBTX, issueID, dependsOnID string, depTables []string) (bool, error) {
 	if len(depTables) == 0 {
 		depTables = cycleDetectionTables()
 	}
 	var reachable int
 	query := cycleReachabilityQuery(depTables)
-	if err := tx.QueryRowContext(ctx, query, dep.DependsOnID, dep.IssueID).Scan(&reachable); err != nil {
-		return fmt.Errorf("failed to check for dependency cycle: %w", err)
+	if err := tx.QueryRowContext(ctx, query, dependsOnID, issueID).Scan(&reachable); err != nil {
+		return false, err
 	}
-	if reachable > 0 {
-		return fmt.Errorf("adding dependency would create a cycle")
-	}
-	return nil
+	return reachable > 0, nil
 }
 
 // cycleReachabilityQuery uses UNION distinct recursion so cyclic and diamond
@@ -373,9 +385,9 @@ func cycleDetectionTables() []string {
 	return []string{"dependencies", "wisp_dependencies"}
 }
 
-// isSchedulingEdge reports whether a dependency type participates in
-// ready-work computation, and therefore in cycle detection across the
-// combined dependency graph.
+// isSchedulingEdge reports whether a dependency type belongs to the static
+// combined-cycle set: blocks, conditional-blocks, and parent-child. Waits-for
+// also affects readiness but is intentionally outside this validation rule.
 func isSchedulingEdge(t types.DependencyType) bool {
 	switch t {
 	case types.DepBlocks, types.DepConditionalBlocks, types.DepParentChild:

@@ -92,6 +92,84 @@ func TestDependencyUseCaseSQLiteRejectsHierarchyBlockingButAllowsSiblings(t *tes
 	}
 }
 
+func TestDependencyUseCaseSQLiteRejectsCombinedSchedulingCycles(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "beads.db")
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if err := storagesqlite.InitSchema(ctx, raw); err != nil {
+		_ = raw.Close()
+		t.Fatalf("init sqlite schema: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+	runner, err := sqlitedialect.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open translated sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+
+	issueRepo := NewIssueSQLRepository(runner)
+	for _, id := range []string{
+		"block-a", "block-b", "block-c",
+		"parent-a", "parent-b", "parent-c",
+		"bulk-a", "bulk-b", "bulk-c",
+		"deferred-a", "deferred-b", "deferred-c",
+	} {
+		if err := issueRepo.Insert(ctx, newTestIssue(id, id), "tester", domain.InsertIssueOpts{}); err != nil {
+			t.Fatalf("insert issue %s: %v", id, err)
+		}
+	}
+	uc := domain.NewDependencyUseCase(NewDependencySQLRepository(runner))
+
+	for _, dep := range []*types.Dependency{
+		newDep("block-a", "block-b", types.DepBlocks),
+		newDep("block-b", "block-c", types.DepParentChild),
+	} {
+		if err := uc.AddDependency(ctx, dep, "tester"); err != nil {
+			t.Fatalf("seed block-closing path: %v", err)
+		}
+	}
+	if err := uc.AddDependency(ctx, newDep("block-c", "block-a", types.DepConditionalBlocks), "tester"); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("blocking closer error = %v, want combined-cycle rejection", err)
+	}
+
+	for _, dep := range []*types.Dependency{
+		newDep("parent-a", "parent-b", types.DepBlocks),
+		newDep("parent-b", "parent-c", types.DepConditionalBlocks),
+	} {
+		if err := uc.AddDependency(ctx, dep, "tester"); err != nil {
+			t.Fatalf("seed parent-child-closing path: %v", err)
+		}
+	}
+	if err := uc.AddDependency(ctx, newDep("parent-c", "parent-a", types.DepParentChild), "tester"); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("parent-child closer error = %v, want combined-cycle rejection", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		ids  [3]string
+		opts domain.BulkAddDepsOpts
+	}{
+		{name: "per edge", ids: [3]string{"bulk-a", "bulk-b", "bulk-c"}},
+		{name: "deferred whole graph", ids: [3]string{"deferred-a", "deferred-b", "deferred-c"}, opts: domain.BulkAddDepsOpts{SkipPerEdgeCycleCheck: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := uc.AddDependencies(ctx, []*types.Dependency{
+				newDep(tc.ids[0], tc.ids[1], types.DepBlocks),
+				newDep(tc.ids[1], tc.ids[2], types.DepParentChild),
+				newDep(tc.ids[2], tc.ids[0], types.DepBlocks),
+			}, "tester", tc.opts)
+			if err == nil || !strings.Contains(err.Error(), "cycle") {
+				t.Fatalf("bulk mixed cycle error = %v, want rejection", err)
+			}
+		})
+	}
+}
+
 func TestDependencyUseCaseSQLiteValidatesPlannedHierarchyBeforeBlocking(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "beads.db")
@@ -199,7 +277,7 @@ func TestDependencyUseCaseSQLiteValidatesPlannedHierarchyBeforeBlocking(t *testi
 		newDep("prec-parent", "prec-middle", types.DepBlocks),
 		newDep("prec-middle", "prec-child", types.DepBlocks),
 	} {
-		if err := depRepo.Insert(ctx, dep, "tester", domain.DepInsertOpts{}); err != nil {
+		if err := depRepo.Insert(ctx, dep, "tester", domain.DepInsertOpts{CycleValidated: true}); err != nil {
 			t.Fatalf("seed dependency %s -> %s: %v", dep.IssueID, dep.DependsOnID, err)
 		}
 	}
