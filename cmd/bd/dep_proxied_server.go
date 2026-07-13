@@ -18,6 +18,7 @@ type depAddResult struct {
 	fromTitle string
 	toTitle   string
 	cycles    [][]*types.Issue
+	cycleErr  error
 }
 
 func proxiedLookupTitle(ctx context.Context, uw uow.UnitOfWork, id string) string {
@@ -33,6 +34,12 @@ func proxiedLookupTitle(ctx context.Context, uw uow.UnitOfWork, id string) strin
 		return wisp.Title
 	}
 	return ""
+}
+
+func printCycleDetectionError(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to check for cycles: %v\n", err)
+	}
 }
 
 func printCycleWarnings(cycles [][]*types.Issue) {
@@ -80,24 +87,23 @@ func runDepBlocksProxiedServer(cmd *cobra.Command, ctx context.Context, blockerI
 		}
 
 		var cycles [][]*types.Issue
+		var cycleErr error
 		if !noCycleCheck {
-			var err error
-			cycles, err = uw.DependencyUseCase().DetectCycles(ctx)
-			if err != nil {
-				cycles = nil
-			}
+			cycles, cycleErr = uw.DependencyUseCase().DetectCycles(ctx)
 		}
 
 		return depAddResult{
 			fromTitle: proxiedLookupTitle(ctx, uw, blockedID),
 			toTitle:   proxiedLookupTitle(ctx, uw, blockerID),
 			cycles:    cycles,
+			cycleErr:  cycleErr,
 		}, fmt.Sprintf("bd: dep add %s %s", blockedID, blockerID), nil
 	})
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
+	printCycleDetectionError(res.cycleErr)
 	printCycleWarnings(res.cycles)
 
 	if jsonOutput {
@@ -171,20 +177,23 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		}
 
 		var cycles [][]*types.Issue
+		var cycleErr error
 		if !noCycleCheck {
-			cycles, _ = uw.DependencyUseCase().DetectCycles(ctx)
+			cycles, cycleErr = uw.DependencyUseCase().DetectCycles(ctx)
 		}
 
 		return depAddResult{
 			fromTitle: proxiedLookupTitle(ctx, uw, fromID),
 			toTitle:   proxiedLookupTitle(ctx, uw, toID),
 			cycles:    cycles,
+			cycleErr:  cycleErr,
 		}, fmt.Sprintf("bd: dep add %s %s", fromID, toID), nil
 	})
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
+	printCycleDetectionError(res.cycleErr)
 	printCycleWarnings(res.cycles)
 
 	if jsonOutput {
@@ -237,25 +246,30 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 
-	cycles, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) ([][]*types.Issue, string, error) {
+	type bulkResult struct {
+		cycles   [][]*types.Issue
+		cycleErr error
+	}
+	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (bulkResult, string, error) {
 		if _, err := uw.DependencyUseCase().AddDependencies(ctx, deps, actor, domain.BulkAddDepsOpts{
 			SkipPerEdgeCycleCheck: noCycleCheck,
 		}); err != nil {
-			return nil, "", err
+			return bulkResult{}, "", err
 		}
 
-		var cycles [][]*types.Issue
+		var r bulkResult
 		if !noCycleCheck {
-			cycles, _ = uw.DependencyUseCase().DetectCycles(ctx)
+			r.cycles, r.cycleErr = uw.DependencyUseCase().DetectCycles(ctx)
 		}
 
-		return cycles, fmt.Sprintf("dependency: add %d edges", len(deps)), nil
+		return r, fmt.Sprintf("dependency: add %d edges", len(deps)), nil
 	})
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
-	printCycleWarnings(cycles)
+	printCycleDetectionError(res.cycleErr)
+	printCycleWarnings(res.cycles)
 
 	if jsonOutput {
 		out := make([]map[string]interface{}, 0, len(deps))
