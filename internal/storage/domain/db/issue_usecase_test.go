@@ -162,6 +162,7 @@ func (s *testSuite) TestIssueUseCase_ApplyGraph() {
 	s.Run("RegularGraphCycleThroughExistingWispDepErrors", s.applyGraphRegularCycleThroughWispDep)
 	s.Run("WispGraphCycleThroughExistingRegularDepErrors", s.applyGraphWispCycleThroughRegularDep)
 	s.Run("RejectsBlockingThroughExistingParentChild", s.applyGraphRejectsBlockingThroughParentChild)
+	s.Run("RejectsBlockingThroughPlannedHierarchy", s.applyGraphRejectsBlockingThroughPlannedHierarchy)
 	s.Run("HealthyPlanRoundTrips", s.applyGraphHealthy)
 	s.Run("WispGraphRoutesToWispTables", s.applyGraphWispRouting)
 }
@@ -561,6 +562,31 @@ func (s *testSuite) applyGraphRejectsBlockingThroughParentChild() {
 	for _, d := range s.loadDepRows("dependencies", "gK-%") {
 		if d.depType == string(types.DepBlocks) && d.issueID == "gK-parent" && d.dependsOnID == "gK-child" {
 			s.Fail("hierarchy-deadlocking blocking edge must not be written")
+		}
+	}
+}
+
+func (s *testSuite) applyGraphRejectsBlockingThroughPlannedHierarchy() {
+	s.resetMintConfig("gL", "")
+	uc := s.issueUseCase()
+
+	grand := newGraphNode("grand", "grand")
+	parent := newGraphNode("parent", "parent")
+	child := newGraphNode("child", "child")
+	_, err := uc.ApplyIssueGraph(s.Ctx(), domain.GraphPlan{
+		Nodes: []domain.GraphNode{grand, parent, child},
+		Edges: []domain.GraphEdge{
+			{FromKey: "child", ToKey: "grand", Type: types.DepConditionalBlocks}, // Deliberately first.
+			{FromKey: "child", ToKey: "parent", Type: types.DepParentChild},
+			{FromKey: "parent", ToKey: "grand", Type: types.DepParentChild},
+		},
+	}, "tester")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot be blocked by its ancestor")
+
+	for _, d := range s.loadDepRows("dependencies", "gL-%") {
+		if d.depType == string(types.DepConditionalBlocks) {
+			s.Fail("block-first graph edge must not escape planned hierarchy validation")
 		}
 	}
 }

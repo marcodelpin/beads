@@ -348,6 +348,54 @@ func TestExecuteGraphApplyUnitRejectsBlockingThroughExistingParentChild(t *testi
 	}
 }
 
+func TestExecuteGraphApplyUnitRejectsBlockingThroughPlannedHierarchyRegardlessOfOrder(t *testing.T) {
+	tests := []struct {
+		name string
+		plan *GraphApplyPlan
+	}{
+		{
+			name: "explicit edges",
+			plan: &GraphApplyPlan{
+				Nodes: []GraphApplyNode{
+					{Key: "grand", Title: "Grand"},
+					{Key: "parent", Title: "Parent"},
+					{Key: "child", Title: "Child"},
+				},
+				Edges: []GraphApplyEdge{
+					{FromKey: "child", ToKey: "grand", Type: "conditional-blocks"}, // Deliberately first.
+					{FromKey: "child", ToKey: "parent", Type: "parent-child"},
+					{FromKey: "parent", ToKey: "grand", Type: "parent-child"},
+				},
+			},
+		},
+		{
+			name: "inline deps",
+			plan: &GraphApplyPlan{
+				Nodes: []GraphApplyNode{
+					{Key: "grand", Title: "Grand"},
+					{Key: "parent", Title: "Parent", Deps: []GraphApplyNodeDep{{Type: "parent-child", Target: "grand"}}},
+					{Key: "child", Title: "Child", Deps: []GraphApplyNodeDep{
+						{Type: "blocks", Target: "grand"}, // Deliberately first.
+						{Type: "parent-child", Target: "parent"},
+					}},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, fakeStore := withGraphApplyFakeStore(t)
+			_, err := executeGraphApply(ctx, tt.plan, GraphApplyOptions{})
+			if err == nil || !strings.Contains(err.Error(), "cannot be blocked by its ancestor") {
+				t.Fatalf("error = %v, want planned-ancestor rejection", err)
+			}
+			if len(fakeStore.issues) != 0 || len(fakeStore.deps) != 0 {
+				t.Fatalf("failed graph transaction leaked writes: issues=%d deps=%d", len(fakeStore.issues), len(fakeStore.deps))
+			}
+		})
+	}
+}
+
 // TestExecuteGraphApplyUnitRejectsBlockingThroughExistingBlocking is the
 // companion guard: a planned blocking edge that closes a cycle through an
 // existing blocking dep must still be rejected by the preflight.
