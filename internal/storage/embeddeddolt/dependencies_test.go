@@ -167,14 +167,70 @@ func TestAddDependency(t *testing.T) {
 			t.Fatalf("parent-child setup: %v", err)
 		}
 
-		// Child task blocking its parent epic creates a shadow edge -> reject.
+		// Epic gated on its own child task -> livelock via blocked-state
+		// cascade, rejected.
 		dep := &types.Dependency{IssueID: "sh-epic", DependsOnID: "sh-task", Type: types.DepBlocks}
 		err := te.store.AddDependency(ctx, dep, "tester")
 		if err == nil {
-			t.Fatal("expected rejection of parent-child shadow blocks edge")
+			t.Fatal("expected rejection of blocks edge within a hierarchy line")
 		}
-		if !strings.Contains(err.Error(), "parent-child relationship") {
-			t.Errorf("expected shadow rejection message, got: %v", err)
+		if !strings.Contains(err.Error(), "descendant") {
+			t.Errorf("expected descendant-livelock message, got: %v", err)
+		}
+
+		// Child task gated on its own ancestor epic -> deadlock, rejected.
+		err = te.store.AddDependency(ctx, &types.Dependency{IssueID: "sh-task", DependsOnID: "sh-epic", Type: types.DepBlocks}, "tester")
+		if err == nil || !strings.Contains(err.Error(), "ancestor") {
+			t.Errorf("expected ancestor-deadlock message, got: %v", err)
+		}
+
+		// Siblings share a hierarchy component but not a hierarchy line:
+		// ordering blocks edges between them stay allowed (the guard walks
+		// child -> parent only, never back down).
+		sib := &types.Issue{ID: "sh-sib", Title: "Sibling", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+		if err := te.store.CreateIssue(ctx, sib, "tester"); err != nil {
+			t.Fatalf("CreateIssue sibling: %v", err)
+		}
+		if err := te.store.AddDependency(ctx, &types.Dependency{IssueID: "sh-sib", DependsOnID: "sh-epic", Type: types.DepParentChild}, "tester"); err != nil {
+			t.Fatalf("parent-child setup for sibling: %v", err)
+		}
+		if err := te.store.AddDependency(ctx, &types.Dependency{IssueID: "sh-sib", DependsOnID: "sh-task", Type: types.DepBlocks}, "tester"); err != nil {
+			t.Errorf("sibling ordering blocks edge should succeed: %v", err)
+		}
+	})
+
+	t.Run("wisp_parent_child_shadow_rejected", func(t *testing.T) {
+		te := newTestEnv(t, "wh")
+		ctx := t.Context()
+
+		for _, issue := range []*types.Issue{
+			{ID: "wh-parent", Title: "Parent", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeEpic, Ephemeral: true},
+			{ID: "wh-child", Title: "Child", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask, Ephemeral: true},
+		} {
+			if err := te.store.CreateIssue(ctx, issue, "tester"); err != nil {
+				t.Fatalf("CreateIssue %s: %v", issue.ID, err)
+			}
+		}
+		if err := te.store.AddDependency(ctx, &types.Dependency{
+			IssueID: "wh-child", DependsOnID: "wh-parent", Type: types.DepParentChild,
+		}, "tester"); err != nil {
+			t.Fatalf("parent-child setup: %v", err)
+		}
+
+		err := te.store.AddDependency(ctx, &types.Dependency{
+			IssueID: "wh-parent", DependsOnID: "wh-child", Type: types.DepBlocks,
+		}, "tester")
+		if err == nil || !strings.Contains(err.Error(), "descendant") {
+			t.Fatalf("wisp descendant block error = %v, want hierarchy rejection", err)
+		}
+
+		// Hierarchy validation runs before the existing-edge type conflict, so a
+		// conditional gate over the child->parent pair reports the real deadlock.
+		err = te.store.AddDependency(ctx, &types.Dependency{
+			IssueID: "wh-child", DependsOnID: "wh-parent", Type: types.DepConditionalBlocks,
+		}, "tester")
+		if err == nil || !strings.Contains(err.Error(), "ancestor") {
+			t.Fatalf("wisp ancestor block error = %v, want hierarchy rejection", err)
 		}
 	})
 
@@ -320,8 +376,8 @@ func TestAddDependency(t *testing.T) {
 			t.Fatalf("CreateIssue task: %v", err)
 		}
 
-		// Parent-child between epic and task should succeed (cross-type restriction
-		// only applies to blocks deps).
+		// Parent-child between epic and task should succeed (the hierarchy
+		// deadlock guard only applies to blocking deps).
 		dep := &types.Dependency{IssueID: "pc-task", DependsOnID: "pc-epic", Type: types.DepParentChild}
 		if err := te.store.AddDependency(ctx, dep, "tester"); err != nil {
 			t.Fatalf("AddDependency parent-child cross-type: %v", err)

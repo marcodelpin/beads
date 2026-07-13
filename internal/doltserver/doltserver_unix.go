@@ -21,11 +21,9 @@ const portConflictHint = "lsof -i :%d"
 // Used in error messages when too many dolt servers are running.
 const processListHint = "pgrep -la 'dolt sql-server'"
 
-// procAttrDetached returns SysProcAttr to detach a child process from the parent
-// process group so it survives parent exit.
-func procAttrDetached() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true}
-}
+// procAttrDetached is defined per-platform in procattr_linux.go (Linux) and
+// procattr_other_unix.go (darwin/BSD): Pdeathsig, used to test-gate
+// parent-death cleanup, exists only on Linux (see those files for details).
 
 // findPIDOnPort returns the PID of the process listening on a TCP port.
 // Uses lsof to look up the listener. Returns 0 if no process found or on error.
@@ -46,8 +44,20 @@ func findPIDOnPort(port int) int {
 // listDoltProcessPIDs returns PIDs of all running dolt sql-server processes.
 // Excludes zombies and defunct processes. Callers derive count (len) and
 // membership (linear scan) from the returned slice.
+//
+// The pgrep pattern uses `dolt.*sql-server` rather than the literal
+// `dolt sql-server` so it still matches when top-level dolt flags appear
+// between the binary name and the subcommand — e.g. debug mode launches
+// the server as `dolt --prof cpu --prof-path /…/dolt-pprof sql-server …`,
+// in which `dolt sql-server` no longer appears as a contiguous substring.
+// Without this, IsRunning's isDoltProcess check would reject the PID as
+// "not a dolt process" and wipe the PID/port files of a healthy server,
+// breaking `bd dolt status` and auto-start reattachment. The per-PID
+// substring check below still requires both "dolt" and "sql-server" in
+// the cmdline, so this only widens the first-stage filter; it does not
+// loosen identity validation.
 func listDoltProcessPIDs() []int {
-	out, err := exec.Command("pgrep", "-f", "dolt sql-server").Output()
+	out, err := exec.Command("pgrep", "-f", "dolt.*sql-server").Output()
 	if err != nil {
 		return nil
 	}

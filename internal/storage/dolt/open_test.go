@@ -2,6 +2,7 @@ package dolt
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -143,6 +144,24 @@ func TestApplyCLIAutoStart_RespectsExternalMode(t *testing.T) {
 	}
 }
 
+func TestApplyCLIAutoStart_DisableAutoStartWins(t *testing.T) {
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
+	t.Setenv("BEADS_DOLT_AUTO_START", "")
+	t.Setenv("BEADS_TEST_MODE", "")
+
+	beadsDir := t.TempDir()
+	if err := configfile.DefaultConfig().Save(beadsDir); err != nil {
+		t.Fatalf("save metadata.json: %v", err)
+	}
+
+	storeCfg := &Config{DisableAutoStart: true}
+	ApplyCLIAutoStart(beadsDir, storeCfg)
+	if storeCfg.AutoStart {
+		t.Fatal("DisableAutoStart should suppress CLI auto-start defaults")
+	}
+}
+
 func TestCLIDirUsesSharedDoltRootInSharedServerMode(t *testing.T) {
 	sharedRoot := t.TempDir()
 	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
@@ -188,7 +207,9 @@ func TestApplyResolvedConfig(t *testing.T) {
 		}
 		cfg := &Config{}
 
-		applyResolvedConfig(beadsDir, fileCfg, cfg)
+		if err := applyResolvedConfig(context.Background(), beadsDir, fileCfg, cfg); err != nil {
+			t.Fatalf("applyResolvedConfig: %v", err)
+		}
 
 		if cfg.BeadsDir != beadsDir {
 			t.Fatalf("BeadsDir = %q, want %q", cfg.BeadsDir, beadsDir)
@@ -226,7 +247,9 @@ func TestApplyResolvedConfig(t *testing.T) {
 		r, w, _ := os.Pipe()
 		os.Stderr = w
 
-		applyResolvedConfig(beadsDir, fileCfg, cfg)
+		if err := applyResolvedConfig(context.Background(), beadsDir, fileCfg, cfg); err != nil {
+			t.Fatalf("applyResolvedConfig: %v", err)
+		}
 
 		w.Close()
 		os.Stderr = oldStderr
@@ -255,7 +278,9 @@ func TestApplyResolvedConfig(t *testing.T) {
 		r, w, _ := os.Pipe()
 		os.Stderr = w
 
-		applyResolvedConfig(beadsDir, fileCfg, cfg)
+		if err := applyResolvedConfig(context.Background(), beadsDir, fileCfg, cfg); err != nil {
+			t.Fatalf("applyResolvedConfig: %v", err)
+		}
 
 		w.Close()
 		os.Stderr = oldStderr
@@ -281,7 +306,9 @@ func TestApplyResolvedConfig(t *testing.T) {
 			ServerUser: "custom",
 		}
 
-		applyResolvedConfig(beadsDir, fileCfg, cfg)
+		if err := applyResolvedConfig(context.Background(), beadsDir, fileCfg, cfg); err != nil {
+			t.Fatalf("applyResolvedConfig: %v", err)
+		}
 
 		if cfg.BeadsDir != "/override/.beads" {
 			t.Fatalf("BeadsDir override lost: %q", cfg.BeadsDir)

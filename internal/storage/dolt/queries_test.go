@@ -30,6 +30,62 @@ func TestGetReadyWork_EmptyStore(t *testing.T) {
 	}
 }
 
+func TestRigIssueIsPersistentButHiddenFromReady(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	rig := &types.Issue{
+		ID:        "rw-rig-durable",
+		Title:     "Rig identity",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.IssueType("rig"),
+	}
+	if err := store.CreateIssue(ctx, rig, "tester"); err != nil {
+		t.Fatalf("CreateIssue rig: %v", err)
+	}
+	if rig.Ephemeral {
+		t.Fatal("CreateIssue marked type=rig as ephemeral")
+	}
+
+	got, err := store.GetIssue(ctx, rig.ID)
+	if err != nil {
+		t.Fatalf("GetIssue rig: %v", err)
+	}
+	if got.Ephemeral {
+		t.Fatal("stored type=rig issue is ephemeral")
+	}
+
+	var issueRows int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues WHERE id = ?", rig.ID).Scan(&issueRows); err != nil {
+		t.Fatalf("count rig issue rows: %v", err)
+	}
+	if issueRows != 1 {
+		t.Fatalf("type=rig rows in issues = %d, want 1", issueRows)
+	}
+
+	var wispRows int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM wisps WHERE id = ?", rig.ID).Scan(&wispRows); err != nil {
+		t.Fatalf("count rig wisp rows: %v", err)
+	}
+	if wispRows != 0 {
+		t.Fatalf("type=rig rows in wisps = %d, want 0", wispRows)
+	}
+
+	work, err := store.GetReadyWork(ctx, types.WorkFilter{})
+	if err != nil {
+		t.Fatalf("GetReadyWork: %v", err)
+	}
+	for _, item := range work {
+		if item.ID == rig.ID {
+			t.Fatalf("type=rig issue appeared in ready work: %v", issueIDs(work))
+		}
+	}
+}
+
 func TestGetReadyWork_ExcludesClosedIssues(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -477,7 +533,10 @@ func TestGetReadyWork_LimitCandidateGraphSemantics(t *testing.T) {
 	defer cancel()
 
 	issues := []*types.Issue{
-		{ID: "rw-graph-parent-blocker", Title: "Parent blocker", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeGate},
+		// This blocker is intentionally a blocked epic instead of the older open
+		// gate fixture: current dependency validation rejects gate->epic block
+		// edges, and the test only needs a non-ready blocker for the parent chain.
+		{ID: "rw-graph-parent-blocker", Title: "Parent blocker", Status: types.StatusBlocked, Priority: 1, IssueType: types.TypeEpic},
 		{ID: "rw-graph-parent", Title: "Blocked parent", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeEpic},
 		{ID: "rw-graph-parent-child", Title: "Child of blocked parent", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask},
 		{ID: "rw-graph-all-waiter", Title: "All waiter", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask},
@@ -682,6 +741,57 @@ func TestGetReadyWork_LimitIncludeEphemeralWispBlocker(t *testing.T) {
 	}
 }
 
+func TestGetReadyWork_LimitIncludeEphemeralHonorsOldestSortAcrossWispPages(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	lowPriorityOld := &types.Issue{
+		ID:        "rw-eph-oldest-low-priority",
+		Title:     "Oldest low priority wisp",
+		Status:    types.StatusOpen,
+		Priority:  4,
+		IssueType: types.TypeTask,
+		CreatedAt: now.Add(-72 * time.Hour),
+		Ephemeral: true,
+	}
+	if err := store.CreateIssue(ctx, lowPriorityOld, "tester"); err != nil {
+		t.Fatalf("create old wisp: %v", err)
+	}
+
+	for i := 0; i < 101; i++ {
+		iss := &types.Issue{
+			ID:        fmt.Sprintf("rw-eph-priority-noise-%03d", i),
+			Title:     fmt.Sprintf("Priority noise %03d", i),
+			Status:    types.StatusOpen,
+			Priority:  1,
+			IssueType: types.TypeTask,
+			CreatedAt: now.Add(time.Duration(i) * time.Minute),
+			Ephemeral: true,
+		}
+		if err := store.CreateIssue(ctx, iss, "tester"); err != nil {
+			t.Fatalf("create priority noise %03d: %v", i, err)
+		}
+	}
+
+	work, err := store.GetReadyWork(ctx, types.WorkFilter{
+		Limit:            1,
+		IncludeEphemeral: true,
+		SortPolicy:       types.SortPolicyOldest,
+	})
+	if err != nil {
+		t.Fatalf("limited oldest ready work with wisps: %v", err)
+	}
+	ids := issueIDs(work)
+	want := []string{lowPriorityOld.ID}
+	if fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Fatalf("limited oldest ready work = %v, want %v", ids, want)
+	}
+}
+
 func TestGetReadyWork_IncludeEphemeralPropagatesWispSearchError(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -697,6 +807,16 @@ func TestGetReadyWork_IncludeEphemeralPropagatesWispSearchError(t *testing.T) {
 		IssueType: types.TypeTask,
 	}, "tester"); err != nil {
 		t.Fatalf("create ready issue: %v", err)
+	}
+	if err := store.CreateIssue(ctx, &types.Issue{
+		ID:        "rw-wisp-error-wisp",
+		Title:     "Wisp control",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+		Ephemeral: true,
+	}, "tester"); err != nil {
+		t.Fatalf("create wisp: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, "ALTER TABLE wisps DROP COLUMN title"); err != nil {
 		t.Fatalf("damage wisps table for regression test: %v", err)
@@ -719,7 +839,7 @@ func TestGetReadyWork_DottedHasMetadataKey(t *testing.T) {
 	defer cancel()
 
 	matching := &types.Issue{
-		ID:        "rw-meta-dotted",
+		ID:        "test-rw-meta-dotted",
 		Title:     "Dotted metadata",
 		Status:    types.StatusOpen,
 		Priority:  1,
@@ -727,7 +847,7 @@ func TestGetReadyWork_DottedHasMetadataKey(t *testing.T) {
 		Metadata:  []byte(`{"gc.routed_to":"beads/workflows.codex-max"}`),
 	}
 	nonMatching := &types.Issue{
-		ID:        "rw-meta-nested",
+		ID:        "test-rw-meta-nested",
 		Title:     "Nested metadata",
 		Status:    types.StatusOpen,
 		Priority:  1,
@@ -760,9 +880,9 @@ func TestGetReadyWork_TypePriorityLimitUsesDoltSafeTypePredicate(t *testing.T) {
 
 	priority := 1
 	issues := []*types.Issue{
-		{ID: "rw-type-task", Title: "Task", Status: types.StatusOpen, Priority: priority, IssueType: types.TypeTask},
-		{ID: "rw-type-bug-1", Title: "Bug 1", Status: types.StatusOpen, Priority: priority, IssueType: types.TypeBug},
-		{ID: "rw-type-bug-2", Title: "Bug 2", Status: types.StatusOpen, Priority: priority, IssueType: types.TypeBug},
+		{ID: "test-rw-type-task", Title: "Task", Status: types.StatusOpen, Priority: priority, IssueType: types.TypeTask},
+		{ID: "test-rw-type-bug-1", Title: "Bug 1", Status: types.StatusOpen, Priority: priority, IssueType: types.TypeBug},
+		{ID: "test-rw-type-bug-2", Title: "Bug 2", Status: types.StatusOpen, Priority: priority, IssueType: types.TypeBug},
 	}
 	if err := store.CreateIssues(ctx, issues, "tester"); err != nil {
 		t.Fatalf("create typed issues: %v", err)
@@ -779,95 +899,9 @@ func TestGetReadyWork_TypePriorityLimitUsesDoltSafeTypePredicate(t *testing.T) {
 		t.Fatalf("ready work with type+status+priority+limit: %v", err)
 	}
 	ids := issueIDs(work)
-	want := []string{"rw-type-bug-1", "rw-type-bug-2"}
+	want := []string{"test-rw-type-bug-1", "test-rw-type-bug-2"}
 	if fmt.Sprint(ids) != fmt.Sprint(want) {
 		t.Fatalf("typed ready work = %v, want %v", ids, want)
-	}
-}
-
-func TestGetReadyWork_UnboundedPopulatesBlockedIDsCache(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx, cancel := testContext(t)
-	defer cancel()
-
-	blocker := &types.Issue{ID: "rw-cache-blocker", Title: "Blocker", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask}
-	blocked := &types.Issue{ID: "rw-cache-blocked", Title: "Blocked", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask}
-	if err := store.CreateIssues(ctx, []*types.Issue{blocker, blocked}, "tester"); err != nil {
-		t.Fatalf("create cache issues: %v", err)
-	}
-	if err := store.AddDependency(ctx, &types.Dependency{IssueID: blocked.ID, DependsOnID: blocker.ID, Type: types.DepBlocks}, "tester"); err != nil {
-		t.Fatalf("add cache dependency: %v", err)
-	}
-
-	if _, err := store.GetReadyWork(ctx, types.WorkFilter{}); err != nil {
-		t.Fatalf("first ready work: %v", err)
-	}
-	if !store.blockedIDsCached {
-		t.Fatal("expected unbounded ready work to populate blocked IDs cache")
-	}
-	firstCache := store.blockedIDsCache
-	if len(firstCache) == 0 {
-		t.Fatal("expected blocked IDs cache to contain blocked issue")
-	}
-	firstCacheEntry := &firstCache[0]
-	if _, err := store.GetReadyWork(ctx, types.WorkFilter{}); err != nil {
-		t.Fatalf("second ready work: %v", err)
-	}
-	if !store.blockedIDsCached || len(store.blockedIDsCache) == 0 {
-		t.Fatal("expected blocked IDs cache to remain populated")
-	}
-	if &store.blockedIDsCache[0] != firstCacheEntry {
-		t.Fatal("expected consecutive unbounded ready-work calls to reuse the blocked IDs cache")
-	}
-}
-
-func TestClaimReadyIssue_UnboundedPopulatesAndReusesBlockedIDsCache(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx, cancel := testContext(t)
-	defer cancel()
-
-	blocker := &types.Issue{ID: "claim-cache-blocker", Title: "Blocker", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask}
-	blocked := &types.Issue{ID: "claim-cache-blocked", Title: "Blocked", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeBug}
-	if err := store.CreateIssues(ctx, []*types.Issue{blocker, blocked}, "tester"); err != nil {
-		t.Fatalf("create claim cache issues: %v", err)
-	}
-	if err := store.AddDependency(ctx, &types.Dependency{IssueID: blocked.ID, DependsOnID: blocker.ID, Type: types.DepBlocks}, "tester"); err != nil {
-		t.Fatalf("add claim cache dependency: %v", err)
-	}
-
-	filter := types.WorkFilter{Type: string(types.TypeBug)}
-	claimed, err := store.ClaimReadyIssue(ctx, filter, "tester")
-	if err != nil {
-		t.Fatalf("first claim ready issue: %v", err)
-	}
-	if claimed != nil {
-		t.Fatalf("first claim = %s, want nil because bug is blocked", claimed.ID)
-	}
-	if !store.blockedIDsCached {
-		t.Fatal("expected claim path to populate blocked IDs cache")
-	}
-	firstCache := store.blockedIDsCache
-	if len(firstCache) == 0 {
-		t.Fatal("expected blocked IDs cache to contain blocked issue")
-	}
-	firstCacheEntry := &firstCache[0]
-
-	claimed, err = store.ClaimReadyIssue(ctx, filter, "tester")
-	if err != nil {
-		t.Fatalf("second claim ready issue: %v", err)
-	}
-	if claimed != nil {
-		t.Fatalf("second claim = %s, want nil because bug is blocked", claimed.ID)
-	}
-	if !store.blockedIDsCached || len(store.blockedIDsCache) == 0 {
-		t.Fatal("expected blocked IDs cache to remain populated")
-	}
-	if &store.blockedIDsCache[0] != firstCacheEntry {
-		t.Fatal("expected consecutive claim attempts to reuse the blocked IDs cache")
 	}
 }
 
