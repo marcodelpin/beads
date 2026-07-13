@@ -55,6 +55,78 @@ func TestJSONContract_ShowOutputHasRequiredFields(t *testing.T) {
 	}
 }
 
+// TestJSONContract_ShowOmitsOptInPayloadsByDefault pins the NEGATIVE half of the
+// count-only contract (be-ijck6q): by default, bd show --json must OMIT the
+// "comments" and "dependents" arrays entirely, and each --include-* flag must
+// populate its own array and only its own.
+//
+// Every other test that touches comments or dependents asks for them with
+// showJSONFull, so all of them would stay green if the default silently went
+// back to materializing both lists eagerly — which is precisely the pathological
+// hub-bead slowness cfcc95799 removed. Omission is the invariant with no other
+// witness, so it needs one of its own: a perf contract that nothing asserts is a
+// perf contract that will be regressed.
+func TestJSONContract_ShowOmitsOptInPayloadsByDefault(t *testing.T) {
+	t.Parallel()
+	w := newWorkspace(t)
+	parent := w.create("--title", "Count-only parent", "--type", "epic", "--priority", "1")
+	child := w.create("--title", "Count-only child", "--type", "task", "--parent", parent)
+	w.run("comments", "add", parent, "First note")
+
+	// showOnce runs show --json with the given extra flags and returns the issue.
+	showOnce := func(flags ...string) map[string]any {
+		t.Helper()
+		out := w.run(append([]string{"show", parent, "--json"}, flags...)...)
+		items := parseJSONOutput(t, out)
+		if len(items) == 0 {
+			t.Fatalf("bd show %s --json %v returned no items", parent, flags)
+		}
+		return items[0]
+	}
+
+	// The arrays must be absent, not merely empty: an empty array would still
+	// mean the rows were materialized, which is the cost the flag exists to avoid.
+	assertAbsent := func(t *testing.T, issue map[string]any, key, context string) {
+		t.Helper()
+		if v, present := issue[key]; present {
+			t.Errorf("%s: show --json must omit %q, got %v", context, key, v)
+		}
+	}
+
+	t.Run("default_omits_both_arrays", func(t *testing.T) {
+		issue := showOnce()
+		assertAbsent(t, issue, "comments", "default payload")
+		assertAbsent(t, issue, "dependents", "default payload")
+
+		// The counts are what the default carries instead.
+		assertFieldFloat(t, issue, "comment_count", 1)
+		assertFieldFloat(t, issue, "dependent_count", 1)
+	})
+
+	t.Run("include_comments_does_not_drag_in_dependents", func(t *testing.T) {
+		issue := showOnce("--include-comments")
+		requireCommentTextsEqual(t, getObjectSlice(issue, "comments"),
+			[]string{"First note"}, "comments under --include-comments")
+		assertAbsent(t, issue, "dependents", "--include-comments")
+	})
+
+	t.Run("include_dependents_does_not_drag_in_comments", func(t *testing.T) {
+		issue := showOnce("--include-dependents")
+		dependents := getObjectSlice(issue, "dependents")
+		found := false
+		for _, dep := range dependents {
+			if id, _ := dep["id"].(string); id == child {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("--include-dependents: parent %s does not list child %s (got %d dependents)",
+				parent, child, len(dependents))
+		}
+		assertAbsent(t, issue, "comments", "--include-dependents")
+	})
+}
+
 // TestJSONContract_ShowOutputIsArray pins the shape of bd show --json: a
 // top-level JSON array with one element per requested ID, NOT a schema_version
 // envelope. This is what the golden corpus commits (CATALOG.md: show =
