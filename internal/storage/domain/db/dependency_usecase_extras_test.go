@@ -23,6 +23,7 @@ func (s *testSuite) TestDependencyUseCase_Extras() {
 		s.Run("NilDepReturnsError", s.ducAddBulkNilDep)
 		s.Run("EmptyIDsReturnError", s.ducAddBulkEmptyIDs)
 		s.Run("InsertsEdgesAndReturnsAdded", s.ducAddBulkInserts)
+		s.Run("RejectsHierarchyBlockingButAllowsSiblings", s.ducAddBulkHierarchyBlocking)
 		s.Run("PerEdgeCycleCheckBlocksCycleCreation", s.ducAddBulkPerEdgeCycle)
 		s.Run("SkipPerEdgeStillRunsFinalCheck", s.ducAddBulkFinalCycleCheck)
 		s.Run("SkipPerEdgeAcceptsAcyclicBulk", s.ducAddBulkSkipPerEdgeAcyclic)
@@ -154,6 +155,47 @@ func (s *testSuite) ducAddBulkInserts() {
 	out, err := s.depUseCase().GetIssueDependencyRecords(s.Ctx(), []string{"bd-duc-bulk-a"})
 	s.Require().NoError(err)
 	s.Require().Len(out["bd-duc-bulk-a"], 2)
+}
+
+func (s *testSuite) ducAddBulkHierarchyBlocking() {
+	for _, id := range []string{
+		"bd-duc-hier-parent",
+		"bd-duc-hier-child",
+		"bd-duc-hier-sibling",
+	} {
+		s.seedIssueRow(id)
+	}
+
+	repo := NewDependencySQLRepository(s.Runner())
+	for _, child := range []string{"bd-duc-hier-child", "bd-duc-hier-sibling"} {
+		s.Require().NoError(repo.Insert(s.Ctx(),
+			newDep(child, "bd-duc-hier-parent", types.DepParentChild),
+			"tester", domain.DepInsertOpts{}))
+	}
+
+	uc := s.depUseCase()
+	_, err := uc.AddDependencies(s.Ctx(), []*types.Dependency{
+		newDep("bd-duc-hier-sibling", "bd-duc-hier-child", types.DepBlocks),
+	}, "tester", domain.BulkAddDepsOpts{})
+	s.Require().NoError(err, "siblings may carry ordering edges")
+
+	_, err = uc.AddDependencies(s.Ctx(), []*types.Dependency{
+		newDep("bd-duc-hier-child", "bd-duc-hier-parent", types.DepBlocks),
+	}, "tester", domain.BulkAddDepsOpts{})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot be blocked by its ancestor")
+
+	_, err = uc.AddDependencies(s.Ctx(), []*types.Dependency{
+		newDep("bd-duc-hier-parent", "bd-duc-hier-child", types.DepBlocks),
+	}, "tester", domain.BulkAddDepsOpts{})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot be blocked by its descendant")
+
+	_, err = uc.AddDependencies(s.Ctx(), []*types.Dependency{
+		newDep("bd-duc-hier-child", "bd-duc-hier-parent", types.DepConditionalBlocks),
+	}, "tester", domain.BulkAddDepsOpts{})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "cannot be blocked by its ancestor")
 }
 
 func (s *testSuite) ducAddBulkPerEdgeCycle() {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/depid"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -158,32 +159,9 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		}
 	}
 
-	// Hierarchy deadlock validation (GH#1495, bd-wg7ve): blocking dependencies
-	// may cross issue types — gating a task on an epic closing is legitimate
-	// program sequencing — but must not cross hierarchy lines. Gating an issue
-	// on its own ancestor deadlocks (the ancestor cannot close until its
-	// descendants do), and gating an issue on its own descendant livelocks
-	// (blocked status cascades down to the very descendant that must close to
-	// clear the gate). Blocks edges between unrelated issues — including
-	// siblings under the same parent — are fine. Cross-prefix and external
-	// targets are skipped: they cannot share a local hierarchy with the source.
-	if (dep.Type == types.DepBlocks || dep.Type == types.DepConditionalBlocks) &&
-		targetType != "" && dep.IssueID != dep.DependsOnID {
-		blockerIsAncestor, err := isAncestorInTx(ctx, tx, dep.IssueID, dep.DependsOnID, depTables)
-		if err != nil {
-			return fmt.Errorf("failed to check blocker ancestry: %w", err)
-		}
-		if blockerIsAncestor {
-			return fmt.Errorf("%s cannot be blocked by its ancestor %s: %s cannot close until its descendants finish, so the gate would never clear",
-				dep.IssueID, dep.DependsOnID, dep.DependsOnID)
-		}
-		blockerIsDescendant, err := isAncestorInTx(ctx, tx, dep.DependsOnID, dep.IssueID, depTables)
-		if err != nil {
-			return fmt.Errorf("failed to check blocker ancestry: %w", err)
-		}
-		if blockerIsDescendant {
-			return fmt.Errorf("%s cannot be blocked by its descendant %s: blocked status cascades to descendants, so %s would inherit the block and never close",
-				dep.IssueID, dep.DependsOnID, dep.DependsOnID)
+	if targetType != "" {
+		if err := CheckBlockingHierarchyInTx(ctx, tx, dep, depTables); err != nil {
+			return err
 		}
 	}
 
@@ -388,11 +366,45 @@ func cycleDetectionTables() []string {
 	return []string{"dependencies", "wisp_dependencies"}
 }
 
+// CheckBlockingHierarchyInTx rejects blocking dependencies between an issue
+// and its own ancestor or descendant. Cross-prefix/external targets must be
+// filtered by the caller because no local hierarchy can connect them.
+func CheckBlockingHierarchyInTx(ctx context.Context, tx DBTX, dep *types.Dependency, depTables []string) error {
+	if dep.Type != types.DepBlocks && dep.Type != types.DepConditionalBlocks {
+		return nil
+	}
+	if dep.IssueID == dep.DependsOnID {
+		return nil // The dedicated self-dependency check owns this error.
+	}
+	if len(depTables) == 0 {
+		depTables = cycleDetectionTables()
+	}
+	blockerIsAncestor, err := isAncestorInTx(ctx, tx, dep.IssueID, dep.DependsOnID, depTables)
+	if err != nil {
+		return fmt.Errorf("failed to check blocker ancestry: %w", err)
+	}
+	if blockerIsAncestor {
+		return &domain.DependencyHierarchyConflictError{
+			IssueID: dep.IssueID, BlockerID: dep.DependsOnID, BlockerIsAncestor: true,
+		}
+	}
+	blockerIsDescendant, err := isAncestorInTx(ctx, tx, dep.DependsOnID, dep.IssueID, depTables)
+	if err != nil {
+		return fmt.Errorf("failed to check blocker ancestry: %w", err)
+	}
+	if blockerIsDescendant {
+		return &domain.DependencyHierarchyConflictError{
+			IssueID: dep.IssueID, BlockerID: dep.DependsOnID,
+		}
+	}
+	return nil
+}
+
 // isAncestorInTx reports whether candidate is an ancestor of node along
 // parent-child dependency edges (walking child -> parent only, so siblings
 // and cousins in the same hierarchy do not match). Uses UNION distinct
 // recursion so diamond/cyclic parentage terminates by unique reachable node.
-func isAncestorInTx(ctx context.Context, tx *sql.Tx, node, candidate string, depTables []string) (bool, error) {
+func isAncestorInTx(ctx context.Context, tx DBTX, node, candidate string, depTables []string) (bool, error) {
 	var unions []string
 	for _, t := range depTables {
 		unions = append(unions, fmt.Sprintf("SELECT issue_id, %s AS parent_id FROM %s WHERE type = 'parent-child'", DepTargetExpr, t))

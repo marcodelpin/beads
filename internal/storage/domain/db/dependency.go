@@ -76,6 +76,12 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 	}
 
 	table := pickDepTable(opts.UseWispsTable)
+	if !strings.HasPrefix(dep.DependsOnID, "external:") &&
+		types.ExtractPrefix(dep.IssueID) == types.ExtractPrefix(dep.DependsOnID) {
+		if err := issueops.CheckBlockingHierarchyInTx(ctx, r.runner, dep, nil); err != nil {
+			return err
+		}
+	}
 
 	var existingType string
 	err := r.runner.QueryRowContext(ctx,

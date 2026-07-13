@@ -744,6 +744,16 @@ func PersistDependenciesWithOptionsResult(ctx context.Context, tx *sql.Tx, issue
 				}
 			}
 
+			if kind != DepTargetExternal {
+				if err := CheckBlockingHierarchyInTx(ctx, tx, dep, nil); err != nil {
+					if opts.SkipDependencyValidationErrors {
+						recordSkippedDependency(opts, dep, err.Error())
+						continue
+					}
+					return result, fmt.Errorf("invalid dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
+				}
+			}
+
 			if err := CheckDependencyCycleInTx(ctx, tx, dep, nil); err != nil {
 				if opts.SkipDependencyValidationErrors {
 					recordSkippedDependency(opts, dep, err.Error())

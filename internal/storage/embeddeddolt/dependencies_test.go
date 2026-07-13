@@ -199,6 +199,41 @@ func TestAddDependency(t *testing.T) {
 		}
 	})
 
+	t.Run("wisp_parent_child_shadow_rejected", func(t *testing.T) {
+		te := newTestEnv(t, "wh")
+		ctx := t.Context()
+
+		for _, issue := range []*types.Issue{
+			{ID: "wh-parent", Title: "Parent", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeEpic, Ephemeral: true},
+			{ID: "wh-child", Title: "Child", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask, Ephemeral: true},
+		} {
+			if err := te.store.CreateIssue(ctx, issue, "tester"); err != nil {
+				t.Fatalf("CreateIssue %s: %v", issue.ID, err)
+			}
+		}
+		if err := te.store.AddDependency(ctx, &types.Dependency{
+			IssueID: "wh-child", DependsOnID: "wh-parent", Type: types.DepParentChild,
+		}, "tester"); err != nil {
+			t.Fatalf("parent-child setup: %v", err)
+		}
+
+		err := te.store.AddDependency(ctx, &types.Dependency{
+			IssueID: "wh-parent", DependsOnID: "wh-child", Type: types.DepBlocks,
+		}, "tester")
+		if err == nil || !strings.Contains(err.Error(), "descendant") {
+			t.Fatalf("wisp descendant block error = %v, want hierarchy rejection", err)
+		}
+
+		// Hierarchy validation runs before the existing-edge type conflict, so a
+		// conditional gate over the child->parent pair reports the real deadlock.
+		err = te.store.AddDependency(ctx, &types.Dependency{
+			IssueID: "wh-child", DependsOnID: "wh-parent", Type: types.DepConditionalBlocks,
+		}, "tester")
+		if err == nil || !strings.Contains(err.Error(), "ancestor") {
+			t.Fatalf("wisp ancestor block error = %v, want hierarchy rejection", err)
+		}
+	})
+
 	t.Run("idempotent_same_type", func(t *testing.T) {
 		te := newTestEnv(t, "id")
 		ctx := t.Context()

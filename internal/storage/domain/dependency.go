@@ -23,6 +23,24 @@ type DependencyTypeConflictError struct {
 	RequestedType string
 }
 
+// DependencyHierarchyConflictError is returned when a blocking dependency
+// would gate an issue on one of its own ancestors or descendants. Either shape
+// can never clear under the parent-child close/blocking semantics.
+type DependencyHierarchyConflictError struct {
+	IssueID           string
+	BlockerID         string
+	BlockerIsAncestor bool
+}
+
+func (e *DependencyHierarchyConflictError) Error() string {
+	if e.BlockerIsAncestor {
+		return fmt.Sprintf("%s cannot be blocked by its ancestor %s: %s cannot close until its descendants finish, so the gate would never clear",
+			e.IssueID, e.BlockerID, e.BlockerID)
+	}
+	return fmt.Sprintf("%s cannot be blocked by its descendant %s: blocked status cascades to descendants, so %s would inherit the block and never close",
+		e.IssueID, e.BlockerID, e.BlockerID)
+}
+
 func (e *DependencyTypeConflictError) Error() string {
 	return fmt.Sprintf("dependency %s -> %s already exists with type %q (requested %q); remove it first with 'bd dep remove' then re-add",
 		e.IssueID, e.DependsOnID, e.ExistingType, e.RequestedType)
@@ -195,6 +213,10 @@ func (u *dependencyUseCaseImpl) add(ctx context.Context, dep *types.Dependency, 
 		// not prepend "add dep: insert:" (#4547 F-1).
 		var conflict *DependencyTypeConflictError
 		if errors.As(err, &conflict) {
+			return err
+		}
+		var hierarchyConflict *DependencyHierarchyConflictError
+		if errors.As(err, &hierarchyConflict) {
 			return err
 		}
 		return fmt.Errorf("add dep: insert: %w", err)
@@ -500,6 +522,10 @@ func (u *dependencyUseCaseImpl) addBulk(ctx context.Context, deps []*types.Depen
 			}
 		}
 		if err := u.depRepo.Insert(ctx, dep, actor, insertOpts); err != nil {
+			var hierarchyConflict *DependencyHierarchyConflictError
+			if errors.As(err, &hierarchyConflict) {
+				return BulkAddDepsResult{}, err
+			}
 			return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: insert: %w", i, err)
 		}
 	}
