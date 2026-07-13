@@ -26,6 +26,9 @@ Examples:
   bd unclaim bd-123 bd-456`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("unclaim is not supported in proxied-server mode")
+		}
 		CheckReadonly("unclaim")
 		reason, _ := cmd.Flags().GetString("reason")
 		force, _ := cmd.Flags().GetBool("force")
