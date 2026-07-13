@@ -94,7 +94,7 @@ type AddDependencyOpts struct {
 // transaction. It handles:
 //   - Wisp routing (auto-detected or caller-provided)
 //   - Source/target existence validation
-//   - Hierarchy deadlock validation for blocking deps (GH#1495, bd-wg7ve)
+//   - Cross-type blocking validation (GH#1495)
 //   - Cycle detection via recursive CTE across both dependency tables
 //   - Idempotent same-type updates (metadata only)
 //   - Type conflict detection
@@ -158,31 +158,16 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		}
 	}
 
-	// Hierarchy deadlock validation (GH#1495, bd-wg7ve): blocking dependencies
-	// may cross issue types — gating a task on an epic closing is legitimate
-	// program sequencing — but must not cross hierarchy lines. Gating an issue
-	// on its own ancestor deadlocks (the ancestor cannot close until its
-	// descendants do), and gating an issue on its own descendant livelocks
-	// (blocked status cascades down to the very descendant that must close to
-	// clear the gate). Cross-prefix and external targets are skipped: they
-	// cannot share a local hierarchy with the source.
-	if (dep.Type == types.DepBlocks || dep.Type == types.DepConditionalBlocks) &&
-		targetType != "" && dep.IssueID != dep.DependsOnID {
-		blockerIsAncestor, err := isAncestorInTx(ctx, tx, dep.IssueID, dep.DependsOnID, depTables)
-		if err != nil {
-			return fmt.Errorf("failed to check blocker ancestry: %w", err)
-		}
-		if blockerIsAncestor {
-			return fmt.Errorf("%s cannot be blocked by its ancestor %s: %s cannot close until its descendants finish, so the gate would never clear",
-				dep.IssueID, dep.DependsOnID, dep.DependsOnID)
-		}
-		blockerIsDescendant, err := isAncestorInTx(ctx, tx, dep.DependsOnID, dep.IssueID, depTables)
-		if err != nil {
-			return fmt.Errorf("failed to check blocker ancestry: %w", err)
-		}
-		if blockerIsDescendant {
-			return fmt.Errorf("%s cannot be blocked by its descendant %s: blocked status cascades to descendants, so %s would inherit the block and never close",
-				dep.IssueID, dep.DependsOnID, dep.DependsOnID)
+	// Cross-type blocking validation (GH#1495): tasks can only block tasks,
+	// epics can only block epics.
+	if dep.Type == types.DepBlocks && targetType != "" {
+		sourceIsEpic := sourceType == string(types.TypeEpic)
+		targetIsEpic := targetType == string(types.TypeEpic)
+		if sourceIsEpic != targetIsEpic {
+			if sourceIsEpic {
+				return fmt.Errorf("epics can only block other epics, not tasks")
+			}
+			return fmt.Errorf("tasks can only block other tasks, not epics")
 		}
 	}
 
@@ -385,32 +370,6 @@ func cycleReachabilityQuery(depTables []string) string {
 
 func cycleDetectionTables() []string {
 	return []string{"dependencies", "wisp_dependencies"}
-}
-
-// isAncestorInTx reports whether candidate is an ancestor of node along
-// parent-child dependency edges (walking child -> parent). Uses UNION distinct
-// recursion so diamond/cyclic parentage terminates by unique reachable node.
-func isAncestorInTx(ctx context.Context, tx *sql.Tx, node, candidate string, depTables []string) (bool, error) {
-	var unions []string
-	for _, t := range depTables {
-		unions = append(unions, fmt.Sprintf("SELECT issue_id, %s AS parent_id FROM %s WHERE type = 'parent-child'", DepTargetExpr, t))
-	}
-	//nolint:gosec // G201: depTables are fixed dependency table names from cycleDetectionTables/opts.
-	query := fmt.Sprintf(`
-		WITH RECURSIVE ancestors(node) AS (
-			SELECT ?
-			UNION
-			SELECT d.parent_id
-			FROM ancestors a
-			JOIN (%s) d ON d.issue_id = a.node
-		)
-		SELECT COUNT(*) FROM ancestors WHERE node = ?
-	`, strings.Join(unions, " UNION "))
-	var n int
-	if err := tx.QueryRowContext(ctx, query, node, candidate).Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
 }
 
 func DeleteWispFromDependenciesInTx(ctx context.Context, tx *sql.Tx, wispID string) error {

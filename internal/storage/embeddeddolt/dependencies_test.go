@@ -128,7 +128,7 @@ func TestAddDependency(t *testing.T) {
 		}
 	})
 
-	t.Run("cross_type_blocks_allowed", func(t *testing.T) {
+	t.Run("cross_type_validation", func(t *testing.T) {
 		te := newTestEnv(t, "ct")
 		ctx := t.Context()
 
@@ -141,10 +141,14 @@ func TestAddDependency(t *testing.T) {
 			t.Fatalf("CreateIssue task: %v", err)
 		}
 
-		// Gating a task on an unrelated epic closing is legitimate (bd-wg7ve).
+		// Task blocking epic should fail.
 		dep := &types.Dependency{IssueID: "ct-task", DependsOnID: "ct-epic", Type: types.DepBlocks}
-		if err := te.store.AddDependency(ctx, dep, "tester"); err != nil {
-			t.Fatalf("AddDependency task-gated-on-epic: %v", err)
+		err := te.store.AddDependency(ctx, dep, "tester")
+		if err == nil {
+			t.Fatal("expected cross-type error")
+		}
+		if !strings.Contains(err.Error(), "epics") {
+			t.Errorf("expected cross-type error message, got: %v", err)
 		}
 	})
 
@@ -290,8 +294,8 @@ func TestAddDependency(t *testing.T) {
 			t.Fatalf("CreateIssue task: %v", err)
 		}
 
-		// Parent-child between epic and task should succeed (the hierarchy
-		// deadlock guard only applies to blocking deps).
+		// Parent-child between epic and task should succeed (cross-type restriction
+		// only applies to blocks deps).
 		dep := &types.Dependency{IssueID: "pc-task", DependsOnID: "pc-epic", Type: types.DepParentChild}
 		if err := te.store.AddDependency(ctx, dep, "tester"); err != nil {
 			t.Fatalf("AddDependency parent-child cross-type: %v", err)
@@ -318,37 +322,27 @@ func TestAddDependency(t *testing.T) {
 		}
 	})
 
-	t.Run("hierarchy_blocks_rejected", func(t *testing.T) {
+	t.Run("epic_blocks_task_fails", func(t *testing.T) {
 		te := newTestEnv(t, "et")
 		ctx := t.Context()
 
 		epic := &types.Issue{ID: "et-epic", Title: "Epic", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeEpic}
 		task := &types.Issue{ID: "et-task", Title: "Task", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
-		sub := &types.Issue{ID: "et-sub", Title: "Subtask", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
-		for _, iss := range []*types.Issue{epic, task, sub} {
-			if err := te.store.CreateIssue(ctx, iss, "tester"); err != nil {
-				t.Fatalf("CreateIssue %s: %v", iss.ID, err)
-			}
+		if err := te.store.CreateIssue(ctx, epic, "tester"); err != nil {
+			t.Fatalf("CreateIssue epic: %v", err)
 		}
-		for _, dep := range []*types.Dependency{
-			{IssueID: "et-task", DependsOnID: "et-epic", Type: types.DepParentChild},
-			{IssueID: "et-sub", DependsOnID: "et-task", Type: types.DepParentChild},
-		} {
-			if err := te.store.AddDependency(ctx, dep, "tester"); err != nil {
-				t.Fatalf("AddDependency parent-child %s->%s: %v", dep.IssueID, dep.DependsOnID, err)
-			}
+		if err := te.store.CreateIssue(ctx, task, "tester"); err != nil {
+			t.Fatalf("CreateIssue task: %v", err)
 		}
 
-		// Gating an issue on its own ancestor would deadlock; transitive ancestry counts.
-		err := te.store.AddDependency(ctx, &types.Dependency{IssueID: "et-sub", DependsOnID: "et-epic", Type: types.DepBlocks}, "tester")
-		if err == nil || !strings.Contains(err.Error(), "ancestor") {
-			t.Errorf("expected ancestor-deadlock error, got: %v", err)
+		// Epic blocking task should fail (reverse direction of existing cross_type_validation test).
+		dep := &types.Dependency{IssueID: "et-epic", DependsOnID: "et-task", Type: types.DepBlocks}
+		err := te.store.AddDependency(ctx, dep, "tester")
+		if err == nil {
+			t.Fatal("expected cross-type error")
 		}
-
-		// Gating an issue on its own descendant would livelock via blocked-state cascade.
-		err = te.store.AddDependency(ctx, &types.Dependency{IssueID: "et-epic", DependsOnID: "et-sub", Type: types.DepBlocks}, "tester")
-		if err == nil || !strings.Contains(err.Error(), "descendant") {
-			t.Errorf("expected descendant-livelock error, got: %v", err)
+		if !strings.Contains(err.Error(), "epics") {
+			t.Errorf("expected cross-type error message, got: %v", err)
 		}
 	})
 }

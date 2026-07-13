@@ -902,10 +902,10 @@ func TestAddDependency_SamePrefix_RequiresTargetExistence(t *testing.T) {
 }
 
 // =============================================================================
-// Blocking Dependency Hierarchy Validation Tests (GH#1495, bd-wg7ve)
+// Cross-Type Blocking Validation Tests (GH#1495)
 // =============================================================================
 
-func TestAddDependency_BlocksCrossType_EpicGatedOnTask(t *testing.T) {
+func TestAddDependency_BlocksCrossType_TaskBlocksEpic(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -933,18 +933,22 @@ func TestAddDependency_BlocksCrossType_EpicGatedOnTask(t *testing.T) {
 		t.Fatalf("failed to create epic: %v", err)
 	}
 
-	// Epic gated on an unrelated task closing -> allowed (bd-wg7ve).
+	// Task blocks epic -> should fail
 	dep := &types.Dependency{
 		IssueID:     "ct-epic-1",
 		DependsOnID: "ct-task-1",
 		Type:        types.DepBlocks,
 	}
-	if err := store.AddDependency(ctx, dep, "tester"); err != nil {
-		t.Fatalf("epic gated on unrelated task should succeed: %v", err)
+	err := store.AddDependency(ctx, dep, "tester")
+	if err == nil {
+		t.Fatal("expected error when task blocks epic, got nil")
+	}
+	if !strings.Contains(err.Error(), "can only block") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
-func TestAddDependency_BlocksCrossType_TaskGatedOnEpic(t *testing.T) {
+func TestAddDependency_BlocksCrossType_EpicBlocksTask(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -972,71 +976,18 @@ func TestAddDependency_BlocksCrossType_TaskGatedOnEpic(t *testing.T) {
 		t.Fatalf("failed to create epic: %v", err)
 	}
 
-	// Task gated on an unrelated epic closing -> allowed (bd-wg7ve).
+	// Epic blocks task -> should fail
 	dep := &types.Dependency{
 		IssueID:     "ct-task-2",
 		DependsOnID: "ct-epic-2",
 		Type:        types.DepBlocks,
 	}
-	if err := store.AddDependency(ctx, dep, "tester"); err != nil {
-		t.Fatalf("task gated on unrelated epic should succeed: %v", err)
+	err := store.AddDependency(ctx, dep, "tester")
+	if err == nil {
+		t.Fatal("expected error when epic blocks task, got nil")
 	}
-}
-
-func TestAddDependency_BlocksWithinHierarchy_Rejected(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx, cancel := testContext(t)
-	defer cancel()
-
-	epic := &types.Issue{
-		ID:        "hier-epic",
-		Title:     "An epic",
-		Status:    types.StatusOpen,
-		Priority:  1,
-		IssueType: types.TypeEpic,
-	}
-	task := &types.Issue{
-		ID:        "hier-task",
-		Title:     "A child task",
-		Status:    types.StatusOpen,
-		Priority:  1,
-		IssueType: types.TypeTask,
-	}
-	if err := store.CreateIssue(ctx, epic, "tester"); err != nil {
-		t.Fatalf("failed to create epic: %v", err)
-	}
-	if err := store.CreateIssue(ctx, task, "tester"); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
-	pc := &types.Dependency{
-		IssueID:     "hier-task",
-		DependsOnID: "hier-epic",
-		Type:        types.DepParentChild,
-	}
-	if err := store.AddDependency(ctx, pc, "tester"); err != nil {
-		t.Fatalf("failed to add parent-child: %v", err)
-	}
-
-	// Child gated on its own ancestor epic -> deadlock, rejected.
-	err := store.AddDependency(ctx, &types.Dependency{
-		IssueID:     "hier-task",
-		DependsOnID: "hier-epic",
-		Type:        types.DepBlocks,
-	}, "tester")
-	if err == nil || !strings.Contains(err.Error(), "ancestor") {
-		t.Errorf("expected ancestor-deadlock error, got: %v", err)
-	}
-
-	// Epic gated on its own descendant -> livelock, rejected.
-	err = store.AddDependency(ctx, &types.Dependency{
-		IssueID:     "hier-epic",
-		DependsOnID: "hier-task",
-		Type:        types.DepBlocks,
-	}, "tester")
-	if err == nil || !strings.Contains(err.Error(), "descendant") {
-		t.Errorf("expected descendant-livelock error, got: %v", err)
+	if !strings.Contains(err.Error(), "can only block") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
@@ -1146,8 +1097,7 @@ func TestAddDependency_ParentChild_CrossType_Allowed(t *testing.T) {
 		t.Fatalf("failed to create epic: %v", err)
 	}
 
-	// Parent-child between epic and task -> should succeed (the hierarchy
-	// deadlock guard only applies to blocking deps)
+	// Parent-child between epic and task -> should succeed (only blocks is restricted)
 	dep := &types.Dependency{
 		IssueID:     "ct-task-5",
 		DependsOnID: "ct-epic-5",
