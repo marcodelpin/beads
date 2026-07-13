@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/testutil"
 )
@@ -81,6 +82,11 @@ func testMainInner(m *testing.M) int {
 
 	code := m.Run()
 
+	// Best-effort reap of any dolt sql-server left running under a temp dir
+	// this suite created (e.g. a SIGKILLed run) — see
+	// gastownhall/beads mybd-q6cz.
+	doltserver.SweepOrphanedTestServers(testBDDir)
+
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	if testBDDir != "" {
@@ -118,6 +124,9 @@ func initDoctorSharedSchema(port int) error {
 	}
 	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('--allow-empty', '-m', 'test: init shared schema')"); err != nil {
 		return fmt.Errorf("DOLT_COMMIT: %w", err)
+	}
+	if err := testutil.MaterializeLocalTableSchemasForBranchTests(ctx, db); err != nil {
+		return fmt.Errorf("materialize local table schemas: %w", err)
 	}
 
 	return nil

@@ -1033,10 +1033,10 @@ func TestAddDependency_Blocks_ChildBlocksParent_Rejected(t *testing.T) {
 		Type:        types.DepBlocks,
 	}, "tester")
 	if err == nil {
-		t.Fatal("expected rejection of child-blocks-parent shadow edge")
+		t.Fatal("expected rejection of child-blocks-parent edge")
 	}
-	if !strings.Contains(err.Error(), "parent-child relationship") {
-		t.Errorf("unexpected error message: %v", err)
+	if !strings.Contains(err.Error(), "descendant") {
+		t.Errorf("expected descendant-livelock message, got: %v", err)
 	}
 }
 
@@ -1084,13 +1084,13 @@ func TestAddDependency_Blocks_ParentBlocksChild_Rejected(t *testing.T) {
 		Type:        types.DepBlocks,
 	}, "tester")
 	if err == nil {
-		t.Fatal("expected rejection of parent-blocks-child shadow edge")
+		t.Fatal("expected rejection of parent-blocks-child edge")
 	}
-	if !strings.Contains(err.Error(), "parent-child relationship") &&
-		!strings.Contains(err.Error(), "already exists") {
-		// The shadow check fires first, but the existing-pair check might
-		// fire instead since the same pair already has a parent-child row.
-		t.Errorf("unexpected error message: %v", err)
+	// The hierarchy guard runs before the existing-pair type-conflict check,
+	// so the ancestry message wins even though the pair already has a
+	// parent-child row.
+	if !strings.Contains(err.Error(), "ancestor") {
+		t.Errorf("expected ancestor-deadlock message, got: %v", err)
 	}
 }
 
@@ -1129,8 +1129,8 @@ func TestAddDependency_Blocks_AncestorBlocksDescendant_Rejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection of grandparent-blocks-grandchild")
 	}
-	if !strings.Contains(err.Error(), "parent-child relationship") {
-		t.Errorf("unexpected error message: %v", err)
+	if !strings.Contains(err.Error(), "ancestor") {
+		t.Errorf("expected ancestor-deadlock message, got: %v", err)
 	}
 }
 
@@ -1456,8 +1456,8 @@ func TestAddDependencyCycleCheckTerminatesOnExistingCycleAndDiamond(t *testing.T
 		{"union-term-d", "union-term-b"},
 	} {
 		if _, err := store.db.ExecContext(ctx, `
-			INSERT INTO dependencies (issue_id, depends_on_issue_id, type, created_at, created_by, metadata)
-			VALUES (?, ?, 'blocks', NOW(), 'tester', '{}')
+			INSERT INTO dependencies (id, issue_id, depends_on_issue_id, type, created_at, created_by, metadata)
+			VALUES (UUID(), ?, ?, 'blocks', NOW(), 'tester', '{}')
 		`, dep.from, dep.to); err != nil {
 			t.Fatalf("seed dependency %s->%s: %v", dep.from, dep.to, err)
 		}

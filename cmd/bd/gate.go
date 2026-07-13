@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -44,42 +45,95 @@ Examples:
 
 // gateListCmd lists gate issues
 var gateListCmd = &cobra.Command{
-	Use:   "list",
+	Use:   "list [issue-id]",
 	Short: "List gate issues",
-	Long: `List all gate issues in the current beads database.
+	Long: `List gate issues.
+
+With no argument, lists all gate issues in the current beads database.
+With an [issue-id] argument, lists ONLY the gates that block that issue
+(its own dependency gates) — not every gate in the database.
 
 By default, shows only open gates. Use --all to include closed gates.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.MaximumNArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("gate-list")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		allFlag, _ := cmd.Flags().GetBool("all")
 		limit, _ := cmd.Flags().GetInt("limit")
 
-		// Build filter for gate type issues
+		ctx := rootCtx
+
+		// Bead-scoped: list only the gates that block this specific issue
+		// (its dependency gates), never the whole database. Without this an
+		// issue-id argument was silently ignored and the DB-wide list was
+		// returned, which could lead a caller to act on unrelated gates.
+		if len(args) == 1 {
+			target, err := store.GetIssue(ctx, args[0])
+			if err != nil {
+				return HandleErrorRespectJSON("issue not found: %s", args[0])
+			}
+			deps, err := store.GetDependencies(ctx, target.ID)
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
+			}
+			gates := filterIssueGates(deps, allFlag, limit)
+			if jsonOutput {
+				return outputJSON(gates)
+			}
+			displayGates(gates, allFlag)
+			return nil
+		}
+
 		gateType := types.IssueType("gate")
 		filter := types.IssueFilter{
 			IssueType: &gateType,
 			Limit:     limit,
 		}
 
-		// By default, exclude closed gates
 		if !allFlag {
 			filter.ExcludeStatus = []types.Status{types.StatusClosed}
 		}
 
-		ctx := rootCtx
-
-		// Direct mode
 		issues, err := store.SearchIssues(ctx, "", filter)
 		if err != nil {
-			FatalError("%v", err)
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		if jsonOutput {
-			outputJSON(issues)
-			return
+			return outputJSON(issues)
 		}
 
 		displayGates(issues, allFlag)
+		return nil
 	},
+}
+
+// filterIssueGates selects the gate-type issues from an issue's dependency set,
+// honoring the same open/closed and limit semantics as the DB-wide list path.
+// Pulled out as a pure helper so the bead-scoping logic is unit-testable without
+// a live store.
+func filterIssueGates(deps []*types.Issue, all bool, limit int) []*types.Issue {
+	var gates []*types.Issue
+	for _, d := range deps {
+		if d == nil || d.IssueType != types.IssueType("gate") {
+			continue
+		}
+		if !all && d.Status == types.StatusClosed {
+			continue
+		}
+		gates = append(gates, d)
+		if limit > 0 && len(gates) >= limit {
+			break
+		}
+	}
+	return gates
 }
 
 // displayGates formats and displays gate issues, separating open and closed gates
@@ -168,49 +222,55 @@ When the gate closes, the waiter will receive a wake notification via 'bd gate w
 The waiter is typically the worker's address (e.g., "my-project/workers/agent-1").
 
 This is used by 'bd done --phase-complete' to register for gate wake notifications.`,
-	Args: cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.ExactArgs(2),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("gate add-waiter")
+
+		evt := metrics.NewCommandEvent("gate-add-waiter")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
 
 		gateID := args[0]
 		waiter := args[1]
 		ctx := rootCtx
 
-		// Get the gate issue
 		var issue *types.Issue
 		var err error
 
 		issue, err = store.GetIssue(ctx, gateID)
 		if err != nil {
-			FatalError("gate not found: %s", gateID)
+			return HandleError("gate not found: %s", gateID)
 		}
 
 		if issue.IssueType != "gate" {
-			FatalError("%s is not a gate issue (type=%s)", gateID, issue.IssueType)
+			return HandleError("%s is not a gate issue (type=%s)", gateID, issue.IssueType)
 		}
 
-		// Check if waiter is already registered
 		for _, w := range issue.Waiters {
 			if w == waiter {
 				fmt.Printf("Waiter already registered on gate %s\n", gateID)
-				return
+				return nil
 			}
 		}
 
-		// Add waiter to the waiters list
 		newWaiters := append(issue.Waiters, waiter)
 
-		// Update the gate
 		updates := map[string]interface{}{
 			"waiters": newWaiters,
 		}
 		if err := store.UpdateIssue(ctx, gateID, updates, actor); err != nil {
-			FatalError("updating gate: %v", err)
+			return HandleError("updating gate: %v", err)
 		}
 
 		commandDidWrite.Store(true)
 
 		fmt.Printf("%s Added waiter to gate %s: %s\n", ui.RenderPass("✓"), gateID, waiter)
+		return nil
 	},
 }
 
@@ -234,8 +294,17 @@ Examples:
   bd gate create --type=human --blocks bd-abc --reason="Need design review"
   bd gate create --type=timer --blocks bd-abc --timeout=2h
   bd gate create --type=gh:pr --blocks bd-abc --await-id=42`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("gate create")
+
+		evt := metrics.NewCommandEvent("gate-create")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
 
 		blocksID, _ := cmd.Flags().GetString("blocks")
 		gateType, _ := cmd.Flags().GetString("type")
@@ -245,35 +314,30 @@ Examples:
 
 		ctx := rootCtx
 
-		// Verify the target issue exists
 		targetIssue, err := store.GetIssue(ctx, blocksID)
 		if err != nil {
-			FatalError("issue not found: %s", blocksID)
+			return HandleErrorRespectJSON("issue not found: %s", blocksID)
 		}
 
-		// Parse timeout if specified
 		var timeout time.Duration
 		if timeoutStr != "" {
 			parsed, err := time.ParseDuration(timeoutStr)
 			if err != nil {
-				FatalError("invalid timeout: %v", err)
+				return HandleErrorRespectJSON("invalid timeout: %v", err)
 			}
 			timeout = parsed
 		}
 
-		// Build gate title
 		title := fmt.Sprintf("Gate: %s", gateType)
 		if awaitID != "" {
 			title = fmt.Sprintf("Gate: %s %s", gateType, awaitID)
 		}
 
-		// Build description
 		desc := fmt.Sprintf("Ad-hoc gate blocking %s", targetIssue.ID)
 		if reason != "" {
 			desc = fmt.Sprintf("%s\n\nReason: %s", desc, reason)
 		}
 
-		// Create the gate issue
 		gate := &types.Issue{
 			Title:       title,
 			Description: desc,
@@ -288,29 +352,25 @@ Examples:
 		}
 
 		if err := store.CreateIssue(ctx, gate, actor); err != nil {
-			FatalError("creating gate: %v", err)
+			return HandleErrorRespectJSON("creating gate: %v", err)
 		}
 
-		// Add blocking dependency: target issue depends on gate
 		dep := &types.Dependency{
 			IssueID:     targetIssue.ID,
 			DependsOnID: gate.ID,
 			Type:        types.DepBlocks,
 		}
 		if err := store.AddDependency(ctx, dep, actor); err != nil {
-			FatalError("adding blocking dependency: %v", err)
+			return HandleErrorRespectJSON("adding blocking dependency: %v", err)
 		}
 
-		// CreateIssue commits the issue row. AddDependency writes to the
-		// working set and needs a follow-up commit.
 		commitMsg := fmt.Sprintf("bd: create gate %s blocking %s", gate.ID, targetIssue.ID)
 		if err := store.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
-			FatalError("failed to commit: %v", err)
+			return HandleErrorRespectJSON("failed to commit: %v", err)
 		}
 
 		if jsonOutput {
-			outputJSON(gate)
-			return
+			return outputJSON(gate)
 		}
 
 		fmt.Printf("%s Created gate %s (type: %s)\n", ui.RenderPass("✓"), ui.RenderID(gate.ID), gateType)
@@ -322,6 +382,7 @@ Examples:
 			fmt.Printf("  Timeout: %s\n", timeout)
 		}
 		fmt.Printf("\nResolve with: bd gate resolve %s\n", gate.ID)
+		return nil
 	},
 }
 
@@ -332,30 +393,36 @@ var gateShowCmd = &cobra.Command{
 	Long: `Display details of a gate issue including its waiters.
 
 This is similar to 'bd show' but validates that the issue is a gate.`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("gate-show")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		gateID := args[0]
 		ctx := rootCtx
 
-		// Get the gate issue
 		var issue *types.Issue
 		var err error
 
 		issue, err = store.GetIssue(ctx, gateID)
 		if err != nil {
-			FatalError("gate not found: %s", gateID)
+			return HandleErrorRespectJSON("gate not found: %s", gateID)
 		}
 
 		if issue.IssueType != "gate" {
-			FatalError("%s is not a gate issue (type=%s)", gateID, issue.IssueType)
+			return HandleErrorRespectJSON("%s is not a gate issue (type=%s)", gateID, issue.IssueType)
 		}
 
 		if jsonOutput {
-			outputJSON(issue)
-			return
+			return outputJSON(issue)
 		}
 
-		// Display gate details
 		statusSym := "○"
 		if issue.Status == types.StatusClosed {
 			statusSym = "●"
@@ -379,6 +446,7 @@ This is similar to 'bd show' but validates that the issue is a gate.`,
 		if issue.Description != "" {
 			fmt.Printf("  Description: %s\n", issue.Description)
 		}
+		return nil
 	},
 }
 
@@ -390,30 +458,37 @@ var gateResolveCmd = &cobra.Command{
 
 This is equivalent to 'bd close <gate-id>' but with a more explicit name.
 Use --reason to provide context for why the gate was resolved.`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("gate resolve")
+
+		evt := metrics.NewCommandEvent("gate-resolve")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
 
 		gateID := args[0]
 		reason, _ := cmd.Flags().GetString("reason")
 
-		// Verify it's a gate issue
 		ctx := rootCtx
 		var issue *types.Issue
 		var err error
 
 		issue, err = store.GetIssue(ctx, gateID)
 		if err != nil {
-			FatalError("gate not found: %s", gateID)
+			return HandleError("gate not found: %s", gateID)
 		}
 
 		if issue.IssueType != "gate" {
-			FatalError("%s is not a gate issue (type=%s)", gateID, issue.IssueType)
+			return HandleError("%s is not a gate issue (type=%s)", gateID, issue.IssueType)
 		}
 
-		// Close the gate
 		if err := store.CloseIssue(ctx, gateID, reason, actor, ""); err != nil {
-			FatalError("closing gate: %v", err)
+			return HandleError("closing gate: %v", err)
 		}
 
 		commandDidWrite.Store(true)
@@ -422,6 +497,7 @@ Use --reason to provide context for why the gate was resolved.`,
 		if reason != "" {
 			fmt.Printf("  Reason: %s\n", reason)
 		}
+		return nil
 	},
 }
 
@@ -463,15 +539,23 @@ Examples:
   bd gate check --type=bead  # Check only cross-rig bead gates
   bd gate check --dry-run    # Show what would happen without changes
   bd gate check --escalate   # Escalate expired/failed gates`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("gate check")
+
+		evt := metrics.NewCommandEvent("gate-check")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
 
 		gateTypeFilter, _ := cmd.Flags().GetString("type")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		escalateFlag, _ := cmd.Flags().GetBool("escalate")
 		limit, _ := cmd.Flags().GetInt("limit")
 
-		// Get open gates
 		gateType := types.IssueType("gate")
 		filter := types.IssueFilter{
 			IssueType:     &gateType,
@@ -485,10 +569,9 @@ Examples:
 
 		gates, err = store.SearchIssues(ctx, "", filter)
 		if err != nil {
-			FatalError("%v", err)
+			return HandleErrorRespectJSON("%v", err)
 		}
 
-		// Filter by type if specified
 		var filteredGates []*types.Issue
 		for _, gate := range gates {
 			if shouldCheckGate(gate, gateTypeFilter) {
@@ -502,7 +585,7 @@ Examples:
 			} else {
 				fmt.Println("No open gates found.")
 			}
-			return
+			return nil
 		}
 
 		// Results tracking
@@ -593,15 +676,15 @@ Examples:
 			len(results), resolvedCount, escalatedCount, errorCount)
 
 		if jsonOutput {
-			summary := map[string]interface{}{
+			return outputJSON(map[string]interface{}{
 				"checked":   len(results),
 				"resolved":  resolvedCount,
 				"escalated": escalatedCount,
 				"errors":    errorCount,
 				"dry_run":   dryRun,
-			}
-			outputJSON(summary)
+			})
 		}
+		return nil
 	},
 }
 
