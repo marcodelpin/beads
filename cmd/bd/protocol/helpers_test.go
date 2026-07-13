@@ -304,12 +304,36 @@ func (w *workspace) create(args ...string) string {
 }
 
 // showJSON runs bd show <id> --json and returns the first issue object.
+//
+// The payload is count-only: labels and dependencies are inline, but comments
+// and dependents are reported as comment_count / dependent_count and their
+// bodies are omitted. Use showJSONFull to assert on comment or dependent
+// content.
 func (w *workspace) showJSON(id string) map[string]any {
 	w.t.Helper()
 	out := w.run("show", id, "--json")
 	items := parseJSONOutput(w.t, out)
 	if len(items) == 0 {
 		w.t.Fatalf("bd show %s --json returned no items", id)
+	}
+	return items[0]
+}
+
+// showJSONFull runs bd show <id> --json with the opt-in relational payloads and
+// returns the first issue object — the shape to assert against when a test
+// cares about comment or dependent CONTENT rather than counts.
+//
+// bd show --json has been count-only by default since cfcc95799 ("count-only
+// JSON details with opt-in streamed payloads", be-ijck6q): materializing every
+// comment and dependent made show pathologically slow on hub beads, so the full
+// lists moved behind --include-comments / --include-dependents. The data is
+// still there — these flags are how you ask for it.
+func (w *workspace) showJSONFull(id string) map[string]any {
+	w.t.Helper()
+	out := w.run("show", id, "--json", "--include-comments", "--include-dependents")
+	items := parseJSONOutput(w.t, out)
+	if len(items) == 0 {
+		w.t.Fatalf("bd show %s --json --include-comments --include-dependents returned no items", id)
 	}
 	return items[0]
 }

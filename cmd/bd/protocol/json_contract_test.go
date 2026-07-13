@@ -26,7 +26,12 @@ func TestJSONContract_ListOutputIsValidJSON(t *testing.T) {
 }
 
 // TestJSONContract_ShowOutputHasRequiredFields verifies bd show --json
-// includes all required issue fields.
+// includes all required issue fields, including the relational counts that
+// stand in for the opt-in comment and dependent payloads.
+//
+// schema_version is deliberately NOT required here: show is an array-returning
+// command (see TestJSONContract_ShowOutputIsArray), and wrapWithSchemaVersion
+// only injects the field into object-shaped output.
 func TestJSONContract_ShowOutputHasRequiredFields(t *testing.T) {
 	t.Parallel()
 	w := newWorkspace(t)
@@ -39,12 +44,50 @@ func TestJSONContract_ShowOutputHasRequiredFields(t *testing.T) {
 	}
 
 	issue := items[0]
-	requiredFields := []string{"id", "title", "status", "priority", "issue_type", "created_at", "schema_version"}
+	requiredFields := []string{
+		"id", "title", "status", "priority", "issue_type", "created_at",
+		"dependency_count", "dependent_count", "comment_count",
+	}
 	for _, field := range requiredFields {
 		if _, ok := issue[field]; !ok {
 			t.Errorf("bd show --json missing required field %q", field)
 		}
 	}
+}
+
+// TestJSONContract_ShowOutputIsArray pins the shape of bd show --json: a
+// top-level JSON array with one element per requested ID, NOT a schema_version
+// envelope. This is what the golden corpus commits (CATALOG.md: show =
+// "array-of-one") and what wrapWithSchemaVersion does with a slice — it returns
+// it bare, injecting schema_version only into object output.
+//
+// The shape is load-bearing for every consumer that parses show --json, so a
+// change here is a breaking wire change, not a cleanup.
+func TestJSONContract_ShowOutputIsArray(t *testing.T) {
+	t.Parallel()
+	w := newWorkspace(t)
+	id1 := w.create("Array shape one")
+	id2 := w.create("Array shape two")
+
+	out := w.run("show", id1, id2, "--json")
+
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(out), &arr); err != nil {
+		t.Fatalf("bd show --json is not a top-level JSON array: %v\nOutput:\n%s", err, out)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("bd show <id1> <id2> --json returned %d items, want 2\nOutput:\n%s", len(arr), out)
+	}
+
+	gotIDs := make([]string, 0, len(arr))
+	for _, item := range arr {
+		id, _ := item["id"].(string)
+		gotIDs = append(gotIDs, id)
+		if _, ok := item["schema_version"]; ok {
+			t.Errorf("bd show --json item %s carries schema_version; array-returning commands do not", id)
+		}
+	}
+	requireStringSetEqual(t, gotIDs, []string{id1, id2}, "bd show <id1> <id2> --json ids")
 }
 
 // TestJSONContract_ReadyOutputIsValidJSON verifies bd ready --json produces
@@ -209,18 +252,18 @@ func TestJSONContract_PingOutputIsValidJSON(t *testing.T) {
 }
 
 // TestJSONContract_SchemaVersionPresent verifies that schema_version is
-// present in object-returning --json commands (show, create, ping).
-// Array-returning commands (list, ready) do not include schema_version.
+// present in object-returning --json commands (create, ping).
+// Array-returning commands (list, ready, show) do not include schema_version —
+// see TestJSONContract_ShowOutputIsArray.
 func TestJSONContract_SchemaVersionPresent(t *testing.T) {
 	t.Parallel()
 	w := newWorkspace(t)
-	id := w.create("Schema version test")
 
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{"show", []string{"show", id, "--json"}},
+		{"create", []string{"create", "Schema version test", "--json"}},
 		{"ping", []string{"ping", "--json"}},
 	}
 
