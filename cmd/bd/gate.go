@@ -58,15 +58,16 @@ By default, shows only open gates. Use --all to include closed gates.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("gate list is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("gate-list")
 		defer func() {
 			if c := metrics.Global(); c != nil {
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		if usesProxiedServer() {
+			return runGateListProxiedServer(cmd, rootCtx, args)
+		}
 
 		allFlag, _ := cmd.Flags().GetBool("all")
 		limit, _ := cmd.Flags().GetInt("limit")

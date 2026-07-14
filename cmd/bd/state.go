@@ -36,15 +36,16 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("state is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("state")
 		defer func() {
 			if c := metrics.Global(); c != nil {
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		if usesProxiedServer() {
+			return runStateProxiedServer(rootCtx, args[0], args[1])
+		}
 
 		ctx := rootCtx
 		issueID := args[0]
@@ -278,15 +279,16 @@ Example:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("state list is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("state-list")
 		defer func() {
 			if c := metrics.Global(); c != nil {
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		if usesProxiedServer() {
+			return runStateListProxiedServer(rootCtx, args[0])
+		}
 
 		ctx := rootCtx
 		issueID := args[0]
