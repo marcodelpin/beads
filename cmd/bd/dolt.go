@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/ui"
 	"golang.org/x/term"
@@ -250,7 +251,7 @@ func printAncestorPKMismatchGuidance(err error) {
 	fmt.Fprintln(w, "       bd import /tmp/beads-local.jsonl")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Full playbook (and how to prevent this during upgrades):")
-	fmt.Fprintln(w, "  https://github.com/gastownhall/beads/blob/main/docs/RECOVERY.md#pk-fork-refused")
+	fmt.Fprintln(w, "  https://github.com/gastownhall/beads/blob/main/docs/recovery/init-safety.md#pk-fork-refused")
 }
 
 // printNoRemoteGuidance prints an informational message (to stdout) when
@@ -487,6 +488,30 @@ The remote must already exist (see 'bd dolt remote add').`,
 	},
 }
 
+// errExplicitCommitUnsupported returns a typed *storage.ErrUnsupported when the
+// open store has no Dolt commit graph (Postgres/MySQL/SQLite), and nil for Dolt.
+// The SQL backends deliberately expose a no-op Commit so internal write paths can
+// call store.Commit() opportunistically without erroring; an EXPLICIT `bd dolt
+// commit` / `bd vc commit` must not ride that no-op and print a fake "Committed."
+// with no commit graph behind it. Internal opportunistic auto-commit is skipped
+// separately in PostRun for these backends, so gating only the explicit commands
+// keeps that path untouched.
+func errExplicitCommitUnsupported(st storage.DoltStorage, op string) error {
+	ncg, ok := storage.UnwrapStore(st).(storage.NonCommitGraphBackend)
+	if !ok || !ncg.CommitGraphUnsupported() {
+		return nil
+	}
+	backend := "non-dolt"
+	if beadsDir := selectedDoltBeadsDir(); beadsDir != "" {
+		if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
+			if b := cfg.GetBackend(); b != "" && b != configfile.BackendDolt {
+				backend = b
+			}
+		}
+	}
+	return &storage.ErrUnsupported{Op: op, Backend: backend}
+}
+
 var doltCommitCmd = &cobra.Command{
 	Use:   "commit",
 	Short: "Create a Dolt commit from pending changes",
@@ -507,6 +532,9 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 		st := getStore()
 		if st == nil {
 			return HandleError("no store available")
+		}
+		if err := errExplicitCommitUnsupported(st, "dolt commit"); err != nil {
+			return HandleError("%v", err)
 		}
 		msg, _ := cmd.Flags().GetString("message")
 		if msg == "" {
@@ -588,6 +616,19 @@ on the next bd command unless auto-start is disabled.`,
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 		}
+
+		if usesProxiedServer() {
+			rootDir, err := resolveProxiedServerRootPath(beadsDir)
+			if err != nil {
+				return HandleError("%v", err)
+			}
+			if err := proxy.Shutdown(rootDir); err != nil {
+				return HandleError("%v", err)
+			}
+			fmt.Println("Dolt server stopped.")
+			return nil
+		}
+
 		serverDir := doltserver.ResolveServerDir(beadsDir)
 		force, _ := cmd.Flags().GetBool("force")
 
@@ -617,6 +658,13 @@ endpoint via SQL and reports reachability, server version, and database.`,
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		}
+		// A non-Dolt backend (postgres/mysql/sqlite) has no Dolt engine at all;
+		// report the backend rather than misdescribing an embedded Dolt server
+		// (parity with `bd dolt show`, which already special-cases this).
+		if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() != configfile.BackendDolt {
+			fmt.Printf("Backend: %s (no Dolt engine)\n", cfg.GetBackend())
+			return nil
 		}
 		if !usesSQLServer() {
 			showEmbeddedDoltStatus(beadsDir)
