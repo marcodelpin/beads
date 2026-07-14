@@ -227,7 +227,7 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 
 	idleTimeout := opts.IdleTimeout
 	if idleTimeout < 0 {
-		idleTimeout = 0
+		idleTimeout = IdleTimeoutNever
 	}
 
 	args := []string{
@@ -301,6 +301,14 @@ func forkExecChild(rootDir string, opts OpenOpts, port int, lock *util.Lock) (*e
 	}()
 
 	return cmd, done, nil
+}
+
+func IsRunning(rootDir string) (bool, int) {
+	_, pf, ok := readAndDial(rootDir)
+	if !ok {
+		return false, 0
+	}
+	return true, pf.Pid
 }
 
 func readAndDial(rootDir string) (Endpoint, *pidfile.PidFile, bool) {
