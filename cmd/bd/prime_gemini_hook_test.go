@@ -400,6 +400,74 @@ func TestPrime_MemoriesOnly_WithCustomPrimeMd(t *testing.T) {
 	}
 }
 
+// TestPrime_NoMemories_DefaultPath: --no-memories omits the persistent memories
+// section from the default (generated) prime output. A control run without the
+// flag confirms the memory is otherwise present, so the assertion has signal.
+func TestPrime_NoMemories_DefaultPath(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	workDir := t.TempDir()
+	initBeadsWorkspace(t, binPath, workDir)
+	rememberInWorkspace(t, binPath, workDir, "prime-mem-key", "remember this insight")
+
+	// Control: without --no-memories, the memory is injected.
+	ctrl, _ := runPrimeBinary(t, binPath, workDir, "--full")
+	if !strings.Contains(string(ctrl), "remember this insight") {
+		t.Fatalf("control run should include memory, got: %q", firstN(string(ctrl), 400))
+	}
+
+	// With --no-memories, the memories section is omitted.
+	stdout, _ := runPrimeBinary(t, binPath, workDir, "--full", "--no-memories")
+	out := string(stdout)
+	if strings.Contains(out, "remember this insight") {
+		t.Errorf("--no-memories should omit memory content, got: %q", firstN(out, 400))
+	}
+	if strings.Contains(out, "Persistent Memories") {
+		t.Errorf("--no-memories should omit the Persistent Memories section, got: %q", firstN(out, 400))
+	}
+	// The generated workflow context should still be present.
+	if !strings.Contains(out, "Beads") {
+		t.Errorf("--no-memories should still emit workflow context, got: %q", firstN(out, 400))
+	}
+}
+
+// TestPrime_NoMemories_CustomPrimeMd: --no-memories suppresses the memories that
+// GH#3941 appends under a custom PRIME.md; the custom content itself is unaffected.
+func TestPrime_NoMemories_CustomPrimeMd(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	workDir := t.TempDir()
+	initBeadsWorkspace(t, binPath, workDir)
+	rememberInWorkspace(t, binPath, workDir, "prime-mem-key", "remember this insight")
+
+	const custom = "# Custom local PRIME.md override\nBe excellent.\n"
+	if err := os.WriteFile(filepath.Join(workDir, ".beads", "PRIME.md"), []byte(custom), 0o644); err != nil {
+		t.Fatalf("write PRIME.md: %v", err)
+	}
+
+	stdout, _ := runPrimeBinary(t, binPath, workDir, "--no-memories")
+	out := string(stdout)
+	if !strings.Contains(out, "Be excellent.") {
+		t.Errorf("custom PRIME.md content should be present, got: %q", firstN(out, 300))
+	}
+	if strings.Contains(out, "remember this insight") || strings.Contains(out, "Persistent Memories") {
+		t.Errorf("--no-memories should omit memories under custom PRIME.md, got: %q", firstN(out, 400))
+	}
+}
+
+// TestPrime_NoMemories_MemoriesOnlyWins: when both --memories-only and
+// --no-memories are set, --memories-only wins and memories are still returned.
+func TestPrime_NoMemories_MemoriesOnlyWins(t *testing.T) {
+	binPath := buildBDUnderTest(t)
+	workDir := t.TempDir()
+	initBeadsWorkspace(t, binPath, workDir)
+	rememberInWorkspace(t, binPath, workDir, "prime-mem-key", "remember this insight")
+
+	stdout, _ := runPrimeBinary(t, binPath, workDir, "--memories-only", "--no-memories")
+	out := string(stdout)
+	if !strings.Contains(out, "remember this insight") {
+		t.Errorf("--memories-only should win over --no-memories and include memories, got: %q", firstN(out, 400))
+	}
+}
+
 func firstN(s string, n int) string {
 	if len(s) <= n {
 		return s
