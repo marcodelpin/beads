@@ -161,7 +161,8 @@ var showCmd = &cobra.Command{
 				if includeDepends {
 					iter, err := issueStore.IterDependentsWithMetadata(ctx, issue.ID)
 					if err != nil {
-						FatalErrorRespectJSON("iter dependents %s: %v", issue.ID, err)
+						result.Close()
+						return HandleErrorRespectJSON("iter dependents %s: %v", issue.ID, err)
 					}
 					defer iter.Close() //nolint:errcheck
 					var shallowDeps []*types.IssueWithDependencyMetadata
@@ -179,7 +180,8 @@ var showCmd = &cobra.Command{
 						})
 					}
 					if err := iter.Err(); err != nil {
-						FatalErrorRespectJSON("iter dependents %s: %v", issue.ID, err)
+						result.Close()
+						return HandleErrorRespectJSON("iter dependents %s: %v", issue.ID, err)
 					}
 					details.Dependents = shallowDeps
 
@@ -208,14 +210,16 @@ var showCmd = &cobra.Command{
 				if includeComments {
 					iter, err := issueStore.IterIssueComments(ctx, issue.ID)
 					if err != nil {
-						FatalErrorRespectJSON("iter comments %s: %v", issue.ID, err)
+						result.Close()
+						return HandleErrorRespectJSON("iter comments %s: %v", issue.ID, err)
 					}
 					defer iter.Close() //nolint:errcheck
 					for iter.Next(ctx) {
 						details.Comments = append(details.Comments, iter.Value())
 					}
 					if err := iter.Err(); err != nil {
-						FatalErrorRespectJSON("iter comments %s: %v", issue.ID, err)
+						result.Close()
+						return HandleErrorRespectJSON("iter comments %s: %v", issue.ID, err)
 					}
 				}
 
