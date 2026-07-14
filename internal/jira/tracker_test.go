@@ -696,6 +696,9 @@ func (s *configStore) GetReadyWork(_ context.Context, _ types.WorkFilter) ([]*ty
 func (s *configStore) GetReadyWorkWithCounts(_ context.Context, _ types.WorkFilter) ([]*types.IssueWithCounts, error) {
 	return nil, nil
 }
+func (s *configStore) CountReadyWork(_ context.Context, _ types.WorkFilter) (int, error) {
+	return 0, nil
+}
 func (s *configStore) GetBlockedIssues(_ context.Context, _ types.WorkFilter) ([]*types.BlockedIssue, error) {
 	return nil, nil
 }
