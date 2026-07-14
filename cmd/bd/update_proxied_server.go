@@ -70,6 +70,12 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	return nil
 }
 
+type updateProxiedResult struct {
+	before  *types.Issue
+	after   *types.Issue
+	updated bool
+}
+
 // applyUpdateProxiedOne applies one ID's update on the proxied path. The third
 // return (claimLost) reports a requested --claim that lost to a different owner
 // (already-claimed / not-claimable), so the caller can flip the batch exit code
@@ -78,58 +84,56 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 	if uowProvider == nil {
 		return nil, false, false, HandleError("proxied-server UOW provider not initialized")
 	}
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening unit of work for %s: %v\n", id, err)
-		return nil, false, false, nil
-	}
-	defer uw.Close(ctx)
 
-	issueUC := uw.IssueUseCase()
-	current, err := issueUC.GetIssue(ctx, id)
-	if err != nil || current == nil {
-		wispCurrent, wispErr := issueUC.GetWisp(ctx, id)
-		if wispErr == nil && wispCurrent != nil {
-			current = wispCurrent
-		} else if err != nil {
-			fmt.Fprintf(os.Stderr, "Error resolving %s: %v\n", id, err)
-			return nil, false, false, nil
-		} else {
-			fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
-			return nil, false, false, nil
+	var claimLost bool
+	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (updateProxiedResult, string, error) {
+		issueUC := uw.IssueUseCase()
+		current, err := issueUC.GetIssue(ctx, id)
+		if err != nil || current == nil {
+			wispCurrent, wispErr := issueUC.GetWisp(ctx, id)
+			if wispErr == nil && wispCurrent != nil {
+				current = wispCurrent
+			} else if err != nil {
+				return updateProxiedResult{}, "", fmt.Errorf("resolving %s: %w", id, err)
+			} else {
+				return updateProxiedResult{}, "", fmt.Errorf("issue %s not found", id)
+			}
 		}
-	}
-	if err := validateIssueUpdatable(id, current); err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
-		return nil, false, false, nil
-	}
+		if err := validateIssueUpdatable(id, current); err != nil {
+			return updateProxiedResult{}, "", err
+		}
 
-	spec, err := buildUpdateSpecForIssue(current, in)
-	if err != nil {
-		return nil, false, false, HandleErrorRespectJSON("%v", err)
-	}
+		spec, err := buildUpdateSpecForIssue(current, in)
+		if err != nil {
+			return updateProxiedResult{}, "", err
+		}
 
-	updated, err := issueUC.ApplyUpdate(ctx, id, spec, actor)
+		updated, err := issueUC.ApplyUpdate(ctx, id, spec, actor)
+		if err != nil {
+			if errors.Is(err, storage.ErrAlreadyClaimed) || errors.Is(err, storage.ErrNotClaimable) {
+				claimLost = in.claim
+				return updateProxiedResult{}, "", err
+			}
+			return updateProxiedResult{}, "", fmt.Errorf("updating %s: %w", id, err)
+		}
+
+		return updateProxiedResult{before: current, after: updated, updated: true}, fmt.Sprintf("bd: update %s", id), nil
+	})
 	if err != nil {
-		if errors.Is(err, storage.ErrAlreadyClaimed) || errors.Is(err, storage.ErrNotClaimable) {
+		if claimLost {
 			fmt.Fprintf(os.Stderr, "Error claiming %s: %v\n", id, err)
-			// A requested --claim that lost to another owner must flip the exit
-			// code even if another ID in the same batch was updated.
-			return nil, false, in.claim, nil
+			return nil, false, true, nil
 		}
-		fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return nil, false, false, nil
 	}
 
-	if err := uow.CommitWithRetries(ctx, uw, fmt.Sprintf("bd: update %s", id)); err != nil && !isDoltNothingToCommit(err) {
-		fmt.Fprintf(os.Stderr, "Error committing %s: %v\n", id, err)
-		return nil, false, false, nil
+	if res.updated {
+		if err := fireProxiedUpdateHooks(ctx, res.before, res.after); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", id, err)
+		}
 	}
-
-	if err := fireProxiedUpdateHooks(ctx, current, updated); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", id, err)
-	}
-	return updated, true, false, nil
+	return res.after, res.updated, false, nil
 }
 
 func fireProxiedUpdateHooks(ctx context.Context, before, after *types.Issue) error {

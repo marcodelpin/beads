@@ -565,8 +565,8 @@ func TestProxiedServerUpdate(t *testing.T) {
 		if got["tier"] != "gold" {
 			t.Errorf("metadata[tier]: got %v, want %q", got["tier"], "gold")
 		}
-		if got["score"] != float64(99) {
-			t.Errorf("metadata[score]: got %v, want 99 (number-typed via toJSONValue)", got["score"])
+		if got["score"] != "99" {
+			t.Errorf("metadata[score]: got %v, want %q (--set-metadata always stores string values)", got["score"], "99")
 		}
 	})
 

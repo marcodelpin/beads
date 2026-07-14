@@ -41,6 +41,7 @@ import (
 	sqlitestore "github.com/steveyegge/beads/internal/storage/sqlite"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/telemetry"
+	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -86,6 +87,7 @@ type envSnapshotValue struct {
 var changeDirEnvSnapshot map[string]envSnapshotValue
 
 var (
+	noColorFlag       bool
 	sandboxMode       bool
 	globalFlag        bool
 	serverMode        bool
@@ -205,6 +207,15 @@ func forcedMigratePreviewFlag(cmd *cobra.Command) string {
 		}
 	}
 	return ""
+}
+
+// applyNoColorFlag disables colorized output when --no-color is set.
+// Complements the NO_COLOR / CLICOLOR=0 env detection in package ui,
+// giving callers a per-invocation override.
+func applyNoColorFlag() {
+	if noColorFlag {
+		ui.DisableColors()
+	}
 }
 
 // loadBeadsEnvFile loads .beads/.env into process environment for per-project
@@ -614,6 +625,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "Enable verbose/debug output")
 	rootCmd.PersistentFlags().BoolVarP(&quietFlag, "quiet", "q", false, "Suppress non-essential output (errors only)")
 	rootCmd.PersistentFlags().BoolVar(&ignoreSchemaSkew, "ignore-schema-skew", false, "Proceed despite forward schema drift (some queries may fail)")
+	rootCmd.PersistentFlags().BoolVar(&noColorFlag, "no-color", false, "Disable color output (also: NO_COLOR=1 or CLICOLOR=0)")
 
 	// Add --version flag to root command (same behavior as version subcommand)
 	rootCmd.Flags().BoolP("version", "V", false, "Print version information")
@@ -702,6 +714,8 @@ var rootCmd = &cobra.Command{
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		applyNoColorFlag()
+
 		// Initialize CommandContext to hold runtime state (replaces scattered globals)
 		initCommandContext()
 
@@ -888,6 +902,8 @@ var rootCmd = &cobra.Command{
 		// silently skipped if "remote" were ever added to noDbCommands.
 		needsStoreDoltGrandchildren := []string{"remote"}
 
+		skipStoreMigrateSubcommands := []string{"from-server-to-proxied-server", "from-proxied-server-to-server", "from-shared-server-to-proxied-server", "from-proxied-server-to-shared-server"}
+
 		// Check both the command name and parent command name for subcommands
 		cmdName := cmd.Name()
 		isSubcommand := cmd.Parent() != nil && cmd.Parent().Name() != "bd"
@@ -898,6 +914,8 @@ var rootCmd = &cobra.Command{
 				// GH#2042: dolt push/pull/commit need the store — fall through to init
 			} else if slices.Contains(needsStoreDoltGrandchildren, parentName) {
 				// GH#2224: dolt remote add/list/remove need the store — fall through to init
+			} else if parentName == "migrate" && slices.Contains(skipStoreMigrateSubcommands, cmdName) {
+				skipsStoreInit = true
 			} else if slices.Contains(noDbCommands, parentName) {
 				skipsStoreInit = true
 			}
