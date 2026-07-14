@@ -205,8 +205,8 @@ func TestUpdateIssueMergeOps_InTxSemantics(t *testing.T) {
 		if got["team"] != "platform" {
 			t.Errorf("metadata[team]: got %v, want %q", got["team"], "platform")
 		}
-		if got["score"] != float64(5) {
-			t.Errorf("metadata[score]: got %v, want 5 (number-typed)", got["score"])
+		if got["score"] != "5" {
+			t.Errorf("metadata[score]: got %v, want %q (--set-metadata always stores string values, GH#4146)", got["score"], "5")
 		}
 	})
 

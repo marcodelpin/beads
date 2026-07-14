@@ -299,22 +299,10 @@ func ApplyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string)
 	return json.RawMessage(result), nil
 }
 
-// MetadataEditValue converts a set-edit string value to its most appropriate
-// JSON representation. Recognizes numbers, booleans, and null; everything else
-// becomes a JSON string.
+// MetadataEditValue stores a set-edit string value as a JSON string.
+// Previous behavior inferred types (numbers, booleans, null) from content,
+// which silently broke map[string]string round-trips (GH#4146).
 func MetadataEditValue(s string) json.RawMessage {
-	if s == "null" {
-		return json.RawMessage("null")
-	}
-	if s == "true" || s == "false" {
-		return json.RawMessage(s)
-	}
-	if _, err := fmt.Sscanf(s, "%f", new(float64)); err == nil {
-		// Verify it round-trips cleanly (not NaN, Inf, etc.)
-		if json.Valid([]byte(s)) {
-			return json.RawMessage(s)
-		}
-	}
 	b, _ := json.Marshal(s)
 	return json.RawMessage(b)
 }

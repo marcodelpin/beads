@@ -320,6 +320,12 @@ create, update, show, or close operation).`,
 
 		updatedIssues := []*types.Issue{}
 		var firstUpdatedID string // Track first successful update for last-touched
+		// claimFailed records a requested-but-lost claim. In a mixed batch (one
+		// claim won, another lost) firstUpdatedID is set by the winner, so the
+		// command would otherwise exit 0 and hide the lost claim from exit-code
+		// automation. Track it separately and exit non-zero when any claim was
+		// requested but not granted (beads audit finding #10).
+		claimFailed := false
 		mutatedStores := map[storage.DoltStorage][]string{}
 		mutatedResults := map[*RoutedResult]bool{}
 		pendingCloseResults := []*RoutedResult{}
@@ -378,6 +384,7 @@ create, update, show, or close operation).`,
 			if claimFlag {
 				if err := issueStore.ClaimIssue(ctx, result.ResolvedID, actor); err != nil {
 					fmt.Fprintf(os.Stderr, "Error claiming %s: %v\n", id, err)
+					claimFailed = true
 					closeIfUnmutated(result)
 					continue
 				}
@@ -542,7 +549,7 @@ create, update, show, or close operation).`,
 			}
 		}
 
-		if len(args) > 0 && firstUpdatedID == "" {
+		if (len(args) > 0 && firstUpdatedID == "") || claimFailed {
 			return SilentExit()
 		}
 		return nil
@@ -562,8 +569,9 @@ func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string)
 	return storage.ApplyMetadataEdits(existing, setFlags, unsetFlags)
 }
 
-// toJSONValue converts a string value to its most appropriate JSON representation.
-// Recognizes numbers, booleans, and null; everything else becomes a JSON string.
+// toJSONValue stores a CLI metadata value as a JSON string.
+// Previous behavior inferred types (numbers, booleans) from content,
+// which silently broke map[string]string round-trips (GH#4146).
 func toJSONValue(s string) json.RawMessage {
 	return storage.MetadataEditValue(s)
 }
