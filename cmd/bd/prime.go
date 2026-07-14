@@ -104,9 +104,9 @@ Config options:
   See docs/getting-started/ide-setup.md#policy-profiles for what each profile means.
 
 	Workflow customization:
-	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default output entirely.
+	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default workflow text. Persistent memories (from bd remember) are still appended so memory injection keeps working under a custom template.
 	- Use --export to dump the default content for customization.
-	- Use --memories-only for hook contexts that should inject only persistent memories.
+	- Use --memories-only for hook contexts that should inject only persistent memories; this returns only the memories section even when a custom PRIME.md is present.
 
 Memory injection caps:
 	Large memory sets can exceed what a session-start hook host will ingest,
@@ -160,26 +160,36 @@ Memory injection caps:
 
 		stealthMode := primeStealthMode || config.GetBool("no-git-ops")
 
-		if !primeExportMode {
-			localPrimePath := filepath.Join(".beads", "PRIME.md")
-			redirectedPrimePath := filepath.Join(beadsDir, "PRIME.md")
-
-			// #nosec G304 -- path is relative to cwd
-			if content, err := os.ReadFile(localPrimePath); err == nil {
-				emit(string(content))
-				return nil
-			}
-			// #nosec G304 -- path is constructed from beadsDir which we control
-			if content, err := os.ReadFile(redirectedPrimePath); err == nil {
-				emit(string(content))
-				return nil
-			}
-			// #nosec G304 -- path constructed from UserConfigDir which we control
-			if globalPath := resolveGlobalPrimePath(""); globalPath != "" {
-				if content, err := os.ReadFile(globalPath); err == nil {
-					emit(string(content))
-					return nil
+		// --memories-only is the primary memory-injection path for hook contexts
+		// (e.g. PreCompact). It must return ONLY the persistent memories section,
+		// regardless of any custom PRIME.md override or --export (GH#3941).
+		// Handle it before the custom-PRIME branch so a custom PRIME.md can never
+		// suppress memory injection.
+		if primeMemoriesOnly {
+			var buf bytes.Buffer
+			if err := outputMemoriesOnlyContext(&buf); err != nil {
+				// Suppress all errors - silent exit with success.
+				if primeHookJSONMode {
+					_ = outputHookJSON(os.Stdout, "")
 				}
+				return nil
+			}
+			emit(buf.String())
+			return nil
+		}
+
+		// Check for custom PRIME.md override (unless --export flag).
+		// A custom PRIME.md replaces the default workflow text, but the persistent
+		// memories section is still appended (when present) so `bd remember` keeps
+		// working under a custom template — matching the default-template behavior
+		// (GH#3941).
+		if !primeExportMode {
+			if content, ok := readCustomPrimeContent(beadsDir); ok {
+				if mem := formatMemoriesForPrime(false); mem != "" {
+					content += mem
+				}
+				emit(content)
+				return nil
 			}
 		}
 
@@ -210,6 +220,34 @@ func init() {
 	primeCmd.Flags().IntVar(&primeMaxMemories, "max-memories", 0, "Cap injected persistent memories to N entries (0 = unlimited; falls back to the prime.max-memories config key)")
 	primeCmd.Flags().IntVar(&primeMaxMemoryChars, "max-memory-chars", 0, "Cap the total bytes of injected memory entries, at whole-memory boundaries; section header and banner are not counted (0 = unlimited; falls back to the prime.max-memory-chars config key)")
 	rootCmd.AddCommand(primeCmd)
+}
+
+// readCustomPrimeContent returns the contents of a custom PRIME.md override and
+// true when one is found. It checks, in priority order: the local .beads/PRIME.md
+// (clone-specific customization), the redirected workspace PRIME.md (shared
+// customization), then the global ~/.config/beads/PRIME.md. It returns ("", false)
+// when no override exists, so callers fall through to the generated default.
+func readCustomPrimeContent(beadsDir string) (string, bool) {
+	localPrimePath := filepath.Join(".beads", "PRIME.md")
+	// Try local first (user's clone-specific customization).
+	// #nosec G304 -- path is relative to cwd
+	if content, err := os.ReadFile(localPrimePath); err == nil {
+		return string(content), true
+	}
+	// Fall back to redirected location (shared customization).
+	redirectedPrimePath := filepath.Join(beadsDir, "PRIME.md")
+	// #nosec G304 -- path is constructed from beadsDir which we control
+	if content, err := os.ReadFile(redirectedPrimePath); err == nil {
+		return string(content), true
+	}
+	// Fall back to global config (~/.config/beads/PRIME.md).
+	if globalPath := resolveGlobalPrimePath(""); globalPath != "" {
+		// #nosec G304 -- path constructed from UserConfigDir which we control
+		if content, err := os.ReadFile(globalPath); err == nil {
+			return string(content), true
+		}
+	}
+	return "", false
 }
 
 // outputHookJSON wraps content in the SessionStart hook JSON envelope shared
