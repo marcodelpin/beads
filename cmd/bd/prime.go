@@ -97,6 +97,11 @@ Config options:
 - no-git-ops: When true, outputs stealth mode (no git commands in session close protocol).
   Set via: bd config set no-git-ops true
   Useful when you want to control when commits happen manually.
+- agent.profile: Explicit policy profile for git/commit authority wording
+  (conservative | minimal | team-maintainer; default conservative).
+  Set via: bd config set agent.profile team-maintainer
+  Or per-session: BD_AGENT_PROFILE=team-maintainer (env var takes precedence).
+  See docs/getting-started/ide-setup.md#policy-profiles for what each profile means.
 
 	Workflow customization:
 	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default output entirely.
@@ -284,6 +289,13 @@ var isEphemeralBranch = func() bool {
 // (stubbable for tests).
 var primeNoPushConfigured = func() bool {
 	return config.GetBool("no-push")
+}
+
+// primeAgentProfile reports the explicit agent.profile knob (gh#3423,
+// follow-up to #4220), resolved via BD_AGENT_PROFILE env override / config
+// key with a safe fallback to conservative (stubbable for tests).
+var primeAgentProfile = func() config.AgentProfile {
+	return config.GetAgentProfile()
 }
 
 // primeHasGitRemote detects if any git remote is configured (stubbable for tests)
@@ -514,16 +526,31 @@ func outputMCPContext(w io.Writer, stealthMode bool) error {
 
 	var closeProtocol string
 	var profileRule string
-	if stealthMode || localOnly {
-		// Stealth mode or local-only: close issues, no git operations
+	if stealthMode {
+		// Stealth mode is an explicit no-git context.
 		closeProtocol = "Before saying \"done\": bd close <completed-ids>"
 		profileRule = "Git authority: no git operations in this context"
+	} else if localOnly {
+		if primeAgentProfile() == config.ProfileTeamMaintainer {
+			closeProtocol = "Before saying \"done\": bd close <completed-ids>; run checks; run git status and commit local changes as routine work (agent.profile=team-maintainer); do not push, pull, or run remote sync."
+			profileRule = "Git authority: local-only/no-remote. No git remote configured. Profile: team-maintainer active (agent.profile=team-maintainer) - local commits are routine; do not push, pull, or run remote sync. Explicit no-commit instructions still override."
+		} else {
+			closeProtocol = "Before saying \"done\": bd close <completed-ids>; run checks; report git status and proposed handoff (local-only/no remote sync)"
+			profileRule = "Git authority: local-only/no-remote. No git remote configured. Do not push, pull, or run remote sync. Local git operations follow active user, orchestrator, and repository authority."
+		}
 	} else if ephemeral {
 		closeProtocol = "Before saying \"done\": bd close <completed-ids>; run checks; report git status and proposed handoff (no push - ephemeral branch)"
 		profileRule = "Profile model: conservative by default; commit only with explicit user/orchestrator authority"
 	} else if noPush {
 		closeProtocol = "Before saying \"done\": bd close <completed-ids>; run checks; report git status and proposed handoff (push disabled)"
 		profileRule = "Profile model: conservative by default; push only with explicit user/orchestrator authority"
+	} else if primeAgentProfile() == config.ProfileTeamMaintainer {
+		// Explicit agent.profile=team-maintainer knob: commit/sync/push are
+		// routine work here, not conditional on a per-session "enabled" ask.
+		// Hard constraints above (stealth/local-only/ephemeral/no-push) still
+		// take precedence over this profile.
+		closeProtocol = "Before saying \"done\": bd close <completed-ids>; run checks; commit, bd dolt push, and git push as part of routine work (agent.profile=team-maintainer), unless current instructions say otherwise."
+		profileRule = "Profile: team-maintainer active (agent.profile=team-maintainer) - commit, sync, and push are routine; explicit no-commit/no-push instructions still override."
 	} else {
 		closeProtocol = "Before saying \"done\": bd close <completed-ids>; run checks. Then follow the active profile — conservative reports handoff; team-maintainer may commit/sync/push when explicitly enabled."
 		profileRule = "Default: do not commit, push, or run dolt remote sync without explicit authority. Team-maintainer behavior is opt-in and still subordinate to user/orchestrator instructions."
@@ -571,8 +598,8 @@ func outputCLIContext(w io.Writer, stealthMode bool) error {
 	var gitWorkflowRule string
 	var profileRule string
 
-	if stealthMode || localOnly {
-		// Stealth mode or local-only: close issues, no git operations
+	if stealthMode {
+		// Stealth mode is an explicit no-git context.
 		closeProtocol = `[ ] bd close <id1> <id2> ...   (close completed issues)`
 		syncSection = `### Sync & Collaboration
 - ` + "`bd search <query>`" + ` - Search issues by keyword`
@@ -580,14 +607,40 @@ func outputCLIContext(w io.Writer, stealthMode bool) error {
 ` + "```bash" + `
 bd close <id1> <id2> ...    # Close all completed issues at once
 ` + "```"
-		// Only show local-only note if not in stealth mode (stealth is explicit user choice)
-		if localOnly && !stealthMode {
-			closeNote = "**Note:** No git remote configured. Issues are saved locally only."
-			gitWorkflowRule = "Git workflow: local-only (no git remote)"
-		} else {
-			gitWorkflowRule = "Git workflow: stealth mode (no git ops)"
-		}
+		gitWorkflowRule = "Git workflow: stealth mode (no git ops)"
 		profileRule = "Git authority: no git operations in this context"
+	} else if localOnly {
+		closeNote = "**Note:** No git remote configured. Do not push, pull, or run remote sync. Local git operations follow active user, orchestrator, and repository authority."
+		syncSection = `### Sync & Collaboration
+- ` + "`bd search <query>`" + ` - Search issues by keyword`
+		if primeAgentProfile() == config.ProfileTeamMaintainer {
+			closeProtocol = `[ ] 1. bd close <id1> <id2> ...   (close completed issues)
+[ ] 2. run quality gates        (tests, linters, builds when relevant)
+[ ] 3. git status               (check what changed)
+[ ] 4. team-maintainer: commit local changes; do not push or run remote sync`
+			completingWorkflow = `**Completing work:**
+` + "```bash" + `
+bd close <id1> <id2> ...    # Close all completed issues at once
+git status                  # Check changed files
+git add <files> && git commit -m "..."
+# Local-only/no-remote: do not push, pull, or run remote sync
+` + "```"
+			gitWorkflowRule = "Git workflow: local-only/no-remote; team-maintainer commits locally but does not push or run remote sync"
+			profileRule = "Git authority: local-only/no-remote. Profile: team-maintainer active (agent.profile=team-maintainer) - local commits are routine; explicit no-commit instructions still override."
+		} else {
+			closeProtocol = `[ ] 1. bd close <id1> <id2> ...   (close completed issues)
+[ ] 2. run quality gates        (tests, linters, builds when relevant)
+[ ] 3. git status               (check what changed)
+[ ] 4. report handoff           (local-only/no remote sync; wait for authority)`
+			completingWorkflow = `**Completing work:**
+` + "```bash" + `
+bd close <id1> <id2> ...    # Close all completed issues at once
+git status                  # Report changed files and proposed commands
+# Local-only/no-remote: do not push, pull, or run remote sync
+` + "```"
+			gitWorkflowRule = "Git workflow: local-only/no-remote; no push, pull, or remote sync"
+			profileRule = "Git authority: local-only/no-remote. Local git operations follow active user, orchestrator, and repository authority."
+		}
 	} else if ephemeral {
 		closeProtocol = `[ ] 1. bd close <id1> <id2> ...   (close completed issues)
 [ ] 2. run quality gates        (tests, linters, builds when relevant)
@@ -625,6 +678,31 @@ git status                  # Report changed files and proposed commands
 ` + "```"
 		gitWorkflowRule = "Git workflow: push disabled; report handoff unless explicitly authorized"
 		profileRule = "Profile model: conservative/minimal report handoff; team-maintainer still respects no-push/user instructions"
+	} else if primeAgentProfile() == config.ProfileTeamMaintainer {
+		// Explicit agent.profile=team-maintainer knob: commit/sync/push are
+		// routine work here, not conditional on a per-session "enabled" ask.
+		// Hard constraints above (stealth/local-only/ephemeral/no-push) still
+		// take precedence over this profile.
+		closeProtocol = `[ ] 1. bd close <id1> <id2> ...   (close completed issues)
+[ ] 2. run quality gates        (tests, linters, builds when relevant)
+[ ] 3. git status               (check what changed)
+[ ] 4. team-maintainer: commit, sync, push as part of routine work (unless current instructions say otherwise)`
+		closeNote = "**Policy:** agent.profile=team-maintainer is active. Commit, sync, and push as part of routine work; explicit \"do not commit\"/\"do not push\" instructions still override."
+		syncSection = `### Sync & Collaboration
+- ` + "`bd dolt push`" + ` - Push beads to Dolt remote
+- ` + "`bd dolt pull`" + ` - Pull beads from Dolt remote
+- ` + "`bd search <query>`" + ` - Search issues by keyword`
+		completingWorkflow = `**Completing work:**
+` + "```bash" + `
+bd close <id1> <id2> ...    # Close all completed issues at once
+git status                  # Check changed files
+# team-maintainer: commit, sync, push are routine unless instructions forbid it
+git add . && git commit -m "..."
+bd dolt push
+git push
+` + "```"
+		gitWorkflowRule = "Git workflow: team-maintainer active - commit/push are routine unless explicitly restricted"
+		profileRule = "Profile: team-maintainer active (agent.profile=team-maintainer) - commit, sync, and push are routine; explicit no-commit/no-push instructions still override."
 	} else {
 		closeProtocol = `[ ] 1. bd close <id1> <id2> ...   (close completed issues)
 [ ] 2. run quality gates        (tests, linters, builds when relevant)
