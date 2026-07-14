@@ -6,18 +6,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
-func runLabelAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
+func runLabelAddProxiedServer(ctx context.Context, args []string) error {
 	return labelMutateProxied(ctx, args, "added")
 }
 
-func runLabelRemoveProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
+func runLabelRemoveProxiedServer(ctx context.Context, args []string) error {
 	return labelMutateProxied(ctx, args, "removed")
 }
 
@@ -101,7 +99,7 @@ func labelMutateProxied(ctx context.Context, args []string, operation string) er
 	return nil
 }
 
-func runLabelListProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
+func runLabelListProxiedServer(ctx context.Context, args []string) error {
 	uw, err := proxiedOpenReadUOW(ctx)
 	if err != nil {
 		return err
@@ -145,7 +143,7 @@ func runLabelListProxiedServer(cmd *cobra.Command, ctx context.Context, args []s
 	return nil
 }
 
-func runLabelListAllProxiedServer(cmd *cobra.Command, ctx context.Context) error {
+func runLabelListAllProxiedServer(ctx context.Context) error {
 	uw, err := proxiedOpenReadUOW(ctx)
 	if err != nil {
 		return err
@@ -229,7 +227,7 @@ func runLabelListAllProxiedServer(cmd *cobra.Command, ctx context.Context) error
 	return nil
 }
 
-func runLabelPropagateProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
+func runLabelPropagateProxiedServer(ctx context.Context, args []string) error {
 	label := strings.TrimSpace(args[1])
 	if label == "" {
 		return HandleErrorRespectJSON("label cannot be empty")

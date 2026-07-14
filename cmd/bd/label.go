@@ -131,7 +131,7 @@ var labelAddCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			return runLabelAddProxiedServer(cmd, rootCtx, args)
+			return runLabelAddProxiedServer(rootCtx, args)
 		}
 
 		issueIDs, labels := parseLabelArgs(args)
@@ -176,7 +176,7 @@ var labelRemoveCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			return runLabelRemoveProxiedServer(cmd, rootCtx, args)
+			return runLabelRemoveProxiedServer(rootCtx, args)
 		}
 
 		issueIDs, labels := parseLabelArgs(args)
@@ -209,7 +209,7 @@ var labelListCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			return runLabelListProxiedServer(cmd, rootCtx, args)
+			return runLabelListProxiedServer(rootCtx, args)
 		}
 
 		ctx := rootCtx
@@ -256,7 +256,7 @@ var labelListAllCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			return runLabelListAllProxiedServer(cmd, rootCtx)
+			return runLabelListAllProxiedServer(rootCtx)
 		}
 
 		ctx := rootCtx
@@ -336,7 +336,7 @@ var labelPropagateCmd = &cobra.Command{
 		}()
 
 		if usesProxiedServer() {
-			return runLabelPropagateProxiedServer(cmd, rootCtx, args)
+			return runLabelPropagateProxiedServer(rootCtx, args)
 		}
 
 		ctx := rootCtx
