@@ -36,7 +36,7 @@ func TestCLI_Import_ForeignPrefix_E2E(t *testing.T) {
 	}
 	bdBinary := filepath.Join(tmpDir, bdName)
 
-	buildCmd := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", bdBinary, ".")
+	buildCmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", bdBinary, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build bd: %v\nOutput: %s", err, out)
 	}

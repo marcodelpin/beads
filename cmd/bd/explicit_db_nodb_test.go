@@ -52,7 +52,14 @@ func buildBDUnderTest(t *testing.T) string {
 			binName = "bd.exe"
 		}
 		buildBDPath = filepath.Join(dir, binName)
-		buildCmd := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", buildBDPath, ".")
+		// -buildvcs=false: the test binary needs no VCS stamping, and stamping is
+		// fragile here. Sibling tests scrub HOME/USERPROFILE process-wide for
+		// hermetic runs, so this child `go build` inherits an env with no gitconfig;
+		// on a checkout whose files are owned by another SID (a Windows network/
+		// mapped drive) git then reports dubious-ownership and the VCS probe fails
+		// with "error obtaining VCS status: exit status 128", failing the build for
+		// a stamp nothing reads.
+		buildCmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", buildBDPath, ".")
 		if out, err := buildCmd.CombinedOutput(); err != nil {
 			buildBDErr = &buildBDError{err: err, output: out}
 			return

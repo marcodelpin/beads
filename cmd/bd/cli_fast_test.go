@@ -717,7 +717,7 @@ func init() {
 		panic(err)
 	}
 	testBD = filepath.Join(tmpDir, bdBinary)
-	cmd := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", testBD, ".")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", testBD, ".")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		panic(string(out))
 	}

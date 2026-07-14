@@ -245,7 +245,7 @@ func TestListUsesRepoBeadsDirWhenDoltDataDirEscapesDotBeads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	buildCmd := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", binPath, ".")
+	buildCmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", binPath, ".")
 	buildCmd.Dir = packageDir
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
