@@ -6,29 +6,27 @@ import (
 	"os"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/storage/uow"
 )
 
 func runDoltRemoteRemoveProxied(ctx context.Context, name string) error {
 	if uowProvider == nil {
 		return HandleError("proxied-server UOW provider not initialized")
 	}
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		return HandleErrorRespectJSON("open unit of work: %v", err)
-	}
-	defer uw.Close(ctx)
 
-	if err := uw.DoltRemoteUseCase().DeleteRemote(ctx, name); err != nil {
+	err := uow.RunTx(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
+		if err := uw.DoltRemoteUseCase().DeleteRemote(ctx, name); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("bd: remove remote %s", name), nil
+	})
+	if err != nil {
 		if jsonOutput {
 			_ = outputJSONError(err, "remote_remove_failed")
 		} else {
 			fmt.Fprintf(os.Stderr, "Error removing remote: %v\n", err)
 		}
 		return SilentExit()
-	}
-
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: remove remote %s", name)); err != nil && !isDoltNothingToCommit(err) {
-		return HandleErrorRespectJSON("commit: %v", err)
 	}
 
 	if name == "origin" {
