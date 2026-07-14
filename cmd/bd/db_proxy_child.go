@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -62,6 +63,7 @@ not intended to be invoked directly by users.`,
 		if err != nil {
 			return err
 		}
+		defer func() { _ = srv.Stop(context.Background()) }()
 
 		p := proxy.NewProxyServer(proxy.ProxyOpts{
 			RootDir:     dbProxyChildRoot,
