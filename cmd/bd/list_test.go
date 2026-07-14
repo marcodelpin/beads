@@ -192,36 +192,43 @@ func TestListCommandSuite(t *testing.T) {
 				t.Fatalf("Failed to add dependency: %v", err)
 			}
 
-			err := outputDotFormat(h.ctx, h.store, h.issues)
+			deps, derr := h.store.GetAllDependencyRecords(h.ctx)
+			if derr != nil {
+				t.Fatalf("GetAllDependencyRecords: %v", derr)
+			}
+			err := outputDotFormat(h.issues, deps)
 			if err != nil {
 				t.Errorf("outputDotFormat failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list dot", func(t *testing.T) {
-			err := outputFormattedList(h.ctx, h.store, h.issues, "dot")
+			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
+			err := outputFormattedList(h.issues, deps, "dot")
 			if err != nil {
 				t.Errorf("outputFormattedList with dot format failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list digraph preset", func(t *testing.T) {
-			// Dependency already added in previous test, just use it
-			err := outputFormattedList(h.ctx, h.store, h.issues, "digraph")
+			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
+			err := outputFormattedList(h.issues, deps, "digraph")
 			if err != nil {
 				t.Errorf("outputFormattedList with digraph format failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list custom template", func(t *testing.T) {
-			err := outputFormattedList(h.ctx, h.store, h.issues, "{{.ID}} {{.Title}}")
+			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
+			err := outputFormattedList(h.issues, deps, "{{.ID}} {{.Title}}")
 			if err != nil {
 				t.Errorf("outputFormattedList with custom template failed: %v", err)
 			}
 		})
 
 		t.Run("output formatted list invalid template", func(t *testing.T) {
-			err := outputFormattedList(h.ctx, h.store, h.issues, "{{.ID")
+			deps, _ := h.store.GetAllDependencyRecords(h.ctx)
+			err := outputFormattedList(h.issues, deps, "{{.ID")
 			if err == nil {
 				t.Error("Expected error for invalid template")
 			}
@@ -1454,14 +1461,15 @@ func TestHierarchicalChildren(t *testing.T) {
 		}
 	})
 
-	// Test leaf node (should return only itself)
+	// Test leaf node: a childless parent is not echoed (GH#3349), so a leaf
+	// has no hierarchical children and the result is empty.
 	t.Run("leaf_node", func(t *testing.T) {
 		issues, err := getHierarchicalChildren(ctx, store, "", grandchild11.ID, types.IssueFilter{})
 		if err != nil {
 			t.Fatalf("getHierarchicalChildren for leaf failed: %v", err)
 		}
-		if len(issues) != 1 || issues[0].ID != grandchild11.ID {
-			t.Errorf("Expected 1 issue (leaf), got %d", len(issues))
+		if len(issues) != 0 {
+			t.Errorf("Expected 0 issues for a leaf node (GH#3349: parent not echoed when childless), got %d", len(issues))
 		}
 	})
 

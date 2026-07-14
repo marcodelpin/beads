@@ -38,12 +38,12 @@ echo "=== Check 1: Removed commands ==="
 # bd sync (removed in v0.51)
 SYNC_REFS=$(grep -rn 'bd sync\b' \
     "$PROJECT_ROOT"/docs/*.md \
+    "$PROJECT_ROOT"/docs/*/*.md \
     "$PROJECT_ROOT"/AGENT_INSTRUCTIONS.md \
     "$PROJECT_ROOT"/AGENTS.md \
     "$PROJECT_ROOT"/README.md \
     "$PROJECT_ROOT"/npm-package/*.md \
     "$PROJECT_ROOT"/integrations/*/README.md \
-    "$PROJECT_ROOT"/website/docs/**/*.md \
     "$PROJECT_ROOT"/plugins/beads/skills/beads/commands/*.md \
     "$PROJECT_ROOT"/plugins/beads/skills/beads/resources/*.md \
     2>/dev/null \
@@ -69,10 +69,10 @@ INIT_FLAGS=$($BD init --help 2>&1 | grep -oP '^\s+--[a-z][a-z0-9-]*' | sed 's/^\
 # Check for --branch on init (removed)
 BRANCH_REFS=$(grep -rn 'bd init.*--branch' \
     "$PROJECT_ROOT"/docs/*.md \
+    "$PROJECT_ROOT"/docs/*/*.md \
     "$PROJECT_ROOT"/AGENT_INSTRUCTIONS.md \
     "$PROJECT_ROOT"/AGENTS.md \
     "$PROJECT_ROOT"/README.md \
-    "$PROJECT_ROOT"/website/docs/**/*.md \
     2>/dev/null \
     | grep -v 'CHANGELOG\|removed\|was removed\|no longer\|deprecated' \
     || true)
@@ -92,10 +92,10 @@ echo "=== Check 3: Legacy storage references ==="
 
 SQLITE_REFS=$(grep -rn 'beads\.db\|default\.db\|sqlite3.*\.beads\|\.beads/.*\.db' \
     "$PROJECT_ROOT"/docs/*.md \
+    "$PROJECT_ROOT"/docs/*/*.md \
     "$PROJECT_ROOT"/AGENT_INSTRUCTIONS.md \
     "$PROJECT_ROOT"/AGENTS.md \
     "$PROJECT_ROOT"/README.md \
-    "$PROJECT_ROOT"/website/docs/**/*.md \
     2>/dev/null \
     | grep -v 'CHANGELOG\|removed\|legacy\|migration\|migrate\|was removed\|pre-\|old\|deprecated' \
     || true)
@@ -132,13 +132,7 @@ if [ -f "$CLI_REF" ]; then
             echo "PASS: docs/CLI_REFERENCE.md covers all live top-level CLI commands"
         fi
 
-        WEBSITE_DIRS=("$PROJECT_ROOT/website/docs/cli-reference")
-        if [ -d "$PROJECT_ROOT/website/versioned_docs" ]; then
-            for vdir in "$PROJECT_ROOT"/website/versioned_docs/version-*; do
-                [ -d "$vdir" ] || continue
-                WEBSITE_DIRS+=("$vdir/cli-reference")
-            done
-        fi
+        WEBSITE_DIRS=("$PROJECT_ROOT/docs/cli-reference")
         for dir in "${WEBSITE_DIRS[@]}"; do
             if [ ! -d "$dir" ]; then
                 continue
@@ -164,8 +158,8 @@ if [ -f "$CLI_REF" ]; then
             if [ -z "$BD_FOR_GEN" ]; then
                 echo "FAIL: Could not resolve bd binary path for CLI docs freshness check"
                 ERRORS=$((ERRORS + 1))
-            elif "$PROJECT_ROOT/scripts/generate-cli-docs.sh" --check "$BD_FOR_GEN"; then
-                echo "PASS: Generated CLI docs are fresh"
+            elif "$PROJECT_ROOT/scripts/check-cli-docs-drift.sh" "$BD_FOR_GEN"; then
+                echo "PASS: CLI docs freshness gate (see drift check output above)"
             else
                 ERRORS=$((ERRORS + 1))
             fi

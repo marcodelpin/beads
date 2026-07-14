@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/metrics"
 )
 
 var backupCmd = &cobra.Command{
@@ -36,6 +37,16 @@ var backupStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show last backup status",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if usesProxiedServer() {
+			return HandleErrorRespectJSON("backup status is not supported in proxied-server mode")
+		}
+		evt := metrics.NewCommandEvent("backup-status")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		dir, err := backupDir()
 		if err != nil {
 			return err

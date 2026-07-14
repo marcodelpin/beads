@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/steveyegge/beads/internal/storage/depid"
 )
 
 func TestReplaceDependencyTargetNormalizesTargetColumns(t *testing.T) {
@@ -72,8 +73,8 @@ func TestReplaceDependencyTargetNormalizesTargetColumns(t *testing.T) {
 			mock.ExpectExec(regexp.QuoteMeta("DELETE FROM dependencies")).
 				WithArgs("old-target", "old-target").
 				WillReturnResult(sqlmock.NewResult(0, 1))
-			mock.ExpectExec(regexp.QuoteMeta("INSERT INTO dependencies (issue_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type, created_at, created_by, metadata, thread_id)")).
-				WithArgs("source", tt.wantIssue, tt.wantWisp, tt.wantExternal, "blocks", nil, "tester", "{}", "thread-1").
+			mock.ExpectExec(regexp.QuoteMeta("INSERT INTO dependencies (id, issue_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type, created_at, created_by, metadata, thread_id)")).
+				WithArgs(depid.New("source", "new-target"), "source", tt.wantIssue, tt.wantWisp, tt.wantExternal, "blocks", nil, "tester", "{}", "thread-1").
 				WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectCommit()
 
@@ -111,8 +112,8 @@ func TestCycleReachabilityQuerySingleTableJoinsDirectly(t *testing.T) {
 	if strings.Contains(query, "JOIN (SELECT") {
 		t.Fatalf("single-table cycle query should not materialize a derived dependency table:\n%s", query)
 	}
-	if !strings.Contains(query, "d.type IN ('blocks', 'conditional-blocks')") {
-		t.Fatalf("query does not filter blocking dependency types at the direct join:\n%s", query)
+	if !strings.Contains(query, "d.type IN ('blocks', 'conditional-blocks', 'parent-child')") {
+		t.Fatalf("query does not filter scheduling-relevant dependency types at the direct join:\n%s", query)
 	}
 	if strings.Contains(query, "UNION ALL") || strings.Contains(query, "depth") {
 		t.Fatalf("cycle query should traverse unique nodes, not enumerate paths:\n%s", query)
