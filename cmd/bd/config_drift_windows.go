@@ -2,18 +2,32 @@
 
 package main
 
-import "os"
+import "golang.org/x/sys/windows"
 
-// processAlive reports whether the process is still running.
+// processAlive reports whether a process with the given PID is still running.
 //
-// Windows has no signals: os.Process.Signal rejects anything but Kill with
-// "not supported by windows", so the Unix null-signal probe (signal 0) always
-// returned an error here and made every live PID look dead.
+// A bare OpenProcess / os.FindProcess success is NOT sufficient on Windows.
+// The kernel process object of a terminated process lingers, and stays
+// openable, for as long as any handle to it remains open anywhere on the
+// system (a parent that never Wait()ed, an AV/EDR scanner, a debugger, Task
+// Manager). So an existence-only probe reports a dead server as alive for a
+// window after it exits.
 //
-// The existence check is instead already performed by os.FindProcess, which on
-// Windows issues a real OpenProcess and fails when the PID does not exist. So by
-// the time we hold a *os.Process the process was found, which is exactly the
-// heuristic this caller wants (see isServerProbablyRunning: "probably").
-func processAlive(_ *os.Process) bool {
-	return true
+// Instead, wait on the process handle with a zero timeout: a terminated
+// process's handle is signaled (WaitForSingleObject returns WAIT_OBJECT_0),
+// a running one times out (WAIT_TIMEOUT). This distinguishes live from dead
+// even when OpenProcess still succeeds on a lingering handle.
+func processAlive(pid int) bool {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		// No such process, or we may not open it.
+		return false
+	}
+	defer windows.CloseHandle(h)
+
+	s, err := windows.WaitForSingleObject(h, 0)
+	if err != nil {
+		return false
+	}
+	return s == uint32(windows.WAIT_TIMEOUT)
 }

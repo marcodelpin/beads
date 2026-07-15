@@ -314,12 +314,7 @@ func isServerProbablyRunning(beadsDir string) bool {
 		return false
 	}
 
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		// Windows: FindProcess performs a real OpenProcess, so this means "no such process".
-		return false
-	}
-	return processAlive(proc)
+	return processAlive(pid)
 }
 
 // printDriftItems renders drift results in human-readable format.
