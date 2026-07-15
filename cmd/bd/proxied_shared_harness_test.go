@@ -52,7 +52,7 @@ func uniqueProxiedDatabase() string {
 	return fmt.Sprintf("bdtest_%d", sharedProxiedDBSeq.Add(1))
 }
 
-func newSharedProxiedProject(t *testing.T, bd, prefix string, extraInitArgs ...string) proxiedProject {
+func sharedProxiedInitArgs(t *testing.T, extraInitArgs ...string) (string, []string) {
 	t.Helper()
 	port := requireSharedProxiedServer(t)
 
@@ -62,8 +62,21 @@ func newSharedProxiedProject(t *testing.T, bd, prefix string, extraInitArgs ...s
 		"--proxied-server-external-host", "127.0.0.1",
 		"--proxied-server-external-port", strconv.Itoa(port),
 	}, extraInitArgs...)
+	return database, args
+}
 
+func newSharedProxiedProject(t *testing.T, bd, prefix string, extraInitArgs ...string) proxiedProject {
+	t.Helper()
+	database, args := sharedProxiedInitArgs(t, extraInitArgs...)
 	p := bdProxiedInit(t, bd, prefix, args...)
+	p.database = database
+	return p
+}
+
+func newSharedProxiedProjectWithHooks(t *testing.T, bd, prefix string, hooks map[string]string, extraInitArgs ...string) proxiedProject {
+	t.Helper()
+	database, args := sharedProxiedInitArgs(t, extraInitArgs...)
+	p := bdProxiedInitWithHooks(t, bd, prefix, hooks, args...)
 	p.database = database
 	return p
 }
