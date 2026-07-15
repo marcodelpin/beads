@@ -105,7 +105,9 @@ the flags appear in the command line.`,
 
 		// Direct mode
 		closedIssues := []*types.Issue{}
+		alreadyClosedIssues := []*types.Issue{}
 		closedCount := 0
+		alreadyClosedCount := 0
 		firstClosedID := ""
 
 		for i, id := range resolvedIDs {
@@ -156,8 +158,24 @@ the flags appear in the command line.`,
 				}
 			}
 
-			if err := activeStore.CloseIssue(ctx, id, reason, actor, session); err != nil {
+			closeRes, err := activeStore.CloseIssueWithResult(ctx, id, reason, actor, session)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error closing %s: %v\n", id, err)
+				continue
+			}
+
+			// Already-closed no-op (GH#4816): storage kept the first reason and
+			// minted no event, so report the truth and skip every "we closed it"
+			// side effect (audit entry, closedCount, last-touched, molecule
+			// auto-close, suggest/claim-next, embedded commit).
+			if closeRes != nil && closeRes.AlreadyClosed {
+				alreadyClosedCount++
+				fmt.Fprintf(os.Stderr, "%s already closed — close reason unchanged; use `bd reopen %s && bd close %s --reason ...` to rewrite it\n", id, id, id)
+				if jsonOutput {
+					if existing, _ := activeStore.GetIssue(ctx, id); existing != nil {
+						alreadyClosedIssues = append(alreadyClosedIssues, existing)
+					}
+				}
 				continue
 			}
 			mutatedStores[activeStore] = append(mutatedStores[activeStore], id)
@@ -278,15 +296,27 @@ the flags appear in the command line.`,
 			}
 		}
 
-		if jsonOutput && len(closedIssues) > 0 {
-			if claimedNextIssue != nil {
-				if err := outputJSON(map[string]interface{}{
+		if jsonOutput && (len(closedIssues) > 0 || len(alreadyClosedIssues) > 0) {
+			switch {
+			case claimedNextIssue != nil:
+				payload := map[string]interface{}{
 					"closed":  closedIssues,
 					"claimed": claimedNextIssue,
+				}
+				if len(alreadyClosedIssues) > 0 {
+					payload["already_closed"] = alreadyClosedIssues
+				}
+				if err := outputJSON(payload); err != nil {
+					return err
+				}
+			case len(alreadyClosedIssues) > 0:
+				if err := outputJSON(map[string]interface{}{
+					"closed":         closedIssues,
+					"already_closed": alreadyClosedIssues,
 				}); err != nil {
 					return err
 				}
-			} else {
+			default:
 				if err := outputJSON(closedIssues); err != nil {
 					return err
 				}
@@ -308,7 +338,7 @@ the flags appear in the command line.`,
 		}
 
 		totalAttempted := len(resolvedIDs)
-		if totalAttempted > 0 && closedCount == 0 {
+		if totalAttempted > 0 && closedCount == 0 && alreadyClosedCount != totalAttempted {
 			return SilentExit()
 		}
 		return nil
