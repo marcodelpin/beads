@@ -26,9 +26,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("link is not supported in proxied-server mode")
-		}
 		CheckReadonly("link")
 
 		evt := metrics.NewCommandEvent("link")
@@ -37,6 +34,10 @@ Examples:
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		if usesProxiedServer() {
+			return runLinkProxiedServer(cmd, rootCtx, args)
+		}
 
 		id1 := args[0]
 		id2 := args[1]
