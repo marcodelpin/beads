@@ -38,6 +38,14 @@ var ErrNotInitialized = errors.New("database not initialized")
 // ErrPrefixMismatch is returned when an issue ID does not match the configured prefix.
 var ErrPrefixMismatch = errors.New("prefix mismatch")
 
+// CloseResult reports what a CloseIssueWithResult call actually did.
+type CloseResult struct {
+	// AlreadyClosed is true when the issue was already closed and the call
+	// was a no-op: the stored close_reason is unchanged (first close wins)
+	// and no new EventClosed row was recorded (GH#4025).
+	AlreadyClosed bool
+}
+
 // Storage is the interface satisfied by *dolt.DoltStore.
 // Consumers depend on this interface rather than on the concrete type so that
 // alternative implementations (mocks, proxies, etc.) can be substituted.
@@ -53,6 +61,11 @@ type Storage interface {
 	UnclaimIssue(ctx context.Context, id string, actor string, force bool) error
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
+	// CloseIssueWithResult is CloseIssue plus a report of what actually
+	// happened, so callers can distinguish a real close from the idempotent
+	// already-closed no-op (GH#4816) without weakening the GH#4025 contract
+	// (nil error, first reason wins, no duplicate EventClosed).
+	CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*CloseResult, error)
 	DeleteIssue(ctx context.Context, id string) error
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
 	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)

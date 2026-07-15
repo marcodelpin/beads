@@ -23,8 +23,13 @@ func (r *recordingHookRunner) Run(event string, issue *types.Issue) {
 
 type fakeHookStore struct {
 	DoltStorage
-	issues           map[string]*types.Issue
-	dropDependencies bool
+	issues             map[string]*types.Issue
+	dropDependencies   bool
+	closeAlreadyClosed bool
+}
+
+func (s fakeHookStore) CloseIssueWithResult(_ context.Context, _, _, _, _ string) (*CloseResult, error) {
+	return &CloseResult{AlreadyClosed: s.closeAlreadyClosed}, nil
 }
 
 func (s fakeHookStore) CreateIssue(_ context.Context, issue *types.Issue, _ string) error {
@@ -439,6 +444,41 @@ func TestHookFiringStoreCreateIssuesSkipsUnpersistedDependencies(t *testing.T) {
 	wantEvents := []string{hooks.EventCreate, hooks.EventCreate}
 	if !reflect.DeepEqual(runner.events, wantEvents) {
 		t.Fatalf("events = %v, want %v", runner.events, wantEvents)
+	}
+}
+
+func TestHookFiringStoreCloseIssueWithResultFiresOnRealClose(t *testing.T) {
+	runner := &recordingHookRunner{}
+	inner := fakeHookStore{issues: map[string]*types.Issue{"c1": {ID: "c1"}}}
+	store := &HookFiringStore{DoltStorage: inner, inner: inner, runner: runner}
+
+	res, err := store.CloseIssueWithResult(context.Background(), "c1", "done", "a", "s")
+	if err != nil {
+		t.Fatalf("CloseIssueWithResult: %v", err)
+	}
+	if res == nil || res.AlreadyClosed {
+		t.Fatalf("result = %+v, want AlreadyClosed=false", res)
+	}
+	wantEvents := []string{hooks.EventClose}
+	if !reflect.DeepEqual(runner.events, wantEvents) {
+		t.Fatalf("events = %v, want %v", runner.events, wantEvents)
+	}
+}
+
+func TestHookFiringStoreCloseIssueWithResultSkipsHookOnAlreadyClosed(t *testing.T) {
+	runner := &recordingHookRunner{}
+	inner := fakeHookStore{issues: map[string]*types.Issue{"c1": {ID: "c1"}}, closeAlreadyClosed: true}
+	store := &HookFiringStore{DoltStorage: inner, inner: inner, runner: runner}
+
+	res, err := store.CloseIssueWithResult(context.Background(), "c1", "again", "a", "s")
+	if err != nil {
+		t.Fatalf("CloseIssueWithResult: %v", err)
+	}
+	if res == nil || !res.AlreadyClosed {
+		t.Fatalf("result = %+v, want AlreadyClosed=true", res)
+	}
+	if len(runner.events) != 0 {
+		t.Fatalf("events = %v, want none (no-op close must not fire on_close)", runner.events)
 	}
 }
 

@@ -201,18 +201,22 @@ func (s *DoltStore) updateWisp(ctx context.Context, id string, updates map[strin
 // closeWisp closes a wisp in the wisps table.
 // Delegates SQL work to issueops.CloseIssueInTx; no Dolt versioning needed
 // since wisps live in dolt_ignored tables.
-func (s *DoltStore) closeWisp(ctx context.Context, id string, reason string, actor string, session string) error {
+func (s *DoltStore) closeWisp(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session); err != nil {
-		return err
+	res, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
+	if err != nil {
+		return nil, err
 	}
 
-	return wrapTransactionError("commit close wisp", tx.Commit())
+	if err := wrapTransactionError("commit close wisp", tx.Commit()); err != nil {
+		return nil, err
+	}
+	return &storage.CloseResult{AlreadyClosed: res.AlreadyClosed}, nil
 }
 
 // deleteWisp permanently removes a wisp and its related data.

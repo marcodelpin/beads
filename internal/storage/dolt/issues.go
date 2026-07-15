@@ -385,9 +385,16 @@ func (s *DoltStore) UpdateIssueType(ctx context.Context, id string, issueType st
 }
 
 // CloseIssue closes an issue with a reason.
+func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error {
+	_, err := s.CloseIssueWithResult(ctx, id, reason, actor, session)
+	return err
+}
+
+// CloseIssueWithResult closes an issue with a reason and reports whether the
+// row actually changed (storage.CloseResult.AlreadyClosed).
 // Delegates SQL work to issueops.CloseIssueInTx; handles Dolt-specific concerns
 // (wisp routing, DOLT_ADD/COMMIT, cache invalidation).
-func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error {
+func (s *DoltStore) CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
 	// Route ephemeral IDs to wisps table (falls through for promoted wisps).
 	// Wisps skip DOLT_COMMIT since they live in dolt_ignored tables.
 	if s.isActiveWisp(ctx, id) {
@@ -400,10 +407,13 @@ func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, ac
 	// locking — FOR UPDATE / SKIP LOCKED are parse-only no-ops
 	// (https://www.dolthub.com/blog/2023-10-23-hold-my-beer/) — so retry is the
 	// only safety net. withRetryTx owns BeginTx and the final Commit.
-	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		if _, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session); err != nil {
+	var out *storage.CloseResult
+	err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		res, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
+		if err != nil {
 			return err
 		}
+		out = &storage.CloseResult{AlreadyClosed: res.AlreadyClosed}
 
 		// Dolt versioning for permanent issues.
 		// GH#2455: Stage only the tables we modified, then commit without -A.
@@ -417,6 +427,10 @@ func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, ac
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // DeleteIssue permanently removes an issue

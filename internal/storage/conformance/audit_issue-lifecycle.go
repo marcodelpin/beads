@@ -32,6 +32,7 @@ func auditCountEventType(events []*types.Event, want types.EventType) int {
 func RunAudit_issue_lifecycle(t *testing.T, f Factory) {
 	t.Helper()
 	t.Run("CloseIdempotentKeepsFirstReason", func(t *testing.T) { testAuditCloseIdempotentKeepsFirstReason(t, f) })
+	t.Run("CloseWithResultReportsAlreadyClosed", func(t *testing.T) { testAuditCloseWithResultReportsAlreadyClosed(t, f) })
 	t.Run("ReopenOnOpenMintsEvent", func(t *testing.T) { testAuditReopenOnOpenMintsEvent(t, f) })
 	t.Run("ReopenNotFoundIsSentinel", func(t *testing.T) { testAuditReopenNotFoundIsSentinel(t, f) })
 	t.Run("DeleteIssuesBatchModes", func(t *testing.T) { testAuditDeleteIssuesBatchModes(t, f) })
@@ -77,6 +78,44 @@ func testAuditCloseIdempotentKeepsFirstReason(t *testing.T, f Factory) {
 	must(t, err)
 	if n := auditCountEventType(events, types.EventClosed); n != 1 {
 		t.Errorf("EventClosed count = %d, want 1", n)
+	}
+}
+
+// CloseIssueWithResult surfaces the already-closed no-op that CloseIssue keeps
+// silent (GH#4816): the first close reports AlreadyClosed=false, a re-close
+// reports AlreadyClosed=true with the GH#4025 contract intact (nil error, first
+// reason wins, no second EventClosed), and a missing ID is still ErrNotFound.
+func testAuditCloseWithResultReportsAlreadyClosed(t *testing.T, f Factory) {
+	s := f(t)
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "cwr-1", Title: "T", Status: types.StatusOpen}), "a"))
+
+	res, err := s.CloseIssueWithResult(ctx(), "cwr-1", "first", "a", "s1")
+	must(t, err)
+	if res == nil || res.AlreadyClosed {
+		t.Fatalf("first close: result = %+v, want AlreadyClosed=false", res)
+	}
+
+	res, err = s.CloseIssueWithResult(ctx(), "cwr-1", "second", "b", "s2")
+	if err != nil {
+		t.Fatalf("re-close: err = %v, want nil (idempotent per GH#4025)", err)
+	}
+	if res == nil || !res.AlreadyClosed {
+		t.Errorf("re-close: result = %+v, want AlreadyClosed=true", res)
+	}
+
+	got, err := s.GetIssue(ctx(), "cwr-1")
+	must(t, err)
+	if got.CloseReason != "first" {
+		t.Errorf("CloseReason = %q, want %q (first close wins)", got.CloseReason, "first")
+	}
+	events, err := s.GetEvents(ctx(), "cwr-1", 0)
+	must(t, err)
+	if n := auditCountEventType(events, types.EventClosed); n != 1 {
+		t.Errorf("EventClosed count = %d, want 1", n)
+	}
+
+	if _, err := s.CloseIssueWithResult(ctx(), "cwr-missing", "x", "a", "s"); !errors.Is(err, storage.ErrNotFound) {
+		t.Errorf("missing ID: err = %v, want storage.ErrNotFound", err)
 	}
 }
 
