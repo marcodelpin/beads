@@ -35,6 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pool-aware claiming via the `claim.pools` config key** (bd-bguz6).
+  Dispatcher fleets pre-assign issues to a pool pseudo-assignee (e.g.
+  `fable-crew`); `--claim` previously refused those ("already assigned"),
+  forcing a two-step `--assignee <me> -s in_progress` per issue. Aliases
+  listed in `bd config set claim.pools "fable-crew,night-crew"` are now
+  claimable by any actor through the same atomic compare-and-swap — the
+  claim stamps the normal lease, and issues assigned to a real actor (or
+  to an alias not in the config) keep their anti-steal protection.
+  Off by default: with no `claim.pools` configured, behavior is unchanged.
+
 - **Work leases: claim-TTL, heartbeat, and reclaim for dead-worker recovery**
   (schema v54, migration `0054`)
   ([#4537](https://github.com/gastownhall/beads/pull/4537)). A claim was
