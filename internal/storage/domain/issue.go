@@ -427,6 +427,13 @@ func (u *issueUseCaseImpl) claim(ctx context.Context, id, actor string, useWisp 
 		if row.CurrentAssigneeIsPool {
 			return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
 		}
+		if row.CurrentStatus == types.StatusOpen {
+			// Same guidance as issueops.ClaimIssueInTx's open-but-assigned
+			// refusal (bd-at6rc): steer toward the holder, never name an
+			// eviction command. Keep the %w wrap — the proxied batch exit
+			// code keys on errors.Is(err, ErrAlreadyClaimed).
+			return ClaimResult{}, fmt.Errorf("%w: already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", storage.ErrAlreadyClaimed, row.CurrentAssignee)
+		}
 		return ClaimResult{}, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, row.CurrentAssignee)
 	}
 	return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
