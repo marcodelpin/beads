@@ -90,9 +90,10 @@ func issueUpsertAssignments(table string, rejectStaleUpdate bool) string {
 	assignments := make([]string, 0, len(issueUpsertColumns))
 	for _, col := range issueUpsertColumns {
 		if rejectStaleUpdate {
-			// Qualify existing-row references with the table name so the target value
-			// remains unambiguous after the SQLite upsert translation. VALUES(...) is
-			// the incoming row in the canonical Dolt/MySQL-dialect statement.
+			// Qualify the existing-row references with the table name. Postgres's
+			// ON CONFLICT DO UPDATE rejects a bare `updated_at` as ambiguous (it could
+			// be the target row or EXCLUDED); <table>.updated_at is unambiguous and is
+			// also accepted by MySQL/Dolt/SQLite. VALUES(...) is the incoming row.
 			assignments = append(assignments,
 				fmt.Sprintf("%s = IF(VALUES(updated_at) > %s.updated_at, VALUES(%s), %s.%s)", col, table, col, table, col))
 		} else {

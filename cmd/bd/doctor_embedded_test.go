@@ -83,32 +83,6 @@ func TestDoctorEmbeddedSupportedChecks(t *testing.T) {
 	}
 }
 
-func TestDoctorSQLiteUnsupportedMessagingDoesNotRecommendDoltMigration(t *testing.T) {
-	bd := buildBDForInitTests(t)
-	dir, _, _ := bdInit(t, bd, "--prefix", "ds", "--backend", "sqlite")
-
-	stdout, stderr, err := runBDSplit(t, bd, dir, "doctor", "--json")
-	if err != nil {
-		t.Fatalf("bd doctor --json failed for SQLite: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
-	}
-	if strings.TrimSpace(stdout) != "" {
-		t.Fatalf("expected empty stdout for SQLite doctor stub, got:\n%s", stdout)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(stderr), &result); err != nil {
-		t.Fatalf("SQLite doctor stub is not valid JSON: %v\nstderr:\n%s", err, stderr)
-	}
-	if result["code"] != "sqlite_doctor_unsupported" || result["backend"] != "sqlite" {
-		t.Fatalf("SQLite doctor payload = %#v, want backend-specific unsupported result", result)
-	}
-	for _, hostile := range []string{"embeddeddolt", "Switch to server mode", "migrate to Dolt", "no longer supported"} {
-		if strings.Contains(stderr, hostile) {
-			t.Errorf("SQLite doctor guidance contains %q:\n%s", hostile, stderr)
-		}
-	}
-}
-
 // TestDoctorEmbeddedUnsupportedJSON verifies that variants which still require
 // server mode (bare doctor, --check=validate) emit a structured JSON payload
 // when --json or --agent --json is set, rather than the prose stub. Tooling

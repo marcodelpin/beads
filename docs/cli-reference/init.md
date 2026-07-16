@@ -11,7 +11,7 @@ Initialize bd in the current directory by creating a .beads/ directory
 and its storage (a Dolt database by default). Optionally specify a custom issue prefix.
 
 Dolt is the default backend and the only one with version control (history,
-branching, sync). Select the embedded SQLite alternative with --backend=sqlite;
+branching, sync). Select an alternative with --backend=&lt;postgres|mysql|sqlite&gt;;
 see docs/architecture/storage-backends.md for the trade-offs and setup.
 
 Use --database to specify an existing server database name, overriding the
@@ -52,7 +52,7 @@ bd init [flags]
       --agents-file string                             Custom filename for agent instructions (default: AGENTS.md)
       --agents-profile string                          AGENTS.md profile: 'minimal' (default, pointer to bd prime) or 'full' (complete command reference)
       --agents-template string                         Path to custom AGENTS.md template (overrides embedded default)
-      --backend string                                 Storage backend: dolt (default) or sqlite. See docs/architecture/storage-backends.md.
+      --backend string                                 Storage backend: dolt (default), postgres, mysql, or sqlite. See docs/architecture/storage-backends.md.
       --contributor                                    Run OSS contributor setup wizard
       --database string                                Use existing server database name (overrides prefix-based naming)
       --debug                                          Run the managed Dolt sql-server with --loglevel=debug and CPU profiling (--prof cpu). Persisted to config.yaml as dolt.debug. No effect on externally-managed servers.
@@ -62,7 +62,11 @@ bd init [flags]
       --force                                          Deprecated alias for --reinit-local. Bypasses only the LOCAL data-safety guard; does NOT authorize remote divergence (see 'bd help init-safety').
       --from-jsonl                                     Import issues from configured import.path; refuses remote history unless --discard-remote authorizes replacement
       --init-if-missing                                If the workspace is already initialized, skip init and exit 0 instead of failing (idempotent init for scaffolds)
+      --mysql-database string                          MySQL database for this workspace (with --backend=mysql; MySQL's isolation unit)
+      --mysql-url string                               MySQL server DSN (with --backend=mysql), e.g. user:pass@tcp(host:3306)/ . A password may be included for init but is never persisted; set BEADS_MYSQL_PASSWORD for later commands. Falls back to BEADS_MYSQL_URL.
       --non-interactive                                Skip all interactive prompts (auto-detected in CI or non-TTY environments)
+      --pg-schema string                               Postgres schema for this workspace's tables (with --backend=postgres; provides search_path isolation)
+      --pg-url string                                  Postgres connection URL (with --backend=postgres). A password may be included for init but is never persisted; set BEADS_PG_PASSWORD for later commands. Falls back to BEADS_POSTGRES_URL.
   -p, --prefix string                                  Issue prefix (default: current directory name)
       --proxied-server                                 [EXPERIMENTAL] Use a per-workspace proxied dolt sql-server (proxy + child dolt) rooted at .beads/dolt
       --proxied-server-config-path string              [EXPERIMENTAL] Absolute path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one. Relative paths are rejected.

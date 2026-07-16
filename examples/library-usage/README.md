@@ -35,9 +35,9 @@ import (
 func main() {
     ctx := context.Background()
     
-    // Find the workspace and open its configured Dolt or SQLite implementation
-    beadsDir := beads.FindBeadsDir()
-    store, err := beads.OpenBestAvailable(ctx, beadsDir)
+    // Find and open database
+    dbPath := beads.FindDatabasePath()
+    store, err := beads.Open(ctx, dbPath)
     if err != nil {
         log.Fatal(err)
     }
@@ -145,8 +145,8 @@ type VCStorage struct {
     beads beads.Storage
 }
 
-func NewVCStorage(ctx context.Context, beadsDir string) (*VCStorage, error) {
-    store, err := beads.OpenBestAvailable(ctx, beadsDir)
+func NewVCStorage(ctx context.Context, dbPath string) (*VCStorage, error) {
+    store, err := beads.Open(ctx, dbPath)
     if err != nil {
         return nil, err
     }

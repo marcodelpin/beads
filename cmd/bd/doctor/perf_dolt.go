@@ -49,8 +49,7 @@ func RunDoltPerformanceDiagnostics(path string, enableProfiling bool) (*DoltPerf
 
 	// Verify this is a Dolt backend
 	if !IsDoltBackend(beadsDir) {
-		backend, _ := getBackendAndBeadsDir(path)
-		return nil, fmt.Errorf("Dolt server performance diagnostics do not apply to the configured backend %q; SQLite remains supported for normal bd commands", backend)
+		return nil, fmt.Errorf("SQLite backend is no longer supported. Migrate to Dolt with 'bd migrate'")
 	}
 
 	metrics := &DoltPerfMetrics{

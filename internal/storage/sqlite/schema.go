@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// ddl is the SQLite backend schema, embedded from schema.sql. It is the Dolt
+// ddl is the SQLite backend schema, embedded from schema.sql. It is the Dolt/MySQL
 // schema with SQLite adjustments: ENGINE/CHARSET/COLLATE stripped, inline KEY/UNIQUE
 // KEY lifted to CREATE INDEX (SQLite forbids inline non-PK indexes), ON UPDATE
 // CURRENT_TIMESTAMP dropped (unsupported), json → text, and prefix-index lengths

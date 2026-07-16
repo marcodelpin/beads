@@ -5,26 +5,18 @@ description: Complete reference for bd configuration across config.yaml and data
 
 Complete configuration reference for beads.
 
-Last reviewed: 2026-07-16
+Last reviewed: 2026-07-10
 
 Freshness source: `cmd/bd/main.go`, `cmd/bd/config.go`, and `internal/configfile/`.
 
 beads has two complementary configuration systems:
 
 1. **Tool-level configuration** (YAML, managed by [Viper](https://github.com/spf13/viper)) — startup flags and tool behavior, stored in `config.yaml` files. These are user preferences: output format, auto-commit behavior, CLI ergonomics.
-2. **Project-level configuration** (managed by `bd config`) — integration credentials, status maps, and project-specific settings, stored in the active storage database. Some keys are routed to `config.yaml` instead (see [YAML-only keys](#yaml-only-keys-startup-settings) below).
+2. **Project-level configuration** (managed by `bd config`) — integration credentials, status maps, and project-specific settings, stored in the Dolt database. Some keys are routed to `config.yaml` instead (see [YAML-only keys](#yaml-only-keys-startup-settings) below).
 
-The split is deliberate: tool settings are user-specific, while project config
-travels with the active database. In a Dolt workspace it is team-shared when
-you run `bd dolt push`; SQLite has no built-in cross-machine sync. Secrets are
-refused in either database — see [Security](#security-where-secrets-live).
+The split is deliberate: tool settings are user-specific; project config is team-shared and travels with the database when you run `bd dolt push`. That is also why secrets are refused in the database — see [Security](#security-where-secrets-live).
 
-Supported storage paths are embedded Dolt (the default), Dolt server, and
-SQLite. Embedded Dolt stores data at `.beads/embeddeddolt/`; managed repo-local
-server mode (`bd init --server`) uses `.beads/dolt/`, while shared and external
-servers manage their own data locations. SQLite uses `.beads/beads.db` by
-default. See
-[Storage Backends](/architecture/storage-backends).
+Dolt is the only storage backend. Embedded mode (the default) stores data at `.beads/embeddeddolt/`; server mode (`bd init --server` or `BEADS_DOLT_SERVER_MODE=1`) uses `.beads/dolt/`. See [Dolt architecture](/architecture/dolt).
 
 ## Configuration Locations
 
@@ -46,9 +38,7 @@ For Viper-managed (YAML) keys, highest to lowest:
 3. **`config.yaml`** files (in the order listed above)
 4. **Built-in defaults**
 
-Project-level keys written via `bd config set` (Jira, Linear, GitHub, status
-maps, etc.) live in the active storage database. They are read at command time
-and have no env var override.
+Project-level keys written via `bd config set` (Jira, Linear, GitHub, status maps, etc.) live in the Dolt database. They are read at command time and have no env var override.
 
 When a config.yaml value or environment variable shadows a database key, `bd config list` prints an override warning, and `bd config show` reports the source of every effective key.
 
@@ -82,10 +72,7 @@ bd config validate
 bd config unset jira.url
 ```
 
-`bd config set` automatically routes the write to the right location: keys in
-the YAML namespace (see below) are written to the project `config.yaml`;
-everything else is written to the active storage database. `beads.role` is
-stored in git config.
+`bd config set` automatically routes the write to the right location: keys in the YAML namespace (see below) are written to the project `config.yaml`; everything else is written to the Dolt database. `beads.role` is stored in git config.
 
 Unrecognized keys produce a warning with a did-you-mean suggestion; use the `custom.*` namespace for user-defined keys.
 
@@ -172,22 +159,17 @@ bd config set export.auto true
 bd config set export.git-add true
 ```
 
-For Dolt workspaces, use `bd dolt push` / `bd dolt pull` for sync and
-`bd backup` for restorable database backups. SQLite has no native remote or
-Dolt backup path; `bd export` remains available for issue-level portability.
+Use `bd dolt push` / `bd dolt pull` for sync and `bd backup` for restorable
+database backups.
 </Warning>
 
-Routing note: `output.title-length` and `agents.file` are functionally
-tool-level settings, but `bd config set` writes them to the active storage
-database. They are typically read from `config.yaml` when set there directly.
+Routing note: `output.title-length` and `agents.file` are functionally tool-level settings, but `bd config set` writes them to the Dolt database. They are typically read from `config.yaml` when set there directly.
 
 `bd config show` is the source of truth for what's currently effective on your machine, including provenance.
 
 ## Dolt History, Backup, and Push
 
-For Dolt workspaces, three post-write behaviors run after each successful write
-command, in this order: auto-commit, auto-backup, auto-push. SQLite commits its
-SQL transaction and skips this Dolt-specific maintenance tail.
+Three post-write behaviors run after each successful write command, in this order: auto-commit, auto-backup, auto-push.
 
 ### Auto-commit: SQL Commits vs Dolt Commits
 
@@ -277,8 +259,7 @@ export BEADS_ACTOR="my-github-handle"
 
 ## Project-Level Settings (Database)
 
-These are written to the active storage database by `bd config set` and have no
-env var override. Common namespaces:
+These are written to the Dolt database by `bd config set` and have no env var override. Common namespaces:
 
 | Namespace | Purpose |
 |---|---|
@@ -372,10 +353,7 @@ bd config set max_hash_length "8"         # Upper bound (default 8)
 
 ## Sync and Federation
 
-Native sync and federation require Dolt. Dolt workspaces use remotes
-(`bd dolt push` / `bd dolt pull`) with cell-level merge and `bd backup` for
-restorable database backups. SQLite has no native remote; use `bd export` for
-issue portability.
+Beads syncs exclusively through Dolt remotes (`bd dolt push` / `bd dolt pull`) with cell-level merge. Use `bd export` for issue portability and `bd backup` for restorable database backups.
 
 Federation settings live in `config.yaml`:
 
@@ -488,14 +466,9 @@ Integration secrets follow tracker-specific conventions: `LINEAR_API_KEY`, `GITH
 
 ## Security: Where Secrets Live
 
-- Tokens and API keys are never stored in the active storage database. Dolt
-  database config can be pushed to remotes, which would expose secrets and trip
-  GitHub secret scanning; SQLite follows the same safe rule. `bd config set`
-  routes secret keys to the local `config.yaml` instead.
+- Tokens and API keys are never stored in the Dolt database — database config is pushed to remotes, which would expose secrets and trip GitHub secret scanning. `bd config set` routes secret keys to the local `config.yaml` instead.
 - Writing a secret to a git-tracked `config.yaml` is refused unless you pass `--force-git-tracked`; environment variables are the safer default.
-- `bd init` writes a `.beads/.gitignore` that keeps the database storage
-  (`embeddeddolt/`, `dolt/`, and SQLite database files), runtime files, push
-  state, and the federation credential key out of git.
+- `bd init` writes a `.beads/.gitignore` that keeps the database directories (`embeddeddolt/`, `dolt/`), runtime files, push state, and the federation credential key out of git.
 
 ## Example `.beads/config.yaml`
 

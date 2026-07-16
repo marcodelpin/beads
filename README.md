@@ -126,26 +126,24 @@ See [docs/reference/antivirus.md](docs/reference/antivirus.md) for Windows AV fa
 
 ## 💾 Storage Modes
 
-Beads keeps storage behind one interface and supports three deployment paths:
+Beads uses [Dolt](https://github.com/dolthub/dolt) as its database. Two modes:
 
-- **Embedded Dolt (default)** — `bd init`. Dolt runs in-process, data lives in
-  `.beads/embeddeddolt/`, and writes are file-locked. Recommended for most users.
-- **Dolt server** — `bd init --server`. Connects to a `dolt sql-server` for
-  multiple concurrent writers. Managed repo-local mode uses `.beads/dolt/`;
-  shared and external servers manage their own data location.
-- **SQLite** — `bd init --backend=sqlite`. Stores data in a small local database
-  file with no server or credentials. It does not provide Dolt history or sync.
+- **Embedded (default)** — `bd init`. Dolt runs in-process, data lives in
+  `.beads/embeddeddolt/`, single writer. Recommended for most users.
+- **Server** — `bd init --server`. Connects to an external `dolt sql-server`
+  for multiple concurrent writers; data lives in `.beads/dolt/`.
 
-The Dolt paths support cross-machine sync with `bd dolt push` / `bd dolt pull`
-against `refs/dolt/data` on your git remote. `.beads/issues.jsonl` is an export
-for viewers and interchange, not the source of truth or a full backup. Back up
-and migrate between Dolt modes with `bd backup`; reclaim Dolt space with
-`bd prune` / `bd purge`.
+Cross-machine sync uses `bd dolt push` / `bd dolt pull` against
+`refs/dolt/data` on your git remote; `.beads/issues.jsonl` is an export for
+viewers and interchange, not the source of truth or a backup. Back up and
+migrate between modes with `bd backup`; reclaim space with `bd prune` /
+`bd purge`.
 
-See the [Dolt backend guide](docs/architecture/dolt.md) for connection flags,
-sockets, maintenance, backup, and migration. See
-[Storage Backends](docs/architecture/storage-backends.md) for the supported
-Dolt and SQLite paths and their trade-offs.
+Full detail — connection flags, sockets, maintenance, backup, and migration —
+in the [Dolt backend guide](docs/architecture/dolt.md). Prefer a different
+database? [Storage Backends](docs/architecture/storage-backends.md) covers
+Postgres, MySQL, and SQLite (Dolt stays the default and the only backend
+with history).
 
 ## 🌐 Community Tools
 
@@ -155,9 +153,8 @@ See [docs/related-projects.md](docs/related-projects.md) for adjacent or complem
 
 ## 🚀 Git-Free Usage
 
-Storage choice and Git integration are independent. Embedded Dolt, Dolt
-server, and SQLite can all be used without Git; hooks, repo discovery, and
-identity integration are optional.
+Beads works without git. The Dolt database is the storage backend — git
+integration (hooks, repo discovery, identity) is optional.
 
 ```bash
 # Initialize without git

@@ -1,7 +1,11 @@
-// Package sqlitedialect translates bd's canonical MySQL-dialect SQL to SQLite and
-// wraps the modernc.org/sqlite driver. SQLite accepts many of the canonical forms
-// natively; this package rewrites the remaining INSERT, upsert, function, and UPDATE
-// forms. It stays isolated so shared issueops/sqlkit code remains backend-neutral.
+// Package sqlitedialect translates bd's canonical (MySQL-dialect) SQL to SQLite and
+// wraps the modernc.org/sqlite driver. SQLite is closer to MySQL than Postgres is —
+// backtick identifiers, `?` placeholders, bool→integer binding, INSTR, json_object,
+// REPLACE INTO, and CURRENT_TIMESTAMP (UTC) all work natively — so the translation is
+// a small subset of pgdialect's: INSERT IGNORE, the ON DUPLICATE KEY upsert (standard
+// ON CONFLICT, shared with Postgres), CONCAT, and unqualified UPDATE SET targets. The
+// string-scanning machinery (codeMask/rewriteFuncCalls/…) is shared in shape with
+// pgdialect. Isolated here; shared issueops/sqlkit and other backends are untouched.
 package sqlitedialect
 
 import (
@@ -89,7 +93,7 @@ func rewriteInsertIgnore(sql string) string {
 	return insertIgnoreRe.ReplaceAllString(sql, "INSERT OR IGNORE INTO")
 }
 
-// --- ON DUPLICATE KEY UPDATE -> SQLite ON CONFLICT ---
+// --- ON DUPLICATE KEY UPDATE -> ON CONFLICT (standard SQL, same syntax as Postgres) ---
 
 // onConflictTargets maps a table to its ON CONFLICT arbiter (the key MySQL's ON
 // DUPLICATE KEY infers). Only DO UPDATE upserts need an entry.
@@ -344,7 +348,7 @@ func scanKeyword(s string, m []bool, from int, kw string) int {
 	return -1
 }
 
-// --- string-scanning machinery used by the SQLite rewrites ---
+// --- shared string-scanning machinery (shape mirrors pgdialect) ---
 
 func codeMask(sql string) []bool {
 	b := []byte(sql)

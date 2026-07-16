@@ -3,10 +3,7 @@ title: Dolt Backend for Beads
 description: "How beads uses Dolt for versioned issue storage: embedded vs server mode, remotes, sync, and backups"
 ---
 
-Dolt is Beads' default storage backend. It provides a version-controlled SQL
-database with cell-level merge, native branching, and two deployment modes.
-For the supported server-free SQLite alternative, see
-[Storage Backends](/architecture/storage-backends).
+Beads uses Dolt as its storage backend. Dolt provides a version-controlled SQL database with cell-level merge, native branching, and two deployment modes.
 
 ## Why Dolt?
 
@@ -46,11 +43,9 @@ gt dolt start           # Start the Dolt server
 bd init --server        # Initialize with server mode
 ```
 
-### Migrate from Legacy SQLite Installations
+### Migrate from SQLite (Legacy)
 
-Current releases support SQLite through the storage interface. This section is
-only for upgrades from older, pre-Dolt SQLite schemas that are not compatible
-with the current SQLite implementation.
+If upgrading from an older version that used SQLite:
 
 > **Note:** The `bd migrate --to-dolt` command was removed in v0.58.0.
 > For pre-0.50 installations with JSONL data, use the migration script:
@@ -447,7 +442,6 @@ dolt:
 | Variable | Purpose |
 |----------|---------|
 | `BEADS_DOLT_PASSWORD` | Server mode password (highest priority) |
-| `BEADS_DOLT_CREDENTIAL_COMMAND` | Gateway identity command (token becomes the connection username) |
 | `BEADS_CREDENTIALS_FILE` | Path to credentials file (overrides default location) |
 | `BEADS_DOLT_SERVER_MODE` | Enable server mode (set to "1") |
 | `BEADS_DOLT_SERVER_HOST` | Server host (default: 127.0.0.1) |
@@ -458,31 +452,6 @@ dolt:
 | `DOLT_REMOTE_USER` | Clone/push/pull auth user |
 | `DOLT_REMOTE_PASSWORD` | Clone/push/pull auth password |
 | `BD_DOLT_AUTO_COMMIT` | Override auto-commit setting |
-
-### Gateway Identity Credentials
-
-Authenticating gateway deployments can set
-`BEADS_DOLT_CREDENTIAL_COMMAND` to a command that mints a short-lived identity
-token. Beads runs the command, reads a bare token or supported JSON token
-envelope from stdout, and presents that token as the MySQL connection username.
-The gateway verifies the identity and routes the connection to the appropriate
-Dolt database.
-
-This is an identity credential, not a database password:
-
-- A server user already preset by the opener takes precedence. Otherwise the
-  command runs before the static `BEADS_DOLT_SERVER_USER` or metadata user.
-- A configured command that fails aborts the connection. Beads does not fall
-  back to the static `root` user.
-- The command is read from the environment only and is never persisted in
-  workspace metadata.
-- Gateway mode assumes an externally managed server, so Beads does not
-  auto-start a local `dolt sql-server`.
-- Tokens containing `:`, `@`, or `/` are rejected because the MySQL DSN grammar
-  cannot represent them safely in the username field.
-
-For ordinary Dolt server deployments, use `BEADS_DOLT_PASSWORD` or the
-credentials file below instead.
 
 ### Credentials File
 

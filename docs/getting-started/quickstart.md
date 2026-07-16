@@ -71,11 +71,9 @@ The wizard will:
 - Install git hooks (skip with `--skip-hooks`)
 
 Notes:
-- Dolt is the default storage backend. Embedded data is stored in `.beads/embeddeddolt/`.
+- Dolt is the default (and only) storage backend. Data is stored in `.beads/embeddeddolt/`.
 - By default, Dolt runs in **embedded mode** (in-process, no server needed).
 - For multi-writer setups, use `bd init --server` to connect to a `dolt sql-server` instead.
-- For a small server-free workspace without Dolt history or sync, use
-  `bd init --backend=sqlite`.
 - To import issues from an older installation, run `bd init --from-jsonl`.
 
 ### Role configuration

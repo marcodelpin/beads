@@ -25,7 +25,7 @@ import (
 
 // shellBackends are the backends whose typed-unsupported shell this tool
 // generates. Each dir is relative to this package (internal/storage/unsupportedgen).
-var shellBackends = []string{"sqlite"}
+var shellBackends = []string{"postgres", "mysql", "sqlite"}
 
 func TestGeneratedShellsAreUpToDate(t *testing.T) {
 	// storage package source, relative to this package dir (one level up).
