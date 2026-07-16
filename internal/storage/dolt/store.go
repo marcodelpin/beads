@@ -308,13 +308,59 @@ const (
 	defaultConnMaxIdleTime = 20 * time.Second
 )
 
-// cliExecTimeout is the maximum time to wait for dolt CLI push/pull operations.
-// SSH transfers can hang indefinitely on network issues or SSH key prompts;
-// this prevents the process from blocking forever.
+// cliExecTimeout is the default maximum time to wait for dolt CLI
+// push/pull/fetch operations. SSH transfers can hang indefinitely on network
+// issues or SSH key prompts; this prevents the process from blocking forever.
+// Large transfers can legitimately run longer (e.g. pushing a big chunk store
+// to a cloud remote, or a transfer serialized behind a busy dolt sql-server
+// that holds the database directory lock); set BEADS_CLI_TRANSFER_TIMEOUT to
+// override.
 const cliExecTimeout = 5 * time.Minute
 
+// cliExecTimeoutEnv is the environment variable that overrides cliExecTimeout.
+const cliExecTimeoutEnv = "BEADS_CLI_TRANSFER_TIMEOUT"
+
+// cliExecWaitDelay bounds how long Wait/CombinedOutput may keep waiting after
+// the transfer context expires. CommandContext kills only the direct dolt
+// child; a grandchild (e.g. a cloud credential helper) that inherited the
+// output pipes would otherwise keep Wait blocked indefinitely after the kill.
+const cliExecWaitDelay = 10 * time.Second
+
+// cliExecTimeoutDuration returns the configured CLI transfer timeout. The env
+// var BEADS_CLI_TRANSFER_TIMEOUT overrides the compiled-in cliExecTimeout
+// const; valid time.ParseDuration strings (e.g. "20m", "90s") or bare numbers
+// treated as seconds (e.g. "90") are accepted. Unset or invalid values fall
+// back to cliExecTimeout.
+func cliExecTimeoutDuration() time.Duration {
+	return timeoutFromEnv(cliExecTimeoutEnv, cliExecTimeout)
+}
+
 func withCLIExecTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, cliExecTimeout)
+	return context.WithTimeout(ctx, cliExecTimeoutDuration())
+}
+
+// timeoutFromEnv returns the duration configured in the named env var, falling
+// back to fallback when the var is unset, unparsable, or non-positive. Valid
+// time.ParseDuration strings (e.g. "2m", "90s") or bare numbers treated as
+// seconds (e.g. "90") are accepted.
+func timeoutFromEnv(env string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(env))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d > 0 {
+			return d
+		}
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw + "s"); err == nil {
+		if d > 0 {
+			return d
+		}
+		return fallback
+	}
+	return fallback
 }
 
 // fsckTimeout is the default maximum time to wait for dolt fsck to verify the
@@ -332,23 +378,7 @@ const fsckTimeoutEnv = "BEADS_FSCK_TIMEOUT"
 // seconds (e.g. "90") are accepted. Unset or invalid values fall back to
 // fsckTimeout.
 func fsckTimeoutDuration() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(fsckTimeoutEnv))
-	if raw == "" {
-		return fsckTimeout
-	}
-	if d, err := time.ParseDuration(raw); err == nil {
-		if d > 0 {
-			return d
-		}
-		return fsckTimeout
-	}
-	if d, err := time.ParseDuration(raw + "s"); err == nil {
-		if d > 0 {
-			return d
-		}
-		return fsckTimeout
-	}
-	return fsckTimeout
+	return timeoutFromEnv(fsckTimeoutEnv, fsckTimeout)
 }
 
 // Retry configuration for transient connection errors (stale pool connections,
@@ -2299,19 +2329,23 @@ func (s *DoltStore) ensureMatchingCLIRemote(remote, expectedURL string) error {
 	return nil
 }
 
-func (s *DoltStore) prepareDoltCLITransfer(ctx context.Context, remote string, creds *remoteCredentials, args ...string) (*exec.Cmd, context.CancelFunc) {
+func (s *DoltStore) prepareDoltCLITransfer(ctx context.Context, remote string, creds *remoteCredentials, args ...string) (*exec.Cmd, context.Context, context.CancelFunc) {
 	return prepareDoltCLITransferCommand(ctx, s.CLIDir(), creds, s.isS3Remote(ctx, remote), args...)
 }
 
-func prepareDoltCLITransferCommand(ctx context.Context, cliDir string, creds *remoteCredentials, s3Remote bool, args ...string) (*exec.Cmd, context.CancelFunc) {
+func prepareDoltCLITransferCommand(ctx context.Context, cliDir string, creds *remoteCredentials, s3Remote bool, args ...string) (*exec.Cmd, context.Context, context.CancelFunc) {
 	ctx, cancel := withCLIExecTimeout(ctx)
 	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command with validated remote/ref args
+	// CommandContext kills only the direct dolt child on expiry; a grandchild
+	// (e.g. a cloud credential helper) holding the inherited output pipes
+	// would otherwise keep Wait/CombinedOutput blocked forever after the kill.
+	cmd.WaitDelay = cliExecWaitDelay
 	cmd.Dir = cliDir
 	creds.applyToCmd(cmd)
 	if s3Remote {
 		applyS3ChecksumEnvToCmd(cmd)
 	}
-	return cmd, cancel
+	return cmd, ctx, cancel
 }
 
 // prepareCLIRouteForGitProtocol reports whether the SQL-visible remote uses
@@ -2507,25 +2541,36 @@ func (s *DoltStore) doltCLIPush(ctx context.Context, remote string, force bool, 
 		args = append(args, "--force")
 	}
 	args = append(args, remote, s.branch)
-	cmd, cancel := s.prepareDoltCLITransfer(ctx, remote, creds, args...)
+	cmd, transferCtx, cancel := s.prepareDoltCLITransfer(ctx, remote, creds, args...)
 	defer cancel()
 	applyNoGitHooksToCmd(cmd) // GH#3724
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("dolt push failed: %s: %w", strings.TrimSpace(string(out)), err)
+		return cliTransferError("dolt push", remote, transferCtx, out, err)
 	}
 	return nil
+}
+
+// cliTransferError wraps a failed CLI transfer, distinguishing a transfer that
+// hit the bounded timeout (actionable: raise BEADS_CLI_TRANSFER_TIMEOUT, or
+// check what holds the database directory busy) from an ordinary failure.
+func cliTransferError(op, remote string, transferCtx context.Context, out []byte, err error) error {
+	if errors.Is(transferCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%s to %q timed out after %s (override with %s=<duration>; large transfers to cloud remotes can run long, and a busy dolt sql-server serving the database directory can stall CLI transfers): %s: %w",
+			op, remote, cliExecTimeoutDuration(), cliExecTimeoutEnv, strings.TrimSpace(string(out)), err)
+	}
+	return fmt.Errorf("%s failed: %s: %w", op, strings.TrimSpace(string(out)), err)
 }
 
 // doltCLIPull shells out to `dolt pull` from the database directory.
 // Used for git-protocol remotes where CALL DOLT_PULL times out through the SQL connection.
 // If creds is non-nil, credentials are set on the subprocess environment only.
 func (s *DoltStore) doltCLIPull(ctx context.Context, remote string, creds *remoteCredentials) error {
-	cmd, cancel := s.prepareDoltCLITransfer(ctx, remote, creds, "pull", remote, s.branch)
+	cmd, transferCtx, cancel := s.prepareDoltCLITransfer(ctx, remote, creds, "pull", remote, s.branch)
 	defer cancel()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("dolt pull failed: %s: %w", strings.TrimSpace(string(out)), err)
+		return cliTransferError("dolt pull", remote, transferCtx, out, err)
 	}
 	return nil
 }
