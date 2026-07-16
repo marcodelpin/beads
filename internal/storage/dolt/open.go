@@ -55,10 +55,10 @@ func ApplyCLIAutoStart(beadsDir string, cfg *Config) {
 func requireDoltBackend(fileCfg *configfile.Config) error {
 	switch fileCfg.Backend {
 	case configfile.BackendPostgres, configfile.BackendMySQL:
-		return fmt.Errorf("configured storage backend %q is no longer supported and cannot be opened as Dolt: direct support for general-purpose server databases was rolled back to keep Beads simple and resource-light; the configured %s database was not opened or modified; export it with a bd version that supports %s, then follow bd help init-safety to reinitialize with Dolt or SQLite and import the exported data", fileCfg.Backend, fileCfg.Backend, fileCfg.Backend)
+		return fmt.Errorf("configured storage backend %q is no longer supported and cannot be opened as Dolt: %s", fileCfg.Backend, configfile.RemovedBackendDetail(fileCfg.Backend))
 	}
 	if !configfile.IsSupportedBackend(fileCfg.Backend) {
-		return fmt.Errorf("configured storage backend %q in metadata.json is not recognized and cannot be opened as Dolt; no storage database was opened or modified", fileCfg.Backend)
+		return fmt.Errorf("configured storage backend %q in metadata.json is not recognized and cannot be opened as Dolt; %s", fileCfg.Backend, configfile.BackendNotOpenedGuarantee)
 	}
 	backend := fileCfg.GetBackend()
 	if backend != configfile.BackendDolt {

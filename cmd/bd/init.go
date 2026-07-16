@@ -244,13 +244,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		isSQLite := backendFlag == configfile.BackendSQLite
 		if !configfile.IsSupportedBackend(backendFlag) {
 			if backendFlag == configfile.BackendPostgres || backendFlag == configfile.BackendMySQL {
-				return fmt.Errorf("storage backend %q is no longer supported: direct support for general-purpose server databases was rolled back to keep Beads simple and resource-light; supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag)
+				return fmt.Errorf("storage backend %q is no longer supported: %s; supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag, configfile.RemovedBackendRationale)
 			}
 			return fmt.Errorf("unknown backend %q: supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag)
 		}
 		for _, legacyFlag := range removedServerBackendInitFlags {
 			if cmd.Flags().Changed(legacyFlag.name) {
-				return fmt.Errorf("--%s belonged to the removed PostgreSQL/MySQL initialization paths: direct support for general-purpose server databases was rolled back to keep Beads simple and resource-light; use --backend=dolt or --backend=sqlite", legacyFlag.name)
+				return fmt.Errorf("--%s belonged to the removed PostgreSQL/MySQL initialization paths: %s; use --backend=dolt or --backend=sqlite", legacyFlag.name, configfile.RemovedBackendRationale)
 			}
 		}
 		if isSQLite {
