@@ -63,7 +63,19 @@ func TestExternalDoltConfig_Validate_TLS(t *testing.T) {
 		}
 	})
 
-	_ = keyPath
+	t.Run("tls material without tls required is rejected", func(t *testing.T) {
+		cases := []ExternalDoltConfig{
+			{Host: "db", Port: 3306, TLSCACert: certPath},
+			{Host: "db", Port: 3306, TLSCert: certPath, TLSKey: keyPath},
+			{Host: "db", Port: 3306, TLSServerName: "db"},
+			{Host: "db", Port: 3306, TLSSkipVerify: true},
+		}
+		for _, c := range cases {
+			if err := c.Validate(); err == nil {
+				t.Fatalf("expected error for TLS material without TLSRequired: %+v", c)
+			}
+		}
+	})
 }
 
 func TestExternalDoltConfig_TLSClientConfig(t *testing.T) {

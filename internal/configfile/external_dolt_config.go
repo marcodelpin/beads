@@ -77,6 +77,19 @@ func (c ExternalDoltConfig) Validate() error {
 		return fmt.Errorf("ExternalDoltConfig: TLSCACert %q is not absolute", c.TLSCACert)
 	}
 
+	if !c.TLSRequired {
+		switch {
+		case c.TLSCACert != "":
+			return errors.New("ExternalDoltConfig: TLSCACert set without TLSRequired")
+		case c.TLSCert != "" || c.TLSKey != "":
+			return errors.New("ExternalDoltConfig: TLSCert/TLSKey set without TLSRequired")
+		case c.TLSServerName != "":
+			return errors.New("ExternalDoltConfig: TLSServerName set without TLSRequired")
+		case c.TLSSkipVerify:
+			return errors.New("ExternalDoltConfig: TLSSkipVerify set without TLSRequired")
+		}
+	}
+
 	if c.TLSRequired && hasSocket && c.TLSServerName == "" && !c.TLSSkipVerify {
 		return errors.New("ExternalDoltConfig: TLSRequired over Socket needs TLSServerName or TLSSkipVerify")
 	}
@@ -96,7 +109,7 @@ func (c ExternalDoltConfig) TLSClientConfig() (*tls.Config, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 
 	if c.TLSSkipVerify {
-		cfg.InsecureSkipVerify = true
+		cfg.InsecureSkipVerify = true //nolint:gosec // G402: opt-in insecure transport via the TLSSkipVerify testing flag
 	} else {
 		name := c.TLSServerName
 		if name == "" {
