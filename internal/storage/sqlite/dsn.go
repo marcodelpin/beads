@@ -13,9 +13,8 @@ import "strings"
 //     inter-process contention.
 //   - _txlock=immediate: writers take the write lock up front and fail fast rather
 //     than deadlocking mid-transaction on lock upgrade.
-//   - case_sensitive_like(1): LIKE parity with the other backends. Dolt/MySQL use
-//     the utf8mb4_0900_bin table collation and Postgres uses collation "C", so
-//     `id LIKE 'bd-A%'` is case-sensitive there; SQLite's default LIKE is
+//   - case_sensitive_like(1): LIKE parity with Dolt's binary table collation.
+//     SQLite's default LIKE is
 //     ASCII-case-INsensitive, which silently diverged on raw-cased operands
 //     (--id-prefix filtering, parent-descendant `id LIKE parent || '.%'`,
 //     GetNextChildID's child scan). Intentionally case-insensitive searches are
@@ -28,14 +27,12 @@ import "strings"
 // counts mega-query renders (translated to strftime by sqlitedialect) returns NULL and
 // deps_json exposes a zero created_at instead of the real timestamp. datetime stores
 // "2026-07-09 12:34:56", which strftime yields as "2026-07-09T12:34:56Z", giving the
-// same whole-second GRANULARITY as Dolt/MySQL datetime(0) and unifying bound timestamps
+// same whole-second granularity as Dolt datetime(0) and unifying bound timestamps
 // with the DEFAULT CURRENT_TIMESTAMP rows into one sortable, strftime-parseable format.
 //
-// Note the granularity matches but the sub-second RULE does not: Go's Format truncates
-// the fraction, whereas Dolt/MySQL datetime(0) round half-up (Postgres keeps microseconds).
-// This sub-second divergence is an accepted, documented waiver — the portable contract is
-// a whole-second round-trip (see conformance.testAuditImportCommentSubSecond); forcing
-// round-down parity would only discard the SQL backends' native precision.
+// Note the granularity matches but the sub-second rule does not: Go's Format truncates
+// the fraction, whereas Dolt datetime(0) rounds half-up. This accepted divergence is
+// covered by conformance.testAuditImportCommentSubSecond.
 func dsn(path string) string {
 	if strings.HasPrefix(path, "file:") {
 		return path

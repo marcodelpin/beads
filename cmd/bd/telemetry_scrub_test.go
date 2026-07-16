@@ -7,12 +7,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TestScrubArgsForTelemetry locks the invariant that no password embedded in a
-// --pg-url/--mysql-url value survives into the bd.args telemetry span, across every
-// DSN password form pgx/go-sql-driver accept and both the --flag=value and
-// --flag value spellings. The pre-fix scrubber handled only URL userinfo, so
-// query-param and libpq keyword/value passwords (the confirmed red-team vectors)
-// leaked verbatim.
+// TestScrubArgsForTelemetry locks the invariant that a positional connection
+// string cannot leak an embedded password into the bd.args telemetry span. This
+// defense is backend-neutral and remains useful even when bd does not implement
+// the connection string's database backend.
 func TestScrubArgsForTelemetry(t *testing.T) {
 	const secret = "s3cr3t-pw"
 	cases := []struct {
@@ -21,34 +19,44 @@ func TestScrubArgsForTelemetry(t *testing.T) {
 		keep []string // non-secret structure that must survive redaction
 	}{
 		{
-			name: "pg url userinfo =form",
-			argv: []string{"init", "--backend=postgres", "--pg-url=postgres://bts:" + secret + "@127.0.0.1:5432/db"},
-			keep: []string{"--pg-url=postgres://bts:", "127.0.0.1:5432/db", "--backend=postgres"},
+			name: "url userinfo",
+			argv: []string{"command", "postgres://bts:" + secret + "@127.0.0.1:5432/db"},
+			keep: []string{"postgres://bts:", "127.0.0.1:5432/db"},
 		},
 		{
-			name: "pg url query param space form",
-			argv: []string{"init", "--pg-url", "postgres://bts@127.0.0.1:5432/db?password=" + secret},
+			name: "url query param",
+			argv: []string{"command", "postgres://bts@127.0.0.1:5432/db?password=" + secret},
 			keep: []string{"127.0.0.1:5432/db", "password="},
 		},
 		{
-			name: "pg url sslpassword =form",
-			argv: []string{"init", "--pg-url=postgres://bts@h:5432/db?sslpassword=" + secret + "&sslmode=require"},
+			name: "url sslpassword",
+			argv: []string{"command", "postgres://bts@h:5432/db?sslpassword=" + secret + "&sslmode=require"},
 			keep: []string{"sslmode=require"},
 		},
 		{
-			name: "pg libpq keyword/value =form single token",
-			argv: []string{"init", "--pg-url=host=127.0.0.1 user=bts password=" + secret + " dbname=db"},
+			name: "keyword value connection string",
+			argv: []string{"command", "host=127.0.0.1 user=bts password=" + secret + " dbname=db"},
 			keep: []string{"host=127.0.0.1", "user=bts", "dbname=db"},
 		},
 		{
-			name: "mysql userinfo space form",
-			argv: []string{"init", "--mysql-url", "bts:" + secret + "@tcp(127.0.0.1:3306)/db"},
-			keep: []string{"tcp(127.0.0.1:3306)/db", "bts:"},
+			name: "keyword value connection string with whitespace around equals",
+			argv: []string{"command", "host = 127.0.0.1 password=" + secret},
+			keep: []string{"host = 127.0.0.1", "password="},
 		},
 		{
-			name: "mysql userinfo =form",
-			argv: []string{"init", "--mysql-url=bts:" + secret + "@tcp(127.0.0.1:3306)/db"},
-			keep: []string{"--mysql-url=bts:", "tcp(127.0.0.1:3306)/db"},
+			name: "password-only keyword connection string",
+			argv: []string{"command", "password=" + secret},
+			keep: []string{"password="},
+		},
+		{
+			name: "service keyword connection string",
+			argv: []string{"command", "service=production password=" + secret},
+			keep: []string{"service=production", "password="},
+		},
+		{
+			name: "scheme-less userinfo",
+			argv: []string{"command", "bts:" + secret + "@tcp(127.0.0.1:3306)/db"},
+			keep: []string{"tcp(127.0.0.1:3306)/db", "bts:"},
 		},
 	}
 	for _, tc := range cases {
@@ -78,10 +86,23 @@ func TestScrubArgsForTelemetryLeavesOrdinaryArgs(t *testing.T) {
 	if out := scrubArgsForTelemetry(argv, nil); out != "create --title document the password= knob" {
 		t.Fatalf("over-redacted ordinary args: got %q", out)
 	}
+	argv = []string{"create", "--title", "transport=rail password=foo"}
+	if out := scrubArgsForTelemetry(argv, nil); out != "create --title transport=rail password=foo" {
+		t.Fatalf("over-redacted non-DSN key/value text: got %q", out)
+	}
 
 	argv = []string{"weird", "postgres://u:leak@h:5432/db"}
 	if out := scrubArgsForTelemetry(argv, nil); strings.Contains(out, "leak") {
 		t.Fatalf("userinfo password not scrubbed as defense in depth: %q", out)
+	}
+
+	for _, arg := range []string{
+		"postgres://u@h:5432/db?password=leak",
+		"host=h user=u password=leak dbname=db",
+	} {
+		if out := scrubArgsForTelemetry([]string{"weird", arg}, nil); strings.Contains(out, "leak") {
+			t.Fatalf("positional DSN password not scrubbed as defense in depth: %q", out)
+		}
 	}
 }
 
@@ -190,6 +211,14 @@ func TestScrubArgsForTelemetryRedactsShorthandCluster(t *testing.T) {
 			name: "boolean shorthand -v then -p cluster",
 			argv: []string{"federation", "add-peer", "partner", "h:3306/db", "-vp" + secret},
 		},
+		{
+			name: "boolean shorthand -q then separate -p value",
+			argv: []string{"federation", "add-peer", "partner", "h:3306/db", "-qp", secret},
+		},
+		{
+			name: "boolean shorthand -v then separate -p value",
+			argv: []string{"federation", "add-peer", "partner", "h:3306/db", "-vp", secret},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,5 +247,31 @@ func TestScrubArgsForTelemetryKeepsOverloadedShortFlag(t *testing.T) {
 	}
 	if out := scrubArgsForTelemetry([]string{"init", "-p=myprefix"}, nil); out != "init -p=myprefix" {
 		t.Fatalf("over-redacted non-secret -p=prefix: got %q", out)
+	}
+}
+
+// TestTelemetryRedactionURLInFlagEqualsValue covers URL values embedded in a
+// --flag=value argv element. The flag prefix must not prevent URL query parsing.
+func TestTelemetryRedactionURLInFlagEqualsValue(t *testing.T) {
+	const secret = "query-secret"
+	arg := "--remote=postgres://bts@db.example/beads?password=" + secret
+	out := scrubArgsForTelemetry([]string{"init", arg}, nil)
+	if strings.Contains(out, secret) {
+		t.Fatalf("PASSWORD LEAK: URL query password in --flag=value survived telemetry scrub: %q", out)
+	}
+}
+
+// TestTelemetryRedactionMalformedURLQuery fails closed when a URL-shaped DSN has
+// an invalid percent escape. net/url rejects the whole URL in that case, but the
+// query password must still never reach the bd.args telemetry span.
+func TestTelemetryRedactionMalformedURLQuery(t *testing.T) {
+	const secret = "query-secret"
+	arg := "postgres://bts@db.example/beads%zz?password=" + secret + "&sslmode=require"
+	out := scrubArgsForTelemetry([]string{"command", arg}, nil)
+	if strings.Contains(out, secret) {
+		t.Fatalf("PASSWORD LEAK: malformed URL query password survived telemetry scrub: %q", out)
+	}
+	if !strings.Contains(out, "password=xxxxx") || !strings.Contains(out, "sslmode=require") {
+		t.Fatalf("malformed URL query structure was not preserved after redaction: %q", out)
 	}
 }

@@ -9,8 +9,10 @@ package beads
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
@@ -18,6 +20,15 @@ import (
 
 // Storage is the interface for beads storage operations
 type Storage = beads.Storage
+
+func configuredBackendUnavailable(backend string) error {
+	switch backend {
+	case configfile.BackendPostgres, configfile.BackendMySQL:
+		return fmt.Errorf("storage backend %q is no longer supported: direct support for general-purpose server databases was rolled back to keep Beads simple and resource-light; the configured %s database was not opened or modified; export with a bd version that supports %s, then follow bd help init-safety to reinitialize with Dolt or SQLite and import the exported data", backend, backend, backend)
+	default:
+		return fmt.Errorf("storage backend %q in metadata.json is not recognized or supported; no storage database was opened or modified; supported backends are \"dolt\" and \"sqlite\"; fix or restore metadata.json and retry", backend)
+	}
+}
 
 // Transaction provides atomic multi-operation support within a database transaction.
 // Use Storage.RunInTransaction() to obtain a Transaction instance.
@@ -64,9 +75,9 @@ func Open(ctx context.Context, dbPath string) (Storage, error) {
 	return dolt.New(ctx, &dolt.Config{Path: dbPath, CreateIfMissing: true})
 }
 
-// OpenFromConfig opens a beads database using configuration from metadata.json.
-// Unlike Open, this respects Dolt server mode settings and database name
-// configuration, connecting to the Dolt SQL server when dolt_mode is "server".
+// OpenFromConfig opens the Dolt implementation using configuration from
+// metadata.json. Unlike Open, this respects Dolt server mode settings and database
+// name configuration. Use OpenBestAvailable when metadata may select SQLite.
 // beadsDir is the path to the .beads directory.
 func OpenFromConfig(ctx context.Context, beadsDir string) (Storage, error) {
 	return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: true})

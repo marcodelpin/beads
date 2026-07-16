@@ -1,12 +1,12 @@
-// Package sqlkit is the single, shared SQL-family implementation of bd's storage
-// semantics. Every SQL backend (Dolt, Postgres, SQLite, MySQL, …) is a strategy
-// bundle over this one implementation:
+// Package sqlkit is the shared relational implementation used by the SQLite
+// storage backend. It remains separated from the public storage interface as a
+// strategy bundle:
 //
 //   - Dialect            — the SQL flavor (a translating driver or native emit)
 //   - ReadinessStrategy  — how the is_blocked projection is kept current
 //   - ClaimStrategy      — how a ready issue is atomically claimed
 //
-// A concrete backend embeds *Store, inherits every method, and overrides only
+// SQLite embeds *Store, inherits every method, and overrides only
 // the handful it specializes (a "method override") or adds capability-interface
 // methods for operations that don't exist in the core contract (e.g. Dolt
 // history). The query/graph/ordering/id-mint/cycle semantics live here once, in
@@ -22,9 +22,8 @@ import (
 )
 
 // Dialect opens the backend's *sql.DB and names it. The shared layer emits
-// canonical (MySQL-dialect) SQL; a Dialect whose driver translates that text to
-// the backend's flavor is how a non-MySQL SQL engine joins the family without
-// changing the shared layer (see internal/storage/pgdialect for Postgres).
+// canonical MySQL-dialect SQL inherited from the Dolt implementation; the SQLite
+// dialect translates that text without changing the shared layer.
 type Dialect interface {
 	Name() string
 	Open(ctx context.Context) (*sql.DB, error)

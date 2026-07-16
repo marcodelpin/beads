@@ -58,15 +58,22 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Check if Dolt backend is configured
 	if cfg.GetBackend() != configfile.BackendDolt {
+		status := StatusWarning
+		message := fmt.Sprintf("Server checks require Dolt; configured backend is %q", cfg.GetBackend())
+		detail := "Dolt server health checks do not apply to this backend"
+		if cfg.GetBackend() == configfile.BackendSQLite {
+			status = StatusOK
+			message = "N/A (SQLite is supported and does not use a Dolt server)"
+			detail = "Run bd commands normally for this SQLite workspace"
+		}
 		result.Checks = append(result.Checks, DoctorCheck{
 			Name:     "Server Config",
-			Status:   StatusWarning,
-			Message:  fmt.Sprintf("Backend is '%s', not Dolt", cfg.GetBackend()),
-			Detail:   "Server mode health checks are only relevant for Dolt backend",
-			Fix:      "Set backend: dolt in metadata.json to use Dolt server mode",
+			Status:   status,
+			Message:  message,
+			Detail:   detail,
 			Category: CategoryFederation,
 		})
-		result.OverallOK = false
+		result.OverallOK = status == StatusOK
 		return result
 	}
 
