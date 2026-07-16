@@ -229,3 +229,80 @@ func JSONMetadataPath(key string) string {
 	}
 	return "$." + key
 }
+
+// MergeMetadataJSON merges incoming metadata JSON into existing metadata.
+// Top-level keys from incoming overwrite keys in existing; keys only in
+// existing are preserved. Both inputs must be JSON objects (or empty/null).
+func MergeMetadataJSON(existing, incoming json.RawMessage) (json.RawMessage, error) {
+	base := make(map[string]json.RawMessage)
+	if len(existing) > 0 {
+		trimmed := strings.TrimSpace(string(existing))
+		if trimmed != "" && trimmed != "null" {
+			if err := json.Unmarshal(existing, &base); err != nil {
+				return nil, fmt.Errorf("existing metadata is not a JSON object: %w", err)
+			}
+		}
+	}
+
+	overlay := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(incoming, &overlay); err != nil {
+		return nil, fmt.Errorf("new metadata is not a JSON object: %w", err)
+	}
+
+	for k, v := range overlay {
+		base[k] = v
+	}
+
+	result, err := json.Marshal(base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal merged metadata: %w", err)
+	}
+	return json.RawMessage(result), nil
+}
+
+// ApplyMetadataEdits applies incremental set (key=value) and unset (key) edits
+// to existing metadata and returns the merged JSON. Set values are typed via
+// MetadataEditValue; keys are validated with ValidateMetadataKey.
+func ApplyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string) (json.RawMessage, error) {
+	data := make(map[string]json.RawMessage)
+	if len(existing) > 0 {
+		trimmed := strings.TrimSpace(string(existing))
+		if trimmed != "" && trimmed != "null" {
+			if err := json.Unmarshal(existing, &data); err != nil {
+				return nil, fmt.Errorf("existing metadata is not a JSON object: %w", err)
+			}
+		}
+	}
+
+	for _, kv := range setFlags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid --set-metadata: expected key=value, got %q", kv)
+		}
+		if err := ValidateMetadataKey(k); err != nil {
+			return nil, err
+		}
+		data[k] = MetadataEditValue(v)
+	}
+
+	for _, k := range unsetFlags {
+		if err := ValidateMetadataKey(k); err != nil {
+			return nil, err
+		}
+		delete(data, k)
+	}
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	return json.RawMessage(result), nil
+}
+
+// MetadataEditValue stores a set-edit string value as a JSON string.
+// Previous behavior inferred types (numbers, booleans, null) from content,
+// which silently broke map[string]string round-trips (GH#4146).
+func MetadataEditValue(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return json.RawMessage(b)
+}

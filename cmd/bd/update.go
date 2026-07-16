@@ -12,6 +12,7 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -134,7 +135,7 @@ create, update, show, or close operation).`,
 		}
 		if cmd.Flags().Changed("append-notes") {
 			appendNotes, _ := cmd.Flags().GetString("append-notes")
-			updates["append_notes"] = appendNotes
+			updates[issueops.OpAppendNotes] = appendNotes
 		}
 		if cmd.Flags().Changed("acceptance") || cmd.Flags().Changed("acceptance-criteria") {
 			var acceptanceCriteria string
@@ -288,7 +289,10 @@ create, update, show, or close operation).`,
 			if !json.Valid([]byte(metadataJSON)) {
 				return HandleErrorRespectJSON("invalid JSON in --metadata: must be valid JSON")
 			}
-			updates["metadata"] = json.RawMessage(metadataJSON)
+			// Passed as a merge OPERATION, not a pre-merged value: the storage
+			// layer re-reads and merges inside the mutation transaction so a
+			// concurrent writer's keys survive (lost-update fix).
+			updates[issueops.OpMergeMetadata] = json.RawMessage(metadataJSON)
 		}
 
 		// Incremental metadata edits (GH#1406)
@@ -297,9 +301,11 @@ create, update, show, or close operation).`,
 		if (len(setMetadataFlags) > 0 || len(unsetMetadataFlags) > 0) && cmd.Flags().Changed("metadata") {
 			return HandleErrorRespectJSON("cannot combine --metadata with --set-metadata or --unset-metadata")
 		}
-		if len(setMetadataFlags) > 0 || len(unsetMetadataFlags) > 0 {
-			updates["_set_metadata"] = setMetadataFlags
-			updates["_unset_metadata"] = unsetMetadataFlags
+		if len(setMetadataFlags) > 0 {
+			updates[issueops.OpSetMetadata] = setMetadataFlags
+		}
+		if len(unsetMetadataFlags) > 0 {
+			updates[issueops.OpUnsetMetadata] = unsetMetadataFlags
 		}
 
 		// Get claim flag
@@ -385,11 +391,16 @@ create, update, show, or close operation).`,
 				trackMutation(result)
 			}
 
-			// Apply regular field updates if any
+			// Apply regular field updates if any. Metadata edits (--metadata,
+			// --set-metadata, --unset-metadata) and --append-notes pass through
+			// as merge OPERATIONS: the storage layer resolves them against the
+			// row re-read inside the mutation transaction. Merging here against
+			// the `issue` snapshot (read in an earlier transaction) silently
+			// erased concurrent writers' keys — both processes exited 0, one
+			// process's committed write vanished.
 			regularUpdates := make(map[string]interface{})
 			for k, v := range updates {
-				if k != "add_labels" && k != "remove_labels" && k != "set_labels" && k != "parent" && k != "append_notes" &&
-					k != "_set_metadata" && k != "_unset_metadata" {
+				if k != "add_labels" && k != "remove_labels" && k != "set_labels" && k != "parent" {
 					regularUpdates[k] = v
 				}
 			}
@@ -398,33 +409,6 @@ create, update, show, or close operation).`,
 			// shouldn't be clobbered just because defer_until was stale.
 			if clearDeferStatus && issue.Status == types.StatusDeferred {
 				regularUpdates["status"] = string(types.StatusOpen)
-			}
-
-			// Handle --metadata: merge with existing metadata instead of replacing
-			if newMeta, ok := regularUpdates["metadata"].(json.RawMessage); ok && len(issue.Metadata) > 0 {
-				merged, err := mergeMetadata(issue.Metadata, newMeta)
-				if err != nil {
-					return HandleErrorRespectJSON("metadata merge failed for %s: %v", id, err)
-				}
-				regularUpdates["metadata"] = merged
-			}
-			// Handle incremental metadata edits (GH#1406)
-			if setMeta, ok := updates["_set_metadata"].([]string); ok {
-				unsetMeta, _ := updates["_unset_metadata"].([]string)
-				merged, err := applyMetadataEdits(issue.Metadata, setMeta, unsetMeta)
-				if err != nil {
-					return HandleErrorRespectJSON("metadata edit failed for %s: %v", id, err)
-				}
-				regularUpdates["metadata"] = merged
-			}
-			// Handle append_notes: combine existing notes with new content
-			if appendNotes, ok := updates["append_notes"].(string); ok {
-				combined := issue.Notes
-				if combined != "" {
-					combined += "\n"
-				}
-				combined += appendNotes
-				regularUpdates["notes"] = combined
 			}
 			if len(regularUpdates) > 0 {
 				res, err := writeWithSpool(ctx, "update",
@@ -595,81 +579,22 @@ create, update, show, or close operation).`,
 
 // mergeMetadata merges new metadata JSON into existing metadata.
 // Keys from newMeta overwrite keys in existing; keys only in existing are preserved.
+// Thin alias over the shared storage helper (also used in-transaction by issueops).
 func mergeMetadata(existing, newMeta json.RawMessage) (json.RawMessage, error) {
-	base := make(map[string]json.RawMessage)
-	if len(existing) > 0 {
-		trimmed := strings.TrimSpace(string(existing))
-		if trimmed != "" && trimmed != "null" {
-			if err := json.Unmarshal(existing, &base); err != nil {
-				return nil, fmt.Errorf("existing metadata is not a JSON object: %w", err)
-			}
-		}
-	}
-
-	incoming := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(newMeta, &incoming); err != nil {
-		return nil, fmt.Errorf("new metadata is not a JSON object: %w", err)
-	}
-
-	for k, v := range incoming {
-		base[k] = v
-	}
-
-	result, err := json.Marshal(base)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal merged metadata: %w", err)
-	}
-	return json.RawMessage(result), nil
+	return storage.MergeMetadataJSON(existing, newMeta)
 }
 
 // applyMetadataEdits applies --set-metadata and --unset-metadata edits to existing metadata.
-// Returns the merged JSON as json.RawMessage.
+// Thin alias over the shared storage helper (also used in-transaction by issueops).
 func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string) (json.RawMessage, error) {
-	// Parse existing metadata (or start with empty object)
-	data := make(map[string]json.RawMessage)
-	if len(existing) > 0 {
-		trimmed := strings.TrimSpace(string(existing))
-		if trimmed != "" && trimmed != "null" {
-			if err := json.Unmarshal(existing, &data); err != nil {
-				return nil, fmt.Errorf("existing metadata is not a JSON object: %w", err)
-			}
-		}
-	}
-
-	// Apply --set-metadata key=value pairs
-	for _, kv := range setFlags {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, fmt.Errorf("invalid --set-metadata: expected key=value, got %q", kv)
-		}
-		if err := storage.ValidateMetadataKey(k); err != nil {
-			return nil, err
-		}
-		// Store as JSON value: try to preserve type (number, bool, null)
-		data[k] = toJSONValue(v)
-	}
-
-	// Apply --unset-metadata keys
-	for _, k := range unsetFlags {
-		if err := storage.ValidateMetadataKey(k); err != nil {
-			return nil, err
-		}
-		delete(data, k)
-	}
-
-	result, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-	return json.RawMessage(result), nil
+	return storage.ApplyMetadataEdits(existing, setFlags, unsetFlags)
 }
 
 // toJSONValue stores a CLI metadata value as a JSON string.
 // Previous behavior inferred types (numbers, booleans) from content,
 // which silently broke map[string]string round-trips (GH#4146).
 func toJSONValue(s string) json.RawMessage {
-	b, _ := json.Marshal(s)
-	return json.RawMessage(b)
+	return storage.MetadataEditValue(s)
 }
 
 func init() {

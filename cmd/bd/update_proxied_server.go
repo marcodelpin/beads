@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/fs"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -80,6 +81,16 @@ type updateProxiedResult struct {
 // return (claimLost) reports a requested --claim that lost to a different owner
 // (already-claimed / not-claimable), so the caller can flip the batch exit code
 // even when another ID succeeded — matching the non-proxied path.
+//
+// uow.RunTxResult redoes the WHOLE read-merge-write in a fresh unit of work
+// when Dolt reports a serialization failure — never just the commit. The
+// server already rolled the conflicted transaction back, so re-committing the
+// same session (the old uow.CommitWithRetries idiom) could only ever produce
+// "nothing to commit", which was swallowed: bd printed "✓ Updated" and exited
+// 0 for a write that never landed. Redoing the attempt re-reads the winner's
+// committed row, so merge operations (metadata edits, note appends) resolve
+// against authoritative state instead of erasing it; exhausted retries surface
+// as a loud per-issue error and a non-zero exit.
 func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*types.Issue, bool, bool, error) {
 	if uowProvider == nil {
 		return nil, false, false, HandleError("proxied-server UOW provider not initialized")
@@ -103,10 +114,7 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 			return updateProxiedResult{}, "", err
 		}
 
-		spec, err := buildUpdateSpecForIssue(current, in)
-		if err != nil {
-			return updateProxiedResult{}, "", err
-		}
+		spec := buildUpdateSpecForIssue(current, in)
 
 		updated, err := issueUC.ApplyUpdate(ctx, id, spec, actor)
 		if err != nil {
@@ -176,7 +184,11 @@ func proxiedHookRunner(ctx context.Context) (*hooks.Runner, error) {
 	return hooks.NewRunner(filepath.Join(resolution.BeadsDir, "hooks")), nil
 }
 
-func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) (domain.UpdateSpec, error) {
+// buildUpdateSpecForIssue translates gathered CLI input into a domain
+// UpdateSpec. It never pre-merges row state: merge-shaped edits are passed as
+// operation keys and resolved by the repository inside the mutation
+// transaction.
+func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) domain.UpdateSpec {
 	fields := make(map[string]any, len(in.fields))
 	for k, v := range in.fields {
 		fields[k] = v
@@ -185,30 +197,26 @@ func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) (domain.Upda
 	if in.clearDeferStatus && current.Status == types.StatusDeferred {
 		fields["status"] = string(types.StatusOpen)
 	}
+	// Metadata edits and note appends pass through as merge OPERATIONS: the
+	// repository resolves them against the row re-read inside the mutation
+	// transaction (issueops.ResolveMergeOps via the domain/db Update path).
+	// Merging here against `current` — a read from this unit of work's MVCC
+	// snapshot — silently erased keys a concurrent writer committed after our
+	// snapshot was taken: both processes exited 0, one write vanished.
 	if in.hasAppendNotes {
-		combined := current.Notes
-		if combined != "" {
-			combined += "\n"
-		}
-		combined += in.appendNotes
-		fields["notes"] = combined
+		fields[issueops.OpAppendNotes] = in.appendNotes
 	}
 	if len(in.mergeMetadataIn) > 0 {
-		merged, err := mergeMetadata(current.Metadata, in.mergeMetadataIn)
-		if err != nil {
-			return domain.UpdateSpec{}, fmt.Errorf("metadata merge failed for %s: %w", current.ID, err)
-		}
-		fields["metadata"] = merged
+		fields[issueops.OpMergeMetadata] = in.mergeMetadataIn
 	}
-	if len(in.setMetadata) > 0 || len(in.unsetMetadata) > 0 {
-		merged, err := applyMetadataEdits(current.Metadata, in.setMetadata, in.unsetMetadata)
-		if err != nil {
-			return domain.UpdateSpec{}, fmt.Errorf("metadata edit failed for %s: %w", current.ID, err)
-		}
-		fields["metadata"] = merged
+	if len(in.setMetadata) > 0 {
+		fields[issueops.OpSetMetadata] = in.setMetadata
+	}
+	if len(in.unsetMetadata) > 0 {
+		fields[issueops.OpUnsetMetadata] = in.unsetMetadata
 	}
 
-	spec := domain.UpdateSpec{
+	return domain.UpdateSpec{
 		Fields:       fields,
 		Claim:        in.claim,
 		AddLabels:    in.addLabels,
@@ -216,5 +224,4 @@ func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) (domain.Upda
 		SetLabels:    in.setLabels,
 		Reparent:     in.reparent,
 	}
-	return spec, nil
 }
