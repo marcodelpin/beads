@@ -214,6 +214,10 @@ var configSetCmd = &cobra.Command{
 			return HandleError("setting config: %v", err)
 		}
 		commandDidWrite.Store(true)
+		if err := commitConfigWrite(ctx, store, "config set"); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		if jsonOutput {
 			if err := outputJSON(map[string]string{
@@ -593,6 +597,10 @@ var configUnsetCmd = &cobra.Command{
 			return HandleError("deleting config: %v", err)
 		}
 		commandDidWrite.Store(true)
+		if err := commitConfigWrite(ctx, store, "config unset"); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		if jsonOutput {
 			if err := outputJSON(map[string]string{
@@ -874,6 +882,10 @@ Examples:
 					}
 				}
 				commandDidWrite.Store(true)
+				// One scoped commit for the whole batch, not one per key (GH#4078).
+				if err := commitConfigWrite(ctx, store, "config set-many"); err != nil {
+					return HandleError("%v", err)
+				}
 			}
 		}
 

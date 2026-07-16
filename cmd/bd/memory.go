@@ -395,6 +395,9 @@ Examples:
 			return HandleErrorRespectJSON("storing memory: %v", err)
 		}
 		commandDidWrite.Store(true)
+		if err := commitConfigWrite(ctx, store, "remember"); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 
 		if jsonOutput {
 			action := "remembered"
@@ -916,6 +919,9 @@ Examples:
 			return HandleErrorRespectJSON("forgetting memory: %v", err)
 		}
 		commandDidWrite.Store(true)
+		if err := commitConfigWrite(ctx, store, "forget"); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 
 		if jsonOutput {
 			return outputJSON(map[string]string{

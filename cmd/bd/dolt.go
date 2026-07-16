@@ -601,15 +601,15 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 			return HandleError("%v", err)
 		}
 		msg, _ := cmd.Flags().GetString("message")
-		if msg == "" {
-			msg = fmt.Sprintf("bd: dolt commit (auto-commit) by %s", getActor())
-		}
-		if err := st.Commit(ctx, msg); err != nil {
-			if isDoltNothingToCommit(err) {
-				fmt.Println("Nothing to commit.")
-				return nil
-			}
+		// GH#4078: explicit commits include config and report truthfully.
+		// Without -m, CommitPending builds a descriptive summary message.
+		committed, err := explicitDoltCommit(ctx, st, msg)
+		if err != nil {
 			return HandleError("%v", err)
+		}
+		if !committed {
+			fmt.Println("Nothing to commit.")
+			return nil
 		}
 		commandDidExplicitDoltCommit = true
 		fmt.Println("Committed.")

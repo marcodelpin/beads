@@ -181,15 +181,19 @@ Examples:
 		}
 
 		commandDidExplicitDoltCommit = true
-		if err := store.Commit(ctx, vcCommitMessage); err != nil {
-			if isDoltNothingToCommit(err) {
-				if jsonOutput {
-					return outputJSON(map[string]interface{}{"committed": false, "message": "nothing to commit"})
-				}
-				fmt.Println("Nothing to commit")
-				return nil
-			}
+		// GH#4078: include config and report truthfully - the old Commit()
+		// path silently no-opped on config-only working sets while still
+		// printing "Created commit".
+		committed, err := explicitDoltCommit(ctx, store, vcCommitMessage)
+		if err != nil {
 			return HandleErrorRespectJSON("failed to commit: %v", err)
+		}
+		if !committed {
+			if jsonOutput {
+				return outputJSON(map[string]interface{}{"committed": false, "message": "nothing to commit"})
+			}
+			fmt.Println("Nothing to commit")
+			return nil
 		}
 
 		hash, err := store.GetCurrentCommit(ctx)

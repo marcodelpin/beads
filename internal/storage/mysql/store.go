@@ -62,6 +62,7 @@ func (s *Store) CommitPending(_ context.Context, _ string) (bool, error) { retur
 func (s *Store) Commit(_ context.Context, _ string) error                { return nil }
 func (s *Store) CommitWithConfig(_ context.Context, _ string) error      { return nil }
 func (s *Store) CommitMergeResolution(_ context.Context, _ string) error { return nil }
+func (s *Store) CommitConfigOnly(_ context.Context, _ string) error      { return nil }
 
 var (
 	_ storage.DoltStorage           = (*Store)(nil)
