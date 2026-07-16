@@ -31,6 +31,11 @@ func TestEmbeddedClaimPools(t *testing.T) {
 	cfgCmd.Env = bdEnv(dir)
 	if out, err := cfgCmd.CombinedOutput(); err != nil {
 		t.Fatalf("bd config set claim.pools failed: %v\n%s", err, out)
+	} else if strings.Contains(string(out), "not a recognized config key") {
+		// The exit code alone missed this once: claim.* must be a
+		// recognized namespace so the feature's setup command doesn't
+		// warn every adopter.
+		t.Fatalf("bd config set claim.pools warned about an unrecognized key:\n%s", out)
 	}
 
 	t.Run("claim_from_pool_succeeds", func(t *testing.T) {

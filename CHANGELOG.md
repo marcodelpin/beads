@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claimable by any actor through the same atomic compare-and-swap — the
   claim stamps the normal lease, and issues assigned to a real actor (or
   to an alias not in the config) keep their anti-steal protection.
+  Pool-aware claiming works in every dolt mode — the proxied-server claim
+  path applies the same predicate — and `claim.*` is a recognized config
+  namespace (documented in `bd config --help`). Note: if a pool take's
+  lease expires, `bd reclaim` returns the issue to the unassigned pool,
+  not to the pool alias it was dispatched to.
   Off by default: with no `claim.pools` configured, behavior is unchanged.
 
 - **Work leases: claim-TTL, heartbeat, and reclaim for dead-worker recovery**

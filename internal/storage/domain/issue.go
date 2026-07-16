@@ -22,11 +22,16 @@ type IssueTableOpts struct {
 }
 
 type ClaimRowResult struct {
-	Updated          bool
-	CurrentAssignee  string
-	CurrentStatus    types.Status
-	StartedAtWasZero bool
-	OldIssue         *types.Issue
+	Updated bool
+	// CurrentAssignee is the assignee found on the 0-row disambiguation
+	// read; CurrentAssigneeIsPool marks it as a claim.pools alias, so the
+	// caller reports a status conflict instead of a held-by-someone
+	// refusal (a pool alias never "holds" a claim).
+	CurrentAssignee       string
+	CurrentAssigneeIsPool bool
+	CurrentStatus         types.Status
+	StartedAtWasZero      bool
+	OldIssue              *types.Issue
 }
 
 type IssueSQLRepository interface {
@@ -416,6 +421,12 @@ func (u *issueUseCaseImpl) claim(ctx context.Context, id, actor string, useWisp 
 		return ClaimResult{AlreadyClaimed: true, PriorAssignee: actor}, nil
 	}
 	if row.CurrentAssignee != "" && row.CurrentAssignee != actor {
+		// A pool-assigned issue only loses the CAS for a non-assignee
+		// reason (status changed underneath us): report the status, not a
+		// misleading held-by refusal (mirrors issueops.ClaimIssueInTx).
+		if row.CurrentAssigneeIsPool {
+			return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
+		}
 		return ClaimResult{}, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, row.CurrentAssignee)
 	}
 	return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
