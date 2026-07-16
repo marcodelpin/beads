@@ -12,6 +12,11 @@ Release a claimed issue by clearing the assignee and resetting status to 'open'.
 Use this when an agent crashes mid-work or you need to abandon a claimed task.
 The issue becomes available for re-claiming by other agents.
 
+Only the current assignee can release its own claim. Releasing another
+actor's claim requires --force and should be coordinated with the holder
+first — their claim may be live even if the issue looks idle. Prefer
+letting lease expiry reclaim genuinely abandoned work.
+
 Examples:
   bd unclaim bd-123
   bd unclaim bd-123 --reason "Agent crashed"

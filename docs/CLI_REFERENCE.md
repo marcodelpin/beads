@@ -1535,6 +1535,11 @@ Release a claimed issue by clearing the assignee and resetting status to 'open'.
 Use this when an agent crashes mid-work or you need to abandon a claimed task.
 The issue becomes available for re-claiming by other agents.
 
+Only the current assignee can release its own claim. Releasing another
+actor's claim requires --force and should be coordinated with the holder
+first — their claim may be live even if the issue looks idle. Prefer
+letting lease expiry reclaim genuinely abandoned work.
+
 Examples:
   bd unclaim bd-123
   bd unclaim bd-123 --reason "Agent crashed"
@@ -2357,6 +2362,16 @@ Commands:
 DoltHub is recommended for cloud backup:
   bd backup init https://doltremoteapi.dolthub.com/&lt;user&gt;/&lt;repo&gt;
   Set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD for authentication.
+
+Auto-backup default:
+  When backup.enabled is unset, auto-backup turns ON in embedded mode if a
+  git remote exists, and stays OFF in sql-server / shared-server mode. In
+  server mode many bd clients share one Dolt server, and each would register
+  a server-side backup remote under the same name pointing at its own local
+  dir and full-sync the whole database — a self-amplifying storm. To back up
+  a shared server, run 'bd backup' explicitly (or set backup.enabled=true and
+  coordinate destinations). 'bd config get backup.enabled' shows the effective
+  value and its source.
 
 ```
 bd backup [command]
