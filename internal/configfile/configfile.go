@@ -249,10 +249,17 @@ func (c *Config) GetCapabilities() BackendCapabilities {
 	return CapabilitiesForBackend(backend)
 }
 
-// GetBackend returns the configured storage backend. Only the explicitly-allowlisted
-// non-default backends ("postgres", "mysql") are honored; "", "dolt", and any legacy
-// or unknown value resolve to dolt so the default path stays byte-identical and a
-// typo fails safe to Dolt.
+// IsSupportedBackend reports whether backend selects an implementation shipped by
+// beads. The empty value is the legacy/default spelling of Dolt.
+func IsSupportedBackend(backend string) bool {
+	return backend == "" || backend == BackendDolt || backend == BackendSQLite
+}
+
+// GetBackend returns the configured storage backend. PostgreSQL and MySQL remain
+// recognizable here so workspaces created by earlier releases can fail loudly at
+// store selection instead of silently falling back to an empty Dolt database.
+// Empty, explicit Dolt, and unknown legacy values retain the established Dolt
+// fallback behavior.
 func (c *Config) GetBackend() string {
 	if c != nil {
 		switch c.Backend {

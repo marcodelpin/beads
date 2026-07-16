@@ -662,6 +662,29 @@ func TestGetBackendAllowlist(t *testing.T) {
 	}
 }
 
+func TestSupportedBackendAllowlist(t *testing.T) {
+	tests := []struct {
+		name      string
+		backend   string
+		supported bool
+	}{
+		{name: "implicit dolt", backend: "", supported: true},
+		{name: "dolt", backend: BackendDolt, supported: true},
+		{name: "sqlite", backend: BackendSQLite, supported: true},
+		{name: "postgres", backend: BackendPostgres, supported: false},
+		{name: "mysql", backend: BackendMySQL, supported: false},
+		{name: "unknown", backend: "mystery", supported: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSupportedBackend(tt.backend); got != tt.supported {
+				t.Fatalf("IsSupportedBackend(%q) = %v, want %v", tt.backend, got, tt.supported)
+			}
+		})
+	}
+}
+
 // TestDatabasePathAlwaysDolt tests that DatabasePath always returns the dolt path.
 func TestDatabasePathAlwaysDolt(t *testing.T) {
 	beadsDir := "/home/user/project/.beads"

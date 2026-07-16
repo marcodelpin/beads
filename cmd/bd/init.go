@@ -105,11 +105,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
-		// Postgres backend flags (backend="postgres")
-		pgURL, _ := cmd.Flags().GetString("pg-url")
-		pgSchema, _ := cmd.Flags().GetString("pg-schema")
-		mysqlURL, _ := cmd.Flags().GetString("mysql-url")
-		mysqlDatabase, _ := cmd.Flags().GetString("mysql-database")
 		sqlitePath, _ := cmd.Flags().GetString("sqlite-path")
 
 		// --force is a deprecated alias for --reinit-local. They share
@@ -248,25 +243,22 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			externalConfig = &cfg
 		}
 
-		// Backend selection: dolt (default) + the pluggable SQL-family backends
-		// (postgres, mysql, sqlite). SQLite was removed under the one-backend
-		// assumption (#3151) and re-added as a pluggable leaf backend.
-		isPostgres := backendFlag == configfile.BackendPostgres
-		isMySQL := backendFlag == configfile.BackendMySQL
+		// Backend selection: Dolt (default) and the embedded SQLite backend.
 		isSQLite := backendFlag == configfile.BackendSQLite
-		if backendFlag != "" && backendFlag != configfile.BackendDolt && !isPostgres && !isMySQL && !isSQLite {
-			return fmt.Errorf("unknown backend %q: supported backends are \"dolt\" (default), \"postgres\", \"mysql\", and \"sqlite\"", backendFlag)
+		if !configfile.IsSupportedBackend(backendFlag) {
+			if backendFlag == configfile.BackendPostgres || backendFlag == configfile.BackendMySQL {
+				return fmt.Errorf("storage backend %q is no longer supported; supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag)
+			}
+			return fmt.Errorf("unknown backend %q: supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag)
 		}
-		if isPostgres || isMySQL || isSQLite {
+		if isSQLite {
 			// A non-Dolt SQL backend is a plain local workspace: only a small set of
 			// init-local flags apply. Reject any other init-local flag by ALLOWLIST — a
 			// denylist silently ignores Dolt-only flags added later, the exact footgun
 			// this block exists to prevent. Inherited/global flags (--json, --dir, …)
 			// are not init-local and are left untouched.
-			pgAllowedFlags := map[string]bool{
-				"backend": true,
-				"pg-url":  true, "pg-schema": true,
-				"mysql-url": true, "mysql-database": true,
+			sqliteAllowedFlags := map[string]bool{
+				"backend":     true,
 				"sqlite-path": true,
 				"prefix":      true, "quiet": true,
 				"skip-hooks": true, "skip-agents": true,
@@ -281,7 +273,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if cmd.InheritedFlags().Lookup(f.Name) != nil {
 					return
 				}
-				if !pgAllowedFlags[f.Name] {
+				if !sqliteAllowedFlags[f.Name] {
 					rejected = append(rejected, "--"+f.Name)
 				}
 			})
@@ -320,8 +312,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			return fmt.Errorf("--team requires interactive prompts and cannot be used with --non-interactive")
 		}
 
-		// Non-Dolt backends (postgres/mysql/sqlite) were dispatched and returned
-		// earlier; this is the Dolt init path.
+		// SQLite was dispatched and returned earlier; this is the Dolt init path.
 		backend := configfile.BackendDolt
 
 		// Also treat BEADS_DOLT_SERVER_MODE=1 env var as --server.
@@ -814,31 +805,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 
 		ctx := rootCtx
 
-		// Postgres proof-wedge: finalize a plain local workspace backed by Postgres.
-		// Everything below provisions Dolt (embedded/server DB dir, migrations, remote
-		// gate, sync, remotes) — none of which Postgres has an analog for — so the PG
-		// path provisions the schema + seeds + metadata.json here and returns. The
-		// shared setup above (.beads/, .gitignore, git init) already ran.
-		if isPostgres {
-			return runInitPostgres(ctx, initPostgresInput{
-				beadsDir:   beadsDir,
-				prefix:     prefix,
-				pgURL:      pgURL,
-				pgSchema:   pgSchema,
-				quiet:      quiet,
-				jsonOutput: jsonOutput,
-			})
-		}
-		if isMySQL {
-			return runInitMySQL(ctx, initMySQLInput{
-				beadsDir:      beadsDir,
-				prefix:        prefix,
-				mysqlURL:      mysqlURL,
-				mysqlDatabase: mysqlDatabase,
-				quiet:         quiet,
-				jsonOutput:    jsonOutput,
-			})
-		}
 		if isSQLite {
 			return runInitSQLite(ctx, initSQLiteInput{
 				beadsDir:   beadsDir,
