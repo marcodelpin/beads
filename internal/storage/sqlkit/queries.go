@@ -58,8 +58,8 @@ func (s *Store) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFil
 
 // CountReadyWork returns the total ready-work count for filter. It is identical
 // to len(GetReadyWorkWithCounts(filter with Limit=0)) but sizes the total with
-// cheap indexed COUNT(*)s instead of re-running the counts mega-query, so every
-// SQL backend (Postgres/MySQL/SQLite) satisfies storage.ReadyWorkCounter and
+// cheap indexed COUNT(*)s instead of re-running the counts mega-query, so SQLite
+// satisfies storage.ReadyWorkCounter and
 // `bd ready --json` prints "Showing X of N" without the unbounded pass.
 func (s *Store) CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error) {
 	var n int

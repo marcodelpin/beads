@@ -9,8 +9,8 @@ import (
 )
 
 // Open returns a *sql.DB over modernc.org/sqlite whose Prepare translates bd's
-// canonical MySQL SQL to SQLite (see Translate). Like pgdialect it exposes no
-// Execer/Queryer fast path, so database/sql routes every statement through Prepare.
+// canonical MySQL SQL to SQLite (see Translate). It exposes no Execer/Queryer fast
+// path, so database/sql routes every statement through Prepare.
 // The caller supplies foreign-key enforcement etc. via DSN pragmas.
 func Open(dsn string) (*sql.DB, error) {
 	return sql.OpenDB(&connector{dsn: dsn}), nil

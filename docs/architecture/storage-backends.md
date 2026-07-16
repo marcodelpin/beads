@@ -1,101 +1,118 @@
 ---
 title: Storage Backends
-description: Running bd on Dolt, Postgres, MySQL, or SQLite, and what version-control features each backend keeps
+description: Choosing between embedded Dolt, Dolt server, and SQLite, and understanding which version-control features each path provides
 ---
 
-Beads uses Dolt as its default storage backend, and Dolt remains the reference implementation. You can also point `bd` at Postgres, MySQL, or SQLite — every backend implements the full issue-tracking core, and the only thing you give up off Dolt is version control.
+Beads keeps issue storage behind one interface and supports three deployment
+paths:
 
-One seam, one shared core: the issue-tracking semantics are written once (in `issueops`) and shared by *every* backend — Dolt runs them natively, the SQL family runs them through one thin per-engine dialect. Each backend is a store adapter over that shared core. Version control lives only in the Dolt store; on the SQL backends it returns one clean, typed error.
+- **Embedded Dolt (default)** — version-controlled storage in the `bd` process
+- **Dolt server** — the same version-controlled storage through a
+  `dolt sql-server`, for concurrent writers
+- **SQLite** — a small, server-free database file for local and resource-light
+  workspaces
+
+The issue-tracking semantics are written once in the shared core. Dolt is the
+reference implementation and adds history, branching, remotes, and sync.
+SQLite runs the same issue core through the SQL adapter and returns a clear,
+typed error for operations that require Dolt's commit graph.
 
 ```mermaid
 flowchart TD
-    CLI["bd CLI"] --> SEAM["Storage interface<br/>one seam — every backend satisfies all of it"]
+    CLI["bd CLI"] --> SEAM["Storage interface<br/>one seam for every implementation"]
 
-    SEAM --> CORE["CORE — issueops<br/>CRUD · search · deps · ready/claim · ordering · id-mint<br/>written once, shared by EVERY backend"]
-    SEAM --> CAPS["CAPABILITIES — version control<br/>history · branch · remotes · sync"]
+    SEAM --> CORE["Issue core<br/>CRUD · search · deps · ready/claim · labels · comments"]
+    SEAM --> CAPS["Dolt capabilities<br/>history · branch · remotes · sync"]
 
-    CORE --> DS["Dolt store<br/>runs the core natively"]
-    CORE --> KIT["sqlkit.Store<br/>SQL-family adapter · Dialect / Readiness / Claim"]
+    CORE --> DS["Dolt store"]
+    CORE --> KIT["sqlkit.Store"] --> SQLITE[("SQLite file")]
 
-    DS --> DOLT[("Dolt — embedded / server<br/>the conformance ORACLE")]
-    KIT --> PGD["pgdialect"] --> PG[("Postgres")]
-    KIT --> MYD["mysqldialect"] --> MY[("MySQL")]
-    KIT --> LTD["sqlitedialect"] --> LT[("SQLite")]
+    DS --> EMBED[("Embedded Dolt")]
+    DS --> SERVER[("Dolt SQL server")]
+    CAPS --> DS
+    CAPS -->|"typed unsupported error"| SQLITE
 
-    CAPS -->|"implemented in the Dolt store"| DS
-    CAPS -->|"generated typed-unsupported shell"| SHELL["Postgres / MySQL / SQLite<br/>operation X not supported"]
-
-    DOLT -. "conformance-tested: SQL family matches Dolt byte-for-byte" .-> KIT
+    DS -. "conformance reference" .-> KIT
 ```
 
 <Accordion title="Plain-text version of the diagram">
 
-```
+```text
                               bd CLI
                                 |
                        Storage interface
                                 |
-      +-------------------------+--------------------------+
-      |                                                    |
-  CORE  (every backend)                        CAPABILITIES  (Dolt-only)
-  issueops -- CRUD, search, deps,              version control:
-  ready/claim, ordering, id-mint,              history, branch, remotes, sync
-  cycle checks: written ONCE                     |
-      |                                          +-> Dolt store: implemented
-      +--------------------+                     +-> Postgres/MySQL/SQLite:
-      |                    |                          generated typed-"unsupported"
-  Dolt store         sqlkit.Store                     (operation "X" not supported)
-  runs the core      SQL-family adapter
-  natively           (Dialect/Readiness/Claim)
-      |                    |
- [Dolt engine]      +------+------+---------+
- embedded/server    pgdialect mysqldialect sqlitedialect
- = conformance          |         |            |
-    ORACLE          Postgres    MySQL       SQLite
-
-  issueops is shared by EVERY backend (Dolt included); each backend is a store
-  adapter over it. Dolt runs the core's SQL natively and adds version control;
-  the SQL family runs it through one thin dialect per engine, and is
-  conformance-tested to match the Dolt oracle byte-for-byte.
+             +------------------+------------------+
+             |                                     |
+         Issue core                       Dolt capabilities
+   CRUD, search, deps, claims,          history, branch, remotes,
+   labels, comments, ordering                    sync
+             |                                     |
+      +------+-------+                             |
+      |              |                             |
+  Dolt store     sqlkit.Store <--- conformance ----+
+      |              |
+  +---+---+        SQLite file
+  |       |        (typed unsupported errors for
+embedded  server    Dolt-only capabilities)
+ Dolt     Dolt
 ```
 
 </Accordion>
 
-## Why Choose a Backend?
+## Supported Scope
 
-- **Dolt stays the default** — `bd init` with no flags behaves exactly as before, and Dolt is the only backend with history, branching, and sync
-- **Postgres / MySQL** — put your issues in the database your team already runs, backs up, and monitors; many writers, one server
-- **SQLite** — a single file inside `.beads/`, zero servers, zero credentials, pure-Go driver
-- **Same `bd` everywhere** — create, list, ready, deps, claims, labels, comments, search all behave identically on every backend; conformance tests enforce it against the Dolt reference
-- **Clean degradation** — Dolt-only commands don't half-work on SQL backends; they return one clear, typed error
+The recently added direct PostgreSQL and MySQL adapters have been rolled back.
+Supporting additional general-purpose server databases adds dialect,
+credential, schema-lifecycle, migration, CI, and operational complexity. Our
+goal is to keep Beads as simple as possible and consume as few resources as
+possible, so the supported implementations stay focused on Dolt and SQLite.
 
-## Pick Your Backend
+This does **not** remove Dolt server mode. A `dolt sql-server` speaks the MySQL
+wire protocol, and Beads continues to support that mode for concurrent writers.
+A MySQL-protocol reference in the Dolt documentation therefore describes a
+Dolt connection, not a generic MySQL storage backend.
 
-| Backend | Best for | History | Server needed | Credentials |
+## Choose a Storage Path
+
+| Storage path | Best for | History and sync | Concurrent writers | Server or credentials |
 |---|---|---|---|---|
-| `dolt` (default) | Solo or team work where you want issue history, branching, `bd dolt push`/`pull` | Yes | No (embedded) / optional | Only in server mode |
-| `sqlite` | Solo work, throwaway workspaces, CI sandboxes, air-gapped machines | No | No | None |
-| `postgres` | Teams with an existing Postgres; many workspaces share one database via per-workspace schemas | No | Yes | Ladder (below) |
-| `mysql` | Teams with an existing MySQL; each workspace gets its own database | No | Yes | Ladder (below) |
+| Embedded Dolt (default) | Most projects; offline-first work with versioned issue data | Yes | One process at a time | None |
+| Dolt server | Teams or orchestrators with multiple writers | Yes | Yes | `dolt sql-server`; credentials when configured |
+| SQLite | Local work, CI sandboxes, air-gapped or minimal-footprint environments | No | Writes are serialized | None |
 
 Rules of thumb:
 
-- If you want `bd history`, `bd dolt push`, time-travel, or federation — use **Dolt**. It is the only backend that tracks history.
-- If you want the smallest possible footprint and don't need history — use **SQLite**.
-- If your organization already operates Postgres or MySQL and you want issues living next to everything else your DBAs manage — use **Postgres** or **MySQL**. Multi-writer concurrency comes from the database server itself.
-- If in doubt, use the default. `bd init` without `--backend` is Dolt, unchanged.
+- Use **embedded Dolt** unless you have a reason to choose differently.
+- Use **Dolt server** when multiple processes need to write concurrently.
+- Use **SQLite** when the smallest server-free footprint matters more than
+  history, branching, federation, or cross-machine sync.
 
 ## Getting Started
 
-The backend is chosen once, at `bd init` time, and recorded in `.beads/metadata.json`. Every later `bd` command reads it from there — no per-command flags.
+The backend is selected at `bd init` time and recorded in
+`.beads/metadata.json`. Later commands reopen that implementation
+automatically.
 
-### Dolt (default)
+### Embedded Dolt (default)
 
 ```bash
 bd init --prefix myproj
 ```
 
-Nothing changes. See [Dolt Backend for Beads](/architecture/dolt) for embedded vs. server mode.
+Dolt runs in-process and stores data under `.beads/embeddeddolt/`. No separate
+server or credentials are needed.
+
+### Dolt server
+
+```bash
+bd init --server --prefix myproj
+```
+
+Server mode connects to a `dolt sql-server`. Managed repo-local mode stores
+data under `.beads/dolt/`; shared, external, and gateway servers manage their
+own data locations. See [Dolt Backend for Beads](/architecture/dolt) for
+managed, shared, external, socket, TLS, and credential configuration.
 
 ### SQLite
 
@@ -106,174 +123,109 @@ bd init --backend=sqlite --prefix myproj
 bd init --backend=sqlite --sqlite-path=issues.db --prefix myproj
 ```
 
-That's it — no server, no credentials. Foreign keys and immediate-transaction locking are configured automatically.
+SQLite needs no server and no credentials. Foreign keys and transaction
+locking are configured automatically.
 
-### Postgres
+## Credentials
 
-Each Beads workspace lives in its own Postgres **schema**, so many workspaces can share one database.
+Embedded Dolt and SQLite need no database credentials. Dolt server mode can
+use `BEADS_DOLT_PASSWORD` or the per-host credentials file documented in the
+[Dolt backend guide](/architecture/dolt#credentials-file).
 
-```bash
-bd init --backend=postgres \
-  --pg-url='postgres://bd:onlyforinit@db.example.com:5432/beads?sslmode=require' \
-  --pg-schema=myproj \
-  --prefix myproj
-```
+Authenticating gateway deployments can instead set
+`BEADS_DOLT_CREDENTIAL_COMMAND`. The command produces a short-lived identity
+token that Beads presents as the connection username to the gateway. This is a
+Dolt server feature; see
+[Gateway identity credentials](/architecture/dolt#gateway-identity-credentials)
+for the fail-closed behavior and precedence rules.
 
-- `--pg-url` — a standard `postgres://` URL. If omitted, `bd init` falls back to the `BEADS_POSTGRES_URL` environment variable.
-- `--pg-schema` — the schema this workspace owns; created and pinned via `search_path`.
+## Existing PostgreSQL or MySQL Workspaces
 
-> **Note:** `bd init` connects with the URL exactly as given, so embed the password
-> in `--pg-url` for init. It is stripped before anything is written to disk —
-> `.beads/metadata.json` stores only the password-free DSN — and every later
-> command resolves the password through the credential ladder below.
+Current Beads builds still recognize PostgreSQL and MySQL workspace markers so
+they can stop safely with migration guidance. They do not connect to, open, or
+modify the configured PostgreSQL or MySQL database.
 
-```bash
-# For all subsequent commands, supply the password via any ladder rung, e.g.:
-export BEADS_PG_PASSWORD_COMMAND='vault kv get -field=password secret/beads/pg'
+To move an existing workspace:
 
-bd create "first issue" -p 1
-bd ready
-```
+1. Leave the original server database and workspace metadata in place. Take a
+   server-native backup before making changes.
+2. Before upgrading, or with a separate `bd` build that supports the configured
+   backend, create an issue export:
 
-### MySQL
+   ```bash
+   bd export --all -o beads-export.jsonl
+   ```
 
-Each Beads workspace gets its own MySQL **database**.
+3. Install the current build and follow `bd help init-safety` before
+   reinitializing the workspace with embedded Dolt, Dolt server, or SQLite.
+4. Import the issue export and verify the resulting workspace:
 
-```bash
-bd init --backend=mysql \
-  --mysql-url='bd:onlyforinit@tcp(db.example.com:3306)/' \
-  --mysql-database=myproj_beads \
-  --prefix myproj
-```
+   ```bash
+   bd import beads-export.jsonl
+   ```
 
-- `--mysql-url` — go-sql-driver DSN grammar: `user:password@tcp(host:port)/` (note the trailing slash, no scheme). Falls back to `BEADS_MYSQL_URL` if omitted.
-- `--mysql-database` — the database this workspace owns.
+5. Keep the original server database until the imported workspace has been
+   checked and backed up using its new storage path.
 
-Same rule as Postgres: embed the password in `--mysql-url` for init only; it is redacted before persisting, and later commands use the ladder:
+Do not edit `.beads/metadata.json` to point at another backend. JSONL is an
+issue-level interchange format, not a complete database backup, and does not
+replace the server-native backup from step 1.
 
-```bash
-export BEADS_MYSQL_PASSWORD_COMMAND='vault kv get -field=password secret/beads/mysql'
-# or a static password:
-export BEADS_MYSQL_PASSWORD=...
-```
+## What SQLite Keeps and What It Gives Up
 
-> **Note:** the MySQL DSN grammar cannot carry a password without a username.
-> `bd` refuses such DSNs loudly rather than silently connecting passwordless.
+SQLite implements the complete issue-tracking core:
 
-## Credentials & Override Layers
+- Issue CRUD, bulk creates, close, reopen, and delete
+- Search, counts, filtering, and sorting
+- Dependencies, cycle detection, and dependency trees
+- Ready and blocked queries, claims, and leases
+- Labels, comments, events, config, metadata, and statistics
+- Transactions and streaming iterators
 
-SQLite needs no credentials. For Postgres and MySQL, the password is resolved fresh at open time by a **ladder** of sources, highest priority first. The first *configured* rung wins, and a configured rung that fails aborts the connection — it never silently falls through to a lower rung.
+Operations built on Dolt's version-control capabilities remain Dolt-only:
 
-Precedence, per backend:
-
-1. **Password embedded in the DSN** — a password inside `BEADS_POSTGRES_URL` / `BEADS_MYSQL_URL` wins outright; no ladder runs.
-2. **Credential command** — `BEADS_PG_PASSWORD_COMMAND` / `BEADS_MYSQL_PASSWORD_COMMAND`
-3. **Static env var** — `BEADS_PG_PASSWORD` / `BEADS_MYSQL_PASSWORD`
-4. **Credentials file** — an entry matching the DSN's `host:port`
-5. **Driver-native fallback** — Postgres only: `PGPASSWORD`, `~/.pgpass`, `PGPASSFILE` still work when nothing above is configured. MySQL has no driver-native fallback; with nothing configured it attempts an empty password.
-
-> **Note the naming asymmetry:** the URL variables use full names
-> (`BEADS_POSTGRES_URL`, `BEADS_MYSQL_URL`) while the password variables
-> abbreviate Postgres (`BEADS_PG_PASSWORD`, `BEADS_PG_PASSWORD_COMMAND`).
-> There is no `BEADS_PG_URL`.
-
-### The credential command (rotating secrets)
-
-This is the same idiom as kubectl's ExecCredential, the AWS CLI's `credential_process`, and git credential helpers: `bd` runs your command with `sh -c` (30-second timeout) and reads the secret from stdout. Output can be a bare token, a kubectl-style JSON envelope (`{"token": "...", "expirationTimestamp": "..."}`), or an OAuth-style one (`{"access_token": "...", "expires_in": 900}`). Results are cached in-process and refreshed shortly before expiry, so repeated opens don't re-spawn your helper.
-
-```bash
-# Vault
-export BEADS_PG_PASSWORD_COMMAND="vault kv get -field=password secret/beads/pg"
-
-# AWS RDS IAM auth (15-minute tokens; caching and expiry are handled for you)
-export BEADS_PG_PASSWORD_COMMAND="aws rds generate-db-auth-token \
-  --hostname db.example.com --port 5432 --username bd"
-```
-
-The command variables are read from the environment only — never from workspace metadata — because a persisted command would be arbitrary code executed on every `bd` invocation.
-
-### The credentials file (static, per-host)
-
-The lowest configured rung is an INI-style file keyed by `host:port`, at `~/.config/beads/credentials` (Linux/macOS) or `%APPDATA%\beads\credentials` (Windows); override the path with `BEADS_CREDENTIALS_FILE`.
-
-```ini
-# ~/.config/beads/credentials  (chmod 600)
-[127.0.0.1:5432]
-password=localDevPassword
-
-[db.example.com:3306]
-password=teamServerPassword
-```
-
-If the file is readable by group or others, `bd` prints an ssh-style warning. The file rung is deliberately forgiving: a missing file or unmatched section just means "not configured" and the ladder continues — fail-closed behavior is reserved for rungs you explicitly configured, like a command.
-
-### Dolt server credentials
-
-The Dolt backend in server mode has its own rungs: `BEADS_DOLT_PASSWORD`, then the credentials file, with `BEADS_DOLT_SERVER_USER` overriding the username. There is also `BEADS_DOLT_CREDENTIAL_COMMAND`, an *identity* credential: the minted token is presented as the connection username to an authenticating gateway server, which verifies it and routes to the database. This is for gateway deployments only — the direct Postgres/MySQL backends reject `BEADS_PG_CREDENTIAL_COMMAND` / `BEADS_MYSQL_CREDENTIAL_COMMAND` with an error telling you to use the `_PASSWORD_COMMAND` form instead.
-
-### Secrets never reach disk
-
-`bd init` redacts the password from your URL before writing `.beads/metadata.json`, using the database driver's own parser, and then re-parses to verify nothing survived — refusing to init rather than persisting a secret it can't prove is gone. Check for yourself:
-
-```bash
-cat .beads/metadata.json
-# {"backend":"postgres","postgres_dsn":"postgres://bd@db.example.com:5432/beads?sslmode=require", ...}
-```
-
-## What You Keep and What You Give Up
-
-Every backend implements the complete issue-tracking core — the same shared implementation, not a re-derivation per backend:
-
-- Issue CRUD, bulk creates, close/reopen/delete
-- Search, counts, filtering, sorting
-- Dependencies, cycle detection, dependency trees
-- Ready/blocked work queries, claims and leases
-- Labels, comments, the full event/audit trail
-- Config, metadata slots, statistics, transactions, streaming iterators
-
-What is Dolt-only — by design, since these *are* version control:
-
-- **History & time travel** — `bd history`, as-of queries, diffs
-- **Branching & merging** — branch, checkout, merge, conflict resolution
-- **Remotes & sync** — `bd dolt push` / `bd dolt pull`, fetch, sync
+- **History and time travel** — `bd history`, as-of queries, and diffs
+- **Branching and merging** — branch, checkout, merge, and conflict resolution
+- **Remotes and sync** — `bd dolt push`, `bd dolt pull`, fetch, and sync
 - **Federation** — peer management
 - **Compaction** — snapshot-based memory compaction
 
-On Postgres, MySQL, and SQLite these operations don't limp along or approximate — each returns one clean, typed error:
+Those operations fail explicitly on SQLite instead of approximating Dolt
+behavior:
 
-```
+```text
 $ bd history myproj-9q9
 Error: failed to get history: operation "History" not supported by the sqlite backend
 ```
 
-`bd init` sets the expectation up front:
+`bd init` also sets the expectation up front:
 
-```
+```text
 ✓ bd initialized with the SQLite backend
   History: not tracked (SQLite backend has no version control; use Dolt for history)
 ```
 
-A few practical consequences:
+SQLite writes are durable when the command returns. The Dolt-only maintenance
+tail—history commits, native backups, and remote pushes—is skipped. Use
+`bd export` when you need a portable JSONL copy of issue data; JSONL remains an
+interchange format rather than a full database backup.
 
-- Writes on SQL backends are durable the moment the command returns — each write commits its own SQL transaction. (`bd`'s internal commit hooks become harmless no-ops, not errors.)
-- The Dolt-only maintenance tail (auto-commit, auto-export, auto-backup, auto-push) is skipped automatically on non-Dolt backends.
-- "Sync" on Postgres/MySQL is your database server: everyone connects to the same database, so there is nothing to push or pull. Back up issues with your normal database tooling, or `bd export` for JSONL interoperability.
+## How Conformance Is Enforced
 
-## How It Stays Correct
+The conformance harness holds SQLite to the embedded-Dolt reference:
 
-The SQL backends are held to the embedded-Dolt reference by a conformance harness, run locally and in CI (with real Postgres and MySQL servers) on every pull request:
+- **Tier 1 (in-process)** runs the same issue-store behavior corpus against
+  embedded Dolt and SQLite, including the typed-unsupported contract for
+  Dolt-only operations.
+- **Tier 2 (end-to-end)** builds a real `bd` binary, initializes isolated Dolt
+  and SQLite workspaces, and compares normalized CLI output.
 
-- **Tier 1 (in-process):** the same behavior corpus the Dolt reference passes — CRUD, search, dependencies, ready/blocked, claims and leases, plus a ~94-case audit corpus of edge behaviors — runs against every backend. Two extra gates make capability gaps impossible to hide: a completeness test proves the set of unsupported operations exactly matches an audited allowlist, and a contract test calls every one of them to prove it returns the typed error rather than panicking or lying.
-- **Tier 2 (end-to-end):** a real `bd` binary runs `bd init --backend=...` and a CLI scenario corpus in an isolated workspace per backend, and the normalized output must be byte-identical to the Dolt reference. Known-divergence entries are visible in the registry and can only shrink — currently there are none.
+Run both tiers with:
 
 ```bash
 ./scripts/conformance.sh
-# Postgres/MySQL profiles self-skip unless you point them at a server:
-BEADS_PG_TEST_URL="postgres://user:pass@127.0.0.1:5432/beads_test" \
-BEADS_MYSQL_TEST_URL="user:pass@tcp(127.0.0.1:3306)/" \
-./scripts/conformance.sh
 ```
 
-Adding a new backend is one declarative profile entry in `test/conformance/profiles.go` plus a store-factory arm; both tiers pick it up automatically.
-
-See [Dolt Backend for Beads](/architecture/dolt) for the default backend, [Configuration](/reference/configuration) for configuration, and [Troubleshooting](/reference/troubleshooting) if a connection misbehaves.
+See [Dolt Backend for Beads](/architecture/dolt) for versioned storage and
+[Configuration](/reference/configuration) for settings shared across storage
+paths.

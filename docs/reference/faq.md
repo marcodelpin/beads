@@ -7,7 +7,12 @@ description: Common questions about beads and how to use it effectively
 
 ### What is beads?
 
-Beads (`bd`) is a lightweight, Dolt-backed issue tracker designed for AI coding agents. It provides dependency-aware task management with built-in sync across machines, so agents and humans can collaborate from the same task graph. See [Core Concepts](/core-concepts/index) for the full model.
+Beads (`bd`) is a lightweight, local-first issue tracker designed for AI coding
+agents. It uses version-controlled Dolt storage by default and also supports
+SQLite for small server-free workspaces. It provides dependency-aware task
+management, with Dolt-backed sync across machines so agents and humans can
+collaborate from the same task graph. See
+[Core Concepts](/core-concepts/index) for the full model.
 
 ### Why beads instead of GitHub Issues or Jira?
 
@@ -30,9 +35,9 @@ Taskwarrior is excellent for personal task management, but beads is built for AI
 
 - **Agent semantics**: the `discovered-from` dependency type, `bd ready` for queue management
 - **JSON-first design**: every command has `--json` output
-- **Built-in sync**: version-controlled storage with native push/pull, no separate sync server to run
-- **Cell-level merge**: concurrent changes merge automatically at the field level
-- **SQL database**: full SQL queries against the Dolt database
+- **Built-in Dolt sync**: version-controlled storage with native push/pull, no separate sync server to run
+- **Cell-level Dolt merge**: concurrent changes merge automatically at the field level
+- **SQL storage**: full SQL queries against Dolt, with SQLite available for smaller local workspaces
 
 ### Can I use beads without AI agents?
 
@@ -44,11 +49,16 @@ Nothing specific — it's a metaphor for linked work items, like beads on a stri
 
 ### Is beads production-ready?
 
-Beads is a 1.x product used in production for AI-assisted development. The core functionality — create, update, dependencies, ready work, Dolt-backed sync — is stable, and releases follow semantic versioning. Data stays portable: `bd export` produces human-readable JSONL, and `bd backup` pushes Dolt-native backups. As with any tracker holding work you care about, keep normal backup hygiene (a Dolt remote or a `bd backup` destination).
+Beads is a 1.x product used in production for AI-assisted development. The core
+functionality — create, update, dependencies, ready work, and Dolt-backed sync —
+is stable, and releases follow semantic versioning. `bd export` produces
+human-readable JSONL for issue-level portability, but JSONL is not a complete
+database backup. Dolt workspaces can use a Dolt remote or `bd backup`; protect a
+SQLite workspace with SQLite-aware or offline file-backup tooling.
 
 ## Architecture
 
-### Why Dolt instead of plain SQLite or flat files?
+### Why is Dolt the default instead of plain SQLite or flat files?
 
 Dolt is a version-controlled SQL database — git semantics at the database level:
 
@@ -58,7 +68,10 @@ Dolt is a version-controlled SQL database — git semantics at the database leve
 - **Multi-writer**: server mode supports concurrent agents
 - **Portable**: `bd export` produces JSONL for migration and interoperability
 
-See [Dolt architecture](/architecture/dolt) for the detailed analysis and [Storage backends](/architecture/storage-backends) for the alternatives.
+SQLite remains available when a small server-free database matters more than
+history and sync. See [Dolt architecture](/architecture/dolt) for the detailed
+analysis and [Storage backends](/architecture/storage-backends) for the
+supported paths.
 
 ### Why hash-based IDs instead of sequential?
 
@@ -92,7 +105,16 @@ The parent hash keeps the namespace unique across epics, the child numbers stay 
 
 The default `bd init` uses **embedded mode**: Dolt runs in-process inside `bd`, data lives at `.beads/embeddeddolt/`, and there is no server, port, or PID file to manage. This is the right mode for solo work, CI/CD, and single-agent setups.
 
-**Server mode** (`bd init --server`) connects to a running `dolt sql-server` and stores data at `.beads/dolt/`. Switch to it when multiple processes need concurrent write access to the same database — for example several agents on one machine. See [Dolt architecture](/architecture/dolt) for setup and migration between modes.
+**Dolt server mode** (`bd init --server`) connects to a running
+`dolt sql-server`. Managed repo-local mode stores data at `.beads/dolt/`;
+shared and external servers manage data at the server. Switch to it when
+multiple processes need concurrent write access to the same database — for
+example several agents on one machine. See
+[Dolt architecture](/architecture/dolt) for setup and migration between modes.
+
+SQLite is a separate server-free storage path selected with
+`bd init --backend=sqlite`; it is neither embedded-Dolt mode nor Dolt-server
+mode and does not provide Dolt history or sync.
 
 ## Usage
 
@@ -105,7 +127,10 @@ bd init          # Humans: interactive, prompts for git hooks
 bd init --quiet  # Agents: non-interactive, auto-installs hooks
 ```
 
-For an existing project, clone and run `bd init`; it creates the Dolt database and pulls from the configured remote. For a new project, run `bd init`, then commit the `.beads/` directory.
+For an existing Dolt-backed project, clone and run `bd init`; it creates the
+local Dolt database and pulls from the configured remote. For a new project,
+`bd init` chooses embedded Dolt by default; use `bd init --backend=sqlite` for
+the smaller server-free SQLite path.
 
 ### How do I sync issues across machines?
 
@@ -114,11 +139,22 @@ bd dolt push    # Push changes to the Dolt remote
 bd dolt pull    # Pull changes from the Dolt remote
 ```
 
-`bd init` auto-configures your git origin as the Dolt remote when present; use `bd init --remote <url>` for an explicit remote. See [Sync Setup](/getting-started/sync-setup).
+These commands apply to Dolt workspaces. `bd init` auto-configures your git
+origin as the Dolt remote when present; use `bd init --remote <url>` for an
+explicit remote. SQLite has no native Beads sync; choose Dolt when the same
+issue graph must move across machines. See [Sync Setup](/getting-started/sync-setup).
 
 ### Do I need to run export/import manually?
 
-No. All writes go directly to the Dolt database and are committed to Dolt history automatically; `bd dolt push` / `bd dolt pull` handle sync. `bd export` exists for portability and interchange — `.beads/issues.jsonl` is a passive export, never the database. For backups, use `bd backup init <path>` / `bd backup sync` / `bd backup restore`. See [Sync Concepts](/core-concepts/sync-concepts) for the full model and the sync patterns to avoid.
+Not for normal operation. Dolt writes are committed to Dolt history, and
+`bd dolt push` / `bd dolt pull` handle sync. SQLite writes go directly to the
+configured SQLite file and have no Dolt history or native Beads sync.
+
+For either backend, `bd export` and `bd import` are issue-level portability and
+migration tools. `.beads/issues.jsonl` is a passive interchange file, never the
+database or a complete backup. Dolt workspaces can use `bd backup`; protect
+SQLite with SQLite-aware or offline file-backup tooling. See
+[Sync Concepts](/core-concepts/sync-concepts) for the full Dolt model.
 
 ### What if my database feels stale after a colleague pushes changes?
 
@@ -127,7 +163,9 @@ bd dolt pull    # Fetch and merge updates from the Dolt remote
 bd ready        # Shows fresh data
 ```
 
-For federation setups, `bd federation sync` syncs with all configured peers. See [Federation](/multi-agent/federation).
+This is a Dolt-workspace workflow. For federation setups, `bd federation sync`
+syncs with all configured peers. SQLite workspaces do not pull colleague
+changes. See [Federation](/multi-agent/federation).
 
 ### How do I handle merge conflicts?
 
@@ -167,7 +205,11 @@ In orchestrated workflows an orchestrator usually assigns work (`bd assign`); ag
 
 ### Does beads work offline?
 
-Yes — beads is offline-first. All queries run against the local Dolt database, no command needs the network, and sync happens via `bd dolt push` / `bd dolt pull` when you're online. That makes it suitable for planes, unstable connections, air-gapped environments, and privacy-sensitive projects.
+Yes — beads is offline-first. Queries run against local storage and normal
+commands do not need the network. Dolt workspaces sync later with
+`bd dolt push` / `bd dolt pull`; SQLite remains local and has no native Beads
+sync. That makes both paths suitable for planes, unstable connections,
+air-gapped environments, and privacy-sensitive projects.
 
 ### How do I use beads in CI/CD?
 
@@ -269,7 +311,11 @@ Sure — beads is just an issue tracker. Writing projects (chapters as issues, o
 
 ### What dependencies does beads have?
 
-Beads is a single static binary with no runtime dependencies — the Dolt engine is embedded in-process. No PostgreSQL, no Redis, no Docker, no node_modules. The standalone `dolt` CLI is only needed if you run server mode, and git is only needed to version your project code. See [Installation](/getting-started/installation).
+Beads is a single static binary with no runtime dependencies — the Dolt engine
+and SQLite driver are embedded in-process. No PostgreSQL server, generic MySQL
+server, Redis, Docker, or node_modules are required. The standalone `dolt` CLI
+is only needed if you run Dolt server mode, and git is only needed to version
+your project code. See [Installation](/getting-started/installation).
 
 ### Can I query or extend the database directly?
 

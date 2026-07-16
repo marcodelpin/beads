@@ -245,7 +245,7 @@ func testAuditImportCommentSubSecond(t *testing.T, f Factory) {
 	c := ctx()
 	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-i", Title: "I"}), "a"))
 	// Sub-second precision is intentionally backend-specific (Dolt datetime(0) rounds
-	// half-up; SQLite keeps the fraction; Postgres keeps microseconds), so we test the
+	// half-up; SQLite keeps the fraction), so we test the
 	// portable contract every backend honors: a whole-second UTC timestamp round-trips
 	// exactly. Higher fidelity on some backends is accepted, not asserted.
 	ts := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
