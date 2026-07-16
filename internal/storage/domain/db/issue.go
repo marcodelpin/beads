@@ -229,9 +229,7 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 	// Mirror the primary path's pool-aware predicate (bd-bguz6): aliases in
 	// the claim.pools config are claimable by any actor. This dual must stay
 	// in lockstep with issueops.ClaimIssueInTx — the lease comment above is
-	// the scar from the last time it drifted. (Known remaining drift: this
-	// path claims from status = 'open' only, not the custom active statuses
-	// of ClaimableSourceStatusesInTx.)
+	// the scar from the last time it drifted.
 	pools, err := issueops.ClaimPoolAliasesInTx(ctx, r.runner)
 	if err != nil {
 		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: resolve claim pools: %w", id, err)
@@ -243,27 +241,43 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 		assigneeArgs = append(assigneeArgs, pool)
 	}
 
+	// Same lockstep for the source statuses (bd-pq7m2): claimable from "open"
+	// plus custom active-category statuses, like the primary path — not a
+	// hardcoded status = 'open'.
+	claimableStatuses, err := issueops.ClaimableSourceStatusesInTx(ctx, r.runner)
+	if err != nil {
+		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: resolve claimable statuses: %w", id, err)
+	}
+	statusPredicate := "status = ?"
+	statusArgs := []any{claimableStatuses[0]}
+	for _, st := range claimableStatuses[1:] {
+		statusPredicate += " OR status = ?"
+		statusArgs = append(statusArgs, st)
+	}
+
 	var res sql.Result
 	if startedWasZero {
 		args := append([]any{actor, now, now}, leaseArgs...)
 		args = append(args, id)
+		args = append(args, statusArgs...)
 		args = append(args, assigneeArgs...)
 		//nolint:gosec // G201: table is one of two hardcoded constants
 		res, err = r.runner.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, started_at = ?, %s
-			WHERE id = ? AND status = 'open' AND (%s)
-		`, table, leaseClause, assigneePredicate), args...)
+			WHERE id = ? AND (%s) AND (%s)
+		`, table, leaseClause, statusPredicate, assigneePredicate), args...)
 	} else {
 		args := append([]any{actor, now}, leaseArgs...)
 		args = append(args, id)
+		args = append(args, statusArgs...)
 		args = append(args, assigneeArgs...)
 		//nolint:gosec // G201: table is one of two hardcoded constants
 		res, err = r.runner.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, %s
-			WHERE id = ? AND status = 'open' AND (%s)
-		`, table, leaseClause, assigneePredicate), args...)
+			WHERE id = ? AND (%s) AND (%s)
+		`, table, leaseClause, statusPredicate, assigneePredicate), args...)
 	}
 	if err != nil {
 		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: %w", id, err)

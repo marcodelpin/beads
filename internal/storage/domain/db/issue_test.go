@@ -44,6 +44,7 @@ func (s *testSuite) TestIssueSQLRepository() {
 		s.Run("PoolAliasClaimableByAnyActor", s.issueClaimPoolAlias)
 		s.Run("UnconfiguredAliasStillProtected", s.issueClaimPoolUnconfiguredAlias)
 		s.Run("PoolStatusConflictFlagsPoolAssignee", s.issueClaimPoolStatusConflict)
+		s.Run("CustomActiveStatusClaimable", s.issueClaimCustomActiveStatus)
 	})
 	s.Run("Get", func() {
 		s.Run("MissingIDReturnsErrNoRows", s.issueGetMissing)
@@ -770,6 +771,46 @@ func (s *testSuite) issueClaimPoolStatusConflict() {
 	s.False(res.Updated)
 	s.True(res.CurrentAssigneeIsPool, "pool assignee must be flagged for status-conflict error mapping")
 	s.Equal(types.StatusBlocked, res.CurrentStatus)
+}
+
+// issueClaimCustomActiveStatus asserts the proxied-server claim path claims
+// from custom active-category statuses like the primary path's
+// ClaimableSourceStatusesInTx (bd-pq7m2), not from a hardcoded
+// status = 'open' — and that non-active customs keep their anti-steal
+// protection (GH-3570 parity).
+func (s *testSuite) issueClaimCustomActiveStatus() {
+	_, err := s.db.ExecContext(s.Ctx(),
+		"INSERT INTO custom_statuses (name, category) VALUES ('triaged', 'active'), ('polishing', 'wip')")
+	s.Require().NoError(err)
+	defer func() {
+		_, err := s.db.ExecContext(s.Ctx(),
+			"DELETE FROM custom_statuses WHERE name IN ('triaged', 'polishing')")
+		s.Require().NoError(err)
+	}()
+
+	r := s.issueRepo()
+	in := newTestIssue("bd-claim-custom-active", "triaged item")
+	in.Status = types.Status("triaged")
+	s.Require().NoError(r.Insert(s.Ctx(), in, "tester", domain.InsertIssueOpts{}))
+
+	res, err := r.Claim(s.Ctx(), "bd-claim-custom-active", "alice", domain.IssueTableOpts{})
+	s.Require().NoError(err)
+	s.Require().True(res.Updated, "custom active-category status must be claimable through the proxied path (bd-pq7m2)")
+
+	out, err := r.Get(s.Ctx(), "bd-claim-custom-active", domain.IssueTableOpts{})
+	s.Require().NoError(err)
+	s.Equal("alice", out.Assignee)
+	s.Equal(types.StatusInProgress, out.Status)
+
+	// A wip-category custom status stays unclaimable (anti-steal parity).
+	wip := newTestIssue("bd-claim-custom-wip", "being polished")
+	wip.Status = types.Status("polishing")
+	s.Require().NoError(r.Insert(s.Ctx(), wip, "tester", domain.InsertIssueOpts{}))
+
+	res, err = r.Claim(s.Ctx(), "bd-claim-custom-wip", "alice", domain.IssueTableOpts{})
+	s.Require().NoError(err)
+	s.False(res.Updated, "wip-category custom status must not be claimable")
+	s.Equal(types.Status("polishing"), res.CurrentStatus)
 }
 
 func (s *testSuite) issueClaimRecordsEvent() {
