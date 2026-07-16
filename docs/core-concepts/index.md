@@ -112,10 +112,12 @@ flowchart LR
 
 ## Sync — how work moves between machines
 
-Beads stores everything in [Dolt](https://github.com/dolthub/dolt), a
-version-controlled SQL database. Every write auto-commits to Dolt history;
-sync is native push/pull, piggybacking on your existing git remote under a
-separate ref — no server to run.
+Dolt workspaces store issue data in
+[Dolt](https://github.com/dolthub/dolt), a version-controlled SQL database.
+Every write auto-commits to Dolt history; sync is native push/pull,
+piggybacking on your existing git remote under a separate ref — no additional
+sync server to run. SQLite workspaces do not provide this history or remote
+sync path.
 
 ```mermaid
 flowchart LR
@@ -143,12 +145,13 @@ is not the database, not the sync protocol, and not a backup. The full model
 
 | Mode | Command | Data lives at | Writers |
 |------|---------|---------------|---------|
-| **Embedded** (default) | `bd init` | `.beads/embeddeddolt/` | one (file-locked) |
-| **Server** | `bd init --server` | `.beads/dolt/` | many concurrent |
+| **Embedded Dolt** (default) | `bd init` | `.beads/embeddeddolt/` | one (file-locked) |
+| **Dolt server** | `bd init --server` | managed local: `.beads/dolt/`; otherwise server-managed | many concurrent |
+| **SQLite** | `bd init --backend=sqlite` | `.beads/beads.db` by default | serialized writes |
 
 Embedded runs Dolt in-process and is right for almost everyone; server mode
-connects to an external `dolt sql-server` for multi-writer setups. Other SQL
-backends exist without Dolt's history — see
+connects to a `dolt sql-server` for multi-writer setups. SQLite provides a
+small, server-free option without Dolt's history or sync. See
 [Storage Backends](/architecture/storage-backends) and the
 [architecture overview](/architecture/index).
 

@@ -19,7 +19,8 @@ data between independent teams or locations. Key benefits:
 
 ## Prerequisites
 
-1. **Dolt backend**: Federation requires the Dolt storage backend (the only supported backend)
+1. **Dolt backend**: Federation requires embedded or server-mode Dolt; SQLite
+   does not provide the commit graph or remotes federation needs
 
 ## Configuration
 

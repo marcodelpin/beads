@@ -1,13 +1,21 @@
 ---
 title: Architecture Overview
-description: "How Beads stores, queries, and syncs issue data with Dolt"
+description: "How Beads stores and queries issue data, with Dolt-backed history and sync"
 ---
 
-This document explains how Beads' architecture works with Dolt as its storage backend: the storage layout, the data model, and the sync paths. For the concept model — beads, dependencies, ready work, molecules — see [How Beads Works](/core-concepts/index).
+This document explains the default Dolt architecture: storage layout, data
+model, and sync paths. Beads also supports SQLite behind the same storage
+interface; see [Storage Backends](/architecture/storage-backends) for the
+supported paths and their trade-offs. For the concept model — beads,
+dependencies, ready work, molecules — see
+[How Beads Works](/core-concepts/index).
 
 ## Architecture
 
-Beads uses **Dolt** as its sole storage backend -- a version-controlled SQL database that provides git-like semantics (branch, merge, diff, push, pull) natively at the database level.
+Beads uses **Dolt** by default. Dolt is a version-controlled SQL database that
+provides git-like semantics (branch, merge, diff, push, pull) natively at the
+database level. SQLite is the supported server-free alternative when those
+version-control capabilities are not needed.
 
 By default, Dolt runs in **embedded mode** (in-process, no separate server). For multi-writer
 setups (multiple agents, orchestrator), switch to **server mode** which connects to a
@@ -270,7 +278,7 @@ For these use cases, consider GitHub Issues, Linear, or Jira.
 - [How Beads Works](/core-concepts/index) — The concept model: beads, dependencies, ready work, molecules
 - [Sync Concepts](/core-concepts/sync-concepts) — Cross-machine sync, wire format, and anti-patterns
 - [Dolt Backend](/architecture/dolt) — Embedded vs server mode in depth, shared server, migration
-- [Storage Backends](/architecture/storage-backends) — Postgres, MySQL, and SQLite alternatives
+- [Storage Backends](/architecture/storage-backends) — Embedded Dolt, Dolt server, and SQLite
 - [Recovery Runbooks](/recovery/index) — Step-by-step procedures for common issues
 - [CLI Reference](/cli-reference/index) — Complete command documentation
 - [Getting Started](/index) — Installation and first steps
