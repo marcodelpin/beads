@@ -76,6 +76,12 @@ jobs:
           dolt config --global --add user.name "CI Bot"
           dolt config --global --add user.email "ci@beads.test"
 
+      - name: Pull Dolt sql-server image
+        # The shared proxied harness requires the image cached locally
+        # (isDoltImageCached); without it every proxied test self-skips. Keep the
+        # tag in sync with internal/testutil/testdoltcommon.go:DoltDockerImage.
+        run: docker pull dolthub/dolt-sql-server:2.2.0
+
       - name: Test proxied-server cmd shard
         env:
           BEADS_TEST_PROXIED_SERVER: "1"
