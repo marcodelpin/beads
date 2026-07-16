@@ -676,6 +676,13 @@ func TestEmbeddedUpdate(t *testing.T) {
 		if strings.Contains(out, "to release it before re-claiming") {
 			t.Errorf("refusal must not suggest plain unclaim of a foreign claim, got: %s", out)
 		}
+		// Nor may it name unclaim or --force at all: copy that names an
+		// eviction command gets pattern-matched by batch agents into
+		// `unclaim --force; claim` — a stronger steamroller than the one
+		// this fix removed (wy-yuclk).
+		if strings.Contains(out, "unclaim") || strings.Contains(out, "--force") {
+			t.Errorf("claim refusal must not name an eviction command, got: %s", out)
+		}
 	})
 
 	// A batch where one claim is lost and another is won must exit non-zero, so

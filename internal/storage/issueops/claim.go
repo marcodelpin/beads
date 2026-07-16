@@ -114,10 +114,13 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 		}
 		if assignee != "" && assignee != actor {
 			if currentStatus == types.StatusOpen {
-				// Do not suggest `bd unclaim` here: that copy taught agents to
-				// evict each other's live claims (an unclaim+claim steamroller
-				// observed in multi-agent fleets). Point at the holder instead.
-				return nil, fmt.Errorf("issue already assigned to %q — coordinate with the holder instead of releasing their claim (releasing another actor's claim requires bd unclaim --force)", assignee)
+				// Do not name a release command here — not `bd unclaim`, not
+				// `bd unclaim --force`. Refusal copy that names one gets
+				// pattern-matched by batch agents into an unclaim+claim
+				// steamroller of live claims (wy-yuclk). Point at the holder;
+				// bd reclaim is safe to name because it only recovers claims
+				// whose lease has already expired.
+				return nil, fmt.Errorf("issue already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", assignee)
 			}
 			return nil, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, assignee)
 		}
