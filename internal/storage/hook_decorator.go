@@ -143,6 +143,19 @@ func (h *HookFiringStore) CloseIssue(ctx context.Context, id string, reason stri
 	return nil
 }
 
+// CloseIssueWithResult closes an issue and fires on_close only when the close
+// actually happened; an already-closed no-op fires no hook.
+func (h *HookFiringStore) CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*CloseResult, error) {
+	res, err := h.inner.CloseIssueWithResult(ctx, id, reason, actor, session)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil || !res.AlreadyClosed {
+		h.fireHookByID(ctx, hooks.EventClose, id)
+	}
+	return res, nil
+}
+
 // ── Dependency mutations ────────────────────────────────────────────
 
 // AddDependency adds a dependency and fires on_update for the issue.

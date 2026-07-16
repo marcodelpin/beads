@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -186,8 +187,24 @@ func (s *Store) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*t
 
 // CloseIssue closes an issue and reprojects blocked-ness in the same tx.
 func (s *Store) CloseIssue(ctx context.Context, id, reason, actor, session string) error {
-	return s.withMutationTx(ctx, func(tx *sql.Tx) error {
-		_, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
-		return err
+	_, err := s.CloseIssueWithResult(ctx, id, reason, actor, session)
+	return err
+}
+
+// CloseIssueWithResult closes an issue and reports whether the row actually
+// changed (storage.CloseResult.AlreadyClosed).
+func (s *Store) CloseIssueWithResult(ctx context.Context, id, reason, actor, session string) (*storage.CloseResult, error) {
+	var out *storage.CloseResult
+	err := s.withMutationTx(ctx, func(tx *sql.Tx) error {
+		res, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
+		if err != nil {
+			return err
+		}
+		out = &storage.CloseResult{AlreadyClosed: res.AlreadyClosed}
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

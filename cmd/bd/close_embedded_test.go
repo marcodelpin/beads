@@ -627,6 +627,142 @@ func TestEmbeddedClose(t *testing.T) {
 		issue2 := bdCreate(t, bd, dir, "Suggest multi 2", "--type", "task")
 		bdCloseFail(t, bd, dir, issue1.ID, issue2.ID, "--suggest-next")
 	})
+
+	// ===== Already-Closed Re-close (GH#4816) =====
+	// The storage layer's idempotent close (GH#4025) keeps the first reason and
+	// mints no second event; the CLI must report that truthfully instead of
+	// printing a false "✓ Closed <id>: <new reason>".
+
+	t.Run("reclose_reports_already_closed_and_preserves_reason", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Reclose truth", "--type", "task")
+		bdClose(t, bd, dir, issue.ID, "--reason", "FIRST")
+
+		cmd := exec.Command(bd, "close", issue.ID, "--reason", "SECOND")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		stdout, stderr, err := runCommandBuffers(t, cmd)
+		if err != nil {
+			t.Fatalf("idempotent re-close must exit 0 (GH#4025): %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		}
+		if strings.Contains(stdout.String(), "Closed") {
+			t.Errorf("re-close printed a success line for a no-op:\n%s", stdout.String())
+		}
+		if !strings.Contains(stderr.String(), "already closed") {
+			t.Errorf("expected stderr to report the issue was already closed, got:\n%s", stderr.String())
+		}
+		got := bdShow(t, bd, dir, issue.ID)
+		if got.CloseReason != "FIRST" {
+			t.Errorf("close_reason = %q after re-close, want %q (first close wins)", got.CloseReason, "FIRST")
+		}
+	})
+
+	t.Run("reclose_json_reports_already_closed", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Reclose JSON", "--type", "task")
+		bdClose(t, bd, dir, issue.ID, "--reason", "FIRST")
+
+		cmd := exec.Command(bd, "close", issue.ID, "--reason", "SECOND", "--json")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		stdout, stderr, err := runCommandBuffers(t, cmd)
+		if err != nil {
+			t.Fatalf("re-close --json failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		}
+		s := stdout.String()
+		start := strings.Index(s, "{")
+		if start < 0 {
+			t.Fatalf("no JSON object in output (want already_closed indicator): %s", s)
+		}
+		var payload struct {
+			Closed        []*types.Issue `json:"closed"`
+			AlreadyClosed []*types.Issue `json:"already_closed"`
+		}
+		if err := json.Unmarshal([]byte(s[start:]), &payload); err != nil {
+			t.Fatalf("parse JSON: %v\n%s", err, s[start:])
+		}
+		if len(payload.Closed) != 0 {
+			t.Errorf("closed = %d issues, want 0 for a no-op re-close", len(payload.Closed))
+		}
+		if len(payload.AlreadyClosed) != 1 || payload.AlreadyClosed[0].ID != issue.ID {
+			t.Errorf("already_closed = %+v, want exactly [%s]", payload.AlreadyClosed, issue.ID)
+		}
+		if len(payload.AlreadyClosed) == 1 && payload.AlreadyClosed[0].CloseReason != "FIRST" {
+			t.Errorf("already_closed[0].close_reason = %q, want %q", payload.AlreadyClosed[0].CloseReason, "FIRST")
+		}
+	})
+
+	t.Run("reclose_mints_no_second_closed_event", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Reclose events", "--type", "task")
+		bdClose(t, bd, dir, issue.ID, "--reason", "FIRST")
+
+		cmd := exec.Command(bd, "close", issue.ID, "--reason", "SECOND")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		_, _, _ = runCommandBuffers(t, cmd)
+
+		dataDir := filepath.Join(beadsDir, "embeddeddolt")
+		cfg, _ := configfile.Load(beadsDir)
+		database := ""
+		if cfg != nil {
+			database = cfg.GetDoltDatabase()
+		}
+		db, cleanup, err := embeddeddolt.OpenSQL(t.Context(), dataDir, database, "main")
+		if err != nil {
+			t.Fatalf("OpenSQL: %v", err)
+		}
+		defer cleanup()
+		var count int
+		if err := db.QueryRowContext(t.Context(),
+			"SELECT COUNT(*) FROM events WHERE issue_id = ? AND event_type = 'closed'", issue.ID).Scan(&count); err != nil {
+			t.Fatalf("count closed events: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("closed events = %d, want 1 (no phantom event on re-close)", count)
+		}
+	})
+
+	t.Run("reclose_skips_claim_next", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Reclose claim-next", "--type", "task")
+		bdClose(t, bd, dir, issue.ID)
+		ready := bdCreate(t, bd, dir, "Reclose claim-next target", "--type", "task", "--priority", "0")
+
+		cmd := exec.Command(bd, "close", issue.ID, "--claim-next")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		stdout, stderr, err := runCommandBuffers(t, cmd)
+		if err != nil {
+			t.Fatalf("idempotent re-close must exit 0: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		}
+		got := bdShow(t, bd, dir, ready.ID)
+		if got.Status != types.StatusOpen || got.Assignee != "" {
+			t.Errorf("no-op re-close must not claim-next: target status=%s assignee=%q", got.Status, got.Assignee)
+		}
+		bdClose(t, bd, dir, ready.ID) // keep later subtests' ready pool clean
+	})
+
+	t.Run("close_mixed_batch_reports_each_id_truthfully", func(t *testing.T) {
+		done := bdCreate(t, bd, dir, "Mixed batch done", "--type", "task")
+		open := bdCreate(t, bd, dir, "Mixed batch open", "--type", "task")
+		bdClose(t, bd, dir, done.ID, "--reason", "FIRST")
+
+		cmd := exec.Command(bd, "close", done.ID, open.ID, "--reason", "shared")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		stdout, stderr, err := runCommandBuffers(t, cmd)
+		if err != nil {
+			t.Fatalf("mixed batch close failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stderr.String(), done.ID+" already closed") {
+			t.Errorf("expected already-closed notice for %s, got stderr:\n%s", done.ID, stderr.String())
+		}
+		gotDone := bdShow(t, bd, dir, done.ID)
+		if gotDone.CloseReason != "FIRST" {
+			t.Errorf("%s close_reason = %q, want %q (first close wins)", done.ID, gotDone.CloseReason, "FIRST")
+		}
+		gotOpen := bdShow(t, bd, dir, open.ID)
+		if gotOpen.Status != types.StatusClosed || gotOpen.CloseReason != "shared" {
+			t.Errorf("%s status=%s close_reason=%q, want closed/%q", open.ID, gotOpen.Status, gotOpen.CloseReason, "shared")
+		}
+	})
 }
 
 // TestEmbeddedCloseConcurrent exercises create, close, and list operations
