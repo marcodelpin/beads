@@ -121,7 +121,7 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 	})
 	if err != nil {
 		if claimLost {
-			fmt.Fprintf(os.Stderr, "Error claiming %s: %v\n", id, err)
+			reportClaimFailure(id, err)
 			return nil, false, true, nil
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
