@@ -275,3 +275,168 @@ func TestTelemetryRedactionMalformedURLQuery(t *testing.T) {
 		t.Fatalf("malformed URL query structure was not preserved after redaction: %q", out)
 	}
 }
+
+// TestScrubArgsForTelemetryAdversarialDSNVectors ports the adversarial regression
+// vectors from the deleted internal/storage/pgdialect redaction tests
+// (redact_error_test.go, redact_matrix_test.go). Each vector was a real leak or a
+// scrubber-bypass near miss in an earlier redactor, so they are pinned here against
+// the argv scrubber — the telemetry sink is backend-neutral and keeps receiving
+// these DSN shapes even though the backends that motivated them are gone.
+//
+// Historical failure modes locked in, per case:
+//   - percent-encoded userinfo/query passwords must vanish in BOTH the raw
+//     (SUPER%2ASECRET) and decoded (SUPER*SECRET) forms;
+//   - percent-encoded query KEYS (pass%77ord, sslpass%77ord, %70assword) decode to
+//     password keys and bypassed key matching done on the raw key only;
+//   - password=SUPER\ SECRET: pgx accepts the backslash-escaped space as part of a
+//     single value, but a \S+-shaped value regex stopped at the space and shipped
+//     with the tail " SECRET" left in cleartext;
+//   - a single-quoted libpq password containing spaces is one value, not several;
+//   - pgx treats \v as inter-token whitespace, but Go's regexp \s class does not
+//     include \v, so a (^|\s)-anchored password regex never matched after \v and the
+//     password leaked entirely;
+//   - when one collected secret is a prefix of another (userinfo "foo", query
+//     "fooACTUAL"), replacing the short secret first turned "fooACTUAL" into
+//     "xxxxxACTUAL" and the tail survived; replacement must be length-descending.
+func TestScrubArgsForTelemetryAdversarialDSNVectors(t *testing.T) {
+	const secret = "SUPERSECRET"
+	cases := []struct {
+		name  string
+		dsn   string
+		leaks []string // every cleartext form that must NOT survive redaction
+		keep  []string // non-secret structure that must survive redaction
+	}{
+		{
+			name:  "url userinfo percent-encoded password",
+			dsn:   "postgres://u:SUPER%2ASECRET@h:5432/db",
+			leaks: []string{"SUPER%2ASECRET", "SUPER*SECRET"},
+			keep:  []string{"postgres://u:", "h:5432/db"},
+		},
+		{
+			name:  "url userinfo percent-encoded special chars",
+			dsn:   "postgres://bts:p%40ss%3Aw%2Frd-" + secret + "@127.0.0.1:5432/db",
+			leaks: []string{"p%40ss%3Aw%2Frd-" + secret, "p@ss:w/rd-" + secret},
+			keep:  []string{"postgres://bts:", "127.0.0.1:5432/db"},
+		},
+		{
+			name:  "url query param percent-encoded value",
+			dsn:   "postgres://u@h:5432/db?password=SUPER%2ASECRET",
+			leaks: []string{"SUPER%2ASECRET", "SUPER*SECRET"},
+			keep:  []string{"password=", "h:5432/db"},
+		},
+		{
+			name:  "url query param percent-encoded key (pass%77ord)",
+			dsn:   "postgres://u@h:5432/db?pass%77ord=" + secret,
+			leaks: []string{secret},
+			keep:  []string{"pass%77ord=", "h:5432/db"},
+		},
+		{
+			name:  "url query sslpassword percent-encoded key (sslpass%77ord)",
+			dsn:   "postgres://u@h:5432/db?sslpass%77ord=" + secret + "&sslmode=require",
+			leaks: []string{secret},
+			keep:  []string{"sslpass%77ord=", "sslmode=require"},
+		},
+		{
+			name:  "url query param fully percent-encoded key (%70assword)",
+			dsn:   "postgres://u@h:5432/db?%70assword=" + secret,
+			leaks: []string{secret},
+			keep:  []string{"%70assword=", "h:5432/db"},
+		},
+		{
+			name:  "url query password with sslmode preserved",
+			dsn:   "postgres://bts@127.0.0.1:5432/db?password=" + secret + "&sslmode=disable",
+			leaks: []string{secret},
+			keep:  []string{"sslmode=disable", "127.0.0.1:5432/db"},
+		},
+		{
+			name:  "url userinfo password with sslmode and application_name preserved",
+			dsn:   "postgres://bts:" + secret + "@127.0.0.1:5432/db?sslmode=require&application_name=beads",
+			leaks: []string{secret},
+			keep:  []string{"sslmode=require", "application_name=beads", "127.0.0.1:5432/db"},
+		},
+		{
+			name:  "url userinfo password but no user",
+			dsn:   "postgres://:" + secret + "@h:5432/db",
+			leaks: []string{secret},
+			keep:  []string{"h:5432/db"},
+		},
+		{
+			name: "keyword value password with backslash-escaped whitespace",
+			dsn:  `host=h user=u password=SUPER\ SECRET dbname=db`,
+			// "SECRET" pins the historical shipped bug: the tail after the escaped
+			// space must not survive in cleartext.
+			leaks: []string{"SECRET", `SUPER\`},
+			keep:  []string{"host=h", "user=u", "dbname=db"},
+		},
+		{
+			name:  "keyword value single-quoted password containing spaces",
+			dsn:   "host=h user=u password='se cret " + secret + "' dbname=db",
+			leaks: []string{"se cret", secret},
+			keep:  []string{"host=h", "user=u", "dbname=db"},
+		},
+		{
+			name:  "keyword value single-quoted password",
+			dsn:   "host=h user=u password='" + secret + "' dbname=db",
+			leaks: []string{secret},
+			keep:  []string{"host=h", "user=u", "dbname=db"},
+		},
+		{
+			name:  "keyword value vertical-tab separator",
+			dsn:   "host=h user=u\vpassword=" + secret + " dbname=db",
+			leaks: []string{secret},
+			keep:  []string{"host=h", "dbname=db"},
+		},
+		{
+			name:  "keyword value sslpassword with sslmode preserved",
+			dsn:   "host=h user=u sslpassword=" + secret + " sslmode=require dbname=db",
+			leaks: []string{secret},
+			keep:  []string{"host=h", "sslmode=require", "dbname=db"},
+		},
+		{
+			name:  "keyword value password but no user",
+			dsn:   "host=h port=5432 password=" + secret + " dbname=db",
+			leaks: []string{secret},
+			keep:  []string{"host=h", "port=5432", "dbname=db"},
+		},
+		{
+			name:  "overlapping secrets where one is a prefix of another",
+			dsn:   "postgres://u:foo@h:5432/db?password=fooACTUAL",
+			leaks: []string{"ACTUAL", ":foo@"},
+			keep:  []string{"postgres://u:", "h:5432/db"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := scrubArgsForTelemetry([]string{"command", tc.dsn}, nil)
+			for _, leak := range tc.leaks {
+				if strings.Contains(out, leak) {
+					t.Errorf("PASSWORD LEAK: %q survived telemetry scrub of %q: %q", leak, tc.dsn, out)
+				}
+			}
+			if !strings.Contains(out, "xxxxx") {
+				t.Errorf("expected redaction marker xxxxx in %q", out)
+			}
+			for _, k := range tc.keep {
+				if !strings.Contains(out, k) {
+					t.Errorf("expected %q to survive redaction in %q", k, out)
+				}
+			}
+		})
+	}
+}
+
+// TestScrubArgsForTelemetryPasswordlessDSNUnchanged ports the deleted matrix
+// round-trip invariant: a DSN carrying no password must pass through the scrubber
+// byte-for-byte unchanged, in both URL and libpq keyword/value form. Over-redaction
+// here would destroy the non-secret operational signal the span exists to carry.
+func TestScrubArgsForTelemetryPasswordlessDSNUnchanged(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://bts@127.0.0.1:5432/db?application_name=beads&sslmode=require",
+		"host=127.0.0.1 port=5432 user=bts dbname=db sslmode=require",
+	} {
+		want := "command " + dsn
+		if out := scrubArgsForTelemetry([]string{"command", dsn}, nil); out != want {
+			t.Errorf("passwordless DSN altered by scrubber:\n in  = %q\n out = %q", want, out)
+		}
+	}
+}
