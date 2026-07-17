@@ -62,3 +62,30 @@
 8 8 TestProxiedServerReopenConcurrent
 8 8 TestProxiedServerDoltRemoteRemove
 8 8 TestProxiedServerChildren
+
+# Parity-suite proxied tests (added with the cmd/bd embedded-parity port).
+# Balanced by subtest count; shard 1 stays TestProxiedServerUpdate-only.
+
+8 2 TestProxiedServerDeferUndefer
+8 2 TestProxiedServerFindDuplicates
+8 2 TestProxiedServerStatus
+
+8 3 TestProxiedServerHistory
+8 3 TestProxiedServerTypes
+8 3 TestProxiedServerUnclaim
+
+8 4 TestProxiedServerEpic
+8 4 TestProxiedServerSetState
+8 4 TestProxiedServerStale
+
+8 5 TestProxiedServerCount
+8 5 TestProxiedServerCountIncludeInfra
+8 5 TestProxiedServerDuplicates
+
+8 6 TestProxiedServerOrphans
+8 6 TestProxiedServerStatuses
+
+8 7 TestProxiedServerGraph
+8 7 TestProxiedServerInfo
+8 7 TestProxiedServerLint
+8 7 TestProxiedServerReclaim

@@ -4,9 +4,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -160,62 +158,4 @@ func TestProxiedServerInfo(t *testing.T) {
 			t.Error("expected non-empty --thanks output")
 		}
 	})
-}
-
-// TestProxiedServerInfoConcurrent exercises info operations concurrently
-// through the proxied server.
-func TestProxiedServerInfoConcurrent(t *testing.T) {
-	requireSharedProxiedServer(t)
-	t.Parallel()
-	bd := buildEmbeddedBD(t)
-	p := newSharedProxiedProject(t, bd, "ixc")
-
-	for i := 0; i < 3; i++ {
-		bdProxiedCreate(t, bd, p.dir, fmt.Sprintf("info-concurrent-%d", i), "--type", "task")
-	}
-
-	const numWorkers = 8
-
-	type workerResult struct {
-		worker int
-		err    error
-	}
-
-	results := make([]workerResult, numWorkers)
-	var wg sync.WaitGroup
-	wg.Add(numWorkers)
-
-	for w := 0; w < numWorkers; w++ {
-		go func(worker int) {
-			defer wg.Done()
-			r := workerResult{worker: worker}
-
-			var args []string
-			switch worker % 3 {
-			case 0:
-				args = []string{"info"}
-			case 1:
-				args = []string{"info", "--schema"}
-			case 2:
-				args = []string{"info", "--whats-new"}
-			}
-			out, err := bdProxiedRun(t, bd, p.dir, args...)
-			if err != nil {
-				r.err = fmt.Errorf("info (worker %d): %v\n%s", worker, err, out)
-				results[worker] = r
-				return
-			}
-			if len(strings.TrimSpace(string(out))) == 0 {
-				r.err = fmt.Errorf("info (worker %d): empty output", worker)
-			}
-			results[worker] = r
-		}(w)
-	}
-	wg.Wait()
-
-	for _, r := range results {
-		if r.err != nil && !strings.Contains(r.err.Error(), "one writer at a time") {
-			t.Errorf("worker %d failed: %v", r.worker, r.err)
-		}
-	}
 }

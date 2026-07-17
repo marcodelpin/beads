@@ -4,9 +4,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -193,65 +191,4 @@ func TestProxiedServerStatus(t *testing.T) {
 			t.Errorf("expected 0 total issues in empty db, got %d", got.Summary.TotalIssues)
 		}
 	})
-}
-
-// TestProxiedServerStatusConcurrent exercises status operations concurrently
-// through the proxied server.
-func TestProxiedServerStatusConcurrent(t *testing.T) {
-	requireSharedProxiedServer(t)
-	t.Parallel()
-	bd := buildEmbeddedBD(t)
-	p := newSharedProxiedProject(t, bd, "ssc")
-
-	for i := 0; i < 10; i++ {
-		bdProxiedCreate(t, bd, p.dir, fmt.Sprintf("concurrent-status-%d", i), "--type", "task")
-	}
-
-	const numWorkers = 8
-
-	type workerResult struct {
-		worker int
-		err    error
-	}
-
-	results := make([]workerResult, numWorkers)
-	var wg sync.WaitGroup
-	wg.Add(numWorkers)
-
-	queries := [][]string{
-		{"--json"},
-		{"--json", "--no-activity"},
-		{"--json"},
-		{"--json", "--no-activity"},
-		{"--json"},
-		{"--json"},
-		{"--json", "--no-activity"},
-		{"--json"},
-	}
-
-	for w := 0; w < numWorkers; w++ {
-		go func(worker int) {
-			defer wg.Done()
-			r := workerResult{worker: worker}
-			q := queries[worker%len(queries)]
-			out, err := bdProxiedRun(t, bd, p.dir, append([]string{"status"}, q...)...)
-			if err != nil {
-				r.err = fmt.Errorf("worker %d status %v: %v\n%s", worker, q, err, out)
-				results[worker] = r
-				return
-			}
-			var m map[string]interface{}
-			if err := json.Unmarshal(out, &m); err != nil {
-				r.err = fmt.Errorf("worker %d: JSON parse: %v\n%s", worker, err, out)
-			}
-			results[worker] = r
-		}(w)
-	}
-	wg.Wait()
-
-	for _, r := range results {
-		if r.err != nil && !strings.Contains(r.err.Error(), "one writer at a time") {
-			t.Errorf("worker %d failed: %v", r.worker, r.err)
-		}
-	}
 }

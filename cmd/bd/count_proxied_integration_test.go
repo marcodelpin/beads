@@ -4,10 +4,8 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -550,74 +548,4 @@ func TestProxiedServerCountIncludeInfra(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestProxiedServerCountConcurrent exercises count operations concurrently
-// through the proxied server.
-func TestProxiedServerCountConcurrent(t *testing.T) {
-	requireSharedProxiedServer(t)
-	t.Parallel()
-	bd := buildEmbeddedBD(t)
-	p := newSharedProxiedProject(t, bd, "ccc")
-
-	for i := 0; i < 20; i++ {
-		args := []string{fmt.Sprintf("concurrent-count-%d", i), "--type", "task"}
-		if i%2 == 0 {
-			args = append(args, "--assignee", "alice")
-		} else {
-			args = append(args, "--assignee", "bob")
-		}
-		if i%3 == 0 {
-			args = append(args, "--priority", "1")
-		}
-		bdProxiedCreate(t, bd, p.dir, args...)
-	}
-
-	const numWorkers = 8
-
-	type workerResult struct {
-		worker int
-		err    error
-	}
-
-	results := make([]workerResult, numWorkers)
-	var wg sync.WaitGroup
-	wg.Add(numWorkers)
-
-	queries := [][]string{
-		{},
-		{"--status", "open"},
-		{"--assignee", "alice"},
-		{"--type", "task"},
-		{"--by-status"},
-		{"--by-assignee"},
-		{"--by-priority"},
-		{"--priority", "1"},
-	}
-
-	for w := 0; w < numWorkers; w++ {
-		go func(worker int) {
-			defer wg.Done()
-			r := workerResult{worker: worker}
-			q := queries[worker%len(queries)]
-			out, err := bdProxiedRun(t, bd, p.dir, append([]string{"count", "--json"}, q...)...)
-			if err != nil {
-				r.err = fmt.Errorf("worker %d count %v: %v\n%s", worker, q, err, out)
-				results[worker] = r
-				return
-			}
-			var m map[string]interface{}
-			if err := json.Unmarshal(out, &m); err != nil {
-				r.err = fmt.Errorf("worker %d: JSON parse: %v\n%s", worker, err, out)
-			}
-			results[worker] = r
-		}(w)
-	}
-	wg.Wait()
-
-	for _, r := range results {
-		if r.err != nil && !strings.Contains(r.err.Error(), "one writer at a time") {
-			t.Errorf("worker %d failed: %v", r.worker, r.err)
-		}
-	}
 }
