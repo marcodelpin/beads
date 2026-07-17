@@ -120,12 +120,10 @@ func TestReclaimExpiredLeaseSurvivesRestartEmbedded(t *testing.T) {
 		t.Fatalf("ClaimIssue: %v", err)
 	}
 
-	// Restart: close the engine, let the lease expire while it is down, reopen.
+	// Restart: close the engine, reopen from disk.
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	time.Sleep(1500 * time.Millisecond)
-
 	store2, err := embeddeddolt.Open(ctx, beadsDir, prefix, "main")
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -136,10 +134,29 @@ func TestReclaimExpiredLeaseSurvivesRestartEmbedded(t *testing.T) {
 	// against a vacuous pass below, since reclaim JOINs on the leases table and
 	// would return nothing if restart had dropped the row.
 	te := &testEnv{store: store2, dataDir: filepath.Join(beadsDir, "embeddeddolt"), database: prefix}
-	var holder string
-	te.queryScalar(t, ctx, "SELECT holder FROM leases WHERE issue_id = ?", []any{"lease-restart-1"}, &holder)
+	var holder, statusBefore, expiresStr string
+	te.queryScalar(t, ctx,
+		"SELECT l.holder, i.status, CAST(l.lease_expires_at AS CHAR) FROM leases l JOIN issues i ON i.id = l.issue_id WHERE l.issue_id = ?",
+		[]any{"lease-restart-1"}, &holder, &statusBefore, &expiresStr)
 	if holder != "alice" {
 		t.Fatalf("lease holder after restart = %q, want alice", holder)
+	}
+	if statusBefore != "in_progress" {
+		t.Fatalf("issue status after restart = %q, want in_progress", statusBefore)
+	}
+
+	// Wait until the wall clock is unambiguously past the STORED expiry:
+	// DATETIME is second-granular and may round the claim's now+TTL up, so
+	// racing a fixed sleep against it flakes (reclaim compares with strict <).
+	expires, err := time.Parse("2006-01-02 15:04:05", expiresStr)
+	if err != nil {
+		t.Fatalf("parse stored lease_expires_at %q: %v", expiresStr, err)
+	}
+	if wait := time.Until(expires.Add(1500 * time.Millisecond)); wait > 0 {
+		if wait > 10*time.Second {
+			t.Fatalf("stored lease_expires_at %s is unexpectedly far in the future", expiresStr)
+		}
+		time.Sleep(wait)
 	}
 
 	reclaimed, err := store2.ReclaimExpiredLeases(ctx, 0, "reaper")
