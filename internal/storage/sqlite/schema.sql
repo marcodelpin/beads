@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS `issues` (
 );
 
 -- Ephemeral claim leases (bd-lrgn1): node-local, never exported by backup.
--- One row per live claim; see issueops.UpsertLeaseInTx for the invariant.
+-- One row per live claim. See issueops.UpsertLeaseInTx for the invariant.
 CREATE TABLE IF NOT EXISTS `leases` (
   `issue_id` varchar(255) NOT NULL,
   `holder` varchar(255) NOT NULL,
