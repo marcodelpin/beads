@@ -81,7 +81,11 @@
     },
     {
       "source": "/STORAGE-BACKENDS",
-      "destination": "/architecture/storage-backends"
+      "destination": "/architecture/dolt"
+    },
+    {
+      "source": "/architecture/storage-backends",
+      "destination": "/architecture/dolt"
     },
     {
       "source": "/MOLECULES",
@@ -247,8 +251,7 @@
         "group": "Architecture",
         "pages": [
           "architecture/index",
-          "architecture/dolt",
-          "architecture/storage-backends"
+          "architecture/dolt"
         ]
       },
       {
