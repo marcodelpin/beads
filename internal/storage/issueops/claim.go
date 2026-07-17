@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
@@ -20,7 +22,9 @@ type ClaimResult struct {
 
 // ClaimIssueInTx atomically claims an issue using compare-and-swap semantics.
 // It sets the assignee to actor and status to "in_progress" only if the issue
-// is currently open and unassigned or already assigned to the same actor.
+// is currently open and unassigned, already assigned to the same actor, or
+// assigned to a pool alias listed in the claim.pools config (see
+// ClaimPoolAliasesInTx).
 // Returns storage.ErrAlreadyClaimed if already claimed by a different user.
 // Idempotent: re-claiming an in_progress issue by the same actor is a no-op
 // success (supports agent retry workflows).
@@ -57,6 +61,22 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 	}
 	statusPlaceholders, statusArgs := buildSQLInClause(claimableStatuses)
 
+	// Pool-aware claim (bd-bguz6): a dispatcher may pre-assign issues to a
+	// pool pseudo-assignee (e.g. "fable-crew"). Aliases listed in the
+	// claim.pools config are claimable by any actor through the same CAS;
+	// issues assigned to a real actor keep their anti-steal protection.
+	pools, err := ClaimPoolAliasesInTx(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve claim pools: %w", err)
+	}
+	assigneePredicate := "assignee = '' OR assignee IS NULL OR assignee = ?"
+	assigneeArgs := []interface{}{actor}
+	if len(pools) > 0 {
+		poolPlaceholders, poolArgs := buildSQLInClause(pools)
+		assigneePredicate += " OR assignee IN (" + poolPlaceholders + ")"
+		assigneeArgs = append(assigneeArgs, poolArgs...)
+	}
+
 	// Conditional UPDATE: only succeeds while the issue is still claimable.
 	// Also set started_at on first transition to in_progress (GH#2796); preserve
 	// any existing value so re-claims don't overwrite the original start time.
@@ -67,22 +87,22 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 		args := append([]interface{}{actor, now, now}, leaseArgs...)
 		args = append(args, id)
 		args = append(args, statusArgs...)
-		args = append(args, actor)
+		args = append(args, assigneeArgs...)
 		result, err = tx.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, started_at = ?, %s
-			WHERE id = ? AND status IN (%s) AND (assignee = '' OR assignee IS NULL OR assignee = ?)
-		`, issueTable, leaseClause, statusPlaceholders), args...)
+			WHERE id = ? AND status IN (%s) AND (%s)
+		`, issueTable, leaseClause, statusPlaceholders, assigneePredicate), args...)
 	} else {
 		args := append([]interface{}{actor, now}, leaseArgs...)
 		args = append(args, id)
 		args = append(args, statusArgs...)
-		args = append(args, actor)
+		args = append(args, assigneeArgs...)
 		result, err = tx.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, %s
-			WHERE id = ? AND status IN (%s) AND (assignee = '' OR assignee IS NULL OR assignee = ?)
-		`, issueTable, leaseClause, statusPlaceholders), args...)
+			WHERE id = ? AND status IN (%s) AND (%s)
+		`, issueTable, leaseClause, statusPlaceholders, assigneePredicate), args...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to claim issue: %w", err)
@@ -113,8 +133,20 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 			return &ClaimResult{OldIssue: oldIssue, IsWisp: isWisp}, nil
 		}
 		if assignee != "" && assignee != actor {
+			// A pool-assigned issue reaches here only when the CAS lost for a
+			// non-assignee reason (status changed underneath us): report the
+			// status rather than a misleading held-by-someone refusal.
+			if slices.Contains(pools, assignee) {
+				return nil, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, currentStatus)
+			}
 			if currentStatus == types.StatusOpen {
-				return nil, fmt.Errorf("issue already assigned to %q. Use `bd unclaim %s` to release it before re-claiming", assignee, id)
+				// Do not name a release command here — not `bd unclaim`, not
+				// `bd unclaim --force`. Refusal copy that names one gets
+				// pattern-matched by batch agents into an unclaim+claim
+				// steamroller of live claims (wy-yuclk). Point at the holder;
+				// bd reclaim is safe to name because it only recovers claims
+				// whose lease has already expired.
+				return nil, fmt.Errorf("issue already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", assignee)
 			}
 			return nil, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, assignee)
 		}
@@ -169,6 +201,27 @@ func ClaimReadyIssueInTx(
 		return claimed, nil
 	}
 	return nil, nil
+}
+
+// ClaimPoolAliasesInTx returns the pool pseudo-assignee aliases from the
+// claim.pools config key (comma-separated, whitespace-trimmed). An issue
+// assigned to one of these aliases is claimable by ANY actor through the
+// normal claim CAS — the pattern where a dispatcher pre-assigns work to a
+// group alias (e.g. "fable-crew") and members take items from the pool.
+// Issues assigned to a real actor are unaffected. Missing/empty config (the
+// default) disables pool-aware claiming entirely.
+func ClaimPoolAliasesInTx(ctx context.Context, tx DBTX) ([]string, error) {
+	raw, err := GetConfigInTx(ctx, tx, "claim.pools")
+	if err != nil {
+		return nil, err
+	}
+	var pools []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			pools = append(pools, p)
+		}
+	}
+	return pools, nil
 }
 
 // ClaimableSourceStatusesInTx returns the set of statuses an issue may be

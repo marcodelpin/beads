@@ -58,11 +58,20 @@ func TableRouting(issue *types.Issue) (issueTable, eventTable string) {
 // updated_at in every assignment, and ON DUPLICATE KEY UPDATE assignments are
 // evaluated in order, so the comparison column must not be reassigned until
 // all other columns have been decided.
+//
+// The lease columns ride the same rule as status/assignee (protocol L1.2:
+// lease fields MUST round-trip the JSONL interchange, wy-urlct): a stale
+// snapshot can never clobber a live lease because claim and heartbeat both
+// stamp updated_at, so a live claim is always strictly newer than any
+// pre-claim export. row_lock rides along because any write that can change
+// status/assignee/lease must rewrite it to collide with a concurrent
+// heartbeat/reclaim/close on the same row (see freshRowLock in lease.go).
 var issueUpsertColumns = []string{
 	"content_hash", "title", "description", "design", "acceptance_criteria",
 	"notes", "status", "priority", "issue_type", "assignee",
 	"estimated_minutes", "started_at", "closed_at", "external_ref",
-	"source_repo", "close_reason", "metadata", "updated_at",
+	"source_repo", "close_reason", "metadata",
+	"lease_expires_at", "heartbeat_at", "row_lock", "updated_at",
 }
 
 // issueUpsertAssignments renders the ON DUPLICATE KEY UPDATE clause. With
@@ -112,7 +121,8 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 			mol_type, work_type, source_system, source_repo, close_reason,
 			event_kind, actor, target, payload,
 			await_type, await_id, timeout_ns, waiters,
-			due_at, defer_until, metadata
+			due_at, defer_until, metadata,
+			lease_expires_at, heartbeat_at, row_lock
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
@@ -122,6 +132,7 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
+			?, ?, ?,
 			?, ?, ?
 		)
 		ON DUPLICATE KEY UPDATE
@@ -136,6 +147,7 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 		issue.EventKind, issue.Actor, issue.Target, issue.Payload,
 		issue.AwaitType, issue.AwaitID, issue.Timeout.Nanoseconds(), FormatJSONStringArray(issue.Waiters),
 		issue.DueAt, issue.DeferUntil, JSONMetadata(issue.Metadata),
+		issue.LeaseExpiresAt, issue.HeartbeatAt, freshRowLock(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert issue into %s: %w", table, err)

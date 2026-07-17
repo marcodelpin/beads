@@ -54,7 +54,7 @@ func UnclaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string, 
 	// Validate ownership unless the caller forced the release. Without force, a
 	// process may only release its own claim.
 	if !force && oldIssue.Assignee != actor {
-		return fmt.Errorf("%w: %s is held by %s (use --force to override)",
+		return fmt.Errorf("%w: %s is held by %s; coordinate with the holder — pass --force only if their claim is abandoned (crashed agent, expired lease)",
 			storage.ErrNotOwner, id, oldIssue.Assignee)
 	}
 
@@ -97,7 +97,7 @@ func UnclaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string, 
 			return fmt.Errorf("failed to unclaim issue %s: no matching row", id)
 		}
 		if !force && current.Assignee != actor {
-			return fmt.Errorf("%w: %s is held by %s (use --force to override)",
+			return fmt.Errorf("%w: %s is held by %s; coordinate with the holder — pass --force only if their claim is abandoned (crashed agent, expired lease)",
 				storage.ErrNotOwner, id, current.Assignee)
 		}
 		return fmt.Errorf("failed to unclaim issue %s: no matching row", id)
