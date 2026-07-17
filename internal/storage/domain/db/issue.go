@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
@@ -929,6 +930,70 @@ func (r *issueSQLRepositoryImpl) GetStatistics(ctx context.Context) (*types.Stat
 		stats.ReadyIssues = 0
 	}
 	return stats, nil
+}
+
+func (r *issueSQLRepositoryImpl) CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error) {
+	n, err := issueops.CountIssuesInTx(ctx, r.runner, query, filter)
+	if err != nil {
+		return 0, fmt.Errorf("db: IssueSQLRepository.CountIssues: %w", err)
+	}
+	return int64(n), nil
+}
+
+func (r *issueSQLRepositoryImpl) CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error) {
+	out, err := issueops.CountIssuesByGroupInTx(ctx, r.runner, filter, groupBy)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.CountIssuesByGroup: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) History(ctx context.Context, id string) ([]*storage.HistoryEntry, error) {
+	out, err := issueops.HistoryInTx(ctx, r.runner, id)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.History: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) IterEvents(ctx context.Context, id string, limit int) (storage.Iter[types.Event], error) {
+	events, err := issueops.GetEventsInTx(ctx, r.runner, id, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.IterEvents: %w", err)
+	}
+	return storage.NewSliceIter(events), nil
+}
+
+func (r *issueSQLRepositoryImpl) GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error) {
+	out, err := issueops.GetStaleIssuesInTx(ctx, r.runner, filter)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.GetStaleIssues: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error) {
+	out, err := issueops.GetEpicsEligibleForClosureInTx(ctx, r.runner)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.GetEpicsEligibleForClosure: %w", err)
+	}
+	return out, nil
+}
+
+func (r *issueSQLRepositoryImpl) UnclaimIssue(ctx context.Context, id, actor string, force bool) error {
+	if err := issueops.UnclaimIssueInTx(ctx, r.runner, id, actor, force); err != nil {
+		return fmt.Errorf("db: IssueSQLRepository.UnclaimIssue: %w", err)
+	}
+	return nil
+}
+
+func (r *issueSQLRepositoryImpl) ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, actor string) ([]types.ReclaimedLease, error) {
+	cutoff := time.Now().UTC().Add(-olderThan)
+	out, err := issueops.ReclaimExpiredLeasesInTx(ctx, r.runner, cutoff, actor)
+	if err != nil {
+		return nil, fmt.Errorf("db: IssueSQLRepository.ReclaimExpiredLeases: %w", err)
+	}
+	return out, nil
 }
 
 const deleteBatchSize = 200

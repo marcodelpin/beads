@@ -63,6 +63,14 @@ type IssueSQLRepository interface {
 	ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error)
 	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
 	GetStatistics(ctx context.Context) (*types.Statistics, error)
+	CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error)
+	CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error)
+	History(ctx context.Context, id string) ([]*storage.HistoryEntry, error)
+	IterEvents(ctx context.Context, id string, limit int) (storage.Iter[types.Event], error)
+	GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error)
+	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
+	UnclaimIssue(ctx context.Context, id, actor string, force bool) error
+	ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, actor string) ([]types.ReclaimedLease, error)
 }
 
 type CloseRowParams struct {
@@ -225,6 +233,14 @@ type IssueUseCase interface {
 	ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (ClaimReadyResult, error)
 	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
 	GetStatistics(ctx context.Context) (*types.Statistics, error)
+	CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error)
+	CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error)
+	History(ctx context.Context, id string) ([]*storage.HistoryEntry, error)
+	IterEvents(ctx context.Context, id string, limit int) (storage.Iter[types.Event], error)
+	GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error)
+	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
+	Unclaim(ctx context.Context, id, actor string, force bool) error
+	ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, actor string) ([]types.ReclaimedLease, error)
 
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
@@ -1440,6 +1456,72 @@ func (u *issueUseCaseImpl) GetStatistics(ctx context.Context) (*types.Statistics
 	out, err := u.issueRepo.GetStatistics(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("GetStatistics: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error) {
+	out, err := u.issueRepo.CountIssues(ctx, query, filter)
+	if err != nil {
+		return 0, fmt.Errorf("CountIssues: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error) {
+	out, err := u.issueRepo.CountIssuesByGroup(ctx, filter, groupBy)
+	if err != nil {
+		return nil, fmt.Errorf("CountIssuesByGroup: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) History(ctx context.Context, id string) ([]*storage.HistoryEntry, error) {
+	out, err := u.issueRepo.History(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("History: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) IterEvents(ctx context.Context, id string, limit int) (storage.Iter[types.Event], error) {
+	out, err := u.issueRepo.IterEvents(ctx, id, limit)
+	if err != nil {
+		return nil, fmt.Errorf("IterEvents: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error) {
+	out, err := u.issueRepo.GetStaleIssues(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("GetStaleIssues: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error) {
+	out, err := u.issueRepo.GetEpicsEligibleForClosure(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetEpicsEligibleForClosure: %w", err)
+	}
+	return out, nil
+}
+
+func (u *issueUseCaseImpl) Unclaim(ctx context.Context, id, actor string, force bool) error {
+	if id == "" {
+		return fmt.Errorf("Unclaim: id must not be empty")
+	}
+	if err := u.issueRepo.UnclaimIssue(ctx, id, actor, force); err != nil {
+		return fmt.Errorf("Unclaim: %w", err)
+	}
+	return nil
+}
+
+func (u *issueUseCaseImpl) ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, actor string) ([]types.ReclaimedLease, error) {
+	out, err := u.issueRepo.ReclaimExpiredLeases(ctx, olderThan, actor)
+	if err != nil {
+		return nil, fmt.Errorf("ReclaimExpiredLeases: %w", err)
 	}
 	return out, nil
 }
