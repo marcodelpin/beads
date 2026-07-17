@@ -526,6 +526,7 @@ var onConflictTargets = map[string]string{
 	"wisp_child_counters": "parent_id",
 	"repo_mtimes":         "repo_path",
 	"federation_peers":    "name",
+	"leases":              "issue_id",
 }
 
 // rewriteOnDuplicateKey converts `… ON DUPLICATE KEY UPDATE <body>` into
