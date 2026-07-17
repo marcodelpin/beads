@@ -55,7 +55,9 @@ bd dolt stop
 ```
 
 **Step 2:** Squash to a single baseline. From the Dolt data directory,
-re-commit the current tree directly on top of the root commit:
+re-commit the current tree directly on top of the root commit. Keeping the
+root as the sole ancestor preserves a valid chain — do not try to "simplify"
+further by starting an orphan branch:
 
 ```bash
 root=$(dolt log --oneline | tail -1 | cut -d' ' -f1)
@@ -65,13 +67,24 @@ dolt commit -m "history squash: baseline $(date +%F)"
 ```
 
 **Step 3:** Drop the other refs and collect. Anything still pointing at the
-old chain keeps it alive:
+old chain keeps it alive — stale local branches and tags, and also the
+*remote-tracking refs* left behind by every past push and fetch, which any
+long-lived synced workspace has. Delete them all before collecting; Step 4's
+force-push recreates the remote-tracking refs on the new chain:
 
 ```bash
-dolt branch          # delete stale branches: dolt branch -D <name>
-dolt tag             # delete stale tags:     dolt tag -d <name>
+dolt branch          # delete stale branches:       dolt branch -D <name>
+dolt branch -r       # delete remote-tracking refs: dolt branch -rd <remote>/<branch>
+dolt tag             # delete stale tags:           dolt tag -d <name>
 dolt gc --full
+du -sh .             # verify: the store should now be a fraction of its old size
 ```
+
+If the size barely moved, a ref still anchors the old chain — re-check
+`dolt branch`, `dolt branch -r`, and `dolt tag` for survivors and collect
+again. (A failed collection does not endanger Step 4 — the push sends only
+what the new baseline references — but this machine keeps the bloat until
+the gc succeeds.)
 
 **Step 4:** Re-point remotes and backups. The new history is unrelated to
 the old, so the first publish must replace it:
@@ -95,9 +108,10 @@ root). Only then unfence your writers.
 
 ## Prevention
 
-High-frequency coordination state (claim leases, wisps) lives in unversioned
-tables precisely so routine agent traffic does not mint history; bloat at
-this scale usually means something is writing versioned tables in a tight
-loop. Find and fix that writer, watch data-directory growth over time, and
+High-frequency coordination state lives in unversioned tables precisely so
+routine agent traffic does not mint history — claim leases (see
+[bd heartbeat](/cli-reference/heartbeat)) and [wisps](/workflows/wisps) —
+so bloat at this scale usually means something is writing versioned tables
+in a tight loop. Find and fix that writer, watch data-directory growth over time, and
 run `dolt gc` periodically so unreachable garbage never accumulates on top
 of reachable history.
