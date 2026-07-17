@@ -64,7 +64,10 @@ func (p *doltSQLProvider) BeginTx(ctx context.Context) (Tx, error) {
 func (p *doltSQLProvider) initSchema(ctx context.Context, database string) error {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
-	bo.MaxElapsedTime = 15 * time.Second
+	// This budget must outwait a peer holding the migration lock through a
+	// full cold-start migration pass (every migration + a Dolt commit each),
+	// not just a transient blip — it grows as migrations accumulate.
+	bo.MaxElapsedTime = 60 * time.Second
 	return backoff.Retry(func() error {
 		conn, err := p.db.Conn(ctx)
 		if err != nil {
