@@ -58,38 +58,33 @@ SET @sql = IF(@has_col > 0,
     'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- 3. Drop the lease index and columns from issues.
+-- 3. Drop the lease index and columns from issues. One combined ALTER (each
+-- ALTER is a table rewrite; fresh chains run 0054 add + 0055 drop, so keep
+-- this cheap). Clauses are guarded individually so a partially-applied
+-- earlier run re-runs as a no-op.
 SET @has_index = (
     SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'issues'
       AND INDEX_NAME = 'idx_issues_lease'
 );
-SET @sql = IF(@has_index > 0,
-    'ALTER TABLE issues DROP INDEX idx_issues_lease',
-    'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @has_col = (
+SET @has_lease_col = (
     SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'issues'
       AND COLUMN_NAME = 'lease_expires_at'
 );
-SET @sql = IF(@has_col > 0,
-    'ALTER TABLE issues DROP COLUMN lease_expires_at',
-    'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @has_col = (
+SET @has_hb_col = (
     SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()
       AND TABLE_NAME = 'issues'
       AND COLUMN_NAME = 'heartbeat_at'
 );
-SET @sql = IF(@has_col > 0,
-    'ALTER TABLE issues DROP COLUMN heartbeat_at',
-    'SELECT 1');
+SET @clauses = CONCAT_WS(', ',
+    IF(@has_index > 0, 'DROP INDEX idx_issues_lease', NULL),
+    IF(@has_lease_col > 0, 'DROP COLUMN lease_expires_at', NULL),
+    IF(@has_hb_col > 0, 'DROP COLUMN heartbeat_at', NULL));
+SET @sql = IF(@clauses = '', 'SELECT 1', CONCAT('ALTER TABLE issues ', @clauses));
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- 4. Drop the (never-reclaimed, now entirely unread) lease columns from wisps.
@@ -102,24 +97,20 @@ SET @has_wisps = (
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wisps'
 );
 
-SET @has_col = IF(@has_wisps > 0,
+SET @has_lease_col = IF(@has_wisps > 0,
     (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
           AND TABLE_NAME = 'wisps'
           AND COLUMN_NAME = 'lease_expires_at'),
     0);
-SET @sql = IF(@has_col > 0,
-    'ALTER TABLE wisps DROP COLUMN lease_expires_at',
-    'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @has_col = IF(@has_wisps > 0,
+SET @has_hb_col = IF(@has_wisps > 0,
     (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
           AND TABLE_NAME = 'wisps'
           AND COLUMN_NAME = 'heartbeat_at'),
     0);
-SET @sql = IF(@has_col > 0,
-    'ALTER TABLE wisps DROP COLUMN heartbeat_at',
-    'SELECT 1');
+SET @clauses = CONCAT_WS(', ',
+    IF(@has_lease_col > 0, 'DROP COLUMN lease_expires_at', NULL),
+    IF(@has_hb_col > 0, 'DROP COLUMN heartbeat_at', NULL));
+SET @sql = IF(@clauses = '', 'SELECT 1', CONCAT('ALTER TABLE wisps ', @clauses));
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
