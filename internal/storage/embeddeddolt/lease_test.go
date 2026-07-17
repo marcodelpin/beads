@@ -4,10 +4,12 @@ package embeddeddolt_test
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -73,6 +75,95 @@ func TestLeaseLifecycleEmbedded(t *testing.T) {
 	}
 	if got.Assignee != "" {
 		t.Errorf("assignee = %q after reclaim, want empty", got.Assignee)
+	}
+}
+
+// TestReclaimExpiredLeaseSurvivesRestartEmbedded pins bd-lrgn1 acceptance (5):
+// the leases table is dolt_ignored (unversioned, node-local) but still durable,
+// so a lease granted before a server restart is visible after it and an expired
+// lease can be reclaimed by the restarted server. Closing and reopening the
+// embedded store is a real engine restart from disk.
+func TestReclaimExpiredLeaseSurvivesRestartEmbedded(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+
+	ctx := t.Context()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	const prefix = "lease_restart"
+
+	store, err := embeddeddolt.Open(ctx, beadsDir, prefix, "main")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := store.SetConfig(ctx, "issue_prefix", prefix); err != nil {
+		store.Close()
+		t.Fatalf("SetConfig(issue_prefix): %v", err)
+	}
+	if err := store.Commit(ctx, "bd init"); err != nil {
+		store.Close()
+		t.Fatalf("Commit: %v", err)
+	}
+
+	issue := &types.Issue{
+		ID:        "lease-restart-1",
+		Title:     "lease across restart",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, issue, "seeder"); err != nil {
+		store.Close()
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	claimCtx := issueops.WithLeaseTTL(ctx, time.Second)
+	if err := store.ClaimIssue(claimCtx, "lease-restart-1", "alice"); err != nil {
+		store.Close()
+		t.Fatalf("ClaimIssue: %v", err)
+	}
+
+	// Restart: close the engine, let the lease expire while it is down, reopen.
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+
+	store2, err := embeddeddolt.Open(ctx, beadsDir, prefix, "main")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer store2.Close()
+
+	// The lease row survived the restart with its holder intact — this guards
+	// against a vacuous pass below, since reclaim JOINs on the leases table and
+	// would return nothing if restart had dropped the row.
+	te := &testEnv{store: store2, dataDir: filepath.Join(beadsDir, "embeddeddolt"), database: prefix}
+	var holder string
+	te.queryScalar(t, ctx, "SELECT holder FROM leases WHERE issue_id = ?", []any{"lease-restart-1"}, &holder)
+	if holder != "alice" {
+		t.Fatalf("lease holder after restart = %q, want alice", holder)
+	}
+
+	reclaimed, err := store2.ReclaimExpiredLeases(ctx, 0, "reaper")
+	if err != nil {
+		t.Fatalf("ReclaimExpiredLeases after restart: %v", err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0].ID != "lease-restart-1" || reclaimed[0].PreviousOwner != "alice" {
+		t.Fatalf("reclaimed = %+v, want [{lease-restart-1 alice}]", reclaimed)
+	}
+
+	got, err := store2.GetIssue(ctx, "lease-restart-1")
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if got.Status != types.StatusOpen {
+		t.Errorf("status = %q after restart reclaim, want open", got.Status)
+	}
+	if got.Assignee != "" {
+		t.Errorf("assignee = %q after restart reclaim, want empty", got.Assignee)
+	}
+	var leaseRows int
+	te.queryScalar(t, ctx, "SELECT COUNT(*) FROM leases WHERE issue_id = ?", []any{"lease-restart-1"}, &leaseRows)
+	if leaseRows != 0 {
+		t.Errorf("lease rows after reclaim = %d, want 0", leaseRows)
 	}
 }
 
