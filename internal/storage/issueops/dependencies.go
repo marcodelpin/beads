@@ -882,8 +882,8 @@ func GetIssuesByIDsInTx(ctx context.Context, tx DBTX, ids []string, wispSet map[
 			inClause := strings.Join(placeholders, ",")
 
 			rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-				`SELECT %s FROM %s WHERE id IN (%s)`,
-				IssueSelectColumns, pair.table, inClause), args...)
+				`SELECT %s FROM %s %s WHERE id IN (%s)`,
+				IssueSelectColumns, pair.table, sqlbuild.LeaseJoin(pair.table), inClause), args...)
 			if err != nil {
 				return nil, fmt.Errorf("get issues by IDs from %s: %w", pair.table, err)
 			}

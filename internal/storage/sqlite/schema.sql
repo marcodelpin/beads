@@ -53,10 +53,19 @@ CREATE TABLE IF NOT EXISTS `issues` (
   `no_history` tinyint(1) DEFAULT '0',
   `started_at` datetime,
   `is_blocked` tinyint(1) NOT NULL DEFAULT '0',
-  `lease_expires_at` datetime,
-  `heartbeat_at` datetime,
   `row_lock` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`)
+);
+
+-- Ephemeral claim leases (bd-lrgn1): node-local, never exported by backup.
+-- One row per live claim. See issueops.UpsertLeaseInTx for the invariant.
+CREATE TABLE IF NOT EXISTS `leases` (
+  `issue_id` varchar(255) NOT NULL,
+  `holder` varchar(255) NOT NULL,
+  `granted_at` datetime NOT NULL,
+  `lease_expires_at` datetime NOT NULL,
+  `heartbeat_at` datetime NOT NULL,
+  PRIMARY KEY (`issue_id`)
 );
 
 CREATE TABLE IF NOT EXISTS `wisps` (
@@ -114,8 +123,6 @@ CREATE TABLE IF NOT EXISTS `wisps` (
   `no_history` tinyint(1) DEFAULT '0',
   `started_at` datetime,
   `is_blocked` tinyint(1) NOT NULL DEFAULT '0',
-  `lease_expires_at` datetime,
-  `heartbeat_at` datetime,
   `row_lock` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`)
 );
@@ -279,7 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_issues_issue_type ON `issues` (`issue_type`);
 CREATE INDEX IF NOT EXISTS idx_issues_priority ON `issues` (`priority`);
 CREATE INDEX IF NOT EXISTS idx_issues_spec_id ON `issues` (`spec_id`);
 CREATE INDEX IF NOT EXISTS idx_issues_status_updated_at ON `issues` (`status`,`updated_at`);
-CREATE INDEX IF NOT EXISTS idx_issues_lease ON `issues` (`status`,`lease_expires_at`);
+CREATE INDEX IF NOT EXISTS idx_leases_expires ON `leases` (`lease_expires_at`);
 CREATE INDEX IF NOT EXISTS idx_wisps_assignee ON `wisps` (`assignee`);
 CREATE INDEX IF NOT EXISTS idx_wisps_created_at ON `wisps` (`created_at`);
 CREATE INDEX IF NOT EXISTS idx_wisps_external_ref ON `wisps` (`external_ref`);

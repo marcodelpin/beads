@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -27,9 +28,9 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 func scanIssueFromTable(ctx context.Context, db *sql.DB, table, id string) (*types.Issue, error) {
 	row := db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT %s
-		FROM %s
+		FROM %s %s
 		WHERE id = ?
-	`, issueSelectColumns, table), id)
+	`, issueSelectColumns, table, sqlbuild.LeaseJoin(table)), id)
 
 	issue, err := scanIssueFrom(row)
 	if err == sql.ErrNoRows {
@@ -117,8 +118,8 @@ func insertIssueTxIntoTable(ctx context.Context, tx *sql.Tx, table string, issue
 //nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
 func scanIssueTxFromTable(ctx context.Context, tx *sql.Tx, table, id string) (*types.Issue, error) {
 	row := tx.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT %s FROM %s WHERE id = ?
-	`, issueSelectColumns, table), id)
+		SELECT %s FROM %s %s WHERE id = ?
+	`, issueSelectColumns, table, sqlbuild.LeaseJoin(table)), id)
 
 	issue, err := scanIssueFrom(row)
 	if err == sql.ErrNoRows {
@@ -432,9 +433,9 @@ func (s *DoltStore) getWispsByIDs(ctx context.Context, ids []string) ([]*types.I
 		//nolint:gosec // G201: placeholders contains only ? markers
 		querySQL := fmt.Sprintf(`
 			SELECT %s
-			FROM wisps
+			FROM wisps %s
 			WHERE id IN (%s)
-		`, issueSelectColumns, placeholders)
+		`, issueSelectColumns, sqlbuild.LeaseJoin("wisps"), placeholders)
 
 		queryRows, err := s.queryContext(ctx, querySQL, args...)
 		if err != nil {

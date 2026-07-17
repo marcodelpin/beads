@@ -28,6 +28,10 @@ func TestTranslate(t *testing.T) {
 		// rewritten to SQLite's scalar max even inside the ON DUPLICATE KEY envelope,
 		// otherwise hierarchical dotted child IDs fail on SQLite.
 		{"child counter upsert", "INSERT INTO child_counters (parent_id, last_child) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_child = GREATEST(last_child, ?)", "ON CONFLICT (parent_id) DO UPDATE SET last_child = max(last_child, ?)", "GREATEST"},
+		// The lease upsert from issueops/lease.go (bd-lrgn1): leases keys on
+		// issue_id, so the arbiter map must know it or the upsert fails at PREPARE.
+		{"lease upsert", "INSERT INTO leases (issue_id, holder) VALUES (?, ?) ON DUPLICATE KEY UPDATE holder = VALUES(holder)", "ON CONFLICT (issue_id) DO UPDATE SET holder = excluded.holder", "DUPLICATE"},
+		{"lease import-restore live guard", "INSERT INTO leases (issue_id, holder) VALUES (?, ?) ON DUPLICATE KEY UPDATE holder = IF(leases.lease_expires_at >= ?, leases.holder, VALUES(holder))", "ON CONFLICT (issue_id) DO UPDATE SET holder = CASE WHEN leases.lease_expires_at >= ? THEN leases.holder ELSE excluded.holder END", "IF("},
 		{"passthrough select", "SELECT * FROM issues WHERE id = ?", "SELECT * FROM issues WHERE id = ?", ""},
 	}
 	for _, tc := range cases {

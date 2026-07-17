@@ -9,6 +9,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -33,8 +34,8 @@ func (s *Store) IterIssues(ctx context.Context, query string, filter types.Issue
 	}
 
 	//nolint:gosec // G201: whereSQL contains column comparisons with ?, limitSQL is a safe integer
-	q := fmt.Sprintf(`SELECT %s FROM issues %s ORDER BY priority ASC, created_at DESC, id ASC%s`,
-		issueops.IssueSelectColumns, whereSQL, limitSQL)
+	q := fmt.Sprintf(`SELECT %s FROM issues %s %s ORDER BY priority ASC, created_at DESC, id ASC%s`,
+		issueops.IssueSelectColumns, sqlbuild.LeaseJoin("issues"), whereSQL, limitSQL)
 
 	var issues []*types.Issue
 	txErr := s.withReadTx(ctx, func(tx *sql.Tx) error {

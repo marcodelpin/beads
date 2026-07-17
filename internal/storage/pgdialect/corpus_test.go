@@ -60,8 +60,8 @@ func searchSelectSQL(tables sqlbuild.FilterTables, query string, filter types.Is
 	if plan.Distinct {
 		selectKw = "SELECT DISTINCT "
 	}
-	return fmt.Sprintf("%s%s FROM %s %s %s",
-		selectKw, sqlbuild.IssueSelectColumns, plan.FromSQL, whereSQL,
+	return fmt.Sprintf("%s%s FROM %s %s %s %s",
+		selectKw, sqlbuild.IssueSelectColumns, plan.FromSQL, sqlbuild.LeaseJoin(tables.Main), whereSQL,
 		sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, "")), nil
 }
 
@@ -262,6 +262,8 @@ func createScratchSchema(ctx context.Context, db *sql.DB, schema string) error {
 		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %q`, schema),
 		issueTableDDL("issues"),
 		issueTableDDL("wisps"),
+		`CREATE TABLE leases (issue_id text, holder text, granted_at timestamp(0),
+			lease_expires_at timestamp(0), heartbeat_at timestamp(0))`,
 		`CREATE TABLE labels (issue_id text, label text)`,
 		`CREATE TABLE wisp_labels (issue_id text, label text)`,
 		depTableDDL("dependencies"),
@@ -281,11 +283,13 @@ func createScratchSchema(ctx context.Context, db *sql.DB, schema string) error {
 }
 
 // issueTableDDL renders a CREATE TABLE for the issues/wisps family from
-// IssueSelectColumns plus the derived is_blocked column the ready-work WHERE
-// reads. Column types are faithful where an operator depends on them.
+// IssueBaseColumns plus the derived is_blocked column the ready-work WHERE
+// reads. The lease overlay columns live in the separate leases table
+// (bd-lrgn1), created explicitly in createScratchSchema. Column types are
+// faithful where an operator depends on them.
 func issueTableDDL(table string) string {
 	var defs []string
-	for _, name := range splitColumnList(sqlbuild.IssueSelectColumns) {
+	for _, name := range splitColumnList(sqlbuild.IssueBaseColumns) {
 		defs = append(defs, name+" "+pgColumnType(name))
 	}
 	defs = append(defs, "is_blocked smallint NOT NULL DEFAULT 0")

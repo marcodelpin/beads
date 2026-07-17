@@ -53,8 +53,6 @@ CREATE TABLE IF NOT EXISTS `issues` (
   `no_history` tinyint(1) DEFAULT '0',
   `started_at` datetime,
   `is_blocked` tinyint(1) NOT NULL DEFAULT '0',
-  `lease_expires_at` datetime,
-  `heartbeat_at` datetime,
   `row_lock` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   KEY `idx_issues_assignee` (`assignee`),
@@ -65,8 +63,19 @@ CREATE TABLE IF NOT EXISTS `issues` (
   KEY `idx_issues_issue_type` (`issue_type`),
   KEY `idx_issues_priority` (`priority`),
   KEY `idx_issues_spec_id` (`spec_id`(191)),
-  KEY `idx_issues_status_updated_at` (`status`,`updated_at`),
-  KEY `idx_issues_lease` (`status`,`lease_expires_at`)
+  KEY `idx_issues_status_updated_at` (`status`,`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
+-- Ephemeral claim leases (bd-lrgn1): node-local, never exported by backup.
+-- One row per live claim. See issueops.UpsertLeaseInTx for the invariant.
+CREATE TABLE IF NOT EXISTS `leases` (
+  `issue_id` varchar(255) NOT NULL,
+  `holder` varchar(255) NOT NULL,
+  `granted_at` datetime NOT NULL,
+  `lease_expires_at` datetime NOT NULL,
+  `heartbeat_at` datetime NOT NULL,
+  PRIMARY KEY (`issue_id`),
+  KEY `idx_leases_expires` (`lease_expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 
@@ -125,8 +134,6 @@ CREATE TABLE IF NOT EXISTS `wisps` (
   `no_history` tinyint(1) DEFAULT '0',
   `started_at` datetime,
   `is_blocked` tinyint(1) NOT NULL DEFAULT '0',
-  `lease_expires_at` datetime,
-  `heartbeat_at` datetime,
   `row_lock` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   KEY `idx_wisps_assignee` (`assignee`),

@@ -12,9 +12,9 @@ import (
 )
 
 // UnclaimIssueInTx atomically releases a claimed issue: it clears the assignee,
-// resets status to "open", clears the lease columns (lease_expires_at,
-// heartbeat_at, started_at) and rewrites row_lock so a concurrent heartbeat or
-// reclaim on the same row conflicts rather than silently cell-merging (see the
+// resets status to "open", clears started_at, deletes the issue's lease row
+// (see UpsertLeaseInTx) and rewrites row_lock so a concurrent reclaim or close
+// on the same row conflicts rather than silently cell-merging (see the
 // row_lock invariant in lease.go). Records an "unclaimed" event.
 //
 // Ownership: only the current assignee may release its own claim. A mismatched
@@ -60,11 +60,11 @@ func UnclaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string, 
 
 	now := time.Now().UTC()
 
-	// Atomic UPDATE: clear assignee, reset status to open, clear the lease
-	// columns, and rewrite row_lock. The predicate re-checks ownership (unless
-	// forced) so a claim that changed hands between the read above and this
-	// write is not clobbered. row_lock forces a racing heartbeat/reclaim on the
-	// same row to conflict rather than silently merge (see lease.go invariant).
+	// Atomic UPDATE: clear assignee, reset status to open, clear started_at,
+	// and rewrite row_lock. The predicate re-checks ownership (unless forced)
+	// so a claim that changed hands between the read above and this write is
+	// not clobbered. row_lock forces a racing reclaim/close on the same row to
+	// conflict rather than silently merge (see lease.go invariant).
 	ownerPredicate := "AND assignee = ?"
 	args := []interface{}{now, freshRowLock(), id, actor}
 	if force {
@@ -75,8 +75,7 @@ func UnclaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string, 
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE %s
 		SET assignee = '', status = 'open', updated_at = ?,
-		    lease_expires_at = NULL, heartbeat_at = NULL, started_at = NULL,
-		    row_lock = ?
+		    started_at = NULL, row_lock = ?
 		WHERE id = ? AND status IN ('open', 'in_progress') %s
 	`, issueTable, ownerPredicate), args...)
 	if err != nil {
@@ -101,6 +100,12 @@ func UnclaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string, 
 				storage.ErrNotOwner, id, current.Assignee)
 		}
 		return fmt.Errorf("failed to unclaim issue %s: no matching row", id)
+	}
+
+	// The claim is over: drop its lease row (no-op when none exists, e.g. a
+	// wisp or an open-but-assigned issue that was never leased).
+	if err := DeleteLeaseInTx(ctx, tx, id); err != nil {
+		return err
 	}
 
 	// Record the unclaim event

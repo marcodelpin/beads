@@ -44,6 +44,16 @@ func TestTranslate(t *testing.T) {
 			want: `INSERT INTO issues (id, title, updated_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET title = CASE WHEN EXCLUDED.updated_at > updated_at THEN EXCLUDED.title ELSE title END`,
 		},
 		{
+			name: "lease upsert with (issue_id) target (bd-lrgn1)",
+			in:   `INSERT INTO leases (issue_id, holder, granted_at, lease_expires_at, heartbeat_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE holder = VALUES(holder), lease_expires_at = VALUES(lease_expires_at)`,
+			want: `INSERT INTO leases (issue_id, holder, granted_at, lease_expires_at, heartbeat_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (issue_id) DO UPDATE SET holder = EXCLUDED.holder, lease_expires_at = EXCLUDED.lease_expires_at`,
+		},
+		{
+			name: "lease import-restore never-clobber-live guard (bd-lrgn1)",
+			in:   `INSERT INTO leases (issue_id, holder) VALUES (?, ?) ON DUPLICATE KEY UPDATE holder = IF(leases.lease_expires_at >= ?, leases.holder, VALUES(holder))`,
+			want: `INSERT INTO leases (issue_id, holder) VALUES ($1, $2) ON CONFLICT (issue_id) DO UPDATE SET holder = CASE WHEN leases.lease_expires_at >= $3 THEN leases.holder ELSE EXCLUDED.holder END`,
+		},
+		{
 			name: "child counter GREATEST upsert with (parent_id) target",
 			in:   `INSERT INTO child_counters (parent_id, last_child) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_child = GREATEST(last_child, ?)`,
 			want: `INSERT INTO child_counters (parent_id, last_child) VALUES ($1, $2) ON CONFLICT (parent_id) DO UPDATE SET last_child = GREATEST(last_child, $3)`,

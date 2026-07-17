@@ -644,8 +644,8 @@ func (s *testSuite) issueClaimEmptyID() {
 	s.Contains(err.Error(), "id must not be empty")
 }
 
-// issueClaimStampsLease asserts the proxied-server (uow) claim path stamps the
-// lease columns and rewrites row_lock, so a claim made through this path is
+// issueClaimStampsLease asserts the proxied-server (uow) claim path grants a
+// lease row and rewrites row_lock, so a claim made through this path is
 // visible to bd reclaim rather than stranded (the C2 gap).
 func (s *testSuite) issueClaimStampsLease() {
 	r := s.issueRepo()
@@ -662,10 +662,11 @@ func (s *testSuite) issueClaimStampsLease() {
 		rowLock      int64
 	)
 	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
-		"SELECT lease_expires_at, heartbeat_at, row_lock FROM issues WHERE id = ?", "bd-claim-lease").
+		"SELECT l.lease_expires_at, l.heartbeat_at, i.row_lock FROM issues i "+
+			"LEFT JOIN leases l ON l.issue_id = i.id WHERE i.id = ?", "bd-claim-lease").
 		Scan(&leaseExpires, &heartbeatAt, &rowLock))
-	s.Require().True(leaseExpires.Valid, "proxied claim must stamp lease_expires_at")
-	s.Require().True(heartbeatAt.Valid, "proxied claim must stamp heartbeat_at")
+	s.Require().True(leaseExpires.Valid, "proxied claim must grant a lease row")
+	s.Require().True(heartbeatAt.Valid, "proxied claim must stamp heartbeat_at on the lease row")
 	s.NotZero(rowLock, "proxied claim must rewrite row_lock")
 
 	// The stamped lease must be recoverable. A cutoff in the future makes the
@@ -731,8 +732,8 @@ func (s *testSuite) issueClaimPoolAlias() {
 
 	var leaseExpires sql.NullTime
 	s.Require().NoError(s.Runner().QueryRowContext(s.Ctx(),
-		"SELECT lease_expires_at FROM issues WHERE id = ?", "bd-claim-pool").Scan(&leaseExpires))
-	s.Require().True(leaseExpires.Valid, "a pool take is a normal claim and must stamp a lease")
+		"SELECT lease_expires_at FROM leases WHERE issue_id = ?", "bd-claim-pool").Scan(&leaseExpires))
+	s.Require().True(leaseExpires.Valid, "a pool take is a normal claim and must grant a lease")
 }
 
 // issueClaimPoolUnconfiguredAlias asserts an alias absent from claim.pools
