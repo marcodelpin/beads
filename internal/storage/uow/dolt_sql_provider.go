@@ -93,13 +93,14 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string) error
 	}, backoff.WithContext(bo, ctx))
 }
 
-func buildDSN(ep proxy.Endpoint, database, user, password string) string {
+func buildDSN(ep proxy.Endpoint, database, user, password, tlsConfigName string) string {
 	return util.DoltServerDSN{
-		Host:     ep.Host,
-		Port:     ep.Port,
-		User:     user,
-		Password: password,
-		Database: database,
+		Host:          ep.Host,
+		Port:          ep.Port,
+		User:          user,
+		Password:      password,
+		Database:      database,
+		TLSConfigName: tlsConfigName,
 	}.String()
 }
 
@@ -114,8 +115,8 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	return conn, nil
 }
 
-func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUser, rootPassword string) (UnitOfWorkProvider, error) {
-	initDB, err := openDB(ctx, buildDSN(ep, "", rootUser, rootPassword))
+func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUser, rootPassword, tlsConfigName string) (UnitOfWorkProvider, error) {
+	initDB, err := openDB(ctx, buildDSN(ep, "", rootUser, rootPassword, tlsConfigName))
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +135,7 @@ func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUse
 		return nil, fmt.Errorf("uow: close init db: %w", err)
 	}
 
-	dbConn, err := openDB(ctx, buildDSN(ep, database, rootUser, rootPassword))
+	dbConn, err := openDB(ctx, buildDSN(ep, database, rootUser, rootPassword, tlsConfigName))
 	if err != nil {
 		return nil, err
 	}

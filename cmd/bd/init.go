@@ -136,8 +136,11 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		externalSocketPath, _ := cmd.Flags().GetString("proxied-server-external-socket-path")
 		externalUser, _ := cmd.Flags().GetString("proxied-server-external-user")
 		externalTLS, _ := cmd.Flags().GetBool("proxied-server-external-tls")
+		externalTLSCACertPath, _ := cmd.Flags().GetString("proxied-server-external-tls-ca-cert-path")
 		externalTLSCertPath, _ := cmd.Flags().GetString("proxied-server-external-tls-cert-path")
 		externalTLSKeyPath, _ := cmd.Flags().GetString("proxied-server-external-tls-key-path")
+		externalTLSServerName, _ := cmd.Flags().GetString("proxied-server-external-tls-server-name")
+		externalTLSSkipVerify, _ := cmd.Flags().GetBool("proxied-server-external-tls-skip-verify")
 		externalKeepAlive, _ := cmd.Flags().GetDuration("proxied-server-external-keep-alive")
 		if os.Getenv("BEADS_DOLT_PROXIED_SERVER") == "1" {
 			initProxiedServer = true
@@ -214,7 +217,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 
 		externalProvided := externalHost != "" || externalPort != 0 || externalSocketPath != "" ||
 			externalUser != "" ||
-			externalTLS || externalTLSCertPath != "" || externalTLSKeyPath != "" || externalKeepAlive != 0
+			externalTLS || externalTLSCACertPath != "" || externalTLSCertPath != "" || externalTLSKeyPath != "" ||
+			externalTLSServerName != "" || externalTLSSkipVerify || externalKeepAlive != 0
 		if externalProvided && !initProxiedServer {
 			return fmt.Errorf("--proxied-server-external-* flags require --proxied-server")
 		}
@@ -232,8 +236,11 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				Socket:          externalSocketPath,
 				User:            externalUser,
 				TLSRequired:     externalTLS,
+				TLSCACert:       externalTLSCACertPath,
 				TLSCert:         externalTLSCertPath,
 				TLSKey:          externalTLSKeyPath,
+				TLSServerName:   externalTLSServerName,
+				TLSSkipVerify:   externalTLSSkipVerify,
 				KeepAlivePeriod: externalKeepAlive,
 			}
 			if err := cfg.Validate(); err != nil {
@@ -2162,8 +2169,11 @@ func init() {
 	initCmd.Flags().String("proxied-server-external-socket-path", "", "[EXPERIMENTAL] Absolute unix socket path of the externally-managed dolt sql-server (proxied-server mode only). Mutually exclusive with --proxied-server-external-host. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-external-user", "", "[EXPERIMENTAL] MySQL user for the externally-managed dolt sql-server (proxied-server mode only). Defaults to \"root\" when empty. Password is read at runtime from $BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD and is never persisted to disk.")
 	initCmd.Flags().Bool("proxied-server-external-tls", false, "[EXPERIMENTAL] Require TLS when connecting to the externally-managed dolt sql-server (proxied-server mode only).")
+	initCmd.Flags().String("proxied-server-external-tls-ca-cert-path", "", "[EXPERIMENTAL] Absolute path to a CA certificate (PEM) used to verify the externally-managed dolt sql-server. Empty uses the system trust store. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-external-tls-cert-path", "", "[EXPERIMENTAL] Absolute path to a client TLS certificate (for mTLS to the externally-managed dolt sql-server). Must be paired with --proxied-server-external-tls-key-path. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-external-tls-key-path", "", "[EXPERIMENTAL] Absolute path to the client TLS private key (for mTLS to the externally-managed dolt sql-server). Must be paired with --proxied-server-external-tls-cert-path. Relative paths are rejected.")
+	initCmd.Flags().String("proxied-server-external-tls-server-name", "", "[EXPERIMENTAL] Server name to verify in the external dolt sql-server's TLS certificate. Defaults to the external host. Required with a unix socket unless --proxied-server-external-tls-skip-verify is set.")
+	initCmd.Flags().Bool("proxied-server-external-tls-skip-verify", false, "[EXPERIMENTAL] Skip TLS certificate verification for the external dolt sql-server. Insecure; testing only.")
 	initCmd.Flags().Duration("proxied-server-external-keep-alive", 0, "[EXPERIMENTAL] TCP keepalive period for the proxy→external connection. Zero uses the package default (30s).")
 
 	rootCmd.AddCommand(initCmd)
