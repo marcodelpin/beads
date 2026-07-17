@@ -15,7 +15,9 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// leaseState reads the lease columns for an issue directly, for assertions.
+// leaseState reads an issue's claim state plus its lease-row overlay (the
+// ephemeral leases table, bd-lrgn1) directly, for assertions. leaseExpires/
+// heartbeatAt are NULL when the issue has no lease row.
 type leaseState struct {
 	status        string
 	assignee      sql.NullString
@@ -30,8 +32,9 @@ func readLeaseState(t *testing.T, ctx context.Context, store *DoltStore, id stri
 	var ls leaseState
 	var startedAt sql.NullTime
 	err := store.db.QueryRowContext(ctx, `
-		SELECT status, assignee, lease_expires_at, heartbeat_at, row_lock, started_at
-		FROM issues WHERE id = ?
+		SELECT i.status, i.assignee, l.lease_expires_at, l.heartbeat_at, i.row_lock, i.started_at
+		FROM issues i LEFT JOIN leases l ON l.issue_id = i.id
+		WHERE i.id = ?
 	`, id).Scan(&ls.status, &ls.assignee, &ls.leaseExpires, &ls.heartbeatAt, &ls.rowLock, &startedAt)
 	if err != nil {
 		t.Fatalf("read lease state for %s: %v", id, err)
@@ -106,8 +109,8 @@ func TestHeartbeatExtendsLeaseAndGuardsOwnership(t *testing.T) {
 	if !after.leaseExpires.Time.After(before.leaseExpires.Time) {
 		t.Errorf("heartbeat did not extend lease: before=%v after=%v", before.leaseExpires.Time, after.leaseExpires.Time)
 	}
-	if after.rowLock == before.rowLock {
-		t.Error("heartbeat did not rewrite row_lock")
+	if after.rowLock != before.rowLock {
+		t.Error("heartbeat touched the issues row (row_lock changed) — heartbeats must write only the leases table (bd-lrgn1)")
 	}
 
 	// A non-owner cannot heartbeat.
@@ -388,15 +391,17 @@ func TestReclaimRevertsExpiredOnly(t *testing.T) {
 
 // TestRowLockForcesConflictOnDisjointCellWrites is the regression guard for the
 // row_lock trick. It shows, against real Dolt, that two concurrent transactions
-// writing DISJOINT cells of the same issue row silently cell-merge into a
-// corrupt "zombie" state — UNLESS both also rewrite the shared row_lock cell,
-// which forces the second commit to conflict (1213) so withRetryTx can replay.
+// writing DISJOINT cells of the same issue row silently cell-merge — UNLESS
+// both also rewrite the shared row_lock cell, which forces the second commit
+// to conflict (1213) so withRetryTx can replay.
 //
-// The dangerous pair: a worker's heartbeat (writes heartbeat_at) racing a reaper
-// reverting the row to ready (writes status/assignee). Without a shared lock
-// cell Dolt merges them, producing an open+unassigned issue that still carries
-// the worker's fresh heartbeat — the worker believes it owns work that another
-// worker can now also claim.
+// Since bd-lrgn1 heartbeats no longer touch the issues row (they live on the
+// leases table, where a racing reclaim contends on the SAME row — see
+// TestHeartbeatReclaimContendOnLeaseRow). The disjoint-cell pair guarded here
+// is a worker-side field edit (e.g. priority, via updateIssueInTx) racing a
+// reaper reverting the row to ready (status/assignee): without the shared
+// lock cell Dolt merges them silently, so the edit path never learns its row
+// was reverted underneath it.
 func TestRowLockForcesConflictOnDisjointCellWrites(t *testing.T) {
 	store, cleanup := setupConcurrentTestStore(t)
 	defer cleanup()
@@ -417,44 +422,48 @@ func TestRowLockForcesConflictOnDisjointCellWrites(t *testing.T) {
 			t.Fatalf("begin tx2: %v", err)
 		}
 
-		hbSQL := "UPDATE issues SET heartbeat_at = ? WHERE id = ?"
+		editSQL := "UPDATE issues SET priority = 0 WHERE id = ?"
 		reclaimSQL := "UPDATE issues SET status = 'open', assignee = NULL WHERE id = ?"
-		hbArgs := []any{time.Now().UTC(), id}
+		editArgs := []any{id}
 		reclaimArgs := []any{id}
 		if withLock {
-			hbSQL = "UPDATE issues SET heartbeat_at = ?, row_lock = ? WHERE id = ?"
-			hbArgs = []any{time.Now().UTC(), int64(111111), id}
+			editSQL = "UPDATE issues SET priority = 0, row_lock = ? WHERE id = ?"
+			editArgs = []any{int64(111111), id}
 			reclaimSQL = "UPDATE issues SET status = 'open', assignee = NULL, row_lock = ? WHERE id = ?"
 			reclaimArgs = []any{int64(222222), id}
 		}
 
-		if _, err := tx1.ExecContext(ctx, hbSQL, hbArgs...); err != nil {
-			t.Fatalf("tx1 heartbeat exec: %v", err)
+		if _, err := tx1.ExecContext(ctx, editSQL, editArgs...); err != nil {
+			t.Fatalf("tx1 edit exec: %v", err)
 		}
 		if _, err := tx2.ExecContext(ctx, reclaimSQL, reclaimArgs...); err != nil {
 			t.Fatalf("tx2 reclaim exec: %v", err)
 		}
-		// Commit the heartbeat first, then the reclaim. The reclaim is the loser
+		// Commit the edit first, then the reclaim. The reclaim is the loser
 		// that must conflict when both touch row_lock.
 		if err := tx1.Commit(); err != nil {
-			t.Fatalf("tx1 commit (heartbeat): %v", err)
+			t.Fatalf("tx1 commit (edit): %v", err)
 		}
 		return tx2.Commit()
 	}
 
-	// WITHOUT row_lock: the disjoint writes merge with no error, leaving a zombie.
+	// WITHOUT row_lock: the disjoint writes merge with no error.
 	if err := runRace("zombie-norowlock", false); err != nil {
 		// A conflict here would also be acceptable (still safe), but the point of
 		// the test is to demonstrate the silent merge, so surface if Dolt's
 		// behavior changed.
 		t.Skipf("expected silent merge without row_lock, got conflict %v (Dolt merge semantics changed)", err)
 	}
-	z := readLeaseState(t, ctx, store, "zombie-norowlock")
-	zombie := z.status == "open" && z.heartbeatAt.Valid && (!z.assignee.Valid || z.assignee.String == "")
-	if !zombie {
-		t.Fatalf("without row_lock expected a merged zombie (open+unassigned+heartbeat), got %+v", z)
+	var priority int
+	var status string
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT priority, status FROM issues WHERE id = ?", "zombie-norowlock").Scan(&priority, &status); err != nil {
+		t.Fatalf("read merged row: %v", err)
 	}
-	t.Logf("without row_lock: cell-merge produced zombie state %+v", z)
+	if priority != 0 || status != "open" {
+		t.Fatalf("without row_lock expected a silent merge (priority=0 AND status=open), got priority=%d status=%s", priority, status)
+	}
+	t.Logf("without row_lock: cell-merge landed both writes (priority=%d, status=%s)", priority, status)
 
 	// WITH row_lock: both writers touch the shared cell, so the second commit
 	// conflicts (1213/1205) instead of silently merging.
@@ -466,6 +475,99 @@ func TestRowLockForcesConflictOnDisjointCellWrites(t *testing.T) {
 		t.Fatalf("with row_lock got err %v, want a serialization conflict (1213/1205)", err)
 	}
 	t.Logf("with row_lock: second commit correctly conflicted: %v", err)
+}
+
+// TestHeartbeatReclaimContendOnLeaseRow pins the property that replaced the
+// old heartbeat-vs-reaper row_lock guard (bd-lrgn1): a heartbeat (UPDATE of
+// the lease row) and a reclaim (DELETE of the same lease row) contend on the
+// SAME leases row, so Dolt's commit-time merge forces the second committer to
+// conflict — no shared lock cell needed. The loser's withRetryTx replay then
+// sees the winner's state: a replayed heartbeat finds its lease gone (worker
+// learns it lost the claim), a replayed reclaim finds a fresh expiry and
+// leaves the rescued claim alone.
+func TestHeartbeatReclaimContendOnLeaseRow(t *testing.T) {
+	store, cleanup := setupConcurrentTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	seedClaimedIssue(t, ctx, store, "lease-contend", "owner", time.Hour)
+
+	tx1, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	tx2, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+
+	// tx1: heartbeat pushes the expiry forward. tx2: reclaim deletes the row.
+	if _, err := tx1.ExecContext(ctx,
+		"UPDATE leases SET lease_expires_at = ?, heartbeat_at = ? WHERE issue_id = ?",
+		time.Now().UTC().Add(2*time.Hour), time.Now().UTC(), "lease-contend"); err != nil {
+		t.Fatalf("tx1 heartbeat exec: %v", err)
+	}
+	if _, err := tx2.ExecContext(ctx,
+		"DELETE FROM leases WHERE issue_id = ?", "lease-contend"); err != nil {
+		t.Fatalf("tx2 reclaim exec: %v", err)
+	}
+	if err := tx1.Commit(); err != nil {
+		t.Fatalf("tx1 commit (heartbeat): %v", err)
+	}
+	err = tx2.Commit()
+	if err == nil {
+		t.Fatal("update-vs-delete of the same lease row did not conflict — the heartbeat/reclaim race guard is gone")
+	}
+	if !isSerializationError(err) {
+		t.Fatalf("lease-row contention err = %v, want a serialization conflict (1213/1205)", err)
+	}
+	t.Logf("lease-row update-vs-delete correctly conflicted: %v", err)
+}
+
+// TestHeartbeatMintsNoDoltCommits is acceptance criterion (1) of bd-lrgn1: a
+// claim followed by N heartbeats produces exactly the claim's own commit and
+// ZERO further commits — heartbeats write only the dolt_ignored leases table.
+// Status/assignee transitions (claim, close) still commit (criterion 2).
+func TestHeartbeatMintsNoDoltCommits(t *testing.T) {
+	store, cleanup := setupConcurrentTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	commitCount := func() int {
+		var n int
+		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_log").Scan(&n); err != nil {
+			t.Fatalf("count dolt_log: %v", err)
+		}
+		return n
+	}
+
+	seedClaimedIssue(t, ctx, store, "lease-nocommit", "alice", time.Hour)
+	afterClaim := commitCount()
+
+	for i := 0; i < 5; i++ {
+		if err := store.HeartbeatIssue(ctx, "lease-nocommit", "alice"); err != nil {
+			t.Fatalf("heartbeat %d: %v", i, err)
+		}
+	}
+	if got := commitCount(); got != afterClaim {
+		t.Errorf("heartbeats minted %d dolt commit(s) — want zero (leases are dolt_ignored)", got-afterClaim)
+	}
+
+	// The lease is genuinely renewed even though nothing committed.
+	ls := readLeaseState(t, ctx, store, "lease-nocommit")
+	if !ls.leaseExpires.Valid || !ls.leaseExpires.Time.After(time.Now()) {
+		t.Errorf("lease not renewed after heartbeats: %+v", ls)
+	}
+
+	// A status transition still commits: close mints a commit.
+	if err := store.CloseIssue(ctx, "lease-nocommit", "done", "alice", ""); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if got := commitCount(); got <= afterClaim {
+		t.Errorf("close minted no dolt commit: count %d, want > %d", got, afterClaim)
+	}
 }
 
 // TestConcurrentHeartbeatReclaimClose is the integration race (the lease analog

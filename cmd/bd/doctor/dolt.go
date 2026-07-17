@@ -288,7 +288,7 @@ func checkSchemaWithDB(conn *doltConn) DoctorCheck {
 	// Check dolt_ignore'd tables — these only exist in the working set and
 	// must be recreated each server session. (GH#2271)
 	ignoredTables := []string{
-		"local_metadata", "repo_mtimes",
+		"leases", "local_metadata", "repo_mtimes",
 		"wisps", "wisp_labels", "wisp_dependencies", "wisp_events", "wisp_comments",
 	}
 	var missingIgnoredTables []string
@@ -411,7 +411,7 @@ func CheckDoltIssueCount(path string) DoctorCheck {
 // produces self-fulfilling warnings that can never be cleared.
 func isIgnoredTable(tableName string) bool {
 	switch tableName {
-	case "wisps", "local_metadata", "repo_mtimes":
+	case "wisps", "leases", "local_metadata", "repo_mtimes":
 		return true
 	}
 	return strings.HasPrefix(tableName, "wisp_")

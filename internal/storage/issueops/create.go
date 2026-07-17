@@ -138,6 +138,16 @@ func CreateIssueInTxWithResult(ctx context.Context, tx *sql.Tx, bc *BatchContext
 	}
 	result.markChanged(issueTable)
 
+	// Reconcile the ephemeral lease row with the accepted issue state
+	// (restore an imported lease / drop an orphaned one — see
+	// RestoreLeaseOnImportInTx). Wisps are never leased. The leases table is
+	// dolt_ignored, so this is deliberately not marked as a changed table.
+	if issueTable == "issues" {
+		if err := RestoreLeaseOnImportInTx(ctx, tx, issue, isNew); err != nil {
+			return result, err
+		}
+	}
+
 	if isNew {
 		if err := RecordEventInTable(ctx, tx, eventTable, issue.ID, types.EventCreated, actor, ""); err != nil {
 			return result, fmt.Errorf("failed to record event for %s: %w", issue.ID, err)

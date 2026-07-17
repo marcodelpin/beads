@@ -107,8 +107,6 @@ CREATE TABLE IF NOT EXISTS issues (
     no_history          smallint DEFAULT 0,
     started_at          timestamp(0),
     is_blocked          smallint NOT NULL DEFAULT 0,
-    lease_expires_at    timestamp(0),
-    heartbeat_at        timestamp(0),
     row_lock            bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (id)
 );
@@ -122,7 +120,21 @@ CREATE INDEX IF NOT EXISTS idx_issues_issue_type        ON issues (issue_type);
 CREATE INDEX IF NOT EXISTS idx_issues_priority          ON issues (priority);
 CREATE INDEX IF NOT EXISTS idx_issues_spec_id           ON issues (spec_id);
 CREATE INDEX IF NOT EXISTS idx_issues_status_updated_at ON issues (status, updated_at);
-CREATE INDEX IF NOT EXISTS idx_issues_lease             ON issues (status, lease_expires_at);
+
+-- ============================================================ leases
+-- Ephemeral claim leases (bd-lrgn1): node-local, never exported by backup.
+-- One row per live claim; see issueops.UpsertLeaseInTx for the invariant.
+
+CREATE TABLE IF NOT EXISTS leases (
+    issue_id            text NOT NULL,
+    holder              text NOT NULL,
+    granted_at          timestamp(0) NOT NULL,
+    lease_expires_at    timestamp(0) NOT NULL,
+    heartbeat_at        timestamp(0) NOT NULL,
+    PRIMARY KEY (issue_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_leases_expires ON leases (lease_expires_at);
 
 -- ============================================================ wisps
 
@@ -181,8 +193,6 @@ CREATE TABLE IF NOT EXISTS wisps (
     no_history          smallint DEFAULT 0,
     started_at          timestamp(0),
     is_blocked          smallint NOT NULL DEFAULT 0,
-    lease_expires_at    timestamp(0),
-    heartbeat_at        timestamp(0),
     row_lock            bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (id)
 );
