@@ -838,9 +838,10 @@ jobs:
           BEADS_TEST_EMBEDDED_DOLT: "1"
           BEADS_TEST_EMBEDDED_TEST_BINARY: /tmp/embeddeddolt-test
         # Conformance runs in the dedicated test-embedded-conformance job
-        # below (mirrors pr-risk.yml); skip it here so this job stays inside
-        # its 20m envelope as the base embedded suite grows.
-        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=20m -test.skip '^TestConformance$'
+        # below (mirrors pr-risk.yml); skip it here. The budget must cover
+        # every store-open re-running the full migration chain, which grows
+        # with each migration (bd-lrgn1 pushed a slow runner past 20m).
+        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=30m -test.skip '^TestConformance$'
 
   test-embedded-conformance:
     name: Test (Embedded Dolt Conformance)
