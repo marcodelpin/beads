@@ -240,12 +240,12 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 	now := time.Now().UTC()
 	startedWasZero := oldIssue.StartedAt == nil
 
-	// Stamp the same lease + row_lock the primary claim path (issueops.
-	// ClaimIssueInTx) writes. Without this, a claim made through the proxied-
-	// server (uow) path leaves lease_expires_at/heartbeat_at NULL and row_lock
-	// unchanged — invisible to bd reclaim and open to the cell-merge bug the
-	// row_lock invariant guards against (see issueops/lease.go).
-	leaseClause, leaseArgs := issueops.LeaseSetClause(now, issueops.LeaseTTL(ctx))
+	// Rewrite row_lock exactly like the primary claim path (issueops.
+	// ClaimIssueInTx). Without this, a claim made through the proxied-server
+	// (uow) path leaves row_lock unchanged — open to the cell-merge bug the
+	// row_lock invariant guards against (see issueops/lease.go). The lease
+	// itself is granted into the ephemeral leases table below, after the CAS.
+	rowLockClause, rowLockArgs := issueops.RowLockClause()
 
 	// Mirror the primary path's pool-aware predicate (bd-bguz6): aliases in
 	// the claim.pools config are claimable by any actor. This dual must stay
@@ -278,7 +278,7 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 
 	var res sql.Result
 	if startedWasZero {
-		args := append([]any{actor, now, now}, leaseArgs...)
+		args := append([]any{actor, now, now}, rowLockArgs...)
 		args = append(args, id)
 		args = append(args, statusArgs...)
 		args = append(args, assigneeArgs...)
@@ -287,9 +287,9 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, started_at = ?, %s
 			WHERE id = ? AND (%s) AND (%s)
-		`, table, leaseClause, statusPredicate, assigneePredicate), args...)
+		`, table, rowLockClause, statusPredicate, assigneePredicate), args...)
 	} else {
-		args := append([]any{actor, now}, leaseArgs...)
+		args := append([]any{actor, now}, rowLockArgs...)
 		args = append(args, id)
 		args = append(args, statusArgs...)
 		args = append(args, assigneeArgs...)
@@ -298,7 +298,7 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, %s
 			WHERE id = ? AND (%s) AND (%s)
-		`, table, leaseClause, statusPredicate, assigneePredicate), args...)
+		`, table, rowLockClause, statusPredicate, assigneePredicate), args...)
 	}
 	if err != nil {
 		return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: %w", id, err)
@@ -331,6 +331,15 @@ func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, op
 		}, nil
 	}
 
+	// Grant the lease in the ephemeral leases table, mirroring
+	// issueops.ClaimIssueInTx. Wisps are never leased. This dual must stay in
+	// lockstep with the primary path (see the row_lock comment above).
+	if !opts.UseWispsTable {
+		if err := issueops.UpsertLeaseInTx(ctx, r.runner, id, actor, now, issueops.LeaseTTL(ctx)); err != nil {
+			return domain.ClaimRowResult{}, fmt.Errorf("db: Claim %s: %w", id, err)
+		}
+	}
+
 	oldData, _ := json.Marshal(oldIssue)
 	newData, _ := json.Marshal(map[string]any{"assignee": actor, "status": "in_progress"})
 	if err := r.events.Record(ctx, domain.Event{
@@ -358,7 +367,8 @@ func (r *issueSQLRepositoryImpl) Get(ctx context.Context, id string, opts domain
 	}
 	table := pickIssueTable(opts.UseWispsTable)
 	//nolint:gosec // G201: table is one of two hardcoded constants
-	row := r.runner.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM %s WHERE id = ?", issueSelectColumns, table), id)
+	row := r.runner.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM %s %s WHERE id = ?",
+		issueSelectColumns, table, sqlbuild.LeaseJoin(table)), id)
 	issue, err := scanIssue(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, sql.ErrNoRows
@@ -381,7 +391,8 @@ func (r *issueSQLRepositoryImpl) GetByIDs(ctx context.Context, ids []string, opt
 	}
 	table := pickIssueTable(opts.UseWispsTable)
 	//nolint:gosec // G201: table is one of two hardcoded constants
-	q := fmt.Sprintf("SELECT %s FROM %s WHERE id IN (%s)", issueSelectColumns, table, strings.Join(placeholders, ","))
+	q := fmt.Sprintf("SELECT %s FROM %s %s WHERE id IN (%s)",
+		issueSelectColumns, table, sqlbuild.LeaseJoin(table), strings.Join(placeholders, ","))
 	rows, err := r.runner.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: GetByIDs: %w", err)
@@ -733,6 +744,10 @@ func (r *issueSQLRepositoryImpl) Delete(ctx context.Context, id string, opts dom
 	if rows == 0 {
 		return fmt.Errorf("issue not found: %s", id)
 	}
+	// A deleted issue holds no lease (no-op for wisps, which are never leased).
+	if err := issueops.DeleteLeaseInTx(ctx, r.runner, id); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -769,6 +784,15 @@ func (r *issueSQLRepositoryImpl) DeleteByIDs(ctx context.Context, ids []string, 
 			return total, fmt.Errorf("db: IssueSQLRepository.DeleteByIDs rows affected: %w", err)
 		}
 		total += int(n)
+		if !opts.UseWispsTable {
+			// Deleted issues hold no leases.
+			//nolint:gosec // G201: placeholders are ?.
+			if _, err := r.runner.ExecContext(ctx,
+				fmt.Sprintf("DELETE FROM leases WHERE issue_id IN (%s)", strings.Join(placeholders, ",")),
+				args...); err != nil {
+				return total, fmt.Errorf("db: IssueSQLRepository.DeleteByIDs leases: %w", err)
+			}
+		}
 	}
 	return total, nil
 }

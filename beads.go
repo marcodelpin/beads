@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
@@ -19,9 +20,32 @@ import (
 // Storage is the interface for beads storage operations
 type Storage = beads.Storage
 
+func configuredBackendUnavailable(backend string) error {
+	switch backend {
+	case configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite:
+		return configfile.RemovedBackendError(backend)
+	default:
+		return configfile.UnknownBackendError(backend)
+	}
+}
+
 // Transaction provides atomic multi-operation support within a database transaction.
 // Use Storage.RunInTransaction() to obtain a Transaction instance.
 type Transaction = beads.Transaction
+
+// DependencyAddOptions controls transaction-scoped dependency insertion for
+// Transaction.AddDependencyWithOptions. Exported so embedders' bulk graph
+// writers can set SkipCycleCheck per edge and run one whole-graph
+// Transaction.CycleThroughEdges pass before commit (bd-6dnrw.8) instead of
+// paying the recursive per-edge cycle query — which cannot finish inside a
+// per-command budget on molecule-sized graphs (observed: a 67-node/100-edge
+// batch blowing a 120s deadline mid-transaction, gascity 2026-07-17).
+//
+// Callers that set SkipCycleCheck MUST run Transaction.CycleThroughEdges before
+// commit and fail on new blocks/conditional-blocks/parent-child cycles
+// (waits-for is excluded); skipping the per-edge check trades per-edge cost for
+// one whole-graph check, never graph integrity.
+type DependencyAddOptions = storage.DependencyAddOptions
 
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
@@ -64,9 +88,9 @@ func Open(ctx context.Context, dbPath string) (Storage, error) {
 	return dolt.New(ctx, &dolt.Config{Path: dbPath, CreateIfMissing: true})
 }
 
-// OpenFromConfig opens a beads database using configuration from metadata.json.
-// Unlike Open, this respects Dolt server mode settings and database name
-// configuration, connecting to the Dolt SQL server when dolt_mode is "server".
+// OpenFromConfig opens the Dolt implementation using configuration from
+// metadata.json. Unlike Open, this respects Dolt server mode settings and database
+// name configuration.
 // beadsDir is the path to the .beads directory.
 func OpenFromConfig(ctx context.Context, beadsDir string) (Storage, error) {
 	return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: true})

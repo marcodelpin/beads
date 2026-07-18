@@ -528,50 +528,42 @@ var createCmd = &cobra.Command{
 
 		ctx := createCtx
 
-		// Check if any dependencies are discovered-from type
-		// If so, inherit source_repo from the parent issue
-		var discoveredFromParentID string
-		for _, depSpec := range deps {
-			depSpec = strings.TrimSpace(depSpec)
-			if depSpec == "" {
-				continue
-			}
-
-			var depType types.DependencyType
-			var dependsOnID string
-
-			if strings.Contains(depSpec, ":") {
-				parts := strings.SplitN(depSpec, ":", 2)
-				if len(parts) == 2 {
-					depType = types.DependencyType(strings.TrimSpace(parts[0]))
-					dependsOnID = strings.TrimSpace(parts[1])
-
-					if depType == types.DepDiscoveredFrom && dependsOnID != "" {
-						discoveredFromParentID = dependsOnID
-						break
-					}
-				}
-			}
+		// Parse every requested dependency edge BEFORE creating anything so
+		// a malformed spec aborts with no orphan issue behind it.
+		depSpecs, err := parseDepSpecs(deps)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		waitsForSpec, err := buildWaitsFor(waitsFor, waitsForGate)
+		if err != nil {
+			return HandleError("%v", err)
 		}
 
-		// If we found a discovered-from dependency, inherit source_repo from parent
-		if discoveredFromParentID != "" {
-			parentIssue, err := store.GetIssue(ctx, discoveredFromParentID)
+		// If a discovered-from dependency is present, inherit source_repo
+		// from the referenced parent issue.
+		if dfParent := discoveredFromParent(deps); dfParent != "" {
+			parentIssue, err := store.GetIssue(ctx, dfParent)
 			if err == nil && parentIssue.SourceRepo != "" {
 				issue.SourceRepo = parentIssue.SourceRepo
 			}
 			// If error getting parent or parent has no source_repo, continue with default
 		}
 
-		// Build ALL dependency edges up front (validation errors surface
-		// BEFORE the write) so a spooled create carries them in its payload
-		// and replay can apply them once the store-generated ID exists. An
-		// EMPTY IssueID/DependsOnID side means "the new issue" (ID unknown
-		// until the write lands) -- see resolveSpooledDeps.
+		// Build ALL dependency edges up front for the SPOOL payload: a queued
+		// create carries them so replay can apply them once the store-generated
+		// ID exists (GH#4378-review D1). buildCreateDeps also surfaces validation
+		// errors before any write.
 		pendingDeps, depErr := buildCreateDeps(parentID, deps, waitsFor, waitsForGate)
 		if depErr != nil {
 			return depErr
 		}
+
+		// On the LIVE path, createIssueWithDeps (#4731) applies the create and
+		// its dependency edges in ONE transaction, so a failed edge rolls back
+		// the create instead of leaving a dep-less permanently-ready bead. The
+		// spool wrapper keeps the queued-create durability: if the server is
+		// unreachable the whole op is spooled and replayed later (from pendingDeps).
+		edges := createDepEdges{parentID: parentID, specs: depSpecs, waitsFor: waitsForSpec}
 
 		res, err := writeWithSpool(ctx, "create",
 			spoolPayload(map[string]interface{}{
@@ -580,11 +572,11 @@ var createCmd = &cobra.Command{
 				"dependencies": pendingDeps,
 			}),
 			func() error {
-				return store.CreateIssue(ctx, issue, actor)
+				return createIssueWithDeps(ctx, store, issue, actor, edges)
 			},
 		)
 		if err != nil {
-			return HandleError("%v", err)
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		if res.Spooled {
@@ -608,30 +600,19 @@ var createCmd = &cobra.Command{
 			return nil
 		}
 
-		// Track whether any post-create writes occurred. CreateIssue commits
-		// the issue and its initial labels to Dolt internally, but subsequent
-		// AddDependency calls only write to the working set. A follow-up Dolt
-		// commit is needed to persist them (GH#2009).
-		postCreateWrites := false
-
-		// Apply the dependency edges now that the ID exists (empty side =
-		// the new issue). Failures stay warn-only, as before.
-		for _, dep := range resolveSpooledDeps(pendingDeps, issue.ID) {
-			if err := store.AddDependency(ctx, dep, actor); err != nil {
-				WarnError("failed to add %s dependency %s -> %s: %v", dep.Type, dep.IssueID, dep.DependsOnID, err)
-			} else {
-				postCreateWrites = true
+		if edges.empty() {
+			// Bare create: createIssueWithDeps delegated to store.CreateIssue,
+			// which commits the issue but leaves a follow-up Dolt commit for
+			// embedded mode. The deps path commits inside its own transaction.
+			shouldCommit, err := shouldCommitCreatePostWrites(issue, false)
+			if err != nil {
+				return HandleError("dolt auto-commit failed: %v", err)
 			}
-		}
-
-		shouldCommit, err := shouldCommitCreatePostWrites(issue, postCreateWrites)
-		if err != nil {
-			return HandleError("dolt auto-commit failed: %v", err)
-		}
-		if shouldCommit {
-			commitMsg := fmt.Sprintf("bd: create %s", issue.ID)
-			if err := store.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
-				WarnError("failed to commit: %v", err)
+			if shouldCommit {
+				commitMsg := fmt.Sprintf("bd: create %s", issue.ID)
+				if err := store.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
+					WarnError("failed to commit: %v", err)
+				}
 			}
 		}
 

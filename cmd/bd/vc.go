@@ -176,10 +176,6 @@ Examples:
 			return HandleErrorRespectJSON("commit message is required (use -m, --message, or --stdin)")
 		}
 
-		if err := errExplicitCommitUnsupported(store, "vc commit"); err != nil {
-			return HandleErrorRespectJSON("%v", err)
-		}
-
 		commandDidExplicitDoltCommit = true
 		// GH#4078: include config and report truthfully - the old Commit()
 		// path silently no-opped on config-only working sets while still

@@ -44,12 +44,12 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 
 	now := time.Now().UTC()
 
-	// Stamp a lease on the claim: lease_expires_at = now + TTL, heartbeat_at =
-	// now, and a fresh row_lock (see lease.go). The lease is what makes a claim
-	// recoverable — a worker that dies stops heartbeating and bd reclaim later
-	// reverts the issue. row_lock here also forces a concurrent reclaim/heartbeat
-	// to conflict rather than silently cell-merge.
-	leaseClause, leaseArgs := leaseSetClause(now, leaseTTL(ctx))
+	// Rewrite row_lock with the claim (see lease.go): a concurrent reclaim or
+	// close on the same row is forced to conflict rather than silently
+	// cell-merge. The lease itself is granted separately below, in the
+	// ephemeral leases table — claims commit (status/assignee are
+	// history-worthy) but lease grants and heartbeats do not (bd-lrgn1).
+	rowLockClause, rowLockArgs := RowLockClause()
 
 	// An issue is claimable from "open" plus any configured custom status whose
 	// category is "active" (e.g. a draft->ready->in_progress lifecycle where
@@ -84,7 +84,7 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 		result sql.Result
 	)
 	if oldIssue.StartedAt == nil {
-		args := append([]interface{}{actor, now, now}, leaseArgs...)
+		args := append([]interface{}{actor, now, now}, rowLockArgs...)
 		args = append(args, id)
 		args = append(args, statusArgs...)
 		args = append(args, assigneeArgs...)
@@ -92,9 +92,9 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, started_at = ?, %s
 			WHERE id = ? AND status IN (%s) AND (%s)
-		`, issueTable, leaseClause, statusPlaceholders, assigneePredicate), args...)
+		`, issueTable, rowLockClause, statusPlaceholders, assigneePredicate), args...)
 	} else {
-		args := append([]interface{}{actor, now}, leaseArgs...)
+		args := append([]interface{}{actor, now}, rowLockArgs...)
 		args = append(args, id)
 		args = append(args, statusArgs...)
 		args = append(args, assigneeArgs...)
@@ -102,7 +102,7 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 			UPDATE %s
 			SET assignee = ?, status = 'in_progress', updated_at = ?, %s
 			WHERE id = ? AND status IN (%s) AND (%s)
-		`, issueTable, leaseClause, statusPlaceholders, assigneePredicate), args...)
+		`, issueTable, rowLockClause, statusPlaceholders, assigneePredicate), args...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to claim issue: %w", err)
@@ -151,6 +151,16 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 			return nil, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, assignee)
 		}
 		return nil, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, currentStatus)
+	}
+
+	// Grant the lease: what makes the claim recoverable — a worker that dies
+	// stops heartbeating and bd reclaim later reverts the issue. Lease rows
+	// live in the ephemeral leases table (no Dolt commit, node-local). Wisps
+	// are never leased (they are ephemeral, not reclaimable work).
+	if !isWisp {
+		if err := UpsertLeaseInTx(ctx, tx, id, actor, now, leaseTTL(ctx)); err != nil {
+			return nil, err
+		}
 	}
 
 	// Record the claim event.

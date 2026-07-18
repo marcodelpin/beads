@@ -169,9 +169,10 @@ jobs:
           BEADS_TEST_EMBEDDED_DOLT: "1"
           BEADS_TEST_EMBEDDED_TEST_BINARY: /tmp/embeddeddolt-test
         # Conformance runs in the dedicated test-embedded-conformance job; skip
-        # it here. Keeps upstream's 20m bump (base embedded tests grew) while
-        # this job stays inside its envelope without the conformance suite.
-        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=20m -test.skip '^TestConformance$'
+        # it here. The budget must cover every store-open re-running the full
+        # migration chain, which grows with each migration (bd-lrgn1 pushed a
+        # slow runner past the old 20m).
+        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=30m -test.skip '^TestConformance$'
 
   test-embedded-conformance:
     name: Test (Embedded Dolt Conformance)
@@ -202,9 +203,9 @@ jobs:
         # Conformance suite (conformance.RunAll via TestConformance) against the
         # embedded Dolt backend. Split from test-embedded-storage so each job
         # stays well under its timeout; the server twin runs in mybd-665b's job.
-        # 30m matches the repo's integration timeout: the audit suite is large and
-        # embedded Dolt under -race is slow, so 15m no longer left headroom.
-        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=30m -test.run '^TestConformance$'
+        # 45m gives the audit-heavy embedded run enough headroom without making
+        # the workflow open-ended.
+        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=45m -test.run '^TestConformance$'
 
   test-server-storage:
     name: Test (Server Dolt Conformance)

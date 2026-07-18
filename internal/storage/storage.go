@@ -28,6 +28,12 @@ var ErrNotClaimable = errors.New("issue not claimable")
 // escape hatch (bd unclaim --force), reserved for admin/reaper use.
 var ErrNotOwner = errors.New("issue claimed by a different actor")
 
+// ErrAssigneeMismatch is returned by UnclaimIssueIfAssignee when the issue's
+// current assignee does not match the expected assignee (including when the
+// issue is no longer assigned at all). The caller's view of the claim was
+// stale; the issue is left untouched.
+var ErrAssigneeMismatch = errors.New("assignee mismatch")
+
 // ErrNotFound is returned when a requested entity does not exist in the database.
 var ErrNotFound = errors.New("not found")
 
@@ -59,6 +65,11 @@ type Storage interface {
 	UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error
 	ReopenIssue(ctx context.Context, id string, reason string, actor string) error
 	UnclaimIssue(ctx context.Context, id string, actor string, force bool) error
+	// UnclaimIssueIfAssignee releases a claim only while the issue is still
+	// assigned to expectedAssignee (compare-and-swap, the inverse of
+	// ClaimIssue). Returns ErrAssigneeMismatch, leaving the issue untouched,
+	// when the current assignee differs.
+	UnclaimIssueIfAssignee(ctx context.Context, id string, actor string, expectedAssignee string) error
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
 	// CloseIssueWithResult is CloseIssue plus a report of what actually
@@ -266,6 +277,19 @@ type GarbageCollector interface {
 // Callers should type-assert to this interface for history compaction.
 type Flattener interface {
 	Flatten(ctx context.Context) error
+}
+
+// RemoteRefPruner manages the cached remote-tracking refs that anchor Dolt
+// history. After a squash (Flatten/Compact) those refs still point at the
+// pre-squash chain, making the follow-up GC a silent no-op on any workspace
+// that has ever pushed or fetched (bd-agctw) — callers must prune them before
+// GC. Pruning only touches the local cache; the next push/fetch re-creates
+// the refs at the new tip. Tags anchor history the same way but are
+// user-created, so they are listed for warning rather than deleted.
+type RemoteRefPruner interface {
+	ListRemoteRefs(ctx context.Context) ([]string, error)
+	PruneRemoteRefs(ctx context.Context) ([]string, error)
+	ListTags(ctx context.Context) ([]string, error)
 }
 
 type SchemaMigrator interface {
