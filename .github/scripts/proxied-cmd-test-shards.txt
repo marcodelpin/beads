@@ -25,7 +25,6 @@
 8 3 TestProxiedServerGateList
 8 3 TestProxiedServerPriority
 
-8 4 TestProxiedServerReady
 8 4 TestProxiedServerReopen
 8 4 TestProxiedServerDeleteConcurrent
 8 4 TestProxiedServerReadyWisp
@@ -62,6 +61,7 @@
 8 8 TestProxiedServerReopenConcurrent
 8 8 TestProxiedServerDoltRemoteRemove
 8 8 TestProxiedServerChildren
+8 8 TestProxiedServerReady
 
 # Parity-suite proxied tests (added with the cmd/bd embedded-parity port).
 # Balanced by subtest count; shard 1 stays TestProxiedServerUpdate-only.
