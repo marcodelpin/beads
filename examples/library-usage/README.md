@@ -35,7 +35,7 @@ import (
 func main() {
     ctx := context.Background()
     
-    // Find the workspace and open its configured Dolt or SQLite implementation
+    // Find the workspace and open its configured Dolt implementation
     beadsDir := beads.FindBeadsDir()
     store, err := beads.OpenBestAvailable(ctx, beadsDir)
     if err != nil {

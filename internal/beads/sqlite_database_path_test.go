@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// The sqlite backend is a removed-backend tombstone: discovery must return ""
+// so store selection reports the metadata error, and it must never create the
+// database file the removed backend would have provisioned.
 func TestFindDatabasePathSQLiteMetadataOutsideCWD(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -44,16 +47,16 @@ func TestFindDatabasePathSQLiteMetadataOutsideCWD(t *testing.T) {
 			t.Setenv("BEADS_DB", "")
 			t.Setenv("BD_DB", "")
 
-			want := filepath.Join(beadsDir, tt.relativePath)
-			if _, err := os.Stat(want); !os.IsNotExist(err) {
+			dbPath := filepath.Join(beadsDir, tt.relativePath)
+			if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 				t.Fatalf("SQLite database unexpectedly exists before discovery: %v", err)
 			}
 
-			if got := FindDatabasePath(); got != want {
-				t.Errorf("FindDatabasePath() = %q, want %q", got, want)
+			if got := FindDatabasePath(); got != "" {
+				t.Errorf("FindDatabasePath() = %q, want \"\" for the removed sqlite backend", got)
 			}
-			if _, err := os.Stat(want); !os.IsNotExist(err) {
-				t.Fatalf("FindDatabasePath created SQLite database path %q: %v", want, err)
+			if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+				t.Fatalf("FindDatabasePath created SQLite database path %q: %v", dbPath, err)
 			}
 		})
 	}

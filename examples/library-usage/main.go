@@ -24,7 +24,7 @@ func main() {
 
 	fmt.Printf("Using workspace: %s\n\n", beadsDir)
 
-	// Open the configured Dolt or SQLite implementation.
+	// Open the configured Dolt implementation (embedded or server mode).
 	store, err := beads.OpenBestAvailable(ctx, beadsDir)
 	if err != nil {
 		log.Fatalf("Failed to open storage: %v", err)

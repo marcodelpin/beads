@@ -10,7 +10,7 @@ import (
 // Audit cases for the "labels-comments-events" slice. Each case pins a strange
 // but real behavior of the issueops label/comment/event helpers, validated
 // against the embedded-Dolt oracle. See the audit findings for provenance
-// (issueops/events.go, issueops/labels.go, issueops/comments.go, sqlkit/annotations.go).
+// (issueops/events.go, issueops/labels.go, issueops/comments.go; formerly sqlkit/annotations.go).
 
 // auditEventsOfType returns the events of exactly the given type, in the order
 // GetEvents returned them.

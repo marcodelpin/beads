@@ -410,7 +410,7 @@ func testAuditSearchTextIDBranchExternalRef(t *testing.T, f Factory) {
 }
 
 // LIKE over raw-cased operands is case-sensitive on both implementations: Dolt uses
-// a binary table collation, and SQLite sets PRAGMA case_sensitive_like (sqlite/dsn.go).
+// a binary table collation, and SQLite set PRAGMA case_sensitive_like (formerly sqlite/dsn.go).
 // SQLite's default LIKE is
 // ASCII-case-insensitive and silently diverged (bd-oyvc2.10). IDPrefix filtering
 // (sqlbuild/filter.go `id LIKE ?`) must therefore distinguish test-AB from test-ab.

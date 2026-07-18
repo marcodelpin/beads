@@ -19,12 +19,15 @@ func TestRunServerHealthChecksSQLiteIsNotAMigrationWarning(t *testing.T) {
 		t.Fatalf("save SQLite config: %v", err)
 	}
 
+	// The sqlite backend is a removed-backend tombstone: server checks report a
+	// clearly-attributed non-Dolt warning with no migration fix, and never edit
+	// the workspace.
 	result := RunServerHealthChecks(tmpDir)
-	if !result.OverallOK || len(result.Checks) != 1 {
-		t.Fatalf("SQLite server-health result = %#v, want one benign N/A check", result)
+	if result.OverallOK || len(result.Checks) != 1 {
+		t.Fatalf("SQLite server-health result = %#v, want one non-Dolt warning", result)
 	}
 	check := result.Checks[0]
-	if check.Status != StatusOK || !strings.Contains(check.Message, "SQLite") || check.Fix != "" {
-		t.Fatalf("SQLite server-health check = %#v, want supported-backend N/A without metadata edit", check)
+	if check.Status != StatusWarning || !strings.Contains(check.Message, "sqlite") || check.Fix != "" {
+		t.Fatalf("SQLite server-health check = %#v, want non-Dolt warning without migration fix", check)
 	}
 }
