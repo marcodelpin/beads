@@ -33,6 +33,20 @@ func configuredBackendUnavailable(backend string) error {
 // Use Storage.RunInTransaction() to obtain a Transaction instance.
 type Transaction = beads.Transaction
 
+// DependencyAddOptions controls transaction-scoped dependency insertion for
+// Transaction.AddDependencyWithOptions. Exported so embedders' bulk graph
+// writers can set SkipCycleCheck per edge and run one whole-graph
+// Transaction.CycleThroughEdges pass before commit (bd-6dnrw.8) instead of
+// paying the recursive per-edge cycle query — which cannot finish inside a
+// per-command budget on molecule-sized graphs (observed: a 67-node/100-edge
+// batch blowing a 120s deadline mid-transaction, gascity 2026-07-17).
+//
+// Callers that set SkipCycleCheck MUST run Transaction.CycleThroughEdges before
+// commit and fail on new blocks/conditional-blocks/parent-child cycles
+// (waits-for is excluded); skipping the per-edge check trades per-edge cost for
+// one whole-graph check, never graph integrity.
+type DependencyAddOptions = storage.DependencyAddOptions
+
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
 //
