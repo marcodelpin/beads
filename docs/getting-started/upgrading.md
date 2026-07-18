@@ -204,6 +204,12 @@ migrating here as the designated migrator, adopting the remote's already-migrate
 database, or recovering a fork — and asks for an explicit operator decision.
 Follow the guidance it prints.
 
+For scripted or CI upgrades where nobody reads the prompt,
+`BD_ALLOW_REMOTE_MIGRATE=1 bd migrate` (any boolean true value works) declares
+this clone the designated migrator and bypasses the gate entirely — including
+its already-forked checks — so wire it into exactly one clone's upgrade job,
+never all of them.
+
 **Multiple clones sharing one remote:**
 
 ```bash

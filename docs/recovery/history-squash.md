@@ -121,8 +121,8 @@ unfence your writers.
 ## Prevention
 
 High-frequency coordination state lives in unversioned tables precisely so
-routine agent traffic does not mint history — claim leases (see
-[bd heartbeat](/cli-reference/heartbeat)) and [wisps](/workflows/wisps) —
+routine agent traffic does not mint history — claim leases and
+[wisps](/workflows/wisps) —
 so bloat at this scale usually means something is writing versioned tables
 in a tight loop. Find and fix that writer, watch data-directory growth over time, and
 run `dolt gc` periodically so unreachable garbage never accumulates on top
