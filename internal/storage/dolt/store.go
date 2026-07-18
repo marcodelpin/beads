@@ -1860,6 +1860,27 @@ func (s *DoltStore) DoltGC(ctx context.Context) error {
 	return versioncontrolops.DoltGC(ctx, conn)
 }
 
+// ListRemoteRefs returns the names of all cached remote-tracking refs.
+func (s *DoltStore) ListRemoteRefs(ctx context.Context) ([]string, error) {
+	return versioncontrolops.ListRemoteRefs(ctx, s.db)
+}
+
+// PruneRemoteRefs deletes all cached remote-tracking refs so a post-squash GC
+// can reclaim the history they anchor (bd-agctw). Returns the deleted names.
+func (s *DoltStore) PruneRemoteRefs(ctx context.Context) ([]string, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire connection for remote-ref prune: %w", err)
+	}
+	defer conn.Close()
+	return versioncontrolops.PruneRemoteRefs(ctx, conn)
+}
+
+// ListTags returns the names of all Dolt tags.
+func (s *DoltStore) ListTags(ctx context.Context) ([]string, error) {
+	return versioncontrolops.ListTags(ctx, s.db)
+}
+
 // Flatten squashes all Dolt commit history into a single commit.
 // Pins a single connection because the stored procedures (DOLT_CHECKOUT,
 // DOLT_RESET, etc.) rely on session-scoped state that would be lost if
