@@ -12,7 +12,7 @@
 // so the AST flatten resolves all embeds locally.
 //
 // Invoked via `//go:generate go run ../unsupportedgen -pkg <backend> -src .. ...`
-// from a backend package dir (e.g. internal/storage/postgres), whose CWD makes
+// from a backend package dir (e.g. internal/storage/sqlite), whose CWD makes
 // the storage package ".." — hence -src "..".
 package main
 
@@ -65,7 +65,7 @@ func main() {
 // genConfig is the parameterized generation request. Its zero-flag defaults
 // (see defaultConfig) reproduce a backend's committed shell byte-for-byte; the
 // flags exist so the same generator can emit a partial shell for another
-// package (e.g. postgres) that embeds a real store alongside the generated one.
+// package (e.g. sqlite) that embeds a real store alongside the generated one.
 type genConfig struct {
 	pkg   string          // -pkg  : package clause of the generated file
 	src   string          // -src  : dir of the storage package to parse
@@ -133,7 +133,7 @@ type pkgInfo struct {
 
 // runConfig is the parameterized generator. At defaultConfig() values it emits
 // a backend's committed shell byte-for-byte; -pkg/-type/-skip let it emit a
-// partial shell for another package (e.g. postgres) that embeds a real store
+// partial shell for another package (e.g. sqlite) that embeds a real store
 // alongside the generated one.
 func runConfig(cfg genConfig) error {
 	info, err := parsePackage(cfg.src)

@@ -40,3 +40,27 @@ func TestRunDoltPerformanceDiagnostics_RequiresServer(t *testing.T) {
 		t.Errorf("expected server/database error, got: %v", err)
 	}
 }
+
+func TestRunDoltPerformanceDiagnosticsSQLiteIsSupportedButNotApplicable(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &configfile.Config{Backend: configfile.BackendSQLite, SQLitePath: "beads.db"}
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatalf("save SQLite config: %v", err)
+	}
+
+	_, err := RunDoltPerformanceDiagnostics(tmpDir, false)
+	if err == nil {
+		t.Fatal("expected Dolt-only diagnostics to decline a SQLite workspace")
+	}
+	message := err.Error()
+	if strings.Contains(message, "no longer supported") || strings.Contains(message, "Migrate") {
+		t.Fatalf("Dolt-only diagnostics gave hostile SQLite migration guidance: %v", err)
+	}
+	if !strings.Contains(message, "Dolt") || !strings.Contains(message, "SQLite") {
+		t.Fatalf("diagnostic error should explain the backend mismatch: %v", err)
+	}
+}

@@ -106,6 +106,13 @@ Examples:
   bd dolt set data-dir /home/user/.beads-dolt/myproject`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		beadsDir := selectedDoltBeadsDir()
+		if beadsDir == "" {
+			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		}
+		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+			return HandleError("%v", err)
+		}
 		if !usesSQLServer() {
 			return HandleError("'bd dolt set' is not supported in embedded mode (no Dolt server)")
 		}
@@ -129,6 +136,13 @@ This verifies that:
 
 Use this before switching to server mode to ensure the server is running.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		beadsDir := selectedDoltBeadsDir()
+		if beadsDir == "" {
+			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		}
+		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+			return HandleError("%v", err)
+		}
 		if !usesSQLServer() {
 			return HandleError("'bd dolt test' is not supported in embedded mode (no Dolt server)")
 		}
@@ -489,12 +503,12 @@ The remote must already exist (see 'bd dolt remote add').`,
 }
 
 // errExplicitCommitUnsupported returns a typed *storage.ErrUnsupported when the
-// open store has no Dolt commit graph (Postgres/MySQL/SQLite), and nil for Dolt.
-// The SQL backends deliberately expose a no-op Commit so internal write paths can
+// open store has no Dolt commit graph (currently SQLite), and nil for Dolt.
+// Non-Dolt stores deliberately expose a no-op Commit so internal write paths can
 // call store.Commit() opportunistically without erroring; an EXPLICIT `bd dolt
 // commit` / `bd vc commit` must not ride that no-op and print a fake "Committed."
 // with no commit graph behind it. Internal opportunistic auto-commit is skipped
-// separately in PostRun for these backends, so gating only the explicit commands
+// separately in PostRun for these stores, so gating only the explicit commands
 // keeps that path untouched.
 func errExplicitCommitUnsupported(st storage.DoltStorage, op string) error {
 	ncg, ok := storage.UnwrapStore(st).(storage.NonCommitGraphBackend)
@@ -566,12 +580,15 @@ project path. PID and logs are stored in .beads/.
 The server auto-starts transparently when needed, so manual start is rarely
 required. Use this command for explicit control or diagnostics.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !usesSQLServer() {
-			return HandleError("'bd dolt start' is not supported in embedded mode (no Dolt server)")
-		}
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		}
+		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+			return HandleError("%v", err)
+		}
+		if !usesSQLServer() {
+			return HandleError("'bd dolt start' is not supported in embedded mode (no Dolt server)")
 		}
 		serverDir := doltserver.ResolveServerDir(beadsDir)
 
@@ -609,12 +626,15 @@ var doltStopCmd = &cobra.Command{
 This sends a graceful shutdown signal. The server will restart automatically
 on the next bd command unless auto-start is disabled.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !usesSQLServer() {
-			return HandleError("'bd dolt stop' is not supported in embedded mode (no Dolt server)")
-		}
 		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		}
+		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+			return HandleError("%v", err)
+		}
+		if !usesSQLServer() {
+			return HandleError("'bd dolt stop' is not supported in embedded mode (no Dolt server)")
 		}
 
 		if usesProxiedServer() {
@@ -659,10 +679,20 @@ endpoint via SQL and reports reachability, server version, and database.`,
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 		}
-		// A non-Dolt backend (postgres/mysql/sqlite) has no Dolt engine at all;
+		cfg, cfgErr := configfile.Load(beadsDir)
+		if cfgErr != nil {
+			return HandleError("loading config: %v", cfgErr)
+		}
+		if cfg == nil {
+			cfg = configfile.DefaultConfig()
+		}
+		if err := validateConfiguredBackend(cfg); err != nil {
+			return HandleError("%v", err)
+		}
+		// A non-Dolt backend (SQLite or a removed-backend tombstone) has no Dolt engine;
 		// report the backend rather than misdescribing an embedded Dolt server
 		// (parity with `bd dolt show`, which already special-cases this).
-		if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil && cfg.GetBackend() != configfile.BackendDolt {
+		if cfg.GetBackend() != configfile.BackendDolt {
 			fmt.Printf("Backend: %s (no Dolt engine)\n", cfg.GetBackend())
 			return nil
 		}
@@ -679,19 +709,10 @@ endpoint via SQL and reports reachability, server version, and database.`,
 		//     systemd manages the server lifecycle, be-0eyj)
 		//
 		// IsAutoStartDisabled reads the active (globally-bound) config and
-		// BEADS_DOLT_AUTO_START env, not the per-beadsDir cfg loaded just
-		// below. That coupling is intentional and consistent with every
+		// BEADS_DOLT_AUTO_START env, not the per-beadsDir cfg loaded above.
+		// That coupling is intentional and consistent with every
 		// other call site of IsAutoStartDisabled in this package — both
 		// resolve against the same active workspace at command time.
-		cfg, cfgErr := configfile.Load(beadsDir)
-		if cfgErr != nil {
-			// Don't silently swallow. A corrupted or missing metadata.json
-			// would otherwise mask the externally-managed routing for both
-			// the remote-host and auto-start-disabled-local cases, falling
-			// through to the PID-file path with a misleading "not running"
-			// — which is the exact failure mode this PR addresses.
-			fmt.Fprintf(os.Stderr, "Warning: cannot load .beads config (%v); falling back to PID-file status path\n", cfgErr)
-		}
 		if cfg != nil && shouldUseExternalDoltStatus(cfg, doltserver.IsAutoStartDisabled(), doltserver.IsSharedServerMode()) {
 			runExternalDoltStatus(beadsDir, cfg)
 			return nil
@@ -942,10 +963,15 @@ servers are preserved.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		beadsDir := selectedDoltBeadsDir()
+		if beadsDir != "" {
+			if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+				return HandleError("%v", err)
+			}
+		}
 		if !usesSQLServer() {
 			return HandleError("'bd dolt killall' is not supported in embedded mode (no Dolt server)")
 		}
-		beadsDir := selectedDoltBeadsDir()
 		if beadsDir == "" {
 			beadsDir = "." // best effort
 		}
@@ -1007,6 +1033,13 @@ Stale database prefixes: testdb_*, beads_test*, beads_pt*, beads_vr*, doctest_*,
 These waste server memory and can degrade performance under concurrent load.
 Use --dry-run to see what would be dropped without actually dropping.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		beadsDir := selectedDoltBeadsDir()
+		if beadsDir == "" {
+			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
+		}
+		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+			return HandleError("%v", err)
+		}
 		if !usesSQLServer() {
 			return HandleError("'bd dolt clean-databases' is not supported in embedded mode (no Dolt server)")
 		}
@@ -1450,6 +1483,9 @@ func showDoltConfig(testConnection bool) error {
 	if cfg == nil {
 		cfg = configfile.DefaultConfig()
 	}
+	if err := validateConfiguredBackend(cfg); err != nil {
+		return HandleError("%v", err)
+	}
 
 	backend := cfg.GetBackend()
 	embedded := !usesSQLServer()
@@ -1548,16 +1584,9 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 		return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 	}
 
-	cfg, err := configfile.Load(beadsDir)
+	cfg, err := loadDoltBackendConfig(beadsDir)
 	if err != nil {
-		return HandleError("loading config: %v", err)
-	}
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-
-	if cfg.GetBackend() != configfile.BackendDolt {
-		return HandleError("not using Dolt backend")
+		return HandleError("%v", err)
 	}
 
 	var yamlKey string
@@ -1709,16 +1738,9 @@ func testDoltConnection() error {
 		return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 	}
 
-	cfg, err := configfile.Load(beadsDir)
+	cfg, err := loadDoltBackendConfig(beadsDir)
 	if err != nil {
-		return HandleError("loading config: %v", err)
-	}
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-
-	if cfg.GetBackend() != configfile.BackendDolt {
-		return HandleError("not using Dolt backend")
+		return HandleError("%v", err)
 	}
 
 	host := cfg.GetDoltServerHost()
@@ -1878,12 +1900,9 @@ func openDoltServerConnection() (*sql.DB, func(), error) {
 		return nil, nil, HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 	}
 
-	cfg, err := configfile.Load(beadsDir)
+	cfg, err := loadDoltBackendConfig(beadsDir)
 	if err != nil {
-		return nil, nil, HandleError("loading config: %v", err)
-	}
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
+		return nil, nil, HandleError("%v", err)
 	}
 
 	host := cfg.GetDoltServerHost()

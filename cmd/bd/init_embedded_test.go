@@ -1387,14 +1387,11 @@ func TestEmbeddedInit(t *testing.T) {
 			t.Errorf("backend: got %q, want %q", cfg.Backend, configfile.BackendSQLite)
 		}
 
-		// Postgres is recognized, not an unknown backend: it fails only because the
-		// required connection config is absent (bdEnv strips any ambient DSN).
-		pgOut := bdInitFail(t, bd, "--backend", "postgres")
-		if strings.Contains(pgOut, "unknown backend") {
-			t.Errorf("postgres should be recognized, got unknown-backend error: %s", pgOut)
-		}
-		if !strings.Contains(pgOut, "--pg-url") {
-			t.Errorf("postgres init should request --pg-url, got: %s", pgOut)
+		for _, backend := range []string{"postgres", "mysql"} {
+			out := bdInitFail(t, bd, "--backend", backend)
+			if !strings.Contains(out, "no longer supported") {
+				t.Errorf("%s should report the backend rollback: %s", backend, out)
+			}
 		}
 
 		// A genuinely unsupported backend is still rejected.

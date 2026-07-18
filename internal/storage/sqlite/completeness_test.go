@@ -9,24 +9,22 @@ import (
 	"github.com/steveyegge/beads/internal/storage/conformance"
 )
 
-// legitimatelyUnsupported is the EXPLICIT denominator of every storage.DoltStorage
-// method the Postgres wedge deliberately does not implement, each with a reason.
+// legitimatelyUnsupported is the explicit set of storage.DoltStorage methods that
+// SQLite deliberately does not implement, each with a reason.
 //
 // The interface-completeness gate (TestInterfaceCompleteness) asserts the
 // generated capability shell (unsupported_gen.go) contains EXACTLY these methods
 // — no more, no less. This is the guard the red-team had to stand in for: a
-// method that silently resolves to the typed-unsupported shell (the class that
-// bit us: DeleteIssues, GetCustomStatuses, the batch reads, …) fails this test
+// method that silently resolves to the typed-unsupported shell fails this test
 // at build time instead of failing a user at runtime. Adding a method to the
 // shell without an entry here is a hard error that forces the triage question:
 // "implement it in sqlkit, or record here why the wedge legitimately omits it."
 var legitimatelyUnsupported = map[string]string{
-	// VersionControl — the Dolt commit graph. The wedge's whole premise is
-	// "bd on Postgres, history/version-control simply absent".
+	// VersionControl — SQLite has no Dolt commit graph.
 	"Branch": "VC: Dolt branch", "Checkout": "VC: Dolt checkout",
 	"CurrentBranch": "VC", "DeleteBranch": "VC", "ListBranches": "VC",
-	// Commit/CommitWithConfig/CommitMergeResolution are NO-OPS on Postgres (data
-	// is already durable per-tx), not unsupported — implemented on postgres.Store.
+	// Commit/CommitWithConfig/CommitMergeResolution are no-ops on SQLite because
+	// data is already durable per transaction; sqlite.Store implements them.
 	"CommitExists": "VC", "GetCurrentCommit": "VC: Dolt hash", "Status": "VC",
 	"Log": "VC: dolt_log", "Merge": "VC", "GetConflicts": "VC", "ResolveConflicts": "VC",
 

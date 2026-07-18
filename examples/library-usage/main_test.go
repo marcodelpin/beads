@@ -18,11 +18,17 @@ func TestExampleCompiles(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "dolt")
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("Failed to create .beads dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"backend":"sqlite","sqlite_path":"beads.db"}`), 0o600); err != nil {
+		t.Fatalf("Failed to create metadata.json: %v", err)
+	}
 
 	// Open storage
 	ctx := context.Background()
-	store, err := beads.Open(ctx, dbPath)
+	store, err := beads.OpenBestAvailable(ctx, beadsDir)
 	if err != nil {
 		t.Fatalf("Failed to open storage: %v", err)
 	}

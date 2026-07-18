@@ -58,7 +58,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 // DB exposes the underlying pool for diagnostics/migrations.
 func (s *Store) DB() *sql.DB { return s.db }
 
-// DialectName reports the backend's dialect ("postgres", "sqlite", …).
+// DialectName reports the backend's SQL dialect.
 func (s *Store) DialectName() string { return s.dialect.Name() }
 
 // Close closes the pool. Idempotent.
@@ -77,9 +77,7 @@ func (s *Store) Close() error {
 // would queue behind any in-flight writer and fail with SQLITE_BUSY after
 // busy_timeout, forfeiting WAL's reader/writer independence. TxOptions.ReadOnly
 // suppresses beginMode (plain deferred BEGIN), letting reads run concurrently
-// with a writer. On the server backends it maps to START TRANSACTION READ ONLY
-// (mysql) / BEGIN READ ONLY (pgx), which every withReadTx callback satisfies:
-// they are pure issueops reads.
+// with a writer. Every withReadTx callback is a pure issueops read.
 func (s *Store) withReadTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	if s.closed.Load() {
 		return ErrStoreClosed

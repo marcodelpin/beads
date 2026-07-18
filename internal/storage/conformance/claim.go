@@ -2,8 +2,6 @@ package conformance
 
 import (
 	"errors"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,10 +10,10 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// Claim / lease behavior (Gas Station v1.1 dead-worker recovery). Every backend
+// Claim / lease behavior (Gas Station v1.1 dead-worker recovery). Each backend
 // routes ClaimIssue/ClaimReadyIssue/HeartbeatIssue/ReclaimExpiredLeases through the
-// shared issueops implementations, so these assertions hold identically on the Dolt
-// reference and every SQL backend. issueops.WithLeaseTTL pins the lease deterministically
+// shared issueops implementations, so these assertions hold identically on Dolt and
+// SQLite. issueops.WithLeaseTTL pins the lease deterministically
 // so the reclaim path is testable without wall-clock waits.
 
 // testClaim: claiming an open issue stamps assignee, in_progress, started_at, and a
@@ -154,102 +152,6 @@ func issueID(i *types.Issue) string {
 		return "<nil>"
 	}
 	return i.ID
-}
-
-// requireMultiWriter skips the caller unless the backend backs concurrent writers on
-// separate connections. Postgres and MySQL use a multi-connection pool; SQLite pins its
-// pool to a single connection (sqliteDialect.Open sets MaxOpenConns(1)) and embedded-Dolt
-// serializes writers, so a "concurrent" claim race there only ever exercises the trivial
-// serialized path. The dialect name is the profile signal: sqlkit-backed SQL stores
-// expose DialectName(); the Dolt reference does not, so it skips via the type assertion.
-func requireMultiWriter(t *testing.T, s storage.DoltStorage) {
-	t.Helper()
-	dn, ok := s.(interface{ DialectName() string })
-	if !ok {
-		t.Skip("backend does not expose a SQL dialect; concurrent multi-writer claim race not applicable")
-	}
-	switch dn.DialectName() {
-	case "postgres", "mysql":
-		// multi-connection pool: a genuine cross-connection race.
-	default:
-		t.Skipf("dialect %q is single-writer (pool pinned to one connection); concurrent claim race not applicable", dn.DialectName())
-	}
-}
-
-// testClaimReadyIssueConcurrentExclusivity races many workers, each on its own pooled
-// connection, to claim a small pool of ready issues and asserts every issue is claimed by
-// exactly one worker. This is the multi-writer property the SQL backends exist for — the
-// whole reason to run bd on Postgres/MySQL instead of single-writer Dolt — and the shared
-// claim path's cross-process exclusivity (a conditional-UPDATE CAS: only the writer whose
-// UPDATE finds the row still unassigned wins; the losers' ClaimReadyIssue retries the next
-// ready candidate) is otherwise only asserted, never raced. Gated to the multi-connection
-// backends; see requireMultiWriter.
-func testClaimReadyIssueConcurrentExclusivity(t *testing.T, f Factory) {
-	s := f(t)
-	requireMultiWriter(t, s)
-
-	const readyCount = 8
-	for i := 0; i < readyCount; i++ {
-		must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{
-			ID:       fmt.Sprintf("ccx-%d", i),
-			Title:    "ready",
-			Priority: 1,
-		}), "a"))
-	}
-
-	const workers = 24 // > readyCount, so workers must contend and most must lose a race
-
-	var (
-		mu     sync.Mutex
-		claims = make(map[string]string) // issueID -> claiming worker
-		dupes  []string
-		errs   []error
-	)
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func(worker string) {
-			defer wg.Done()
-			<-start // barrier: release all workers together to maximize contention
-			// Drain: keep claiming until no ready work remains. Bounded so a bug that
-			// kept returning issues can never hang the suite.
-			for attempt := 0; attempt < readyCount+workers; attempt++ {
-				claimed, err := s.ClaimReadyIssue(ctx(), types.WorkFilter{}, worker)
-				if err != nil {
-					mu.Lock()
-					errs = append(errs, err)
-					mu.Unlock()
-					return
-				}
-				if claimed == nil {
-					return // no ready work left to claim
-				}
-				if claimed.Assignee != worker || claimed.Status != types.StatusInProgress {
-					t.Errorf("claimed %s not owned by claimer: assignee=%q status=%q", claimed.ID, claimed.Assignee, claimed.Status)
-				}
-				mu.Lock()
-				if prev, ok := claims[claimed.ID]; ok {
-					dupes = append(dupes, fmt.Sprintf("%s claimed by both %s and %s", claimed.ID, prev, worker))
-				} else {
-					claims[claimed.ID] = worker
-				}
-				mu.Unlock()
-			}
-		}(fmt.Sprintf("worker-%d", w))
-	}
-	close(start)
-	wg.Wait()
-
-	for _, e := range errs {
-		t.Errorf("ClaimReadyIssue errored under concurrency: %v", e)
-	}
-	for _, d := range dupes {
-		t.Errorf("claim exclusivity violated — %s", d)
-	}
-	if len(claims) != readyCount {
-		t.Errorf("distinct claimed issues = %d, want %d (every ready issue claimed exactly once, none lost)", len(claims), readyCount)
-	}
 }
 
 // testHeartbeatRenewsLease: a heartbeat extends the lease (and keeps the claim).

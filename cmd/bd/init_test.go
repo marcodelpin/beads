@@ -2396,28 +2396,28 @@ func TestInitBackendFlag(t *testing.T) {
 		}
 	})
 
-	// Postgres is a recognized backend now: it must not be rejected as unknown,
-	// and it fails only because the required connection config is absent.
-	t.Run("postgres_is_recognized_and_requires_config", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
+	for _, backend := range []string{"postgres", "mysql"} {
+		t.Run(backend+"_is_no_longer_supported", func(t *testing.T) {
+			tmpDir := t.TempDir()
+			beadsDir := filepath.Join(tmpDir, ".beads")
 
-		cmd := exec.Command(bd, "init", "--backend", "postgres", "--quiet")
-		cmd.Dir = tmpDir
-		cmd.Env = initBackendTestEnv(beadsDir)
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatal("Expected non-zero exit for --backend=postgres without connection config")
-		}
+			cmd := exec.Command(bd, "init", "--backend", backend, "--quiet")
+			cmd.Dir = tmpDir
+			cmd.Env = initBackendTestEnv(beadsDir)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("Expected non-zero exit for --backend=%s", backend)
+			}
 
-		outStr := string(out)
-		if strings.Contains(outStr, "unknown backend") {
-			t.Errorf("postgres must be a recognized backend, not reported unknown: %s", outStr)
-		}
-		if !strings.Contains(outStr, "--pg-url") {
-			t.Errorf("Expected missing --pg-url guidance for postgres, got: %s", outStr)
-		}
-	})
+			outStr := string(out)
+			if !strings.Contains(outStr, "no longer supported") {
+				t.Errorf("Expected rollback guidance for %s, got: %s", backend, outStr)
+			}
+			if !strings.Contains(outStr, `"dolt"`) || !strings.Contains(outStr, `"sqlite"`) {
+				t.Errorf("Expected supported backend guidance for %s, got: %s", backend, outStr)
+			}
+		})
+	}
 
 	// A genuinely unsupported backend value is still rejected up front.
 	t.Run("unknown_backend_errors", func(t *testing.T) {

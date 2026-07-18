@@ -40,12 +40,17 @@ func RunDeepValidation(path string) DeepValidationResult {
 	}
 
 	if backend != configfile.BackendDolt {
+		status := StatusWarning
+		message := fmt.Sprintf("N/A (deep validation requires Dolt; configured backend is %q)", backend)
+		if backend == configfile.BackendSQLite {
+			status = StatusOK
+			message = "N/A (SQLite is supported; deep validation currently requires Dolt server mode)"
+		}
 		check := DoctorCheck{
 			Name:     "Deep Validation",
-			Status:   StatusWarning,
-			Message:  "SQLite backend detected",
+			Status:   status,
+			Message:  message,
 			Category: CategoryMaintenance,
-			Fix:      "Run 'bd init' to set up Dolt backend",
 		}
 		result.AllChecks = append(result.AllChecks, check)
 		return result
