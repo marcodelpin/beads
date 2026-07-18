@@ -113,8 +113,10 @@ bd list -n 5
 ```
 
 Every other clone of this database must be re-created from the squashed
-remote (old clones can no longer pull — the histories no longer share a
-root). Only then unfence your writers.
+remote. Old clones must not pull: the two chains still share the root, so a
+pull can "succeed" as a cross-merge that re-anchors the entire old history —
+and a later push resurrects the bloat on the squashed remote. Only then
+unfence your writers.
 
 ## Prevention
 
