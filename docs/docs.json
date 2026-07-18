@@ -274,6 +274,7 @@
           "recovery/merge-conflicts",
           "recovery/circular-dependencies",
           "recovery/sync-failures",
+          "recovery/history-squash",
           "recovery/uninstalling"
         ]
       },
