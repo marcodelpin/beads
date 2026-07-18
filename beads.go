@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
@@ -18,6 +19,15 @@ import (
 
 // Storage is the interface for beads storage operations
 type Storage = beads.Storage
+
+func configuredBackendUnavailable(backend string) error {
+	switch backend {
+	case configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite:
+		return configfile.RemovedBackendError(backend)
+	default:
+		return configfile.UnknownBackendError(backend)
+	}
+}
 
 // Transaction provides atomic multi-operation support within a database transaction.
 // Use Storage.RunInTransaction() to obtain a Transaction instance.
@@ -64,9 +74,9 @@ func Open(ctx context.Context, dbPath string) (Storage, error) {
 	return dolt.New(ctx, &dolt.Config{Path: dbPath, CreateIfMissing: true})
 }
 
-// OpenFromConfig opens a beads database using configuration from metadata.json.
-// Unlike Open, this respects Dolt server mode settings and database name
-// configuration, connecting to the Dolt SQL server when dolt_mode is "server".
+// OpenFromConfig opens the Dolt implementation using configuration from
+// metadata.json. Unlike Open, this respects Dolt server mode settings and database
+// name configuration.
 // beadsDir is the path to the .beads directory.
 func OpenFromConfig(ctx context.Context, beadsDir string) (Storage, error) {
 	return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: true})

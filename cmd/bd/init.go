@@ -3,20 +3,17 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/cmd/bd/setup"
 	"github.com/steveyegge/beads/internal/beads"
@@ -28,11 +25,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	beadsmysql "github.com/steveyegge/beads/internal/storage/mysql"
-	"github.com/steveyegge/beads/internal/storage/pgdialect"
-	"github.com/steveyegge/beads/internal/storage/postgres"
 	"github.com/steveyegge/beads/internal/storage/schema"
-	beadssqlite "github.com/steveyegge/beads/internal/storage/sqlite"
 	"github.com/steveyegge/beads/internal/templates/agents"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -48,9 +41,8 @@ var initCmd = &cobra.Command{
 	Long: `Initialize bd in the current directory by creating a .beads/ directory
 and its storage (a Dolt database by default). Optionally specify a custom issue prefix.
 
-Dolt is the default backend and the only one with version control (history,
-branching, sync). Select an alternative with --backend=<postgres|mysql|sqlite>;
-see docs/architecture/storage-backends.md for the trade-offs and setup.
+Dolt is the default and only supported storage backend, with full version
+control (history, branching, sync).
 
 Use --database to specify an existing server database name, overriding the
 default prefix-based naming. This is useful when an external tool (e.g. an orchestrator)
@@ -105,12 +97,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
-		// Postgres backend flags (backend="postgres")
-		pgURL, _ := cmd.Flags().GetString("pg-url")
-		pgSchema, _ := cmd.Flags().GetString("pg-schema")
-		mysqlURL, _ := cmd.Flags().GetString("mysql-url")
-		mysqlDatabase, _ := cmd.Flags().GetString("mysql-database")
-		sqlitePath, _ := cmd.Flags().GetString("sqlite-path")
 
 		// --force is a deprecated alias for --reinit-local. They share
 		// semantics for the local data-safety guard; both refuse remote
@@ -249,49 +235,21 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			externalConfig = &cfg
 		}
 
-		// Backend selection: dolt (default) + the pluggable SQL-family backends
-		// (postgres, mysql, sqlite). SQLite was removed under the one-backend
-		// assumption (#3151) and re-added as a pluggable leaf backend.
-		isPostgres := backendFlag == configfile.BackendPostgres
-		isMySQL := backendFlag == configfile.BackendMySQL
-		isSQLite := backendFlag == configfile.BackendSQLite
-		if backendFlag != "" && backendFlag != configfile.BackendDolt && !isPostgres && !isMySQL && !isSQLite {
-			return fmt.Errorf("unknown backend %q: supported backends are \"dolt\" (default), \"postgres\", \"mysql\", and \"sqlite\"", backendFlag)
-		}
-		if isPostgres || isMySQL || isSQLite {
-			// A non-Dolt SQL backend is a plain local workspace: only a small set of
-			// init-local flags apply. Reject any other init-local flag by ALLOWLIST — a
-			// denylist silently ignores Dolt-only flags added later, the exact footgun
-			// this block exists to prevent. Inherited/global flags (--json, --dir, …)
-			// are not init-local and are left untouched.
-			pgAllowedFlags := map[string]bool{
-				"backend": true,
-				"pg-url":  true, "pg-schema": true,
-				"mysql-url": true, "mysql-database": true,
-				"sqlite-path": true,
-				"prefix":      true, "quiet": true,
-				"skip-hooks": true, "skip-agents": true,
-				"reinit-local": true, "force": true, "init-if-missing": true,
-				"non-interactive": true,
+		// Backend selection: Dolt is the only supported backend.
+		if !configfile.IsSupportedBackend(backendFlag) {
+			switch backendFlag {
+			case configfile.BackendPostgres, configfile.BackendMySQL:
+				return fmt.Errorf("storage backend %q is no longer supported: %s; the supported backend is \"dolt\" (default)", backendFlag, configfile.RemovedBackendRationale)
+			case configfile.BackendSQLite:
+				return fmt.Errorf("storage backend %q is no longer supported: %s; the supported backend is \"dolt\" (default)", backendFlag, configfile.RemovedSQLiteRationale)
 			}
-			var rejected []string
-			cmd.Flags().Visit(func(f *pflag.Flag) {
-				// Only police init's own flags; inherited/global flags (--json, …)
-				// are not this command's concern. cmd.Flags() is the authoritative
-				// parsed set that carries the Changed state.
-				if cmd.InheritedFlags().Lookup(f.Name) != nil {
-					return
-				}
-				if !pgAllowedFlags[f.Name] {
-					rejected = append(rejected, "--"+f.Name)
-				}
-			})
-			if len(rejected) > 0 {
-				sort.Strings(rejected)
-				return fmt.Errorf("bd init --backend=%s does not support %s (a non-Dolt SQL backend is a plain local workspace: no Dolt server, sync, remote, or wizard)", backendFlag, strings.Join(rejected, ", "))
+			return fmt.Errorf("unknown backend %q: the supported backend is \"dolt\" (default)", backendFlag)
+		}
+		for _, legacyFlag := range removedBackendInitFlags {
+			if cmd.Flags().Changed(legacyFlag.name) {
+				return fmt.Errorf("--%s belonged to %s: %s; use --backend=dolt (the default)", legacyFlag.name, legacyFlag.origin, legacyFlag.rationale)
 			}
 		}
-
 		// Validate --database format early, before any side effects.
 		if database != "" {
 			if err := dolt.ValidateDatabaseName(database); err != nil {
@@ -321,8 +279,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			return fmt.Errorf("--team requires interactive prompts and cannot be used with --non-interactive")
 		}
 
-		// Non-Dolt backends (postgres/mysql/sqlite) were dispatched and returned
-		// earlier; this is the Dolt init path.
+		// Dolt is the only supported backend.
 		backend := configfile.BackendDolt
 
 		// Also treat BEADS_DOLT_SERVER_MODE=1 env var as --server.
@@ -814,41 +771,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 
 		ctx := rootCtx
-
-		// Postgres proof-wedge: finalize a plain local workspace backed by Postgres.
-		// Everything below provisions Dolt (embedded/server DB dir, migrations, remote
-		// gate, sync, remotes) — none of which Postgres has an analog for — so the PG
-		// path provisions the schema + seeds + metadata.json here and returns. The
-		// shared setup above (.beads/, .gitignore, git init) already ran.
-		if isPostgres {
-			return runInitPostgres(ctx, initPostgresInput{
-				beadsDir:   beadsDir,
-				prefix:     prefix,
-				pgURL:      pgURL,
-				pgSchema:   pgSchema,
-				quiet:      quiet,
-				jsonOutput: jsonOutput,
-			})
-		}
-		if isMySQL {
-			return runInitMySQL(ctx, initMySQLInput{
-				beadsDir:      beadsDir,
-				prefix:        prefix,
-				mysqlURL:      mysqlURL,
-				mysqlDatabase: mysqlDatabase,
-				quiet:         quiet,
-				jsonOutput:    jsonOutput,
-			})
-		}
-		if isSQLite {
-			return runInitSQLite(ctx, initSQLiteInput{
-				beadsDir:   beadsDir,
-				prefix:     prefix,
-				sqlitePath: sqlitePath,
-				quiet:      quiet,
-				jsonOutput: jsonOutput,
-			})
-		}
 
 		// Create Dolt storage backend
 		storagePath := doltserver.ResolveDoltDir(beadsDir)
@@ -1829,293 +1751,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 	},
 }
 
-// initPostgresInput carries the resolved inputs the Postgres init arm needs from
-// the shared prologue of the init command.
-type initPostgresInput struct {
-	beadsDir   string
-	prefix     string
-	pgURL      string
-	pgSchema   string
-	quiet      bool
-	jsonOutput bool
-}
-
-// runInitPostgres finalizes a Postgres-backed workspace. It is the Postgres analog
-// of the Dolt store-open + config-seed + metadata block (init.go), minus every
-// version-control / server / sync step Postgres has no analog for: it provisions the
-// schema (DDL + config-default seeds, idempotent), seeds the issue prefix and project
-// identity, and writes metadata.json with the password-stripped DSN. The password is
-// supplied at open time via BEADS_PG_PASSWORD and never lands on disk.
-func runInitPostgres(ctx context.Context, in initPostgresInput) error {
-	dsn := in.pgURL
-	if dsn == "" {
-		dsn = os.Getenv("BEADS_POSTGRES_URL")
-	}
-	if dsn == "" {
-		return fmt.Errorf("bd init --backend=postgres requires --pg-url=<dsn> (or BEADS_POSTGRES_URL); a password may be included for init but is never persisted — set BEADS_PG_PASSWORD for later commands")
-	}
-	schema := in.pgSchema
-	if schema == "" {
-		return fmt.Errorf("bd init --backend=postgres requires --pg-schema=<name> (the per-workspace schema for search_path isolation)")
-	}
-
-	// Redact BEFORE provisioning: a connection string whose password we cannot safely
-	// strip fails the whole init before any schema is created, and the password is
-	// guaranteed never to reach metadata.json (RedactPassword verifies with pgx that
-	// no password survives, failing closed).
-	persistDSN, err := pgdialect.RedactPassword(dsn)
-	if err != nil {
-		return fmt.Errorf("cannot safely persist the Postgres connection: %w", err)
-	}
-
-	store, err := postgres.Provision(ctx, dsn, schema)
-	if err != nil {
-		return fmt.Errorf("failed to initialize Postgres workspace: %w", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	// Load any existing metadata.json up front so we can adopt its project identity.
-	cfg, _ := configfile.Load(in.beadsDir)
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-
-	// Seed the issue prefix, only if unset — a shared schema may already carry one.
-	// Matches the Dolt init path (dots normalized to underscores for valid IDs).
-	if in.prefix != "" {
-		if existing, _ := store.GetConfig(ctx, "issue_prefix"); existing == "" {
-			issuePrefix := strings.ReplaceAll(in.prefix, ".", "_")
-			if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
-				return fmt.Errorf("failed to set issue prefix: %w", err)
-			}
-		}
-	}
-
-	// Project identity: the DB is authoritative when it already carries one; otherwise
-	// adopt the metadata.json id (a re-init or committed clone) or mint a fresh UUID.
-	// Write it to BOTH the DB and metadata.json so the two can never diverge (GH#2372) —
-	// the Dolt path keeps them in lockstep the same way.
-	projectID, _ := store.GetMetadata(ctx, "_project_id")
-	if projectID == "" {
-		if cfg.ProjectID != "" {
-			projectID = cfg.ProjectID
-		} else {
-			projectID = configfile.GenerateProjectID()
-		}
-		if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
-			return fmt.Errorf("failed to write project ID: %w", err)
-		}
-	}
-
-	// Persist metadata.json: backend + password-free DSN + schema + the DB's identity.
-	cfg.Backend = configfile.BackendPostgres
-	cfg.PostgresDSN = persistDSN
-	cfg.PostgresSchema = schema
-	cfg.ProjectID = projectID
-	if err := cfg.Save(in.beadsDir); err != nil {
-		return fmt.Errorf("failed to write metadata.json: %w", err)
-	}
-
-	switch {
-	case in.jsonOutput:
-		out := map[string]any{
-			"status":  "initialized",
-			"backend": configfile.BackendPostgres,
-			"schema":  schema,
-			"prefix":  in.prefix,
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-	case !in.quiet:
-		fmt.Printf("%s bd initialized with the Postgres backend\n", ui.RenderPass("✓"))
-		fmt.Printf("  Schema:  %s\n", schema)
-		if in.prefix != "" {
-			fmt.Printf("  Prefix:  %s\n", in.prefix)
-		}
-		fmt.Println("  History: not tracked (Postgres backend has no version control; use Dolt for history)")
-	}
-	return nil
-}
-
-// initMySQLInput carries the resolved inputs the MySQL init arm needs.
-type initMySQLInput struct {
-	beadsDir      string
-	prefix        string
-	mysqlURL      string
-	mysqlDatabase string
-	quiet         bool
-	jsonOutput    bool
-}
-
-// runInitMySQL finalizes a MySQL-backed workspace: it creates the per-workspace
-// database, applies the schema (config seeds on first provision), seeds the issue
-// prefix and project identity, and writes metadata.json with the password-stripped
-// DSN. The password is supplied at open time via BEADS_MYSQL_PASSWORD and never lands
-// on disk. MySQL isolates by database where Postgres isolates by schema.
-func runInitMySQL(ctx context.Context, in initMySQLInput) error {
-	dsn := in.mysqlURL
-	if dsn == "" {
-		dsn = os.Getenv("BEADS_MYSQL_URL")
-	}
-	if dsn == "" {
-		return fmt.Errorf("bd init --backend=mysql requires --mysql-url=<dsn> (or BEADS_MYSQL_URL), e.g. user:pass@tcp(host:3306)/ ; a password may be included for init but is never persisted — set BEADS_MYSQL_PASSWORD for later commands")
-	}
-	database := in.mysqlDatabase
-	if database == "" {
-		return fmt.Errorf("bd init --backend=mysql requires --mysql-database=<name> (the per-workspace database)")
-	}
-
-	// Redact BEFORE provisioning so a DSN we cannot safely persist fails before any
-	// side effect, and the password is guaranteed never to reach metadata.json.
-	persistDSN, err := beadsmysql.RedactPassword(dsn)
-	if err != nil {
-		return fmt.Errorf("cannot safely persist the MySQL connection: %w", err)
-	}
-
-	store, err := beadsmysql.Provision(ctx, dsn, database)
-	if err != nil {
-		return fmt.Errorf("failed to initialize MySQL workspace: %w", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	cfg, _ := configfile.Load(in.beadsDir)
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-
-	if in.prefix != "" {
-		if existing, _ := store.GetConfig(ctx, "issue_prefix"); existing == "" {
-			issuePrefix := strings.ReplaceAll(in.prefix, ".", "_")
-			if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
-				return fmt.Errorf("failed to set issue prefix: %w", err)
-			}
-		}
-	}
-
-	projectID, _ := store.GetMetadata(ctx, "_project_id")
-	if projectID == "" {
-		if cfg.ProjectID != "" {
-			projectID = cfg.ProjectID
-		} else {
-			projectID = configfile.GenerateProjectID()
-		}
-		if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
-			return fmt.Errorf("failed to write project ID: %w", err)
-		}
-	}
-
-	cfg.Backend = configfile.BackendMySQL
-	cfg.MySQLDSN = persistDSN
-	cfg.MySQLDatabase = database
-	cfg.ProjectID = projectID
-	if err := cfg.Save(in.beadsDir); err != nil {
-		return fmt.Errorf("failed to write metadata.json: %w", err)
-	}
-
-	switch {
-	case in.jsonOutput:
-		out := map[string]any{
-			"status":   "initialized",
-			"backend":  configfile.BackendMySQL,
-			"database": database,
-			"prefix":   in.prefix,
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-	case !in.quiet:
-		fmt.Printf("%s bd initialized with the MySQL backend\n", ui.RenderPass("✓"))
-		fmt.Printf("  Database: %s\n", database)
-		if in.prefix != "" {
-			fmt.Printf("  Prefix:   %s\n", in.prefix)
-		}
-		fmt.Println("  History:  not tracked (MySQL backend has no version control; use Dolt for history)")
-	}
-	return nil
-}
-
-// initSQLiteInput carries the resolved inputs the SQLite init arm needs.
-type initSQLiteInput struct {
-	beadsDir   string
-	prefix     string
-	sqlitePath string
-	quiet      bool
-	jsonOutput bool
-}
-
-// runInitSQLite finalizes a SQLite-backed workspace: it provisions the database file
-// (default beads.db inside the beads dir), seeds the issue prefix and project identity,
-// and writes metadata.json. SQLite is file-based and embedded (pure-Go), so there is no
-// server, DSN, or password.
-func runInitSQLite(ctx context.Context, in initSQLiteInput) error {
-	relPath := in.sqlitePath
-	if relPath == "" {
-		relPath = "beads.db"
-	}
-	dbPath := relPath
-	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(in.beadsDir, dbPath)
-	}
-
-	store, err := beadssqlite.Provision(ctx, dbPath)
-	if err != nil {
-		return fmt.Errorf("failed to initialize SQLite workspace: %w", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	cfg, _ := configfile.Load(in.beadsDir)
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-
-	if in.prefix != "" {
-		if existing, _ := store.GetConfig(ctx, "issue_prefix"); existing == "" {
-			issuePrefix := strings.ReplaceAll(in.prefix, ".", "_")
-			if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
-				return fmt.Errorf("failed to set issue prefix: %w", err)
-			}
-		}
-	}
-
-	projectID, _ := store.GetMetadata(ctx, "_project_id")
-	if projectID == "" {
-		if cfg.ProjectID != "" {
-			projectID = cfg.ProjectID
-		} else {
-			projectID = configfile.GenerateProjectID()
-		}
-		if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
-			return fmt.Errorf("failed to write project ID: %w", err)
-		}
-	}
-
-	cfg.Backend = configfile.BackendSQLite
-	cfg.SQLitePath = relPath
-	cfg.ProjectID = projectID
-	if err := cfg.Save(in.beadsDir); err != nil {
-		return fmt.Errorf("failed to write metadata.json: %w", err)
-	}
-
-	switch {
-	case in.jsonOutput:
-		out := map[string]any{
-			"status":  "initialized",
-			"backend": configfile.BackendSQLite,
-			"path":    relPath,
-			"prefix":  in.prefix,
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-	case !in.quiet:
-		fmt.Printf("%s bd initialized with the SQLite backend\n", ui.RenderPass("✓"))
-		fmt.Printf("  Database: %s\n", relPath)
-		if in.prefix != "" {
-			fmt.Printf("  Prefix:   %s\n", in.prefix)
-		}
-		fmt.Println("  History:  not tracked (SQLite backend has no version control; use Dolt for history)")
-	}
-	return nil
-}
-
 func init() {
 	initCmd.Flags().StringP("prefix", "p", "", "Issue prefix (default: current directory name)")
 	initCmd.Flags().BoolP("quiet", "q", false, "Suppress output (quiet mode)")
@@ -2140,13 +1775,16 @@ func init() {
 	initCmd.Flags().Bool("non-interactive", false, "Skip all interactive prompts (auto-detected in CI or non-TTY environments)")
 	initCmd.Flags().String("role", "", "Set beads role without prompting: \"maintainer\" or \"contributor\"")
 
-	// Backend selection: dolt (default) plus the SQL-family backends (postgres/mysql/sqlite).
-	initCmd.Flags().String("backend", "", "Storage backend: dolt (default), postgres, mysql, or sqlite. See docs/architecture/storage-backends.md.")
-	initCmd.Flags().String("pg-url", "", "Postgres connection URL (with --backend=postgres). A password may be included for init but is never persisted; set BEADS_PG_PASSWORD for later commands. Falls back to BEADS_POSTGRES_URL.")
-	initCmd.Flags().String("pg-schema", "", "Postgres schema for this workspace's tables (with --backend=postgres; provides search_path isolation)")
-	initCmd.Flags().String("mysql-url", "", "MySQL server DSN (with --backend=mysql), e.g. user:pass@tcp(host:3306)/ . A password may be included for init but is never persisted; set BEADS_MYSQL_PASSWORD for later commands. Falls back to BEADS_MYSQL_URL.")
-	initCmd.Flags().String("mysql-database", "", "MySQL database for this workspace (with --backend=mysql; MySQL's isolation unit)")
-	initCmd.Flags().String("sqlite-path", "", "SQLite database file (with --backend=sqlite; relative to the beads dir, default beads.db)")
+	// Backend selection: Dolt is the default and only supported backend.
+	initCmd.Flags().String("backend", "", "Storage backend: dolt (default). Removed backends (postgres, mysql, sqlite) print migration guidance.")
+	// Keep the short-lived removed-backend flags as hidden parser tombstones. A
+	// legacy invocation can then reach the backend rollback guidance instead of
+	// failing early with an opaque "unknown flag" error. The current backend rejects
+	// these flags explicitly above; they are never consumed as connection data.
+	for _, legacyFlag := range removedBackendInitFlags {
+		initCmd.Flags().String(legacyFlag.name, "", legacyFlag.usage)
+		_ = initCmd.Flags().MarkHidden(legacyFlag.name)
+	}
 
 	// Dolt server connection flags
 	initCmd.Flags().Bool("server", false, "Use external dolt sql-server instead of embedded engine")
@@ -2177,6 +1815,19 @@ func init() {
 	initCmd.Flags().Duration("proxied-server-external-keep-alive", 0, "[EXPERIMENTAL] TCP keepalive period for the proxy→external connection. Zero uses the package default (30s).")
 
 	rootCmd.AddCommand(initCmd)
+}
+
+var removedBackendInitFlags = []struct {
+	name      string
+	usage     string
+	origin    string
+	rationale string
+}{
+	{name: "pg-url", usage: "Legacy PostgreSQL connection URL (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "pg-schema", usage: "Legacy PostgreSQL schema (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "mysql-url", usage: "Legacy MySQL connection URL (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "mysql-database", usage: "Legacy MySQL database (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "sqlite-path", usage: "Legacy SQLite database file (removed backend compatibility only)", origin: "the removed SQLite initialization path", rationale: configfile.RemovedSQLiteRationale},
 }
 
 // migrateOldDatabases detects and migrates old database files to beads.db
@@ -2267,50 +1918,6 @@ func alreadyInitialized(format string, args ...any) error {
 // A returned error that matches errWorkspaceAlreadyInitialized means a database
 // already exists (the benign, idempotent-skip case); any other error is
 // operational and must not be treated as success.
-// checkExistingSQLBackend returns an "already initialized" guard error when cfg
-// selects a non-Dolt SQL backend (Postgres/MySQL/SQLite), each of which is marked
-// by metadata.json alone with no local DB directory to inspect. It returns nil for
-// the Dolt backend so the caller runs the directory/server checks instead. Split
-// out of checkExistingBeadsDataAt so the added SQL-backend branches don't inflate
-// that function's complexity.
-func checkExistingSQLBackend(cfg *configfile.Config) error {
-	switch cfg.GetBackend() {
-	case configfile.BackendPostgres:
-		return alreadyInitialized(`
-%s This workspace is already initialized with the Postgres backend (schema %q).
-
-To use it:
-  Just run bd commands normally (e.g., %s)
-
-To re-initialize (Postgres provisioning is idempotent):
-  bd init --backend=postgres --reinit-local ...
-
-Aborting.`, ui.RenderWarn("⚠"), cfg.GetPostgresSchema(), ui.RenderAccent("bd list"))
-	case configfile.BackendMySQL:
-		return alreadyInitialized(`
-%s This workspace is already initialized with the MySQL backend (database %q).
-
-To use it:
-  Just run bd commands normally (e.g., %s)
-
-To re-initialize (MySQL provisioning is idempotent):
-  bd init --backend=mysql --reinit-local ...
-
-Aborting.`, ui.RenderWarn("⚠"), cfg.GetMySQLDatabase(), ui.RenderAccent("bd list"))
-	case configfile.BackendSQLite:
-		return alreadyInitialized(`
-%s This workspace is already initialized with the SQLite backend (%q).
-
-To use it:
-  Just run bd commands normally (e.g., %s)
-
-To re-initialize (SQLite provisioning is idempotent):
-  bd init --backend=sqlite --reinit-local ...
-
-Aborting.`, ui.RenderWarn("⚠"), cfg.GetSQLitePath(), ui.RenderAccent("bd list"))
-	}
-	return nil
-}
 
 func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 	// Check if .beads directory exists
@@ -2319,20 +1926,24 @@ func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 	}
 
 	// metadata.json is authoritative for the configured backend, so resolve it once
-	// and dispatch. A non-Dolt SQL backend (Postgres/MySQL/SQLite) is marked by
-	// metadata alone — there is no local DB directory to inspect — so a plain
+	// and dispatch. Removed-backend tombstones are marked by metadata
+	// alone — there is no local Dolt directory to inspect — so a plain
 	// `bd init` (which defaults to Dolt) must not silently repoint a live SQL
 	// workspace to a fresh embedded Dolt DB and orphan its issues. --reinit-local
-	// /--force bypass this (handled by the caller). A config that fails to load falls
-	// through to the redirect/database-file checks below.
+	// /--force bypass this (handled by the caller). Invalid metadata must fail closed:
+	// without an explicit reinitialization request, init may not overwrite the only
+	// marker for an external or otherwise nonlocal database.
 	cfg, cfgErr := configfile.Load(beadsDir)
-	if cfgErr == nil && cfg != nil {
-		if guardErr := checkExistingSQLBackend(cfg); guardErr != nil {
+	if cfgErr != nil {
+		return fmt.Errorf("failed to load %s: %w; refusing to reinitialize automatically (restore the metadata or use --reinit-local after safeguarding existing data)", configfile.ConfigPath(beadsDir), cfgErr)
+	}
+	if cfg != nil {
+		if guardErr := validateConfiguredBackend(cfg); guardErr != nil {
 			return guardErr
 		}
 	}
 
-	if cfgErr == nil && cfg != nil && cfg.GetBackend() == configfile.BackendDolt {
+	if cfg != nil && cfg.GetBackend() == configfile.BackendDolt {
 		if cfg.IsDoltProxiedServerMode() {
 			proxiedRoot, rootErr := resolveProxiedServerRootPath(beadsDir)
 			if rootErr != nil {

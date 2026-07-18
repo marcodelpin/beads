@@ -12,12 +12,10 @@ import (
 	"testing"
 )
 
-// The portable JSONL backup path — `bd export` -> git -> `bd import` — is the only
-// backup mechanism the non-Dolt backends have (Dolt-native CALL DOLT_BACKUP is
-// unsupported on them, and auto-export is gated to Dolt because its change token is
-// the Dolt commit hash). The manual round-trip is already lossless on every backend
-// (verified live against real Postgres/MySQL); this test pins that so a regression in
-// export or import cannot slip through CI.
+// The portable JSONL backup path — `bd export` -> git -> `bd import` — is the
+// backend-agnostic backup mechanism for stores without Dolt-native CALL
+// DOLT_BACKUP and commit hashes. This test pins the manual round-trip so a
+// regression in export or import cannot slip through CI.
 //
 // It is a self-consistency (idempotence) check, not a differential one, so it lives
 // outside the `corpus`: for each backend it seeds a rich fixture, exports, restores
@@ -125,18 +123,11 @@ func restoreAndReexport(t *testing.T, bin string, p BackendProfile, exportJSONL 
 	return mustRead(t, out)
 }
 
-// initRoundTripWorkspace mints an isolated workspace for a backend (fresh temp dir plus
-// a fresh handle/schema for the server backends) and runs `bd init`. Prefix "rt" matches
-// the pinned rt-* ids in the seed.
+// initRoundTripWorkspace creates an isolated temporary workspace and runs `bd init`.
+// Prefix "rt" matches the pinned rt-* ids in the seed.
 func initRoundTripWorkspace(t *testing.T, bin string, p BackendProfile) (*Workspace, []string) {
 	t.Helper()
 	ws := &Workspace{Dir: t.TempDir()}
-	if p.NewHandle != nil {
-		ws.Handle = p.NewHandle()
-	}
-	if p.Teardown != nil {
-		t.Cleanup(func() { p.Teardown(ws) })
-	}
 	var env []string
 	if p.Env != nil {
 		env = p.Env(ws)

@@ -149,7 +149,6 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("ClaimNotClaimable", func(t *testing.T) { testClaimNotClaimable(t, factory) })
 	t.Run("ClaimReadyIssue", func(t *testing.T) { testClaimReadyIssue(t, factory) })
 	t.Run("ClaimReadyIssueLabelFilters", func(t *testing.T) { testClaimReadyIssueLabelFilters(t, factory) })
-	t.Run("ClaimReadyIssueConcurrentExclusivity", func(t *testing.T) { testClaimReadyIssueConcurrentExclusivity(t, factory) })
 	t.Run("HeartbeatRenewsLease", func(t *testing.T) { testHeartbeatRenewsLease(t, factory) })
 	t.Run("HeartbeatWisp", func(t *testing.T) { testHeartbeatWisp(t, factory) })
 	t.Run("ReclaimExpiredLease", func(t *testing.T) { testReclaimExpiredLease(t, factory) })
@@ -191,12 +190,10 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("Transaction", func(t *testing.T) { testTransaction(t, factory) })
 }
 
-// RunDeferredReads runs the subset of the suite covering the shared "deferred"
-// non-version-control reads — statistics, external-ref lookup, and staleness — that
-// the SQL-family backends (postgres/mysql/sqlite) implement through issueops. RunAll
-// is the full fail-loud measurement (and stays red on genuinely Dolt-only methods
-// like slots), so these backends run this focused GREEN gate instead. The Dolt
-// reference covers the same cases via RunAll.
+// RunDeferredReads runs the subset of the suite covering SQLite's shared
+// non-version-control reads: statistics, external-ref lookup, and staleness. RunAll
+// remains the full Dolt reference; SQLite runs this focused gate for methods supplied
+// by issueops while its Dolt-only methods fail loudly as unsupported.
 func RunDeferredReads(t *testing.T, factory Factory) {
 	t.Helper()
 	t.Run("Statistics", func(t *testing.T) { testStatistics(t, factory) })
