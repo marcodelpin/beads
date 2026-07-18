@@ -14,7 +14,8 @@ the old history becomes collectable, without touching your live data.
 <Warning>
 This procedure rewrites history. Every other clone of the database becomes
 unmergeable and must re-clone, and remotes and backups must be re-pointed.
-Run it in a fenced window: all writers stopped, backup verified first.
+Run it in a fenced window: all writers stopped **on every machine that syncs
+this database**, backup verified first.
 </Warning>
 
 ## Symptoms
@@ -45,9 +46,15 @@ If `dolt gc --full` frees the space, you are done — no squash needed.
 
 ## Solution
 
-**Step 1:** Fence and back up. Stop every writer (agents, background
-services); in server mode also stop the server after backing up. The backup
-is dolt-native and keeps the full history, so it remains your rollback.
+**Step 1:** Fence and back up. Stop every writer: agents, background
+services, and — easiest to miss — any scheduled sync job (cron, launchd,
+systemd) that pushes or pulls this database, on *every machine that syncs
+it*, not just the one you squash on. List the machines and their sync units
+by name and verify each is stopped. One live peer sync undoes the squash on
+its next tick: it pulls the new baseline, cross-merges it into its old
+chain, and pushes the entire old history back to the fresh remote. In
+server mode also stop the server after backing up. The backup is dolt-native
+and keeps the full history, so it remains your rollback.
 
 ```bash
 bd backup sync
@@ -115,8 +122,9 @@ bd list -n 5
 Every other clone of this database must be re-created from the squashed
 remote. Old clones must not pull: the two chains still share the root, so a
 pull can "succeed" as a cross-merge that re-anchors the entire old history —
-and a later push resurrects the bloat on the squashed remote. Only then
-unfence your writers.
+and a later push resurrects the bloat on the squashed remote. Re-enable each
+machine's sync jobs only after that machine has re-cloned; unfence your
+writers last.
 
 ## Prevention
 
