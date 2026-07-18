@@ -95,6 +95,16 @@ bd backup remove && bd backup init <path>   # fresh destination, then:
 bd backup sync
 ```
 
+<Warning>
+A Dolt remote accumulates chunks monotonically: the force-push re-points the
+remote's refs at the squashed chain but deletes nothing, so the *remote's*
+storage does not shrink. To reclaim the published side too, replace the
+remote — clear its storage (or pick a fresh path/prefix) before the push:
+`bd dolt remote remove <name>`, `bd dolt remote add <name> <fresh-url>`,
+then `bd dolt push --force`. Every other clone must re-clone after a squash
+regardless, so replacing the remote costs nothing extra.
+</Warning>
+
 **Step 5:** Verify, then re-clone everywhere else. On this machine:
 
 ```bash
