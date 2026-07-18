@@ -2420,12 +2420,13 @@ func (s *DoltStore) credentialsForRemote(remote string) *remoteCredentials {
 // re-pushes that remote faithfully propagates the dangling reference.
 //
 // If CLIDir is empty or .dolt/noms does not exist, the check is skipped.
-// Five outcomes are possible when fsck exits non-zero (see classifyFSCKFailure):
+// Six outcomes are possible when fsck exits non-zero (see classifyFSCKFailure):
 //   - non-empty output, could-not-open: skipped with a log warning.
 //   - non-empty output, other: ErrDanglingReference — push aborted.
 //   - parent context canceled: cancellation error — push aborted.
 //   - parent context deadline exceeded: ErrFSCKTimeout (caller timeout) — push aborted.
 //   - fsck own timeout: ErrFSCKTimeout (raise BEADS_FSCK_TIMEOUT) — push aborted.
+//   - cancellation phrasing in output, no context error: cancellation error — push aborted.
 func (s *DoltStore) prePushFSCK(ctx context.Context) error {
 	dir := s.CLIDir()
 	if dir == "" {
@@ -2450,15 +2451,18 @@ func (s *DoltStore) prePushFSCK(ctx context.Context) error {
 	return nil
 }
 
-// classifyFSCKFailure maps a failed dolt fsck exit into one of five outcomes,
+// classifyFSCKFailure maps a failed dolt fsck exit into one of six outcomes,
 // evaluated in priority order:
 //
 //	(a) Non-empty output → route by content: could-not-open → nil (caller logs
-//	    and skips); any other content → ErrDanglingReference abort. Non-empty
-//	    output means fsck actually ran and said something (--quiet fsck is
-//	    silent until it finds a problem), so content wins over context state.
-//	    This also closes the race where real corruption arrives at the deadline
-//	    instant and would otherwise be masked as a timeout.
+//	    and skips); cancellation phrasing (fsckOutputInterrupted) → fall
+//	    through to the context-state branches below, because an interrupted
+//	    fsck prints e.g. "context canceled" before dying and that text is not
+//	    an integrity finding; any other content → ErrDanglingReference abort.
+//	    Non-empty output means fsck actually ran and said something (--quiet
+//	    fsck is silent until it finds a problem), so content wins over context
+//	    state. This also closes the race where real corruption arrives at the
+//	    deadline instant and would otherwise be masked as a timeout.
 //
 //	(b) Parent context canceled (Ctrl-C, caller abort) → plain cancellation
 //	    error wrapping context.Canceled; neither ErrDanglingReference nor
@@ -2474,19 +2478,30 @@ func (s *DoltStore) prePushFSCK(ctx context.Context) error {
 //	(d) fsck's own deadline exceeded, parent still running → ErrFSCKTimeout
 //	    with dolt gc / CALL DOLT_GC() / BEADS_FSCK_TIMEOUT guidance.
 //
-//	(e) Generic non-zero exit, empty output → ErrDanglingReference abort.
+//	(e) Cancellation phrasing in output but no recognized context error — the
+//	    bd process (group) was killed out from under fsck, so neither context
+//	    carries the reason. Plain cancellation error wrapping context.Canceled;
+//	    the store is not implicated.
+//
+//	(f) Generic non-zero exit, empty output → ErrDanglingReference abort.
 //
 // Returning nil for the could-not-open case (branch a) distinguishes "fsck
 // couldn't run at all" from "fsck ran and found a problem". Wrapping an
-// open-failure as ErrDanglingReference misleads users (dolthub/dolt#10915).
+// open-failure as ErrDanglingReference misleads users (dolthub/dolt#10915);
+// so does wrapping an interrupt's "context canceled" noise as corruption
+// (same genus, observed when a background push's process group was killed).
 func classifyFSCKFailure(parentErr, fsckErr error, output string) error {
 	// (a) Non-empty output: fsck actually reported something; route by content.
 	if output != "" {
 		if fsckCouldNotOpen(output) {
 			return nil
 		}
-		return fmt.Errorf("%w: aborting push to prevent propagating corrupt chunks: %s",
-			ErrDanglingReference, output)
+		if !fsckOutputInterrupted(output) {
+			return fmt.Errorf("%w: aborting push to prevent propagating corrupt chunks: %s",
+				ErrDanglingReference, output)
+		}
+		// Cancellation phrasing: not an integrity finding — classify by
+		// context state below.
 	}
 	// (b) Parent context canceled — user interrupt or caller abort.
 	if errors.Is(parentErr, context.Canceled) {
@@ -2509,7 +2524,13 @@ func classifyFSCKFailure(parentErr, fsckErr error, output string) error {
 			"the timeout can be raised via the BEADS_FSCK_TIMEOUT environment variable",
 			ErrFSCKTimeout)
 	}
-	// (e) Generic failure with no output and no recognized context error.
+	// (e) Interrupted fsck whose cancellation reason lives only in the output
+	// (process group killed: both contexts look healthy from here).
+	if fsckOutputInterrupted(output) {
+		return fmt.Errorf("pre-push integrity check interrupted: %w: %s",
+			context.Canceled, output)
+	}
+	// (f) Generic failure with no output and no recognized context error.
 	return fmt.Errorf("%w: aborting push to prevent propagating corrupt chunks",
 		ErrDanglingReference)
 }
@@ -2526,6 +2547,26 @@ func fsckCouldNotOpen(output string) bool {
 	default:
 		return false
 	}
+}
+
+// fsckOutputInterrupted reports whether dolt fsck output is cancellation
+// noise from a dying process rather than an integrity finding. An fsck
+// interrupted mid-run (Ctrl-C, killed process group, expired deadline)
+// prints the literal cancellation text to its combined output before
+// exiting; treating that as a dangling-reference finding produces a false
+// corruption report for a plain interrupt (bd-f2b15).
+func fsckOutputInterrupted(output string) bool {
+	for _, phrase := range []string{
+		"context canceled",
+		"context deadline exceeded",
+		"signal: killed",
+		"signal: terminated",
+	} {
+		if strings.Contains(output, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // doltCLIPush shells out to `dolt push` from the database directory.
