@@ -259,6 +259,19 @@ type Flattener interface {
 	Flatten(ctx context.Context) error
 }
 
+// RemoteRefPruner manages the cached remote-tracking refs that anchor Dolt
+// history. After a squash (Flatten/Compact) those refs still point at the
+// pre-squash chain, making the follow-up GC a silent no-op on any workspace
+// that has ever pushed or fetched (bd-agctw) — callers must prune them before
+// GC. Pruning only touches the local cache; the next push/fetch re-creates
+// the refs at the new tip. Tags anchor history the same way but are
+// user-created, so they are listed for warning rather than deleted.
+type RemoteRefPruner interface {
+	ListRemoteRefs(ctx context.Context) ([]string, error)
+	PruneRemoteRefs(ctx context.Context) ([]string, error)
+	ListTags(ctx context.Context) ([]string, error)
+}
+
 type SchemaMigrator interface {
 	ApplySchemaMigrations(ctx context.Context) (applied int, err error)
 }
