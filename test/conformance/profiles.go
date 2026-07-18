@@ -1,8 +1,8 @@
 // Package conformance is the end-to-end (real `bd` binary) conformance harness. It
 // complements the in-process store suite (internal/storage/conformance): that one
 // exercises a store object; this one exercises the whole CLI path — `bd init`, the
-// factory, metadata.json, SQLite dialect translation over the real binary, and output
-// formatting — differentially against the Dolt reference.
+// factory, metadata.json, and output formatting — differentially against the Dolt
+// reference.
 //
 // One declarative registry (Profiles) describes how to create and tear down an
 // isolated workspace for each backend. Adding a backend is one Profiles entry; the
@@ -45,13 +45,6 @@ var Profiles = []BackendProfile{
 		Reference: true,
 		Available: func() bool { return true },
 		InitArgs:  func(*Workspace) []string { return nil },
-	},
-	{
-		Name:      "sqlite",
-		Available: func() bool { return true }, // embedded (pure-Go modernc); always runs
-		// File-based: the default beads.db inside each workspace's .beads dir isolates
-		// it; the temp workspace dir cleanup removes the file. No handle/env/teardown.
-		InitArgs: func(*Workspace) []string { return []string{"--backend=sqlite"} },
 	},
 }
 

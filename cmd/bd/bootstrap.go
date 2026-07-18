@@ -283,9 +283,6 @@ func requireBootstrapDoltBackend(cfg *configfile.Config) error {
 	if err := validateConfiguredBackend(cfg); err != nil {
 		return err
 	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendSQLite {
-		return fmt.Errorf("bd bootstrap is not supported for SQLite workspaces; the configured SQLite database was not modified; run bd commands normally for this workspace")
-	}
 	return nil
 }
 

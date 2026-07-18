@@ -11,9 +11,9 @@ func validateConfiguredBackend(cfg *configfile.Config) error {
 		return nil
 	}
 	switch cfg.Backend {
-	case configfile.BackendPostgres, configfile.BackendMySQL:
+	case configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite:
 		return configfile.RemovedBackendError(cfg.Backend)
-	case "", configfile.BackendDolt, configfile.BackendSQLite:
+	case "", configfile.BackendDolt:
 		return nil
 	default:
 		return configfile.UnknownBackendError(cfg.Backend)

@@ -13,7 +13,7 @@ import (
 
 func TestCommandStartupRejectsRemovedBackendsBeforeLocalWrites(t *testing.T) {
 	bd := buildBDForInitTests(t)
-	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL} {
+	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
 		t.Run(backend, func(t *testing.T) {
 			root := t.TempDir()
 			beadsDir := filepath.Join(root, ".beads")
@@ -32,7 +32,7 @@ func TestCommandStartupRejectsRemovedBackendsBeforeLocalWrites(t *testing.T) {
 				t.Fatalf("removed backend %s unexpectedly opened", backend)
 			}
 			message := strings.ToLower(string(out))
-			for _, want := range []string{"no longer supported", "simple and resource-light", "was not opened", "export", "dolt", "sqlite"} {
+			for _, want := range removedBackendWantSubstrings(backend) {
 				if !strings.Contains(message, want) {
 					t.Errorf("startup error for %s missing %q: %s", backend, want, message)
 				}
@@ -70,7 +70,7 @@ func TestCommandStartupRejectsUnknownBackendBeforeLocalWrites(t *testing.T) {
 	if strings.Contains(message, "no beads database found") {
 		t.Fatalf("unknown backend stopped at generic discovery instead of metadata guidance:\n%s", out)
 	}
-	for _, want := range []string{"not recognized", "opened or modified", "dolt", "sqlite"} {
+	for _, want := range []string{"not recognized", "opened or modified", "dolt"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("unknown-backend error missing %q:\n%s", want, out)
 		}
@@ -135,7 +135,7 @@ func TestDoctorRejectsUnknownBackendBeforeDoltChecks(t *testing.T) {
 	if err == nil {
 		t.Fatalf("doctor unexpectedly ran Dolt checks for unknown backend:\n%s", out)
 	}
-	for _, want := range []string{"not recognized", "no storage database was opened or modified", "dolt", "sqlite"} {
+	for _, want := range []string{"not recognized", "no storage database was opened or modified", "dolt"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("doctor unknown-backend error missing %q:\n%s", want, out)
 		}
@@ -152,6 +152,7 @@ func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
 	tests := []struct {
 		backend string
 		args    []string
+		wants   []string
 	}{
 		{
 			backend: configfile.BackendPostgres,
@@ -160,6 +161,7 @@ func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
 				"--pg-url=postgres://beads@127.0.0.1:5432/beads",
 				"--pg-schema=legacy_workspace",
 			},
+			wants: []string{"no longer supported", "general-purpose server databases", "simple and resource-light", "dolt"},
 		},
 		{
 			backend: configfile.BackendMySQL,
@@ -168,6 +170,15 @@ func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
 				"--mysql-url=beads@tcp(127.0.0.1:3306)/",
 				"--mysql-database=legacy_workspace",
 			},
+			wants: []string{"no longer supported", "general-purpose server databases", "simple and resource-light", "dolt"},
+		},
+		{
+			backend: configfile.BackendSQLite,
+			args: []string{
+				"init", "--backend=sqlite",
+				"--sqlite-path=beads.db",
+			},
+			wants: []string{"no longer supported", "single engine", "dolt"},
 		},
 	}
 
@@ -187,7 +198,7 @@ func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
 			if strings.Contains(message, "unknown flag") {
 				t.Errorf("legacy %s init stopped at argument parsing instead of rollback guidance: %s", tt.backend, message)
 			}
-			for _, want := range []string{"no longer supported", "general-purpose server databases", "simple and resource-light", "dolt", "sqlite"} {
+			for _, want := range tt.wants {
 				if !strings.Contains(message, want) {
 					t.Errorf("legacy %s init error missing %q: %s", tt.backend, want, message)
 				}
@@ -215,7 +226,7 @@ func TestDoltAdministrativeCommandsRejectRemovedBackends(t *testing.T) {
 		{name: "clean-databases", args: []string{"dolt", "clean-databases", "--dry-run"}},
 	}
 
-	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL} {
+	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
 		t.Run(backend, func(t *testing.T) {
 			root := t.TempDir()
 			beadsDir := filepath.Join(root, ".beads")
@@ -237,7 +248,7 @@ func TestDoltAdministrativeCommandsRejectRemovedBackends(t *testing.T) {
 					}
 
 					message := strings.ToLower(string(out))
-					for _, want := range []string{"no longer supported", "simple and resource-light", "was not opened", "export", "dolt", "sqlite"} {
+					for _, want := range removedBackendWantSubstrings(backend) {
 						if !strings.Contains(message, want) {
 							t.Errorf("%q error for %s missing %q: %s", strings.Join(command.args, " "), backend, want, message)
 						}
@@ -338,7 +349,7 @@ func removedBackendTestEnv(beadsDir string) []string {
 }
 
 func TestStoreFactoriesRemovedBackendsFailLoud(t *testing.T) {
-	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL} {
+	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
 		t.Run(backend, func(t *testing.T) {
 			beadsDir := t.TempDir()
 			cfg := &configfile.Config{Backend: backend}
@@ -368,7 +379,7 @@ func TestStoreFactoriesRemovedBackendsFailLoud(t *testing.T) {
 						t.Fatalf("error should explain that %s is no longer supported: %v", backend, err)
 					}
 					guidance := strings.ToLower(err.Error())
-					if !strings.Contains(guidance, "export") || !strings.Contains(guidance, "dolt") || !strings.Contains(guidance, "sqlite") {
+					if !strings.Contains(guidance, "export") || !strings.Contains(guidance, "dolt") {
 						t.Fatalf("error should provide safe migration guidance: %v", err)
 					}
 					for _, name := range []string{"embeddeddolt", "dolt", "beads.db"} {
@@ -390,14 +401,20 @@ func TestRequireDoltBackend(t *testing.T) {
 		}
 	}
 
-	if err := requireDoltBackend(&configfile.Config{Backend: configfile.BackendSQLite}); err == nil || !strings.Contains(err.Error(), "not using Dolt") {
-		t.Fatalf("SQLite Dolt-command guard error = %v, want non-Dolt explanation", err)
-	}
-
-	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL} {
+	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
 		err := requireDoltBackend(&configfile.Config{Backend: backend})
 		if err == nil || !strings.Contains(err.Error(), "no longer supported") || !strings.Contains(err.Error(), "export") {
 			t.Fatalf("removed backend %q guard error = %v, want rollback and migration guidance", backend, err)
 		}
 	}
+}
+
+// removedBackendWantSubstrings returns the guidance substrings every removed-backend
+// rejection must carry, including the backend-specific rationale marker.
+func removedBackendWantSubstrings(backend string) []string {
+	wants := []string{"no longer supported", "was not opened", "export", "dolt"}
+	if backend == configfile.BackendSQLite {
+		return append(wants, "single engine")
+	}
+	return append(wants, "general-purpose server databases", "simple and resource-light")
 }

@@ -2369,10 +2369,9 @@ func initBackendTestEnv(beadsDir string) []string {
 func TestInitBackendFlag(t *testing.T) {
 	bd := buildBDForInitTests(t)
 
-	// SQLite is a supported pluggable backend now (it was removed under the
-	// one-backend assumption in #3151 and re-added as a leaf backend): init
-	// succeeds and metadata.json records backend=sqlite.
-	t.Run("sqlite_initializes_and_persists_backend", func(t *testing.T) {
+	// The SQLite backend was rolled back with the other alternative backends:
+	// init fails closed with migration guidance and writes no workspace state.
+	t.Run("sqlite_is_no_longer_supported", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 
@@ -2380,19 +2379,15 @@ func TestInitBackendFlag(t *testing.T) {
 		cmd.Dir = tmpDir
 		cmd.Env = initBackendTestEnv(beadsDir)
 		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("bd init --backend=sqlite should succeed: %v\n%s", err, out)
+		if err == nil {
+			t.Fatalf("Expected non-zero exit for --backend=sqlite:\n%s", out)
 		}
-
-		cfg, err := configfile.Load(beadsDir)
-		if err != nil {
-			t.Fatalf("Failed to load metadata.json: %v", err)
+		outStr := string(out)
+		if !strings.Contains(outStr, "no longer supported") || !strings.Contains(outStr, "single engine") {
+			t.Errorf("Expected rollback guidance for sqlite, got: %s", outStr)
 		}
-		if cfg == nil {
-			t.Fatal("metadata.json not found after --backend=sqlite init")
-		}
-		if cfg.Backend != configfile.BackendSQLite {
-			t.Errorf("Expected backend %q, got %q", configfile.BackendSQLite, cfg.Backend)
+		if _, statErr := os.Stat(beadsDir); !os.IsNotExist(statErr) {
+			t.Fatalf("rejected sqlite init created workspace state (stat error: %v)", statErr)
 		}
 	})
 
@@ -2413,7 +2408,7 @@ func TestInitBackendFlag(t *testing.T) {
 			if !strings.Contains(outStr, "no longer supported") {
 				t.Errorf("Expected rollback guidance for %s, got: %s", backend, outStr)
 			}
-			if !strings.Contains(outStr, `"dolt"`) || !strings.Contains(outStr, `"sqlite"`) {
+			if !strings.Contains(outStr, `"dolt"`) {
 				t.Errorf("Expected supported backend guidance for %s, got: %s", backend, outStr)
 			}
 		})

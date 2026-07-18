@@ -57,12 +57,12 @@ func TestRunDeepValidationSQLiteIsNotAMigrationWarning(t *testing.T) {
 	}
 
 	result := RunDeepValidation(tmpDir)
-	if !result.OverallOK || len(result.AllChecks) != 1 {
-		t.Fatalf("SQLite deep-validation result = %#v, want one benign N/A check", result)
+	if len(result.AllChecks) != 1 {
+		t.Fatalf("SQLite deep-validation result = %#v, want one N/A check", result)
 	}
 	check := result.AllChecks[0]
-	if check.Status != StatusOK || !strings.Contains(check.Message, "SQLite") || check.Fix != "" {
-		t.Fatalf("SQLite deep-validation check = %#v, want supported-backend N/A without migration fix", check)
+	if check.Status != StatusWarning || !strings.Contains(check.Message, "sqlite") || check.Fix != "" {
+		t.Fatalf("SQLite deep-validation check = %#v, want non-Dolt N/A without migration fix", check)
 	}
 }
 

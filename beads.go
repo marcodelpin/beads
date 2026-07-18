@@ -22,7 +22,7 @@ type Storage = beads.Storage
 
 func configuredBackendUnavailable(backend string) error {
 	switch backend {
-	case configfile.BackendPostgres, configfile.BackendMySQL:
+	case configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite:
 		return configfile.RemovedBackendError(backend)
 	default:
 		return configfile.UnknownBackendError(backend)
@@ -76,7 +76,7 @@ func Open(ctx context.Context, dbPath string) (Storage, error) {
 
 // OpenFromConfig opens the Dolt implementation using configuration from
 // metadata.json. Unlike Open, this respects Dolt server mode settings and database
-// name configuration. Use OpenBestAvailable when metadata may select SQLite.
+// name configuration.
 // beadsDir is the path to the .beads directory.
 func OpenFromConfig(ctx context.Context, beadsDir string) (Storage, error) {
 	return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: true})

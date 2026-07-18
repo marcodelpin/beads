@@ -8,11 +8,10 @@ import (
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	beadssqlite "github.com/steveyegge/beads/internal/storage/sqlite"
 )
 
 // OpenBestAvailable opens a beads database using the best available backend
-// for the given .beads directory. In non-CGO builds, Dolt server and SQLite are
+// for the given .beads directory. In non-CGO builds, only Dolt server mode is
 // supported; embedded Dolt returns an error directing the user to server mode.
 //
 // beadsDir is the path to the .beads directory.
@@ -26,11 +25,6 @@ func OpenBestAvailable(ctx context.Context, beadsDir string) (Storage, error) {
 	}
 	if !configfile.IsSupportedBackend(cfg.Backend) {
 		return nil, configuredBackendUnavailable(cfg.Backend)
-	}
-
-	switch cfg.GetBackend() {
-	case configfile.BackendSQLite:
-		return beadssqlite.NewFromConfig(ctx, beadsDir)
 	}
 
 	if cfg.IsDoltServerMode() {

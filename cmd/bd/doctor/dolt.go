@@ -101,9 +101,10 @@ func openDoltConn(beadsDir string) (*doltConn, error) {
 	return &doltConn{db: db, cfg: cfg, port: port}, nil
 }
 
-// GetBackend returns the configured backend type from configuration.
-// It checks config.yaml first (storage-backend key), then falls back to metadata.json.
-// Returns "dolt" (default) or "sqlite" (legacy).
+// GetBackend returns the configured backend type from metadata.json. An absent
+// or empty backend field reads as "dolt" (the default); removed-backend
+// tombstones ("postgres", "mysql", "sqlite") are returned verbatim so callers
+// can label them without opening anything.
 // hq-3446fc.17: Use dolt.GetBackendFromConfig for consistent backend detection.
 func GetBackend(beadsDir string) string {
 	return dolt.GetBackendFromConfig(beadsDir)
@@ -126,13 +127,13 @@ func runDoltHealthChecksInternal(path string) []DoctorCheck {
 
 	if !IsDoltBackend(beadsDir) {
 		return []DoctorCheck{
-			{Name: "Dolt Connection", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryCore},
-			{Name: "Dolt Schema", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryCore},
-			{Name: "Dolt Issue Count", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryData},
-			{Name: "Dolt Status", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryData},
-			{Name: "Dolt Lock Health", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryRuntime},
-			{Name: "Phantom Databases", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryData},
-			{Name: "Shared Server", Status: StatusOK, Message: "N/A (SQLite backend)", Category: CategoryRuntime},
+			{Name: "Dolt Connection", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryCore},
+			{Name: "Dolt Schema", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryCore},
+			{Name: "Dolt Issue Count", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryData},
+			{Name: "Dolt Status", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryData},
+			{Name: "Dolt Lock Health", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryRuntime},
+			{Name: "Phantom Databases", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryData},
+			{Name: "Shared Server", Status: StatusOK, Message: "N/A (non-Dolt backend)", Category: CategoryRuntime},
 		}
 	}
 

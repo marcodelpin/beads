@@ -3,20 +3,17 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/cmd/bd/setup"
 	"github.com/steveyegge/beads/internal/beads"
@@ -29,7 +26,6 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
-	beadssqlite "github.com/steveyegge/beads/internal/storage/sqlite"
 	"github.com/steveyegge/beads/internal/templates/agents"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -45,9 +41,8 @@ var initCmd = &cobra.Command{
 	Long: `Initialize bd in the current directory by creating a .beads/ directory
 and its storage (a Dolt database by default). Optionally specify a custom issue prefix.
 
-Dolt is the default backend and the only one with version control (history,
-branching, sync). Select the embedded SQLite alternative with --backend=sqlite;
-see docs/architecture/storage-backends.md for the trade-offs and setup.
+Dolt is the default and only supported storage backend, with full version
+control (history, branching, sync).
 
 Use --database to specify an existing server database name, overriding the
 default prefix-based naming. This is useful when an external tool (e.g. an orchestrator)
@@ -102,7 +97,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
-		sqlitePath, _ := cmd.Flags().GetString("sqlite-path")
 
 		// --force is a deprecated alias for --reinit-local. They share
 		// semantics for the local data-safety guard; both refuse remote
@@ -241,51 +235,21 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			externalConfig = &cfg
 		}
 
-		// Backend selection: Dolt (default) and the embedded SQLite backend.
-		isSQLite := backendFlag == configfile.BackendSQLite
+		// Backend selection: Dolt is the only supported backend.
 		if !configfile.IsSupportedBackend(backendFlag) {
-			if backendFlag == configfile.BackendPostgres || backendFlag == configfile.BackendMySQL {
-				return fmt.Errorf("storage backend %q is no longer supported: %s; supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag, configfile.RemovedBackendRationale)
+			switch backendFlag {
+			case configfile.BackendPostgres, configfile.BackendMySQL:
+				return fmt.Errorf("storage backend %q is no longer supported: %s; the supported backend is \"dolt\" (default)", backendFlag, configfile.RemovedBackendRationale)
+			case configfile.BackendSQLite:
+				return fmt.Errorf("storage backend %q is no longer supported: %s; the supported backend is \"dolt\" (default)", backendFlag, configfile.RemovedSQLiteRationale)
 			}
-			return fmt.Errorf("unknown backend %q: supported backends are \"dolt\" (default) and \"sqlite\"", backendFlag)
+			return fmt.Errorf("unknown backend %q: the supported backend is \"dolt\" (default)", backendFlag)
 		}
-		for _, legacyFlag := range removedServerBackendInitFlags {
+		for _, legacyFlag := range removedBackendInitFlags {
 			if cmd.Flags().Changed(legacyFlag.name) {
-				return fmt.Errorf("--%s belonged to the removed PostgreSQL/MySQL initialization paths: %s; use --backend=dolt or --backend=sqlite", legacyFlag.name, configfile.RemovedBackendRationale)
+				return fmt.Errorf("--%s belonged to %s: %s; use --backend=dolt (the default)", legacyFlag.name, legacyFlag.origin, legacyFlag.rationale)
 			}
 		}
-		if isSQLite {
-			// SQLite is a plain local workspace: only a small set of init-local flags
-			// apply. Reject any other init-local flag by ALLOWLIST — a
-			// denylist silently ignores Dolt-only flags added later, the exact footgun
-			// this block exists to prevent. Inherited/global flags (--json, --dir, …)
-			// are not init-local and are left untouched.
-			sqliteAllowedFlags := map[string]bool{
-				"backend":     true,
-				"sqlite-path": true,
-				"prefix":      true, "quiet": true,
-				"skip-hooks": true, "skip-agents": true,
-				"reinit-local": true, "force": true, "init-if-missing": true,
-				"non-interactive": true,
-			}
-			var rejected []string
-			cmd.Flags().Visit(func(f *pflag.Flag) {
-				// Only police init's own flags; inherited/global flags (--json, …)
-				// are not this command's concern. cmd.Flags() is the authoritative
-				// parsed set that carries the Changed state.
-				if cmd.InheritedFlags().Lookup(f.Name) != nil {
-					return
-				}
-				if !sqliteAllowedFlags[f.Name] {
-					rejected = append(rejected, "--"+f.Name)
-				}
-			})
-			if len(rejected) > 0 {
-				sort.Strings(rejected)
-				return fmt.Errorf("bd init --backend=%s does not support %s (SQLite is a plain local workspace: no Dolt server, sync, remote, or wizard)", backendFlag, strings.Join(rejected, ", "))
-			}
-		}
-
 		// Validate --database format early, before any side effects.
 		if database != "" {
 			if err := dolt.ValidateDatabaseName(database); err != nil {
@@ -315,7 +279,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			return fmt.Errorf("--team requires interactive prompts and cannot be used with --non-interactive")
 		}
 
-		// Dolt remains the default; the SQLite arm returns before Dolt provisioning.
+		// Dolt is the only supported backend.
 		backend := configfile.BackendDolt
 
 		// Also treat BEADS_DOLT_SERVER_MODE=1 env var as --server.
@@ -807,16 +771,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 
 		ctx := rootCtx
-
-		if isSQLite {
-			return runInitSQLite(ctx, initSQLiteInput{
-				beadsDir:   beadsDir,
-				prefix:     prefix,
-				sqlitePath: sqlitePath,
-				quiet:      quiet,
-				jsonOutput: jsonOutput,
-			})
-		}
 
 		// Create Dolt storage backend
 		storagePath := doltserver.ResolveDoltDir(beadsDir)
@@ -1797,89 +1751,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 	},
 }
 
-// initSQLiteInput carries the resolved inputs the SQLite init arm needs.
-type initSQLiteInput struct {
-	beadsDir   string
-	prefix     string
-	sqlitePath string
-	quiet      bool
-	jsonOutput bool
-}
-
-// runInitSQLite finalizes a SQLite-backed workspace: it provisions the database file
-// (default beads.db inside the beads dir), seeds the issue prefix and project identity,
-// and writes metadata.json. SQLite is file-based and embedded (pure-Go), so there is no
-// server, DSN, or password.
-func runInitSQLite(ctx context.Context, in initSQLiteInput) error {
-	relPath := in.sqlitePath
-	if relPath == "" {
-		relPath = "beads.db"
-	}
-	dbPath := relPath
-	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(in.beadsDir, dbPath)
-	}
-
-	store, err := beadssqlite.Provision(ctx, dbPath)
-	if err != nil {
-		return fmt.Errorf("failed to initialize SQLite workspace: %w", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	cfg, _ := configfile.Load(in.beadsDir)
-	if cfg == nil {
-		cfg = configfile.DefaultConfig()
-	}
-
-	if in.prefix != "" {
-		if existing, _ := store.GetConfig(ctx, "issue_prefix"); existing == "" {
-			issuePrefix := strings.ReplaceAll(in.prefix, ".", "_")
-			if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
-				return fmt.Errorf("failed to set issue prefix: %w", err)
-			}
-		}
-	}
-
-	projectID, _ := store.GetMetadata(ctx, "_project_id")
-	if projectID == "" {
-		if cfg.ProjectID != "" {
-			projectID = cfg.ProjectID
-		} else {
-			projectID = configfile.GenerateProjectID()
-		}
-		if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
-			return fmt.Errorf("failed to write project ID: %w", err)
-		}
-	}
-
-	cfg.Backend = configfile.BackendSQLite
-	cfg.SQLitePath = relPath
-	cfg.ProjectID = projectID
-	if err := cfg.Save(in.beadsDir); err != nil {
-		return fmt.Errorf("failed to write metadata.json: %w", err)
-	}
-
-	switch {
-	case in.jsonOutput:
-		out := map[string]any{
-			"status":  "initialized",
-			"backend": configfile.BackendSQLite,
-			"path":    relPath,
-			"prefix":  in.prefix,
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-	case !in.quiet:
-		fmt.Printf("%s bd initialized with the SQLite backend\n", ui.RenderPass("✓"))
-		fmt.Printf("  Database: %s\n", relPath)
-		if in.prefix != "" {
-			fmt.Printf("  Prefix:   %s\n", in.prefix)
-		}
-		fmt.Println("  History:  not tracked (SQLite backend has no version control; use Dolt for history)")
-	}
-	return nil
-}
-
 func init() {
 	initCmd.Flags().StringP("prefix", "p", "", "Issue prefix (default: current directory name)")
 	initCmd.Flags().BoolP("quiet", "q", false, "Suppress output (quiet mode)")
@@ -1904,14 +1775,13 @@ func init() {
 	initCmd.Flags().Bool("non-interactive", false, "Skip all interactive prompts (auto-detected in CI or non-TTY environments)")
 	initCmd.Flags().String("role", "", "Set beads role without prompting: \"maintainer\" or \"contributor\"")
 
-	// Backend selection: Dolt (default) or embedded SQLite.
-	initCmd.Flags().String("backend", "", "Storage backend: dolt (default) or sqlite. See docs/architecture/storage-backends.md.")
-	initCmd.Flags().String("sqlite-path", "", "SQLite database file (with --backend=sqlite; relative to the beads dir, default beads.db)")
-	// Keep the short-lived server-backend flags as hidden parser tombstones. A
+	// Backend selection: Dolt is the default and only supported backend.
+	initCmd.Flags().String("backend", "", "Storage backend: dolt (default). Removed backends (postgres, mysql, sqlite) print migration guidance.")
+	// Keep the short-lived removed-backend flags as hidden parser tombstones. A
 	// legacy invocation can then reach the backend rollback guidance instead of
-	// failing early with an opaque "unknown flag" error. Current backends reject
+	// failing early with an opaque "unknown flag" error. The current backend rejects
 	// these flags explicitly above; they are never consumed as connection data.
-	for _, legacyFlag := range removedServerBackendInitFlags {
+	for _, legacyFlag := range removedBackendInitFlags {
 		initCmd.Flags().String(legacyFlag.name, "", legacyFlag.usage)
 		_ = initCmd.Flags().MarkHidden(legacyFlag.name)
 	}
@@ -1947,14 +1817,17 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
-var removedServerBackendInitFlags = []struct {
-	name  string
-	usage string
+var removedBackendInitFlags = []struct {
+	name      string
+	usage     string
+	origin    string
+	rationale string
 }{
-	{name: "pg-url", usage: "Legacy PostgreSQL connection URL (removed backend compatibility only)"},
-	{name: "pg-schema", usage: "Legacy PostgreSQL schema (removed backend compatibility only)"},
-	{name: "mysql-url", usage: "Legacy MySQL connection URL (removed backend compatibility only)"},
-	{name: "mysql-database", usage: "Legacy MySQL database (removed backend compatibility only)"},
+	{name: "pg-url", usage: "Legacy PostgreSQL connection URL (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "pg-schema", usage: "Legacy PostgreSQL schema (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "mysql-url", usage: "Legacy MySQL connection URL (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "mysql-database", usage: "Legacy MySQL database (removed backend compatibility only)", origin: "the removed PostgreSQL/MySQL initialization paths", rationale: configfile.RemovedBackendRationale},
+	{name: "sqlite-path", usage: "Legacy SQLite database file (removed backend compatibility only)", origin: "the removed SQLite initialization path", rationale: configfile.RemovedSQLiteRationale},
 }
 
 // migrateOldDatabases detects and migrates old database files to beads.db
@@ -2045,28 +1918,6 @@ func alreadyInitialized(format string, args ...any) error {
 // A returned error that matches errWorkspaceAlreadyInitialized means a database
 // already exists (the benign, idempotent-skip case); any other error is
 // operational and must not be treated as success.
-// checkExistingSQLBackend returns an "already initialized" guard for SQLite and a
-// fail-loud tombstone error for workspaces created with a removed backend. These
-// backends are marked by metadata.json alone, with no Dolt directory to inspect.
-func checkExistingSQLBackend(cfg *configfile.Config) error {
-	if err := validateConfiguredBackend(cfg); err != nil {
-		return err
-	}
-	switch cfg.GetBackend() {
-	case configfile.BackendSQLite:
-		return alreadyInitialized(`
-%s This workspace is already initialized with the SQLite backend (%q).
-
-To use it:
-  Just run bd commands normally (e.g., %s)
-
-To re-initialize (SQLite provisioning is idempotent):
-  bd init --backend=sqlite --reinit-local ...
-
-Aborting.`, ui.RenderWarn("⚠"), cfg.GetSQLitePath(), ui.RenderAccent("bd list"))
-	}
-	return nil
-}
 
 func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 	// Check if .beads directory exists
@@ -2075,7 +1926,7 @@ func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 	}
 
 	// metadata.json is authoritative for the configured backend, so resolve it once
-	// and dispatch. SQLite and removed-backend tombstones are marked by metadata
+	// and dispatch. Removed-backend tombstones are marked by metadata
 	// alone — there is no local Dolt directory to inspect — so a plain
 	// `bd init` (which defaults to Dolt) must not silently repoint a live SQL
 	// workspace to a fresh embedded Dolt DB and orphan its issues. --reinit-local
@@ -2087,7 +1938,7 @@ func checkExistingBeadsDataAt(beadsDir string, prefix string) error {
 		return fmt.Errorf("failed to load %s: %w; refusing to reinitialize automatically (restore the metadata or use --reinit-local after safeguarding existing data)", configfile.ConfigPath(beadsDir), cfgErr)
 	}
 	if cfg != nil {
-		if guardErr := checkExistingSQLBackend(cfg); guardErr != nil {
+		if guardErr := validateConfiguredBackend(cfg); guardErr != nil {
 			return guardErr
 		}
 	}

@@ -502,30 +502,6 @@ The remote must already exist (see 'bd dolt remote add').`,
 	},
 }
 
-// errExplicitCommitUnsupported returns a typed *storage.ErrUnsupported when the
-// open store has no Dolt commit graph (currently SQLite), and nil for Dolt.
-// Non-Dolt stores deliberately expose a no-op Commit so internal write paths can
-// call store.Commit() opportunistically without erroring; an EXPLICIT `bd dolt
-// commit` / `bd vc commit` must not ride that no-op and print a fake "Committed."
-// with no commit graph behind it. Internal opportunistic auto-commit is skipped
-// separately in PostRun for these stores, so gating only the explicit commands
-// keeps that path untouched.
-func errExplicitCommitUnsupported(st storage.DoltStorage, op string) error {
-	ncg, ok := storage.UnwrapStore(st).(storage.NonCommitGraphBackend)
-	if !ok || !ncg.CommitGraphUnsupported() {
-		return nil
-	}
-	backend := "non-dolt"
-	if beadsDir := selectedDoltBeadsDir(); beadsDir != "" {
-		if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
-			if b := cfg.GetBackend(); b != "" && b != configfile.BackendDolt {
-				backend = b
-			}
-		}
-	}
-	return &storage.ErrUnsupported{Op: op, Backend: backend}
-}
-
 var doltCommitCmd = &cobra.Command{
 	Use:   "commit",
 	Short: "Create a Dolt commit from pending changes",
@@ -546,9 +522,6 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 		st := getStore()
 		if st == nil {
 			return HandleError("no store available")
-		}
-		if err := errExplicitCommitUnsupported(st, "dolt commit"); err != nil {
-			return HandleError("%v", err)
 		}
 		msg, _ := cmd.Flags().GetString("message")
 		if msg == "" {

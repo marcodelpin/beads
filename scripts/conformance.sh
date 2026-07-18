@@ -4,8 +4,8 @@
 #
 #   ./scripts/conformance.sh
 #
-# Two tiers compare the maintained SQLite implementation against embedded Dolt:
-# the in-process storage corpus, then the real-binary CLI corpus.
+# Two tiers exercise the storage conformance contract: the in-process storage
+# corpus against the embedded-Dolt oracle, then the real-binary CLI corpus.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -31,7 +31,7 @@ assert_conformance_passed() {
 
 echo "==> Tier 1: in-process store conformance + wedge gates"
 # The embedded-Dolt backend runs the full backend-agnostic suite (conformance.RunAll) as
-# the reference oracle every SQL backend is compared against. BEADS_TEST_EMBEDDED_DOLT=1
+# the reference oracle any future backend is compared against. BEADS_TEST_EMBEDDED_DOLT=1
 # is REQUIRED, not optional: without it that suite self-skips
 # (internal/storage/embeddeddolt/conformance_test.go), which would let this whole
 # storage-parity gate report success while never running the oracle. Run it with -v and
@@ -42,12 +42,7 @@ embedded_dolt_log="$(mktemp)"
 BEADS_TEST_EMBEDDED_DOLT=1 CGO_ENABLED=1 go test -tags "$TAGS" -v \
   ./internal/storage/embeddeddolt/ -run TestConformance | tee "$embedded_dolt_log"
 assert_conformance_passed "$embedded_dolt_log" "embedded-Dolt reference (need BEADS_TEST_EMBEDDED_DOLT=1)"
-# SQLite is embedded (pure-Go), always runs.
-CGO_ENABLED=1 go test -tags "$TAGS" ./internal/storage/sqlite/ \
-  -run 'TestInterfaceCompleteness|TestUnsupportedContract|TestConformance|TestSeedOnlyOnFirstProvision'
-CGO_ENABLED=1 go test -tags "$TAGS" ./internal/storage/sqlitedialect/
-
-echo "==> Tier 2: end-to-end 'bd init' + CLI conformance (differential vs Dolt)"
+echo "==> Tier 2: end-to-end 'bd init' + CLI conformance (reference round-trip)"
 CGO_ENABLED=1 go test -tags "$TAGS e2e" ./test/conformance/
 
 echo "==> conformance OK"

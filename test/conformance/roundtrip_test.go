@@ -12,10 +12,10 @@ import (
 	"testing"
 )
 
-// The portable JSONL backup path — `bd export` -> git -> `bd import` — is SQLite's
-// backup mechanism because Dolt-native CALL DOLT_BACKUP and commit hashes do not
-// exist there. This test pins the manual round-trip so a regression in export or
-// import cannot slip through CI.
+// The portable JSONL backup path — `bd export` -> git -> `bd import` — is the
+// backend-agnostic backup mechanism for stores without Dolt-native CALL
+// DOLT_BACKUP and commit hashes. This test pins the manual round-trip so a
+// regression in export or import cannot slip through CI.
 //
 // It is a self-consistency (idempotence) check, not a differential one, so it lives
 // outside the `corpus`: for each backend it seeds a rich fixture, exports, restores

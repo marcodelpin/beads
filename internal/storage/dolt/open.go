@@ -54,7 +54,7 @@ func ApplyCLIAutoStart(beadsDir string, cfg *Config) {
 // closed instead of opening a new, empty Dolt database.
 func requireDoltBackend(fileCfg *configfile.Config) error {
 	switch fileCfg.Backend {
-	case configfile.BackendPostgres, configfile.BackendMySQL:
+	case configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite:
 		return fmt.Errorf("configured storage backend %q is no longer supported and cannot be opened as Dolt: %s", fileCfg.Backend, configfile.RemovedBackendDetail(fileCfg.Backend))
 	}
 	if !configfile.IsSupportedBackend(fileCfg.Backend) {

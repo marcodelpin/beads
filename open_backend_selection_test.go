@@ -18,9 +18,9 @@ func writeBackendMetadata(t *testing.T, backend string) string {
 	}
 	metadata := `{"backend":"` + backend + `"}`
 	if backend == "sqlite" {
-		// Current SQLite workspaces carry an explicit path marker. A bare
-		// backend:"sqlite" can be stale metadata from the earlier SQLite era
-		// and must not be used as a fresh-provisioning fixture (see PR #4740).
+		// Workspaces created by the removed SQLite backend carry an explicit
+		// path marker; a bare backend:"sqlite" can also be stale metadata from
+		// the earlier SQLite era (see PR #4740). Both must hit the tombstone.
 		metadata = `{"backend":"sqlite","sqlite_path":"beads.db"}`
 	}
 	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(metadata), 0o600); err != nil {
@@ -29,30 +29,30 @@ func writeBackendMetadata(t *testing.T, backend string) string {
 	return beadsDir
 }
 
-func TestOpenBestAvailableRoutesSQLite(t *testing.T) {
+func TestOpenBestAvailableRejectsSQLite(t *testing.T) {
 	beadsDir := writeBackendMetadata(t, "sqlite")
 	store, err := beads.OpenBestAvailable(context.Background(), beadsDir)
-	if err != nil {
-		t.Fatalf("OpenBestAvailable(SQLite): %v", err)
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("removed SQLite backend returned a store")
 	}
-	defer store.Close()
-
-	if err := store.SetConfig(context.Background(), "routing-test", "sqlite"); err != nil {
-		t.Fatalf("write through SQLite store: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
+		t.Fatalf("SQLite backend error = %v, want rollback explanation", err)
 	}
-	if got, err := store.GetConfig(context.Background(), "routing-test"); err != nil || got != "sqlite" {
-		t.Fatalf("read through SQLite store = %q, %v; want sqlite, nil", got, err)
+	if !strings.Contains(err.Error(), "single engine") || !strings.Contains(err.Error(), "export") {
+		t.Fatalf("SQLite backend error lacks rationale or migration guidance: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(beadsDir, "beads.db")); err != nil {
-		t.Fatalf("SQLite database was not created: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(beadsDir, "embeddeddolt")); !os.IsNotExist(err) {
-		t.Fatalf("SQLite routing created embedded Dolt storage (stat error: %v)", err)
+	// The fail-closed guarantee includes never provisioning the SQLite file the
+	// removed backend would have created.
+	for _, name := range []string{"embeddeddolt", "dolt", "beads.db"} {
+		if _, statErr := os.Stat(filepath.Join(beadsDir, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("removed SQLite backend created %s (stat error: %v)", name, statErr)
+		}
 	}
 }
 
 func TestOpenBestAvailableRejectsRemovedBackends(t *testing.T) {
-	for _, backend := range []string{"postgres", "mysql"} {
+	for _, backend := range []string{"postgres", "mysql", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
 			beadsDir := writeBackendMetadata(t, backend)
 			store, err := beads.OpenBestAvailable(context.Background(), beadsDir)
@@ -63,7 +63,11 @@ func TestOpenBestAvailableRejectsRemovedBackends(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "no longer supported") {
 				t.Fatalf("removed backend error = %v, want rollback explanation", err)
 			}
-			if !strings.Contains(err.Error(), "simple") || !strings.Contains(err.Error(), "resource") || !strings.Contains(err.Error(), "export") {
+			rationale := "resource-light"
+			if backend == "sqlite" {
+				rationale = "single engine"
+			}
+			if !strings.Contains(err.Error(), rationale) || !strings.Contains(err.Error(), "export") {
 				t.Fatalf("removed backend error lacks rationale or migration guidance: %v", err)
 			}
 			for _, name := range []string{"embeddeddolt", "dolt", "beads.db"} {

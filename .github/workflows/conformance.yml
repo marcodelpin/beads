@@ -1,7 +1,7 @@
 name: Conformance
 
-# Runs the same two-tier Dolt/SQLite storage conformance suite developers run
-# locally: the in-process store corpus and the real-binary CLI differential.
+# Runs the same two-tier storage conformance suite developers run locally:
+# the in-process store corpus and the real-binary CLI harness.
 
 on:
   pull_request:
@@ -18,7 +18,7 @@ env:
 
 jobs:
   conformance:
-    name: Storage backend conformance (Dolt + SQLite)
+    name: Storage backend conformance (embedded Dolt oracle)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
@@ -28,5 +28,5 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
-      - name: Run conformance (Dolt + SQLite)
+      - name: Run conformance (embedded Dolt oracle)
         run: ./scripts/conformance.sh

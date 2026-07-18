@@ -670,7 +670,7 @@ func TestSupportedBackendAllowlist(t *testing.T) {
 	}{
 		{name: "implicit dolt", backend: "", supported: true},
 		{name: "dolt", backend: BackendDolt, supported: true},
-		{name: "sqlite", backend: BackendSQLite, supported: true},
+		{name: "sqlite", backend: BackendSQLite, supported: false},
 		{name: "postgres", backend: BackendPostgres, supported: false},
 		{name: "mysql", backend: BackendMySQL, supported: false},
 		{name: "unknown", backend: "mystery", supported: false},

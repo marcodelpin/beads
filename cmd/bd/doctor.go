@@ -86,15 +86,15 @@ This command checks:
 
 Storage Availability:
   Full diagnostics, --perf, --deep, --server, --migration, and
-  --check=validate currently require Dolt server mode. Embedded Dolt and
-  SQLite support --check=artifacts, --check=conventions, and
+  --check=validate currently require Dolt server mode. Embedded Dolt
+  supports --check=artifacts, --check=conventions, and
   --check=pollution. --check-health has a limited hook-health fallback.
   Unsupported combinations return a notice without changing storage.
 
 Performance Mode (--perf):
   Run performance diagnostics on your database:
   - Times key operations (bd ready, bd list, bd show, etc.)
-  - Collects system info (OS, arch, SQLite version, database stats)
+  - Collects system info (OS, arch, database stats)
   - Generates CPU profile for analysis
   - Outputs shareable report for bug reports
 
@@ -132,9 +132,9 @@ Server Mode (--server):
 
 Legacy Dolt Migration Validation Mode (--migration):
   Retained for older SQLite-to-Dolt migration workflows and available only in
-  Dolt server mode. It does not inspect or migrate a current SQLite workspace,
-  and it is not the migration path for removed PostgreSQL or MySQL backends.
-  Use the storage-backends migration guide for current backend moves. Combine
+  Dolt server mode. It is not the migration path for removed backends
+  (PostgreSQL, MySQL, SQLite); those fail closed with export/import guidance.
+  Combine
   with --json for machine-parseable diagnostic output.
 
 Agent Mode (--agent):
@@ -211,7 +211,6 @@ Examples:
 		if err := validateDoctorWorkspaceBackend(absPath); err != nil {
 			return HandleError("%v", err)
 		}
-		doctorBackend := configuredDoctorBackend(absPath)
 
 		if usesProxiedServer() {
 			fmt.Fprintln(os.Stderr, "Note: 'bd doctor' is not yet supported in proxied-server mode.")
@@ -234,8 +233,8 @@ Examples:
 		// --perf opens a live server-mode connection; route embedded users to
 		// the structured stub instead of a hard connection error (GH#3597).
 		if perfMode {
-			if doctorBackend == configfile.BackendSQLite || isEmbeddedMode() {
-				printDoctorUnsupported("doctor --perf", doctorBackend)
+			if isEmbeddedMode() {
+				printEmbeddedUnsupported("doctor --perf")
 				return nil
 			}
 			if err := doctor.RunPerformanceDiagnostics(absPath); err != nil {
@@ -256,8 +255,8 @@ Examples:
 			case "pollution":
 				return runPollutionCheck(absPath, doctorClean, doctorYes)
 			case "validate":
-				if doctorBackend == configfile.BackendSQLite || isEmbeddedMode() {
-					printDoctorUnsupported("doctor --check=validate", doctorBackend)
+				if isEmbeddedMode() {
+					printEmbeddedUnsupported("doctor --check=validate")
 					return nil
 				}
 				return runValidateCheck(absPath)
@@ -272,8 +271,8 @@ Examples:
 		// time, each human-vetted — do not lift this gate wholesale. Checks
 		// that reach into the database layer stay server-gated until the
 		// storage driver interface covers them (AGENTS.md "Storage Boundary").
-		if doctorBackend == configfile.BackendSQLite || isEmbeddedMode() {
-			printDoctorUnsupported("doctor", doctorBackend)
+		if isEmbeddedMode() {
+			printEmbeddedUnsupported("doctor")
 			return nil
 		}
 
@@ -364,56 +363,6 @@ func validateDoctorWorkspaceBackend(path string) error {
 		return fmt.Errorf("failed to load %s: %w; no storage database was opened or modified; fix or restore metadata.json and retry", configfile.ConfigPath(beadsDir), err)
 	}
 	return validateConfiguredBackend(cfg)
-}
-
-func configuredDoctorBackend(path string) string {
-	beadsDir := doctor.ResolveBeadsDirForRepo(path)
-	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
-		return configfile.BackendDolt
-	}
-	return cfg.GetBackend()
-}
-
-func printDoctorUnsupported(commandLabel, backend string) {
-	if backend == configfile.BackendSQLite {
-		printSQLiteDoctorUnsupported(commandLabel)
-		return
-	}
-	printEmbeddedUnsupported(commandLabel)
-}
-
-func printSQLiteDoctorUnsupported(commandLabel string) {
-	hints := []string{
-		"Run normal SQLite-backed bd commands as usual",
-		"Check bd version: bd version",
-		"Use bd doctor --check=artifacts, --check=conventions, or --check=pollution",
-	}
-	supported := []string{"artifacts", "conventions", "pollution"}
-	unsupported := []string{"validate"}
-
-	if jsonOutput || doctorAgent {
-		payload := map[string]interface{}{
-			"error":                               fmt.Sprintf("'bd %s' database checks are not yet supported for SQLite; normal SQLite commands remain supported", commandLabel),
-			"code":                                "sqlite_doctor_unsupported",
-			"unsupported":                         true,
-			"backend":                             configfile.BackendSQLite,
-			"command":                             commandLabel,
-			"checks_supported_for_sqlite":         supported,
-			"checks_not_yet_supported_for_sqlite": unsupported,
-			"hints":                               hints,
-		}
-		encoder := json.NewEncoder(os.Stderr)
-		encoder.SetIndent("", "  ")
-		_ = encoder.Encode(wrapWithSchemaVersion(payload))
-		return
-	}
-
-	fmt.Fprintf(os.Stderr, "Note: 'bd %s' database checks are not yet supported for SQLite; normal SQLite commands remain supported.\n\n", commandLabel)
-	fmt.Fprintln(os.Stderr, "Checks available for SQLite workspaces:")
-	fmt.Fprintln(os.Stderr, "  • bd doctor --check=artifacts")
-	fmt.Fprintln(os.Stderr, "  • bd doctor --check=conventions")
-	fmt.Fprintln(os.Stderr, "  • bd doctor --check=pollution")
 }
 
 // printEmbeddedUnsupported reports that a doctor variant is not yet wired up

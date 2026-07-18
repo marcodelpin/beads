@@ -9,7 +9,6 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
-	beadssqlite "github.com/steveyegge/beads/internal/storage/sqlite"
 )
 
 // OpenBestAvailable opens a beads database using the best available backend
@@ -18,7 +17,6 @@ import (
 //
 //   - Embedded Dolt (default): Opens via the CGo embedded Dolt engine.
 //   - Dolt server: Connects to a dolt sql-server via OpenFromConfig.
-//   - SQLite: Opens the configured local SQLite database.
 //
 // The returned Storage must be closed when no longer needed.
 //
@@ -33,11 +31,6 @@ func OpenBestAvailable(ctx context.Context, beadsDir string) (Storage, error) {
 	}
 	if !configfile.IsSupportedBackend(cfg.Backend) {
 		return nil, configuredBackendUnavailable(cfg.Backend)
-	}
-
-	switch cfg.GetBackend() {
-	case configfile.BackendSQLite:
-		return beadssqlite.NewFromConfig(ctx, beadsDir)
 	}
 
 	if cfg.IsDoltServerMode() {

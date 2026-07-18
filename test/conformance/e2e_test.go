@@ -159,8 +159,8 @@ var corpus = []scenario{
 		{"create", "childB", "-t", "task", "--parent", "cf-cp1", "--json"},
 		{"list", "--json"},
 	}},
-	// (bd mol wisp list order is non-contractual for equal-second ties — Dolt and
-	// SQLite can differ on tie order in the nested wisps array, which the harness can't
+	// (bd mol wisp list order is non-contractual for equal-second ties — backends
+	// can differ on tie order in the nested wisps array, which the harness can't
 	// normalize; ListWisps is covered as a set at the store level.)
 	// All cli-differential scenarios below were driven end-to-end against the
 	// embedded-Dolt reference (bd built with -tags gms_pure_go, `bd init -p cf`) and
@@ -305,7 +305,7 @@ func TestConformanceE2E(t *testing.T) {
 	ref := Reference()
 	cands := Candidates()
 	if len(cands) == 0 {
-		t.Fatal("no candidate backends registered")
+		t.Skip("no candidate backends registered; the differential harness is idle until another backend profile is added")
 	}
 	// Make coverage visible in test logs.
 	names := make([]string, len(cands))

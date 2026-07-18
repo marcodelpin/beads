@@ -1377,14 +1377,11 @@ func TestEmbeddedInit(t *testing.T) {
 	})
 
 	t.Run("sql_backend_flags", func(t *testing.T) {
-		// SQLite is a supported pluggable backend now: init succeeds and records it.
-		_, beadsDir, _ := bdInit(t, bd, "--prefix", "sqlt", "--backend", "sqlite")
-		cfg, err := configfile.Load(beadsDir)
-		if err != nil {
-			t.Fatalf("failed to load metadata.json: %v", err)
-		}
-		if cfg.Backend != configfile.BackendSQLite {
-			t.Errorf("backend: got %q, want %q", cfg.Backend, configfile.BackendSQLite)
+		// The SQLite backend was rolled back with the other alternative
+		// backends: init fails closed with its own rationale.
+		sqliteOut := bdInitFail(t, bd, "--backend", "sqlite")
+		if !strings.Contains(sqliteOut, "no longer supported") || !strings.Contains(sqliteOut, "single engine") {
+			t.Errorf("sqlite should report the backend rollback: %s", sqliteOut)
 		}
 
 		for _, backend := range []string{"postgres", "mysql"} {

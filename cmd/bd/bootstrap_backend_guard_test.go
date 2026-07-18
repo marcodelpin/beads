@@ -16,7 +16,7 @@ import (
 func TestBootstrapRejectsRemovedBackendsBeforeWorkspaceWrites(t *testing.T) {
 	bd := buildBDForInitTests(t)
 
-	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL} {
+	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
 		backend := backend
 		for _, args := range [][]string{{"bootstrap", "--dry-run"}, {"bootstrap", "--yes"}} {
 			args := args
@@ -47,15 +47,7 @@ func TestBootstrapRejectsRemovedBackendsBeforeWorkspaceWrites(t *testing.T) {
 				}
 
 				message := strings.ToLower(string(out))
-				for _, want := range []string{
-					"no longer supported",
-					"general-purpose server databases",
-					"simple and resource-light",
-					"was not opened",
-					"export",
-					"dolt",
-					"sqlite",
-				} {
+				for _, want := range removedBackendWantSubstrings(backend) {
 					if !strings.Contains(message, want) {
 						t.Errorf("bd %s error for %q missing %q:\n%s", strings.Join(args, " "), backend, want, message)
 					}
@@ -104,7 +96,7 @@ func TestBootstrapRejectsUnknownBackendBeforeWorkspaceWrites(t *testing.T) {
 				t.Errorf("bd %s unexpectedly accepted an unknown backend:\n%s", strings.Join(args, " "), out)
 			}
 			message := string(out)
-			for _, want := range []string{"not recognized", "no storage database was opened or modified", "dolt", "sqlite"} {
+			for _, want := range []string{"not recognized", "no storage database was opened or modified", "dolt"} {
 				if !strings.Contains(message, want) {
 					t.Errorf("bd %s error missing %q:\n%s", strings.Join(args, " "), want, message)
 				}
@@ -190,21 +182,28 @@ func TestBootstrapDoesNotConvertExistingSQLiteWorkspace(t *testing.T) {
 			} {
 				runGitForBootstrapTest(t, root, gitArgs...)
 			}
-			cmd := exec.Command(bd, "init", "--quiet", "--backend=sqlite", "--prefix=sqliteguard")
-			cmd.Dir = root
-			cmd.Env = bootstrapBackendGuardEnv(root, filepath.Join(root, ".beads"))
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("initialize SQLite workspace: %v\n%s", err, out)
-			}
 
+			// Hand-seed a workspace created by an earlier build's SQLite backend:
+			// metadata selecting the removed backend plus its database file. The
+			// guard must reject it without reading or rewriting either.
 			beadsDir := filepath.Join(root, ".beads")
+			if err := os.MkdirAll(beadsDir, 0o700); err != nil {
+				t.Fatalf("create .beads: %v", err)
+			}
 			metadataPath := filepath.Join(beadsDir, configfile.ConfigFileName)
+			metadataBefore := []byte("{\n  \"database\": \"beads.db\",\n  \"backend\": \"sqlite\",\n  \"sqlite_path\": \"beads.db\",\n  \"project_id\": \"sqlite-guard\"\n}\n")
+			if err := os.WriteFile(metadataPath, metadataBefore, 0o600); err != nil {
+				t.Fatalf("write metadata.json: %v", err)
+			}
 			databasePath := filepath.Join(beadsDir, "beads.db")
-			metadataBefore := readBootstrapGuardFile(t, metadataPath)
-			databaseBefore := sha256.Sum256(readBootstrapGuardFile(t, databasePath))
+			databaseContent := []byte("sqlite-guard database placeholder")
+			if err := os.WriteFile(databasePath, databaseContent, 0o600); err != nil {
+				t.Fatalf("write beads.db: %v", err)
+			}
+			databaseBefore := sha256.Sum256(databaseContent)
 			localVersionBefore, hadLocalVersion := readOptionalBootstrapGuardFile(t, filepath.Join(beadsDir, ".local_version"))
 
-			cmd = exec.Command(bd, args...)
+			cmd := exec.Command(bd, args...)
 			cmd.Dir = root
 			cmd.Env = bootstrapBackendGuardEnv(root, beadsDir)
 			out, err := cmd.CombinedOutput()
@@ -213,10 +212,13 @@ func TestBootstrapDoesNotConvertExistingSQLiteWorkspace(t *testing.T) {
 			}
 
 			message := strings.ToLower(string(out))
-			if !strings.Contains(message, "bootstrap") || !strings.Contains(message, "sqlite") ||
-				!(strings.Contains(message, "not support") || strings.Contains(message, "unsupported") ||
-					strings.Contains(message, "cannot") || strings.Contains(message, "refus")) {
-				t.Errorf("bd %s should fail with explicit SQLite bootstrap guidance:\n%s", strings.Join(args, " "), out)
+			if !strings.Contains(message, "sqlite") {
+				t.Errorf("bd %s should name the rejected backend:\n%s", strings.Join(args, " "), out)
+			}
+			for _, want := range removedBackendWantSubstrings(configfile.BackendSQLite) {
+				if !strings.Contains(message, want) {
+					t.Errorf("bd %s error missing %q:\n%s", strings.Join(args, " "), want, out)
+				}
 			}
 
 			metadataAfter := readBootstrapGuardFile(t, metadataPath)

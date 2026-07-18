@@ -17,7 +17,7 @@ const ConfigFileName = "metadata.json"
 
 type Config struct {
 	Database string `json:"database"`
-	Backend  string `json:"backend,omitempty"` // Storage backend: "dolt" (default) or "sqlite"; legacy "postgres"/"mysql" values are rejection tombstones. Read via GetBackend().
+	Backend  string `json:"backend,omitempty"` // Storage backend: "dolt" (default); legacy "postgres"/"mysql"/"sqlite" values are rejection tombstones. Read via GetBackend().
 
 	// Deletions configuration
 	DeletionsRetentionDays int `json:"deletions_retention_days,omitempty"` // 0 means use default (3 days)
@@ -44,7 +44,8 @@ type Config struct {
 	MySQLDSN       string `json:"mysql_dsn,omitempty"`
 	MySQLDatabase  string `json:"mysql_database,omitempty"`
 
-	// SQLite backend (backend="sqlite"). File-based, embedded; no credentials.
+	// Deprecated: retained only to round-trip metadata written by the removed
+	// SQLite backend (backend="sqlite"); store selection rejects that backend.
 	SQLitePath string `json:"sqlite_path,omitempty"` // database file, relative to the beads dir (default beads.db)
 
 	// Project identity — unique ID generated at bd init time.
@@ -230,7 +231,7 @@ type BackendCapabilities struct {
 }
 
 // CapabilitiesForBackend returns capabilities for a backend string. Embedded Dolt
-// and SQLite are single-process-only; use Config.GetCapabilities() to account for
+// is single-process-only; use Config.GetCapabilities() to account for
 // Dolt server and proxied-server modes.
 func CapabilitiesForBackend(_ string) BackendCapabilities {
 	return BackendCapabilities{SingleProcessOnly: true}
@@ -250,12 +251,13 @@ func (c *Config) GetCapabilities() BackendCapabilities {
 // IsSupportedBackend reports whether backend selects an implementation shipped by
 // beads. The empty value is the legacy/default spelling of Dolt.
 func IsSupportedBackend(backend string) bool {
-	return backend == "" || backend == BackendDolt || backend == BackendSQLite
+	return backend == "" || backend == BackendDolt
 }
 
-// GetBackend returns the configured storage backend. PostgreSQL and MySQL remain
-// recognizable here so workspaces created by earlier releases can fail loudly at
-// store selection instead of silently falling back to an empty Dolt database.
+// GetBackend returns the configured storage backend. PostgreSQL, MySQL, and
+// SQLite remain recognizable here so workspaces created by earlier builds can
+// fail loudly at store selection instead of silently falling back to an empty
+// Dolt database.
 // Empty and explicit Dolt retain the established Dolt behavior. GetBackend keeps
 // the historical Dolt fallback for unknown values, so storage-selection callers
 // must check IsSupportedBackend(c.Backend) before opening or creating storage.

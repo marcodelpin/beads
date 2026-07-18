@@ -422,7 +422,7 @@ func findLocalBeadsDir() string {
 
 // findDatabaseInBeadsDir searches for a database within a .beads directory.
 // Checks metadata.json for the selected implementation's database path. For
-// server mode and SQLite, no local path needs to exist yet: authoritative
+// server mode, no local path needs to exist yet: authoritative
 // metadata is enough to route the caller without falling through to Dolt.
 // Embedded Dolt checks both embeddeddolt/ and the legacy dolt/ path. Returns
 // empty string if no database is configured or found.
@@ -441,16 +441,6 @@ func findDatabaseInBeadsDir(beadsDir string, _ bool) string {
 			// storage-selection layer report the metadata error without routing
 			// through a leftover local Dolt directory.
 			return ""
-		}
-		if cfg.GetBackend() == configfile.BackendSQLite {
-			dbPath := cfg.GetSQLitePath()
-			if dbPath == "" {
-				dbPath = "beads.db"
-			}
-			if !filepath.IsAbs(dbPath) {
-				dbPath = filepath.Join(beadsDir, dbPath)
-			}
-			return dbPath
 		}
 		// For Dolt server mode, database is on the server - no local directory required
 		if cfg.IsDoltServerMode() {

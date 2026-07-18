@@ -10,7 +10,6 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	beadssqlite "github.com/steveyegge/beads/internal/storage/sqlite"
 )
 
 func usesSQLServer() bool {
@@ -58,10 +57,6 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltS
 	if err := validateConfiguredBackend(cfg); err != nil {
 		return nil, err
 	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendSQLite {
-		// SQLite (modernc.org/sqlite) is pure-Go; no CGO.
-		return beadssqlite.NewFromConfig(ctx, beadsDir)
-	}
 	if cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
 		return nil, fmt.Errorf("proxy server store should be uow provider")
@@ -85,9 +80,6 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 	}
 	if err := validateConfiguredBackend(cfg); err != nil {
 		return nil, err
-	}
-	if cfg != nil && cfg.GetBackend() == configfile.BackendSQLite {
-		return beadssqlite.NewFromConfig(ctx, beadsDir)
 	}
 	if cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
