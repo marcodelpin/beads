@@ -14,6 +14,13 @@
 -- workspaces self-heal on their next store open. The guard makes this a
 -- no-op on in-place-upgraded workspaces where synced 0054 already added the
 -- column, and on workspaces with no local wisps table yet.
+--
+-- Deliberately NOT healed: 0054's other two wisps columns
+-- (lease_expires_at, heartbeat_at). 0055 moved leases to their own table
+-- and dropped those columns from issues/wisps — wisps are never leased, and
+-- nothing post-cutover reads or writes them on wisps — so bootstrapped
+-- workspaces that never had them are already in the correct final shape.
+-- row_lock is the only 0054 wisps column that survives 0055.
 SET @needs_add = IF(
     (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wisps') > 0
