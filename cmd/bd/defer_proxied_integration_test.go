@@ -14,11 +14,10 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 	requireSharedProxiedServer(t)
 	t.Parallel()
 	bd := buildEmbeddedBD(t)
-	p := newSharedProxiedProject(t, bd, "dfr")
 
-	showStatus := func(t *testing.T, id string) (string, interface{}) {
+	showStatus := func(t *testing.T, dir, id string) (string, interface{}) {
 		t.Helper()
-		out, err := bdProxiedRun(t, bd, p.dir, "show", id, "--json")
+		out, err := bdProxiedRun(t, bd, dir, "show", id, "--json")
 		if err != nil {
 			t.Fatalf("show %s: %v\n%s", id, err, out)
 		}
@@ -33,6 +32,8 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 	}
 
 	t.Run("defer_then_undefer", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfrt")
 		a := bdProxiedCreate(t, bd, p.dir, "Defer target", "--type", "task")
 
 		out, err := bdProxiedRun(t, bd, p.dir, "defer", a.ID, "--until", "tomorrow", "--reason", "waiting on X", "--json")
@@ -50,7 +51,7 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 			t.Errorf("expected defer_until to be set")
 		}
 
-		status, deferUntil := showStatus(t, a.ID)
+		status, deferUntil := showStatus(t, p.dir, a.ID)
 		if status != string(types.StatusDeferred) {
 			t.Errorf("status = %s, want deferred", status)
 		}
@@ -58,11 +59,10 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 			t.Errorf("defer_until should be set after defer")
 		}
 
-		// Undefer restores to open and clears defer_until.
 		if out, err := bdProxiedRun(t, bd, p.dir, "undefer", a.ID); err != nil {
 			t.Fatalf("undefer: %v\n%s", err, out)
 		}
-		status, deferUntil = showStatus(t, a.ID)
+		status, deferUntil = showStatus(t, p.dir, a.ID)
 		if status != string(types.StatusOpen) {
 			t.Errorf("status = %s, want open after undefer", status)
 		}
@@ -72,6 +72,8 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 	})
 
 	t.Run("deferred_excluded_from_ready", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfrr")
 		b := bdProxiedCreate(t, bd, p.dir, "Ready-then-deferred", "--type", "task", "--priority", "1")
 		if out, err := bdProxiedRun(t, bd, p.dir, "defer", b.ID); err != nil {
 			t.Fatalf("defer: %v\n%s", err, out)
@@ -85,6 +87,8 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 	})
 
 	t.Run("undefer_nondeferred_errors", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfrn")
 		c := bdProxiedCreate(t, bd, p.dir, "Open issue", "--type", "task")
 		stdout, stderr, _ := bdProxiedRunBuffers(t, bd, p.dir, "undefer", c.ID)
 		if !strings.Contains(stdout+stderr, "is not deferred") {
@@ -93,17 +97,20 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 	})
 
 	t.Run("defer_is_idempotent", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfri")
 		d := bdProxiedCreate(t, bd, p.dir, "Idempotent defer", "--type", "task")
 		if out, err := bdProxiedRun(t, bd, p.dir, "defer", d.ID); err != nil {
 			t.Fatalf("first defer: %v\n%s", err, out)
 		}
-		// Second defer on an already-deferred issue must not error (ClientFoundRows fix).
 		if out, err := bdProxiedRun(t, bd, p.dir, "defer", d.ID, "--json"); err != nil {
 			t.Fatalf("second defer errored (no-op update regression): %v\n%s", err, out)
 		}
 	})
 
 	t.Run("defer_multiple", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfrm")
 		e := bdProxiedCreate(t, bd, p.dir, "Defer multi 1", "--type", "task")
 		f := bdProxiedCreate(t, bd, p.dir, "Defer multi 2", "--type", "task")
 
@@ -115,13 +122,15 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 			t.Errorf("expected both IDs in defer output, got:\n%s", out)
 		}
 		for _, id := range []string{e.ID, f.ID} {
-			if status, _ := showStatus(t, id); status != string(types.StatusDeferred) {
+			if status, _ := showStatus(t, p.dir, id); status != string(types.StatusDeferred) {
 				t.Errorf("status of %s = %s, want deferred", id, status)
 			}
 		}
 	})
 
 	t.Run("undefer_multiple", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfru")
 		g := bdProxiedCreate(t, bd, p.dir, "Undefer multi 1", "--type", "task")
 		h := bdProxiedCreate(t, bd, p.dir, "Undefer multi 2", "--type", "task")
 		if out, err := bdProxiedRun(t, bd, p.dir, "defer", g.ID, h.ID); err != nil {
@@ -136,13 +145,15 @@ func TestProxiedServerDeferUndefer(t *testing.T) {
 			t.Errorf("expected both IDs in undefer output, got:\n%s", out)
 		}
 		for _, id := range []string{g.ID, h.ID} {
-			if status, _ := showStatus(t, id); status != string(types.StatusOpen) {
+			if status, _ := showStatus(t, p.dir, id); status != string(types.StatusOpen) {
 				t.Errorf("status of %s = %s, want open after undefer", id, status)
 			}
 		}
 	})
 
 	t.Run("defer_reason_appended_to_notes", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "dfrz")
 		i := bdProxiedCreate(t, bd, p.dir, "Defer with reason", "--type", "task")
 		if out, err := bdProxiedRun(t, bd, p.dir, "defer", i.ID, "--reason", "waiting on API access"); err != nil {
 			t.Fatalf("defer --reason: %v\n%s", err, out)

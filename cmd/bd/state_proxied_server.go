@@ -73,10 +73,11 @@ func runStateProxiedServer(ctx context.Context, issueID, dimension string) error
 }
 
 type setStateResult struct {
-	fullID   string
-	oldValue string
-	eventID  string
-	changed  bool
+	fullID     string
+	oldValue   string
+	eventID    string
+	changed    bool
+	removeWarn string
 }
 
 func runSetStateProxiedServer(ctx context.Context, issueID, dimension, newValue, reason string) error {
@@ -151,11 +152,16 @@ func runSetStateProxiedServer(ctx context.Context, issueID, dimension, newValue,
 			eventID = cr.Issue.ID
 		}
 
+		var removeWarn string
 		if oldLabel != "" {
+			var rerr error
 			if isWisp {
-				_ = uw.LabelUseCase().RemoveWispLabel(ctx, fullID, oldLabel, actor)
+				rerr = uw.LabelUseCase().RemoveWispLabel(ctx, fullID, oldLabel, actor)
 			} else {
-				_ = uw.LabelUseCase().RemoveLabel(ctx, fullID, oldLabel, actor)
+				rerr = uw.LabelUseCase().RemoveLabel(ctx, fullID, oldLabel, actor)
+			}
+			if rerr != nil {
+				removeWarn = fmt.Sprintf("failed to remove old label %s: %v", oldLabel, rerr)
 			}
 		}
 		if isWisp {
@@ -168,10 +174,14 @@ func runSetStateProxiedServer(ctx context.Context, issueID, dimension, newValue,
 			}
 		}
 
-		return setStateResult{fullID: fullID, oldValue: oldValue, eventID: eventID, changed: true}, "bd: set-state " + fullID, nil
+		return setStateResult{fullID: fullID, oldValue: oldValue, eventID: eventID, changed: true, removeWarn: removeWarn}, "bd: set-state " + fullID, nil
 	})
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
+	}
+
+	if res.removeWarn != "" {
+		WarnError("%s", res.removeWarn)
 	}
 
 	if !res.changed {
