@@ -28,6 +28,12 @@ var ErrNotClaimable = errors.New("issue not claimable")
 // escape hatch (bd unclaim --force), reserved for admin/reaper use.
 var ErrNotOwner = errors.New("issue claimed by a different actor")
 
+// ErrAssigneeMismatch is returned by UnclaimIssueIfAssignee when the issue's
+// current assignee does not match the expected assignee (including when the
+// issue is no longer assigned at all). The caller's view of the claim was
+// stale; the issue is left untouched.
+var ErrAssigneeMismatch = errors.New("assignee mismatch")
+
 // ErrNotFound is returned when a requested entity does not exist in the database.
 var ErrNotFound = errors.New("not found")
 
@@ -51,6 +57,11 @@ type Storage interface {
 	UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error
 	ReopenIssue(ctx context.Context, id string, reason string, actor string) error
 	UnclaimIssue(ctx context.Context, id string, actor string, force bool) error
+	// UnclaimIssueIfAssignee releases a claim only while the issue is still
+	// assigned to expectedAssignee (compare-and-swap, the inverse of
+	// ClaimIssue). Returns ErrAssigneeMismatch, leaving the issue untouched,
+	// when the current assignee differs.
+	UnclaimIssueIfAssignee(ctx context.Context, id string, actor string, expectedAssignee string) error
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
 	DeleteIssue(ctx context.Context, id string) error
