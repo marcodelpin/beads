@@ -95,6 +95,7 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 	table := pickIssueTable(opts.UseWispsTable)
 
 	_, statusChanging := updates["status"]
+	mergeOps := issueops.HasMergeOps(updates)
 
 	// When the status changes we need the prior row to reproduce the embedded
 	// lifecycle side effects (issueops.updateIssueInTx): closed_at is set on
@@ -102,8 +103,10 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 	// transition, the audit event type is derived from the transition, and
 	// is_blocked is recomputed for neighbors. Read the full old issue once so
 	// all four use the same snapshot; the ErrNoRows contract is preserved.
+	// Merge operations (metadata edits, note appends) need the same read: they
+	// are resolved against the row as seen by THIS unit-of-work transaction.
 	var oldIssue *types.Issue
-	if statusChanging {
+	if statusChanging || mergeOps {
 		var err error
 		oldIssue, err = r.Get(ctx, id, opts)
 		if err != nil {
@@ -112,6 +115,24 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 			}
 			return fmt.Errorf("db: Update %s: read old issue: %w", id, err)
 		}
+	}
+
+	// Resolve read-merge-write operation keys (issueops.OpMergeMetadata,
+	// OpSetMetadata, OpUnsetMetadata, OpAppendNotes) into concrete column
+	// values inside the mutation transaction, mirroring the embedded path
+	// (issueops.updateIssueInTx). Callers must pass the OPERATION, never a
+	// value pre-merged from an earlier read: this runner is a Dolt sql-server
+	// session where FOR UPDATE is a parse-only no-op, so a stale-snapshot merge
+	// is only made safe by Dolt's commit-time conflict detection plus the
+	// caller redoing the whole unit of work on a serialization failure — and
+	// that redo re-runs this in-transaction resolution against the winner's
+	// committed row.
+	if mergeOps {
+		resolved, err := issueops.ResolveMergeOps(oldIssue, updates)
+		if err != nil {
+			return fmt.Errorf("db: Update %s: %w", id, err)
+		}
+		updates = resolved
 	}
 
 	setClauses := make([]string, 0, len(updates)+3)
