@@ -44,6 +44,11 @@ var ErrNotInitialized = errors.New("database not initialized")
 // ErrPrefixMismatch is returned when an issue ID does not match the configured prefix.
 var ErrPrefixMismatch = errors.New("prefix mismatch")
 
+// ErrCloseBlocked is returned by CloseIssueChecked when an issue cannot be
+// closed because it is still blocked (is_blocked=1: an open blocking dependency
+// or an open blocking gate). Bypass with CloseIssueOptions.Force.
+var ErrCloseBlocked = errors.New("cannot close blocked issue")
+
 // Storage is the interface satisfied by *dolt.DoltStore.
 // Consumers depend on this interface rather than on the concrete type so that
 // alternative implementations (mocks, proxies, etc.) can be substituted.
@@ -64,6 +69,12 @@ type Storage interface {
 	UnclaimIssueIfAssignee(ctx context.Context, id string, actor string, expectedAssignee string) error
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
+	// CloseIssueChecked closes an issue, but refuses with ErrCloseBlocked when
+	// the issue is still blocked (is_blocked=1) unless opts.Force is set. The
+	// blocked-check and the close run in ONE transaction, so the guard is atomic
+	// (no TOCTOU). Already-closed is an idempotent success with Unchanged=true; a
+	// missing issue returns ErrNotFound.
+	CloseIssueChecked(ctx context.Context, id string, actor string, opts CloseIssueOptions) (CloseIssueResult, error)
 	DeleteIssue(ctx context.Context, id string) error
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
 	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)
@@ -188,6 +199,18 @@ type Storage interface {
 
 	// Lifecycle
 	Close() error
+}
+
+// CloseIssueOptions carries the optional inputs to CloseIssueChecked.
+type CloseIssueOptions struct {
+	Reason  string
+	Session string
+	Force   bool // bypass the is_blocked guard (mirrors `bd close --force`)
+}
+
+// CloseIssueResult reports the outcome of CloseIssueChecked.
+type CloseIssueResult struct {
+	Unchanged bool // true when the issue was ALREADY closed (idempotent no-op)
 }
 
 // MergeSlotStatus is returned by MergeSlotCheck and describes the current

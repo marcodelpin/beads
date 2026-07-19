@@ -3,6 +3,7 @@ package beads_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/steveyegge/beads"
@@ -10,6 +11,22 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+// TestReExportCloseBlocked proves the public beads.ErrCloseBlocked alias is the
+// same value as the internal sentinel and composes through errors.Is when
+// wrapped — the property CloseIssueChecked callers rely on to detect a guard
+// refusal without importing internal/storage.
+func TestReExportCloseBlocked(t *testing.T) {
+	t.Parallel()
+
+	if beads.ErrCloseBlocked != storage.ErrCloseBlocked {
+		t.Error("beads.ErrCloseBlocked is not the internal sentinel value (identity broken)")
+	}
+	wrapped := fmt.Errorf("x: %w", beads.ErrCloseBlocked)
+	if !errors.Is(wrapped, beads.ErrCloseBlocked) {
+		t.Errorf("errors.Is(wrapped, beads.ErrCloseBlocked) = false; err = %v", wrapped)
+	}
+}
 
 // TestReExportedSentinelIdentity proves each public sentinel is the SAME value
 // as the internal one it aliases, so errors.Is composes across the package

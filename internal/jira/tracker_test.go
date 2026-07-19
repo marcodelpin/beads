@@ -653,7 +653,10 @@ func (s *configStore) UpdateIssue(_ context.Context, _ string, _ map[string]inte
 func (s *configStore) ReopenIssue(_ context.Context, _, _, _ string) error     { return nil }
 func (s *configStore) UpdateIssueType(_ context.Context, _, _, _ string) error { return nil }
 func (s *configStore) CloseIssue(_ context.Context, _, _, _, _ string) error   { return nil }
-func (s *configStore) DeleteIssue(_ context.Context, _ string) error           { return nil }
+func (s *configStore) CloseIssueChecked(_ context.Context, _, _ string, _ storage.CloseIssueOptions) (storage.CloseIssueResult, error) {
+	return storage.CloseIssueResult{}, nil
+}
+func (s *configStore) DeleteIssue(_ context.Context, _ string) error { return nil }
 func (s *configStore) SearchIssuesWithCounts(_ context.Context, _ string, _ types.IssueFilter) ([]*types.IssueWithCounts, error) {
 	return nil, nil
 }

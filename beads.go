@@ -48,6 +48,16 @@ type Transaction = beads.Transaction
 // one whole-graph check, never graph integrity.
 type DependencyAddOptions = storage.DependencyAddOptions
 
+// CloseIssueOptions carries the optional inputs to Storage.CloseIssueChecked —
+// an atomic, guarded close that refuses a still-blocked issue with
+// ErrCloseBlocked unless Force is set. Exported so consumers can name it without
+// importing internal/storage.
+type CloseIssueOptions = storage.CloseIssueOptions
+
+// CloseIssueResult reports the outcome of Storage.CloseIssueChecked. Unchanged
+// is true when the issue was already closed (idempotent no-op).
+type CloseIssueResult = storage.CloseIssueResult
+
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
 //
@@ -205,6 +215,7 @@ var (
 	ErrNotFound        = storage.ErrNotFound
 	ErrAlreadyClaimed  = storage.ErrAlreadyClaimed
 	ErrNotClaimable    = storage.ErrNotClaimable
+	ErrCloseBlocked    = storage.ErrCloseBlocked
 	ErrSelfDependency  = domain.ErrSelfDependency
 	ErrDependencyCycle = domain.ErrDependencyCycle
 )

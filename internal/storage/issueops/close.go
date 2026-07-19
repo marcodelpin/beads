@@ -3,6 +3,7 @@ package issueops
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,6 +26,70 @@ func CloseIssueInTx(ctx context.Context, tx DBTX, id string, reason, actor, sess
 
 func CloseIssueWithoutEventInTx(ctx context.Context, tx DBTX, id string, reason, actor, session string) (*CloseResult, error) {
 	return closeIssueInTx(ctx, tx, id, reason, actor, session, false)
+}
+
+// CloseIssueCheckedInTx closes an issue within a transaction, refusing with
+// storage.ErrCloseBlocked when it is still blocked (is_blocked=1) unless force
+// is set. The guard (IsBlockedInTx) and the close (CloseIssueInTx) share the
+// SAME transaction, so no blocker can clear between the check and the close.
+func CloseIssueCheckedInTx(ctx context.Context, tx DBTX, id, reason, actor, session string, force bool) (*CloseResult, error) {
+	if !force {
+		// The blocked guard only has meaning for an open→closed transition. An
+		// already-closed row is an idempotent no-op (Unchanged=true per the
+		// Storage.CloseIssueChecked contract), so detect that first. A closed
+		// row can still carry a stale is_blocked=1 — e.g. after a cross-clone
+		// Dolt merge, a state the schema explicitly models (GetStatistics
+		// filters `is_blocked = 1 AND status <> 'closed'`). Guarding such a row
+		// would refuse the idempotent re-close with ErrCloseBlocked. Only guard
+		// rows that are not already closed; CloseIssueInTx below is the sole
+		// detector of the already-closed no-op (and matches the Force path,
+		// which already reaches Unchanged=true by skipping the guard).
+		closed, err := isClosedInTx(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !closed {
+			blocked, blockers, err := IsBlockedInTx(ctx, tx, id)
+			if err != nil {
+				return nil, err
+			}
+			if blocked {
+				// A purely transitive block (e.g. an active parent-child chain)
+				// sets is_blocked=1 without any direct blocks/waits-for/
+				// conditional-blocks edge, so blockers is empty — omit the "blocked
+				// by" clause rather than render "blocked by []".
+				if len(blockers) > 0 {
+					return nil, fmt.Errorf("%w: %s is blocked by %v", storage.ErrCloseBlocked, id, blockers)
+				}
+				return nil, fmt.Errorf("%w: %s", storage.ErrCloseBlocked, id)
+			}
+		}
+	}
+	return CloseIssueInTx(ctx, tx, id, reason, actor, session)
+}
+
+// isClosedInTx reports whether the issue (or wisp) identified by id is already
+// in the closed status. It probes the issues table then the optional wisps
+// table, mirroring IsBlockedInTx's table order. A missing row reports false so
+// the caller falls through to CloseIssueInTx, which returns ErrNotFound.
+//
+//nolint:gosec // G201: table is a hardcoded "issues" or "wisps".
+func isClosedInTx(ctx context.Context, tx DBTX, id string) (bool, error) {
+	for _, table := range []string{"issues", "wisps"} {
+		var status string
+		err := tx.QueryRowContext(ctx, "SELECT status FROM "+table+" WHERE id = ?", id).Scan(&status)
+		if err == nil {
+			return types.Status(status) == types.StatusClosed, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if optionalBlockedTable(table) && isTableNotExistError(err) {
+			continue
+		}
+		return false, fmt.Errorf("read status from %s: %w", table, err)
+	}
+	return false, nil
 }
 
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
