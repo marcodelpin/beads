@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
@@ -847,7 +848,7 @@ func (t *doltTransaction) checkCrossTierSchedulingCycle(ctx context.Context, dep
 		return err
 	}
 	if cycle != "" {
-		return fmt.Errorf("adding dependency would create a cycle")
+		return domain.ErrDependencyCycle
 	}
 	return nil
 }

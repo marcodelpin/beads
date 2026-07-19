@@ -14,6 +14,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -195,4 +196,15 @@ const (
 	EventLabelAdded        = types.EventLabelAdded
 	EventLabelRemoved      = types.EventLabelRemoved
 	EventCompacted         = types.EventCompacted
+)
+
+// Re-exported error sentinels so consumers match on errors.Is rather than
+// on message text. Each is an ALIAS of the internal sentinel, so the identity
+// is preserved across the package boundary.
+var (
+	ErrNotFound        = storage.ErrNotFound
+	ErrAlreadyClaimed  = storage.ErrAlreadyClaimed
+	ErrNotClaimable    = storage.ErrNotClaimable
+	ErrSelfDependency  = domain.ErrSelfDependency
+	ErrDependencyCycle = domain.ErrDependencyCycle
 )
