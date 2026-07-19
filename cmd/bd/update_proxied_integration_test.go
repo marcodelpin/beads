@@ -123,6 +123,83 @@ func TestProxiedServerUpdate(t *testing.T) {
 		}
 	})
 
+	// Parity with the non-proxied TestMultiIDUpdatePartialFailureExitsNonzero:
+	// a generic per-ID failure (a bogus ID) between two good IDs must exit
+	// non-zero and name the failed ID, while the good IDs stay applied. Before
+	// the proxied-parity fix the proxied path returned exit 0 whenever another
+	// ID succeeded, hiding the failure from exit-code automation.
+	t.Run("generic_batch_partial_failure_exits_nonzero", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "ugbp")
+		good1 := bdProxiedCreate(t, bd, p.dir, "Batch good 1")
+		good2 := bdProxiedCreate(t, bd, p.dir, "Batch good 2")
+		const bogus = "ugbp-zzzzzzzzzz" // cannot collide with generated IDs
+
+		out := bdProxiedUpdateFail(t, bd, p.dir, good1.ID, bogus, good2.ID, "--priority", "0")
+		if !strings.Contains(out, bogus) {
+			t.Errorf("expected failed ID %s in output, got: %s", bogus, out)
+		}
+		// The command is per-ID, not atomic: both good IDs must still be applied.
+		for _, id := range []string{good1.ID, good2.ID} {
+			if got := bdProxiedShow(t, bd, p.dir, id); got.Priority != 0 {
+				t.Errorf("issue %s priority = %d, want 0 (successful IDs must stay applied)", id, got.Priority)
+			}
+		}
+	})
+
+	// The --json partial-failure contract on the proxied path: stdout keeps the
+	// array-of-updated-issues success shape and the last stderr line is the
+	// machine-parseable failed-ID report, matching the non-proxied path.
+	t.Run("generic_batch_partial_failure_json_reports_failed_ids", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "ugbj")
+		good1 := bdProxiedCreate(t, bd, p.dir, "JSON good 1")
+		good2 := bdProxiedCreate(t, bd, p.dir, "JSON good 2")
+		const bogus = "ugbj-zzzzzzzzzz"
+
+		stdout, stderr, err := bdProxiedUpdateRaw(t, bd, p.dir, "--json", good1.ID, bogus, good2.ID, "--priority", "0")
+		if err == nil {
+			t.Fatalf("proxied --json batch with a bogus ID exited 0, want non-zero\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+		}
+
+		// stdout keeps the success array of the two updated issues.
+		start := strings.Index(stdout, "[")
+		if start < 0 {
+			t.Fatalf("no JSON success array on stdout:\n%s", stdout)
+		}
+		var updated []*types.Issue
+		if uerr := json.Unmarshal([]byte(stdout[start:]), &updated); uerr != nil {
+			t.Fatalf("stdout is not the array-of-issues success shape: %v\n%s", uerr, stdout)
+		}
+		gotIDs := map[string]bool{}
+		for _, u := range updated {
+			gotIDs[u.ID] = true
+		}
+		if len(updated) != 2 || !gotIDs[good1.ID] || !gotIDs[good2.ID] {
+			t.Errorf("stdout success array = %v, want exactly the two good IDs %s %s", updated, good1.ID, good2.ID)
+		}
+
+		// The last stderr line is a JSON failure report naming the bogus ID.
+		lines := strings.Split(strings.TrimSpace(stderr), "\n")
+		last := lines[len(lines)-1]
+		var report struct {
+			Error  string `json:"error"`
+			Failed []struct {
+				ID    string `json:"id"`
+				Error string `json:"error"`
+			} `json:"failed"`
+		}
+		if uerr := json.Unmarshal([]byte(last), &report); uerr != nil {
+			t.Fatalf("last stderr line is not a JSON failure report: %v\nstderr:\n%s", uerr, stderr)
+		}
+		if report.Error == "" {
+			t.Errorf("JSON failure report has empty error message: %s", last)
+		}
+		if len(report.Failed) != 1 || report.Failed[0].ID != bogus {
+			t.Errorf("JSON failure report failed list = %+v, want exactly one entry for %s", report.Failed, bogus)
+		}
+	})
+
 	t.Run("add_remove_labels", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "ul")

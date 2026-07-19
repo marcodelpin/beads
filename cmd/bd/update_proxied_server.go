@@ -32,28 +32,28 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		return nil
 	}
 
-	jsonOut, _ := cmd.Flags().GetBool("json")
+	// Derive success-output format from the global JSON decision (--json OR
+	// --format json OR config), the same signal reportUpdateFailures uses, so
+	// success output and the failure report never disagree on format within one
+	// invocation. This matches the non-proxied path in update.go.
+	jsonOut := jsonOutput
 	var updated []*types.Issue
-	var anyUpdated bool
-	// claimFailed records a requested-but-lost --claim. In a mixed batch (one
-	// claim won, another lost to a different owner) anyUpdated is set by the
-	// winner, so the command would otherwise exit 0 and hide the lost claim from
-	// exit-code automation. Track it separately and exit non-zero, mirroring the
-	// non-proxied path in update.go (beads audit finding #10).
-	claimFailed := false
+	// failures accumulates every requested ID that could not be updated —
+	// generic per-ID errors as well as a lost --claim race. In a mixed batch a
+	// later winner used to flip the exit code back to success and hide the
+	// failed IDs from exit-code automation; report them all and exit non-zero,
+	// mirroring the non-proxied path in update.go (beads audit finding #10).
+	var failures []updateIDFailure
 
 	for _, id := range args {
-		issue, ok, claimLost, err := applyUpdateProxiedOne(ctx, id, in)
+		issue, failReason, err := applyUpdateProxiedOne(ctx, id, in)
 		if err != nil {
 			return err
 		}
-		if claimLost {
-			claimFailed = true
-		}
-		if !ok {
+		if failReason != "" {
+			failures = append(failures, updateIDFailure{ID: id, Error: failReason})
 			continue
 		}
-		anyUpdated = true
 		if jsonOut {
 			updated = append(updated, issue)
 		} else {
@@ -64,8 +64,8 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	if jsonOut && len(updated) > 0 {
 		_ = outputJSON(updated)
 	}
-	if !anyUpdated || claimFailed {
-		return SilentExit()
+	if len(failures) > 0 {
+		return reportUpdateFailures(failures, len(args))
 	}
 	return nil
 }
@@ -76,13 +76,15 @@ type updateProxiedResult struct {
 	updated bool
 }
 
-// applyUpdateProxiedOne applies one ID's update on the proxied path. The third
-// return (claimLost) reports a requested --claim that lost to a different owner
-// (already-claimed / not-claimable), so the caller can flip the batch exit code
-// even when another ID succeeded — matching the non-proxied path.
-func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*types.Issue, bool, bool, error) {
+// applyUpdateProxiedOne applies one ID's update on the proxied path. On success
+// it returns the updated issue and an empty failReason. On a per-ID failure it
+// returns a non-empty failReason (already printed inline on stderr), including a
+// lost --claim race (already-claimed / not-claimable), so the caller records the
+// failed ID and exits non-zero — matching the non-proxied path. A non-nil error
+// is reserved for a hard, batch-aborting condition (uninitialized UOW provider).
+func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*types.Issue, string, error) {
 	if uowProvider == nil {
-		return nil, false, false, HandleError("proxied-server UOW provider not initialized")
+		return nil, "", HandleError("proxied-server UOW provider not initialized")
 	}
 
 	var claimLost bool
@@ -122,10 +124,10 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 	if err != nil {
 		if claimLost {
 			fmt.Fprintf(os.Stderr, "Error claiming %s: %v\n", id, err)
-			return nil, false, true, nil
+			return nil, fmt.Sprintf("claiming issue: %v", err), nil
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return nil, false, false, nil
+		return nil, err.Error(), nil
 	}
 
 	if res.updated {
@@ -133,7 +135,7 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", id, err)
 		}
 	}
-	return res.after, res.updated, false, nil
+	return res.after, "", nil
 }
 
 func fireProxiedUpdateHooks(ctx context.Context, before, after *types.Issue) error {
