@@ -221,6 +221,17 @@ func (s *InstrumentedStorage) CloseIssueWithResult(ctx context.Context, id strin
 	return res, err
 }
 
+func (s *InstrumentedStorage) CloseIssueChecked(ctx context.Context, id string, actor string, opts storage.CloseIssueOptions) (storage.CloseIssueResult, error) {
+	attrs := []attribute.KeyValue{
+		attribute.String("bd.issue.id", id),
+		attribute.String("bd.actor", actor),
+	}
+	ctx, span, t := s.op(ctx, "CloseIssueChecked", attrs...)
+	res, err := s.inner.CloseIssueChecked(ctx, id, actor, opts)
+	s.done(ctx, span, t, err, attrs...)
+	return res, err
+}
+
 func (s *InstrumentedStorage) DeleteIssue(ctx context.Context, id string) error {
 	attrs := []attribute.KeyValue{attribute.String("bd.issue.id", id)}
 	ctx, span, t := s.op(ctx, "DeleteIssue", attrs...)

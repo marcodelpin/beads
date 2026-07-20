@@ -656,6 +656,10 @@ func (s *configStore) CloseIssue(_ context.Context, _, _, _, _ string) error   {
 func (s *configStore) CloseIssueWithResult(_ context.Context, _, _, _, _ string) (*storage.CloseResult, error) {
 	return nil, nil
 }
+
+func (s *configStore) CloseIssueChecked(_ context.Context, _, _ string, _ storage.CloseIssueOptions) (storage.CloseIssueResult, error) {
+	return storage.CloseIssueResult{}, nil
+}
 func (s *configStore) DeleteIssue(_ context.Context, _ string) error { return nil }
 func (s *configStore) SearchIssuesWithCounts(_ context.Context, _ string, _ types.IssueFilter) ([]*types.IssueWithCounts, error) {
 	return nil, nil

@@ -12,6 +12,7 @@ internal/testutil/fixtures/fixtures_test.go::TestLargeFromJSONL
 internal/storage/dolt/concurrent_test.go::TestHighContentionStress
 internal/storage/dolt/concurrent_test.go::TestConcurrentWorkQueueDrain
 internal/storage/dolt/lease_test.go::TestConcurrentHeartbeatReclaimClose
+internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentMergeOps_NoLostUpdate
 cmd/bd/prune_bench_test.go::TestPruneLargeFixture
 cmd/bd/update_metadata_race_test.go::TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys
 cmd/bd/note_race_test.go::TestNote_ConcurrentProcesses_NoLostNotes

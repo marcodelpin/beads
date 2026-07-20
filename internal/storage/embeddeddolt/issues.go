@@ -149,6 +149,26 @@ func (s *EmbeddedDoltStore) CloseIssueWithResult(ctx context.Context, id string,
 	return out, nil
 }
 
+// CloseIssueChecked closes an issue but refuses with storage.ErrCloseBlocked
+// when it is still blocked (is_blocked=1) unless opts.Force is set. The guard
+// and the close share one transaction, so the check is atomic (no TOCTOU).
+// Delegates SQL work to issueops; EmbeddedDolt auto-commits the transaction.
+func (s *EmbeddedDoltStore) CloseIssueChecked(ctx context.Context, id string, actor string, opts storage.CloseIssueOptions) (storage.CloseIssueResult, error) {
+	var result storage.CloseIssueResult
+	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
+		res, err := issueops.CloseIssueCheckedInTx(ctx, tx, id, opts.Reason, actor, opts.Session, opts.Force)
+		if err != nil {
+			return err
+		}
+		result = storage.CloseIssueResult{Unchanged: res.AlreadyClosed}
+		return nil
+	})
+	if err != nil {
+		return storage.CloseIssueResult{}, err
+	}
+	return result, nil
+}
+
 // IsBlocked checks if an issue is blocked by active dependencies.
 func (s *EmbeddedDoltStore) IsBlocked(ctx context.Context, issueID string) (bool, []string, error) {
 	var blocked bool

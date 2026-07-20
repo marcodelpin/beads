@@ -299,9 +299,12 @@ func ApplyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string)
 	return json.RawMessage(result), nil
 }
 
-// MetadataEditValue stores a set-edit string value as a JSON string.
-// Previous behavior inferred types (numbers, booleans, null) from content,
-// which silently broke map[string]string round-trips (GH#4146).
+// MetadataEditValue converts a --set-metadata string value to JSON. Per the CLI
+// contract (GH#4146), --set-metadata values are ALWAYS stored as JSON strings;
+// inferring numbers/booleans/null from string content silently broke
+// map[string]string round-trips for Go consumers (a numeric-looking id or a
+// version like "1e3" came back as a JSON number). Typed values go through the
+// explicit --metadata / --metadata-json path (MergeMetadataJSON).
 func MetadataEditValue(s string) json.RawMessage {
 	b, _ := json.Marshal(s)
 	return json.RawMessage(b)

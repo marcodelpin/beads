@@ -350,7 +350,7 @@ func markDirectBlockingDependencySourceInTx(ctx context.Context, tx *sql.Tx, sou
 // nil uses all dependency tables.
 func CheckDependencyCycleInTx(ctx context.Context, tx DBTX, dep *types.Dependency, depTables []string) error {
 	if dep.IssueID == dep.DependsOnID {
-		return fmt.Errorf("cannot add self-dependency: %s cannot depend on itself", dep.IssueID)
+		return fmt.Errorf("%w: %s cannot depend on itself", domain.ErrSelfDependency, dep.IssueID)
 	}
 	if !isSchedulingEdge(dep.Type) {
 		return nil
@@ -360,7 +360,7 @@ func CheckDependencyCycleInTx(ctx context.Context, tx DBTX, dep *types.Dependenc
 		return fmt.Errorf("failed to check for dependency cycle: %w", err)
 	}
 	if wouldCycle {
-		return fmt.Errorf("adding dependency would create a cycle")
+		return domain.ErrDependencyCycle
 	}
 	return nil
 }
