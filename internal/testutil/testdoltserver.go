@@ -5,6 +5,7 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -32,6 +33,7 @@ var (
 	doltServerOnce    sync.Once
 	doltServerErr     error
 	doltTestPort      string
+	doltTestHost      string
 	doltSingletonSrv  *doltServer
 	doltTerminateOnce sync.Once
 	dockerOnce        sync.Once
@@ -95,6 +97,51 @@ func hasTestSkip(service string) bool {
 	return false
 }
 
+// doltExternalAddrEnv points the suite at an ALREADY-RUNNING dolt sql-server
+// (host:port) instead of starting a container. Docker is then never touched.
+//
+// Motivation: the suite otherwise hard-requires Docker, and Docker cannot start
+// containers inside an LXC guest whose host forbids loading the docker-default
+// AppArmor profile - which is every LXC on this fleet. dolt ships as a single
+// binary, so a plain `dolt sql-server` is enough to run the whole suite.
+const doltExternalAddrEnv = "BEADS_TEST_DOLT_ADDR"
+
+// externalDoltAddr returns the configured external server address, or "" when
+// the (default) container path should be used.
+func externalDoltAddr() string {
+	return strings.TrimSpace(os.Getenv(doltExternalAddrEnv))
+}
+
+// useExternalDoltServer adopts an already-running server as the suite's target.
+//
+// It FAILS LOUD on a bad address rather than falling back to the container or
+// degrading to a skip. That is the whole point: the failure mode this escape
+// hatch exists to fix is "the suite silently did not run", so a mistyped
+// address must never be able to produce a green run.
+func useExternalDoltServer(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s=%q is not a host:port address: %w", doltExternalAddrEnv, addr, err)
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if port == "" {
+		return fmt.Errorf("%s=%q has no port", doltExternalAddrEnv, addr)
+	}
+
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return fmt.Errorf("%s=%q: cannot reach a dolt sql-server there: %w", doltExternalAddrEnv, addr, err)
+	}
+	_ = conn.Close()
+
+	doltTestHost = host
+	doltTestPort = port
+	return nil
+}
+
 // checkDolt returns the readiness state for Dolt integration tests.
 // It composes hasTestSkip, isDockerAvailable, isDoltImageCached, and
 // isDoltRepoImageCached, caching the result.
@@ -103,6 +150,13 @@ func checkDolt() doltReadiness {
 		// Explicit skip checked first to avoid ~1s docker info cost.
 		if hasTestSkip("dolt") {
 			doltCached = doltSkipped
+			return
+		}
+		// An external server makes every Docker precondition irrelevant. The
+		// address is validated later, in useExternalDoltServer, so a bad value
+		// surfaces as a loud error instead of a "not ready" skip.
+		if externalDoltAddr() != "" {
+			doltCached = doltReady
 			return
 		}
 		if !isDockerAvailable() {
@@ -231,7 +285,11 @@ func StartIsolatedDoltContainer(t *testing.T) string {
 // ensureSharedContainer starts the singleton container and sets BEADS_DOLT_PORT.
 func ensureSharedContainer() {
 	doltServerOnce.Do(func() {
-		doltServerErr = startDoltContainer()
+		if addr := externalDoltAddr(); addr != "" {
+			doltServerErr = useExternalDoltServer(addr)
+		} else {
+			doltServerErr = startDoltContainer()
+		}
 		if doltServerErr == nil && doltTestPort != "" {
 			if err := os.Setenv("BEADS_DOLT_PORT", doltTestPort); err != nil {
 				doltServerErr = fmt.Errorf("set BEADS_DOLT_PORT: %w", err)
@@ -268,7 +326,11 @@ func RequireDoltContainer(t *testing.T) {
 
 // DoltContainerAddr returns the address (host:port) of the Dolt container.
 func DoltContainerAddr() string {
-	return "127.0.0.1:" + doltTestPort
+	host := doltTestHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, doltTestPort)
 }
 
 // DoltContainerPort returns the mapped host port of the Dolt container.
