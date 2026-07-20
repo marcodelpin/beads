@@ -60,29 +60,29 @@ func TestBuildProxiedServerClientInfo(t *testing.T) {
 	})
 
 	t.Run("absolute paths pass through cleaned", func(t *testing.T) {
-		info, err := buildProxiedServerClientInfo("/var/lib/beads/proxieddb", "/etc/dolt/server.yaml", "/var/log/server.log", 0, 0, nil)
+		info, err := buildProxiedServerClientInfo(testPlatformPath("/var/lib/beads/proxieddb"), testPlatformPath("/etc/dolt/server.yaml"), testPlatformPath("/var/log/server.log"), 0, 0, nil)
 		require.NoError(t, err)
 		require.NotNil(t, info)
-		assert.Equal(t, "/var/lib/beads/proxieddb", info.RootPath)
-		assert.Equal(t, "/etc/dolt/server.yaml", info.ConfigPath)
-		assert.Equal(t, "/var/log/server.log", info.LogPath)
+		assert.Equal(t, testPlatformPath("/var/lib/beads/proxieddb"), info.RootPath)
+		assert.Equal(t, testPlatformPath("/etc/dolt/server.yaml"), info.ConfigPath)
+		assert.Equal(t, testPlatformPath("/var/log/server.log"), info.LogPath)
 		assert.Nil(t, info.External)
 	})
 
 	t.Run("filepath.Clean normalizes redundant separators and . segments", func(t *testing.T) {
-		info, err := buildProxiedServerClientInfo("/var/lib//beads/./proxieddb", "", "", 0, 0, nil)
+		info, err := buildProxiedServerClientInfo(testPlatformPath("/var/lib//beads/./proxieddb"), "", "", 0, 0, nil)
 		require.NoError(t, err)
 		require.NotNil(t, info)
-		assert.Equal(t, "/var/lib/beads/proxieddb", info.RootPath)
+		assert.Equal(t, testPlatformPath("/var/lib/beads/proxieddb"), info.RootPath)
 	})
 
 	t.Run("mixed absolute + empty", func(t *testing.T) {
-		info, err := buildProxiedServerClientInfo("/var/lib/beads/proxieddb", "", "/var/log/server.log", 0, 0, nil)
+		info, err := buildProxiedServerClientInfo(testPlatformPath("/var/lib/beads/proxieddb"), "", testPlatformPath("/var/log/server.log"), 0, 0, nil)
 		require.NoError(t, err)
 		require.NotNil(t, info)
-		assert.Equal(t, "/var/lib/beads/proxieddb", info.RootPath)
+		assert.Equal(t, testPlatformPath("/var/lib/beads/proxieddb"), info.RootPath)
 		assert.Equal(t, "", info.ConfigPath)
-		assert.Equal(t, "/var/log/server.log", info.LogPath)
+		assert.Equal(t, testPlatformPath("/var/log/server.log"), info.LogPath)
 	})
 
 	t.Run("relative root path is rejected", func(t *testing.T) {
@@ -104,8 +104,8 @@ func TestBuildProxiedServerClientInfo(t *testing.T) {
 	})
 
 	t.Run("absolute paths survive a round-trip through the sidecar resolver", func(t *testing.T) {
-		const beadsDir = "/proj/.beads"
-		info, err := buildProxiedServerClientInfo("/var/lib/beads/proxieddb", "", "", 0, 0, nil)
+		beadsDir := testPlatformPath("/proj/.beads")
+		info, err := buildProxiedServerClientInfo(testPlatformPath("/var/lib/beads/proxieddb"), "", "", 0, 0, nil)
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Equal(t, info.RootPath, (&configfile.ProxiedServerClientInfo{RootPath: info.RootPath}).ResolvedRootPath(beadsDir))
@@ -129,23 +129,23 @@ func TestBuildProxiedServerClientInfo(t *testing.T) {
 			Host:        "hosted-dolt.example.com",
 			Port:        3306,
 			TLSRequired: true,
-			TLSCert:     "/etc/beads/client.pem",
-			TLSKey:      "/etc/beads/client.key",
+			TLSCert:     testPlatformPath("/etc/beads/client.pem"),
+			TLSKey:      testPlatformPath("/etc/beads/client.key"),
 		}
 		info, err := buildProxiedServerClientInfo("", "", "", 0, 0, ext)
 		require.NoError(t, err)
 		require.NotNil(t, info.External)
 		assert.True(t, info.External.TLSRequired)
-		assert.Equal(t, "/etc/beads/client.pem", info.External.TLSCert)
-		assert.Equal(t, "/etc/beads/client.key", info.External.TLSKey)
+		assert.Equal(t, testPlatformPath("/etc/beads/client.pem"), info.External.TLSCert)
+		assert.Equal(t, testPlatformPath("/etc/beads/client.key"), info.External.TLSKey)
 	})
 
 	t.Run("external unix socket config flows through", func(t *testing.T) {
-		ext := &configfile.ExternalDoltConfig{Socket: "/var/run/dolt.sock"}
+		ext := &configfile.ExternalDoltConfig{Socket: testPlatformPath("/var/run/dolt.sock")}
 		info, err := buildProxiedServerClientInfo("", "", "", 0, 0, ext)
 		require.NoError(t, err)
 		require.NotNil(t, info.External)
-		assert.Equal(t, "/var/run/dolt.sock", info.External.Socket)
+		assert.Equal(t, testPlatformPath("/var/run/dolt.sock"), info.External.Socket)
 		assert.Empty(t, info.External.Host)
 		assert.Zero(t, info.External.Port)
 	})
@@ -160,7 +160,7 @@ func TestBuildProxiedServerClientInfo(t *testing.T) {
 		_, err := buildProxiedServerClientInfo("", "", "", 0, 0, &configfile.ExternalDoltConfig{
 			Host:    "db",
 			Port:    3306,
-			TLSCert: "/etc/beads/client.pem",
+			TLSCert: testPlatformPath("/etc/beads/client.pem"),
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "TLSCert set without TLSKey")

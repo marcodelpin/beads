@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -73,11 +74,30 @@ func TestEnsureProxiedServerConfig_ReusesExistingConfig(t *testing.T) {
 	assert.Equal(t, existing, got, "existing config.yaml must be reused unchanged")
 }
 
+// testPlatformPath turns a POSIX-shaped fixture path into the shape the running
+// platform actually produces: on Windows filepath.Join emits backslashes and a
+// bare leading "/" is drive-relative, so a POSIX literal can never be the right
+// expectation there (bda-apn).
+//
+// Input and expectation are BOTH passed through this, so the assertions keep
+// their independent literal structure -- they are not rebuilt by calling the
+// helper under test, which would make them tautological.
+func testPlatformPath(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return filepath.FromSlash(p)
+	}
+	return filepath.VolumeName(wd) + filepath.FromSlash(p)
+}
+
 func TestProxiedServerPathHelpers(t *testing.T) {
-	bd := "/tmp/some/.beads"
-	assert.Equal(t, "/tmp/some/.beads/dolt", proxiedServerRoot(bd))
-	assert.Equal(t, "/tmp/some/.beads/dolt/config.yaml", proxiedServerConfigPath(bd))
-	assert.Equal(t, "/tmp/some/.beads/dolt/server.log", proxiedServerLogPath(bd))
+	bd := testPlatformPath("/tmp/some/.beads")
+	assert.Equal(t, testPlatformPath("/tmp/some/.beads/dolt"), proxiedServerRoot(bd))
+	assert.Equal(t, testPlatformPath("/tmp/some/.beads/dolt/config.yaml"), proxiedServerConfigPath(bd))
+	assert.Equal(t, testPlatformPath("/tmp/some/.beads/dolt/server.log"), proxiedServerLogPath(bd))
 }
 
 // TestInitCommandRegistersProxiedServerFlag verifies the --proxied-server flag
@@ -134,29 +154,29 @@ func TestResolveProxiedServerConfigPath(t *testing.T) {
 	t.Run("sidecar absolute returned as-is and isCustom", func(t *testing.T) {
 		t.Setenv("BEADS_PROXIED_SERVER_CONFIG", "")
 		bd := t.TempDir()
-		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{ConfigPath: "/etc/dolt/server.yaml"})
+		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{ConfigPath: testPlatformPath("/etc/dolt/server.yaml")})
 		path, isCustom, err := resolveProxiedServerConfigPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/etc/dolt/server.yaml", path)
+		assert.Equal(t, testPlatformPath("/etc/dolt/server.yaml"), path)
 		assert.True(t, isCustom)
 	})
 
 	t.Run("env beats sidecar and isCustom", func(t *testing.T) {
-		t.Setenv("BEADS_PROXIED_SERVER_CONFIG", "/from/env.yaml")
+		t.Setenv("BEADS_PROXIED_SERVER_CONFIG", testPlatformPath("/from/env.yaml"))
 		bd := t.TempDir()
 		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{ConfigPath: "configs/from-meta.yaml"})
 		path, isCustom, err := resolveProxiedServerConfigPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/from/env.yaml", path)
+		assert.Equal(t, testPlatformPath("/from/env.yaml"), path)
 		assert.True(t, isCustom)
 	})
 
 	t.Run("env with no sidecar still wins", func(t *testing.T) {
-		t.Setenv("BEADS_PROXIED_SERVER_CONFIG", "/from/env.yaml")
+		t.Setenv("BEADS_PROXIED_SERVER_CONFIG", testPlatformPath("/from/env.yaml"))
 		bd := t.TempDir()
 		path, isCustom, err := resolveProxiedServerConfigPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/from/env.yaml", path)
+		assert.Equal(t, testPlatformPath("/from/env.yaml"), path)
 		assert.True(t, isCustom)
 	})
 }
@@ -278,29 +298,29 @@ func TestResolveProxiedServerLogPath(t *testing.T) {
 	t.Run("sidecar absolute returned as-is and isCustom", func(t *testing.T) {
 		t.Setenv("BEADS_PROXIED_SERVER_LOG", "")
 		bd := t.TempDir()
-		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{LogPath: "/var/log/beads/server.log"})
+		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{LogPath: testPlatformPath("/var/log/beads/server.log")})
 		path, isCustom, err := resolveProxiedServerLogPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/var/log/beads/server.log", path)
+		assert.Equal(t, testPlatformPath("/var/log/beads/server.log"), path)
 		assert.True(t, isCustom)
 	})
 
 	t.Run("env beats sidecar and isCustom", func(t *testing.T) {
-		t.Setenv("BEADS_PROXIED_SERVER_LOG", "/from/env.log")
+		t.Setenv("BEADS_PROXIED_SERVER_LOG", testPlatformPath("/from/env.log"))
 		bd := t.TempDir()
 		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{LogPath: "logs/from-meta.log"})
 		path, isCustom, err := resolveProxiedServerLogPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/from/env.log", path)
+		assert.Equal(t, testPlatformPath("/from/env.log"), path)
 		assert.True(t, isCustom)
 	})
 
 	t.Run("env with no sidecar still wins", func(t *testing.T) {
-		t.Setenv("BEADS_PROXIED_SERVER_LOG", "/from/env.log")
+		t.Setenv("BEADS_PROXIED_SERVER_LOG", testPlatformPath("/from/env.log"))
 		bd := t.TempDir()
 		path, isCustom, err := resolveProxiedServerLogPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/from/env.log", path)
+		assert.Equal(t, testPlatformPath("/from/env.log"), path)
 		assert.True(t, isCustom)
 	})
 }
@@ -556,27 +576,27 @@ func TestResolveProxiedServerRootPath(t *testing.T) {
 	t.Run("sidecar absolute returned as-is", func(t *testing.T) {
 		t.Setenv("BEADS_PROXIED_SERVER_ROOT_PATH", "")
 		bd := t.TempDir()
-		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{RootPath: "/var/lib/beads/proxieddb"})
+		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{RootPath: testPlatformPath("/var/lib/beads/proxieddb")})
 		got, err := resolveProxiedServerRootPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/var/lib/beads/proxieddb", got)
+		assert.Equal(t, testPlatformPath("/var/lib/beads/proxieddb"), got)
 	})
 
 	t.Run("env beats sidecar", func(t *testing.T) {
-		t.Setenv("BEADS_PROXIED_SERVER_ROOT_PATH", "/from/env-root")
+		t.Setenv("BEADS_PROXIED_SERVER_ROOT_PATH", testPlatformPath("/from/env-root"))
 		bd := t.TempDir()
 		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{RootPath: "alt-from-meta"})
 		got, err := resolveProxiedServerRootPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/from/env-root", got)
+		assert.Equal(t, testPlatformPath("/from/env-root"), got)
 	})
 
 	t.Run("env with no sidecar still wins", func(t *testing.T) {
-		t.Setenv("BEADS_PROXIED_SERVER_ROOT_PATH", "/from/env-root")
+		t.Setenv("BEADS_PROXIED_SERVER_ROOT_PATH", testPlatformPath("/from/env-root"))
 		bd := t.TempDir()
 		got, err := resolveProxiedServerRootPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/from/env-root", got)
+		assert.Equal(t, testPlatformPath("/from/env-root"), got)
 	})
 
 	t.Run("corrupt sidecar surfaces error", func(t *testing.T) {
@@ -686,11 +706,11 @@ func TestResolveProxiedServerConfigPath_FollowsCustomRoot(t *testing.T) {
 		bd := t.TempDir()
 		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{
 			RootPath:   filepath.Join(bd, "alt-root"),
-			ConfigPath: "/etc/dolt/explicit.yaml",
+			ConfigPath: testPlatformPath("/etc/dolt/explicit.yaml"),
 		})
 		path, isCustom, err := resolveProxiedServerConfigPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/etc/dolt/explicit.yaml", path)
+		assert.Equal(t, testPlatformPath("/etc/dolt/explicit.yaml"), path)
 		assert.True(t, isCustom, "explicit override is user-owned")
 	})
 
@@ -737,11 +757,11 @@ func TestResolveProxiedServerLogPath_FollowsCustomRoot(t *testing.T) {
 		bd := t.TempDir()
 		writeProxiedClientInfo(t, bd, &configfile.ProxiedServerClientInfo{
 			RootPath: filepath.Join(bd, "alt-root"),
-			LogPath:  "/var/log/explicit.log",
+			LogPath:  testPlatformPath("/var/log/explicit.log"),
 		})
 		path, isCustom, err := resolveProxiedServerLogPath(bd)
 		require.NoError(t, err)
-		assert.Equal(t, "/var/log/explicit.log", path)
+		assert.Equal(t, testPlatformPath("/var/log/explicit.log"), path)
 		assert.True(t, isCustom)
 	})
 
