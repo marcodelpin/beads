@@ -19,6 +19,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
@@ -29,7 +30,6 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"golang.org/x/term"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // applyInitGatewayCredential routes the hand-built init Dolt config through the
@@ -2242,10 +2242,29 @@ Aborting.`, ui.RenderWarn("⚠"), proxiedRoot, ui.RenderAccent("bd list"))
 		// command has rebound global server-mode state.
 		if !cfg.IsDoltServerMode() {
 			embeddedRoot := filepath.Join(beadsDir, "embeddeddolt")
+			// Distinguish ABSENT from PRESENT-BUT-NOT-A-DIRECTORY before reading.
+			// os.ReadDir cannot tell them apart on Windows: opening a regular file
+			// with directory semantics yields ERROR_PATH_NOT_FOUND ("The system
+			// cannot find the path specified"), which Go maps to fs.ErrNotExist,
+			// so os.IsNotExist() is TRUE and this guard used to take the
+			// "fresh clone, safe to init" branch for an embeddeddolt that exists
+			// as a file. That fails OPEN on the reinitialization guard -- exactly
+			// the direction that risks initializing over existing data. Measured
+			// on windows/amd64, not inferred (bda-4m1).
+			rootInfo, statErr := os.Stat(embeddedRoot)
+			switch {
+			case statErr != nil && os.IsNotExist(statErr):
+				return nil // No embedded root -> fresh clone, safe to init
+			case statErr != nil:
+				return fmt.Errorf("failed to stat embedded dolt directory %s: %w", embeddedRoot, statErr)
+			case !rootInfo.IsDir():
+				return fmt.Errorf("embedded dolt path %s exists but is not a directory; refusing to reinitialize automatically (inspect or remove it, then retry)", embeddedRoot)
+			}
+
 			entries, err := os.ReadDir(embeddedRoot)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return nil // No embedded root -> fresh clone, safe to init
+					return nil // Raced away between Stat and ReadDir -> treat as fresh
 				}
 				return fmt.Errorf("failed to read embedded dolt directory %s: %w", embeddedRoot, err)
 			}
