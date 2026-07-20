@@ -1,3 +1,12 @@
+//go:build cgo
+
+// Every test in this file drives a child `bd init`, which opens an EMBEDDED
+// Dolt store and therefore needs a CGO build. Without this tag the file is
+// compiled into the pure-Go suite (CGO_ENABLED=0 -tags gms_pure_go), where
+// every test fails with "embedded Dolt requires a CGO build" -- an environment
+// error, not a product defect (bda-a2l). Matches the ~229 other cgo-gated test
+// files in this package.
+
 package main
 
 // Regression tests for create-time dependency atomicity.
