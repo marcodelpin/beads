@@ -302,14 +302,13 @@ func buildBDForInitTests(t *testing.T) string {
 		if runtime.GOOS == windowsOS {
 			bdBinary = "bd.exe"
 		}
-		// Preserve the existing local optimization: if a bd binary exists in
-		// the repository root, init-style subprocess tests can reuse it.
-		existingBD := filepath.Join("..", "..", bdBinary)
-		if _, err := os.Stat(existingBD); err == nil {
-			initTestBD, _ = filepath.Abs(existingBD)
-			return
-		}
-		// Fall back to building.
+		// NOTE: there is deliberately NO implicit reuse of a bd binary found in
+		// the repository root. A stale root bd/bd.exe silently substitutes the
+		// binary under test and the failures point everywhere but at the stray
+		// artifact (GH-class bug, bda-5wg: a CGO_ENABLED=0 leftover broke the
+		// AutoExport tests with a misleading CGO error). Reusing a prebuilt
+		// binary is opt-in only, via BEADS_TEST_BD_BINARY (checked above).
+		// Build the binary under test.
 		tmpDir, err := testTempDir("bd-init-test-*")
 		if err != nil {
 			initTestBDErr = fmt.Errorf("failed to create temp dir: %w", err)
@@ -325,6 +324,44 @@ func buildBDForInitTests(t *testing.T) string {
 		t.Fatalf("Failed to build bd binary: %v", initTestBDErr)
 	}
 	return initTestBD
+}
+
+// TestFindPrebuiltBDBinary pins the opt-in contract for reusing a prebuilt bd
+// binary in subprocess tests: only BEADS_TEST_BD_BINARY selects one (empty env
+// means "build fresh"), and a configured-but-unusable path fails loudly instead
+// of silently falling back (regression guard for bda-5wg: the old implicit
+// repo-root ../../bd probe silently tested a stale binary).
+func TestFindPrebuiltBDBinary(t *testing.T) {
+	t.Run("unset env means build fresh", func(t *testing.T) {
+		t.Setenv("BEADS_TEST_BD_BINARY", "")
+		got, err := findPrebuiltBDBinary()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Fatalf("expected empty path (build fresh), got %q", got)
+		}
+	})
+	t.Run("configured but missing fails loudly", func(t *testing.T) {
+		t.Setenv("BEADS_TEST_BD_BINARY", filepath.Join(t.TempDir(), "nope", "bd.exe"))
+		if _, err := findPrebuiltBDBinary(); err == nil {
+			t.Fatal("expected error for unusable BEADS_TEST_BD_BINARY, got nil")
+		}
+	})
+	t.Run("configured and present is used absolute", func(t *testing.T) {
+		fake := filepath.Join(t.TempDir(), "bd-fake.exe")
+		if err := os.WriteFile(fake, []byte("stub"), 0o755); err != nil {
+			t.Fatalf("writing fake binary: %v", err)
+		}
+		t.Setenv("BEADS_TEST_BD_BINARY", fake)
+		got, err := findPrebuiltBDBinary()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !filepath.IsAbs(got) {
+			t.Fatalf("expected absolute path, got %q", got)
+		}
+	})
 }
 
 // runGitForBootstrapTest runs a git subcommand in the given directory and
