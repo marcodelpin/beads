@@ -109,13 +109,14 @@ func (f *fakeUpdateIssueUC) ApplyUpdate(ctx context.Context, id string, spec dom
 }
 
 type fakeUOW struct {
-	issueUC domain.IssueUseCase
-	commit  func() error
+	issueUC  domain.IssueUseCase
+	configUC domain.ConfigUseCase // nil for update tests; create tests need LoadCreateContext
+	commit   func() error
 }
 
 func (f *fakeUOW) Close(ctx context.Context)                        {}
 func (f *fakeUOW) Commit(ctx context.Context, message string) error { return f.commit() }
-func (f *fakeUOW) ConfigUseCase() domain.ConfigUseCase              { return nil }
+func (f *fakeUOW) ConfigUseCase() domain.ConfigUseCase              { return f.configUC }
 func (f *fakeUOW) DoltRemoteUseCase() domain.DoltRemoteUseCase      { return nil }
 func (f *fakeUOW) BootstrapUseCase() domain.BootstrapUseCase        { return nil }
 func (f *fakeUOW) IssueUseCase() domain.IssueUseCase                { return f.issueUC }

@@ -93,9 +93,14 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		return nil
 	}
 
-	issue := buildCreateIssueFromInput(in)
-
 	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (*types.Issue, string, error) {
+		// Build the issue INSIDE the attempt: RunTxResult redoes this whole
+		// closure on a serialization failure, and a *types.Issue shared across
+		// attempts leaks any mutation a failed attempt made into the retry
+		// (bda-4t4: a create raced by concurrent writers landed with Priority
+		// zeroed). Same per-attempt design as #4732's update path.
+		issue := buildCreateIssueFromInput(in)
+
 		cctx, err := uw.ConfigUseCase().LoadCreateContext(ctx)
 		if err != nil {
 			return nil, "", fmt.Errorf("load create context: %w", err)
