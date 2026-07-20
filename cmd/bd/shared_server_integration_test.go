@@ -599,6 +599,14 @@ var (
 // buildSharedServerTestBinary returns the path to a bd binary.
 // If BEADS_TEST_BD_BINARY is set, uses that pre-built binary.
 // Otherwise builds one from source (cached across tests via sync.Once).
+//
+// Deliberately NOT delegated to buildBDForInitTests (test_helpers_pure_test.go,
+// bda-9l1 consolidation): this builder forces CGO_ENABLED=1 in the child
+// build's env, which buildBDForInitTests does not do (it inherits the
+// ambient env unmodified). That is a genuinely different build config for
+// the shared-server integration path, so per bda-9l1 fix-direction (b)
+// ("do NOT merge helpers whose configs genuinely differ") it keeps its own
+// cached builder rather than being folded into the shared one.
 func buildSharedServerTestBinary(t *testing.T) string {
 	t.Helper()
 	sharedServerBuildOnce.Do(func() {

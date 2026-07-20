@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -22,13 +21,10 @@ func TestScripts(t *testing.T) {
 		t.Skip("scripttest uses Unix shell commands (sh -c), skipping on Windows")
 	}
 
-	// Build the bd binary
-	exeName := "bd"
-	binDir := t.TempDir()
-	exe := filepath.Join(binDir, exeName)
-	if err := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", exe, ".").Run(); err != nil {
-		t.Fatal(err)
-	}
+	// Use the shared bd binary (built once, reused across cmd/bd tests; see
+	// buildBDForInitTests in test_helpers_pure_test.go, bda-9l1).
+	exe := buildBDForInitTests(t)
+	binDir := filepath.Dir(exe)
 
 	// Create minimal engine with default commands plus bd
 	timeout := 2 * time.Second

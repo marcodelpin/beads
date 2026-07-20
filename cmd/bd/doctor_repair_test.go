@@ -4,30 +4,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
+// buildBDForTest returns the path to a bd binary for subprocess tests.
+// Delegates to buildBDForInitTests (test_helpers_pure_test.go), which shares
+// ONE sync.Once-cached binary across every cmd/bd test helper using the same
+// build config (gms_pure_go, -buildvcs=false, ambient env) instead of each
+// helper rebuilding its own copy (bda-9l1).
 func buildBDForTest(t *testing.T) string {
 	t.Helper()
-	if prebuilt, err := findPrebuiltBDBinary(); err != nil {
-		t.Fatal(err)
-	} else if prebuilt != "" {
-		return prebuilt
-	}
-	exeName := "bd"
-	if runtime.GOOS == "windows" {
-		exeName = "bd.exe"
-	}
-
-	binDir := t.TempDir()
-	exe := filepath.Join(binDir, exeName)
-	cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", exe, ".")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, string(out))
-	}
-	return exe
+	return buildBDForInitTests(t)
 }
 
 func mkTmpDirInTmp(t *testing.T, prefix string) string {

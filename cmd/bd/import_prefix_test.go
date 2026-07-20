@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,18 +27,10 @@ func TestCLI_Import_ForeignPrefix_E2E(t *testing.T) {
 		t.Skip("skipping: Dolt test container not available")
 	}
 
-	// Step 0: Build the bd binary
+	// Step 0: use the shared bd binary (built once, reused across cmd/bd
+	// tests; see buildBDForInitTests in test_helpers_pure_test.go, bda-9l1)
 	tmpDir := t.TempDir()
-	bdName := "bd"
-	if runtime.GOOS == "windows" {
-		bdName = "bd.exe"
-	}
-	bdBinary := filepath.Join(tmpDir, bdName)
-
-	buildCmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", bdBinary, ".")
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to build bd: %v\nOutput: %s", err, out)
-	}
+	bdBinary := buildBDForInitTests(t)
 
 	// Step 1: Setup a database with a specific prefix
 	projDir := filepath.Join(tmpDir, "proj")

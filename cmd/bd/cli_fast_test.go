@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -41,8 +40,9 @@ var (
 
 // initTemplateDB creates a single template database that can be copied for each test.
 // Uses exec.Command (subprocess) to avoid polluting Cobra global state.
-// The testBD binary is already built once in init().
-func initTemplateDB() {
+// The bd binary used is the shared one from buildBDForInitTests (built once,
+// reused across cmd/bd tests; see test_helpers_pure_test.go, bda-9l1).
+func initTemplateDB(t *testing.T) {
 	templateDBOnce.Do(func() {
 		tmpDir, err := os.MkdirTemp("", "bd-cli-template-*")
 		if err != nil {
@@ -54,7 +54,7 @@ func initTemplateDB() {
 		// Use exec.Command to run bd init in a subprocess.
 		// This avoids any Cobra global state pollution that would affect subsequent
 		// in-process test runs.
-		cmd := exec.Command(testBD, "init", "--prefix", "test", "--quiet")
+		cmd := exec.Command(buildBDForInitTests(t), "init", "--prefix", "test", "--quiet")
 		cmd.Dir = tmpDir
 		cmd.Env = os.Environ()
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -101,7 +101,7 @@ func setupCLITestDB(t *testing.T) string {
 	if testDoltServerPort == 0 {
 		t.Skip("skipping: Dolt test container not available")
 	}
-	initTemplateDB()
+	initTemplateDB(t)
 	if templateDBErr != nil {
 		t.Fatalf("Template DB initialization failed: %v", templateDBErr)
 	}
@@ -693,42 +693,19 @@ func TestCLI_Import(t *testing.T) {
 	}
 }
 
-var testBD string
-
-func init() {
-	// Use existing bd binary from repo root if available, otherwise build once
-	bdBinary := "bd"
-	if runtime.GOOS == "windows" {
-		bdBinary = "bd.exe"
-	}
-
-	// Check if bd binary exists in repo root (../../bd from cmd/bd/)
-	repoRoot := filepath.Join("..", "..")
-	existingBD := filepath.Join(repoRoot, bdBinary)
-	if _, err := os.Stat(existingBD); err == nil {
-		// Use existing binary
-		testBD, _ = filepath.Abs(existingBD)
-		return
-	}
-
-	// Fall back to building once (for CI or fresh checkouts)
-	tmpDir, err := os.MkdirTemp("", "bd-cli-test-*")
-	if err != nil {
-		panic(err)
-	}
-	testBD = filepath.Join(tmpDir, bdBinary)
-	cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", testBD, ".")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		panic(string(out))
-	}
-}
-
 // runBDExec runs bd via exec.Command for end-to-end testing
-// This is kept for a few tests to ensure the actual binary works correctly
+// This is kept for a few tests to ensure the actual binary works correctly.
+// Uses the shared bd binary from buildBDForInitTests (built once, reused
+// across cmd/bd tests; see test_helpers_pure_test.go, bda-9l1). Previously
+// this file built (or implicitly reused a stray ../../bd from the repo
+// root) its own independent copy in a package-level init() -- the implicit
+// repo-root reuse is the same footgun bda-5wg fixed for the canonical
+// helper (a stale root bd/bd.exe silently substituting the binary under
+// test), so it is not reintroduced here.
 func runBDExec(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command(testBD, args...)
+	cmd := exec.Command(buildBDForInitTests(t), args...)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
 
@@ -744,7 +721,7 @@ func runBDExec(t *testing.T, dir string, args ...string) string {
 func runBDExecAllowErrorWithEnv(t *testing.T, dir string, env []string, args ...string) (string, error) {
 	t.Helper()
 
-	cmd := exec.Command(testBD, args...)
+	cmd := exec.Command(buildBDForInitTests(t), args...)
 	cmd.Dir = dir
 	cmd.Env = env
 
@@ -1071,7 +1048,7 @@ func TestCLI_CreateDryRun(t *testing.T) {
 		tmpDir := createTempDirWithCleanup(t)
 
 		// Initialize the database first
-		initCmd := exec.Command(testBD, "init", "--prefix", "test", "--quiet")
+		initCmd := exec.Command(buildBDForInitTests(t), "init", "--prefix", "test", "--quiet")
 		initCmd.Dir = tmpDir
 		initCmd.Env = os.Environ()
 		if out, err := initCmd.CombinedOutput(); err != nil {
@@ -1083,7 +1060,7 @@ func TestCLI_CreateDryRun(t *testing.T) {
 		os.WriteFile(mdFile, []byte("# Test Issue\n\nDescription here"), 0644)
 
 		// Run create with --dry-run and --file (should error)
-		cmd := exec.Command(testBD, "create", "--file", mdFile, "--dry-run")
+		cmd := exec.Command(buildBDForInitTests(t), "create", "--file", mdFile, "--dry-run")
 		cmd.Dir = tmpDir
 		cmd.Env = os.Environ()
 		out, err := cmd.CombinedOutput()
@@ -1289,7 +1266,7 @@ func TestCLI_CreateRejectsFlagLikeTitles(t *testing.T) {
 			tmpDir := createTempDirWithCleanup(t)
 
 			// Initialize the database
-			initCmd := exec.Command(testBD, "init", "--prefix", "test", "--quiet")
+			initCmd := exec.Command(buildBDForInitTests(t), "init", "--prefix", "test", "--quiet")
 			initCmd.Dir = tmpDir
 			initCmd.Env = os.Environ()
 			if out, err := initCmd.CombinedOutput(); err != nil {
@@ -1297,7 +1274,7 @@ func TestCLI_CreateRejectsFlagLikeTitles(t *testing.T) {
 			}
 
 			// Attempt to create with a flag-like positional title
-			cmd := exec.Command(testBD, "create", tc.title)
+			cmd := exec.Command(buildBDForInitTests(t), "create", tc.title)
 			cmd.Dir = tmpDir
 			cmd.Env = os.Environ()
 			out, err := cmd.CombinedOutput()

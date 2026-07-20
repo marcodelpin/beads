@@ -23,45 +23,15 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-var (
-	embeddedBDOnce sync.Once
-	embeddedBD     string
-	embeddedBDErr  error
-)
-
-// buildEmbeddedBD returns the path to an embedded bd binary for subprocess tests.
-// If BEADS_TEST_BD_BINARY is set, uses that pre-built binary (skipping the ~45s build).
-// CI can pre-build once and pass the path to all test invocations.
+// buildEmbeddedBD returns the path to a bd binary for subprocess tests.
+// Delegates to buildBDForInitTests (test_helpers_pure_test.go), which shares
+// ONE sync.Once-cached binary across every cmd/bd test helper using the same
+// build config (gms_pure_go, -buildvcs=false, ambient env) instead of each
+// helper rebuilding its own copy (bda-9l1). BEADS_TEST_BD_BINARY is still
+// honored (via findPrebuiltBDBinary inside buildBDForInitTests).
 func buildEmbeddedBD(t *testing.T) string {
 	t.Helper()
-	embeddedBDOnce.Do(func() {
-		if prebuilt := os.Getenv("BEADS_TEST_BD_BINARY"); prebuilt != "" {
-			if _, err := os.Stat(prebuilt); err != nil {
-				embeddedBDErr = fmt.Errorf("BEADS_TEST_BD_BINARY=%q not found: %w", prebuilt, err)
-				return
-			}
-			embeddedBD = prebuilt
-			return
-		}
-		tmpDir, err := testTempDir("bd-embedded-init-test-*")
-		if err != nil {
-			embeddedBDErr = fmt.Errorf("failed to create temp dir: %w", err)
-			return
-		}
-		name := "bd"
-		if runtime.GOOS == "windows" {
-			name = "bd.exe"
-		}
-		embeddedBD = filepath.Join(tmpDir, name)
-		cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", embeddedBD, ".")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			embeddedBDErr = fmt.Errorf("go build failed: %v\n%s", err, out)
-		}
-	})
-	if embeddedBDErr != nil {
-		t.Fatalf("Failed to build embedded bd binary: %v", embeddedBDErr)
-	}
-	return embeddedBD
+	return buildBDForInitTests(t)
 }
 
 func initGitRepoAt(t *testing.T, dir string) {

@@ -60,7 +60,7 @@ func TestCLI_ReparentDottedIDExcludesOldParent(t *testing.T) {
 // createExecTestIssueWithID creates an issue with an explicit ID.
 func createExecTestIssueWithID(t *testing.T, tmpDir, title, id string) string {
 	t.Helper()
-	cmd := exec.Command(testBD, "create", title, "-p", "1", "--id", id, "--json")
+	cmd := exec.Command(buildBDForInitTests(t), "create", title, "-p", "1", "--id", id, "--json")
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
@@ -81,7 +81,7 @@ func createExecTestIssueWithID(t *testing.T, tmpDir, title, id string) string {
 // runBD runs a bd command and fails the test on error.
 func runBD(t *testing.T, tmpDir string, args ...string) []byte {
 	t.Helper()
-	cmd := exec.Command(testBD, args...)
+	cmd := exec.Command(buildBDForInitTests(t), args...)
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
@@ -94,7 +94,7 @@ func runBD(t *testing.T, tmpDir string, args ...string) []byte {
 // assertParentLists checks whether childID appears in `bd list --parent parentID`.
 func assertParentLists(t *testing.T, tmpDir, parentID, childID string, shouldAppear bool, msg string) {
 	t.Helper()
-	cmd := exec.Command(testBD, "list", "--parent", parentID, "--json")
+	cmd := exec.Command(buildBDForInitTests(t), "list", "--parent", parentID, "--json")
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()

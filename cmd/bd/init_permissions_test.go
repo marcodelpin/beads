@@ -4,48 +4,22 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
-var (
-	initPermissionTestBD     string
-	initPermissionTestBDOnce sync.Once
-	initPermissionTestBDErr  error
-)
-
+// buildBDForInitPermissionTests returns the path to a bd binary for
+// subprocess tests. Delegates to buildBDForInitTests
+// (test_helpers_pure_test.go), which shares ONE sync.Once-cached binary
+// across every cmd/bd test helper using the same build config (gms_pure_go,
+// -buildvcs=false, ambient env) instead of each helper rebuilding its own
+// copy (bda-9l1).
 func buildBDForInitPermissionTests(t *testing.T) string {
 	t.Helper()
-	initPermissionTestBDOnce.Do(func() {
-		prebuilt, err := findPrebuiltBDBinary()
-		if err != nil {
-			initPermissionTestBDErr = err
-			return
-		}
-		if prebuilt != "" {
-			initPermissionTestBD = prebuilt
-			return
-		}
-		tmpDir, err := testTempDir("bd-init-permissions-test-*")
-		if err != nil {
-			initPermissionTestBDErr = fmt.Errorf("failed to create temp dir: %w", err)
-			return
-		}
-		initPermissionTestBD = filepath.Join(tmpDir, "bd")
-		cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", initPermissionTestBD, ".")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			initPermissionTestBDErr = fmt.Errorf("go build failed: %v\n%s", err, out)
-		}
-	})
-	if initPermissionTestBDErr != nil {
-		t.Fatalf("failed to build bd binary: %v", initPermissionTestBDErr)
-	}
-	return initPermissionTestBD
+	return buildBDForInitTests(t)
 }
 
 // TestInitRepairsPermissiveBeadsDir is the init-path regression test for

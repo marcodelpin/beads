@@ -35,7 +35,7 @@ func TestInitCancel_E2E(t *testing.T) {
 	}
 	defer func() { _ = stdoutR.Close() }()
 
-	cmd := exec.Command(testBD, "init", "--prefix", "test", "--contributor")
+	cmd := exec.Command(buildBDForInitTests(t), "init", "--prefix", "test", "--contributor")
 	cmd.Dir = tmpDir
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW

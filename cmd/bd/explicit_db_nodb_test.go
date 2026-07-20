@@ -8,76 +8,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
 )
 
-// buildBDUnderTest builds the bd binary once per test process and returns the path.
-// Previously each caller built a fresh binary in t.TempDir(), which on slow runners
-// (macOS arm64) took 30-240s each and blew the 10m package timeout when many
-// buildBDUnderTest-using tests ran together.
-var (
-	buildBDOnce sync.Once
-	buildBDPath string
-	buildBDErr  error
-	buildBDDir  string
-)
-
+// buildBDUnderTest returns the path to a bd binary for subprocess tests.
+// Delegates to buildBDForInitTests (test_helpers_pure_test.go), which shares
+// ONE sync.Once-cached binary across every cmd/bd test helper using the same
+// build config (gms_pure_go, -buildvcs=false, ambient env) instead of each
+// helper rebuilding its own copy (bda-9l1). Previously this function had its
+// own independent sync.Once + build, meaning this file's binary and
+// buildBDForInitTests's binary were two separate `go build` invocations for
+// an identical config.
 func buildBDUnderTest(t *testing.T) string {
 	t.Helper()
-	buildBDOnce.Do(func() {
-		prebuilt, err := findPrebuiltBDBinary()
-		if err != nil {
-			buildBDErr = err
-			return
-		}
-		if prebuilt != "" {
-			buildBDPath = prebuilt
-			return
-		}
-		dir, err := testTempDir("bd-testbin-*")
-		if err != nil {
-			buildBDErr = err
-			return
-		}
-		buildBDDir = dir
-		binName := "bd"
-		if runtime.GOOS == "windows" {
-			binName = "bd.exe"
-		}
-		buildBDPath = filepath.Join(dir, binName)
-		// -buildvcs=false: the test binary needs no VCS stamping, and stamping is
-		// fragile here. Sibling tests scrub HOME/USERPROFILE process-wide for
-		// hermetic runs, so this child `go build` inherits an env with no gitconfig;
-		// on a checkout whose files are owned by another SID (a Windows network/
-		// mapped drive) git then reports dubious-ownership and the VCS probe fails
-		// with "error obtaining VCS status: exit status 128", failing the build for
-		// a stamp nothing reads.
-		buildCmd := exec.Command("go", "build", "-buildvcs=false", "-tags", "gms_pure_go", "-o", buildBDPath, ".")
-		if out, err := buildCmd.CombinedOutput(); err != nil {
-			buildBDErr = &buildBDError{err: err, output: out}
-			return
-		}
-	})
-	if buildBDErr != nil {
-		t.Fatalf("go build failed: %v", buildBDErr)
-	}
-	return buildBDPath
-}
-
-type buildBDError struct {
-	err    error
-	output []byte
-}
-
-func (e *buildBDError) Error() string {
-	return e.err.Error() + "\n" + string(e.output)
+	return buildBDForInitTests(t)
 }
 
 func initGitRepo(t *testing.T, dir string) {
