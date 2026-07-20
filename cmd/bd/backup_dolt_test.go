@@ -4,9 +4,31 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// posixAbsBackupURLPrefix is the expected resolveDoltBackupURL output for the
+// POSIX-shaped absolute input "/mnt/usb/beads-backup".
+//
+// Deliberately NOT built with filepath.Abs: that is what the function under
+// test uses, so reusing it here would make the assertion tautological. The
+// expectation is derived independently from the current volume, so the test
+// still checks three real things -- that the path was anchored to a volume,
+// that the separators were converted, and that the "file://" prefix was added.
+func posixAbsBackupURLPrefix() string {
+	const posixPath = "/mnt/usb/beads-backup"
+	if runtime.GOOS != "windows" {
+		return "file://" + posixPath
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "file://" + posixPath
+	}
+	// e.g. "S:" + "\mnt\usb\beads-backup"
+	return "file://" + filepath.VolumeName(wd) + filepath.FromSlash(posixPath)
+}
 
 func TestResolveDoltBackupURL(t *testing.T) {
 	t.Parallel()
@@ -43,9 +65,16 @@ func TestResolveDoltBackupURL(t *testing.T) {
 			wantExact: "gs://bucket/path",
 		},
 		{
-			name:    "absolute path gets file:// prefix",
-			input:   "/mnt/usb/beads-backup",
-			wantPfx: "file:///mnt/usb/beads-backup",
+			name:  "absolute path gets file:// prefix",
+			input: "/mnt/usb/beads-backup",
+			// resolveDoltBackupURL documents that a bare filesystem path is
+			// resolved to absolute. On Windows a leading "/" is DRIVE-relative,
+			// so filepath.Abs anchors it to the current volume rather than to a
+			// filesystem root -- correct Windows semantics, and the documented
+			// escape hatch for a portable POSIX destination is to pass a
+			// "file:///..." URL, which the case above already covers. Assert the
+			// platform-appropriate shape instead of a POSIX-only one (bda-apn).
+			wantPfx: posixAbsBackupURLPrefix(),
 		},
 		{
 			name:    "relative path gets resolved and prefixed",
