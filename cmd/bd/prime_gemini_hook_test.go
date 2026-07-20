@@ -211,6 +211,18 @@ func TestPrime_HookJSON_GlobalPrimeOverride(t *testing.T) {
 		t.Fatalf("write mac PRIME.md: %v", err)
 	}
 
+	// Same staging for Windows: os.UserConfigDir() returns %AppData% there and
+	// honors neither XDG_CONFIG_HOME nor HOME, so without this the child looks
+	// in the developer's real roaming profile and never sees the override
+	// (bda-4m1).
+	winConfigDir := filepath.Join(home, "AppData", "Roaming", "beads")
+	if err := os.MkdirAll(winConfigDir, 0o755); err != nil {
+		t.Fatalf("mkdir windows config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(winConfigDir, "PRIME.md"), []byte(custom), 0o644); err != nil {
+		t.Fatalf("write windows PRIME.md: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath, "prime", "--hook-json")
@@ -218,6 +230,11 @@ func TestPrime_HookJSON_GlobalPrimeOverride(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+xdg,
+		// os.UserConfigDir() reads APPDATA on Windows; os.UserHomeDir() reads
+		// USERPROFILE. Neither falls back to HOME, so both must be redirected
+		// for the child to resolve into the test's temp dirs.
+		"APPDATA="+filepath.Join(home, "AppData", "Roaming"),
+		"USERPROFILE="+home,
 		"BEADS_TEST_IGNORE_REPO_CONFIG=1",
 		"BEADS_DIR=",
 		"BEADS_DB=",
