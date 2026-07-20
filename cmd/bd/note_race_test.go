@@ -27,6 +27,19 @@ func TestNote_ConcurrentProcesses_NoLostNotes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns many bd subprocesses; skipped in -short")
 	}
+	// The SQLite backend was removed (#4881, 2026-07-18): "bd init --backend
+	// sqlite" now fails loud with "storage backend \"sqlite\" is no longer
+	// supported". This test's interleaving forcer also depends on SQLite
+	// specifics that have no direct Dolt equivalent: it holds a raw
+	// sql.Open("sqlite", ...) write lock on the local .beads/beads.db file
+	// (MaxOpenConns(1) + BEGIN IMMEDIATE) to stall every writer subprocess
+	// until they all release together. Dolt is a server-mode MVCC store
+	// (no local SQLite file to lock), and this build has no live Dolt server
+	// to design and verify a server-side interleaving forcer against
+	// (internal/storage/dolt is cgo-only; see test_helpers_pure_test.go).
+	// Skip until a real Dolt-based interleaving forcer is designed and
+	// verified against a live Dolt test server (bda-0kl).
+	t.Skip("SQLite backend removed (#4881); needs a redesigned Dolt-server interleaving forcer + a live server to verify it, see bda-0kl")
 	bd := buildBDForTest(t)
 	dir := t.TempDir()
 	env := metadataRaceEnv(dir)
