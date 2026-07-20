@@ -350,17 +350,33 @@ func runMigrateFromProxiedServer(dryRun bool, shared bool) error {
 		}
 	}
 
+	// These two locks are held ON control files that PurgeControlFiles deletes
+	// below, so they must be released BEFORE that pass: Windows refuses to
+	// remove a file that is still open (POSIX allows it, which is why this only
+	// bites on Windows). util.Lock.Unlock() is NOT idempotent -- it panics if
+	// called twice -- so the deferred release is guarded by a flag and the early
+	// release clears it (bda-9s2).
 	proxyLock, err := util.TryLock(filepath.Join(rootDir, proxy.LockFileName))
 	if err != nil {
 		return migrateLockErr("proxy", err)
 	}
-	defer proxyLock.Unlock()
+	proxyLockHeld := true
+	defer func() {
+		if proxyLockHeld {
+			proxyLock.Unlock()
+		}
+	}()
 
 	childLock, err := util.TryLock(filepath.Join(rootDir, server.LockFileName))
 	if err != nil {
 		return migrateLockErr("proxied dolt sql-server", err)
 	}
-	defer childLock.Unlock()
+	childLockHeld := true
+	defer func() {
+		if childLockHeld {
+			childLock.Unlock()
+		}
+	}()
 
 	serverLock, err := util.TryLock(doltserver.LockPath(serverStateDir))
 	if err != nil {
@@ -386,6 +402,16 @@ func runMigrateFromProxiedServer(dryRun bool, shared bool) error {
 	if err := os.Remove(configfile.ProxiedServerClientInfoPath(beadsDir)); err != nil && !os.IsNotExist(err) {
 		return HandleError("failed to remove %s: %v", configfile.ProxiedServerClientInfoFileName, err)
 	}
+
+	// Critical section is over: the mode is flipped, metadata.json is saved and
+	// the sidecar is gone. Release the two control-file locks so the purge can
+	// actually delete them on Windows (see the flag comment at acquisition).
+	// serverLock is deliberately still held -- it guards a path under
+	// serverStateDir that this purge does not touch.
+	proxyLock.Unlock()
+	proxyLockHeld = false
+	childLock.Unlock()
+	childLockHeld = false
 
 	warnMigrateRemovalErrors(proxy.PurgeControlFiles(rootDir))
 	warnMigrateRemovalErrors(removeMigrateAssets(logAssets))
