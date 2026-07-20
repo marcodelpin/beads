@@ -208,6 +208,10 @@ const (
 	EventCompacted         = types.EventCompacted
 )
 
+// MaxFieldLen re-exports the maximum length (in characters) of the assignee,
+// owner, and label fields, paired with the ErrFieldTooLong sentinel below.
+const MaxFieldLen = types.MaxFieldLen
+
 // Re-exported error sentinels so consumers match on errors.Is rather than
 // on message text. Each is an ALIAS of the internal sentinel, so the identity
 // is preserved across the package boundary.
@@ -218,4 +222,5 @@ var (
 	ErrCloseBlocked    = storage.ErrCloseBlocked
 	ErrSelfDependency  = domain.ErrSelfDependency
 	ErrDependencyCycle = domain.ErrDependencyCycle
+	ErrFieldTooLong    = types.ErrFieldTooLong
 )

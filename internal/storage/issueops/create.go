@@ -644,6 +644,14 @@ func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue, actor, e
 			continue
 		}
 		seen[label] = struct{}{}
+		// Reject an over-length label before the INSERT IGNORE, which would
+		// otherwise silently truncate it to VARCHAR(255). This is the create and
+		// import chokepoint (AddLabelInTx guards the bd label-add path). The whole
+		// create runs in one transaction, so returning here rolls it back — the
+		// issue and its labels are not persisted.
+		if err := types.CheckFieldLen("label", label); err != nil {
+			return result, err
+		}
 		//nolint:gosec // G201: table is determined by ephemeral flag
 		sqlResult, err := tx.ExecContext(ctx, fmt.Sprintf(`
 			INSERT IGNORE INTO %s (issue_id, label)

@@ -44,6 +44,7 @@ func TestReExportedSentinelIdentity(t *testing.T) {
 		{"ErrNotClaimable", beads.ErrNotClaimable, storage.ErrNotClaimable},
 		{"ErrSelfDependency", beads.ErrSelfDependency, domain.ErrSelfDependency},
 		{"ErrDependencyCycle", beads.ErrDependencyCycle, domain.ErrDependencyCycle},
+		{"ErrFieldTooLong", beads.ErrFieldTooLong, types.ErrFieldTooLong},
 	}
 	for _, tc := range cases {
 		if tc.exported != tc.internal {
@@ -90,5 +91,25 @@ func TestReExportedSentinelCatchesRealProductionError(t *testing.T) {
 		&types.Dependency{IssueID: "a", DependsOnID: "b", Type: types.DepBlocks}, "tester")
 	if !errors.Is(cycleErr, beads.ErrDependencyCycle) {
 		t.Errorf("errors.Is(real cycle err, beads.ErrDependencyCycle) = false; err = %v", cycleErr)
+	}
+}
+
+// TestReExportFieldTooLong proves the public beads.ErrFieldTooLong alias is the
+// same value as the internal types sentinel and composes through errors.Is when
+// wrapped — the property length-validation callers rely on to detect an
+// over-length assignee/owner/label without importing internal/types. It also
+// checks the MaxFieldLen constant re-export tracks the source of truth.
+func TestReExportFieldTooLong(t *testing.T) {
+	t.Parallel()
+
+	if beads.ErrFieldTooLong != types.ErrFieldTooLong {
+		t.Error("beads.ErrFieldTooLong is not the internal sentinel value (identity broken)")
+	}
+	wrapped := fmt.Errorf("x: %w", beads.ErrFieldTooLong)
+	if !errors.Is(wrapped, beads.ErrFieldTooLong) {
+		t.Errorf("errors.Is(wrapped, beads.ErrFieldTooLong) = false; err = %v", wrapped)
+	}
+	if beads.MaxFieldLen != types.MaxFieldLen {
+		t.Errorf("beads.MaxFieldLen = %d, want types.MaxFieldLen = %d", beads.MaxFieldLen, types.MaxFieldLen)
 	}
 }
