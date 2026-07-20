@@ -61,6 +61,15 @@ func bdEnv(dir string) []string {
 	}
 	return append(env,
 		"HOME="+dir,
+		// USERPROFILE is what Go's os.UserHomeDir() reads on Windows -- HOME is
+		// ignored there. internal/config resolves the user config through
+		// os.UserHomeDir() (config.go:44,62), so without this the spawned child
+		// reads and writes the DEVELOPER'S REAL profile instead of the test's
+		// temp home: user-config and metrics assertions then look in a directory
+		// the child never touched. internal/config's own tests already set both
+		// (config_test.go, testmain_test.go, both commented "Windows"); bdEnv was
+		// the outlier (bda-4m1).
+		"USERPROFILE="+dir,
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_NO_DAEMON=1",
 		"BD_DISABLE_METRICS=1",

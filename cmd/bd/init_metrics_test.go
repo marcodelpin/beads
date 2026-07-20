@@ -599,9 +599,13 @@ func TestMetricsOffEmitsNoEvent(t *testing.T) {
 	initGitRepoAt(t, repo)
 
 	// Establish the metrics-enabled baseline and confirm a normal command emits.
-	runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet")
+	initOut, initErr := runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet")
 	if got := allCommandEvents(t, home); len(got) == 0 {
-		t.Fatalf("precondition: metrics-enabled `bd init` produced no event; env may be misconfigured")
+		// Report what the child actually did. runBdForMetrics discards the exit
+		// code (`_ = cmd.Run()`), so "env may be misconfigured" was a guess that
+		// hid the real cause -- a failed `bd init` and a genuinely event-less one
+		// looked identical here (bda-4m1).
+		t.Fatalf("precondition: metrics-enabled `bd init` produced no event.\nstdout:\n%s\nstderr:\n%s", initOut, initErr)
 	}
 	if err := os.RemoveAll(filepath.Join(home, ".beads", "eventsData")); err != nil {
 		t.Fatalf("clear eventsData: %v", err)
