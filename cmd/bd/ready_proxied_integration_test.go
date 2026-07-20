@@ -440,6 +440,13 @@ func TestProxiedServerReady(t *testing.T) {
 		}
 	})
 
+}
+
+func TestProxiedServerReady2(t *testing.T) {
+	requireSharedProxiedServer(t)
+	t.Parallel()
+	bd := buildEmbeddedBD(t)
+
 	t.Run("gated_json_shape_with_open_gate", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "rdgw")
