@@ -92,6 +92,19 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 		return nil
 	}
 
+	// Bound the VARCHAR(255) assignment columns before touching SQL, mirroring
+	// issueops.updateIssueInTx: an over-length assignee/owner aborts with a typed
+	// ErrFieldTooLong instead of a raw backend "data too long" error.
+	for _, field := range []string{"assignee", "owner"} {
+		if raw, ok := updates[field]; ok {
+			if val, ok := raw.(string); ok {
+				if err := types.CheckFieldLen(field, val); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	table := pickIssueTable(opts.UseWispsTable)
 
 	_, statusChanging := updates["status"]
@@ -229,6 +242,12 @@ func coerceStatus(v any) types.Status {
 func (r *issueSQLRepositoryImpl) Claim(ctx context.Context, id, actor string, opts domain.IssueTableOpts) (domain.ClaimRowResult, error) {
 	if id == "" {
 		return domain.ClaimRowResult{}, errors.New("db: Claim: id must not be empty")
+	}
+	// The CAS below writes assignee = actor. actor is user-settable (--actor /
+	// BEADS_ACTOR), so bound it against the VARCHAR(255) assignee column up front
+	// and return a typed ErrFieldTooLong rather than a raw backend error.
+	if err := types.CheckFieldLen("actor", actor); err != nil {
+		return domain.ClaimRowResult{}, err
 	}
 
 	oldIssue, err := r.Get(ctx, id, opts)
@@ -556,6 +575,17 @@ func pickIssueTable(useWisps bool) string {
 
 //nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
 func insertIssueRow(ctx context.Context, runner Runner, table string, issue *types.Issue) error {
+	// Bound the VARCHAR(255) assignment columns at the raw-SQL chokepoint, so
+	// every proxied-server (uow) create — single, batch, and import — rejects an
+	// over-length assignee/owner with a typed ErrFieldTooLong instead of a raw
+	// backend "data too long" error. Mirrors ValidateWithCustom on the embedded
+	// create path.
+	if err := types.CheckFieldLen("assignee", issue.Assignee); err != nil {
+		return err
+	}
+	if err := types.CheckFieldLen("owner", issue.Owner); err != nil {
+		return err
+	}
 	_, err := runner.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (
 			id, content_hash, title, description, design, acceptance_criteria, notes,
