@@ -11,19 +11,32 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// captureGraphOutput captures stdout output during f() execution
+// captureGraphOutput captures stdout output during f() execution.
+//
+// The reader MUST drain the pipe concurrently with f(): os.Pipe() has a
+// bounded kernel buffer (small on Windows), and renderGraphHTML's embedded
+// D3.js template can exceed it. Reading only after f() returns deadlocks the
+// write once the buffer fills, since nothing is left to drain it (bda-9l1:
+// this hung TestRenderGraphHTML indefinitely on Windows, blocking the whole
+// package's -short run behind it). Mirrors the concurrent-drain pattern
+// already used by captureStdout in test_helpers_pure_test.go.
 func captureGraphOutput(f func()) string {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
 	f()
 
 	w.Close()
 	os.Stdout = old
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	return buf.String()
+	return <-done
 }
 
 func makeTestSubgraph() (*TemplateSubgraph, *GraphLayout) {

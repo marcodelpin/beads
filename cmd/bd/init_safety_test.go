@@ -377,6 +377,9 @@ func TestFormatDestroyToken(t *testing.T) {
 // (no real Dolt push needed). `gitOriginHasDoltDataRef` only checks that the
 // ref exists, not its content.
 func TestInitForceRefusesWhenRemoteHasDoltData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	bdBin := buildBDForInitTests(t)
 
 	bareDir := filepath.Join(t.TempDir(), "bare.git")
@@ -439,6 +442,9 @@ func TestInitForceRefusesWhenRemoteHasDoltData(t *testing.T) {
 // guard for the safe default: --from-jsonl must not be silently ignored and
 // must not start a remote clone when origin advertises refs/dolt/data.
 func TestInitFromJSONLRefusesWhenRemoteHasDoltData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	bdBin := buildBDForInitTests(t)
 
 	bareDir := filepath.Join(t.TempDir(), "bare.git")
@@ -498,6 +504,9 @@ func TestInitFromJSONLRefusesWhenRemoteHasDoltData(t *testing.T) {
 }
 
 func TestInitFromJSONLExplicitRemoteRefusesWhenRemoteHasDoltData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	bdBin := buildBDForInitTests(t)
 
 	bareDir := filepath.Join(t.TempDir(), "bare.git")

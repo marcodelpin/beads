@@ -25,6 +25,9 @@ import (
 // lingering handle open; it confirms the child has actually terminated, then
 // asserts the drift probe reports it dead.
 func TestIsServerProbablyRunningReportsDeadPIDWithLingeringHandle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real child process to probe Windows handle liveness; skipped in -short (bda-9l1)")
+	}
 	cmd := exec.Command("cmd.exe", "/c", "exit")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start child: %v", err)

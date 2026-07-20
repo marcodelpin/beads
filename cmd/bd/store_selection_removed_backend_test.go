@@ -12,6 +12,9 @@ import (
 )
 
 func TestCommandStartupRejectsRemovedBackendsBeforeLocalWrites(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
 		t.Run(backend, func(t *testing.T) {
@@ -49,6 +52,9 @@ func TestCommandStartupRejectsRemovedBackendsBeforeLocalWrites(t *testing.T) {
 }
 
 func TestCommandStartupRejectsUnknownBackendBeforeLocalWrites(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	root := t.TempDir()
 	beadsDir := filepath.Join(root, ".beads")
@@ -112,6 +118,9 @@ func TestInitGuardRejectsCorruptMetadataBeforeWorkspaceWrites(t *testing.T) {
 }
 
 func TestDoctorRejectsUnknownBackendBeforeDoltChecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	root := t.TempDir()
 	beadsDir := filepath.Join(root, ".beads")
@@ -148,6 +157,9 @@ func TestDoctorRejectsUnknownBackendBeforeDoltChecks(t *testing.T) {
 }
 
 func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	tests := []struct {
 		backend string
@@ -211,6 +223,9 @@ func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
 }
 
 func TestDoltAdministrativeCommandsRejectRemovedBackends(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	commands := []struct {
 		name string
@@ -267,6 +282,9 @@ func TestDoltAdministrativeCommandsRejectRemovedBackends(t *testing.T) {
 }
 
 func TestDoltReadOnlyCommandsRejectUnknownBackend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	root := t.TempDir()
 	beadsDir := filepath.Join(root, ".beads")
@@ -293,6 +311,9 @@ func TestDoltReadOnlyCommandsRejectUnknownBackend(t *testing.T) {
 }
 
 func TestDoltKillallRejectsCorruptMetadataBeforeServerCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	root := t.TempDir()
 	beadsDir := filepath.Join(root, ".beads")

@@ -132,6 +132,9 @@ func TestIsNonInteractiveInitPrecedence(t *testing.T) {
 }
 
 func TestInitNonInteractiveAutoExportDefaultOffAndOptIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 

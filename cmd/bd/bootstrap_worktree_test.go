@@ -12,6 +12,9 @@ import (
 )
 
 func TestBootstrap_WorktreeFallbackDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-bootstrap-worktree-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +102,9 @@ func TestBootstrap_WorktreeFallbackDir(t *testing.T) {
 }
 
 func TestBootstrap_WorktreeLocalBeadsPreferLocal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-bootstrap-local-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +175,9 @@ func TestBootstrap_WorktreeLocalBeadsPreferLocal(t *testing.T) {
 }
 
 func TestBootstrap_WorktreeNoBeadsAnywhereStillPointsToMainRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-bootstrap-empty-test-*")
 	if err != nil {
 		t.Fatal(err)

@@ -109,6 +109,9 @@ func copyDirRecursive(src, dst string) error {
 }
 
 func TestNewGitRepo_UsesRepoLocalHooksPathDespiteGlobalConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
+	}
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))

@@ -49,6 +49,9 @@ func TestGitOriginGetURL_NoOriginRemote_ReturnsEmpty(t *testing.T) {
 }
 
 func TestGitOriginGetURL_WithOrigin_ReturnsURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	dir := t.TempDir()
 	initBareGitRepoForTest(t, dir)
 	wantURL := "https://github.com/org/repo.git"
@@ -186,6 +189,9 @@ func TestDoltRemoteMatchesGitOrigin_NoGitDir_ReturnsFalse(t *testing.T) {
 }
 
 func TestDoltRemoteMatchesGitOrigin_MatchingURL_ReturnsTrue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	dir := t.TempDir()
 	initBareGitRepoForTest(t, dir)
 	originURL := "https://github.com/org/repo.git"
@@ -203,6 +209,9 @@ func TestDoltRemoteMatchesGitOrigin_MatchingURL_ReturnsTrue(t *testing.T) {
 }
 
 func TestDoltRemoteMatchesGitOrigin_NormalizedMatch_ReturnsTrue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	dir := t.TempDir()
 	initBareGitRepoForTest(t, dir)
 	runGitCommand(t, dir, "remote", "add", "origin", "https://github.com/org/repo.git")
@@ -215,6 +224,9 @@ func TestDoltRemoteMatchesGitOrigin_NormalizedMatch_ReturnsTrue(t *testing.T) {
 }
 
 func TestDoltRemoteMatchesGitOrigin_DifferentURL_ReturnsFalse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	dir := t.TempDir()
 	initBareGitRepoForTest(t, dir)
 	runGitCommand(t, dir, "remote", "add", "origin", "https://github.com/org/repo.git")

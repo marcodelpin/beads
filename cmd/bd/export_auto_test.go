@@ -24,6 +24,9 @@ import (
 // This test verifies the file ends up staged at .beads/issues.jsonl, not
 // at repo-root "issues.jsonl".
 func TestGitAddFile_InWorktreeHook_StagesCorrectPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -527,6 +530,9 @@ func TestHookWorkTreeRoot(t *testing.T) {
 // inside a git hook). Regression guard so a future tightening of
 // hookWorkTreeRoot does not silently break the common path.
 func TestGitAddFile_NonHookContext_GuardDoesNotFire(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -589,6 +595,9 @@ func TestGitAddFile_NonHookContext_GuardDoesNotFire(t *testing.T) {
 // status. Regression guard for the silent "Warning: auto-export: git add
 // failed: exit status 1" noise where the user has no signal as to why.
 func TestGitAddFile_CapturesStderrOnFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -654,6 +663,9 @@ func TestGitAddFile_CapturesStderrOnFailure(t *testing.T) {
 // TestGitAddFile_CapturesLockedIndexFailure verifies that a locked git index
 // is surfaced as a rich, caller-visible error rather than a bare exit status.
 func TestGitAddFile_CapturesLockedIndexFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -722,6 +734,9 @@ func TestGitAddFile_CapturesLockedIndexFailure(t *testing.T) {
 }
 
 func TestAutoExportGitAddFailureExitsNonZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -790,6 +805,9 @@ func TestAutoExportGitAddFailureExitsNonZero(t *testing.T) {
 // pollute a repo the user did not tell us to touch. Expected behavior is
 // to skip staging entirely (the file content on disk is still correct).
 func TestGitAddFile_RedirectCase_DoesNotStageInMainRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -898,6 +916,9 @@ func TestGitAddFile_RedirectCase_DoesNotStageInMainRepo(t *testing.T) {
 }
 
 func TestPreCommitHasStagedBeadsFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -1052,6 +1073,9 @@ func TestCountIssueRecordsInJSONL(t *testing.T) {
 }
 
 func TestAutoExportSkipsEmptyExportOverPopulatedJSONL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 	env := autoExportDataLossTestEnv(dir)
@@ -1096,6 +1120,9 @@ func TestAutoExportSkipsEmptyExportOverPopulatedJSONL(t *testing.T) {
 }
 
 func TestAutoExportSkipsWhenExistingJSONLHasIDsMissingFromStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
+	}
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 	env := autoExportDataLossTestEnv(dir)
