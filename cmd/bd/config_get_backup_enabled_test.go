@@ -81,6 +81,20 @@ func TestConfigGetBackupEnabled_EffectiveValue(t *testing.T) {
 				t.Setenv("BD_BACKUP_ENABLED", tt.envVal)
 			}
 
+			// The two "unset + no sql-server" cases assert the EMBEDDED-mode
+			// defaults, which a !cgo build can never reach: store_factory_nocgo.go
+			// defines usesSQLServer() as an unconditional true (embedded Dolt needs
+			// CGO), so runConfigGetBackupEnabled always reports "sql-server mode"
+			// there. That is correct production behaviour, not a bug -- so skip
+			// those cases instead of asserting an unreachable branch (bda-qoh).
+			//
+			// The guard is deliberately narrow: cases that set BEADS_DOLT_SHARED_SERVER
+			// or an explicit BD_BACKUP_ENABLED still run in BOTH builds, so this file
+			// keeps real coverage under CGO_ENABLED=0.
+			if !tt.sharedServer && tt.envVal == "\x00" && usesSQLServer() {
+				t.Skip("needs an embedded-capable (CGO) build: usesSQLServer() is unconditionally true without cgo")
+			}
+
 			config.ResetForTesting()
 			t.Cleanup(config.ResetForTesting)
 			if err := config.Initialize(); err != nil {

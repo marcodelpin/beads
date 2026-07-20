@@ -112,8 +112,15 @@ func TestDoltShowConfigDefaultMode(t *testing.T) {
 		if result["database"] != "testdb" {
 			t.Errorf("expected database 'testdb', got %v", result["database"])
 		}
-		if embedded, ok := result["embedded"].(bool); !ok || !embedded {
-			t.Errorf("expected embedded=true in JSON output, got %v", result["embedded"])
+		// The expected value depends on the BUILD, not on config: a !cgo build
+		// defines isEmbeddedMode() as an unconditional false (embedded Dolt needs
+		// CGO), so "embedded":true is unreachable there. Assert the value that is
+		// correct for this build rather than skipping -- a skip would verify
+		// nothing, while this still catches the field being absent, non-boolean,
+		// or set to the wrong value for the build (bda-qoh).
+		wantEmbedded := isEmbeddedMode()
+		if embedded, ok := result["embedded"].(bool); !ok || embedded != wantEmbedded {
+			t.Errorf("expected embedded=%v in JSON output for this build, got %v", wantEmbedded, result["embedded"])
 		}
 		// mode field should no longer be present
 		if _, ok := result["mode"]; ok {
