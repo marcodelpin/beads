@@ -50,6 +50,12 @@ func atomicWriteFile(path string, data []byte, perm ...os.FileMode) error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect path: %w", err)
 	}
+	// Deliberately NOT consulting ancestorNotDirErr here (audited in bda-8ll).
+	// This guard exists to refuse symlink write-through, not to validate the
+	// path: a not-exists is the normal case, since we are about to create the
+	// file. When the path traverses a regular file the fallthrough write fails
+	// anyway and names the path, so the only cost is a slightly less precise
+	// message - not worth an extra ancestor walk on every write.
 
 	return atomicWriteFileFollowingSymlink(path, data, perm...)
 }
