@@ -33,6 +33,12 @@ type ClaimResult struct {
 //
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
 func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*ClaimResult, error) {
+	// The CAS below writes assignee = actor. actor is user-settable (--actor /
+	// BEADS_ACTOR), so bound it against the VARCHAR(255) assignee column up front
+	// and return a typed ErrFieldTooLong rather than a raw backend error.
+	if err := types.CheckFieldLen("actor", actor); err != nil {
+		return nil, err
+	}
 	isWisp := IsActiveWispInTx(ctx, tx, id)
 	issueTable, _, eventTable, _ := WispTableRouting(isWisp)
 
