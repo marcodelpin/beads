@@ -143,7 +143,7 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 
 		var result domain.CreateIssueResult
 		var createErr error
-		if issue.Ephemeral {
+		if issue.Ephemeral || issue.NoHistory {
 			result, createErr = uw.IssueUseCase().CreateWisp(ctx, params, in.createdBy)
 		} else {
 			result, createErr = uw.IssueUseCase().CreateIssue(ctx, params, in.createdBy)
@@ -307,7 +307,7 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 
 		var result domain.CreateIssuesResult
 		var createErr error
-		if in.ephemeral {
+		if in.ephemeral || in.noHistory {
 			result, createErr = uw.IssueUseCase().CreateWisps(ctx, paramsList, in.createdBy)
 		} else {
 			result, createErr = uw.IssueUseCase().CreateIssues(ctx, paramsList, in.createdBy)
