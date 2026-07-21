@@ -1,7 +1,9 @@
+//go:build cgo
+
 package main
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,13 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
-// metadataRaceEnv returns a subprocess environment pinned to a throwaway HOME
-// with daemon/auto-export/metrics machinery disabled, so each bd invocation is
-// a plain short-lived process against the workspace's SQLite store — the exact
-// deployment shape in which the lost-update defect was proven.
 func metadataRaceEnv(home string) []string {
 	env := make([]string, 0, len(os.Environ())+5)
 	for _, e := range os.Environ() {
@@ -33,6 +33,64 @@ func metadataRaceEnv(home string) []string {
 	)
 }
 
+// raceWorkspaceOnDoltServer provisions a workspace directory whose
+// .beads/metadata.json points at this package's Dolt test server, creates the
+// backing database and seeds issue_prefix, then returns the directory. bd
+// subprocesses started with cmd.Dir set to it resolve that workspace by
+// walking up to .beads, exactly as a real invocation would.
+//
+// This replaces the `bd init --backend sqlite --non-interactive` the race
+// tests used before #4881 removed the SQLite backend. The provisioning shape
+// mirrors the existing cgo integration tests (see
+// TestListExplicitDBPathRebindsTargetContext) rather than inventing a second
+// convention.
+func raceWorkspaceOnDoltServer(t *testing.T, issuePrefix string) string {
+	t.Helper()
+	if testDoltServerPort == 0 {
+		t.Fatalf("raceWorkspaceOnDoltServer called without a Dolt test server")
+	}
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("create .beads: %v", err)
+	}
+
+	database := uniqueTestDBName(t)
+	if err := (&configfile.Config{
+		Database:       "dolt",
+		Backend:        configfile.BackendDolt,
+		DoltMode:       configfile.DoltModeServer,
+		DoltServerHost: "127.0.0.1",
+		DoltServerPort: testDoltServerPort,
+		DoltDatabase:   database,
+	}).Save(beadsDir); err != nil {
+		t.Fatalf("save workspace metadata: %v", err)
+	}
+
+	ctx := context.Background()
+	store, err := dolt.New(ctx, &dolt.Config{
+		Path:            filepath.Join(beadsDir, "dolt"),
+		BeadsDir:        beadsDir,
+		ServerHost:      "127.0.0.1",
+		ServerPort:      testDoltServerPort,
+		Database:        database,
+		CreateIfMissing: true,
+	})
+	if err != nil {
+		t.Fatalf("create race test database: %v", err)
+	}
+	if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
+		_ = store.Close()
+		dropTestDatabase(database, testDoltServerPort)
+		t.Fatalf("set issue_prefix: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close provisioning store: %v", err)
+	}
+	t.Cleanup(func() { dropTestDatabase(database, testDoltServerPort) })
+	return dir
+}
+
 // TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys is the end-to-end
 // regression test for the concurrent-metadata lost-update defect: real bd
 // processes running `bd update --set-metadata` concurrently with DISTINCT keys
@@ -45,25 +103,22 @@ func metadataRaceEnv(home string) []string {
 // (7 of 200 exit-0 writes lost in the audit hammer). The fix passes the edit
 // operations through to the storage layer, which re-reads and merges inside
 // the single mutation transaction.
+//
+// Backend note (bda-8gx): see the companion comment on
+// TestNote_ConcurrentProcesses_NoLostNotes. The SQLite write-lock forcer is
+// gone with the SQLite backend (#4881) and has no Dolt equivalent, so this
+// asserts the invariant under raw parallelism and leans on volume instead of
+// determinism. The counts below were tuned against a re-introduced defect
+// until the test went RED; do not lower them without redoing that.
 func TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns many bd subprocesses; skipped in -short")
 	}
-	// The SQLite backend was removed (#4881, 2026-07-18): "bd init --backend
-	// sqlite" now fails loud with "storage backend \"sqlite\" is no longer
-	// supported". This test's interleaving forcer also depends on SQLite
-	// specifics that have no direct Dolt equivalent: it holds a raw
-	// sql.Open("sqlite", ...) write lock on the local .beads/beads.db file
-	// (MaxOpenConns(1) + BEGIN IMMEDIATE) to stall both writer subprocesses
-	// until they release together. Dolt is a server-mode MVCC store
-	// (no local SQLite file to lock), and this build has no live Dolt server
-	// to design and verify a server-side interleaving forcer against
-	// (internal/storage/dolt is cgo-only; see test_helpers_pure_test.go).
-	// Skip until a real Dolt-based interleaving forcer is designed and
-	// verified against a live Dolt test server (bda-0kl).
-	t.Skip("SQLite backend removed (#4881); needs a redesigned Dolt-server interleaving forcer + a live server to verify it, see bda-0kl")
+	if testDoltServerPort == 0 {
+		t.Skip("Dolt test server not available, skipping")
+	}
 	bd := buildBDForTest(t)
-	dir := t.TempDir()
+	dir := raceWorkspaceOnDoltServer(t, "mrace")
 	env := metadataRaceEnv(dir)
 
 	run := func(args ...string) string {
@@ -78,7 +133,6 @@ func TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys(t *testing.T) {
 		return string(out)
 	}
 
-	run("init", "--prefix", "mrace", "--backend", "sqlite", "--non-interactive")
 	createOut := run("create", "metadata race target", "-p", "2", "--json")
 	jsonStart := strings.Index(createOut, "{")
 	if jsonStart < 0 {
@@ -94,35 +148,11 @@ func TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys(t *testing.T) {
 		t.Fatalf("create output has no id: %s", createOut)
 	}
 
-	// The natural read→write window inside one bd process is ~1ms, so two
-	// processes launched together rarely interleave on their own. To align
-	// them, the test holds the SQLite write lock while both writers start:
-	// both block in their busy-timeout loop, then race read-merge-write when
-	// the lock releases — the audit's deterministic reproduction shape.
-	dbPath := filepath.Join(dir, ".beads", "beads.db")
-	lockDB, err := sql.Open("sqlite",
-		"file:"+dbPath+"?_txlock=immediate&_pragma=busy_timeout(10000)")
-	if err != nil {
-		t.Fatalf("open lock handle: %v", err)
-	}
-	defer func() { _ = lockDB.Close() }()
-	lockDB.SetMaxOpenConns(1)
-
-	// Each round launches several bd processes under the held lock, writing
-	// distinct keys of the same issue. All must exit 0 AND every key must
-	// survive.
-	writers := []string{"a", "b", "c", "d"}
+	// Each round launches several bd processes back-to-back, writing distinct
+	// keys of the same issue. All must exit 0 AND every key must survive.
+	writers := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
 	const rounds = 20
 	for i := 0; i < rounds; i++ {
-		lockTx, err := lockDB.Begin()
-		if err != nil {
-			t.Fatalf("round %d: begin lock tx: %v", i, err)
-		}
-		// A no-op write takes SQLite's RESERVED lock, stalling both writers.
-		if _, err := lockTx.Exec("UPDATE issues SET title = title WHERE id = ''"); err != nil {
-			t.Fatalf("round %d: acquire write lock: %v", i, err)
-		}
-
 		var cmds []*exec.Cmd
 		var bufs []*strings.Builder
 		for _, prefix := range writers {
@@ -140,12 +170,6 @@ func TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatalf("round %d: start writer %d: %v", i, j, err)
 			}
-		}
-
-		// Give both processes time to start and block on the held lock.
-		time.Sleep(300 * time.Millisecond)
-		if err := lockTx.Rollback(); err != nil {
-			t.Fatalf("round %d: release write lock: %v", i, err)
 		}
 
 		for j, cmd := range cmds {

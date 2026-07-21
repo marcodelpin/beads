@@ -1,15 +1,14 @@
+//go:build cgo
+
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestNote_ConcurrentProcesses_NoLostNotes is the end-to-end regression test
@@ -23,25 +22,29 @@ import (
 // note. The fix passes the append operation (issueops.OpAppendNotes) through
 // to the storage layer, which re-reads and appends inside the single mutation
 // transaction.
+//
+// Backend note (bda-8gx): this test used to run on SQLite and forced a
+// deterministic interleave by holding the local .beads/beads.db write lock
+// while every writer started. The SQLite backend was removed (#4881) and Dolt
+// offers no equivalent primitive -- it is a server-mode MVCC store, and
+// nothing reachable over its wire protocol stalls writers the way SQLite's
+// file lock did (measured, bda-8gx). The port therefore drops the forcer and
+// asserts the invariant under RAW PARALLELISM: each round starts its writers
+// back-to-back and lets them overlap on their own. That trades determinism for
+// volume, so the counts below are not arbitrary -- they were tuned against a
+// deliberately re-introduced defect until this test went RED, and the fixed
+// tree was then re-run to satisfy the determinism gate. Re-tune them the same
+// way if they ever stop reproducing; a green run of an untuned raw-parallelism
+// test proves nothing.
 func TestNote_ConcurrentProcesses_NoLostNotes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns many bd subprocesses; skipped in -short")
 	}
-	// The SQLite backend was removed (#4881, 2026-07-18): "bd init --backend
-	// sqlite" now fails loud with "storage backend \"sqlite\" is no longer
-	// supported". This test's interleaving forcer also depends on SQLite
-	// specifics that have no direct Dolt equivalent: it holds a raw
-	// sql.Open("sqlite", ...) write lock on the local .beads/beads.db file
-	// (MaxOpenConns(1) + BEGIN IMMEDIATE) to stall every writer subprocess
-	// until they all release together. Dolt is a server-mode MVCC store
-	// (no local SQLite file to lock), and this build has no live Dolt server
-	// to design and verify a server-side interleaving forcer against
-	// (internal/storage/dolt is cgo-only; see test_helpers_pure_test.go).
-	// Skip until a real Dolt-based interleaving forcer is designed and
-	// verified against a live Dolt test server (bda-0kl).
-	t.Skip("SQLite backend removed (#4881); needs a redesigned Dolt-server interleaving forcer + a live server to verify it, see bda-0kl")
+	if testDoltServerPort == 0 {
+		t.Skip("Dolt test server not available, skipping")
+	}
 	bd := buildBDForTest(t)
-	dir := t.TempDir()
+	dir := raceWorkspaceOnDoltServer(t, "nrace")
 	env := metadataRaceEnv(dir)
 
 	run := func(args ...string) string {
@@ -56,7 +59,6 @@ func TestNote_ConcurrentProcesses_NoLostNotes(t *testing.T) {
 		return string(out)
 	}
 
-	run("init", "--prefix", "nrace", "--backend", "sqlite", "--non-interactive")
 	createOut := run("create", "note race target", "-p", "2", "--json")
 	jsonStart := strings.Index(createOut, "{")
 	if jsonStart < 0 {
@@ -72,35 +74,16 @@ func TestNote_ConcurrentProcesses_NoLostNotes(t *testing.T) {
 		t.Fatalf("create output has no id: %s", createOut)
 	}
 
-	// Same interleaving forcer as the metadata race test: hold the SQLite
-	// write lock while all writers start, so they race read-merge-write the
-	// moment it releases.
-	dbPath := filepath.Join(dir, ".beads", "beads.db")
-	lockDB, err := sql.Open("sqlite",
-		"file:"+dbPath+"?_txlock=immediate&_pragma=busy_timeout(10000)")
-	if err != nil {
-		t.Fatalf("open lock handle: %v", err)
-	}
-	defer func() { _ = lockDB.Close() }()
-	lockDB.SetMaxOpenConns(1)
-
 	// Ten `bd note` writers plus one `bd update --append-notes` writer per
 	// round: the note command and the update flag share the same column and
 	// must not erase each other. The high per-round concurrency is what makes
-	// the pre-fix loss reliable — each writer used to read the notes in one
-	// transaction and write the pre-merged column in a later one, so any
-	// read-read-write-write interleave among the pack silently dropped a line.
+	// the pre-fix loss reproducible without a forcer -- each writer used to
+	// read the notes in one transaction and write the pre-merged column in a
+	// later one, so any read-read-write-write interleave among the pack
+	// silently dropped a line.
 	notePrefixes := []string{"a", "b", "c", "d", "e", "f", "g", "h", "j", "k"}
 	const rounds = 15
 	for i := 0; i < rounds; i++ {
-		lockTx, err := lockDB.Begin()
-		if err != nil {
-			t.Fatalf("round %d: begin lock tx: %v", i, err)
-		}
-		if _, err := lockTx.Exec("UPDATE issues SET title = title WHERE id = ''"); err != nil {
-			t.Fatalf("round %d: acquire write lock: %v", i, err)
-		}
-
 		argSets := [][]string{
 			{"update", created.ID, "--append-notes", fmt.Sprintf("append-x%d", i)},
 		}
@@ -123,11 +106,6 @@ func TestNote_ConcurrentProcesses_NoLostNotes(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatalf("round %d: start writer %d: %v", i, j, err)
 			}
-		}
-
-		time.Sleep(250 * time.Millisecond)
-		if err := lockTx.Rollback(); err != nil {
-			t.Fatalf("round %d: release write lock: %v", i, err)
 		}
 
 		for j, cmd := range cmds {
