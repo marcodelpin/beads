@@ -422,6 +422,13 @@ func TestProxiedServerUpdate(t *testing.T) {
 		}
 	})
 
+}
+
+func TestProxiedServerUpdate2(t *testing.T) {
+	requireSharedProxiedServer(t)
+	t.Parallel()
+	bd := buildEmbeddedBD(t)
+
 	t.Run("reparent_from_orphan", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "urpo")
@@ -788,6 +795,13 @@ func TestProxiedServerUpdate(t *testing.T) {
 			t.Errorf("defer_until: got nil, want non-nil (defer still applied)")
 		}
 	})
+
+}
+
+func TestProxiedServerUpdate3(t *testing.T) {
+	requireSharedProxiedServer(t)
+	t.Parallel()
+	bd := buildEmbeddedBD(t)
 
 	t.Run("update_defer_set", func(t *testing.T) {
 		t.Parallel()

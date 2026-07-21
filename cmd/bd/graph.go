@@ -79,17 +79,12 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("graph is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("graph")
 		defer func() {
 			if c := metrics.Global(); c != nil {
 				c.CloseEventAndAdd(evt)
 			}
 		}()
-
-		ctx := rootCtx
 
 		if graphAll && len(args) > 0 {
 			return HandleErrorRespectJSON("cannot specify issue ID with --all flag")
@@ -98,6 +93,11 @@ Examples:
 			return HandleErrorWithHintRespectJSON("issue ID required", "Use --all for all open issues")
 		}
 
+		if usesProxiedServer() {
+			return runGraphProxiedServer(rootCtx, args)
+		}
+
+		ctx := rootCtx
 		if store == nil {
 			return HandleErrorRespectJSON("no database connection")
 		}
@@ -107,61 +107,7 @@ Examples:
 			if err != nil {
 				return HandleErrorRespectJSON("loading all issues: %v", err)
 			}
-
-			if graphOpen {
-				var filtered []*TemplateSubgraph
-				for _, sg := range subgraphs {
-					f := filterSubgraphOpen(sg)
-					if f != nil && len(f.Issues) > 0 {
-						filtered = append(filtered, f)
-					}
-				}
-				subgraphs = filtered
-			}
-
-			if len(subgraphs) == 0 {
-				fmt.Println("No open issues found")
-				return nil
-			}
-
-			if jsonOutput {
-				return outputJSON(subgraphs)
-			}
-
-			if graphHTML && !graphOpen {
-				merged := mergeSubgraphsForHTML(subgraphs)
-				layout := computeLayout(merged)
-				renderGraphHTML(layout, merged)
-				return nil
-			}
-
-			if graphOpen {
-				for i, subgraph := range subgraphs {
-					layout := computeLayout(subgraph)
-					renderGraphCompact(layout, subgraph)
-					if i < len(subgraphs)-1 {
-						fmt.Println(strings.Repeat("─", 60))
-					}
-				}
-				return nil
-			}
-
-			for i, subgraph := range subgraphs {
-				layout := computeLayout(subgraph)
-				if graphDOT {
-					renderGraphDOT(layout, subgraph)
-				} else if graphCompact {
-					renderGraphCompact(layout, subgraph)
-				} else if graphBox {
-					renderGraph(layout, subgraph)
-				} else {
-					renderGraphVisual(layout, subgraph)
-				}
-				if !graphDOT && i < len(subgraphs)-1 {
-					fmt.Println(strings.Repeat("─", 60))
-				}
-			}
-			return nil
+			return renderGraphAllSubgraphs(subgraphs)
 		}
 
 		issueID, err := utils.ResolvePartialID(ctx, store, args[0])
@@ -173,34 +119,53 @@ Examples:
 		if err != nil {
 			return HandleErrorRespectJSON("loading graph: %v", err)
 		}
+		return renderGraphSingleSubgraph(subgraph)
+	},
+}
 
-		if graphOpen {
-			subgraph = filterSubgraphOpen(subgraph)
-			if subgraph == nil || len(subgraph.Issues) == 0 {
-				fmt.Println("No open issues in subgraph")
-				return nil
+func renderGraphAllSubgraphs(subgraphs []*TemplateSubgraph) error {
+	if graphOpen {
+		var filtered []*TemplateSubgraph
+		for _, sg := range subgraphs {
+			f := filterSubgraphOpen(sg)
+			if f != nil && len(f.Issues) > 0 {
+				filtered = append(filtered, f)
 			}
 		}
+		subgraphs = filtered
+	}
 
-		layout := computeLayout(subgraph)
+	if len(subgraphs) == 0 {
+		fmt.Println("No open issues found")
+		return nil
+	}
 
-		if jsonOutput {
-			return outputJSON(map[string]interface{}{
-				"root":   subgraph.Root,
-				"issues": subgraph.Issues,
-				"layout": layout,
-			})
-		}
+	if jsonOutput {
+		return outputJSON(subgraphs)
+	}
 
-		if graphOpen {
+	if graphHTML && !graphOpen {
+		merged := mergeSubgraphsForHTML(subgraphs)
+		layout := computeLayout(merged)
+		renderGraphHTML(layout, merged)
+		return nil
+	}
+
+	if graphOpen {
+		for i, subgraph := range subgraphs {
+			layout := computeLayout(subgraph)
 			renderGraphCompact(layout, subgraph)
-			return nil
+			if i < len(subgraphs)-1 {
+				fmt.Println(strings.Repeat("─", 60))
+			}
 		}
+		return nil
+	}
 
+	for i, subgraph := range subgraphs {
+		layout := computeLayout(subgraph)
 		if graphDOT {
 			renderGraphDOT(layout, subgraph)
-		} else if graphHTML {
-			renderGraphHTML(layout, subgraph)
 		} else if graphCompact {
 			renderGraphCompact(layout, subgraph)
 		} else if graphBox {
@@ -208,8 +173,49 @@ Examples:
 		} else {
 			renderGraphVisual(layout, subgraph)
 		}
+		if !graphDOT && i < len(subgraphs)-1 {
+			fmt.Println(strings.Repeat("─", 60))
+		}
+	}
+	return nil
+}
+
+func renderGraphSingleSubgraph(subgraph *TemplateSubgraph) error {
+	if graphOpen {
+		subgraph = filterSubgraphOpen(subgraph)
+		if subgraph == nil || len(subgraph.Issues) == 0 {
+			fmt.Println("No open issues in subgraph")
+			return nil
+		}
+	}
+
+	layout := computeLayout(subgraph)
+
+	if jsonOutput {
+		return outputJSON(map[string]interface{}{
+			"root":   subgraph.Root,
+			"issues": subgraph.Issues,
+			"layout": layout,
+		})
+	}
+
+	if graphOpen {
+		renderGraphCompact(layout, subgraph)
 		return nil
-	},
+	}
+
+	if graphDOT {
+		renderGraphDOT(layout, subgraph)
+	} else if graphHTML {
+		renderGraphHTML(layout, subgraph)
+	} else if graphCompact {
+		renderGraphCompact(layout, subgraph)
+	} else if graphBox {
+		renderGraph(layout, subgraph)
+	} else {
+		renderGraphVisual(layout, subgraph)
+	}
+	return nil
 }
 
 var graphCheckCmd = &cobra.Command{
@@ -221,9 +227,6 @@ Returns exit code 0 if the graph is clean, 1 if issues are found.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("graph check is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("graph-check")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -231,69 +234,74 @@ Returns exit code 0 if the graph is clean, 1 if issues are found.`,
 			}
 		}()
 
-		ctx := rootCtx
-
-		type GraphCheckResult struct {
-			Clean   bool       `json:"clean"`
-			Cycles  [][]string `json:"cycles"`
-			Summary struct {
-				CycleCount int `json:"cycle_count"`
-			} `json:"summary"`
+		if usesProxiedServer() {
+			return runGraphCheckProxiedServer(rootCtx)
 		}
 
-		result := GraphCheckResult{Clean: true}
-
-		cycles, err := store.DetectCycles(ctx)
+		cycles, err := store.DetectCycles(rootCtx)
 		if err != nil {
 			return HandleErrorRespectJSON("cycle detection failed: %v", err)
 		}
+		return renderGraphCheck(cycles)
+	},
+}
 
-		for _, cycle := range cycles {
-			ids := make([]string, len(cycle))
-			for i, issue := range cycle {
-				ids[i] = issue.ID
-			}
-			result.Cycles = append(result.Cycles, ids)
+func renderGraphCheck(cycles [][]*types.Issue) error {
+	type GraphCheckResult struct {
+		Clean   bool       `json:"clean"`
+		Cycles  [][]string `json:"cycles"`
+		Summary struct {
+			CycleCount int `json:"cycle_count"`
+		} `json:"summary"`
+	}
+
+	result := GraphCheckResult{Clean: true}
+
+	for _, cycle := range cycles {
+		ids := make([]string, len(cycle))
+		for i, issue := range cycle {
+			ids[i] = issue.ID
 		}
-		result.Summary.CycleCount = len(cycles)
+		result.Cycles = append(result.Cycles, ids)
+	}
+	result.Summary.CycleCount = len(cycles)
 
-		if len(cycles) > 0 {
-			result.Clean = false
+	if len(cycles) > 0 {
+		result.Clean = false
+	}
+
+	if jsonOutput {
+		if err := outputJSON(result); err != nil {
+			return err
 		}
-
-		if jsonOutput {
-			if err := outputJSON(result); err != nil {
-				return err
-			}
-			if !result.Clean {
-				return SilentExit()
-			}
-			return nil
-		}
-
-		if result.Clean {
-			fmt.Printf("\n%s Graph integrity check passed\n\n", ui.RenderPass("✓"))
-		} else {
-			fmt.Printf("\n%s Graph integrity issues found\n\n", ui.RenderFail("✗"))
-		}
-
-		if len(result.Cycles) > 0 {
-			fmt.Printf("%s Cycles (%d):\n\n", ui.RenderFail("⚠"), len(result.Cycles))
-			for _, cycle := range result.Cycles {
-				fmt.Printf("  %s → %s\n", strings.Join(cycle, " → "), cycle[0])
-			}
-			fmt.Println()
-		} else {
-			fmt.Printf("  %s No dependency cycles\n", ui.RenderPass("✓"))
-		}
-
-		fmt.Println()
-
 		if !result.Clean {
 			return SilentExit()
 		}
 		return nil
-	},
+	}
+
+	if result.Clean {
+		fmt.Printf("\n%s Graph integrity check passed\n\n", ui.RenderPass("✓"))
+	} else {
+		fmt.Printf("\n%s Graph integrity issues found\n\n", ui.RenderFail("✗"))
+	}
+
+	if len(result.Cycles) > 0 {
+		fmt.Printf("%s Cycles (%d):\n\n", ui.RenderFail("⚠"), len(result.Cycles))
+		for _, cycle := range result.Cycles {
+			fmt.Printf("  %s → %s\n", strings.Join(cycle, " → "), cycle[0])
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("  %s No dependency cycles\n", ui.RenderPass("✓"))
+	}
+
+	fmt.Println()
+
+	if !result.Clean {
+		return SilentExit()
+	}
+	return nil
 }
 
 func init() {
@@ -478,6 +486,10 @@ func loadAllGraphSubgraphs(ctx context.Context, s storage.DoltStorage) ([]*Templ
 		}
 	}
 
+	return assembleAllSubgraphs(allIssues, issueMap, allDeps), nil
+}
+
+func assembleAllSubgraphs(allIssues []*types.Issue, issueMap map[string]*types.Issue, allDeps []*types.Dependency) []*TemplateSubgraph {
 	// Build adjacency list for union-find
 	adj := make(map[string][]string)
 	for _, dep := range allDeps {
@@ -580,7 +592,7 @@ func loadAllGraphSubgraphs(ctx context.Context, s storage.DoltStorage) ([]*Templ
 		subgraphs = append(subgraphs, subgraph)
 	}
 
-	return subgraphs, nil
+	return subgraphs
 }
 
 // isOpenStatus returns true for statuses considered "open" / actionable.
