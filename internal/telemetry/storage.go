@@ -466,6 +466,14 @@ func (s *InstrumentedStorage) GetIssueComments(ctx context.Context, issueID stri
 	return v, err
 }
 
+func (s *InstrumentedStorage) GetIssueCommentsPage(ctx context.Context, issueID string, after storage.CommentPageCursor, limit int) ([]*types.Comment, error) {
+	attrs := []attribute.KeyValue{attribute.String("bd.issue.id", issueID)}
+	ctx, span, t := s.op(ctx, "GetIssueCommentsPage", attrs...)
+	v, err := s.inner.GetIssueCommentsPage(ctx, issueID, after, limit)
+	s.done(ctx, span, t, err, attrs...)
+	return v, err
+}
+
 func (s *InstrumentedStorage) GetEvents(ctx context.Context, issueID string, limit int) ([]*types.Event, error) {
 	attrs := []attribute.KeyValue{attribute.String("bd.issue.id", issueID)}
 	ctx, span, t := s.op(ctx, "GetEvents", attrs...)

@@ -126,6 +126,7 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("SearchLimit", func(t *testing.T) { testSearchLimit(t, factory) })
 	t.Run("CountIssues", func(t *testing.T) { testCountIssues(t, factory) })
 	t.Run("CountByGroup", func(t *testing.T) { testCountByGroup(t, factory) })
+	t.Run("CountByGroupIsBlockedFilter", func(t *testing.T) { testCountByGroupIsBlockedFilter(t, factory) })
 
 	// Dependencies
 	t.Run("AddAndGetDeps", func(t *testing.T) { testAddAndGetDeps(t, factory) })
@@ -492,6 +493,66 @@ func testCountByGroup(t *testing.T, f Factory) {
 	}
 	if counts["closed"] != 1 {
 		t.Errorf("closed = %d, want 1", counts["closed"])
+	}
+}
+
+// testCountByGroupIsBlockedFilter proves the additive IssueFilter.IsBlocked predicate honors the
+// denormalized is_blocked column in the grouped-count path on every backend: IsBlocked=&true returns
+// only is_blocked=true beads per status, &false the complement, and nil the whole population
+// (unchanged from testCountByGroup). Blockedness is produced the same way a real writer does — an open
+// blocker on a blocks-type dependency, which the write path denormalizes onto is_blocked.
+func testCountByGroupIsBlockedFilter(t *testing.T, f Factory) {
+	s := f(t)
+	// Two open beads blocked by an open blocker (is_blocked=true after AddDependency), one open
+	// bead left unblocked, and one closed bead (is_blocked=false) — a (status × is_blocked) mix.
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "ibf-blk", Title: "Blocker", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "ibf-w1", Title: "Waiter1", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "ibf-w2", Title: "Waiter2", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "ibf-free", Title: "Free", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "ibf-done", Title: "Done", Status: types.StatusClosed}), "a"))
+	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "ibf-w1", DependsOnID: "ibf-blk", Type: types.DepBlocks}, "a"))
+	must(t, s.AddDependency(ctx(), &types.Dependency{IssueID: "ibf-w2", DependsOnID: "ibf-blk", Type: types.DepBlocks}, "a"))
+
+	blockedTrue := true
+	blockedFalse := false
+
+	// IsBlocked=&true: only the two blocked waiters, both status=open.
+	onlyBlocked, err := s.CountIssuesByGroup(ctx(), types.IssueFilter{IsBlocked: &blockedTrue}, "status")
+	if err != nil {
+		t.Fatalf("CountIssuesByGroup(IsBlocked=true): %v", err)
+	}
+	if onlyBlocked["open"] != 2 {
+		t.Errorf("IsBlocked=true open = %d, want 2 (the blocked waiters only)", onlyBlocked["open"])
+	}
+	if onlyBlocked["closed"] != 0 {
+		t.Errorf("IsBlocked=true closed = %d, want 0", onlyBlocked["closed"])
+	}
+
+	// IsBlocked=&false: the complement — the blocker + the free bead (open) and the done bead (closed).
+	onlyUnblocked, err := s.CountIssuesByGroup(ctx(), types.IssueFilter{IsBlocked: &blockedFalse}, "status")
+	if err != nil {
+		t.Fatalf("CountIssuesByGroup(IsBlocked=false): %v", err)
+	}
+	if onlyUnblocked["open"] != 2 {
+		t.Errorf("IsBlocked=false open = %d, want 2 (blocker + free)", onlyUnblocked["open"])
+	}
+	if onlyUnblocked["closed"] != 1 {
+		t.Errorf("IsBlocked=false closed = %d, want 1 (done)", onlyUnblocked["closed"])
+	}
+
+	// nil: the whole population, and the true/false split partitions it exactly (no double-count).
+	all, err := s.CountIssuesByGroup(ctx(), types.IssueFilter{}, "status")
+	if err != nil {
+		t.Fatalf("CountIssuesByGroup(nil): %v", err)
+	}
+	if all["open"] != 4 || all["closed"] != 1 {
+		t.Errorf("nil filter open/closed = %d/%d, want 4/1", all["open"], all["closed"])
+	}
+	for _, status := range []string{"open", "closed"} {
+		if onlyBlocked[status]+onlyUnblocked[status] != all[status] {
+			t.Errorf("status %q: blocked(%d) + unblocked(%d) != all(%d) — the is_blocked split must partition",
+				status, onlyBlocked[status], onlyUnblocked[status], all[status])
+		}
 	}
 }
 

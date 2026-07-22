@@ -720,6 +720,10 @@ func (s *configStore) AddIssueComment(_ context.Context, _, _, _ string) (*types
 func (s *configStore) GetIssueComments(_ context.Context, _ string) ([]*types.Comment, error) {
 	return nil, nil
 }
+
+func (s *configStore) GetIssueCommentsPage(_ context.Context, _ string, _ storage.CommentPageCursor, _ int) ([]*types.Comment, error) {
+	return nil, nil
+}
 func (s *configStore) GetEvents(_ context.Context, _ string, _ int) ([]*types.Event, error) {
 	return nil, nil
 }

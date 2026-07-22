@@ -537,6 +537,20 @@ func (s *EmbeddedDoltStore) GetIssueComments(ctx context.Context, issueID string
 	return result, err
 }
 
+// GetIssueCommentsPage returns one keyset page of an issue's comments in
+// (created_at ASC, id ASC) order, resuming strictly after the cursor. See the
+// storage.Storage doc for the ordering, sargability, and page-walk-equals-full-
+// read contract.
+func (s *EmbeddedDoltStore) GetIssueCommentsPage(ctx context.Context, issueID string, after storage.CommentPageCursor, limit int) ([]*types.Comment, error) {
+	var result []*types.Comment
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetIssueCommentsPageInTx(ctx, tx, issueID, after, limit)
+		return err
+	})
+	return result, err
+}
+
 func (s *EmbeddedDoltStore) GetEvents(ctx context.Context, issueID string, limit int) ([]*types.Event, error) {
 	var result []*types.Event
 	err := s.withConn(ctx, false, func(tx *sql.Tx) error {

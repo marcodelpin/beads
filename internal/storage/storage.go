@@ -56,6 +56,18 @@ var ErrCloseBlocked = errors.New("cannot close blocked issue")
 // precondition from other errors.
 var ErrVersionMismatch = errors.New("version mismatch")
 
+// CommentPageCursor is the resume position for a keyset page of an issue's
+// comments: the (created_at, id) of the last comment already returned. The zero
+// value starts a walk from the beginning of the thread.
+//
+// It lives in the storage package (rather than issueops) because issueops
+// imports storage — the reverse would be an import cycle — so the shared cursor
+// type is defined here and referenced from the issueops query layer.
+type CommentPageCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
 // Storage is the interface satisfied by *dolt.DoltStore.
 // Consumers depend on this interface rather than on the concrete type so that
 // alternative implementations (mocks, proxies, etc.) can be substituted.
@@ -146,6 +158,32 @@ type Storage interface {
 	// Comments and events
 	AddIssueComment(ctx context.Context, issueID, author, text string) (*types.Comment, error)
 	GetIssueComments(ctx context.Context, issueID string) ([]*types.Comment, error)
+	// GetIssueCommentsPage returns one keyset page of an issue's comments in the
+	// stable (created_at ASC, id ASC) total order, resuming strictly after the
+	// after cursor (the zero cursor starts from the beginning of the thread).
+	// id is the primary key, so the same-second tie-break is total: a thread
+	// with several comments in the same created_at second still pages
+	// completely, and concatenating every page of a full walk yields exactly the
+	// same comments in the same order as GetIssueComments — no dropped or
+	// duplicated comment. The resume predicate is sargable: it seeks the
+	// (issue_id, created_at, id) index rather than scanning the whole thread.
+	//
+	// The after cursor MUST come from a comment previously returned by a read
+	// (this method or GetIssueComments), whose CreatedAt matches the stored
+	// DATETIME second. Feeding a cursor with a sub-second CreatedAt can skip
+	// same-second rows (AddIssueComment already truncates its returned CreatedAt
+	// for this reason).
+	//
+	// Keyset semantics, like an audit feed: a comment inserted with a backdated
+	// created_at that lands behind an in-progress cursor is not seen by that
+	// walk — the walk only moves forward. A whole-thread read or a fresh walk
+	// still returns it.
+	//
+	// limit <= 0 uses a store default (100); a larger limit is capped at 500. A
+	// caller that pages until len(page) < limit must therefore keep limit <= 500
+	// or use empty-page termination instead: a request for limit > 500 always
+	// returns at most 500 rows and would stop a len-based loop one page early.
+	GetIssueCommentsPage(ctx context.Context, issueID string, after CommentPageCursor, limit int) ([]*types.Comment, error)
 	GetEvents(ctx context.Context, issueID string, limit int) ([]*types.Event, error)
 	GetAllEventsSince(ctx context.Context, since time.Time) ([]*types.Event, error)
 

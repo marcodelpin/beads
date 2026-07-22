@@ -71,6 +71,12 @@ type CloseIssueResult = storage.CloseIssueResult
 // name it without importing internal/storage.
 type UpdateIssueOptions = storage.UpdateIssueOptions
 
+// CommentPageCursor is the resume position for Storage.GetIssueCommentsPage — the
+// (created_at, id) of the last comment already returned, with the zero value
+// starting a walk from the beginning of the thread. Exported so consumers can
+// name it without importing internal/storage.
+type CommentPageCursor = storage.CommentPageCursor
+
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
 //
