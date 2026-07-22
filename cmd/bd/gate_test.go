@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -299,6 +300,93 @@ printf '{"state":"MERGED","title":"Fix gate"}'
 	}
 	if !gateTestContains(reason, "was merged") {
 		t.Fatalf("reason = %q, want merged message", reason)
+	}
+}
+
+func TestCheckGHPRUsesRepositoryFromMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh shell script uses POSIX sh")
+	}
+
+	binDir := t.TempDir()
+	fakeGH := filepath.Join(binDir, "gh")
+	script := `#!/bin/sh
+case "$*" in
+  *"pr view 608 --json state,title --repo srobroek/agentic-packages"*)
+    printf '{"state":"MERGED","title":"Cross-repo gate"}'
+    ;;
+  *)
+    echo "unexpected arguments: $*" >&2
+    exit 9
+    ;;
+esac
+`
+	if err := os.WriteFile(fakeGH, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	resolved, escalated, reason, err := checkGHPR(&types.Issue{
+		IssueType: "gate",
+		AwaitType: "gh:pr",
+		AwaitID:   "608",
+		Metadata:  json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
+	})
+	if err != nil {
+		t.Fatalf("checkGHPR returned error: %v", err)
+	}
+	if !resolved || escalated {
+		t.Fatalf("resolved, escalated = %v, %v; want true, false (%s)", resolved, escalated, reason)
+	}
+}
+
+func TestCheckGHRunUsesRepositoryFromMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh shell script uses POSIX sh")
+	}
+
+	binDir := t.TempDir()
+	fakeGH := filepath.Join(binDir, "gh")
+	script := `#!/bin/sh
+case "$*" in
+  *"run view 12345 --json status,conclusion,name --repo srobroek/agentic-packages"*)
+    printf '{"status":"completed","conclusion":"success","name":"CI"}'
+    ;;
+  *)
+    echo "unexpected arguments: $*" >&2
+    exit 9
+    ;;
+esac
+`
+	if err := os.WriteFile(fakeGH, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	resolved, escalated, reason, err := checkGHRun(&types.Issue{
+		IssueType: "gate",
+		AwaitType: "gh:run",
+		AwaitID:   "12345",
+		Metadata:  json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
+	}, false)
+	if err != nil {
+		t.Fatalf("checkGHRun returned error: %v", err)
+	}
+	if !resolved || escalated {
+		t.Fatalf("resolved, escalated = %v, %v; want true, false (%s)", resolved, escalated, reason)
+	}
+}
+
+func TestGitHubRepoFromIssueRejectsInvalidMetadata(t *testing.T) {
+	tests := []json.RawMessage{
+		json.RawMessage(`{"repo":"missing-owner"}`),
+		json.RawMessage(`{"repo":"owner/repo;echo"}`),
+		json.RawMessage(`"not-an-object"`),
+	}
+	for _, metadata := range tests {
+		if repo, err := githubRepoFromIssue(&types.Issue{Metadata: metadata}); err == nil {
+			t.Fatalf("githubRepoFromIssue(%s) = %q, nil; want validation error", metadata, repo)
+		}
 	}
 }
 

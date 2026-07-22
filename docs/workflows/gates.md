@@ -37,10 +37,17 @@ bd gate resolve <gate-id>    # close a gate manually
 | `timer` | a duration after gate creation | `bd gate check` once the timeout elapses |
 | `gh:run` | a GitHub Actions workflow to complete successfully | `bd gate check` (uses `gh run view`) |
 | `gh:pr` | a pull request to merge | `bd gate check` (uses `gh pr view`) |
-| `bead` | a bead in another rig to close | currently unresolvable — multi-rig routing was removed, so `bd gate check` reports these gates as uncheckable |
+| `bead` | a bead in another rig to close | cannot be checked because multi-rig routing was removed; resolve these gates manually |
 
 Timeouts use Go duration syntax: `30m`, `1h`, `24h` (there is no `d` unit —
 write `24h`, not `1d`).
+
+GitHub gates use the current Git repository by default. To evaluate a PR or
+workflow run in another repository, set the gate's string `metadata.repo` value
+to `OWNER/REPO` or `HOST/OWNER/REPO`. An ad-hoc gate created with
+`bd gate create` inherits a valid `metadata.repo` value from the issue it
+blocks. `bd gate check` rejects malformed repository values instead of falling
+back to the current repository.
 
 ## Gates in formulas
 

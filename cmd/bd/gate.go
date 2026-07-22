@@ -362,6 +362,11 @@ Examples:
 			CreatedBy:   getActorWithGit(),
 			Owner:       getOwner(),
 		}
+		if repo, repoErr := githubRepoFromIssue(targetIssue); repoErr != nil {
+			return HandleErrorRespectJSON("invalid GitHub repository metadata on %s: %v", targetIssue.ID, repoErr)
+		} else if repo != "" {
+			gate.Metadata, _ = json.Marshal(map[string]string{"repo": repo})
+		}
 
 		if err := store.CreateIssue(ctx, gate, actor); err != nil {
 			return HandleErrorRespectJSON("creating gate: %v", err)
@@ -752,9 +757,50 @@ func isNumericID(s string) bool {
 	return true
 }
 
+// githubRepoFromIssue returns a validated [HOST/]OWNER/REPO value from metadata.repo.
+// An empty value means the current Git repository should be used.
+func githubRepoFromIssue(issue *types.Issue) (string, error) {
+	if issue == nil || len(issue.Metadata) == 0 || string(issue.Metadata) == "null" {
+		return "", nil
+	}
+
+	var metadata struct {
+		Repo string `json:"repo"`
+	}
+	if err := json.Unmarshal(issue.Metadata, &metadata); err != nil {
+		return "", fmt.Errorf("metadata must be a JSON object: %w", err)
+	}
+	if metadata.Repo == "" {
+		return "", nil
+	}
+
+	parts := strings.Split(metadata.Repo, "/")
+	if len(parts) != 2 && len(parts) != 3 {
+		return "", fmt.Errorf("repo %q must use OWNER/REPO or HOST/OWNER/REPO", metadata.Repo)
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("repo %q contains an empty path component", metadata.Repo)
+		}
+		for _, char := range part {
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+				continue
+			}
+			return "", fmt.Errorf("repo %q contains invalid character %q", metadata.Repo, char)
+		}
+	}
+
+	return metadata.Repo, nil
+}
+
 // queryGitHubRunsForWorkflow queries recent runs for a specific workflow using gh CLI.
 // Returns runs sorted newest-first (GitHub API default).
 func queryGitHubRunsForWorkflow(workflow string, limit int) ([]GHWorkflowRun, error) {
+	return queryGitHubRunsForWorkflowInRepo(workflow, limit, "")
+}
+
+func queryGitHubRunsForWorkflowInRepo(workflow string, limit int, repo string) ([]GHWorkflowRun, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, fmt.Errorf("gh CLI not found: install from https://cli.github.com")
 	}
@@ -764,6 +810,9 @@ func queryGitHubRunsForWorkflow(workflow string, limit int) ([]GHWorkflowRun, er
 		"--workflow", workflow,
 		"--json", "databaseId,name,status,conclusion,createdAt,workflowName",
 		"--limit", fmt.Sprintf("%d", limit),
+	}
+	if repo != "" {
+		args = append(args, "--repo", repo)
 	}
 
 	cmd := exec.Command("gh", args...)
@@ -786,8 +835,12 @@ func queryGitHubRunsForWorkflow(workflow string, limit int) ([]GHWorkflowRun, er
 // discoverRunIDByWorkflowName queries GitHub for the most recent run of a workflow.
 // Returns (runID, error). This is ZFC-compliant: "most recent run" is deterministic.
 func discoverRunIDByWorkflowName(workflowHint string) (string, error) {
+	return discoverRunIDByWorkflowNameInRepo(workflowHint, "")
+}
+
+func discoverRunIDByWorkflowNameInRepo(workflowHint, repo string) (string, error) {
 	// Query GitHub directly for this workflow (efficient, avoids limit issues)
-	runs, err := queryGitHubRunsForWorkflow(workflowHint, 5)
+	runs, err := queryGitHubRunsForWorkflowInRepo(workflowHint, 5, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to query workflow runs: %w", err)
 	}
@@ -809,10 +862,20 @@ func checkGHRun(gate *types.Issue, persistDiscoveredRunID bool) (resolved, escal
 	}
 
 	runID := gate.AwaitID
+	repo, repoErr := githubRepoFromIssue(gate)
+	if repoErr != nil {
+		return false, false, "", repoErr
+	}
 
 	// If await_id is a workflow name hint (non-numeric), auto-discover the run ID
 	if !isNumericID(gate.AwaitID) {
-		discoveredID, discoverErr := discoverRunIDByWorkflowNameFunc(gate.AwaitID)
+		var discoveredID string
+		var discoverErr error
+		if repo == "" {
+			discoveredID, discoverErr = discoverRunIDByWorkflowNameFunc(gate.AwaitID)
+		} else {
+			discoveredID, discoverErr = discoverRunIDByWorkflowNameInRepo(gate.AwaitID, repo)
+		}
 		if discoverErr != nil {
 			return false, false, fmt.Sprintf("workflow hint '%s': %v", gate.AwaitID, discoverErr), nil
 		}
@@ -827,12 +890,23 @@ func checkGHRun(gate *types.Issue, persistDiscoveredRunID bool) (resolved, escal
 		runID = discoveredID
 	}
 
-	return checkGHRunStatusFunc(runID)
+	if repo == "" {
+		return checkGHRunStatusFunc(runID)
+	}
+	return checkGHRunStatusInRepo(runID, repo)
 }
 
 func checkGHRunStatus(runID string) (resolved, escalated bool, reason string, err error) {
+	return checkGHRunStatusInRepo(runID, "")
+}
+
+func checkGHRunStatusInRepo(runID, repo string) (resolved, escalated bool, reason string, err error) {
 	// Run: gh run view <id> --json status,conclusion,name
-	cmd := exec.Command("gh", "run", "view", runID, "--json", "status,conclusion,name") // #nosec G204 -- runID is a validated GitHub run ID
+	args := []string{"run", "view", runID, "--json", "status,conclusion,name"}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	cmd := exec.Command("gh", args...) // #nosec G204 -- runID and repo are validated values passed without a shell
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -883,8 +957,17 @@ func checkGHPR(gate *types.Issue) (resolved, escalated bool, reason string, err 
 		return false, false, "no PR number specified", nil
 	}
 
-	// Run: gh pr view <id> --json state,title
-	cmd := exec.Command("gh", "pr", "view", gate.AwaitID, "--json", "state,title") // #nosec G204 -- gate.AwaitID is a validated GitHub PR number
+	repo, repoErr := githubRepoFromIssue(gate)
+	if repoErr != nil {
+		return false, false, "", repoErr
+	}
+
+	// Run: gh pr view <id> --json state,title [--repo <repo>]
+	args := []string{"pr", "view", gate.AwaitID, "--json", "state,title"}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	cmd := exec.Command("gh", args...) // #nosec G204 -- await ID and repo are validated values passed without a shell
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
