@@ -650,6 +650,9 @@ func (s *configStore) GetIssuesByIDs(_ context.Context, _ []string) ([]*types.Is
 func (s *configStore) UpdateIssue(_ context.Context, _ string, _ map[string]interface{}, _ string) error {
 	return nil
 }
+func (s *configStore) UpdateIssueChecked(_ context.Context, _ string, _ map[string]interface{}, _ string, _ storage.UpdateIssueOptions) error {
+	return nil
+}
 func (s *configStore) ReopenIssue(_ context.Context, _, _, _ string) error     { return nil }
 func (s *configStore) UpdateIssueType(_ context.Context, _, _, _ string) error { return nil }
 func (s *configStore) CloseIssue(_ context.Context, _, _, _, _ string) error   { return nil }
@@ -669,7 +672,13 @@ func (s *configStore) SearchIssueIDs(_ context.Context, _ string, _ types.IssueF
 func (s *configStore) AddDependency(_ context.Context, _ *types.Dependency, _ string) error {
 	return nil
 }
+func (s *configStore) AddDependencyWithOptions(_ context.Context, _ *types.Dependency, _ string, _ storage.DependencyAddOptions) error {
+	return nil
+}
 func (s *configStore) RemoveDependency(_ context.Context, _, _, _ string) error { return nil }
+func (s *configStore) RemoveDependencyWithOptions(_ context.Context, _, _, _ string, _ storage.DependencyRemoveOptions) error {
+	return nil
+}
 func (s *configStore) GetDependencies(_ context.Context, _ string) ([]*types.Issue, error) {
 	return nil, nil
 }
@@ -735,6 +744,9 @@ func (s *configStore) MergeSlotAcquire(_ context.Context, _, _ string, _ bool) (
 }
 func (s *configStore) MergeSlotRelease(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) SlotSet(_ context.Context, _, _, _, _ string) error    { return nil }
+func (s *configStore) MergeMetadata(_ context.Context, _, _ string, _ json.RawMessage, _ string) error {
+	return nil
+}
 func (s *configStore) SlotGet(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }

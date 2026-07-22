@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -76,7 +77,7 @@ Examples:
 			Type:        dt,
 		}
 
-		if err := fromStore.AddDependency(ctx, dep, actor); err != nil {
+		if err := fromStore.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{EmitEvent: true}); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 

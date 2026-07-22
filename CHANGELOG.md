@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Public `beads.Storage` interface gained two required methods**
+  ([#4911](https://github.com/gastownhall/beads/pull/4911)). `UpdateIssueChecked`
+  (an optional `ExpectedVersion` compare-and-swap on updates) and `MergeMetadata`
+  (atomic single-key metadata merge) are now part of the `beads.Storage` /
+  `storage.Storage` contract. Consumers that only *call* the interface are
+  unaffected; any external type that *implements* it (a custom store, mock, or
+  proxy) must add both methods to compile. `UpdateIssueChecked` with a nil
+  `ExpectedVersion` behaves exactly like `UpdateIssue`, and `MergeMetadata` can
+  be layered over a read-modify-write of issue metadata. See
+  [examples/library-usage](examples/library-usage/README.md#concurrency--metadata).
+
 - **Storage backend scope simplified** (bd-sadcd). The recently merged direct
   PostgreSQL and MySQL adapters have been rolled back before entering a tagged
   release. Supporting additional general-purpose server databases introduced

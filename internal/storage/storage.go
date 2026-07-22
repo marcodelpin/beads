@@ -8,6 +8,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -49,9 +50,21 @@ var ErrPrefixMismatch = errors.New("prefix mismatch")
 // or an open blocking gate). Bypass with CloseIssueOptions.Force.
 var ErrCloseBlocked = errors.New("cannot close blocked issue")
 
+// ErrVersionMismatch is returned by a *Checked op given an ExpectedVersion that
+// no longer matches the row's current version (row_lock) — an optimistic
+// concurrency failure. Callers errors.Is it to distinguish a lost-update
+// precondition from other errors.
+var ErrVersionMismatch = errors.New("version mismatch")
+
 // Storage is the interface satisfied by *dolt.DoltStore.
 // Consumers depend on this interface rather than on the concrete type so that
 // alternative implementations (mocks, proxies, etc.) can be substituted.
+//
+// External implementers note: this contract includes the optimistic-concurrency
+// helper UpdateIssueChecked and the atomic MergeMetadata method as required
+// members. Adding a required method is a breaking change for out-of-tree
+// implementations; such additions are called out in CHANGELOG.md and the
+// examples/library-usage guide so implementers have a migration path.
 type Storage interface {
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error
@@ -60,6 +73,10 @@ type Storage interface {
 	GetIssueByExternalRef(ctx context.Context, externalRef string) (*types.Issue, error)
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
 	UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error
+	// UpdateIssueChecked applies the update like UpdateIssue, with an optional
+	// optimistic-concurrency precondition: see UpdateIssueOptions.ExpectedVersion.
+	// The version read and the update share one transaction (a true CAS).
+	UpdateIssueChecked(ctx context.Context, id string, updates map[string]interface{}, actor string, opts UpdateIssueOptions) error
 	ReopenIssue(ctx context.Context, id string, reason string, actor string) error
 	UnclaimIssue(ctx context.Context, id string, actor string, force bool) error
 	// UnclaimIssueIfAssignee releases a claim only while the issue is still
@@ -70,10 +87,17 @@ type Storage interface {
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
 	// CloseIssueChecked closes an issue, but refuses with ErrCloseBlocked when
-	// the issue is still blocked (is_blocked=1) unless opts.Force is set. The
+	// the issue has a live direct blocker (an open blocks/waits-for/
+	// conditional-blocks edge) unless opts.Force is set — the historical
+	// `bd close` guard. A bare is_blocked=1 with no live direct blocker (a purely
+	// transitive parent-child block, or a stale column) is not refused. The
 	// blocked-check and the close run in ONE transaction, so the guard is atomic
-	// (no TOCTOU). Already-closed is an idempotent success with Unchanged=true; a
-	// missing issue returns ErrNotFound.
+	// (no TOCTOU). When opts.ExpectedVersion is non-nil it adds an orthogonal
+	// optimistic-concurrency precondition: the close proceeds only if the issue's
+	// current RowVersion still equals *opts.ExpectedVersion, else it refuses with
+	// ErrVersionMismatch atomically (Force does NOT bypass this check). Already-
+	// closed is an idempotent success with Unchanged=true; a missing issue returns
+	// ErrNotFound.
 	CloseIssueChecked(ctx context.Context, id string, actor string, opts CloseIssueOptions) (CloseIssueResult, error)
 	DeleteIssue(ctx context.Context, id string) error
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
@@ -85,7 +109,17 @@ type Storage interface {
 
 	// Dependencies
 	AddDependency(ctx context.Context, dep *types.Dependency, actor string) error
+	// AddDependencyWithOptions adds a dependency with explicit options. The
+	// explicit dependency verbs (bd dep add / bd link) pass EmitEvent to record
+	// a dependency_added history event; AddDependency is the no-event default
+	// used by create-with-deps and structural callers.
+	AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, opts DependencyAddOptions) error
 	RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error
+	// RemoveDependencyWithOptions removes a dependency with explicit options. The
+	// explicit dependency verb (bd dep remove) passes EmitEvent to record a
+	// dependency_removed history event; RemoveDependency is the no-event default
+	// used by structural callers (issue delete, reparent, batch, duplicate cleanup).
+	RemoveDependencyWithOptions(ctx context.Context, issueID, dependsOnID string, actor string, opts DependencyRemoveOptions) error
 	GetDependencies(ctx context.Context, issueID string) ([]*types.Issue, error)
 	GetDependents(ctx context.Context, issueID string) ([]*types.Issue, error)
 	GetDependenciesWithMetadata(ctx context.Context, issueID string) ([]*types.IssueWithDependencyMetadata, error)
@@ -197,6 +231,12 @@ type Storage interface {
 	SlotGet(ctx context.Context, issueID, key string) (string, error)
 	SlotClear(ctx context.Context, issueID, key, actor string) error
 
+	// MergeMetadata merges a single key into an issue's metadata JSON as a raw
+	// JSON value (nested objects/arrays are preserved). The read-modify-write
+	// runs in a single transaction, so two concurrent merges of DIFFERENT keys
+	// both survive rather than clobbering each other. SlotSet is built on it.
+	MergeMetadata(ctx context.Context, issueID, key string, value json.RawMessage, actor string) error
+
 	// Lifecycle
 	Close() error
 }
@@ -206,11 +246,38 @@ type CloseIssueOptions struct {
 	Reason  string
 	Session string
 	Force   bool // bypass the is_blocked guard (mirrors `bd close --force`)
+	// ExpectedVersion, when non-nil, gates the close on an optimistic-concurrency
+	// check: the close proceeds only if the issue's current RowVersion (the
+	// row_lock token) equals *ExpectedVersion, otherwise it refuses with
+	// ErrVersionMismatch atomically (the version read and the close share one
+	// transaction). nil disables the check, leaving behavior unchanged. It is a
+	// pointer, not an int64, so nil ("no check") is distinct from a caller that
+	// requires version 0. Force bypasses only the is_blocked guard, not this
+	// version check.
+	//
+	// RowVersion tracks lifecycle/ownership writes only — it is rewritten by
+	// status, assignee, and started_at changes (claim, close, reclaim, unclaim,
+	// updateIssueInTx). So this is a "close only if the issue's lifecycle state
+	// is unchanged" guard, NOT an all-columns check: concurrent label, dependency,
+	// rename, is_blocked, or compaction-only writes intentionally do not bump
+	// row_lock and are not caught here (see the freshRowLock invariant in
+	// internal/storage/issueops/lease.go).
+	ExpectedVersion *int64
 }
 
 // CloseIssueResult reports the outcome of CloseIssueChecked.
 type CloseIssueResult struct {
 	Unchanged bool // true when the issue was ALREADY closed (idempotent no-op)
+}
+
+// UpdateIssueOptions carries the optional inputs to UpdateIssueChecked.
+type UpdateIssueOptions struct {
+	// ExpectedVersion, when non-nil, makes the update a compare-and-swap: it
+	// proceeds only if the issue's current RowVersion (row_lock) equals
+	// *ExpectedVersion, else it refuses with ErrVersionMismatch atomically.
+	// nil disables the check. A pointer so nil is distinct from requiring a
+	// legacy version of 0.
+	ExpectedVersion *int64
 }
 
 // MergeSlotStatus is returned by MergeSlotCheck and describes the current
@@ -411,6 +478,10 @@ type Transaction interface {
 	AddDependency(ctx context.Context, dep *types.Dependency, actor string) error
 	AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, opts DependencyAddOptions) error
 	RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error
+	// RemoveDependencyWithOptions removes a dependency with explicit options.
+	// EmitEvent records a dependency_removed history event for the explicit
+	// bd dep remove verb; RemoveDependency stays silent for structural teardown.
+	RemoveDependencyWithOptions(ctx context.Context, issueID, dependsOnID string, actor string, opts DependencyRemoveOptions) error
 	GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error)
 	// CycleThroughEdges reports a rendered cycle in the static scheduling set
 	// (blocks, conditional-blocks, parent-child; not waits-for) that traverses
@@ -447,7 +518,8 @@ type Transaction interface {
 	GetIssueComments(ctx context.Context, issueID string) ([]*types.Comment, error)
 }
 
-// DependencyAddOptions controls transaction-scoped dependency insertion.
+// DependencyAddOptions controls dependency insertion for both the store-level
+// AddDependencyWithOptions and the transaction-scoped AddDependencyWithOptions.
 type DependencyAddOptions struct {
 	// SkipCycleCheck bypasses the recursive pre-insert cycle check. Callers
 	// that set it MUST run Transaction.CycleThroughEdges before commit and fail
@@ -455,4 +527,21 @@ type DependencyAddOptions struct {
 	// per-edge cost for one whole-graph check, never graph integrity
 	// (bd-6dnrw.8).
 	SkipCycleCheck bool
+	// EmitEvent records a dependency_added history event on the source's event
+	// table for a genuine new edge. Only the explicit dependency verbs set it;
+	// create-with-deps and structural edge wiring leave it unset so implicit
+	// edges stay quiet, matching the proxied DepInsertOpts.EmitEvent gate.
+	EmitEvent bool
+}
+
+// DependencyRemoveOptions controls dependency removal for both the store-level
+// RemoveDependencyWithOptions and the transaction-scoped RemoveDependencyWithOptions.
+type DependencyRemoveOptions struct {
+	// EmitEvent records a dependency_removed history event on the source's event
+	// table when a genuine edge is removed. Only the explicit bd dep remove verb
+	// sets it; structural removals (issue delete, reparent, batch, duplicate
+	// cleanup) leave it unset so they wire edges away quietly, matching the
+	// proxied DepInsertOpts.EmitEvent gate so both backends record identical
+	// history.
+	EmitEvent bool
 }

@@ -699,9 +699,11 @@ func (t *doltTransaction) AddDependency(ctx context.Context, dep *types.Dependen
 func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, addOpts storage.DependencyAddOptions) error {
 	table := "dependencies"
 	sourceTable := "issues"
+	eventTable := "events"
 	if t.isActiveWisp(ctx, dep.IssueID) {
 		table = "wisp_dependencies"
 		sourceTable = "wisps"
+		eventTable = "wisp_events"
 	}
 
 	isCrossPrefix := isCrossPrefixDep(dep.IssueID, dep.DependsOnID)
@@ -724,6 +726,7 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 		IsCrossPrefix:  isCrossPrefix,
 		SkipCycleCheck: addOpts.SkipCycleCheck,
 		TargetKind:     &kind,
+		EmitEvent:      addOpts.EmitEvent,
 	}
 
 	// Regular and dolt-ignored tables run on separate SQL sessions, so when
@@ -757,15 +760,24 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 	}
 
 	var addErr error
+	var eventWritten bool
 	if opts.PrecheckedTarget != nil && table == "wisp_dependencies" && kind == issueops.DepTargetIssue {
-		addErr = t.addWispDepSuspendingIssueTargetFK(ctx, dep, actor, opts)
+		eventWritten, addErr = t.addWispDepSuspendingIssueTargetFK(ctx, dep, actor, opts)
 	} else {
-		addErr = issueops.AddDependencyInTx(ctx, t.txFor(table), dep, actor, opts)
+		eventWritten, addErr = issueops.AddDependencyInTx(ctx, t.txFor(table), dep, actor, opts)
 	}
 	if addErr != nil {
 		return addErr
 	}
 	t.dirty.MarkDirty(table)
+	// AddDependencyInTx records a dependency_added event on the source's event
+	// table only for a genuine emit (explicit verb + new edge); stage that table
+	// so StageAndCommit commits the event with the edge (a torn write otherwise
+	// leaves the event in the working set, dropped on reset). A structural or
+	// idempotent add writes no event, so leave eventTable unstaged.
+	if eventWritten {
+		t.dirty.MarkDirty(eventTable)
+	}
 	t.recordDepTierWrite(table)
 	return nil
 }
@@ -802,15 +814,15 @@ func (t *doltTransaction) recordDepTierWrite(writeTable string) {
 // target's existence was just validated on the regular tx. The regular tx
 // commits before the ignored tx, so the committed end-state always satisfies
 // the FK; suspend the session's FK checks around this one statement scope.
-func (t *doltTransaction) addWispDepSuspendingIssueTargetFK(ctx context.Context, dep *types.Dependency, actor string, opts issueops.AddDependencyOpts) error {
+func (t *doltTransaction) addWispDepSuspendingIssueTargetFK(ctx context.Context, dep *types.Dependency, actor string, opts issueops.AddDependencyOpts) (bool, error) {
 	if _, err := t.ignoredTx.ExecContext(ctx, "SET foreign_key_checks = 0"); err != nil {
-		return fmt.Errorf("suspend foreign key checks for cross-tier dependency: %w", err)
+		return false, fmt.Errorf("suspend foreign key checks for cross-tier dependency: %w", err)
 	}
-	addErr := issueops.AddDependencyInTx(ctx, t.ignoredTx, dep, actor, opts)
+	eventWritten, addErr := issueops.AddDependencyInTx(ctx, t.ignoredTx, dep, actor, opts)
 	if _, err := t.ignoredTx.ExecContext(ctx, "SET foreign_key_checks = 1"); err != nil && addErr == nil {
 		addErr = fmt.Errorf("restore foreign key checks after cross-tier dependency: %w", err)
 	}
-	return addErr
+	return eventWritten, addErr
 }
 
 // readDepTargetForPrecheck validates a dependency target on the transaction
@@ -906,14 +918,28 @@ func (t *doltTransaction) GetDependencyRecords(ctx context.Context, issueID stri
 }
 
 func (t *doltTransaction) RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error {
+	return t.RemoveDependencyWithOptions(ctx, issueID, dependsOnID, actor, storage.DependencyRemoveOptions{})
+}
+
+func (t *doltTransaction) RemoveDependencyWithOptions(ctx context.Context, issueID, dependsOnID string, actor string, rmOpts storage.DependencyRemoveOptions) error {
 	table := "dependencies"
+	eventTable := "events"
 	if t.isActiveWisp(ctx, issueID) {
 		table = "wisp_dependencies"
+		eventTable = "wisp_events"
 	}
-	if err := issueops.RemoveDependencyInTx(ctx, t.txFor(table), issueID, dependsOnID); err != nil {
+	eventWritten, err := issueops.RemoveDependencyInTx(ctx, t.txFor(table), issueID, dependsOnID, actor, rmOpts.EmitEvent)
+	if err != nil {
 		return wrapExecError("remove dependency in tx", err)
 	}
 	t.dirty.MarkDirty(table)
+	// RemoveDependencyInTx records a dependency_removed event on the source's
+	// event table only for a genuine emit (explicit verb + edge removal); stage
+	// that table so it commits with the edge. A structural or missing-edge remove
+	// writes no event, so leave eventTable unstaged.
+	if eventWritten {
+		t.dirty.MarkDirty(eventTable)
+	}
 	return nil
 }
 

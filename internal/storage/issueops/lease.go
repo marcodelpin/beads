@@ -86,6 +86,16 @@ func RowLockClause() (string, []interface{}) {
 	return "row_lock = ?", []interface{}{freshRowLock()}
 }
 
+// FreshRowLock returns a fresh non-zero row_lock token for an INSERT column
+// list. Exported for the proxied-server (uow) create path in
+// internal/storage/domain/db, which builds its own INSERT rather than calling
+// InsertIssueIntoTable. Every create must stamp a non-zero row_lock so the
+// RowVersion optimistic-concurrency token is live from the first write, exactly
+// like the classic insert (see the freshRowLock invariant and types.Issue.RowVersion).
+func FreshRowLock() int64 {
+	return freshRowLock()
+}
+
 // LeaseTTL is the exported form of leaseTTL: it resolves the lease TTL for the
 // current claim from the context (WithLeaseTTL) or falls back to
 // DefaultLeaseTTL.

@@ -48,6 +48,13 @@ type Transaction = beads.Transaction
 // one whole-graph check, never graph integrity.
 type DependencyAddOptions = storage.DependencyAddOptions
 
+// DependencyRemoveOptions controls transaction-scoped dependency removal for
+// Transaction.RemoveDependencyWithOptions. Exported so embedders can request the
+// dependency_removed history event on an explicit edge removal; the plain
+// RemoveDependency default stays silent for structural edge teardown, mirroring
+// the DependencyAddOptions/AddDependencyWithOptions split.
+type DependencyRemoveOptions = storage.DependencyRemoveOptions
+
 // CloseIssueOptions carries the optional inputs to Storage.CloseIssueChecked —
 // an atomic, guarded close that refuses a still-blocked issue with
 // ErrCloseBlocked unless Force is set. Exported so consumers can name it without
@@ -57,6 +64,12 @@ type CloseIssueOptions = storage.CloseIssueOptions
 // CloseIssueResult reports the outcome of Storage.CloseIssueChecked. Unchanged
 // is true when the issue was already closed (idempotent no-op).
 type CloseIssueResult = storage.CloseIssueResult
+
+// UpdateIssueOptions carries the optional inputs to Storage.UpdateIssueChecked —
+// an update with an optional ExpectedVersion compare-and-swap that refuses a
+// concurrently-modified issue with ErrVersionMismatch. Exported so consumers can
+// name it without importing internal/storage.
+type UpdateIssueOptions = storage.UpdateIssueOptions
 
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
@@ -220,7 +233,18 @@ var (
 	ErrAlreadyClaimed  = storage.ErrAlreadyClaimed
 	ErrNotClaimable    = storage.ErrNotClaimable
 	ErrCloseBlocked    = storage.ErrCloseBlocked
+	ErrVersionMismatch = storage.ErrVersionMismatch
 	ErrSelfDependency  = domain.ErrSelfDependency
 	ErrDependencyCycle = domain.ErrDependencyCycle
 	ErrFieldTooLong    = types.ErrFieldTooLong
 )
+
+// DependencyTypeConflictError is returned by AddDependency when an edge of a
+// different type already exists between the pair; callers errors.As it to read
+// the existing/requested types instead of parsing the message.
+type DependencyTypeConflictError = domain.DependencyTypeConflictError
+
+// DependencyHierarchyConflictError is returned by AddDependency when a blocking
+// edge would gate an issue on its own ancestor/descendant (a gate that can
+// never clear).
+type DependencyHierarchyConflictError = domain.DependencyHierarchyConflictError

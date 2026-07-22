@@ -185,7 +185,7 @@ Examples:
 				Type:        types.DependencyType(depType),
 			}
 
-			if err := fromStore.AddDependency(ctx, dep, actor); err != nil {
+			if err := fromStore.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{EmitEvent: true}); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
 
@@ -374,7 +374,7 @@ Examples:
 			Type:        dt,
 		}
 
-		if err := fromStore.AddDependency(ctx, dep, actor); err != nil {
+		if err := fromStore.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{EmitEvent: true}); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
@@ -516,7 +516,7 @@ func addBulkDependenciesInTx(ctx context.Context, tx storage.Transaction, edges 
 				continue
 			}
 			dep := &types.Dependency{IssueID: edge.IssueID, DependsOnID: edge.DependsOnID, Type: edge.Type}
-			if err := tx.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{SkipCycleCheck: noCycleCheck}); err != nil {
+			if err := tx.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{SkipCycleCheck: noCycleCheck, EmitEvent: true}); err != nil {
 				return fmt.Errorf("line %d: %w", edge.Line, err)
 			}
 		}
@@ -958,7 +958,9 @@ var depRemoveCmd = &cobra.Command{
 		fullFromID := fromID
 		fullToID := toID
 
-		if err := fromStore.RemoveDependency(ctx, fullFromID, fullToID, actor); err != nil {
+		// Explicit dep verb: record a dependency_removed history event (parity
+		// with bd dep add's EmitEvent and the proxied bd dep remove path).
+		if err := fromStore.RemoveDependencyWithOptions(ctx, fullFromID, fullToID, actor, storage.DependencyRemoveOptions{EmitEvent: true}); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
