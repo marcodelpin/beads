@@ -7,8 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
-	"runtime"
+	"slices"
 	"sync"
 	"testing"
 
@@ -264,31 +263,14 @@ func TestCheckBeadGate_NilStoreStaysPending(t *testing.T) {
 }
 
 func TestCheckGHPRUsesStateWithoutMergedField(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake gh shell script uses POSIX sh")
-	}
-
-	binDir := t.TempDir()
-	fakeGH := filepath.Join(binDir, "gh")
-	script := `#!/bin/sh
-case "$*" in
-  *merged*)
-    echo "unexpected merged field" >&2
-    exit 9
-    ;;
-esac
-printf '{"state":"MERGED","title":"Fix gate"}'
-`
-	if err := os.WriteFile(fakeGH, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gh: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	resolved, escalated, reason, err := checkGHPR(&types.Issue{
+	resolved, escalated, reason, err := checkGHPRWithRunner(&types.Issue{
 		IssueType: "gate",
 		AwaitType: "gh:pr",
 		AwaitID:   "3488",
-	})
+	}, fakeGHRunner(t,
+		`{"state":"MERGED","title":"Fix gate"}`,
+		"pr", "view", "3488", "--json", "state,title",
+	))
 	if err != nil {
 		t.Fatalf("checkGHPR returned error: %v", err)
 	}
@@ -304,34 +286,15 @@ printf '{"state":"MERGED","title":"Fix gate"}'
 }
 
 func TestCheckGHPRUsesRepositoryFromMetadata(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake gh shell script uses POSIX sh")
-	}
-
-	binDir := t.TempDir()
-	fakeGH := filepath.Join(binDir, "gh")
-	script := `#!/bin/sh
-case "$*" in
-  *"pr view 608 --json state,title --repo srobroek/agentic-packages"*)
-    printf '{"state":"MERGED","title":"Cross-repo gate"}'
-    ;;
-  *)
-    echo "unexpected arguments: $*" >&2
-    exit 9
-    ;;
-esac
-`
-	if err := os.WriteFile(fakeGH, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gh: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	resolved, escalated, reason, err := checkGHPR(&types.Issue{
+	resolved, escalated, reason, err := checkGHPRWithRunner(&types.Issue{
 		IssueType: "gate",
 		AwaitType: "gh:pr",
 		AwaitID:   "608",
 		Metadata:  json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
-	})
+	}, fakeGHRunner(t,
+		`{"state":"MERGED","title":"Cross-repo gate"}`,
+		"pr", "view", "608", "--json", "state,title", "--repo", "srobroek/agentic-packages",
+	))
 	if err != nil {
 		t.Fatalf("checkGHPR returned error: %v", err)
 	}
@@ -341,39 +304,40 @@ esac
 }
 
 func TestCheckGHRunUsesRepositoryFromMetadata(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake gh shell script uses POSIX sh")
-	}
-
-	binDir := t.TempDir()
-	fakeGH := filepath.Join(binDir, "gh")
-	script := `#!/bin/sh
-case "$*" in
-  *"run view 12345 --json status,conclusion,name --repo srobroek/agentic-packages"*)
-    printf '{"status":"completed","conclusion":"success","name":"CI"}'
-    ;;
-  *)
-    echo "unexpected arguments: $*" >&2
-    exit 9
-    ;;
-esac
-`
-	if err := os.WriteFile(fakeGH, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gh: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	resolved, escalated, reason, err := checkGHRun(&types.Issue{
+	resolved, escalated, reason, err := checkGHRunWithRunner(&types.Issue{
 		IssueType: "gate",
 		AwaitType: "gh:run",
 		AwaitID:   "12345",
 		Metadata:  json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
-	}, false)
+	}, false,
+		fakeGHRunner(t,
+			`{"status":"completed","conclusion":"success","name":"CI"}`,
+			"run", "view", "12345", "--json", "status,conclusion,name", "--repo", "srobroek/agentic-packages",
+		),
+	)
 	if err != nil {
 		t.Fatalf("checkGHRun returned error: %v", err)
 	}
 	if !resolved || escalated {
 		t.Fatalf("resolved, escalated = %v, %v; want true, false (%s)", resolved, escalated, reason)
+	}
+}
+
+func TestQueryGitHubRunsForWorkflowUsesRepository(t *testing.T) {
+	runs, err := queryGitHubRunsForWorkflowInRepoWithRunner(
+		"release.yml",
+		5,
+		"srobroek/agentic-packages",
+		fakeGHRunner(t,
+			`[{"databaseId":12345,"name":"release","status":"completed","conclusion":"success","workflowName":"release.yml"}]`,
+			"run", "list", "--workflow", "release.yml", "--json", "databaseId,name,status,conclusion,createdAt,workflowName", "--limit", "5", "--repo", "srobroek/agentic-packages",
+		),
+	)
+	if err != nil {
+		t.Fatalf("queryGitHubRunsForWorkflowInRepo returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].DatabaseID != 12345 {
+		t.Fatalf("runs = %#v, want one run with database ID 12345", runs)
 	}
 }
 
@@ -640,9 +604,14 @@ func TestCheckGHRun_ReturnsErrorWhenPersistingDiscoveredRunIDFails(t *testing.T)
 }
 
 func TestCheckGHRunStatus_Success(t *testing.T) {
-	installFakeGHScript(t, `{"status":"completed","conclusion":"success","name":"release"}`)
-
-	resolved, escalated, reason, err := checkGHRunStatus("12345")
+	resolved, escalated, reason, err := checkGHRunStatusInRepoWithRunner(
+		"12345",
+		"",
+		fakeGHRunner(t,
+			`{"status":"completed","conclusion":"success","name":"release"}`,
+			"run", "view", "12345", "--json", "status,conclusion,name",
+		),
+	)
 	if err != nil {
 		t.Fatalf("checkGHRunStatus returned error: %v", err)
 	}
@@ -842,10 +811,6 @@ func TestWorkflowNameMatches(t *testing.T) {
 }
 
 func TestCheckGHPR_StateHandling(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-sh fake binary; skipping on Windows")
-	}
-
 	tests := []struct {
 		name           string
 		ghJSON         string
@@ -878,9 +843,11 @@ func TestCheckGHPR_StateHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			installFakeGHScript(t, tt.ghJSON)
 			gate := &types.Issue{AwaitID: "https://github.com/org/repo/pull/1"}
-			resolved, escalated, reason, err := checkGHPR(gate)
+			resolved, escalated, reason, err := checkGHPRWithRunner(gate, fakeGHRunner(t,
+				tt.ghJSON,
+				"pr", "view", gate.AwaitID, "--json", "state,title",
+			))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -898,28 +865,11 @@ func TestCheckGHPR_StateHandling(t *testing.T) {
 }
 
 func TestCheckGHPR_NoMergedFieldRequested(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-sh fake binary; skipping on Windows")
-	}
-
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "gh")
-	// Fake gh that fails if "merged" appears anywhere in args
-	script := `#!/bin/sh
-for arg in "$@"; do
-  case "$arg" in
-    *merged*) echo "ERROR: 'merged' field must not be requested" >&2; exit 1;;
-  esac
-done
-echo '{"state":"MERGED","title":"Test PR"}'
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gh: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	gate := &types.Issue{AwaitID: "https://github.com/org/repo/pull/99"}
-	resolved, _, reason, err := checkGHPR(gate)
+	resolved, _, reason, err := checkGHPRWithRunner(gate, fakeGHRunner(t,
+		`{"state":"MERGED","title":"Test PR"}`,
+		"pr", "view", gate.AwaitID, "--json", "state,title",
+	))
 	if err != nil {
 		t.Fatalf("checkGHPR failed (likely requested 'merged' field): %v", err)
 	}
@@ -931,34 +881,15 @@ echo '{"state":"MERGED","title":"Test PR"}'
 	}
 }
 
-func installFakeGHScript(t *testing.T, stdout string) {
+func fakeGHRunner(t *testing.T, stdout string, wantArgs ...string) ghCommandRunner {
 	t.Helper()
-
-	dir := t.TempDir()
-
-	var (
-		scriptPath string
-		script     string
-	)
-
-	if runtime.GOOS == "windows" {
-		scriptPath = filepath.Join(dir, "gh.cmd")
-		script = "@echo off\r\necho " + stdout + "\r\n"
-	} else {
-		scriptPath = filepath.Join(dir, "gh")
-		script = "#!/bin/sh\ncat <<'EOF'\n" + stdout + "\nEOF\n"
-	}
-
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gh: %v", err)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(scriptPath, 0o755); err != nil {
-			t.Fatalf("chmod fake gh: %v", err)
+	return func(args ...string) ([]byte, []byte, error) {
+		t.Helper()
+		if !slices.Equal(args, wantArgs) {
+			t.Fatalf("gh arguments = %q, want %q", args, wantArgs)
 		}
+		return []byte(stdout), nil, nil
 	}
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // gateTestContainsIgnoreCase checks if haystack contains needle (case-insensitive)

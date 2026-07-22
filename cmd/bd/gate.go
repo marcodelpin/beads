@@ -738,6 +738,17 @@ type ghPRStatus struct {
 	Title string `json:"title"`
 }
 
+type ghCommandRunner func(args ...string) (stdout, stderr []byte, err error)
+
+func runGHCommand(args ...string) (stdout, stderr []byte, err error) {
+	cmd := exec.Command("gh", args...) // #nosec G204 -- callers pass validated values as an argument vector, without a shell
+	var stdoutBuffer, stderrBuffer bytes.Buffer
+	cmd.Stdout = &stdoutBuffer
+	cmd.Stderr = &stderrBuffer
+	err = cmd.Run()
+	return stdoutBuffer.Bytes(), stderrBuffer.Bytes(), err
+}
+
 var (
 	discoverRunIDByWorkflowNameFunc = discoverRunIDByWorkflowName
 	updateGateAwaitIDFunc           = updateGateAwaitID
@@ -804,7 +815,10 @@ func queryGitHubRunsForWorkflowInRepo(workflow string, limit int, repo string) (
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, fmt.Errorf("gh CLI not found: install from https://cli.github.com")
 	}
+	return queryGitHubRunsForWorkflowInRepoWithRunner(workflow, limit, repo, runGHCommand)
+}
 
+func queryGitHubRunsForWorkflowInRepoWithRunner(workflow string, limit int, repo string, runGH ghCommandRunner) ([]GHWorkflowRun, error) {
 	args := []string{
 		"run", "list",
 		"--workflow", workflow,
@@ -815,11 +829,10 @@ func queryGitHubRunsForWorkflowInRepo(workflow string, limit int, repo string) (
 		args = append(args, "--repo", repo)
 	}
 
-	cmd := exec.Command("gh", args...)
-	output, err := cmd.Output()
+	output, stderr, err := runGH(args...)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("gh run list --workflow=%s failed: %s", workflow, string(exitErr.Stderr))
+		if len(stderr) > 0 {
+			return nil, fmt.Errorf("gh run list --workflow=%s failed: %s", workflow, string(stderr))
 		}
 		return nil, fmt.Errorf("gh run list: %w", err)
 	}
@@ -857,6 +870,10 @@ func discoverRunIDByWorkflowNameInRepo(workflowHint, repo string) (string, error
 // checkGHRun checks a GitHub Actions workflow run gate.
 // When persistDiscoveredRunID is false, workflow-name discovery stays in-memory only.
 func checkGHRun(gate *types.Issue, persistDiscoveredRunID bool) (resolved, escalated bool, reason string, err error) {
+	return checkGHRunWithRunner(gate, persistDiscoveredRunID, runGHCommand)
+}
+
+func checkGHRunWithRunner(gate *types.Issue, persistDiscoveredRunID bool, runGH ghCommandRunner) (resolved, escalated bool, reason string, err error) {
 	if gate.AwaitID == "" {
 		return false, false, "no run ID specified - set await_id or use workflow name hint", nil
 	}
@@ -893,7 +910,7 @@ func checkGHRun(gate *types.Issue, persistDiscoveredRunID bool) (resolved, escal
 	if repo == "" {
 		return checkGHRunStatusFunc(runID)
 	}
-	return checkGHRunStatusInRepo(runID, repo)
+	return checkGHRunStatusInRepoWithRunner(runID, repo, runGH)
 }
 
 func checkGHRunStatus(runID string) (resolved, escalated bool, reason string, err error) {
@@ -901,31 +918,31 @@ func checkGHRunStatus(runID string) (resolved, escalated bool, reason string, er
 }
 
 func checkGHRunStatusInRepo(runID, repo string) (resolved, escalated bool, reason string, err error) {
+	return checkGHRunStatusInRepoWithRunner(runID, repo, runGHCommand)
+}
+
+func checkGHRunStatusInRepoWithRunner(runID, repo string, runGH ghCommandRunner) (resolved, escalated bool, reason string, err error) {
 	// Run: gh run view <id> --json status,conclusion,name
 	args := []string{"run", "view", runID, "--json", "status,conclusion,name"}
 	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
-	cmd := exec.Command("gh", args...) // #nosec G204 -- runID and repo are validated values passed without a shell
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if runErr := cmd.Run(); runErr != nil {
+	stdout, stderr, runErr := runGH(args...)
+	if runErr != nil {
 		// Check if gh CLI is not found
-		if strings.Contains(stderr.String(), "command not found") ||
+		if strings.Contains(string(stderr), "command not found") ||
 			strings.Contains(runErr.Error(), "executable file not found") {
 			return false, false, "", fmt.Errorf("gh CLI not installed")
 		}
 		// Check if run not found
-		if strings.Contains(stderr.String(), "not found") {
+		if strings.Contains(string(stderr), "not found") {
 			return false, true, "workflow run not found", nil
 		}
-		return false, false, "", fmt.Errorf("gh run view failed: %s", stderr.String())
+		return false, false, "", fmt.Errorf("gh run view failed: %s", string(stderr))
 	}
 
 	var status ghRunStatus
-	if parseErr := json.Unmarshal(stdout.Bytes(), &status); parseErr != nil {
+	if parseErr := json.Unmarshal(stdout, &status); parseErr != nil {
 		return false, false, "", fmt.Errorf("failed to parse gh output: %w", parseErr)
 	}
 
@@ -953,6 +970,10 @@ func checkGHRunStatusInRepo(runID, repo string) (resolved, escalated bool, reaso
 
 // checkGHPR checks a GitHub pull request gate
 func checkGHPR(gate *types.Issue) (resolved, escalated bool, reason string, err error) {
+	return checkGHPRWithRunner(gate, runGHCommand)
+}
+
+func checkGHPRWithRunner(gate *types.Issue, runGH ghCommandRunner) (resolved, escalated bool, reason string, err error) {
 	if gate.AwaitID == "" {
 		return false, false, "no PR number specified", nil
 	}
@@ -967,26 +988,22 @@ func checkGHPR(gate *types.Issue) (resolved, escalated bool, reason string, err 
 	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
-	cmd := exec.Command("gh", args...) // #nosec G204 -- await ID and repo are validated values passed without a shell
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if runErr := cmd.Run(); runErr != nil {
+	stdout, stderr, runErr := runGH(args...)
+	if runErr != nil {
 		// Check if gh CLI is not found
-		if strings.Contains(stderr.String(), "command not found") ||
+		if strings.Contains(string(stderr), "command not found") ||
 			strings.Contains(runErr.Error(), "executable file not found") {
 			return false, false, "", fmt.Errorf("gh CLI not installed")
 		}
 		// Check if PR not found
-		if strings.Contains(stderr.String(), "not found") || strings.Contains(stderr.String(), "Could not resolve") {
+		if strings.Contains(string(stderr), "not found") || strings.Contains(string(stderr), "Could not resolve") {
 			return false, true, "pull request not found", nil
 		}
-		return false, false, "", fmt.Errorf("gh pr view failed: %s", stderr.String())
+		return false, false, "", fmt.Errorf("gh pr view failed: %s", string(stderr))
 	}
 
 	var status ghPRStatus
-	if parseErr := json.Unmarshal(stdout.Bytes(), &status); parseErr != nil {
+	if parseErr := json.Unmarshal(stdout, &status); parseErr != nil {
 		return false, false, "", fmt.Errorf("failed to parse gh output: %w", parseErr)
 	}
 
