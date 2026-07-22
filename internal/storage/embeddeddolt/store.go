@@ -571,6 +571,19 @@ func (s *EmbeddedDoltStore) GetAllEventsSince(ctx context.Context, since time.Ti
 	return result, err
 }
 
+// EventsSince returns durable events strictly after the keyset cursor, ordered
+// by (created_at ASC, id ASC) and bounded by limit. Durable events table only.
+// issueID != "" scopes the feed to one bead's history.
+func (s *EmbeddedDoltStore) EventsSince(ctx context.Context, cursor storage.EventCursor, issueID string, limit int) ([]*types.Event, error) {
+	var result []*types.Event
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.EventsSinceInTx(ctx, tx, cursor.CreatedAt, cursor.ID, issueID, limit)
+		return err
+	})
+	return result, err
+}
+
 // RunInTransaction is implemented in transaction.go.
 
 // Close decrements the reference count if this store was opened via Open (the
@@ -898,6 +911,30 @@ func (s *EmbeddedDoltStore) GetDependencyRecords(ctx context.Context, issueID st
 		return nil
 	})
 	return result, err
+}
+
+// GetDependentRecords returns raw dependency rows whose target is targetID,
+// without hydrating the source issues. Delegates to shared query logic.
+func (s *EmbeddedDoltStore) GetDependentRecords(ctx context.Context, targetID string, depType string, limit int, afterID string) ([]*types.Dependency, error) {
+	var result []*types.Dependency
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetDependentRecordsInTx(ctx, tx, targetID, depType, limit, afterID)
+		return err
+	})
+	return result, err
+}
+
+// CountDependentRecords returns the total inbound-edge count of targetID across
+// both dependency tables. Delegates to issueops.CountDependentRecordsInTx.
+func (s *EmbeddedDoltStore) CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error) {
+	var n int
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		n, err = issueops.CountDependentRecordsInTx(ctx, tx, targetID, depType)
+		return err
+	})
+	return n, err
 }
 
 // IsBlocked is implemented in issues.go.

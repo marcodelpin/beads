@@ -253,6 +253,44 @@ func (s *DoltStore) GetDependencyRecords(ctx context.Context, issueID string) ([
 	return scanDependencyRows(rows)
 }
 
+// GetDependentRecords returns raw dependency rows whose target is issueID,
+// without hydrating the source issues. Delegates to
+// issueops.GetDependentRecordsInTx for shared query logic.
+func (s *DoltStore) GetDependentRecords(ctx context.Context, targetID string, depType string, limit int, afterID string) ([]*types.Dependency, error) {
+	var result []*types.Dependency
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetDependentRecordsInTx(ctx, tx, targetID, depType, limit, afterID)
+		return err
+	})
+	return result, err
+}
+
+// CountDependentRecords returns the total inbound-edge count of targetID across
+// both dependency tables. Delegates to issueops.CountDependentRecordsInTx.
+func (s *DoltStore) CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error) {
+	var n int
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		n, err = issueops.CountDependentRecordsInTx(ctx, tx, targetID, depType)
+		return err
+	})
+	return n, err
+}
+
+// GetDependentRecordsForIssues returns the raw inbound dependency rows for a SET
+// of target ids in one batched read, keyed by target id. Delegates to
+// issueops.GetDependentRecordsForIssuesInTx for shared query logic.
+func (s *DoltStore) GetDependentRecordsForIssues(ctx context.Context, targetIDs []string) (map[string][]*types.Dependency, error) {
+	var result map[string][]*types.Dependency
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetDependentRecordsForIssuesInTx(ctx, tx, targetIDs)
+		return err
+	})
+	return result, err
+}
+
 // GetAllDependencyRecords returns all dependency records.
 // Delegates to issueops.GetAllDependencyRecordsInTx for shared query logic.
 func (s *DoltStore) GetAllDependencyRecords(ctx context.Context) (map[string][]*types.Dependency, error) {
@@ -341,6 +379,21 @@ func (s *DoltStore) IsBlocked(ctx context.Context, issueID string) (bool, []stri
 		return false, nil, fmt.Errorf("failed to check blockers: %w", err)
 	}
 	return blocked, blockers, nil
+}
+
+// IsBlockedBatch returns the denormalized transitive is_blocked flag for each id
+// in one batched read. Delegates to issueops.IsBlockedBatchInTx.
+func (s *DoltStore) IsBlockedBatch(ctx context.Context, ids []string) (map[string]bool, error) {
+	var result map[string]bool
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.IsBlockedBatchInTx(ctx, tx, ids)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch-check blockers: %w", err)
+	}
+	return result, nil
 }
 
 // GetNewlyUnblockedByClose finds issues that become unblocked when an issue is closed.

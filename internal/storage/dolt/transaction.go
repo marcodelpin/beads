@@ -1131,3 +1131,123 @@ func (t *doltTransaction) AddComment(ctx context.Context, issueID, actor, commen
 	}
 	return wrapExecError("add comment in tx", err)
 }
+
+// GetIssueCommentsPage returns one keyset page of an issue's comments within the
+// transaction. Like the OLD GetIssueComments/GetDependencyRecords tx methods, it
+// pre-resolves wispness on the ignored session and hands the InTx read the
+// handle that owns issueID's tier, so a comment written on either tier earlier in
+// THIS uncommitted transaction is visible (durable rows live on regularTx, wisp
+// rows on ignoredTx — see the struct comment on the two-session split).
+func (t *doltTransaction) GetIssueCommentsPage(ctx context.Context, issueID string, after storage.CommentPageCursor, limit int) ([]*types.Comment, error) {
+	tx := t.regularTx
+	if t.isActiveWisp(ctx, issueID) {
+		tx = t.ignoredTx
+	}
+	return issueops.GetIssueCommentsPageInTx(ctx, tx, issueID, after, limit)
+}
+
+// CountIssuesByGroup returns per-group issue counts within the transaction.
+//
+// TWO-SESSION SCOPING: the count runs on regularTx, so it reflects this tx's own
+// uncommitted DURABLE issues plus all COMMITTED issues and wisps, but NOT wisps
+// created in this same uncommitted transaction (those live on the separate
+// ignored session). This matches doltTransaction.SearchIssues, which is likewise
+// durable-tier for the tx's own writes. Note the pre-existing count-vs-search
+// asymmetry: CountIssuesByGroupInTx merges committed wisps into the buckets while
+// SearchIssues reads the issues table only, so the two need not agree when
+// committed wisps exist. The embedded backend has no session split and sees
+// in-tx wisps here.
+func (t *doltTransaction) CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error) {
+	return issueops.CountIssuesByGroupInTx(ctx, t.regularTx, filter, groupBy)
+}
+
+// GetDependentRecords returns the raw inbound dependency rows of targetID within
+// the transaction.
+//
+// TWO-SESSION SCOPING: a target's inbound edges genuinely span BOTH dependency
+// tables (a wisp source points at a durable target), and the InTx read unions
+// them with an in-query, cross-table de-dup that must run on a single handle.
+// Run on regularTx, it sees this tx's own uncommitted DURABLE edges plus all
+// COMMITTED edges, but NOT wisp edges written in this same uncommitted
+// transaction (those live on the ignored session and become visible after
+// commit). The embedded backend has no session split and sees in-tx wisp edges.
+func (t *doltTransaction) GetDependentRecords(ctx context.Context, targetID string, depType string, limit int, afterID string) ([]*types.Dependency, error) {
+	return issueops.GetDependentRecordsInTx(ctx, t.regularTx, targetID, depType, limit, afterID)
+}
+
+// GetDependentRecordsForIssues returns the raw inbound dependency rows for a set
+// of target ids within the transaction, keyed by target id. Same TWO-SESSION
+// SCOPING as GetDependentRecords: uncommitted-durable plus committed edges on the
+// server backend; wisp edges written in this same transaction are visible after
+// commit. The embedded backend sees in-tx wisp edges.
+func (t *doltTransaction) GetDependentRecordsForIssues(ctx context.Context, targetIDs []string) (map[string][]*types.Dependency, error) {
+	return issueops.GetDependentRecordsForIssuesInTx(ctx, t.regularTx, targetIDs)
+}
+
+// CountDependentRecords returns the total inbound-edge count of targetID within
+// the transaction. Same TWO-SESSION SCOPING as GetDependentRecords — the count
+// uses a cross-table NOT-IN subquery that must run on one handle, so on the
+// server backend it excludes wisp edges written in this same uncommitted
+// transaction (visible after commit). The embedded backend sees them.
+func (t *doltTransaction) CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error) {
+	return issueops.CountDependentRecordsInTx(ctx, t.regularTx, targetID, depType)
+}
+
+// IsBlocked reports the denormalized transitive is_blocked flag and direct
+// blockers of issueID within the transaction. Like GetIssueCommentsPage, it
+// pre-resolves wispness and reads on the session that owns issueID's tier, so the
+// is_blocked flag and blocker edges written for issueID earlier in THIS
+// uncommitted transaction are visible on either tier.
+func (t *doltTransaction) IsBlocked(ctx context.Context, issueID string) (bool, []string, error) {
+	tx := t.regularTx
+	if t.isActiveWisp(ctx, issueID) {
+		tx = t.ignoredTx
+	}
+	return issueops.IsBlockedInTx(ctx, tx, issueID)
+}
+
+// IsBlockedBatch reports the denormalized transitive is_blocked flag for a page
+// of ids within the transaction. A batch can mix durable and wisp ids whose
+// is_blocked columns live on different sessions, so — unlike a single-handle
+// delegation — it partitions the ids by wispness (resolved on the ignored
+// session so this tx's own uncommitted wisps count) and reads each tier's
+// is_blocked on its owning session, then merges. Every id therefore reflects the
+// flag written earlier in THIS uncommitted transaction, on either tier.
+func (t *doltTransaction) IsBlockedBatch(ctx context.Context, ids []string) (map[string]bool, error) {
+	if len(ids) == 0 {
+		return map[string]bool{}, nil
+	}
+	wispIDs, permIDs, err := issueops.PartitionWispIDsInTx(ctx, t.ignoredTx, ids)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(ids))
+	if len(permIDs) > 0 {
+		durable, err := issueops.IsBlockedBatchInTx(ctx, t.regularTx, permIDs)
+		if err != nil {
+			return nil, err
+		}
+		for id, blocked := range durable {
+			result[id] = blocked
+		}
+	}
+	if len(wispIDs) > 0 {
+		wisp, err := issueops.IsBlockedBatchInTx(ctx, t.ignoredTx, wispIDs)
+		if err != nil {
+			return nil, err
+		}
+		for id, blocked := range wisp {
+			result[id] = blocked
+		}
+	}
+	return result, nil
+}
+
+// EventsSince returns durable events strictly after the keyset cursor within the
+// transaction. Mirrors DoltStore.EventsSince's issueops delegation. The feed is
+// durable-only by contract (wisp events are excluded), and durable event writes
+// land on regularTx, so an event recorded earlier in THIS uncommitted
+// transaction is visible.
+func (t *doltTransaction) EventsSince(ctx context.Context, cursor storage.EventCursor, issueID string, limit int) ([]*types.Event, error) {
+	return issueops.EventsSinceInTx(ctx, t.regularTx, cursor.CreatedAt, cursor.ID, issueID, limit)
+}

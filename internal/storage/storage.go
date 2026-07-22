@@ -35,6 +35,19 @@ var ErrNotOwner = errors.New("issue claimed by a different actor")
 // stale; the issue is left untouched.
 var ErrAssigneeMismatch = errors.New("assignee mismatch")
 
+// ClaimedByFragment and NotClaimableStatusFragment are the exact message
+// fragments the claim path (issueops/claim.go) appends after the sentinel to
+// carry the conflicting assignee/status: ErrAlreadyClaimed is wrapped as
+// "<sentinel> by <assignee>" and ErrNotClaimable as "<sentinel>: status
+// <status>". They are the single source of truth for that format so producer
+// (claim.go) and consumer (beads.ParseClaimConflict) cannot drift: the consumer
+// reconstructs its marker as ErrAlreadyClaimed.Error()+ClaimedByFragment rather
+// than hardcoding the literal.
+const (
+	ClaimedByFragment          = " by "
+	NotClaimableStatusFragment = ": status "
+)
+
 // ErrNotFound is returned when a requested entity does not exist in the database.
 var ErrNotFound = errors.New("not found")
 
@@ -355,6 +368,7 @@ type DoltStorage interface {
 	FederationStore
 	BulkIssueStore
 	DependencyQueryStore
+	EventQueryStore
 	AnnotationStore
 	ConfigMetadataStore
 	CompactionStore
@@ -484,6 +498,29 @@ type ReadyWorkCounter interface {
 //   - If the callback function panics, the transaction is rolled back
 //   - On successful return from the callback, the transaction is committed
 //
+// # Compose surface (classic path)
+//
+// The transaction methods are implemented by the classic Dolt and
+// embedded-Dolt stores. The domain/uow plumbing (internal/storage/domain) is a
+// separate compose surface that does not implement storage.Transaction today;
+// that asymmetry is pre-existing and out of scope for this surface.
+//
+// The read methods below let a caller assemble a whole composite view — a
+// bd show-style assembly of counts and relations — inside ONE transaction, so
+// everything it stitches together is read from a single snapshot and cannot
+// tear across separate engine reads.
+//
+// TWO-SESSION WISP CAVEAT (server/Dolt backend only): the classic Dolt store
+// runs durable tables and dolt-ignored wisp tables on two separate SQL sessions
+// within one logical transaction. Reads that span both tiers in a single query
+// (the ones flagged below) therefore see this transaction's own uncommitted
+// DURABLE writes and all COMMITTED wisps, but NOT wisps written in the same
+// still-open transaction — those become visible after commit. Single-tier reads
+// (GetIssue, GetIssueComments, GetIssueCommentsPage, GetDependencyRecords,
+// IsBlocked, IsBlockedBatch, GetLabels) route to the owning session and are
+// read-your-writes on both tiers. The embedded-Dolt store has no session split,
+// so every read there is read-your-writes on both tiers.
+//
 // # Example Usage
 //
 //	err := store.RunInTransaction(ctx, "bd: create parent and child", func(tx storage.Transaction) error {
@@ -553,7 +590,61 @@ type Transaction interface {
 	// Comment operations
 	AddComment(ctx context.Context, issueID, actor, comment string) error
 	ImportIssueComment(ctx context.Context, issueID, author, text string, createdAt time.Time) (*types.Comment, error)
-	GetIssueComments(ctx context.Context, issueID string) ([]*types.Comment, error)
+	GetIssueComments(ctx context.Context, issueID string) ([]*types.Comment, error) // For read-your-writes within transaction
+	// GetIssueCommentsPage returns one keyset page of an issue's comments in the
+	// stable (created_at ASC, id ASC) order, resuming strictly after the cursor
+	// (the zero cursor starts at the beginning of the thread). Lets a composite
+	// view page a comment thread off the same snapshot as its other reads. See
+	// storage.Storage.GetIssueCommentsPage for the full ordering and
+	// page-walk-equals-full-read contract.
+	GetIssueCommentsPage(ctx context.Context, issueID string, after CommentPageCursor, limit int) ([]*types.Comment, error)
+
+	// Composite-view reads.
+	//
+	// Each mirrors the Storage-level method of the same name; they add no new
+	// query shape, only the ability to run the existing read on the
+	// transaction's snapshot, so a bd show-style assembly can gather every count
+	// and relation it needs inside one transaction. All see this transaction's
+	// own uncommitted DURABLE writes; the wisp-tier visibility of the
+	// both-tiers-spanning reads is governed by the TWO-SESSION WISP CAVEAT above.
+
+	// CountIssuesByGroup returns per-group issue counts. groupBy is one of:
+	// status, priority, type, assignee, label. SPANS BOTH TIERS (merges wisps):
+	// subject to the two-session wisp caveat on the server backend. Note it merges
+	// committed wisps into the buckets while the transaction's SearchIssues reads
+	// the issues table only, so their totals need not agree when committed wisps
+	// exist — a pre-existing count-vs-search wisp-scoping asymmetry, not a tear.
+	CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error)
+
+	// GetDependentRecords returns the raw inbound dependency rows whose target is
+	// targetID (its dependents), spanning the durable and wisp dependency tables,
+	// filtered by depType ("" = all), bounded by limit and paged by afterID.
+	// SPANS BOTH TIERS: subject to the two-session wisp caveat on the server backend.
+	GetDependentRecords(ctx context.Context, targetID string, depType string, limit int, afterID string) ([]*types.Dependency, error)
+	// GetDependentRecordsForIssues returns the raw inbound dependency rows for a
+	// SET of target ids in one batched read, keyed by target id. SPANS BOTH TIERS:
+	// subject to the two-session wisp caveat on the server backend.
+	GetDependentRecordsForIssues(ctx context.Context, targetIDs []string) (map[string][]*types.Dependency, error)
+	// CountDependentRecords returns the total inbound-edge count of targetID
+	// across both dependency tables (same predicate/scope as GetDependentRecords).
+	// SPANS BOTH TIERS: subject to the two-session wisp caveat on the server backend.
+	CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error)
+
+	// IsBlocked reports the denormalized transitive is_blocked flag for one issue
+	// plus its direct blocker ids. Single-tier (routes to the issue's own tier):
+	// read-your-writes on both tiers.
+	IsBlocked(ctx context.Context, issueID string) (bool, []string, error)
+	// IsBlockedBatch reports the denormalized transitive is_blocked flag for a
+	// page of ids in one batched read. ids present in neither the issues nor the
+	// wisps table are absent from the map; callers treat absent as not-blocked.
+	// Partitions ids by tier and reads each on its owning session, so it is
+	// read-your-writes on both tiers even for a mixed durable/wisp batch.
+	IsBlockedBatch(ctx context.Context, ids []string) (map[string]bool, error)
+
+	// EventsSince returns durable events strictly after cursor, ordered by
+	// (created_at ASC, id ASC) and bounded by limit; issueID scopes the feed to
+	// one issue's history ("" = all issues). Durable events table only.
+	EventsSince(ctx context.Context, cursor EventCursor, issueID string, limit int) ([]*types.Event, error)
 }
 
 // DependencyAddOptions controls dependency insertion for both the store-level

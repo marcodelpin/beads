@@ -783,6 +783,12 @@ func (w WorkType) IsValid() bool {
 
 // Dependency represents a relationship between issues
 type Dependency struct {
+	// ID is the dependency row's deterministic surrogate primary key,
+	// depid.New(issue_id, target) — a UUIDv5 that is stable and globally unique
+	// across the durable and wisp dependency tables. Populated only by reads
+	// that select it (e.g. GetDependentRecords, which keysets on it); left empty
+	// by the source-keyed reads that never needed it.
+	ID          string         `json:"id,omitempty"`
 	IssueID     string         `json:"issue_id"`
 	DependsOnID string         `json:"depends_on_id"`
 	Type        DependencyType `json:"type"`
@@ -1066,6 +1072,7 @@ type EventType string
 const (
 	EventCreated           EventType = "created"
 	EventUpdated           EventType = "updated"
+	EventClaimed           EventType = "claimed"
 	EventStatusChanged     EventType = "status_changed"
 	EventCommented         EventType = "commented"
 	EventClosed            EventType = "closed"
