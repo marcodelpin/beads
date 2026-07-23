@@ -9,32 +9,38 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/audit"
+	"github.com/steveyegge/beads/internal/hooks"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// proxiedGateClose captures a resolved gate's before/after state so on_update
-// and on_close hooks can fire once, after the transaction commits.
 type proxiedGateClose struct {
-	before *types.Issue
-	after  *types.Issue
+	before    *types.Issue
+	after     *types.Issue
+	oldStatus string
+	reason    string
 }
 
-// gateCheckApply is the outcome of the write transaction, built fresh on each
-// RunTx attempt so a serialization retry never doubles it.
 type gateCheckApply struct {
 	closed    []proxiedGateClose
+	updated   []*types.Issue
 	closeErrs map[string]error
 	awaitErrs map[string]error
 }
 
-// runGateCheckProxiedServer is the proxied-server dual of the embedded gate
-// check flow. It evaluates gates outside the transaction (gate evaluation shells
-// out to `gh` and must not run under a retryable tx), then applies await-id
-// updates and gate closes inside a single uow.RunTx, and fires hooks and renders
-// output after the commit.
+type proxiedFreshReadGetter struct{}
+
+func (proxiedFreshReadGetter) GetIssue(ctx context.Context, id string) (*types.Issue, error) {
+	uw, err := proxiedOpenReadUOW(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer uw.Close(ctx)
+	return uw.IssueUseCase().GetIssue(ctx, id)
+}
+
 func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 	CheckReadonly("gate check")
 
@@ -61,10 +67,6 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		Limit:         limit,
 	}
 
-	// Read + evaluate under a read-only unit of work. A gh:run gate that names a
-	// workflow hint records its discovered run id here for a deferred write; the
-	// callback never writes so evaluation stays side-effect free (dry runs pass
-	// nil and skip discovery persistence entirely).
 	discovered := map[string]string{}
 	var persistAwaitID func(gateID, runID string) error
 	if !dryRun {
@@ -84,15 +86,14 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		return HandleErrorRespectJSON("%v", err)
 	}
 	filteredGates := filterCheckableGates(page.Items, gateTypeFilter)
+	readUW.Close(ctx)
+
 	if len(filteredGates) == 0 {
-		readUW.Close(ctx)
 		printNoOpenGates(gateTypeFilter)
 		return nil
 	}
-	results := evaluateGates(ctx, filteredGates, time.Now(), readUW.IssueUseCase(), persistAwaitID)
-	readUW.Close(ctx)
+	results := evaluateGates(ctx, filteredGates, time.Now(), proxiedFreshReadGetter{}, persistAwaitID)
 
-	// Dry run performs no writes; render straight from the evaluation.
 	if dryRun {
 		resolved, escalated, errCount := applyGateCheckResults(results, true, escalateFlag, nil)
 		return printGateCheckSummary(len(results), resolved, escalated, errCount, dryRun)
@@ -107,6 +108,10 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		for gateID, runID := range discovered {
 			if err := uw.IssueUseCase().UpdateIssue(ctx, gateID, map[string]any{"await_id": runID}, actor); err != nil {
 				out.awaitErrs[gateID] = fmt.Errorf("failed to update gate with discovered run ID: %w", err)
+				continue
+			}
+			if after, getErr := uw.IssueUseCase().GetIssue(ctx, gateID); getErr == nil && after != nil {
+				out.updated = append(out.updated, after)
 			}
 		}
 
@@ -118,13 +123,20 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 				continue
 			}
 			before, _ := uw.IssueUseCase().GetIssue(ctx, r.gate.ID)
+			if before != nil && before.Status == types.StatusClosed {
+				continue
+			}
 			res, closeErr := uw.IssueUseCase().CloseIssue(ctx, r.gate.ID, domain.CloseIssueParams{Reason: r.reason}, actor)
 			if closeErr != nil {
 				out.closeErrs[r.gate.ID] = closeErr
 				continue
 			}
-			audit.LogFieldChange(r.gate.ID, "status", string(r.gate.Status), "closed", actor, r.reason)
-			out.closed = append(out.closed, proxiedGateClose{before: before, after: res.Issue})
+			out.closed = append(out.closed, proxiedGateClose{
+				before:    before,
+				after:     res.Issue,
+				oldStatus: string(r.gate.Status),
+				reason:    r.reason,
+			})
 		}
 
 		return out, "bd: gate check", nil
@@ -133,19 +145,21 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
-	// Fire hooks and mark the command as a writer only after the commit lands.
+	for _, after := range applied.updated {
+		if err := fireProxiedUpdateHook(ctx, after); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", after.ID, err)
+		}
+	}
 	for _, c := range applied.closed {
+		audit.LogFieldChange(c.after.ID, "status", c.oldStatus, "closed", actor, c.reason)
 		if err := fireProxiedCloseHooks(ctx, c.before, c.after); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", c.after.ID, err)
 		}
 	}
-	if len(applied.closed) > 0 || len(discovered) > len(applied.awaitErrs) {
+	if len(applied.closed) > 0 || len(applied.updated) > 0 {
 		commandDidWrite.Store(true)
 	}
 
-	// Overlay transaction-time await-id write failures onto evaluation so they
-	// render as check errors, matching the embedded flow where a persistence
-	// failure supersedes the gate's resolution.
 	for i := range results {
 		if awaitErr, failed := applied.awaitErrs[results[i].gate.ID]; failed {
 			results[i].resolved = false
@@ -159,6 +173,23 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 			return applied.closeErrs[gate.ID]
 		})
 	return printGateCheckSummary(len(results), resolved, escalated, errCount, dryRun)
+}
+
+func fireProxiedUpdateHook(ctx context.Context, after *types.Issue) error {
+	if after == nil {
+		return nil
+	}
+	runner, err := proxiedHookRunner(ctx)
+	if err != nil {
+		return fmt.Errorf("hook runner: %w", err)
+	}
+	if runner == nil {
+		return nil
+	}
+	if err := runner.RunSync(hooks.EventUpdate, after); err != nil {
+		return fmt.Errorf("on_update hook: %w", err)
+	}
+	return nil
 }
 
 func runGateListProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {

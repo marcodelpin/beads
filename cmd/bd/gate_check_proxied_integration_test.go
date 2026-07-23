@@ -12,11 +12,6 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// seedGateAwait rewrites a gate issue's await columns directly on the shared
-// Dolt server so proxied gate check has something to evaluate. bd gate create is
-// not available in proxied-server mode, so timer/bead/gh gates are seeded here
-// instead. createdAt/timeout only matter for timer gates; pass zero values
-// otherwise.
 func seedGateAwait(t *testing.T, db *sql.DB, id, awaitType, awaitID string, createdAt time.Time, timeout time.Duration) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(),
@@ -26,17 +21,11 @@ func seedGateAwait(t *testing.T, db *sql.DB, id, awaitType, awaitID string, crea
 	}
 }
 
-// TestProxiedServerGateCheck mirrors the embedded gate check coverage
-// (gate_check_* subtests in gate_embedded_test.go) for proxied-server mode, and
-// asserts the actual resolution behavior end-to-end rather than just that the
-// command runs.
 func TestProxiedServerGateCheck(t *testing.T) {
 	requireSharedProxiedServer(t)
 	t.Parallel()
 	bd := buildEmbeddedBD(t)
 
-	// far past / far future margins large enough that any server/client timezone
-	// skew cannot flip an expired gate into a pending one or vice versa.
 	const expiredTimeout = time.Hour
 	longAgo := func() time.Time { return time.Now().UTC().Add(-48 * time.Hour) }
 	longFuture := time.Hour * 1000
@@ -118,7 +107,6 @@ func TestProxiedServerGateCheck(t *testing.T) {
 		db := openProxiedDB(t, p)
 		seedGateAwait(t, db, gate.ID, "bead", target.ID, time.Now().UTC(), 0)
 
-		// Target still open: gate stays pending.
 		if _, stderr, err := bdProxiedRunBuffers(t, bd, p.dir, "gate", "check", "--type", "bead"); err != nil {
 			t.Fatalf("gate check (target open) failed: %v\nstderr:\n%s", err, stderr)
 		}
@@ -126,7 +114,6 @@ func TestProxiedServerGateCheck(t *testing.T) {
 			t.Error("bead gate should stay pending while target is open")
 		}
 
-		// Close the target, then the gate resolves.
 		bdProxiedClose(t, bd, p.dir, target.ID)
 		out, stderr, err := bdProxiedRunBuffers(t, bd, p.dir, "gate", "check", "--type", "bead")
 		if err != nil {
@@ -149,8 +136,6 @@ func TestProxiedServerGateCheck(t *testing.T) {
 		seedGateAwait(t, db, timerGate.ID, "timer", "", longAgo(), expiredTimeout)
 		seedGateAwait(t, db, prGate.ID, "gh:pr", "1", time.Now().UTC(), 0)
 
-		// --type timer must not touch the gh:pr gate (its evaluation would shell
-		// out to gh, which is unavailable here; the filter keeps it untouched).
 		if _, stderr, err := bdProxiedRunBuffers(t, bd, p.dir, "gate", "check", "--type", "timer"); err != nil {
 			t.Fatalf("gate check --type timer failed: %v\nstderr:\n%s", err, stderr)
 		}

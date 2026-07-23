@@ -617,8 +617,6 @@ Examples:
 	},
 }
 
-// gateCheckResult is one gate's evaluation outcome, independent of the storage
-// backend that produced or will act on it.
 type gateCheckResult struct {
 	gate      *types.Issue
 	resolved  bool
@@ -627,7 +625,6 @@ type gateCheckResult struct {
 	err       error
 }
 
-// filterCheckableGates keeps the gates matching the --type filter.
 func filterCheckableGates(gates []*types.Issue, typeFilter string) []*types.Issue {
 	var out []*types.Issue
 	for _, gate := range gates {
@@ -646,12 +643,6 @@ func printNoOpenGates(typeFilter string) {
 	}
 }
 
-// evaluateGates checks each gate's await condition. Bead gates read through
-// getter; a gh:run gate whose await_id is a workflow-name hint persists the
-// discovered numeric run id through persistAwaitID (nil under --dry-run). now is
-// passed in so timer evaluation is deterministic under test. Evaluation performs
-// no gate writes beyond persistAwaitID, so callers may run it outside a
-// transaction.
 func evaluateGates(ctx context.Context, gates []*types.Issue, now time.Time, getter issueGetter, persistAwaitID func(gateID, runID string) error) []gateCheckResult {
 	results := make([]gateCheckResult, 0, len(gates))
 	for _, gate := range gates {
@@ -666,7 +657,6 @@ func evaluateGates(ctx context.Context, gates []*types.Issue, now time.Time, get
 		case gate.AwaitType == "bead":
 			r.resolved, r.reason = checkBeadGate(ctx, getter, gate.AwaitID)
 		default:
-			// Skip unsupported gate types (human gates need manual resolution).
 			continue
 		}
 		results = append(results, r)
@@ -674,10 +664,6 @@ func evaluateGates(ctx context.Context, gates []*types.Issue, now time.Time, get
 	return results
 }
 
-// applyGateCheckResults renders each outcome and, unless dryRun, closes resolved
-// gates via closeResolved and escalates escalated ones when escalate is set. It
-// is storage-agnostic: closeResolved performs (or reports) the actual close.
-// Returns the resolved/escalated/error counts for the summary line.
 func applyGateCheckResults(results []gateCheckResult, dryRun, escalate bool, closeResolved func(gate *types.Issue, reason string) error) (resolvedCount, escalatedCount, errorCount int) {
 	for _, r := range results {
 		if r.err != nil {
