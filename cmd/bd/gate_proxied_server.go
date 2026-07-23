@@ -131,10 +131,14 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 				out.closeErrs[r.gate.ID] = closeErr
 				continue
 			}
+			oldStatus := "open"
+			if before != nil && before.Status != "" {
+				oldStatus = string(before.Status)
+			}
 			out.closed = append(out.closed, proxiedGateClose{
 				before:    before,
 				after:     res.Issue,
-				oldStatus: string(r.gate.Status),
+				oldStatus: oldStatus,
 				reason:    r.reason,
 			})
 		}
