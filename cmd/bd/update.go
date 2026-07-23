@@ -329,6 +329,7 @@ stderr, and the command exits nonzero.`,
 			failures = append(failures, updateIDFailure{ID: id, Error: reason})
 		}
 		mutatedStores := map[storage.DoltStorage][]string{}
+		notesOverwriteWarnings := map[storage.DoltStorage][]string{}
 		mutatedResults := map[*RoutedResult]bool{}
 		pendingCloseResults := []*RoutedResult{}
 		trackMutation := func(result *RoutedResult) {
@@ -415,6 +416,8 @@ stderr, and the command exits nonzero.`,
 			if clearDeferStatus && issue.Status == types.StatusDeferred {
 				regularUpdates["status"] = string(types.StatusOpen)
 			}
+			notesOverwritten := replacesExistingNotes(issue.Notes, updates)
+
 			if len(regularUpdates) > 0 {
 				if err := issueStore.UpdateIssue(ctx, result.ResolvedID, regularUpdates, actor); err != nil {
 					fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
@@ -423,6 +426,9 @@ stderr, and the command exits nonzero.`,
 					continue
 				}
 				trackMutation(result)
+				if notesOverwritten {
+					notesOverwriteWarnings[issueStore] = append(notesOverwriteWarnings[issueStore], id)
+				}
 				// Audit log key field changes (survives Dolt GC flatten)
 				if s, ok := regularUpdates["status"].(string); ok {
 					audit.LogFieldChange(result.ResolvedID, "status", string(issue.Status), s, actor, "")
@@ -557,6 +563,9 @@ stderr, and the command exits nonzero.`,
 					closePendingResults()
 					return HandleErrorRespectJSON("failed to commit: %v", err)
 				}
+				for _, id := range notesOverwriteWarnings[s] {
+					warnNotesReplacement(id)
+				}
 			}
 		}
 		closePendingResults()
@@ -581,6 +590,15 @@ stderr, and the command exits nonzero.`,
 		}
 		return nil
 	},
+}
+
+func replacesExistingNotes(existing string, fields map[string]any) bool {
+	newNotes, replacing := fields["notes"].(string)
+	return replacing && existing != "" && newNotes != existing
+}
+
+func warnNotesReplacement(id string) {
+	fmt.Fprintf(os.Stderr, "warning: %s: --notes replaced existing notes (use --append-notes to preserve history)\n", id) //nolint:gosec // G705: stderr, not a browser context
 }
 
 // updateIDFailure records one issue ID that could not be updated and why.
@@ -655,6 +673,7 @@ func init() {
 	updateCmd.Flags().String("title", "", "New title")
 	updateCmd.Flags().StringP("type", "t", "", "New type (bug|feature|task|epic|chore|decision); custom types require types.custom config")
 	registerCommonIssueFlags(updateCmd)
+	updateCmd.Flags().Lookup("notes").Usage = "Additional notes (replaces existing notes; use --append-notes to append)"
 	updateCmd.Flags().Bool("allow-empty-description", false, "Allow empty description replacement when reading from stdin or file")
 	updateCmd.Flags().String("spec-id", "", "Link to specification document")
 	updateCmd.Flags().String("acceptance-criteria", "", "DEPRECATED: use --acceptance")

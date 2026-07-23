@@ -159,6 +159,7 @@ func applyUpdateProxiedAttempt(ctx context.Context, id string, in *updateInput) 
 	}
 
 	spec := buildUpdateSpecForIssue(current, in)
+	notesOverwritten := replacesExistingNotes(current.Notes, in.fields)
 
 	updated, err := issueUC.ApplyUpdate(ctx, id, spec, actor)
 	if err != nil {
@@ -189,6 +190,9 @@ func applyUpdateProxiedAttempt(ctx context.Context, id string, in *updateInput) 
 		// lost-write flavor — nothing-to-commit from re-committing a
 		// rolled-back session — cannot reach this branch because each attempt
 		// commits its own fresh unit of work exactly once.
+	}
+	if notesOverwritten {
+		warnNotesReplacement(id)
 	}
 
 	if err := fireProxiedUpdateHooks(ctx, current, updated); err != nil {
