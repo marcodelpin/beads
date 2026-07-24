@@ -1082,6 +1082,10 @@ Use --dry-run to see what would be dropped without actually dropping.`,
 		}
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
+		if usesProxiedServer() {
+			return runDoltCleanDatabasesProxied(rootCtx, beadsDir, dryRun)
+		}
+
 		// Connect directly to the Dolt server via config instead of getStore(),
 		// which isn't initialized for dolt subcommands (beads-9vt).
 		db, cleanup, err := openDoltServerConnection()

@@ -319,6 +319,26 @@ func AllMigrationsSQL() string {
 	return b.String()
 }
 
+// MigrationSQL returns the frozen SQL content of a main-source migration
+// file by name (e.g. "0057_events_value_columns_idempotent_longtext.up.sql"),
+// read from the same embedded FS runMigrations applies in production
+// (see mainSource.files above). It exists for tests outside this package
+// (internal/storage/embeddeddolt's engine-based frozen-guard tests) that need
+// to execute the byte-exact frozen migration content through a real engine:
+// reading the file from disk by a package-relative path does not reliably
+// resolve across every CI execution context, while the embedded FS is always
+// available and is, in fact, higher-fidelity -- it is the literal bytes
+// runMigrations itself applies, not a copy that could drift from the build.
+// Read-only; callers cannot use it to mutate or bypass the frozen-file
+// hygiene guard (scripts/check-migration-hygiene.sh).
+func MigrationSQL(name string) (string, error) {
+	data, err := mainSource.files.ReadFile(mainSource.dir + "/" + name)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func parseVersion(name string) (int, error) {
 	parts := strings.SplitN(name, "_", 2)
 	if len(parts) == 0 {
@@ -1124,19 +1144,31 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 		if err != nil {
 			return count, fmt.Errorf("reading migration %s: %w", mf.name, err)
 		}
-		if err := src.preMigrationRepair(ctx, db, mf.version); err != nil {
-			return count, fmt.Errorf("pre-repair for migration %s: %w", mf.name, err)
-		}
 
-		// Snapshot the working set before the migration runs so the per-step
-		// commit can force-stage only the tables this migration newly dirties,
-		// leaving pre-existing writes to untouched tables in the working set.
+		// Snapshot the working set BEFORE the pre-migration repair runs, not
+		// just before the migration's own SQL. preMigrationRepair (below) can
+		// itself mutate synced tables (e.g. #4690's ensureDependenciesIDColumn
+		// ALTERs `dependencies`); snapshotting after it ran would misclassify
+		// that mutation as pre-existing dirt to exclude from this step's
+		// commit, so the repair would sit uncommitted in the working set while
+		// the cursor row for this version was already committed -- a killed
+		// process between this step and the pass's final commit would leave
+		// history claiming the version applied while the repaired table's
+		// change was never durably recorded, and the version-gated repair
+		// hook cannot re-run to fix it (its version is no longer pending).
+		// Snapshotting first makes repair-hook mutations count as this step's
+		// own newly-dirtied work, so they land in the same atomic commit as
+		// the migration and its cursor row.
 		var dirtyBeforeStep map[string]dirtyTableState
 		if commitEachStep {
 			dirtyBeforeStep, err = dirtyTables(ctx, db, true)
 			if err != nil {
 				return count, fmt.Errorf("snapshotting dirty tables before %s: %w", mf.name, err)
 			}
+		}
+
+		if err := src.preMigrationRepair(ctx, db, mf.version); err != nil {
+			return count, fmt.Errorf("pre-repair for migration %s: %w", mf.name, err)
 		}
 
 		fmt.Fprintf(stderr, "migrating schema: %s\n", mf.name)

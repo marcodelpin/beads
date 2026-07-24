@@ -84,7 +84,7 @@ Consent flow (recommended):
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if usesProxiedServer() {
-			return HandleErrorRespectJSON("gc is not supported in proxied-server mode")
+			return runGCProxiedServer(rootCtx)
 		}
 		evt := metrics.NewCommandEvent("gc")
 		defer func() {

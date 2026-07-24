@@ -143,7 +143,7 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 			// non-assignee reason (status changed underneath us): report the
 			// status rather than a misleading held-by-someone refusal.
 			if slices.Contains(pools, assignee) {
-				return nil, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, currentStatus)
+				return nil, fmt.Errorf("%w%s%s", storage.ErrNotClaimable, storage.NotClaimableStatusFragment, currentStatus)
 			}
 			if currentStatus == types.StatusOpen {
 				// Do not name a release command here — not `bd unclaim`, not
@@ -151,12 +151,18 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 				// pattern-matched by batch agents into an unclaim+claim
 				// steamroller of live claims (wy-yuclk). Point at the holder;
 				// bd reclaim is safe to name because it only recovers claims
-				// whose lease has already expired.
-				return nil, fmt.Errorf("issue already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", assignee)
+				// whose lease has already expired. Keep the %w wrap so this
+				// open-but-assigned refusal is still a classifiable claim
+				// conflict: the public IssueClaimer contract promises wrapped
+				// ErrAlreadyClaimed, and errors.Is / ParseClaimConflict (and the
+				// proxied batch exit code) key on it. This mirrors the
+				// domain-stack twin (domain.issueUseCaseImpl.claim, bd-at6rc),
+				// which already wraps the same message.
+				return nil, fmt.Errorf("%w: already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", storage.ErrAlreadyClaimed, assignee)
 			}
-			return nil, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, assignee)
+			return nil, fmt.Errorf("%w%s%s", storage.ErrAlreadyClaimed, storage.ClaimedByFragment, assignee)
 		}
-		return nil, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, currentStatus)
+		return nil, fmt.Errorf("%w%s%s", storage.ErrNotClaimable, storage.NotClaimableStatusFragment, currentStatus)
 	}
 
 	// Grant the lease: what makes the claim recoverable — a worker that dies
@@ -177,7 +183,7 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 	}
 	newData, _ := json.Marshal(newUpdates)
 
-	if err := RecordFullEventInTable(ctx, tx, eventTable, id, "claimed", actor, string(oldData), string(newData)); err != nil {
+	if err := RecordFullEventInTable(ctx, tx, eventTable, id, types.EventClaimed, actor, string(oldData), string(newData)); err != nil {
 		return nil, fmt.Errorf("failed to record claim event: %w", err)
 	}
 
