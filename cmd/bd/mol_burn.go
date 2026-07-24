@@ -190,7 +190,7 @@ func burnMultipleMolecules(ctx context.Context, moleculeIDs []string, dryRun, fo
 
 	// Batch delete all wisps in one call
 	if len(wispIDs) > 0 {
-		result, err := burnWisps(ctx, store, wispIDs)
+		result, err := burnWisps(ctx, store, wispIDs, actor)
 		if err != nil {
 			if !jsonOutput {
 				fmt.Fprintf(os.Stderr, "Error burning wisps: %v\n", err)
@@ -296,7 +296,7 @@ func burnWispMolecule(ctx context.Context, resolvedID string, dryRun, force bool
 		}
 	}
 
-	result, err := burnWisps(ctx, store, wispIDs)
+	result, err := burnWisps(ctx, store, wispIDs, actor)
 	if err != nil {
 		return HandleErrorRespectJSON("burning wisp: %v", err)
 	}
@@ -374,10 +374,10 @@ func burnPersistentMolecule(ctx context.Context, resolvedID string, dryRun, forc
 
 // burnWisps deletes all wisp issues atomically within a single transaction.
 // If any delete fails, the entire operation is rolled back to prevent partial deletion.
-func burnWisps(ctx context.Context, s storage.DoltStorage, ids []string) (*BurnResult, error) {
+func burnWisps(ctx context.Context, s storage.DoltStorage, ids []string, actorName string) (*BurnResult, error) {
 	var result *BurnResult
 	err := transact(ctx, s, "bd: burn wisps", func(tx storage.Transaction) error {
-		r, err := burnWispsInto(ctx, storeMolWriter{DoltStorage: s, tx: tx}, ids)
+		r, err := burnWispsInto(ctx, storeMolWriter{DoltStorage: s, tx: tx}, ids, actorName)
 		if err != nil {
 			return err
 		}
@@ -390,12 +390,12 @@ func burnWisps(ctx context.Context, s storage.DoltStorage, ids []string) (*BurnR
 	return result, nil
 }
 
-func burnWispsInto(ctx context.Context, w molWriter, ids []string) (*BurnResult, error) {
+func burnWispsInto(ctx context.Context, w molWriter, ids []string, actorName string) (*BurnResult, error) {
 	result := &BurnResult{
 		DeletedIDs: make([]string, 0, len(ids)),
 	}
 	for _, id := range ids {
-		if err := w.DeleteIssue(ctx, id, ""); err != nil {
+		if err := w.DeleteIssue(ctx, id, actorName); err != nil {
 			return nil, fmt.Errorf("failed to delete wisp %s: %w", id, err)
 		}
 		result.DeletedIDs = append(result.DeletedIDs, id)

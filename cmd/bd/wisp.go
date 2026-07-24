@@ -281,8 +281,7 @@ func runWispCreateCore(cmd *cobra.Command, args []string) error {
 		return HandleError("creating wisp: %v", err)
 	}
 
-	renderWispCreateResult(result)
-	return nil
+	return renderWispCreateResult(result)
 }
 
 func checkRequiredVars(subgraph *TemplateSubgraph, vars map[string]string) error {
@@ -328,14 +327,13 @@ func renderWispCreateDryRun(protoID string, subgraph *TemplateSubgraph, vars map
 	}
 }
 
-func renderWispCreateResult(result *InstantiateResult) {
+func renderWispCreateResult(result *InstantiateResult) error {
 	if jsonOutput {
 		type wispCreateResult struct {
 			*InstantiateResult
 			Phase string `json:"phase"`
 		}
-		_ = outputJSON(wispCreateResult{result, "vapor"})
-		return
+		return outputJSON(wispCreateResult{result, "vapor"})
 	}
 
 	fmt.Printf("%s Created wisp: %d issues\n", ui.RenderPass("✓"), result.Created)
@@ -345,6 +343,7 @@ func renderWispCreateResult(result *InstantiateResult) {
 	fmt.Printf("  bd close %s.<step>       # Complete steps\n", result.NewEpicID)
 	fmt.Printf("  bd mol squash %s         # Condense to digest (promotes to persistent)\n", result.NewEpicID)
 	fmt.Printf("  bd mol burn %s           # Discard without creating digest\n", result.NewEpicID)
+	return nil
 }
 
 // isProtoIssue checks if an issue is a proto (has the template label)
@@ -464,15 +463,14 @@ func buildWispListResult(issues []*types.Issue, showAll bool) WispListResult {
 	}
 }
 
-func renderWispListResult(result WispListResult) {
+func renderWispListResult(result WispListResult) error {
 	if jsonOutput {
-		_ = outputJSON(result)
-		return
+		return outputJSON(result)
 	}
 
 	if len(result.Wisps) == 0 {
 		fmt.Println("No wisps found")
-		return
+		return nil
 	}
 
 	fmt.Printf("Wisps (%d):\n\n", len(result.Wisps))
@@ -499,6 +497,7 @@ func renderWispListResult(result WispListResult) {
 			ui.RenderWarn("⚠"), result.OldCount)
 		fmt.Println("  Hint: Use 'bd mol wisp gc' to clean up old wisps")
 	}
+	return nil
 }
 
 func runWispList(cmd *cobra.Command, args []string) error {
@@ -534,8 +533,7 @@ func runWispList(cmd *cobra.Command, args []string) error {
 		return HandleError("listing wisps: %v", err)
 	}
 
-	renderWispListResult(buildWispListResult(issues, showAll))
-	return nil
+	return renderWispListResult(buildWispListResult(issues, showAll))
 }
 
 // formatTimeAgo returns a human-readable relative time

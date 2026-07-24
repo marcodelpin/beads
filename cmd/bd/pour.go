@@ -209,8 +209,7 @@ func runPour(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	renderPourResult(result, totalAttached, len(attachments))
-	return nil
+	return renderPourResult(result, totalAttached, len(attachments))
 }
 
 func warnPourVaporFormula(protoArg string, varFlags []string) {
@@ -289,15 +288,14 @@ func renderPourDryRun(protoID string, subgraph *TemplateSubgraph, vars map[strin
 	}
 }
 
-func renderPourResult(result *InstantiateResult, totalAttached, attachCount int) {
+func renderPourResult(result *InstantiateResult, totalAttached, attachCount int) error {
 	if jsonOutput {
 		type pourResult struct {
 			*InstantiateResult
 			Attached int    `json:"attached"`
 			Phase    string `json:"phase"`
 		}
-		_ = outputJSON(pourResult{result, totalAttached, "liquid"})
-		return
+		return outputJSON(pourResult{result, totalAttached, "liquid"})
 	}
 
 	fmt.Printf("%s Poured mol: created %d issues\n", ui.RenderPass("✓"), result.Created)
@@ -306,6 +304,7 @@ func renderPourResult(result *InstantiateResult, totalAttached, attachCount int)
 	if totalAttached > 0 {
 		fmt.Printf("  Attached: %d issues from %d protos\n", totalAttached, attachCount)
 	}
+	return nil
 }
 
 func init() {

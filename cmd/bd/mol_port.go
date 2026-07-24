@@ -112,11 +112,18 @@ type uowMolReader struct {
 }
 
 func (r uowMolReader) GetIssue(ctx context.Context, id string) (*types.Issue, error) {
-	issue, _ := proxiedResolveIssueOrWisp(ctx, r.uw, id)
+	issue, isWisp := proxiedResolveIssueOrWisp(ctx, r.uw, id)
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found", id)
 	}
-	if labels, err := r.uw.LabelUseCase().GetLabels(ctx, id); err == nil {
+	var labels []string
+	var err error
+	if isWisp {
+		labels, err = r.uw.LabelUseCase().GetWispLabels(ctx, id)
+	} else {
+		labels, err = r.uw.LabelUseCase().GetLabels(ctx, id)
+	}
+	if err == nil {
 		issue.Labels = labels
 	}
 	return issue, nil
@@ -127,17 +134,25 @@ func (r uowMolReader) GetIssuesByIDs(ctx context.Context, ids []string) ([]*type
 	if err != nil {
 		return nil, err
 	}
+	if labelMap, err := r.uw.LabelUseCase().GetLabelsForIssues(ctx, ids); err == nil {
+		for _, issue := range issues {
+			issue.Labels = labelMap[issue.ID]
+		}
+	}
+
 	wisps, err := r.uw.IssueUseCase().GetWispsByIDs(ctx, ids)
 	if err != nil {
 		wisps = nil //nolint:staticcheck // wisps table may not exist; issues result still valid
 	}
-	all := append(issues, wisps...)
-	if labelMap, err := r.uw.LabelUseCase().GetLabelsForIssues(ctx, ids); err == nil {
-		for _, issue := range all {
-			issue.Labels = labelMap[issue.ID]
+	if len(wisps) > 0 {
+		if labelMap, err := r.uw.LabelUseCase().GetLabelsForWisps(ctx, ids); err == nil {
+			for _, wisp := range wisps {
+				wisp.Labels = labelMap[wisp.ID]
+			}
 		}
 	}
-	return all, nil
+
+	return append(issues, wisps...), nil
 }
 
 func (r uowMolReader) GetIssuesByLabel(ctx context.Context, label string) ([]*types.Issue, error) {

@@ -143,8 +143,7 @@ func runPourProxiedServer(ctx context.Context, in pourInput) error {
 		return nil
 	}
 
-	renderPourResult(res.spawn, res.totalAttached, res.attachCount)
-	return nil
+	return renderPourResult(res.spawn, res.totalAttached, res.attachCount)
 }
 
 func runMolShowProxiedServer(ctx context.Context, arg string) error {
@@ -429,8 +428,7 @@ func runMolBondProxiedServer(ctx context.Context, in molBondInput) error {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
-	renderMolBondResult(res.result, res.idA, res.idB, in.ephemeral, in.pour)
-	return nil
+	return renderMolBondResult(res.result, res.idA, res.idB, in.ephemeral, in.pour)
 }
 
 func runMolSquashProxiedServer(ctx context.Context, in molSquashInput) error {
@@ -502,8 +500,7 @@ func runMolSquashProxiedServer(ctx context.Context, in molSquashInput) error {
 		return nil
 	}
 
-	renderSquashResult(result)
-	return nil
+	return renderSquashResult(result)
 }
 
 func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force bool) error {
@@ -600,7 +597,7 @@ func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force b
 		w := newUOWMolWriter(uw)
 
 		if len(wispIDs) > 0 {
-			result, err := burnWispsInto(ctx, w, wispIDs)
+			result, err := burnWispsInto(ctx, w, wispIDs, actor)
 			if err != nil {
 				if !jsonOutput {
 					fmt.Fprintf(os.Stderr, "Error burning wisps: %v\n", err)

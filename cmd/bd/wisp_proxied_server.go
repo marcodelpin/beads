@@ -88,8 +88,7 @@ func runWispCreateProxiedServer(ctx context.Context, in wispCreateInput) error {
 		return HandleError("%v", err)
 	}
 
-	renderWispCreateResult(result)
-	return nil
+	return renderWispCreateResult(result)
 }
 
 func runWispListProxiedServer(ctx context.Context, showAll bool, typeFilter string) error {
@@ -105,8 +104,7 @@ func runWispListProxiedServer(ctx context.Context, showAll bool, typeFilter stri
 		return HandleError("listing wisps: %v", err)
 	}
 
-	renderWispListResult(buildWispListResult(issues, showAll))
-	return nil
+	return renderWispListResult(buildWispListResult(issues, showAll))
 }
 
 func runWispGCProxiedServer(ctx context.Context, dryRun bool, ageThreshold time.Duration, cleanAll, closedMode, force bool, excludeTypes []types.IssueType) error {

@@ -112,10 +112,9 @@ func renderSquashDryRun(moleculeID string, subgraph *TemplateSubgraph, wispChild
 	}
 }
 
-func renderSquashResult(result *SquashResult) {
+func renderSquashResult(result *SquashResult) error {
 	if jsonOutput {
-		_ = outputJSON(result)
-		return
+		return outputJSON(result)
 	}
 	fmt.Printf("%s Squashed molecule: %d children → 1 digest\n", ui.RenderPass("✓"), result.SquashedCount)
 	fmt.Printf("  Digest ID: %s\n", result.DigestID)
@@ -127,6 +126,7 @@ func renderSquashResult(result *SquashResult) {
 	if result.WispSquash {
 		fmt.Printf("  Root auto-closed: %s\n", result.MoleculeID)
 	}
+	return nil
 }
 
 func runMolSquash(cmd *cobra.Command, args []string) error {
@@ -182,8 +182,7 @@ func runMolSquash(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return HandleErrorRespectJSON("squashing molecule: %v", err)
 	}
-	renderSquashResult(result)
-	return nil
+	return renderSquashResult(result)
 }
 
 // generateDigest creates a summary from the molecule execution

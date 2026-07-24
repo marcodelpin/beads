@@ -157,8 +157,7 @@ func runMolBond(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("bonding: %v", err)
 	}
 
-	renderMolBondResult(result, issueA.ID, issueB.ID, in.ephemeral, in.pour)
-	return nil
+	return renderMolBondResult(result, issueA.ID, issueB.ID, in.ephemeral, in.pour)
 }
 
 type molBondInput struct {
@@ -255,10 +254,9 @@ func renderMolBondDryRun(in molBondInput, issueA *types.Issue, formulaA string, 
 	}
 }
 
-func renderMolBondResult(result *BondResult, idA, idB string, ephemeral, pour bool) {
+func renderMolBondResult(result *BondResult, idA, idB string, ephemeral, pour bool) error {
 	if jsonOutput {
-		_ = outputJSON(result)
-		return
+		return outputJSON(result)
 	}
 
 	fmt.Printf("%s Bonded: %s + %s\n", ui.RenderPass("✓"), idA, idB)
@@ -271,6 +269,7 @@ func renderMolBondResult(result *BondResult, idA, idB string, ephemeral, pour bo
 	} else if pour {
 		fmt.Printf("  Phase: liquid (persistent, Ephemeral=false)\n")
 	}
+	return nil
 }
 
 // isProto checks if an issue is a proto (has the template label)
