@@ -56,6 +56,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ownership check itself — foreign unclaim requires `--force` — landed in
   [#4675](https://github.com/gastownhall/beads/pull/4675).)
 
+### Fixed
+
+- **`bd dolt clean-databases` gains an opt-in `--purge-dropped` flag to
+  reclaim disk from what it drops** (be-pq5,
+  [#3663](https://github.com/gastownhall/beads/pull/3663)). `DROP DATABASE`
+  only moves a database's directory under `.dolt_dropped_databases/`; Dolt
+  keeps the on-disk data there — recoverable via `CALL DOLT_UNDROP(name)` —
+  until an explicit `CALL DOLT_PURGE_DROPPED_DATABASES()`. The operator-facing
+  cleanup command dropped stale `testdb_*`/`benchdb_*`/etc. databases from
+  `SHOW DATABASES` but never issued that purge, so disk usage on the shared
+  Dolt server stayed high across repeated runs. `--purge-dropped` runs the
+  purge after cleanup (a failed purge is reported as a warning rather than
+  aborting the command, since the databases are already dropped from the
+  server's active set at that point) and fires even on a run that finds
+  nothing stale to drop, since a prior run's dropped-but-unpurged residue
+  isn't visible to `SHOW DATABASES` either. **`CALL
+  DOLT_PURGE_DROPPED_DATABASES()` is server-global and irreversible** — Dolt
+  has no way to scope it to only the databases a given run dropped, so
+  `--purge-dropped` also permanently deletes every other dropped-but-not-yet-
+  purged database on the server, removing `DOLT_UNDROP` recovery for all of
+  them. It defaults to off for that reason; without it, dropped databases are
+  left in place, recoverable via `DOLT_UNDROP`, same as before this change.
+
 ### Added
 
 - **Pool-aware claiming via the `claim.pools` config key** (bd-bguz6).
@@ -481,6 +504,7 @@ gate that rc.1 introduced, and ships the validated upgrade documentation.
 - **`dependencies.depends_on_id` is now a STORED generated column.** The polymorphic target has been split into three typed columns: `depends_on_issue_id`, `depends_on_wisp_id`, `depends_on_external`. `depends_on_id` remains as `COALESCE(...) STORED` for read paths; **writes to `depends_on_id` will fail** — code that inserts dependencies must populate exactly one typed column (enforced by a new `ck_dep_one_target` CHECK). Same split mirrored to `wisp_dependencies` with a corresponding `ck_wisp_dep_one_target`. Migrations `0041` (tracked) and `ignored/0003` (wisps) perform the column split, copy existing rows by classifying their targets against `issues` / `wisps`, and add the new typed-target indexes. ([#3952](https://github.com/gastownhall/beads/pull/3952))
 - **Most existing dependency-table FKs now use `ON UPDATE CASCADE`.** Migration `0042` rebuilds `fk_dep_issue`, `fk_labels_issue`, `fk_comments_issue`, `fk_events_issue`, `fk_snapshots_issue`, and `fk_comp_snap_issue` to cascade on both delete and update. Same treatment for the wisp-side FKs in `ignored/0003`. Prefix rename and ID-update paths rely on this cascade instead of touching aux tables manually. ([#3952](https://github.com/gastownhall/beads/pull/3952))
 - **Migrations `0041` and `0042` are intentionally irreversible.** The matching `.down.sql` files are documented no-ops because rebuilding the polymorphic column from typed columns would require schema-aware backfill that the storage layer no longer performs. Restore from a prior `dolt` commit if rollback is required. ([#3952](https://github.com/gastownhall/beads/pull/3952))
+- **`BEADS_MAX_ROWS` / `--max-rows` defensive row cap** — ops can now set `BEADS_MAX_ROWS=N` (or pass `bd list --max-rows N`) to bound `SearchIssues` result sets. Default is disabled; on overage, `bd` exits with code 2 and writes a two-line error to stderr (stdout stays empty so `jq` pipelines don't get half-rendered JSON). The flag is wired on `bd list`, `bd ready`, `bd dep tree`, `bd find-duplicates`, and `bd graph`. The env var is also honored by `bd doctor`, `bd lint`, `bd doctor-conventions`, and `bd doctor-pollution`. `bd cleanup`, `bd gc`, `bd export`, `bd export --auto`, `bd migrate-issues`, and `bd jira` explicitly opt out so a misconfigured env can't abort a sweep partway. (be-x42v)
 
 ### Fixed
 
