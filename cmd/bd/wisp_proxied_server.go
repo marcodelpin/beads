@@ -202,8 +202,8 @@ func runWispPurgeClosedProxiedServer(ctx context.Context, dryRun, force bool, ex
 		Limit:        5000,
 	}
 	closedIssues, err := r.SearchIssues(ctx, "", filter)
-	uw.Close(ctx)
 	if err != nil {
+		uw.Close(ctx)
 		return HandleError("listing closed wisps: %v", err)
 	}
 
@@ -222,6 +222,7 @@ func runWispPurgeClosedProxiedServer(ctx context.Context, dryRun, force bool, ex
 		filtered = append(filtered, issue)
 	}
 	closedIssues = filtered
+	uw.Close(ctx)
 
 	if pinnedCount > 0 && !jsonOutput {
 		fmt.Printf("Skipping %d pinned issue(s) (protected from cleanup)\n", pinnedCount)

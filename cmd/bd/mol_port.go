@@ -116,6 +116,9 @@ func (r uowMolReader) GetIssue(ctx context.Context, id string) (*types.Issue, er
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found", id)
 	}
+	if labels, err := r.uw.LabelUseCase().GetLabels(ctx, id); err == nil {
+		issue.Labels = labels
+	}
 	return issue, nil
 }
 
@@ -126,9 +129,15 @@ func (r uowMolReader) GetIssuesByIDs(ctx context.Context, ids []string) ([]*type
 	}
 	wisps, err := r.uw.IssueUseCase().GetWispsByIDs(ctx, ids)
 	if err != nil {
-		return issues, nil //nolint:nilerr // wisps table may not exist; issues result still valid
+		wisps = nil //nolint:staticcheck // wisps table may not exist; issues result still valid
 	}
-	return append(issues, wisps...), nil
+	all := append(issues, wisps...)
+	if labelMap, err := r.uw.LabelUseCase().GetLabelsForIssues(ctx, ids); err == nil {
+		for _, issue := range all {
+			issue.Labels = labelMap[issue.ID]
+		}
+	}
+	return all, nil
 }
 
 func (r uowMolReader) GetIssuesByLabel(ctx context.Context, label string) ([]*types.Issue, error) {
@@ -306,7 +315,7 @@ func (w *uowMolWriter) CreateIssue(ctx context.Context, issue *types.Issue, acto
 }
 
 func (w *uowMolWriter) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
-	if w.isWisp(ctx, dep.IssueID) || w.isWisp(ctx, dep.DependsOnID) {
+	if w.isWisp(ctx, dep.IssueID) {
 		return w.uw.DependencyUseCase().AddWispDependency(ctx, dep, actor)
 	}
 	return w.uw.DependencyUseCase().AddDependency(ctx, dep, actor)
