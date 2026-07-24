@@ -864,6 +864,10 @@ func (r *issueSQLRepositoryImpl) FindAllDependents(ctx context.Context, ids []st
 	return out, nil
 }
 
+func (r *issueSQLRepositoryImpl) FindWispDependentsRecursive(ctx context.Context, ids []string) (map[string]bool, error) {
+	return issueops.FindWispDependentsRecursiveInTx(ctx, r.runner, ids)
+}
+
 func (r *issueSQLRepositoryImpl) AffectedByDeletion(ctx context.Context, issueIDs, wispIDs []string) ([]string, []string, error) {
 	return issueops.AffectedByDeletionInTx(ctx, r.runner, issueIDs, wispIDs)
 }

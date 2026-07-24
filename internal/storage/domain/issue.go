@@ -53,6 +53,7 @@ type IssueSQLRepository interface {
 	DeleteByIDs(ctx context.Context, ids []string, opts IssueTableOpts) (int, error)
 	PartitionWispIDs(ctx context.Context, ids []string) (wispIDs, regularIDs []string, err error)
 	FindAllDependents(ctx context.Context, ids []string) ([]string, error)
+	FindWispDependentsRecursive(ctx context.Context, ids []string) (map[string]bool, error)
 	AffectedByDeletion(ctx context.Context, issueIDs, wispIDs []string) (affectedIssues, affectedWisps []string, err error)
 	RecomputeIsBlocked(ctx context.Context, issueIDs, wispIDs []string) error
 	Close(ctx context.Context, id string, params CloseRowParams, actor string, opts IssueTableOpts) (CloseRowResult, error)
@@ -251,6 +252,7 @@ type UpdateSpec struct {
 type IssueUseCase interface {
 	GetIssue(ctx context.Context, id string) (*types.Issue, error)
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
+	FindWispDependentsRecursive(ctx context.Context, ids []string) (map[string]bool, error)
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) (SearchPage, error)
 	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
@@ -393,6 +395,10 @@ func (u *issueUseCaseImpl) get(ctx context.Context, id string, useWisp bool) (*t
 
 func (u *issueUseCaseImpl) GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error) {
 	return u.getByIDs(ctx, ids, false)
+}
+
+func (u *issueUseCaseImpl) FindWispDependentsRecursive(ctx context.Context, ids []string) (map[string]bool, error) {
+	return u.issueRepo.FindWispDependentsRecursive(ctx, ids)
 }
 
 func (u *issueUseCaseImpl) GetWispsByIDs(ctx context.Context, ids []string) ([]*types.Issue, error) {
