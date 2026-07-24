@@ -18,16 +18,16 @@ import "golang.org/x/sys/windows"
 // a running one times out (WAIT_TIMEOUT). This distinguishes live from dead
 // even when OpenProcess still succeeds on a lingering handle.
 func processAlive(pid int) bool {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	processHandle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		// No such process, or we may not open it.
 		return false
 	}
-	defer windows.CloseHandle(h)
+	defer windows.CloseHandle(processHandle)
 
-	s, err := windows.WaitForSingleObject(h, 0)
+	waitResult, err := windows.WaitForSingleObject(processHandle, 0)
 	if err != nil {
 		return false
 	}
-	return s == uint32(windows.WAIT_TIMEOUT)
+	return waitResult == uint32(windows.WAIT_TIMEOUT)
 }

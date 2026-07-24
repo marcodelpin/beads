@@ -40,9 +40,14 @@ func TestIsServerProbablyRunningReportsDeadPIDWithLingeringHandle(t *testing.T) 
 	if err != nil {
 		t.Skipf("cannot open probe handle for pid %d: %v", pid, err)
 	}
-	if _, err := windows.WaitForSingleObject(probe, 5000); err != nil {
+	status, err := windows.WaitForSingleObject(probe, 5000)
+	if err != nil {
 		windows.CloseHandle(probe)
 		t.Fatalf("waiting for child to exit: %v", err)
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		windows.CloseHandle(probe)
+		t.Fatalf("wait for process %d returned status %#x, want WAIT_OBJECT_0", pid, status)
 	}
 	windows.CloseHandle(probe)
 
