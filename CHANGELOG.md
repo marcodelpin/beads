@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bd sync` — one verb for the federation loop** (wy-jpd3.4). Every
+  multi-machine beads deployment hand-rolls the same sequence in shell; this
+  ships it. `bd sync [--remote <name>] [--attempts N]` pulls, checks for merge
+  conflicts, runs the full `is_blocked` recompute, and pushes — retrying a
+  bounded number of times (default 3) when another replica wins the push race.
+  Two properties are the point of the verb. Conflicts are detected
+  **positively**, from the merge's own captured conflict rows and from
+  `dolt_conflicts`, never inferred from the pull's exit status: a pull fails for
+  plenty of reasons that are not conflicts, and a settled merge that *is*
+  conflicted aborts and leaves `dolt_conflicts` empty, so an exit-status guess
+  invents phantom conflicts and misses real ones. And a conflict sync cannot
+  settle is **never** resolved by picking a side: it halts before recomputing or
+  pushing and exits 2, with no `--strategy`-style override to make it do
+  otherwise. (The pull underneath still auto-settles the convergent classes it
+  always has — machine-local metadata, audit-only dependency rows, LWW on issue
+  cells; anything past those halts.) The halt message reports which state the
+  halt left behind, read from which detection source fired rather than assumed:
+  the SQL pull route aborts the merge and restores the working set, while the
+  CLI/git-protocol route deliberately leaves the conflict rows live. The
+  recompute between pull and push is not bookkeeping either: `is_blocked` is
+  denormalized, so a merge that brings in a dependency edge from another replica
+  leaves `bd ready` stale until it runs. It runs unconditionally, on every
+  attempt — `RecomputeAllBlocked` is precisely the repair that does not depend
+  on a merge advancing HEAD, so gating it on "did anything merge" would mean a
+  column left stale by a hand-resolved conflict (a state `bd sync` creates by
+  exiting 2) is never repaired again while every tick reports success.
+  Exit codes are the machine contract, so a sync timer can branch without
+  parsing output: `0` synced, `1` error, `2` merge conflict (halted, nothing
+  pushed), `3` push-race retries exhausted (transient — retry next tick).
+  `--json` reports the outcome as `{"status", "attempts", "conflicts",
+  "conflicts_live", "rows_corrected", "pushed"}` on every non-error exit; exit 1
+  emits bd's standard `{"error": ...}` envelope. A confirmed-no-remote rig exits
+  0 with the same guidance `bd dolt push` prints; `dolt.local-only` and
+  `no-push` are honored.
+
 - **`bd reclaim` scope filters** (wy-jpd3.3). `bd reclaim` gained
   `--label` / `--label-any` / `--exclude-label` / `--assignee` / `--id`,
   mirroring the claim-side label surface (`bd ready --claim`), so a supervisor

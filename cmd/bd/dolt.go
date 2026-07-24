@@ -192,6 +192,16 @@ func isConfirmedNoRemote(ctx context.Context, st remoteLister, err error) bool {
 	if !isRemoteNotFoundErr(err) {
 		return false
 	}
+	return hasNoRemoteConfigured(ctx, st)
+}
+
+// hasNoRemoteConfigured is the structural half of isConfirmedNoRemote: the
+// positive proof that this rig really has no remote, independent of how the
+// failure worded itself. It is what actually makes an exit-0 skip safe, so a
+// caller with a different (broader) error classification — `bd sync`, which
+// runs on a timer and must not fail every tick on a solo rig — can reuse the
+// proof without loosening it.
+func hasNoRemoteConfigured(ctx context.Context, st remoteLister) bool {
 	remotes, listErr := st.ListRemotes(ctx)
 	if listErr != nil || len(remotes) > 0 {
 		return false
