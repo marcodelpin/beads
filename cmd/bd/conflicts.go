@@ -480,11 +480,6 @@ func concludeResolvedMerge(ctx context.Context) error {
 	if err != nil {
 		return HandleErrorRespectJSON("failed to read conflicts: %v", err)
 	}
-	// Short-circuit before the blocker read: with rows still conflicted the
-	// blockers cannot change the answer, and there is nothing to diagnose yet.
-	if remaining > 0 {
-		return HandleErrorRespectJSON("%d conflict(s) are still live; resolve them first (bd conflicts list)", remaining)
-	}
 	blockers, blockerErr := mergeBlockers(ctx)
 	if blockerErr != nil {
 		// The blocker read is diagnosis, never a gate — but a caller that
@@ -637,7 +632,11 @@ func writeMergeBlockers(w io.Writer, b storage.MergeBlockers) {
 	}
 	if len(b.ConstraintViolations) > 0 {
 		fmt.Fprintln(w, "  Constraint violations:  inspect dolt_constraint_violations_<table>, delete the offending rows,")
-		fmt.Fprintln(w, "                          then conclude with: bd conflicts resolve --conclude")
+		if len(b.SchemaConflictTables) > 0 {
+			fmt.Fprintln(w, "                          then re-inspect after aborting and re-merging the schema change")
+		} else {
+			fmt.Fprintln(w, "                          then conclude with: bd conflicts resolve --conclude")
+		}
 	}
 }
 
