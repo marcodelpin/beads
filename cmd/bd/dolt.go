@@ -206,10 +206,46 @@ func hasNoRemoteConfigured(ctx context.Context, st remoteLister) bool {
 	if listErr != nil || len(remotes) > 0 {
 		return false
 	}
-	if prober, ok := st.(persistedRemoteProber); ok && prober.HasPersistedRemote() {
+	if prober, ok := persistedRemoteProberFor(st); ok && prober.HasPersistedRemote() {
 		return false
 	}
 	return true
+}
+
+// persistedRemoteProberFor finds the on-disk remote probe behind any chain of
+// storage decorators.
+//
+// HasPersistedRemote is not part of storage.DoltStorage — only the concrete
+// *dolt.DoltStore implements it — while the store bd actually holds is the
+// composed chain caller → HookFiringStore → InstrumentedStorage → DoltStore
+// (wireStorageDecorators). The hook layer is present on essentially every rig:
+// main.go builds a hook runner whenever there is a dbPath, whether or not any
+// hook scripts exist, so only no-hooks:true / BD_NO_HOOKS=1 leaves it off.
+// Asserting straight on the passed store therefore all but always failed,
+// silently skipping the GH#2118 cold-start probe and letting `bd sync` /
+// `bd dolt push|pull` report "no remote configured" and exit 0 forever on a rig
+// whose remote is persisted in .dolt/repo_state.json (wy-xtv17).
+//
+// It peels via storage.Unwrapper, the same contract storage.UnwrapStore uses,
+// rather than calling UnwrapStore itself: this helper takes the narrow
+// remoteLister, not a storage.DoltStorage. A store that implements the probe
+// directly is honored before any peeling, so test doubles and any future
+// decorator that forwards HasPersistedRemote keep working.
+func persistedRemoteProberFor(st remoteLister) (persistedRemoteProber, bool) {
+	for {
+		if prober, ok := st.(persistedRemoteProber); ok {
+			return prober, true
+		}
+		u, ok := st.(storage.Unwrapper)
+		if !ok {
+			return nil, false
+		}
+		inner := u.Unwrap()
+		if inner == nil {
+			return nil, false
+		}
+		st = inner
+	}
 }
 
 // isDivergedHistoryErr checks whether the error indicates that local and remote
