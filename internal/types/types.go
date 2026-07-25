@@ -881,6 +881,14 @@ type IssueDetails struct {
 	DependencyCount *int64 `json:"dependency_count,omitempty"`
 	CommentCount    *int64 `json:"comment_count,omitempty"`
 
+	// CommentsOmitted is set true only when CommentCount is nonzero AND
+	// Comments was left nil (count-only mode, no --include-comments). Without
+	// it, a positive CommentCount with no Comments key reads as a client bug,
+	// and a caller checking only `.comments` sees `null`/absent and concludes
+	// "no comments" — both wrong (ga-clgh). Never set alongside a populated
+	// Comments slice or a zero count: a true empty stays plain omission.
+	CommentsOmitted *bool `json:"comments_omitted,omitempty"`
+
 	// Epic progress fields (populated only for issue_type=epic with children)
 	EpicTotalChildren  *int  `json:"epic_total_children,omitempty"`
 	EpicClosedChildren *int  `json:"epic_closed_children,omitempty"`
