@@ -283,7 +283,7 @@ func HeartbeatIssueInTx(ctx context.Context, tx DBTX, id, actor string) error {
 	// the fail-open default cannot be silently converted to fail-closed.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE leases SET lease_expires_at = ?, heartbeat_at = ?,
-			granted_node = IF(granted_node = '', ?, granted_node)
+			granted_node = IF(COALESCE(granted_node, '') = '', ?, granted_node)
 		WHERE issue_id = ? AND holder = ?
 	`, now.Add(leaseTTL(ctx)), now, NodeID(ctx), id, actor)
 	if err != nil {
@@ -375,6 +375,13 @@ func reclaimReplicaSQL(filter types.ReclaimFilter, localNode string) (string, []
 	}
 	// granted_node '' is unknown provenance and stays eligible (fail-open);
 	// only a lease that positively names a different replica is protected.
+	//
+	// granted_node is deliberately UNQUALIFIED: the snapshot splices this into
+	// a `leases l JOIN issues i` (where it resolves to l, since issues has no
+	// such column) but the DELETE site splices it into a bare
+	// `DELETE FROM leases`, which has no alias to qualify with. Adding a
+	// leases-only column to `issues` would make the snapshot ambiguous — give
+	// this an alias parameter then, and pass "" from the DELETE.
 	return "\n\t\t  AND (COALESCE(granted_node, '') = '' OR granted_node = ?)", []any{localNode}
 }
 
@@ -535,7 +542,10 @@ func ReclaimExpiredLeasesInTx(ctx context.Context, tx DBTX, cutoff time.Time, fi
 		// that actually happened: a heartbeat landing after the snapshot makes
 		// the DELETE match nothing, and a "reverting X" line printed up there
 		// would be a lie the operator has no way to catch.
-		if node := staleNodes[r.ID]; filter.AnyReplica && node != "" && node != localNode {
+		// localNode "" is skipped, not printed as `not this node ("")`: on an
+		// unnamed deployment the guard was never armed, so there is no
+		// override to audit — every lease was already eligible.
+		if node := staleNodes[r.ID]; filter.AnyReplica && localNode != "" && node != "" && node != localNode {
 			warnReplica("reclaim: --any-replica reverted %s (held by %s) — lease was granted by replica %q, not this node (%q)\n",
 				r.ID, r.PreviousOwner, node, localNode)
 		}

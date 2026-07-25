@@ -203,12 +203,31 @@ Two rules follow, and a federated deployment owes both:
    that granted it, and `bd reclaim` skips a lease granted elsewhere, naming
    it on stderr. Reap dead workers on the machine that hired them.
 
-The guard is **opt-in**: it arms only where you name this replica, on every
-replica that shares the queue.
+The guard is **opt-in**: it arms only where you name this replica.
 
 ```bash
-export BEADS_NODE_ID=mini          # or: node_id: mini   in config.yaml
+export BEADS_NODE_ID=mini          # per-machine; or `bd config set node_id mini`
 ```
+
+Two rules about what to name, both load-bearing:
+
+- **`node_id` names the STORE, not the host.** One value per beads *database*.
+  Hosts that are clients of the *same* dolt sql-server (`BEADS_DOLT_SERVER_HOST`,
+  a systemd/Docker server, Hosted Dolt, a VPS) are **one replica** no matter how
+  many machines they are — give them all the same value, or leave it unset. Give
+  them distinct ids and you rebuild the very fail-closed regression described
+  below: a supervisor would match no worker's lease and reclaim 0 forever. Name a
+  replica only where there is a real sync interval between it and the others.
+- **`node_id` is per-machine, so it must never be committed.** The project
+  `.beads/config.yaml` is a git-**tracked** file. A `node_id` committed there
+  propagates one machine's identity to every clone that pulls it, and then every
+  comparison matches: the guard is fully *armed* and fully *inert*, and `laptop`
+  reaps `mini`'s leases exactly as if they were local — the precise hazard this
+  feature exists to close, now happening while you believe you are protected.
+  That is worse than not setting it at all. `bd config set node_id` therefore
+  writes the **user-global** `~/.config/bd/config.yaml`, alongside the other
+  per-machine state (`sync-state.json`, `push-state.json`, `redirect`). Use the
+  env var or that command; never hand-add `node_id` to `.beads/config.yaml`.
 
 There is deliberately no hostname fallback. The hostname answers the wrong
 question — it names the client *process's* machine, not the store — and

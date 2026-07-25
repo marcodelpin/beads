@@ -54,10 +54,14 @@ Two invariants the guard cannot enforce for you:
 A TTL or grace shorter than the cadence at which replicas exchange state is
 meaningless across the bridge — the remote view is a full interval old by
 construction. Raise the TTL/grace above the sync interval, never the reverse.
-The guard is opt-in: set BEADS_NODE_ID (or node_id in config.yaml) on every
-replica sharing the queue. There is no hostname fallback — the hostname names
-the client process's machine, not the store — so an unnamed deployment keeps
-the old, unguarded behavior instead of stranding its own work.
+The guard is opt-in: set BEADS_NODE_ID, or run 'bd config set node_id <name>'
+(which writes the per-machine ~/.config/bd/config.yaml — never commit a node_id
+to the git-tracked .beads/config.yaml, or every clone reads the same name and
+the guard goes armed-but-inert). One id per STORE, not per host: machines that
+are clients of the same dolt sql-server are ONE replica and must share one value
+or leave it unset. There is no hostname fallback — the hostname names the client
+process's machine, not the store — so an unnamed deployment keeps the old,
+unguarded behavior instead of stranding its own work.
 
 Examples:
   bd reclaim                       # default grace window (2× the lease TTL)

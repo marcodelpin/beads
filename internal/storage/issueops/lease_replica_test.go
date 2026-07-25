@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -93,6 +94,20 @@ func TestNodeIDContextOverride(t *testing.T) {
 	ctx := t.Context()
 	if got := NodeID(WithNodeID(ctx, "mini")); got != "mini" {
 		t.Errorf("NodeID with override = %q, want %q", got, "mini")
+	}
+	// The empty-override case needs config.NodeID() to be NON-empty, or the
+	// assertion is tautological: with both sides "" it passes even if NodeID
+	// ignored the context entirely. Give the fallback a value so "" can only
+	// come from the override actually winning.
+	t.Setenv("BEADS_NODE_ID", "fallback-node")
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("re-initialize config: %v", err)
+	}
+	if got := config.NodeID(); got != "fallback-node" {
+		t.Fatalf("precondition: config.NodeID() = %q, want %q — the empty-override assertion below would be vacuous", got, "fallback-node")
+	}
+	if got := NodeID(ctx); got != "fallback-node" {
+		t.Errorf("NodeID with no override = %q, want the config fallback %q", got, "fallback-node")
 	}
 	if got := NodeID(WithNodeID(ctx, "")); got != "" {
 		t.Errorf("NodeID with empty override = %q, want %q (must not fall through to config)", got, "")
