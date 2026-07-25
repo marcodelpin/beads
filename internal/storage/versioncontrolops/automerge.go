@@ -3,6 +3,7 @@ package versioncontrolops
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -32,10 +33,15 @@ import (
 //     whichever side is newer either wins the cell outright (both moved) or is
 //     the only side that moved it.
 //
+// Two carve-outs keep per-cell independence from inventing states bd's own
+// write paths cannot produce (see issuesCloseGroup and issuesNonScalarColumns
+// below): the close columns move atomically, and a contested `notes` or
+// `metadata` declines rather than letting LWW delete an append or a JSON key.
+//
 // A row is left for the operator when it is not modify/modify (add/add,
-// delete/modify), or when a genuinely conflicting cell cannot be settled
-// because the two sides' `updated_at` values are equal or unparseable — the
-// ambiguity that LWW has no answer for.
+// delete/modify), when a genuinely conflicting cell cannot be settled because
+// the two sides' `updated_at` values are equal or unparseable — the ambiguity
+// LWW has no answer for — or when one of those carve-outs applies.
 //
 // The companion tables merge by the semantics the ask names:
 //
@@ -74,6 +80,12 @@ type issuesRowMerge struct {
 	ourKey  any
 	columns []string
 	values  []any
+	// lww names the cells both sides changed differently, which were settled
+	// by timestamp rather than merged. They are the only cells where one
+	// side's edit is superseded, so the resolver names them on stderr — the
+	// same courtesy the config path pays for an otherwise-undiagnosable
+	// supersession.
+	lww []string
 }
 
 // loadConflictRows reads every live conflict row of table in raw scanned form.
@@ -188,10 +200,68 @@ func parseConflictTimestamp(v any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// issuesCloseGroup are the columns beads always writes together: `bd close`
+// sets status/closed_at/close_reason/closed_by_session in one statement and
+// `bd reopen` clears them in one statement (issueops/close.go, reopen.go), and
+// types.Issue.Validate enforces the biconditional "closed iff closed_at". Cell
+// independence is wrong for them: our close and their status change would
+// otherwise merge into `status='in_progress' AND closed_at=<t>`, a row no
+// write path can produce and validation rejects. When any of them is
+// contested the whole group is settled from the LWW winner, atomically.
+var issuesCloseGroup = []string{"status", "closed_at", "close_reason", "closed_by_session"}
+
+// issuesNonScalarColumns are columns whose contents are structurally merged by
+// bd's own write paths, so per-cell LWW would silently destroy one side's
+// work: `notes` is append-only (`bd note` = --append-notes) and `metadata` is
+// a JSON object mutated key-wise. Comments and events get append-only union
+// treatment for exactly this reason; these two live inside the issues row
+// where cell-level merge cannot express a union, so a genuinely contested one
+// DECLINES to the operator rather than dropping an append.
+var issuesNonScalarColumns = map[string]bool{
+	"notes":    true,
+	"metadata": true,
+}
+
+// cellVerdict classifies one cell against the merge base.
+type cellVerdict int
+
+const (
+	cellAgree      cellVerdict = iota // both sides hold the same value
+	cellOursOnly                      // only we changed it
+	cellTheirsOnly                    // only they changed it
+	cellContested                     // both sides changed it, differently
+)
+
+// classifyCell compares one column's three sides. ok is false when the
+// conflict row cannot be classified at all (a side's column is missing).
+func classifyCell(row rawConflictRow, col string) (cellVerdict, any, bool) {
+	ourVal, ourHas := row.value("our", col)
+	theirVal, theirHas := row.value("their", col)
+	if !ourHas || !theirHas {
+		return 0, nil, false
+	}
+	if conflictCellsEqual(ourVal, theirVal) {
+		return cellAgree, theirVal, true
+	}
+	baseVal, baseHas := row.value("base", col)
+	if !baseHas {
+		return 0, nil, false
+	}
+	switch {
+	case conflictCellsEqual(theirVal, baseVal):
+		return cellOursOnly, theirVal, true
+	case conflictCellsEqual(ourVal, baseVal):
+		return cellTheirsOnly, theirVal, true
+	default:
+		return cellContested, theirVal, true
+	}
+}
+
 // mergeIssuesConflictRow computes the field-level three-way merge of one
 // conflicted issues row. ok is false when the row must be left for the
-// operator: not modify/modify, or a cell both sides changed differently whose
-// LWW tiebreak is ambiguous (equal or unparseable updated_at).
+// operator: not modify/modify, a contested cell whose LWW tiebreak is
+// ambiguous (equal or unparseable updated_at), or a contested cell whose
+// contents LWW cannot merge without loss (issuesNonScalarColumns).
 //
 // It is pure, so every merge rule is unit-testable without a database.
 func mergeIssuesConflictRow(row rawConflictRow) (issuesRowMerge, bool) {
@@ -203,47 +273,130 @@ func mergeIssuesConflictRow(row rawConflictRow) (issuesRowMerge, bool) {
 	}
 	ourKey, _ := row.value("our", issuesKeyColumn)
 
-	ourUpdated, ourTimeOK := parseConflictTimestamp(mustValue(row, "our", "updated_at"))
-	theirUpdated, theirTimeOK := parseConflictTimestamp(mustValue(row, "their", "updated_at"))
+	ourUpdatedRaw := mustValue(row, "our", "updated_at")
+	theirUpdatedRaw := mustValue(row, "their", "updated_at")
+	ourUpdated, ourTimeOK := parseConflictTimestamp(ourUpdatedRaw)
+	theirUpdated, theirTimeOK := parseConflictTimestamp(theirUpdatedRaw)
+	// theirsWin reports the LWW winner, and whether the tiebreak can be made
+	// at all. It is only consulted for a genuinely contested cell.
+	lwwUsable := ourTimeOK && theirTimeOK && !ourUpdated.Equal(theirUpdated)
+	theirsWinLWW := lwwUsable && theirUpdated.After(ourUpdated)
+
+	// Classify every data column once; the group rules below read the map.
+	cols := row.dataColumns(issuesKeyColumn)
+	verdicts := make(map[string]cellVerdict, len(cols))
+	theirVals := make(map[string]any, len(cols))
+	for _, col := range cols {
+		v, theirVal, ok := classifyCell(row, col)
+		if !ok {
+			// A column dolt reports for our side but not for base/theirs. The
+			// enumeration is our_*-driven, so this catches a their_*/base_*
+			// column going missing, not the reverse; dolt builds the conflict
+			// table from the merged schema, so all three sides are expected.
+			return issuesRowMerge{}, false
+		}
+		verdicts[col] = v
+		theirVals[col] = theirVal
+	}
+
+	// A contested column bd merges structurally has no cell-level answer.
+	for col, v := range verdicts {
+		if v == cellContested && issuesNonScalarColumns[col] {
+			return issuesRowMerge{}, false
+		}
+	}
+
+	// The close group moves atomically: if ANY member is contested, the LWW
+	// winner supplies all of them, overriding the per-cell rule that would
+	// otherwise keep our closed_at beside their status.
+	closeGroupContested := false
+	inCloseGroup := make(map[string]bool, len(issuesCloseGroup))
+	for _, col := range issuesCloseGroup {
+		inCloseGroup[col] = true
+		if verdicts[col] == cellContested {
+			closeGroupContested = true
+		}
+	}
 
 	merge := issuesRowMerge{ourKey: ourKey}
-	for _, col := range row.dataColumns(issuesKeyColumn) {
-		ourVal, ourHas := row.value("our", col)
-		theirVal, theirHas := row.value("their", col)
-		if !ourHas || !theirHas {
-			// A column present on one side only means the two sides' schemas
-			// diverged; that is a schema merge, not a row merge.
-			return issuesRowMerge{}, false
-		}
-		if conflictCellsEqual(ourVal, theirVal) {
-			continue // both sides agree on this cell
-		}
-		baseVal, baseHas := row.value("base", col)
-		if !baseHas {
-			return issuesRowMerge{}, false
-		}
-		switch {
-		case conflictCellsEqual(theirVal, baseVal):
-			// Only we changed it: our working-set value already stands.
+	takeTheirs := func(col string) {
+		merge.columns = append(merge.columns, col)
+		merge.values = append(merge.values, theirVals[col])
+	}
+	for _, col := range cols {
+		v := verdicts[col]
+		if v == cellAgree {
 			continue
-		case conflictCellsEqual(ourVal, baseVal):
-			// Only they changed it: take their edit. This is the case
-			// row-level LWW used to lose.
-			merge.columns = append(merge.columns, col)
-			merge.values = append(merge.values, theirVal)
-		default:
-			// Both sides changed the same cell to different values — the only
-			// genuine conflict. Settle it last-write-wins by updated_at.
-			if !ourTimeOK || !theirTimeOK || ourUpdated.Equal(theirUpdated) {
+		}
+		if closeGroupContested && inCloseGroup[col] {
+			// Atomic group: one LWW decision for all of its members.
+			if !lwwUsable {
 				return issuesRowMerge{}, false
 			}
-			if theirUpdated.After(ourUpdated) {
-				merge.columns = append(merge.columns, col)
-				merge.values = append(merge.values, theirVal)
+			merge.lww = append(merge.lww, col)
+			if theirsWinLWW {
+				// Their side wins the group: take their value for every
+				// member, including the ones only WE changed (that is what
+				// makes the group atomic).
+				takeTheirs(col)
+			}
+			// Ours wins the group: our values already stand, including the
+			// members only THEY changed — they are part of their losing close
+			// state, not an independent edit.
+			continue
+		}
+		switch v {
+		case cellOursOnly:
+			// Our working-set value already stands.
+			continue
+		case cellTheirsOnly:
+			// Only they changed it: take their edit. This is the case
+			// row-level LWW used to lose.
+			takeTheirs(col)
+		case cellContested:
+			// Both sides changed the same cell to different values — the only
+			// genuine conflict. Settle it last-write-wins by updated_at.
+			if !lwwUsable {
+				return issuesRowMerge{}, false
+			}
+			merge.lww = append(merge.lww, col)
+			if theirsWinLWW {
+				takeTheirs(col)
 			}
 		}
 	}
+
+	// updated_at MUST be written explicitly whenever anything else is, because
+	// issues.updated_at is DATETIME ... ON UPDATE CURRENT_TIMESTAMP: an UPDATE
+	// that omits it silently restamps the row with this clone's wall clock,
+	// which (a) breaks the max(ours, theirs) contract, (b) makes the same
+	// merge produce different bytes on each replica so the next sync
+	// re-conflicts, and (c) can make issueops' `VALUES(updated_at) >
+	// issues.updated_at` import stale-guard reject a genuinely newer edit.
+	// The codebase's standing rule for this column (issueops/blocked_state.go)
+	// is the same: assign it explicitly to suppress the ON UPDATE clause.
+	// When nothing else is written no UPDATE runs at all, and our row already
+	// holds the max (we could only have won every contest by being newer).
+	if len(merge.columns) > 0 {
+		merged := ourUpdatedRaw
+		if theirTimeOK && (!ourTimeOK || theirUpdated.After(ourUpdated)) {
+			merged = theirUpdatedRaw
+		}
+		merge.setColumn("updated_at", merged)
+	}
 	return merge, true
+}
+
+// setColumn adds or overwrites a column in the write-back plan.
+func (m *issuesRowMerge) setColumn(col string, val any) {
+	for i, c := range m.columns {
+		if c == col {
+			m.values[i] = val
+			return
+		}
+	}
+	m.columns = append(m.columns, col)
+	m.values = append(m.values, val)
 }
 
 // mustValue reads a side's column, returning nil when the conflict table has
@@ -281,6 +434,15 @@ func issuesConflictsAreFieldMergeable(ctx context.Context, db DBConn) ([]issuesR
 // whose merge equals our side needs no write at all.
 func resolveIssuesFieldMerge(ctx context.Context, db DBConn, plan []issuesRowMerge) error {
 	for _, m := range plan {
+		if len(m.lww) > 0 {
+			// Both sides edited these cells since the merge base, so one
+			// side's value was superseded by timestamp. That supersession is
+			// otherwise undiagnosable once the conflict row is gone — the same
+			// reason the config path names its resolved keys.
+			fmt.Fprintf(os.Stderr,
+				"Notice: auto-merged issue %v; %s settled last-write-wins (the older side's edit was superseded)\n",
+				m.ourKey, strings.Join(m.lww, ", "))
+		}
 		if m.ourKey == nil {
 			return fmt.Errorf("unexpected conflict row with no issue id (safety check bypassed)")
 		}
@@ -327,49 +489,72 @@ func resolveIssuesFieldMerge(ctx context.Context, db DBConn, plan []issuesRowMer
 // columns — the only class where "union" has an unambiguous answer. A row
 // missing on one side (a deletion racing an insert) or diverging columns in a
 // supposedly immutable row goes to the operator.
-func unionConflictsAreSafe(ctx context.Context, db DBConn, table string) (bool, error) {
+func unionConflictsAreSafe(ctx context.Context, db DBConn, table string) ([]unionRowKey, bool, error) {
 	keyCols, ok := unionConflictKeyColumns[table]
 	if !ok {
-		return false, fmt.Errorf("table %s is not union-mergeable", table)
+		return nil, false, fmt.Errorf("table %s is not union-mergeable", table)
 	}
 	rows, err := loadConflictRows(ctx, db, table)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
+	plan := make([]unionRowKey, 0, len(rows))
 	for _, row := range rows {
-		_, ourOK, theirOK := row.sidesPresent(keyCols)
-		if !ourOK || !theirOK {
-			return false, nil
+		key, ok := unionRowIsSafe(row, keyCols)
+		if !ok {
+			return nil, false, nil
 		}
-		for _, col := range row.dataColumns() {
-			ourVal, ourHas := row.value("our", col)
-			theirVal, theirHas := row.value("their", col)
-			if !ourHas || !theirHas || !conflictCellsEqual(ourVal, theirVal) {
-				return false, nil
-			}
+		plan = append(plan, key)
+	}
+	return plan, true, nil
+}
+
+// unionRowIsSafe decides one union-table conflict row and returns its key.
+// Pure, so the safety property is unit-testable without a database: the row
+// must exist on BOTH sides and every column must agree, which is what makes
+// "union" unambiguous. A row missing on one side (a deletion racing an insert)
+// or a supposedly immutable row whose columns diverge is refused.
+func unionRowIsSafe(row rawConflictRow, keyCols []string) (unionRowKey, bool) {
+	_, ourOK, theirOK := row.sidesPresent(keyCols)
+	if !ourOK || !theirOK {
+		return unionRowKey{}, false
+	}
+	for _, col := range row.dataColumns() {
+		ourVal, ourHas := row.value("our", col)
+		theirVal, theirHas := row.value("their", col)
+		if !ourHas || !theirHas || !conflictCellsEqual(ourVal, theirVal) {
+			return unionRowKey{}, false
 		}
 	}
-	return true, nil
+	key := unionRowKey{columns: keyCols}
+	for _, k := range keyCols {
+		v, _ := row.value("our", k)
+		key.values = append(key.values, v)
+	}
+	return key, true
+}
+
+// unionRowKey is one validated conflict row's primary key, carried from the
+// check pass to the resolution pass so the delete is bound to the rows that
+// were actually validated rather than to whatever a second query returns.
+type unionRowKey struct {
+	columns []string
+	values  []any
 }
 
 // resolveUnionConflicts settles the conflicts unionConflictsAreSafe validated.
 // Both sides hold the same row, so our working set already carries the union:
 // deleting the conflict row is the whole resolution.
-func resolveUnionConflicts(ctx context.Context, db DBConn, table string) error {
-	keyCols, ok := unionConflictKeyColumns[table]
-	if !ok {
+func resolveUnionConflicts(ctx context.Context, db DBConn, table string, plan []unionRowKey) error {
+	if _, ok := unionConflictKeyColumns[table]; !ok {
 		return fmt.Errorf("table %s is not union-mergeable", table)
 	}
-	rows, err := loadConflictRows(ctx, db, table)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		preds := make([]string, 0, len(keyCols))
-		args := make([]any, 0, len(keyCols))
-		for _, k := range keyCols {
-			v, has := row.value("our", k)
-			if !has || v == nil {
+	for _, row := range plan {
+		preds := make([]string, 0, len(row.columns))
+		args := make([]any, 0, len(row.columns))
+		for i, k := range row.columns {
+			v := row.values[i]
+			if v == nil {
 				return fmt.Errorf("unexpected %s conflict row with no our_%s (safety check bypassed)", table, k)
 			}
 			preds = append(preds, "`our_"+k+"` = ?")

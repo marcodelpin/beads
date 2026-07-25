@@ -282,3 +282,210 @@ func TestDataColumnsExcludesMetaAndKey(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeIssuesConflictRow_UpdatedAtAlwaysWrittenWithTheMerge is the
+// regression pin for the ON UPDATE CURRENT_TIMESTAMP trap: issues.updated_at
+// is `DATETIME NOT NULL ... ON UPDATE CURRENT_TIMESTAMP`, so any UPDATE that
+// omits it restamps the row with this clone's wall clock — breaking the
+// max(ours, theirs) contract, making the same merge produce different bytes on
+// each replica (so the next sync re-conflicts), and poisoning the import
+// stale-guard. Whenever the plan writes ANYTHING it must therefore also write
+// updated_at explicitly, including the case where OUR timestamp is the max.
+func TestMergeIssuesConflictRow_UpdatedAtAlwaysWrittenWithTheMerge(t *testing.T) {
+	// Ours is the later writer; they made a disjoint edit that we must keep.
+	row := conflictRowFor(t, map[string][3]any{
+		"id":         {"bd-11", "bd-11", "bd-11"},
+		"status":     {"open", "in_progress", "open"},
+		"assignee":   {"", "", "alice"},
+		"updated_at": {tsBase, tsTheirs, tsOurs}, // ours = 12:00, theirs = 11:00
+	})
+	m, ok := mergeIssuesConflictRow(row)
+	if !ok {
+		t.Fatal("expected disjoint-field conflict to merge")
+	}
+	if v, written := m.merged("assignee"); !written || v != "alice" {
+		t.Fatalf("their disjoint edit must survive, got %v (written=%v)", v, written)
+	}
+	v, written := m.merged("updated_at")
+	if !written {
+		t.Fatal("updated_at must be written explicitly whenever the plan updates the row (ON UPDATE CURRENT_TIMESTAMP would restamp it otherwise)")
+	}
+	if v != tsTheirs {
+		t.Errorf("updated_at must be the merged max (our later value), got %v", v)
+	}
+}
+
+// TestMergeIssuesConflictRow_NoWriteNoUpdatedAt pins the other half: when the
+// merge equals our row, no UPDATE runs at all, so nothing is written and the
+// ON UPDATE clause never fires.
+func TestMergeIssuesConflictRow_NoWriteNoUpdatedAt(t *testing.T) {
+	row := conflictRowFor(t, map[string][3]any{
+		"id":         {"bd-12", "bd-12", "bd-12"},
+		"status":     {"open", "in_progress", "open"}, // only we changed it
+		"updated_at": {tsBase, tsTheirs, tsBase},
+	})
+	m, ok := mergeIssuesConflictRow(row)
+	if !ok {
+		t.Fatal("expected the row to merge")
+	}
+	if len(m.columns) != 0 {
+		t.Errorf("nothing should be written when our row already IS the merge, got %v", m.columns)
+	}
+}
+
+// TestMergeIssuesConflictRow_CloseGroupIsAtomic pins that the close columns
+// move together. Per-cell independence would synthesize status='in_progress'
+// alongside our closed_at — a row no write path produces and
+// types.Issue.Validate rejects.
+func TestMergeIssuesConflictRow_CloseGroupIsAtomic(t *testing.T) {
+	t.Run("theirs wins the group", func(t *testing.T) {
+		row := conflictRowFor(t, map[string][3]any{
+			"id":           {"bd-13", "bd-13", "bd-13"},
+			"status":       {"open", "closed", "in_progress"},
+			"closed_at":    {nil, "2026-07-10 11:00:00", nil},
+			"close_reason": {"", "done", ""},
+			"updated_at":   {tsBase, tsOurs, tsTheirs}, // theirs newer
+		})
+		m, ok := mergeIssuesConflictRow(row)
+		if !ok {
+			t.Fatal("expected the close-group conflict to merge by LWW")
+		}
+		if v, written := m.merged("status"); !written || v != "in_progress" {
+			t.Errorf("status must come from the LWW winner, got %v (written=%v)", v, written)
+		}
+		v, written := m.merged("closed_at")
+		if !written || v != nil {
+			t.Errorf("closed_at must follow status to the winner (NULL), got %v (written=%v)", v, written)
+		}
+		if v, written := m.merged("close_reason"); !written || v != "" {
+			t.Errorf("close_reason must follow status to the winner, got %v (written=%v)", v, written)
+		}
+	})
+	t.Run("ours wins the group", func(t *testing.T) {
+		row := conflictRowFor(t, map[string][3]any{
+			"id":           {"bd-14", "bd-14", "bd-14"},
+			"status":       {"open", "closed", "in_progress"},
+			"closed_at":    {nil, "2026-07-10 11:00:00", nil},
+			"close_reason": {"", "done", ""},
+			"updated_at":   {tsBase, tsTheirs, tsOurs}, // ours newer
+		})
+		m, ok := mergeIssuesConflictRow(row)
+		if !ok {
+			t.Fatal("expected the close-group conflict to merge by LWW")
+		}
+		for _, col := range []string{"status", "closed_at", "close_reason"} {
+			if _, written := m.merged(col); written {
+				t.Errorf("our close state must stand whole; %s was overwritten", col)
+			}
+		}
+	})
+	t.Run("ambiguous timestamps decline", func(t *testing.T) {
+		row := conflictRowFor(t, map[string][3]any{
+			"id":         {"bd-15", "bd-15", "bd-15"},
+			"status":     {"open", "closed", "in_progress"},
+			"closed_at":  {nil, "2026-07-10 11:00:00", nil},
+			"updated_at": {tsBase, tsOurs, tsOurs},
+		})
+		if _, ok := mergeIssuesConflictRow(row); ok {
+			t.Error("a contested close group with equal timestamps must go to the operator")
+		}
+	})
+}
+
+// TestMergeIssuesConflictRow_NonScalarColumnsDecline pins that the columns bd
+// merges structurally are never settled by per-cell LWW: `notes` is
+// append-only (bd note = --append-notes) and `metadata` is a JSON object
+// mutated key-wise, so LWW would silently delete one side's append or key.
+func TestMergeIssuesConflictRow_NonScalarColumnsDecline(t *testing.T) {
+	for _, col := range []string{"notes", "metadata"} {
+		t.Run(col+" contested declines", func(t *testing.T) {
+			row := conflictRowFor(t, map[string][3]any{
+				"id":         {"bd-16", "bd-16", "bd-16"},
+				col:          {"base", "base + ours", "base + theirs"},
+				"updated_at": {tsBase, tsOurs, tsTheirs},
+			})
+			if _, ok := mergeIssuesConflictRow(row); ok {
+				t.Errorf("a contested %s must go to the operator, not be settled by LWW", col)
+			}
+		})
+		t.Run(col+" one-sided still merges", func(t *testing.T) {
+			row := conflictRowFor(t, map[string][3]any{
+				"id":         {"bd-17", "bd-17", "bd-17"},
+				col:          {"base", "base", "base + theirs"},
+				"assignee":   {"", "alice", ""},
+				"updated_at": {tsBase, tsOurs, tsTheirs},
+			})
+			m, ok := mergeIssuesConflictRow(row)
+			if !ok {
+				t.Fatalf("a one-sided %s edit is not contested and must merge", col)
+			}
+			if v, written := m.merged(col); !written || v != "base + theirs" {
+				t.Errorf("their %s append must survive, got %v (written=%v)", col, v, written)
+			}
+		})
+	}
+}
+
+// TestMergeIssuesConflictRow_ContestedCellsAreNamed pins that every cell
+// settled by timestamp is recorded, so the resolver can name the supersession
+// on stderr instead of dropping an edit silently.
+func TestMergeIssuesConflictRow_ContestedCellsAreNamed(t *testing.T) {
+	row := conflictRowFor(t, map[string][3]any{
+		"id":         {"bd-18", "bd-18", "bd-18"},
+		"title":      {"seed", "ours", "theirs"},
+		"assignee":   {"", "", "alice"},
+		"updated_at": {tsBase, tsOurs, tsTheirs},
+	})
+	m, ok := mergeIssuesConflictRow(row)
+	if !ok {
+		t.Fatal("expected the row to merge")
+	}
+	named := map[string]bool{}
+	for _, c := range m.lww {
+		named[c] = true
+	}
+	if !named["title"] {
+		t.Errorf("the contested cell must be named for the operator notice, got %v", m.lww)
+	}
+	if named["assignee"] {
+		t.Errorf("a one-sided edit is not a supersession and must not be named, got %v", m.lww)
+	}
+}
+
+// TestUnionRowIsSafe covers the union safety property directly: only a row
+// present on both sides with agreeing columns may be unioned.
+func TestUnionRowIsSafe(t *testing.T) {
+	keyCols := []string{"issue_id", "label"}
+	t.Run("identical row on both sides", func(t *testing.T) {
+		row := conflictRowFor(t, map[string][3]any{
+			"issue_id": {"bd-1", "bd-1", "bd-1"},
+			"label":    {"tier:opus", "tier:opus", "tier:opus"},
+		})
+		key, ok := unionRowIsSafe(row, keyCols)
+		if !ok {
+			t.Fatal("an identical row on both sides must be unionable")
+		}
+		if len(key.values) != 2 || key.values[0] != "bd-1" || key.values[1] != "tier:opus" {
+			t.Errorf("union key must carry our side's key values, got %v", key.values)
+		}
+	})
+	t.Run("missing on one side declines", func(t *testing.T) {
+		row := conflictRowFor(t, map[string][3]any{
+			"issue_id": {"bd-1", nil, "bd-1"},
+			"label":    {"tier:opus", nil, "tier:opus"},
+		})
+		if _, ok := unionRowIsSafe(row, keyCols); ok {
+			t.Error("a deletion racing an insert must go to the operator, not be unioned")
+		}
+	})
+	t.Run("diverging columns decline", func(t *testing.T) {
+		row := conflictRowFor(t, map[string][3]any{
+			"id":     {"c-1", "c-1", "c-1"},
+			"text":   {"hi", "hi there", "hi again"},
+			"author": {"a", "a", "a"},
+		})
+		if _, ok := unionRowIsSafe(row, []string{"id"}); ok {
+			t.Error("an append-only row whose columns diverge must go to the operator")
+		}
+	})
+}

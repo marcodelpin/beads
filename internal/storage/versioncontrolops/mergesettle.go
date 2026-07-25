@@ -195,7 +195,7 @@ func workingSetClean(ctx context.Context, db DBConn) bool {
 
 // TryAutoResolveMergeConflicts auto-resolves merge conflicts that are safe to
 // resolve without operator input, and returns (true, nil) only if ALL conflicts
-// were resolved. It handles four classes:
+// were resolved. It handles these classes:
 //
 //   - metadata: machine-local rows (e.g. dolt_auto_push_*) that routinely diverge
 //     across clones (GH#2466). Resolved with "theirs".
@@ -288,6 +288,7 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 	// not safely resolvable, resolve nothing and let the pull fail.
 	var resolvable []string
 	var issuesPlan []issuesRowMerge
+	var unionPlans map[string][]unionRowKey
 	for _, c := range conflicts {
 		switch c.table {
 		case "metadata":
@@ -330,13 +331,17 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 			issuesPlan = plan
 			resolvable = append(resolvable, "issues")
 		case "labels", "comments", "events":
-			unionSafe, err := unionConflictsAreSafe(ctx, db, c.table)
+			unionPlan, unionSafe, err := unionConflictsAreSafe(ctx, db, c.table)
 			if err != nil {
 				return false, err
 			}
 			if !unionSafe {
 				return false, nil
 			}
+			if unionPlans == nil {
+				unionPlans = make(map[string][]unionRowKey, len(conflicts))
+			}
+			unionPlans[c.table] = unionPlan
 			resolvable = append(resolvable, c.table)
 		default:
 			return false, nil
@@ -376,7 +381,7 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 				return false, err
 			}
 		case "labels", "comments", "events":
-			if err := resolveUnionConflicts(ctx, db, table); err != nil {
+			if err := resolveUnionConflicts(ctx, db, table, unionPlans[table]); err != nil {
 				return false, err
 			}
 		default:
@@ -402,7 +407,7 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 // cascade violation could never settle while the resolver committed first
 // (bd-578h9.14).
 func CommitResolvedConflicts(ctx context.Context, db DBConn) error {
-	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve merge conflicts (GH#2466, #4259, GH#2474, GH#4698)')"); err != nil {
+	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve merge conflicts: metadata, dependencies, schema_migrations, config, issues (field-level three-way merge), labels/comments/events (union)')"); err != nil {
 		return fmt.Errorf("failed to commit resolved conflicts: %w", err)
 	}
 	return nil
