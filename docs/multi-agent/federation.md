@@ -182,6 +182,45 @@ them. This enables proper attribution and trust chains across organizations.
 Remote connectivity is validated on first push/pull operation, not when adding
 the peer. This allows configuring remotes before infrastructure is ready.
 
+### Leases are per-replica
+
+A claim lease (`bd ready --claim` + `bd heartbeat`, reaped by `bd reclaim`) is
+only meaningful on the replica that granted it. The `leases` table is
+clone-local and never replicates; what crosses the bridge is the claim's
+*visibility* — `status`/`assignee` on the issue row — and that is stale on
+every other replica by up to one sync interval.
+
+Two rules follow, and a federated deployment owes both:
+
+1. **Grace window > sync interval, and lease TTL > sync interval.** A TTL or
+   `bd reclaim --older-than` grace shorter than the cadence at which replicas
+   exchange state is meaningless across the bridge: the remote view is a full
+   interval old by construction, so a reaper over there would be judging
+   liveness from data older than the lease itself. `bd reclaim` defaults its
+   grace to 2× the lease TTL; raise the TTL (or the grace) above your sync
+   interval, never shrink the interval to fit them.
+2. **Reclaim belongs to the granting replica.** Each lease records the replica
+   that granted it, and `bd reclaim` skips a lease granted elsewhere, naming
+   it on stderr. Reap dead workers on the machine that hired them.
+
+Set this replica's identity explicitly wherever the hostname is not stable
+(containers, DHCP renames) or two machines could resolve to the same name:
+
+```bash
+export BEADS_NODE_ID=mini          # or: node_id: mini   in config.yaml
+```
+
+It falls back to the hostname, and an empty identity degrades to the old
+behavior (every lease treated as local) rather than failing closed — an
+upgrade can never strand a lease the reaper could previously recover. Leases
+granted before this feature landed carry no replica and are likewise treated
+as local until their next heartbeat re-stamps them.
+
+`bd reclaim --any-replica` disarms the guard. It is for a replica that is
+permanently gone (or a node that was renamed and now sees its own old leases
+as foreign) — not a normal setting, since only the granting machine has a
+first-hand view of whether the holder is alive.
+
 ## Planned Features
 
 The following operation has infrastructure support but is not yet exposed as

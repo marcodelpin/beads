@@ -180,6 +180,8 @@ func Initialize() error {
 	// Additional environment variables (not prefixed with BD_)
 	_ = v.BindEnv("identity", "BEADS_IDENTITY") // BindEnv only fails with zero args, which can't happen here
 	v.SetDefault("identity", "")
+	_ = v.BindEnv("node_id", "BEADS_NODE_ID", "BD_NODE_ID") // replica identity; see NodeID
+	v.SetDefault("node_id", "")
 
 	// Dolt configuration defaults
 	// Controls whether beads should automatically create Dolt commits after write commands.
@@ -879,6 +881,37 @@ func GetIdentity(flagValue string) string {
 	}
 
 	return "unknown"
+}
+
+// NodeID returns the identity of THIS replica: the machine whose beads
+// database grants and enforces leases here. It is deliberately coarser than
+// the actor identity — every clone and every worker on one machine shares a
+// beads store, and a lease is enforceable exactly as far as that store
+// reaches (see issueops.UpsertLeaseInTx; the leases table is dolt_ignored and
+// does not replicate).
+//
+// Resolution order:
+//
+//  1. BEADS_NODE_ID / BD_NODE_ID env var, or node_id in config.yaml. Set this
+//     when the hostname is not stable (containers, DHCP renames) or when two
+//     replicas could resolve to the same hostname.
+//  2. os.Hostname().
+//  3. "" — provenance unknown.
+//
+// An empty result is a first-class value, not an error: it means "this
+// deployment cannot name its replicas", and every consumer must degrade to
+// the pre-replica-aware behavior rather than fail closed. Reclaim in
+// particular treats an unknown-provenance lease as local (see
+// issueops.ReclaimExpiredLeasesInTx) so an upgrade can never strand a stale
+// lease that the reaper used to be able to recover.
+func NodeID() string {
+	if id := strings.TrimSpace(GetString("node_id")); id != "" {
+		return id
+	}
+	if hostname, err := os.Hostname(); err == nil {
+		return strings.TrimSpace(hostname)
+	}
+	return ""
 }
 
 // FederationConfig holds the federation (Dolt remote) configuration.
