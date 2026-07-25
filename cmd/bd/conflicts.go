@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -253,14 +254,8 @@ Examples:
 		// bd at all — with zero live conflicts, --all returns early and a
 		// named ID errors "no live conflict" (wy-36ilm F4).
 		if conflictsConclude {
-			if len(args) > 0 || conflictsResolveAll || conflictsResolveOurs || conflictsResolveTheirs ||
-				conflictsResolveStrat != "" || conflictsResolveTable != "" {
-				// --table included: a scoped conclude does not exist, and
-				// silently ignoring it would imply one (review F8).
-				return HandleErrorRespectJSON("--conclude takes no issue IDs, table or strategy: it commits an already-resolved merge")
-			}
-			if conflictsNoCommit {
-				return HandleErrorRespectJSON("--conclude and --no-commit are opposites")
+			if err := concludeFlagConflict(args); err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
 			return concludeResolvedMerge(ctx)
 		}
@@ -342,7 +337,7 @@ Examples:
 		}
 
 		committed := false
-		if resolved > 0 && remaining == 0 && !conflictsNoCommit && !blockers.Blocked() {
+		if shouldCommitResolution(resolved, remaining, conflictsNoCommit, blockers) {
 			msg := fmt.Sprintf("Resolve %d merge conflict(s) using %s strategy", resolved, strategy)
 			if err := commitMergeResolution(ctx, msg, preHead); err != nil {
 				return HandleErrorRespectJSON("conflicts resolved but %v", err)
@@ -413,6 +408,69 @@ func errText(err error) string {
 	return err.Error()
 }
 
+// concludeAction is what `--conclude` will do with the merge state it found.
+// It exists so the decision is a pure function of that state (planConclude),
+// testable without a live merge: a Blocked() inversion or a dropped
+// merge-status check is otherwise only visible against real dolt.
+type concludeAction int
+
+const (
+	// concludeActionCommit: nothing outstanding and a merge to finish.
+	concludeActionCommit concludeAction = iota
+	// concludeActionConflictsLive: dolt_conflicts still has rows.
+	concludeActionConflictsLive
+	// concludeActionBlocked: schema conflicts or constraint violations.
+	concludeActionBlocked
+	// concludeActionNothingToConclude: no merge is open at all.
+	concludeActionNothingToConclude
+)
+
+// planConclude decides --conclude's outcome from the merge state.
+//
+// Order is load-bearing: live row conflicts outrank blockers (they are the
+// thing the operator can actually resolve with bd), and blockers outrank
+// "nothing to conclude" so a wedged merge can never be reported as a no-op.
+// "Nothing to conclude" requires the merge status to be BOTH available and
+// readable — a backend with no MergeBlockerInspector, or a blocker read that
+// errored, reports Merging=false for want of knowing, and must fall through
+// to attempting the commit rather than claiming there is no merge.
+func planConclude(remaining int, blockers storage.MergeBlockers, blockerErr error, haveStatus bool) concludeAction {
+	switch {
+	case remaining > 0:
+		return concludeActionConflictsLive
+	case blockers.Blocked():
+		return concludeActionBlocked
+	case haveStatus && blockerErr == nil && !blockers.Merging:
+		return concludeActionNothingToConclude
+	default:
+		return concludeActionCommit
+	}
+}
+
+// shouldCommitResolution is the resolve path's commit-hold gate: the merge is
+// committed only when this pass actually resolved something, nothing is left
+// in dolt_conflicts, the operator did not ask to hold the commit, and no
+// schema conflict or constraint violation would make the commit fail with a
+// raw dolt error (wy-36ilm F12).
+func shouldCommitResolution(resolved, remaining int, noCommit bool, blockers storage.MergeBlockers) bool {
+	return resolved > 0 && remaining == 0 && !noCommit && !blockers.Blocked()
+}
+
+// concludeFlagConflict rejects the flag combinations --conclude has no
+// meaning for. --conclude commits an ALREADY-resolved merge, so an issue ID,
+// a strategy, --all or --table describe a resolution it will not perform, and
+// silently ignoring --table would imply a scoped conclude exists (review F8).
+func concludeFlagConflict(args []string) error {
+	if len(args) > 0 || conflictsResolveAll || conflictsResolveOurs || conflictsResolveTheirs ||
+		conflictsResolveStrat != "" || conflictsResolveTable != "" {
+		return fmt.Errorf("--conclude takes no issue IDs, table or strategy: it commits an already-resolved merge")
+	}
+	if conflictsNoCommit {
+		return fmt.Errorf("--conclude and --no-commit are opposites")
+	}
+	return nil
+}
+
 // concludeResolvedMerge commits a merge that has no live conflicts left —
 // `bd conflicts resolve --conclude` (wy-36ilm F4). It refuses while anything
 // is still outstanding, so it can only ever finish a resolution someone else
@@ -422,6 +480,8 @@ func concludeResolvedMerge(ctx context.Context) error {
 	if err != nil {
 		return HandleErrorRespectJSON("failed to read conflicts: %v", err)
 	}
+	// Short-circuit before the blocker read: with rows still conflicted the
+	// blockers cannot change the answer, and there is nothing to diagnose yet.
 	if remaining > 0 {
 		return HandleErrorRespectJSON("%d conflict(s) are still live; resolve them first (bd conflicts list)", remaining)
 	}
@@ -432,7 +492,13 @@ func concludeResolvedMerge(ctx context.Context) error {
 		// their absence (adversarial review F3).
 		fmt.Fprintf(os.Stderr, "Warning: could not read schema conflicts/constraint violations: %v\n", blockerErr)
 	}
-	if blockers.Blocked() {
+	// A backend with no MergeBlockerInspector reports Merging=false, so it
+	// keeps the old behavior of just attempting the commit.
+	_, haveStatus := storage.UnwrapStore(store).(storage.MergeBlockerInspector)
+	switch planConclude(remaining, blockers, blockerErr, haveStatus) {
+	case concludeActionConflictsLive:
+		return HandleErrorRespectJSON("%d conflict(s) are still live; resolve them first (bd conflicts list)", remaining)
+	case concludeActionBlocked:
 		if !jsonOutput {
 			printMergeBlockers(blockers)
 		}
@@ -440,13 +506,8 @@ func concludeResolvedMerge(ctx context.Context) error {
 		// mode too, so a script cannot read `{"committed":false}` at status 0
 		// as success and push over an open merge (adversarial review F2).
 		return HandleErrorRespectJSON("merge not concluded: schema conflicts or constraint violations are outstanding")
-	}
-	// No merge open and nothing blocking: there is nothing to conclude. Say
-	// so rather than minting an empty commit. A backend with no
-	// MergeBlockerInspector reports Merging=false, so it keeps the old
-	// behavior of just attempting the commit.
-	_, haveStatus := storage.UnwrapStore(store).(storage.MergeBlockerInspector)
-	if haveStatus && blockerErr == nil && !blockers.Merging {
+	case concludeActionNothingToConclude:
+		// Say so rather than minting an empty commit.
 		return concludeJSON(false, blockers, "No merge is in progress; nothing to conclude.")
 	}
 
@@ -547,29 +608,36 @@ func mergeBlockers(ctx context.Context) (storage.MergeBlockers, error) {
 // dolt commands that do resolve them — the guidance the raw commit error
 // (wy-36ilm F12) never carried.
 func printMergeBlockers(b storage.MergeBlockers) {
+	writeMergeBlockers(os.Stdout, b)
+}
+
+// writeMergeBlockers is printMergeBlockers' body against an explicit writer,
+// so the remedy text is assertable without hijacking stdout. An unblocked
+// state writes NOTHING: `bd conflicts list` calls this unconditionally.
+func writeMergeBlockers(w io.Writer, b storage.MergeBlockers) {
 	if !b.Blocked() {
 		return
 	}
-	fmt.Printf("\n%s the merge cannot be committed yet:\n", ui.RenderAccent("!!"))
+	fmt.Fprintf(w, "\n%s the merge cannot be committed yet:\n", ui.RenderAccent("!!"))
 	for _, t := range b.SchemaConflictTables {
-		fmt.Printf("  schema conflict: %s\n", t)
+		fmt.Fprintf(w, "  schema conflict: %s\n", t)
 	}
 	for _, v := range b.ConstraintViolations {
-		fmt.Printf("  constraint violations: %s (%d)\n", v.Table, v.Count)
+		fmt.Fprintf(w, "  constraint violations: %s (%d)\n", v.Table, v.Count)
 	}
-	fmt.Println("\nNeither class has an ours/theirs resolution — bd conflicts resolve cannot settle them.")
+	fmt.Fprintln(w, "\nNeither class has an ours/theirs resolution — bd conflicts resolve cannot settle them.")
 	if len(b.SchemaConflictTables) > 0 {
 		// Not `dolt conflicts resolve`: dolt refuses that outright while a
 		// schema conflict is live (dolthub/dolt#6616), so pointing an
 		// operator at it sends them to a command that always errors
 		// (wy-36ilm adversarial review F1). A schema conflict is aborted and
 		// re-merged, not resolved in place.
-		fmt.Println("  Schema conflicts:       abort the merge (dolt merge --abort), apply the peer's")
-		fmt.Println("                          ALTER TABLE statements locally, then merge again")
+		fmt.Fprintln(w, "  Schema conflicts:       abort the merge (dolt merge --abort), apply the peer's")
+		fmt.Fprintln(w, "                          ALTER TABLE statements locally, then merge again")
 	}
 	if len(b.ConstraintViolations) > 0 {
-		fmt.Println("  Constraint violations:  inspect dolt_constraint_violations_<table>, delete the offending rows,")
-		fmt.Println("                          then conclude with: bd conflicts resolve --conclude")
+		fmt.Fprintln(w, "  Constraint violations:  inspect dolt_constraint_violations_<table>, delete the offending rows,")
+		fmt.Fprintln(w, "                          then conclude with: bd conflicts resolve --conclude")
 	}
 }
 
