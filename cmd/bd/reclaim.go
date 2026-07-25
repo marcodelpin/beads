@@ -52,7 +52,7 @@ Two invariants the guard cannot enforce for you:
   grace window > sync interval, and lease TTL > sync interval.
 
 A TTL or grace shorter than the cadence at which replicas exchange state is
-meaningless across the bridge â the remote view is a full interval old by
+meaningless across the bridge — the remote view is a full interval old by
 construction. Raise the TTL/grace above the sync interval, never the reverse.
 This replica's identity is BEADS_NODE_ID (or node_id in config.yaml), falling
 back to the hostname; set it explicitly wherever the hostname is not stable.
