@@ -203,18 +203,29 @@ Two rules follow, and a federated deployment owes both:
    that granted it, and `bd reclaim` skips a lease granted elsewhere, naming
    it on stderr. Reap dead workers on the machine that hired them.
 
-Set this replica's identity explicitly wherever the hostname is not stable
-(containers, DHCP renames) or two machines could resolve to the same name:
+The guard is **opt-in**: it arms only where you name this replica, on every
+replica that shares the queue.
 
 ```bash
 export BEADS_NODE_ID=mini          # or: node_id: mini   in config.yaml
 ```
 
-It falls back to the hostname, and an empty identity degrades to the old
-behavior (every lease treated as local) rather than failing closed — an
-upgrade can never strand a lease the reaper could previously recover. Leases
-granted before this feature landed carry no replica and are likewise treated
-as local until their next heartbeat re-stamps them.
+There is deliberately no hostname fallback. The hostname answers the wrong
+question — it names the client *process's* machine, not the store — and
+guessing gets it wrong in the topologies that most need automated reclaim:
+with a shared or remote dolt sql-server (`BEADS_DOLT_SERVER_HOST`, Hosted
+Dolt, a VPS) many hosts are clients of ONE store with no sync interval
+between them, so a per-hostname identity would stop a supervisor reaping any
+worker's lease at all; in a container the hostname is a per-run container ID;
+on macOS the transient hostname follows the network. Each of those would
+strand work on a deployment with no federation at all — a worse failure than
+the one this guard prevents.
+
+So an unset identity degrades to the old behavior (every lease treated as
+local) rather than failing closed: an upgrade, and any single-store
+deployment, can never strand a lease the reaper could previously recover.
+Leases granted before this feature landed likewise carry no replica and stay
+reclaimable until a heartbeat re-stamps them with a configured node.
 
 `bd reclaim --any-replica` disarms the guard. It is for a replica that is
 permanently gone (or a node that was renamed and now sees its own old leases

@@ -54,8 +54,10 @@ Two invariants the guard cannot enforce for you:
 A TTL or grace shorter than the cadence at which replicas exchange state is
 meaningless across the bridge — the remote view is a full interval old by
 construction. Raise the TTL/grace above the sync interval, never the reverse.
-This replica's identity is BEADS_NODE_ID (or node_id in config.yaml), falling
-back to the hostname; set it explicitly wherever the hostname is not stable.
+The guard is opt-in: set BEADS_NODE_ID (or node_id in config.yaml) on every
+replica sharing the queue. There is no hostname fallback — the hostname names
+the client process's machine, not the store — so an unnamed deployment keeps
+the old, unguarded behavior instead of stranding its own work.
 
 Examples:
   bd reclaim                       # default grace window (2× the lease TTL)

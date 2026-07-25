@@ -883,35 +883,38 @@ func GetIdentity(flagValue string) string {
 	return "unknown"
 }
 
-// NodeID returns the identity of THIS replica: the machine whose beads
-// database grants and enforces leases here. It is deliberately coarser than
-// the actor identity — every clone and every worker on one machine shares a
-// beads store, and a lease is enforceable exactly as far as that store
-// reaches (see issueops.UpsertLeaseInTx; the leases table is dolt_ignored and
-// does not replicate).
+// NodeID returns the identity of THIS replica: the beads STORE that grants
+// and enforces leases here. A lease is enforceable exactly as far as that
+// store reaches, and the replica-aware reclaim guard
+// (issueops.ReclaimExpiredLeasesInTx) refuses to revert a lease some OTHER
+// node granted.
 //
-// Resolution order:
+// It is read from BEADS_NODE_ID / BD_NODE_ID, or node_id in config.yaml, and
+// from nowhere else. It deliberately does NOT fall back to os.Hostname(),
+// because the hostname answers the wrong question — it names the client
+// PROCESS's machine, not the store:
 //
-//  1. BEADS_NODE_ID / BD_NODE_ID env var, or node_id in config.yaml. Set this
-//     when the hostname is not stable (containers, DHCP renames) or when two
-//     replicas could resolve to the same hostname.
-//  2. os.Hostname().
-//  3. "" — provenance unknown.
+//   - With a shared or remote dolt sql-server (BEADS_DOLT_SERVER_HOST, or any
+//     ServerModeExternal deployment — systemd, Docker, Hosted Dolt, a VPS),
+//     many hosts are clients of ONE store. There is no sync interval between
+//     them and no stale liveness view to defend against, but per-hostname
+//     identity would make a supervisor unable to reap any worker's lease —
+//     reclaim would return 0 forever and every dead worker's unit would sit
+//     in_progress permanently.
+//   - In a container the hostname is the container ID, regenerated on every
+//     run, so a replaced worker's own single-machine leases would look
+//     foreign to its successor.
+//   - On macOS/DHCP the transient hostname changes with the network.
 //
-// An empty result is a first-class value, not an error: it means "this
-// deployment cannot name its replicas", and every consumer must degrade to
-// the pre-replica-aware behavior rather than fail closed. Reclaim in
-// particular treats an unknown-provenance lease as local (see
-// issueops.ReclaimExpiredLeasesInTx) so an upgrade can never strand a stale
-// lease that the reaper used to be able to recover.
+// Each of those is a fail-CLOSED regression on a deployment that has no
+// federation at all, which is a far worse failure than the cross-replica
+// reclaim this guard exists to prevent. So the guard is armed only where an
+// operator has said, explicitly, that this store is one replica among
+// several. "" means "this deployment does not name its replicas" and is the
+// default: every consumer degrades to the pre-replica-aware behavior rather
+// than fail closed.
 func NodeID() string {
-	if id := strings.TrimSpace(GetString("node_id")); id != "" {
-		return id
-	}
-	if hostname, err := os.Hostname(); err == nil {
-		return strings.TrimSpace(hostname)
-	}
-	return ""
+	return strings.TrimSpace(GetString("node_id"))
 }
 
 // FederationConfig holds the federation (Dolt remote) configuration.

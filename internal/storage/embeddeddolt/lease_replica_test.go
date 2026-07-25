@@ -68,9 +68,12 @@ func TestReclaimRefusesForeignReplicaLease(t *testing.T) {
 	if got.Status != types.StatusInProgress || got.Assignee != "alice" {
 		t.Fatalf("issue = (%s, %q) after a declined reclaim, want (in_progress, alice)", got.Status, got.Assignee)
 	}
-	// The lease row itself must survive too: the guard is applied on the
-	// per-row DELETE as well as the snapshot SELECT, so a declined reclaim
-	// leaves nothing half-torn-down.
+	// The lease row itself must survive: a declined reclaim leaves nothing
+	// half-torn-down, so the holder can keep heartbeating on the replica that
+	// granted it. (This does NOT exercise the guard's copy on the per-row
+	// DELETE — inside one transaction nothing can flip granted_node between
+	// the snapshot and the DELETE, so that copy is defense in depth against a
+	// future caller that re-checks by id, not a separately reachable branch.)
 	var leaseRows int
 	te.queryScalar(t, ctx, "SELECT COUNT(*) FROM leases WHERE issue_id = ?", []any{"leasereplica-1"}, &leaseRows)
 	if leaseRows != 1 {
