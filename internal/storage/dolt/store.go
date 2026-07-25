@@ -831,6 +831,62 @@ func (s *DoltStore) withReadTx(ctx context.Context, fn func(tx *sql.Tx) error) e
 	})
 }
 
+// withReadTxLongTimeout is like withReadTx but runs fn against a dedicated
+// one-shot connection with a 5-minute read timeout (see openLongTimeoutConn)
+// instead of the shared pool's 10s ReadTimeout (see buildServerDSN). Use for
+// read queries that are known to legitimately run long, e.g. dolt_history_*
+// system-table scans on issues with many revisions — the pooled 10s client
+// timeout otherwise surfaces as an intermittent MySQL i/o timeout / invalid
+// connection error (ga-ahnxx) well before the query would have finished on
+// its own. Note this only removes the client-side ceiling: the Dolt server's
+// own read_timeout_millis (often configured short to bound orphaned-connection
+// pileup — see the comment next to it) still applies server-side and can
+// independently abort a query whose
+// per-row production stalls past that window.
+func (s *DoltStore) withReadTxLongTimeout(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if s.closed.Load() {
+		return ErrStoreClosed
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.withRetry(ctx, func() error {
+		db, err := s.openLongTimeoutConn()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		// The fresh one-shot connection defaults to the default branch, not
+		// whatever branch the store's pooled session (s.db) is actually
+		// checked out to. The pool is branch-isolated (MaxOpenConns(1)
+		// semantics — see the comment on MaxOpenConns above), so ask it for
+		// its real active branch and reproduce that checkout here before
+		// starting the read tx; otherwise a query like dolt_history_* would
+		// silently read the wrong branch after any in-process checkout,
+		// including a test-harness CALL DOLT_CHECKOUT run directly against
+		// s.db, which bypasses Store.Checkout and leaves s.branch stale.
+		var branch string
+		if scanErr := s.db.QueryRowContext(ctx, "SELECT active_branch()").Scan(&branch); scanErr == nil {
+			if branch != "" {
+				if _, err := db.ExecContext(ctx, "CALL DOLT_CHECKOUT(?)", branch); err != nil {
+					return fmt.Errorf("checkout active branch %q on long-timeout connection: %w", branch, err)
+				}
+			}
+		} else if s.branch != "" {
+			// Fall back to the store's recorded branch rather than failing
+			// the whole call outright.
+			if _, err := db.ExecContext(ctx, "CALL DOLT_CHECKOUT(?)", s.branch); err != nil {
+				return fmt.Errorf("checkout fallback branch %q on long-timeout connection: %w", s.branch, err)
+			}
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin read tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		return fn(tx)
+	})
+}
+
 func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
