@@ -39,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
@@ -1342,6 +1343,47 @@ func buildTestModeProductionPortPanic(cfg *Config) string {
 	)
 }
 
+// dialProbe reports whether an address accepts a connection within timeout.
+// Declared as a var (not a plain call) so unit tests can stub connectivity
+// without a live Dolt server. Returns nil when the endpoint is reachable.
+var dialProbe = func(network, addr string, timeout time.Duration) error {
+	conn, err := net.DialTimeout(network, addr, timeout)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// resolveSocketTransport applies a socket-first / TCP-fallback policy and
+// returns the effective unix socket path to use ("" means use TCP).
+//
+// A configured unix socket is a preference, not a hard requirement. Dolt's
+// /tmp/mysql.sock is created only on some server start paths and is frequently
+// absent while the server is fully reachable on its TCP port — when that
+// happens, every socket-mode bd operation (and `gt mq submit`, cross-rig bead
+// reads that route through bd) fails hard with no fallback (gt-28itz). This
+// mirrors the conservative socket-first/TCP-fallback semantics already used on
+// the gt-CLI side (internal/cmd/dolt_dsn.go localDoltSocketPath/buildDoltDSN).
+//
+// Returns the socket unchanged when: no socket is configured, the socket is
+// connectable, or neither the socket nor TCP is reachable (the latter is left
+// to the normal error path so its socket-specific hint still surfaces a true
+// outage rather than masking it behind a TCP error).
+func resolveSocketTransport(socket, host string, port int, timeout time.Duration) string {
+	if socket == "" {
+		return ""
+	}
+	if dialProbe("unix", socket, timeout) == nil {
+		return socket // socket is live — keep using it
+	}
+	if port > 0 && dialProbe("tcp", net.JoinHostPort(host, strconv.Itoa(port)), timeout) == nil {
+		debug.Logf("dolt: socket %s unreachable, falling back to TCP %s\n", socket, net.JoinHostPort(host, strconv.Itoa(port)))
+		return "" // socket down but TCP up — transparently fall back to TCP
+	}
+	return socket // both down (or no TCP port) — keep socket for the error path
+}
+
 // newServerMode creates a DoltStore connected to a running dolt sql-server.
 // This path is pure Go and does not require CGO.
 func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
@@ -1365,6 +1407,12 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 		resolvedBeadsDir = filepath.Dir(cfg.Path) // fallback: cfg.Path is .beads/dolt → parent is .beads/
 	}
 	serverDir := doltserver.ResolveServerDir(resolvedBeadsDir)
+
+	// Socket-first / TCP-fallback (gt-28itz): a configured unix socket that
+	// isn't currently connectable must not block operations when the server is
+	// reachable over TCP. Normalizing here means the fail-fast dial below and
+	// the DSN built in openServerConnection agree on the transport.
+	cfg.ServerSocket = resolveSocketTransport(cfg.ServerSocket, cfg.ServerHost, cfg.ServerPort, 500*time.Millisecond)
 
 	// Fail-fast connectivity check before MySQL protocol initialization.
 	// This gives an immediate, clear error if the Dolt server isn't running,
