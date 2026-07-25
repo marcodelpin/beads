@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
@@ -760,5 +761,254 @@ func TestSyncExitCodesArePinned(t *testing.T) {
 	}
 	if ExitSyncRetriesExhausted != 3 {
 		t.Errorf("ExitSyncRetriesExhausted = %d, want 3", ExitSyncRetriesExhausted)
+	}
+}
+
+// dirtyGraphErr is the guard's real error shape: the sentinel wrapped with the
+// offending table names (issueops.GuardBlockedRecomputeWorkingSet).
+func dirtyGraphErr() error {
+	return fmt.Errorf("%w: commit or discard pending changes to %s first",
+		issueops.ErrBlockedRecomputeDirtyGraph, "issues")
+}
+
+func TestIsRecomputeDirtyGraphErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errors.New("connection refused"), false},
+		// The message alone must never be the signal — a *different* error
+		// that happens to talk about clean working sets is not the guard.
+		{"lookalike message", errors.New("is_blocked recompute needs a clean working set"), false},
+		{"bare sentinel", issueops.ErrBlockedRecomputeDirtyGraph, true},
+		{"guard's wrapped form", dirtyGraphErr(), true},
+		{"wrapped again by the loop's step framing", fmt.Errorf("recompute-blocked: %w", dirtyGraphErr()), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRecomputeDirtyGraphErr(tt.err); got != tt.want {
+				t.Errorf("isRecomputeDirtyGraphErr(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// A concurrent writer's uncommitted edit is foreign and self-healing, so the
+// repair re-enters the attempt loop instead of failing the run and stranding
+// local commits unpushed (wy-mlnz2).
+func TestRunSyncLoopDirtyGraphRecomputeRetriesAndSucceeds(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs: []error{dirtyGraphErr(), dirtyGraphErr(), nil},
+		recomputeVals: []int{0, 0, 4},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), defaultSyncAttempts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusOK {
+		t.Fatalf("status = %q, want %q", out.Status, syncStatusOK)
+	}
+	if out.Attempts != 3 {
+		t.Errorf("Attempts = %d, want 3", out.Attempts)
+	}
+	if r.pulls != 3 || r.recomputes != 3 {
+		t.Errorf("pulls/recomputes = %d/%d, want 3/3 (each retry re-enters at the pull)", r.pulls, r.recomputes)
+	}
+	if r.pushes != 1 {
+		t.Errorf("pushes = %d, want 1 (a blocked repair must not publish)", r.pushes)
+	}
+	if !out.Pushed || out.RowsCorrected != 4 {
+		t.Errorf("Pushed/RowsCorrected = %v/%d, want true/4", out.Pushed, out.RowsCorrected)
+	}
+	if out.LastRecomputeError != "" {
+		t.Errorf("LastRecomputeError = %q, want it cleared once the repair succeeded", out.LastRecomputeError)
+	}
+}
+
+// Exhausting the budget is the transient exit (3), not a hard error (1): the
+// next tick is expected to find a clean working set.
+func TestRunSyncLoopDirtyGraphRetriesExhausted(t *testing.T) {
+	r := &syncOpsRecorder{recomputeErrs: []error{dirtyGraphErr()}}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v (a dirty working set is transient, not an exit-1 failure)", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q", out.Status, syncStatusRetriesExhausted)
+	}
+	if out.Attempts != 2 || r.recomputes != 2 {
+		t.Errorf("attempts/recomputes = %d/%d, want 2/2 (bounded by --attempts)", out.Attempts, r.recomputes)
+	}
+	if r.pushes != 0 {
+		t.Errorf("pushes = %d, want 0 (a stale is_blocked must not be published)", r.pushes)
+	}
+	if out.Pushed || out.Pulled {
+		t.Errorf("Pushed/Pulled = %v/%v, want false/false (no attempt completed its repair)", out.Pushed, out.Pulled)
+	}
+	if out.LastRecomputeError == "" {
+		t.Error("LastRecomputeError is empty, want the guard error recorded")
+	}
+}
+
+// A recompute failure that is NOT the dirty-graph guard can never converge by
+// retrying, so it must still halt the run immediately.
+func TestRunSyncLoopNonDirtyRecomputeErrorDoesNotRetry(t *testing.T) {
+	r := &syncOpsRecorder{recomputeErrs: []error{errors.New("connection refused")}}
+	_, err := runSyncLoop(context.Background(), r.ops(), defaultSyncAttempts)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "recompute-blocked") {
+		t.Errorf("error = %v, want it to name the recompute step", err)
+	}
+	if r.recomputes != 1 {
+		t.Errorf("recomputes = %d, want 1 (a durable failure must not burn the budget)", r.recomputes)
+	}
+}
+
+// LastPushError and LastRecomputeError must not both survive: whichever the
+// FINAL attempt failed on is what the exit-3 report is built from, and the
+// other one describes an attempt that has since been superseded.
+func TestRunSyncLoopRetryClearsTheOtherLastError(t *testing.T) {
+	t.Run("dirty recompute clears an earlier push race", func(t *testing.T) {
+		r := &syncOpsRecorder{
+			pushErrs:      []error{raceErr()},
+			recomputeErrs: []error{nil, dirtyGraphErr()},
+		}
+		out, err := runSyncLoop(context.Background(), r.ops(), 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.Status != syncStatusRetriesExhausted {
+			t.Fatalf("status = %q, want %q", out.Status, syncStatusRetriesExhausted)
+		}
+		if out.LastPushError != "" {
+			t.Errorf("LastPushError = %q, want it cleared by the later recompute failure", out.LastPushError)
+		}
+		if out.LastRecomputeError == "" {
+			t.Error("LastRecomputeError is empty, want the final attempt's failure recorded")
+		}
+		// The first attempt did complete its repair, so the outcome still says so.
+		if !out.Pulled {
+			t.Error("Pulled = false, want true (attempt 1 completed pull + repair)")
+		}
+	})
+
+	t.Run("push race clears an earlier dirty recompute", func(t *testing.T) {
+		r := &syncOpsRecorder{
+			pushErrs:      []error{raceErr()},
+			recomputeErrs: []error{dirtyGraphErr(), nil},
+		}
+		out, err := runSyncLoop(context.Background(), r.ops(), 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.Status != syncStatusRetriesExhausted {
+			t.Fatalf("status = %q, want %q", out.Status, syncStatusRetriesExhausted)
+		}
+		if out.LastRecomputeError != "" {
+			t.Errorf("LastRecomputeError = %q, want it cleared once the repair succeeded", out.LastRecomputeError)
+		}
+		if out.LastPushError == "" {
+			t.Error("LastPushError is empty, want the final attempt's failure recorded")
+		}
+	})
+}
+
+// Both exit-3 causes are transient, but they are blocked on different machines:
+// a race is another REPLICA, a dirty working set is another writer on THIS one.
+func TestSyncRetriesExhaustedMessage(t *testing.T) {
+	joined := func(out *syncOutcome) string {
+		return strings.Join(syncRetriesExhaustedMessage(out), "\n")
+	}
+
+	t.Run("push race", func(t *testing.T) {
+		got := joined(&syncOutcome{Attempts: 3, LastPushError: "non-fast-forward"})
+		if !strings.Contains(got, "push-race retries exhausted after 3 attempt(s)") {
+			t.Errorf("message does not report the exhausted race:\n%s", got)
+		}
+		if !strings.Contains(got, "non-fast-forward") {
+			t.Errorf("message does not quote the last push error:\n%s", got)
+		}
+		if strings.Contains(got, "dirty working set") {
+			t.Errorf("a push race must not be described as a dirty working set:\n%s", got)
+		}
+	})
+
+	t.Run("dirty working set", func(t *testing.T) {
+		got := joined(&syncOutcome{Attempts: 3, LastRecomputeError: dirtyGraphErr().Error()})
+		if !strings.Contains(got, "dirty working set") {
+			t.Errorf("message does not report the dirty working set:\n%s", got)
+		}
+		if !strings.Contains(got, "uncommitted changes to issues/dependencies") {
+			t.Errorf("message does not say who is blocking the repair:\n%s", got)
+		}
+		if !strings.Contains(got, "transient") || !strings.Contains(got, "Nothing was pushed") {
+			t.Errorf("message does not report transience and that nothing shipped:\n%s", got)
+		}
+		// Sending this operator to look at another replica is the wrong machine.
+		if strings.Contains(got, "another replica kept winning the race") {
+			t.Errorf("dirty working set described as a push race:\n%s", got)
+		}
+	})
+}
+
+// --attempts 1 means "no retry budget": the dirty guard is still classified as
+// retryable, but there is nowhere to retry to, so it must reach the transient
+// exit rather than falling through to a hard error or a push.
+func TestRunSyncLoopDirtyGraphSingleAttempt(t *testing.T) {
+	r := &syncOpsRecorder{recomputeErrs: []error{dirtyGraphErr()}}
+	out, err := runSyncLoop(context.Background(), r.ops(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q", out.Status, syncStatusRetriesExhausted)
+	}
+	if r.recomputes != 1 || r.pushes != 0 {
+		t.Errorf("recomputes/pushes = %d/%d, want 1/0", r.recomputes, r.pushes)
+	}
+}
+
+// A cancelled context must win over the retry budget on the dirty path too,
+// so a ^C or a timer deadline is not swallowed by retries.
+func TestRunSyncLoopDirtyGraphHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &syncOpsRecorder{}
+	ops := r.ops()
+	inner := ops.recompute
+	ops.recompute = func(c context.Context) (int, error) {
+		cancel()
+		_, _ = inner(c)
+		return 0, dirtyGraphErr()
+	}
+	out, err := runSyncLoop(ctx, ops, defaultSyncAttempts)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if out.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1 (cancellation must beat the retry budget)", out.Attempts)
+	}
+}
+
+// A run whose pull merged but whose repair was blocked has moved local history
+// while leaving out.Pulled false. The halt report must not tell that operator
+// the run touched nothing.
+func TestSyncConflictMessageReportsABlockedRepair(t *testing.T) {
+	got := strings.Join(syncConflictMessage(&syncOutcome{
+		Conflicts:          []string{"issues"},
+		LastRecomputeError: dirtyGraphErr().Error(),
+	}), "\n")
+	if !strings.Contains(got, "blocked by a dirty working set") {
+		t.Errorf("message does not report the blocked repair:\n%s", got)
+	}
+	if !strings.Contains(got, "is NOT repaired") {
+		t.Errorf("message does not warn that is_blocked was left unrepaired:\n%s", got)
+	}
+	quiet := strings.Join(syncConflictMessage(&syncOutcome{Conflicts: []string{"issues"}}), "\n")
+	if strings.Contains(quiet, "blocked by a dirty working set") {
+		t.Errorf("a clean single-attempt halt mentions a blocked repair:\n%s", quiet)
 	}
 }
