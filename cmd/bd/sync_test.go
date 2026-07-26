@@ -35,12 +35,18 @@ type syncOpsRecorder struct {
 	// production shape for a store that cannot answer the question at all.
 	fingerprints    []string
 	fingerprintErrs []error
+	// mergeBlockers/mergeBlockersErrs script the positive constraint-violation
+	// hook, one entry per blocked attempt. Both empty leaves the hook NIL,
+	// mirroring fingerprints above.
+	mergeBlockers     []storage.MergeBlockers
+	mergeBlockersErrs []error
 
-	pulls            int
-	conflicts        int
-	recomputes       int
-	pushes           int
-	fingerprintCalls int
+	pulls              int
+	conflicts          int
+	recomputes         int
+	pushes             int
+	fingerprintCalls   int
+	mergeBlockersCalls int
 }
 
 func scriptedErr(script []error, call int) error {
@@ -71,8 +77,26 @@ func (r *syncOpsRecorder) ops() syncOps {
 			return r.fingerprints[call], nil
 		}
 	}
+	var blockers func(context.Context) (storage.MergeBlockers, error)
+	if len(r.mergeBlockers) > 0 || len(r.mergeBlockersErrs) > 0 {
+		blockers = func(context.Context) (storage.MergeBlockers, error) {
+			call := r.mergeBlockersCalls
+			r.mergeBlockersCalls++
+			if err := scriptedErr(r.mergeBlockersErrs, call); err != nil {
+				return storage.MergeBlockers{}, err
+			}
+			if len(r.mergeBlockers) == 0 {
+				return storage.MergeBlockers{}, nil
+			}
+			if call >= len(r.mergeBlockers) {
+				return r.mergeBlockers[len(r.mergeBlockers)-1], nil
+			}
+			return r.mergeBlockers[call], nil
+		}
+	}
 	return syncOps{
 		dirtyFingerprint: fingerprint,
+		mergeBlockers:    blockers,
 		pull: func(context.Context) ([]string, error) {
 			call := r.pulls
 			r.pulls++
@@ -981,6 +1005,113 @@ func TestRunSyncLoopDirtyGraphRetriesExhausted(t *testing.T) {
 	}
 }
 
+// The positive escalation this bead adds (wy-mhouc): a graph table dirty
+// because of a constraint violation no writer will ever commit is knowable on
+// the FIRST blocked attempt, from storage.MergeBlockerInspector — it must not
+// wait out syncStuckTicks the way the tick-count inference does.
+func TestRunSyncLoopConstraintViolationEscalatesOnAttemptOne(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs: []error{dirtyGraphErr()},
+		mergeBlockers: []storage.MergeBlockers{{
+			ConstraintViolations: []storage.ConstraintViolation{{Table: "issues", Count: 3}},
+		}},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), defaultSyncAttempts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusDirtyStuck {
+		t.Fatalf("status = %q, want %q", out.Status, syncStatusDirtyStuck)
+	}
+	if out.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1 (escalated on the first blocked attempt)", out.Attempts)
+	}
+	if r.recomputes != 1 {
+		t.Errorf("recomputes = %d, want 1 (no retry budget spent once escalated)", r.recomputes)
+	}
+	if r.pushes != 0 {
+		t.Errorf("pushes = %d, want 0", r.pushes)
+	}
+	if len(out.ConstraintViolations) != 1 || out.ConstraintViolations[0].Table != "issues" || out.ConstraintViolations[0].Count != 3 {
+		t.Errorf("ConstraintViolations = %+v, want [{issues 3}]", out.ConstraintViolations)
+	}
+}
+
+// No constraint violations on the graph tables means the existing tick-count
+// inference is unchanged: a single blocked attempt still just reports
+// retries-exhausted, not an immediate escalation.
+func TestRunSyncLoopNoConstraintViolationsLeavesTickInferenceUnchanged(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs: []error{dirtyGraphErr()},
+		mergeBlockers: []storage.MergeBlockers{{}},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q (no violations, so no positive escalation)", out.Status, syncStatusRetriesExhausted)
+	}
+	if len(out.ConstraintViolations) != 0 {
+		t.Errorf("ConstraintViolations = %+v, want none", out.ConstraintViolations)
+	}
+}
+
+// A constraint violation on some OTHER table (not one of the graph tables the
+// guard found dirty) must not escalate — it is evidence about a table this
+// sync's repair does not even read.
+func TestRunSyncLoopConstraintViolationOnUnrelatedTableDoesNotEscalate(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs: []error{dirtyGraphErr()},
+		mergeBlockers: []storage.MergeBlockers{{
+			ConstraintViolations: []storage.ConstraintViolation{{Table: "wisps", Count: 9}},
+		}},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q (violation is on a non-graph table)", out.Status, syncStatusRetriesExhausted)
+	}
+	if len(out.ConstraintViolations) != 0 {
+		t.Errorf("ConstraintViolations = %+v, want none", out.ConstraintViolations)
+	}
+}
+
+// A blockers-probe failure must never escalate: unavailable evidence is not
+// evidence of being stuck, exactly like the dirty-fingerprint hook's contract.
+func TestRunSyncLoopMergeBlockersProbeFailureDoesNotEscalate(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs:     []error{dirtyGraphErr()},
+		mergeBlockersErrs: []error{errors.New("connection refused")},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q (a probe failure must fall back to the transient exit)", out.Status, syncStatusRetriesExhausted)
+	}
+	if len(out.ConstraintViolations) != 0 {
+		t.Errorf("ConstraintViolations = %+v, want none", out.ConstraintViolations)
+	}
+}
+
+// A nil mergeBlockers hook (production shape for a store without
+// MergeBlockerInspector) must behave exactly like production did before this
+// bead: no escalation, ever.
+func TestRunSyncLoopNilMergeBlockersHookDoesNotEscalate(t *testing.T) {
+	r := &syncOpsRecorder{recomputeErrs: []error{dirtyGraphErr()}}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q", out.Status, syncStatusRetriesExhausted)
+	}
+}
+
 // A recompute failure that is NOT the dirty-graph guard can never converge by
 // retrying, so it must still halt the run immediately.
 func TestRunSyncLoopNonDirtyRecomputeErrorDoesNotRetry(t *testing.T) {
@@ -1879,6 +2010,33 @@ func TestSyncStuckMessage(t *testing.T) {
 	}
 	if !strings.Contains(got, "Resolve it by hand") {
 		t.Errorf("message does not give the operator a next step:\n%s", got)
+	}
+	if strings.Contains(got, "retry on the next tick") {
+		t.Errorf("stuck message still tells the operator to wait:\n%s", got)
+	}
+}
+
+// The positive (constraint-violation) branch names the violating table(s)
+// instead of a tick count, and must not claim a consecutive-run history it
+// never measured.
+func TestSyncStuckMessageConstraintViolations(t *testing.T) {
+	got := strings.Join(syncStuckMessage(&syncOutcome{
+		Status:               syncStatusDirtyStuck,
+		Attempts:             1,
+		LastRecomputeError:   dirtyGraphErr().Error(),
+		ConstraintViolations: []storage.ConstraintViolation{{Table: "issues", Count: 3}},
+	}), "\n")
+	if !strings.Contains(got, "constraint violations") {
+		t.Errorf("message does not name constraint violations as the cause:\n%s", got)
+	}
+	if !strings.Contains(got, "issues (3 row(s))") {
+		t.Errorf("message does not name the violating table and count:\n%s", got)
+	}
+	if !strings.Contains(got, "Resolve it by hand") {
+		t.Errorf("message does not give the operator a next step:\n%s", got)
+	}
+	if strings.Contains(got, "consecutive sync run(s)") {
+		t.Errorf("positive-evidence message must not claim a tick-count history:\n%s", got)
 	}
 	if strings.Contains(got, "retry on the next tick") {
 		t.Errorf("stuck message still tells the operator to wait:\n%s", got)

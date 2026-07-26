@@ -201,6 +201,15 @@ func isBlockedRecomputeGraphTable(table string) bool {
 	return false
 }
 
+// IsBlockedRecomputeGraphTable reports whether table is one of the graph
+// tables (issues, dependencies) the is_blocked recompute guard protects.
+// Exported so a caller correlating another diagnostic (e.g. constraint
+// violations) against dirty-guard state uses the same table set rather than
+// a second hand-maintained list (wy-mhouc).
+func IsBlockedRecomputeGraphTable(table string) bool {
+	return isBlockedRecomputeGraphTable(table)
+}
+
 func isDiffCommitMetadataColumn(column string) bool {
 	switch strings.ToLower(column) {
 	case "from_commit", "to_commit", "from_commit_date", "to_commit_date":

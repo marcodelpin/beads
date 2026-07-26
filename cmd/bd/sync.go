@@ -120,6 +120,12 @@ type syncOutcome struct {
 	// that exhausted their budget against this same fingerprint. Set by the
 	// caller from the persisted marker, not by the loop.
 	DirtyGraphStuckTicks int `json:"dirty_graph_stuck_ticks,omitempty"`
+	// ConstraintViolations names the graph-table (issues, dependencies)
+	// constraint violations that escalated this run straight to dirty-stuck
+	// (exit 4) on the attempt that found them, instead of waiting out
+	// syncStuckTicks. Empty means this run's dirty-stuck status, if any, came
+	// from the tick-count inference instead (wy-mhouc).
+	ConstraintViolations []storage.ConstraintViolation `json:"constraint_violations,omitempty"`
 }
 
 // syncTransient is one attempt's transient failure.
@@ -158,6 +164,14 @@ type syncOps struct {
 	// loop treats exactly like unavailable evidence — it never escalates on a
 	// question it could not ask.
 	dirtyFingerprint func(context.Context) (string, error)
+	// mergeBlockers reports schema conflicts, constraint violations, and
+	// merge state for the current working set (storage.MergeBlockerInspector).
+	// Used to tell a graph table stuck on constraint violations no writer
+	// will ever commit from a merely busy one, on the FIRST blocked attempt
+	// rather than waiting out syncStuckTicks. May be nil, which the loop
+	// treats exactly like a probe failure — it never escalates on a question
+	// it could not ask.
+	mergeBlockers func(context.Context) (storage.MergeBlockers, error)
 	// progress reports a step to the operator; may be nil.
 	progress func(format string, args ...interface{})
 }
@@ -325,6 +339,20 @@ func runSyncLoop(ctx context.Context, ops syncOps, maxAttempts int) (*syncOutcom
 			// returned — a run whose evidence is unavailable still retries and
 			// still reports the transient exit, exactly as before.
 			evidence.observe(ops.sample(ctx))
+
+			// Positive escalation (wy-mhouc): a graph table left dirty by
+			// constraint violations no writer will ever commit is knowable
+			// right now, from storage.MergeBlockerInspector, rather than
+			// waited out over syncStuckTicks consecutive ticks. A nil hook or
+			// a failed probe reports nothing — unavailable evidence must
+			// never escalate — so this only ever narrows, never replaces, the
+			// tick-based inference below.
+			if violations := graphConstraintViolations(ctx, ops); len(violations) > 0 {
+				out.Status = syncStatusDirtyStuck
+				out.ConstraintViolations = violations
+				ops.report("recompute-blocked: constraint violations on the dirty graph table(s) — escalating")
+				return out, nil
+			}
 			ops.report("recompute-blocked: working set dirty (concurrent writer) — re-pulling and retrying")
 			continue
 		}
@@ -471,6 +499,35 @@ func isRecomputeDirtyGraphErr(err error) bool {
 	return err != nil && errors.Is(err, issueops.ErrBlockedRecomputeDirtyGraph)
 }
 
+// graphConstraintViolations reports the constraint violations, if any,
+// outstanding on the graph tables (issues, dependencies) — the same table set
+// isRecomputeDirtyGraphErr just found dirty. It is what lets the loop tell a
+// table that is dirty because of a constraint violation no writer will ever
+// commit from one that is merely being written to right now: the former is
+// knowable positively, on the spot, from storage.MergeBlockerInspector,
+// instead of waited out over several ticks (wy-mhouc).
+//
+// A nil hook or a failed probe reports no violations. That is deliberate:
+// this only ever narrows an already-transient classification to a stronger
+// one, so unavailable evidence must fall back to "keep retrying", never
+// invent a violation it could not confirm.
+func graphConstraintViolations(ctx context.Context, ops syncOps) []storage.ConstraintViolation {
+	if ops.mergeBlockers == nil {
+		return nil
+	}
+	blockers, err := ops.mergeBlockers(ctx)
+	if err != nil {
+		return nil
+	}
+	var out []storage.ConstraintViolation
+	for _, v := range blockers.ConstraintViolations {
+		if issueops.IsBlockedRecomputeGraphTable(v.Table) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // bareNoRemotePattern matches Dolt's bare "no remote" wording. `bd dolt push`
 // and `bd dolt pull` classify only the "remote ... not found" phrasing, but a
 // default-remote fetch on a rig that never configured one fails with
@@ -578,10 +635,12 @@ shell:
 The repair in step 3 refuses to run while another writer has uncommitted changes
 to issues/dependencies. That is transient and not this sync's doing, so it is
 retried on the same budget as a push race rather than failing the run. A working
-set that is NOT transient — the same pending graph edits blocking every attempt
-of several consecutive runs, which is what constraint violations or an abandoned
-uncommitted edit look like — exits 4 instead, because no amount of retrying will
-ever publish and only an operator can clear it.
+set that is NOT transient exits 4 instead, because no amount of retrying will
+ever publish and only an operator can clear it. Two kinds of evidence say so:
+constraint violations on the dirty tables are detected positively and escalate
+on the very attempt that finds them; an abandoned uncommitted edit has no such
+positive signal, so it is only inferred once the same pending graph edits have
+blocked every attempt of several consecutive runs.
 
 Conflicts sync cannot resolve safely are NEVER auto-resolved: it halts before
 recomputing or pushing and exits 2, and repeated runs keep halting the same way
@@ -732,6 +791,7 @@ func runSyncCommand(cmd *cobra.Command, _ []string) error {
 		// working set rather than parsed out of the guard's message. Absent
 		// raw-SQL access the hook stays nil and the loop simply never escalates.
 		dirtyFingerprint: dirtyGraphFingerprintOp(st),
+		mergeBlockers:    mergeBlockersOp(st),
 		push: func(ctx context.Context) error {
 			if noPush {
 				return nil
@@ -801,6 +861,19 @@ func runSyncCommand(cmd *cobra.Command, _ []string) error {
 	default:
 		return nil
 	}
+}
+
+// mergeBlockersOp builds the loop's positive constraint-violation hook, or nil
+// when this store cannot answer the question — an unimplemented interface
+// must leave the detector silent, never guessing. Bound to the same st the
+// rest of ops closes over rather than the package's legacy store global,
+// which getStore() can diverge from once cmdCtx is in play.
+func mergeBlockersOp(st storage.DoltStorage) func(context.Context) (storage.MergeBlockers, error) {
+	inspector, ok := storage.UnwrapStore(st).(storage.MergeBlockerInspector)
+	if !ok {
+		return nil
+	}
+	return inspector.GetMergeBlockers
 }
 
 // dirtyGraphFingerprintOp builds the loop's dirty-graph evidence hook, or nil
@@ -966,10 +1039,34 @@ func syncMixedTransientNote(out *syncOutcome) []string {
 // constraint violations no writer will ever commit, an abandoned uncommitted
 // edit — reports the same "transient, retry on the next tick" forever, so no
 // tick ever publishes and nothing in the output ever changes to say so
-// (wy-wub2s). The claim being made here is narrow and evidence-backed: the
-// pending graph edits have been byte-identical across every attempt of the last
-// N runs, so this is a stuck table rather than a busy fleet.
+// (wy-wub2s). Two distinct kinds of evidence can drive this: out.ConstraintViolations
+// is a POSITIVE read, from storage.MergeBlockerInspector, naming exactly what
+// is stuck and why on the very attempt that found it (wy-mhouc); absent that,
+// out.DirtyGraphStuckTicks is the fallback INFERENCE — the pending graph edits
+// have been byte-identical across every attempt of the last N runs, so this is
+// a stuck table rather than a busy fleet, without knowing the specific cause.
 func syncStuckMessage(out *syncOutcome) []string {
+	if len(out.ConstraintViolations) > 0 {
+		lines := []string{
+			"Error: the is_blocked repair is blocked by constraint violations no writer will ever commit.",
+		}
+		for _, v := range out.ConstraintViolations {
+			lines = append(lines, fmt.Sprintf("  constraint violation: %s (%d row(s))", v.Table, v.Count))
+		}
+		if out.LastRecomputeError != "" {
+			lines = append(lines, fmt.Sprintf("  last recompute error: %s", out.LastRecomputeError))
+		}
+		lines = append(lines,
+			"A constraint violation is not something any commit resolves — the auto-repair path already",
+			"declined it, so retrying can never publish. Resolve it by hand, then the next tick syncs",
+			"normally:",
+			"  bd vc status                 # what is dirty",
+			"  bd conflicts list            # constraint violations / conflicts holding it dirty",
+			"  bd vc commit -m '...'        # commit the pending changes, if they are wanted",
+			"Nothing was pushed. This exit is deliberately distinct from exit 3 so a sync timer can page",
+			"instead of retrying forever.")
+		return append(lines, syncMixedTransientNote(out)...)
+	}
 	lines := []string{
 		fmt.Sprintf("Error: the is_blocked repair has been blocked by the SAME pending graph edits for %d consecutive sync run(s).", out.DirtyGraphStuckTicks),
 	}
