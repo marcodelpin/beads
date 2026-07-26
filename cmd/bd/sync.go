@@ -94,6 +94,13 @@ type syncOutcome struct {
 	// an exhausted run the one that survives names what the FINAL attempt
 	// actually failed on.
 	LastRecomputeError string `json:"last_recompute_error,omitempty"`
+	// DiscardedPullError records a genuine pull failure (transport, auth) that
+	// this run reports as a conflict instead, because live conflict rows from
+	// a DIFFERENT cause (e.g. another writer on a shared sql-server) were also
+	// found at the same instant. The conflict report is correct — the database
+	// really is conflicted — but attributing the halt to that conflict alone
+	// would hide a real transport error the operator also needs to see.
+	DiscardedPullError string `json:"discarded_pull_error,omitempty"`
 	// Transients is every transient failure this run hit, in attempt order.
 	// LastPushError/LastRecomputeError answer "what did the FINAL attempt fail
 	// on" — deliberately, since that is what the operator's next step depends
@@ -265,6 +272,15 @@ func runSyncLoop(ctx context.Context, ops syncOps, maxAttempts int) (*syncOutcom
 			// merge and restored the working set. Guessing either way sends the
 			// operator looking in the wrong place.
 			out.ConflictsLive = len(live) > 0
+			// pullErr only describes the conflict itself when the merge
+			// captured it (merged is non-empty). If merged is empty, this
+			// error is unrelated to the live conflict rows — e.g. a transport
+			// failure racing another replica's already-conflicted state on a
+			// shared sql-server — and returning nil below would silently
+			// drop it. Surface it instead of discarding it.
+			if pullErr != nil && len(merged) == 0 {
+				out.DiscardedPullError = pullErr.Error()
+			}
 			return out, nil
 		}
 		if pullErr != nil {
@@ -704,7 +720,12 @@ func runSyncCommand(cmd *cobra.Command, _ []string) error {
 			if jsonOutput {
 				return outputJSON(&syncOutcome{Status: syncStatusNoRemote})
 			}
-			printNoRemoteGuidance()
+			// This is the benign case, not an error -q means to keep: a solo
+			// rig with no remote configured at all should not print ~15 lines
+			// of onboarding guidance every tick of an unattended timer.
+			if !isQuiet() {
+				printNoRemoteGuidance()
+			}
 			return nil
 		}
 		exitErr := HandleErrorRespectJSON("sync failed: %v", err)
@@ -795,18 +816,26 @@ func syncConflictMessage(out *syncOutcome) []string {
 			"This replica was ALREADY in a conflicted state before this run: the conflict rows",
 			"above are live in the working set, left by an earlier halted sync or a hand-run",
 			"merge. Nothing was pulled, merged, or pushed this run. Resolve the live conflict",
-			"before sync can make progress — Dolt refuses to merge over an unresolved one.")
+			"before sync can make progress — Dolt refuses to merge over an unresolved one.",
+			"Inspect with: bd conflicts list / bd conflicts show",
+			conflictsResolveHint)
 	case out.ConflictsLive:
 		lines = append(lines,
 			"The conflict rows above are LIVE in the working set — this pull route leaves them",
 			"in place for you rather than aborting. The database is conflicted right now, and",
 			"Dolt will refuse to merge over it, so every later sync halts here until you resolve",
-			"it. Nothing was pushed.")
+			"it. Nothing was pushed.",
+			"Inspect with: bd conflicts list / bd conflicts show",
+			conflictsResolveHint)
 	default:
 		lines = append(lines,
 			"The conflicted merge was aborted and the working set restored, so no local work was",
 			"lost — and sync will keep halting here, unchanged, until an operator resolves the",
-			"divergence between this replica and the remote. Nothing is lost by waiting.")
+			"divergence between this replica and the remote. Nothing is lost by waiting.",
+			"'bd conflicts list' will show nothing right now — this pull route restores the working",
+			"set instead of leaving conflicts live for it. The same conflict recurs on every retry",
+			"until the two histories are reconciled by hand (see 'bd vc merge --help' for a route",
+			"that leaves conflicts live and resolvable instead of aborting).")
 	}
 
 	// Second: did anything at all happen before the halt? Only reported when
@@ -826,6 +855,14 @@ func syncConflictMessage(out *syncOutcome) []string {
 			"Note: an earlier attempt in this run completed its pull but its is_blocked repair was",
 			"blocked by a dirty working set, so it retried. Anything that pull merged is in the local",
 			"database, is NOT repaired, and has NOT been published.")
+	}
+	// The conflict rows above are real, but this run ALSO hit a pull error
+	// unrelated to them — surfacing only the conflict would hide it.
+	if out.DiscardedPullError != "" {
+		lines = append(lines,
+			"Note: this run's pull also failed with an error unrelated to the conflict above:",
+			fmt.Sprintf("  pull error: %s", out.DiscardedPullError),
+			"That failure is reported here only — resolving the conflict will not fix it.")
 	}
 	return lines
 }
@@ -1030,6 +1067,13 @@ func printSyncOutcome(out *syncOutcome, noPush bool) {
 			fmt.Fprintln(os.Stderr, line)
 		}
 	default:
+		// The success path is exactly the non-essential output -q exists to
+		// silence — this verb's whole point is running unattended on a short
+		// timer. The conflict and retries-exhausted branches above are NOT
+		// gated: -q means "errors only", and those are the errors.
+		if isQuiet() {
+			return
+		}
 		if out.RowsCorrected > 0 {
 			fmt.Printf("Recomputed is_blocked: %d row(s) corrected.\n", out.RowsCorrected)
 		}
