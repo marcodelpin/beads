@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.1.1] - 2026-07-26
+## [1.1.2] - 2026-07-26
 
-Hotfix release cut from v1.1.0. If `bd migrate` on 1.1.0 aborted with
+Hotfix release cut from v1.1.0. (There is no 1.1.1 release: its tag was cut
+but the release pipeline's package gate failed on a stale MCP lockfile before
+publishing anything, and the version number was burned rather than moving the
+tag.) If `bd migrate` on 1.1.0 aborted with
 `rekey aux row ids: <table>: ... invalid hash length` and the database then
 refused to open, this release lets the migration complete.
 
