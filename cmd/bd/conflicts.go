@@ -382,13 +382,15 @@ func commitMergeResolution(ctx context.Context, msg, preHead string) error {
 		return fmt.Errorf("commit failed: %w", err)
 	}
 	// Same unwrap rule as conflictInspector: RecomputeBlockedAfterMerge lives
-	// on the concrete Dolt store, not on DoltStorage.
-	if rs, ok := storage.UnwrapStore(store).(interface {
-		RecomputeBlockedAfterMerge(ctx context.Context, fromCommit string) error
-	}); ok {
+	// on the concrete Dolt store, not on DoltStorage. Route through the shared
+	// helper (cmd/bd/vc.go) so the package has one declaration of the optional
+	// interface, and never skip silently (bd vc merge's else branch, wy-163oy).
+	if rs, ok := blockedAfterMergeRecomputerFor(store); ok {
 		if err := rs.RecomputeBlockedAfterMerge(ctx, preHead); err != nil {
 			return fmt.Errorf("is_blocked recompute failed: %w", err)
 		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: storage backend %T cannot recompute is_blocked after a merge; 'bd ready' may be stale until 'bd recompute-blocked' runs\n", storage.UnwrapStore(store))
 	}
 	// The store's merge-conclusion path can no-op silently (an unreadable
 	// dolt_merge_status degrades to "nothing to commit"), and reporting
