@@ -124,6 +124,28 @@ var (
 	commandSpan oteltrace.Span
 )
 
+// skipStoreAnnotation, when set to "1" on a command (or any of its ancestors),
+// makes bd skip database/store initialization for that command — the
+// annotation-based equivalent of listing the command name in noDbCommands. It
+// lets commands defined in other files or build-tagged variants opt out of the
+// store gate locally, without editing the central noDbCommands list.
+const skipStoreAnnotation = "bd:skip_store"
+
+// commandOptsOutOfStore reports whether cmd or any of its ancestors carries the
+// skipStoreAnnotation set to "1". The whole ancestor chain is walked, so
+// annotating a command exempts that command and every subcommand beneath it.
+// (This is broader than the noDbCommands list, which only matches a command
+// name or its direct parent — annotate deliberately, on the specific command
+// you want to skip the store.)
+func commandOptsOutOfStore(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Annotations[skipStoreAnnotation] == "1" {
+			return true
+		}
+	}
+	return false
+}
+
 // readOnlyCommands lists commands that only read from the database.
 // These commands open the store in read-only mode. See GH#804.
 var readOnlyCommands = map[string]bool{
@@ -883,6 +905,12 @@ var rootCmd = &cobra.Command{
 		// GH#1093: Check noDbCommands BEFORE expensive operations
 		// to avoid spawning git subprocesses for simple commands
 		// like "bd version" that don't need database access.
+		//
+		// A command can also opt out of store init by setting the
+		// skipStoreAnnotation on its Command literal instead of being listed
+		// here (see commandOptsOutOfStore) — useful for commands defined in
+		// other files or build-tagged variants that can't edit this list. The
+		// "doctor" command uses that seam and so is intentionally absent below.
 		noDbCommands := []string{
 			"__complete",       // Cobra's internal completion command (shell completions work without db)
 			"__completeNoDesc", // Cobra's completion without descriptions (used by fish)
@@ -892,7 +920,7 @@ var rootCmd = &cobra.Command{
 			"context", // reads config files directly, does not need DB open
 			"codex-hook",
 			"cursor-hook", // shells out to `bd prime`; never opens the store itself
-			"doctor",
+			// "doctor" opts out via skipStoreAnnotation on its Command literal.
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",
 			"formula", // parser-only subcommands; add a store-needed guard before adding DB-backed formula subcommands
@@ -955,6 +983,15 @@ var rootCmd = &cobra.Command{
 
 		// Also skip for --version flag on root command (cmdName would be "bd")
 		if v, _ := cmd.Flags().GetBool("version"); v {
+			skipsStoreInit = true
+		}
+
+		// A command may also opt out of store init by declaring the
+		// bd:skip_store annotation (see commandOptsOutOfStore), instead of being
+		// added to the noDbCommands list above. Commands defined in other files
+		// or build-tagged variants use this to exempt themselves without editing
+		// the central list.
+		if commandOptsOutOfStore(cmd) {
 			skipsStoreInit = true
 		}
 
