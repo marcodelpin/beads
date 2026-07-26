@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-26
+
+Hotfix release cut from v1.1.0. If `bd migrate` on 1.1.0 aborted with
+`rekey aux row ids: <table>: ... invalid hash length` and the database then
+refused to open, this release lets the migration complete.
+
+### Fixed
+
+- **The v53 aux row re-key survives dolt#11131 encoding drift.** On storage
+  affected by the upstream Dolt adaptive-encoding bug, reading the drifted
+  cells panics (`invalid hash length: 19`), which aborted the migration and
+  left the database unopenable under 1.1.0. The re-key now skips such a
+  table with a warning, records it in a clone-local drift record
+  (`aux_row_rekey_drifted` in `local_metadata`), and completes the
+  migration; recorded tables are retried on later migration passes and are
+  exempted from the changed-signature dirty-table guard so the retry cannot
+  re-brick the database
+  ([#4380](https://github.com/gastownhall/beads/issues/4380)).
+
 ## [1.1.0] - 2026-07-04
 
 First stable release of the 1.1.0 line. It consolidates everything from
