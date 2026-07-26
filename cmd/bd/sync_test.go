@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
@@ -24,11 +27,17 @@ type syncOpsRecorder struct {
 	recomputeVals []int
 	recomputeErrs []error
 	pushErrs      []error
+	// fingerprints/fingerprintErrs script the dirty-graph evidence hook, one
+	// entry per blocked attempt. Both empty leaves the hook NIL, which is the
+	// production shape for a store that cannot answer the question at all.
+	fingerprints    []string
+	fingerprintErrs []error
 
-	pulls      int
-	conflicts  int
-	recomputes int
-	pushes     int
+	pulls            int
+	conflicts        int
+	recomputes       int
+	pushes           int
+	fingerprintCalls int
 }
 
 func scriptedErr(script []error, call int) error {
@@ -42,7 +51,25 @@ func scriptedErr(script []error, call int) error {
 }
 
 func (r *syncOpsRecorder) ops() syncOps {
+	var fingerprint func(context.Context) (string, error)
+	if len(r.fingerprints) > 0 || len(r.fingerprintErrs) > 0 {
+		fingerprint = func(context.Context) (string, error) {
+			call := r.fingerprintCalls
+			r.fingerprintCalls++
+			if err := scriptedErr(r.fingerprintErrs, call); err != nil {
+				return "", err
+			}
+			if len(r.fingerprints) == 0 {
+				return "", nil
+			}
+			if call >= len(r.fingerprints) {
+				return r.fingerprints[len(r.fingerprints)-1], nil
+			}
+			return r.fingerprints[call], nil
+		}
+	}
 	return syncOps{
+		dirtyFingerprint: fingerprint,
 		pull: func(context.Context) ([]string, error) {
 			call := r.pulls
 			r.pulls++
@@ -762,6 +789,9 @@ func TestSyncExitCodesArePinned(t *testing.T) {
 	if ExitSyncRetriesExhausted != 3 {
 		t.Errorf("ExitSyncRetriesExhausted = %d, want 3", ExitSyncRetriesExhausted)
 	}
+	if ExitSyncDirtyStuck != 4 {
+		t.Errorf("ExitSyncDirtyStuck = %d, want 4", ExitSyncDirtyStuck)
+	}
 }
 
 // dirtyGraphErr is the guard's real error shape: the sentinel wrapped with the
@@ -1010,5 +1040,295 @@ func TestSyncConflictMessageReportsABlockedRepair(t *testing.T) {
 	quiet := strings.Join(syncConflictMessage(&syncOutcome{Conflicts: []string{"issues"}}), "\n")
 	if strings.Contains(quiet, "blocked by a dirty working set") {
 		t.Errorf("a clean single-attempt halt mentions a blocked repair:\n%s", quiet)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wy-wub2s: telling a STUCK working set from a BUSY one, and reporting a run
+// that fought more than one transient condition.
+// ---------------------------------------------------------------------------
+
+// Every blocked attempt seeing byte-identical pending edits is the evidence the
+// cross-tick detector compares. The loop reports it; it does not itself decide
+// anything is wrong.
+func TestRunSyncLoopFoldsIdenticalDirtyEvidence(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs: []error{dirtyGraphErr()},
+		fingerprints:  []string{"issues:aaa"},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q (the loop never escalates on its own)", out.Status, syncStatusRetriesExhausted)
+	}
+	if out.DirtyGraphFingerprint != "issues:aaa" {
+		t.Errorf("DirtyGraphFingerprint = %q, want %q", out.DirtyGraphFingerprint, "issues:aaa")
+	}
+	if r.fingerprintCalls != 3 {
+		t.Errorf("fingerprint samples = %d, want 3 (one per blocked attempt)", r.fingerprintCalls)
+	}
+}
+
+// A working set that visibly moves between attempts is a BUSY fleet. Reporting
+// a fingerprint for it would let the cross-tick detector escalate contention as
+// a wedge, so the run must prove nothing.
+func TestRunSyncLoopMovingDirtyEvidenceProvesNothing(t *testing.T) {
+	cases := []struct {
+		name            string
+		fingerprints    []string
+		fingerprintErrs []error
+	}{
+		{name: "dirty set changed between attempts", fingerprints: []string{"issues:aaa", "issues:bbb", "issues:aaa"}},
+		{name: "evidence unavailable", fingerprintErrs: []error{errors.New("dolt_diff unsupported")}},
+		{
+			name:         "sampled clean: the other writer committed after the guard fired",
+			fingerprints: []string{""},
+		},
+		{
+			name:         "one unavailable sample disqualifies the run",
+			fingerprints: []string{"issues:aaa", "issues:aaa", "issues:aaa"},
+			// The middle sample fails, so the attempts either side cannot be
+			// claimed to be identical to it.
+			fingerprintErrs: []error{nil, errors.New("read timeout"), nil},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &syncOpsRecorder{
+				recomputeErrs:   []error{dirtyGraphErr()},
+				fingerprints:    tc.fingerprints,
+				fingerprintErrs: tc.fingerprintErrs,
+			}
+			out, err := runSyncLoop(context.Background(), r.ops(), 3)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.DirtyGraphFingerprint != "" {
+				t.Errorf("DirtyGraphFingerprint = %q, want empty", out.DirtyGraphFingerprint)
+			}
+		})
+	}
+}
+
+// A store with no way to answer the question leaves the hook nil. That must be
+// treated as unavailable evidence, not as "nothing changed".
+func TestRunSyncLoopWithoutEvidenceHookNeverEscalates(t *testing.T) {
+	r := &syncOpsRecorder{recomputeErrs: []error{dirtyGraphErr()}}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.DirtyGraphFingerprint != "" {
+		t.Errorf("DirtyGraphFingerprint = %q, want empty with no evidence hook", out.DirtyGraphFingerprint)
+	}
+	if _, stuck := classifyDirtyProgress(out, &syncState{StuckTicks: 99}, time.Now()); stuck {
+		t.Error("escalated with no evidence at all")
+	}
+}
+
+// A repair that succeeds is the working set demonstrably advancing, so earlier
+// blocked attempts in the same run must not leave stuck-looking evidence behind
+// for a later push-race exhaustion to inherit.
+func TestRunSyncLoopSuccessfulRepairDropsDirtyEvidence(t *testing.T) {
+	r := &syncOpsRecorder{
+		recomputeErrs: []error{dirtyGraphErr(), nil},
+		pushErrs:      []error{raceErr()},
+		fingerprints:  []string{"issues:aaa"},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != syncStatusRetriesExhausted {
+		t.Fatalf("status = %q, want %q", out.Status, syncStatusRetriesExhausted)
+	}
+	if out.DirtyGraphFingerprint != "" {
+		t.Errorf("DirtyGraphFingerprint = %q, want empty (the repair ran, so the dirt cleared)", out.DirtyGraphFingerprint)
+	}
+}
+
+// The mixed-history record (F7/F8): LastPushError/LastRecomputeError still name
+// only the final attempt, and Transients is where "what did this run fight"
+// lives.
+func TestRunSyncLoopRecordsEveryTransient(t *testing.T) {
+	r := &syncOpsRecorder{
+		pushErrs:      []error{raceErr()},
+		recomputeErrs: []error{nil, dirtyGraphErr()},
+	}
+	out, err := runSyncLoop(context.Background(), r.ops(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Transients) != 2 {
+		t.Fatalf("Transients = %+v, want two entries", out.Transients)
+	}
+	if out.Transients[0].Kind != syncTransientPushRace || out.Transients[0].Attempt != 1 {
+		t.Errorf("first transient = %+v, want a push race on attempt 1", out.Transients[0])
+	}
+	if out.Transients[1].Kind != syncTransientDirtyGraph || out.Transients[1].Attempt != 2 {
+		t.Errorf("second transient = %+v, want a dirty graph on attempt 2", out.Transients[1])
+	}
+	if out.Transients[0].Error == "" || out.Transients[1].Error == "" {
+		t.Error("transients must quote the error each attempt failed on")
+	}
+	// The pre-existing discriminator is unchanged: the final attempt only.
+	if out.LastRecomputeError == "" || out.LastPushError != "" {
+		t.Errorf("Last*Error = %q/%q, want only the final attempt's failure",
+			out.LastPushError, out.LastRecomputeError)
+	}
+	if !out.sawTransient(syncTransientPushRace) || !out.sawTransient(syncTransientDirtyGraph) {
+		t.Error("sawTransient does not report both conditions")
+	}
+}
+
+func TestClassifyDirtyProgress(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	exhausted := func() *syncOutcome {
+		return &syncOutcome{
+			Status:                syncStatusRetriesExhausted,
+			LastRecomputeError:    dirtyGraphErr().Error(),
+			DirtyGraphFingerprint: "issues:aaa",
+		}
+	}
+
+	t.Run("first sighting arms the marker without escalating", func(t *testing.T) {
+		next, stuck := classifyDirtyProgress(exhausted(), &syncState{}, now)
+		if stuck {
+			t.Error("escalated on the first sighting — one run cannot tell stuck from busy")
+		}
+		if next.StuckTicks != 1 || next.DirtyGraphFingerprint != "issues:aaa" {
+			t.Errorf("next = %+v, want the fingerprint at 1 tick", next)
+		}
+		if !next.FirstSeen.Equal(now) {
+			t.Errorf("FirstSeen = %v, want %v", next.FirstSeen, now)
+		}
+	})
+
+	t.Run("escalates when the same evidence survives the threshold", func(t *testing.T) {
+		first := now.Add(-10 * time.Minute)
+		prev := &syncState{DirtyGraphFingerprint: "issues:aaa", StuckTicks: syncStuckTicks - 1, FirstSeen: first}
+		next, stuck := classifyDirtyProgress(exhausted(), prev, now)
+		if !stuck {
+			t.Fatalf("did not escalate at %d consecutive runs", next.StuckTicks)
+		}
+		if next.StuckTicks != syncStuckTicks {
+			t.Errorf("StuckTicks = %d, want %d", next.StuckTicks, syncStuckTicks)
+		}
+		// The operator wants to know how long this has been wedged, so the
+		// first sighting must survive the increments.
+		if !next.FirstSeen.Equal(first) {
+			t.Errorf("FirstSeen = %v, want the original sighting %v", next.FirstSeen, first)
+		}
+	})
+
+	t.Run("different pending edits reset the count", func(t *testing.T) {
+		prev := &syncState{DirtyGraphFingerprint: "issues:bbb", StuckTicks: syncStuckTicks + 5}
+		next, stuck := classifyDirtyProgress(exhausted(), prev, now)
+		if stuck {
+			t.Error("escalated across a CHANGED dirty set — that is a busy fleet, not a wedge")
+		}
+		if next.StuckTicks != 1 {
+			t.Errorf("StuckTicks = %d, want 1", next.StuckTicks)
+		}
+	})
+
+	t.Run("any non-dirty outcome clears the marker", func(t *testing.T) {
+		armed := &syncState{DirtyGraphFingerprint: "issues:aaa", StuckTicks: syncStuckTicks - 1}
+		for _, out := range []*syncOutcome{
+			{Status: syncStatusOK, Pushed: true},
+			{Status: syncStatusConflict, Conflicts: []string{"issues"}},
+			// Exhausted, but on a push race: this replica is not wedged on
+			// pending graph edits.
+			{Status: syncStatusRetriesExhausted, LastPushError: "non-fast-forward", DirtyGraphFingerprint: "issues:aaa"},
+			// Exhausted on dirt, but with no comparable evidence.
+			{Status: syncStatusRetriesExhausted, LastRecomputeError: dirtyGraphErr().Error()},
+		} {
+			next, stuck := classifyDirtyProgress(out, armed, now)
+			if stuck {
+				t.Errorf("status %q escalated", out.Status)
+			}
+			if next.DirtyGraphFingerprint != "" || next.StuckTicks != 0 {
+				t.Errorf("status %q left marker %+v, want it cleared", out.Status, next)
+			}
+		}
+	})
+}
+
+// The stuck report is the one that must NOT say "transient, retry on the next
+// tick": that is the wording an operator has already been ignoring for however
+// many ticks it took to get here.
+func TestSyncStuckMessage(t *testing.T) {
+	got := strings.Join(syncStuckMessage(&syncOutcome{
+		Status:                syncStatusDirtyStuck,
+		Attempts:              3,
+		DirtyGraphStuckTicks:  4,
+		LastRecomputeError:    dirtyGraphErr().Error(),
+		DirtyGraphFingerprint: "issues:aaa",
+	}), "\n")
+	if !strings.Contains(got, "4 consecutive sync run(s)") {
+		t.Errorf("message does not report how long this has been wedged:\n%s", got)
+	}
+	if !strings.Contains(got, "Nothing is advancing") {
+		t.Errorf("message does not state the evidence:\n%s", got)
+	}
+	if !strings.Contains(got, "Resolve it by hand") {
+		t.Errorf("message does not give the operator a next step:\n%s", got)
+	}
+	if strings.Contains(got, "retry on the next tick") {
+		t.Errorf("stuck message still tells the operator to wait:\n%s", got)
+	}
+}
+
+func TestSyncMixedTransientNote(t *testing.T) {
+	mixed := &syncOutcome{
+		Attempts:           2,
+		LastRecomputeError: dirtyGraphErr().Error(),
+		Transients: []syncTransient{
+			{Attempt: 1, Kind: syncTransientPushRace, Error: "non-fast-forward"},
+			{Attempt: 2, Kind: syncTransientDirtyGraph, Error: dirtyGraphErr().Error()},
+		},
+	}
+	got := strings.Join(syncRetriesExhaustedMessage(mixed), "\n")
+	if !strings.Contains(got, "BOTH transient conditions") {
+		t.Errorf("mixed run is not reported as mixed:\n%s", got)
+	}
+	// A single-condition run must stay short: the note is only worth its lines
+	// when the headline is genuinely incomplete.
+	single := &syncOutcome{
+		Attempts:           2,
+		LastRecomputeError: dirtyGraphErr().Error(),
+		Transients: []syncTransient{
+			{Attempt: 1, Kind: syncTransientDirtyGraph, Error: dirtyGraphErr().Error()},
+		},
+	}
+	if quiet := strings.Join(syncRetriesExhaustedMessage(single), "\n"); strings.Contains(quiet, "BOTH") {
+		t.Errorf("single-condition run claims a mixed history:\n%s", quiet)
+	}
+}
+
+// The marker round-trips through the same .beads scratch file the next tick
+// reads, and a cleared marker leaves no stale file behind.
+func TestSyncStatePersistence(t *testing.T) {
+	dir := t.TempDir()
+	if got := loadSyncState(dir); got.DirtyGraphFingerprint != "" || got.StuckTicks != 0 {
+		t.Fatalf("missing marker loaded as %+v, want zero", got)
+	}
+	saveSyncState(dir, &syncState{DirtyGraphFingerprint: "issues:aaa", StuckTicks: 2, FirstSeen: time.Unix(1700000000, 0)})
+	got := loadSyncState(dir)
+	if got.DirtyGraphFingerprint != "issues:aaa" || got.StuckTicks != 2 {
+		t.Fatalf("round-tripped marker = %+v", got)
+	}
+	saveSyncState(dir, &syncState{})
+	if _, err := os.Stat(filepath.Join(dir, syncStateFile)); !os.IsNotExist(err) {
+		t.Errorf("cleared marker left a file behind (stat err = %v)", err)
+	}
+	// A corrupt marker must degrade to "no evidence", never fail the sync.
+	if err := os.WriteFile(filepath.Join(dir, syncStateFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadSyncState(dir); got.DirtyGraphFingerprint != "" {
+		t.Errorf("corrupt marker loaded as %+v, want zero", got)
 	}
 }
