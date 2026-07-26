@@ -43,7 +43,11 @@ func testTempDir(pattern string) (string, error) {
 // This is the suite most likely to leak — most e2e tests here run a real
 // `bd` binary against a `.beads` dir under testTempRoot with auto-start
 // enabled. See gastownhall/beads mybd-q6cz.
-func runTestsAndSweep(m *testing.M) int {
+type testRunner interface {
+	Run() int
+}
+
+func runTestsAndSweep(m testRunner) int {
 	code := m.Run()
 	doltserver.SweepOrphanedTestServers(testTempRoot)
 	return code
