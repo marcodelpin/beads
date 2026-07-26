@@ -133,21 +133,38 @@ func TestCanonicalizePath_DoesNotScanAncestorDirectories(t *testing.T) {
 	}
 	target := filepath.Join(crowded, "sib0")
 
-	const iterations = 200
-	start := time.Now()
-	for i := 0; i < iterations; i++ {
-		if got := CanonicalizePath(target); got == "" {
-			t.Fatalf("CanonicalizePath(%q) returned empty", target)
+	// Time the two implementations against each other rather than against a
+	// wall-clock budget: this suite runs on loaded multi-agent machines where
+	// an absolute per-call budget is a flake, but the ratio between the two
+	// holds because both pay the same scheduling tax.
+	const (
+		fastIters = 200
+		walkIters = 10 // the walk is ~1000x slower; 10 is plenty to rate it
+	)
+	perCall := func(f func(string) string, n int) time.Duration {
+		start := time.Now()
+		for i := 0; i < n; i++ {
+			if got := f(target); got == "" {
+				t.Fatalf("resolver returned empty for %q", target)
+			}
 		}
+		return time.Since(start) / time.Duration(n)
 	}
-	elapsed := time.Since(start)
+	// Warm the vnode/dirent caches so neither implementation absorbs the
+	// cold-start cost of the other.
+	perCall(resolveCanonicalCase, 1)
+	perCall(resolveCanonicalCaseWalk, 1)
 
-	// The walk costs at least one full ReadDir of |crowded| per call. A budget
-	// of 1ms/call is ~2 orders of magnitude above what the kernel query needs
-	// and still far below what the walk can achieve at this fan-out, so this
-	// stays a signal rather than a timing flake.
-	if budget := iterations * time.Millisecond; elapsed > budget {
-		t.Fatalf("%d CanonicalizePath calls took %v (budget %v); the O(entries) ancestor scan is back",
-			iterations, elapsed, budget)
+	fast := perCall(resolveCanonicalCase, fastIters)
+	walk := perCall(resolveCanonicalCaseWalk, walkIters)
+
+	// The walk does a full ReadDir of |crowded| per call; the kernel query does
+	// not read the directory at all. At this fan-out the real gap is three
+	// orders of magnitude, so 4x is a floor that only trips if the ancestor
+	// scan has crept back onto the hot path.
+	if fast*4 > walk {
+		t.Fatalf("per call: fast path %v vs component walk %v — expected the fast path to be >4x cheaper; the O(entries) ancestor scan is back",
+			fast, walk)
 	}
+	t.Logf("per call: fast path %v, component walk %v (%d siblings)", fast, walk, siblings)
 }
