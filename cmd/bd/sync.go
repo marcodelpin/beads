@@ -602,6 +602,11 @@ Exit codes (a sync timer can branch on these without parsing output):
      blocked every attempt of several consecutive runs — nothing pushed, and no
      later tick will publish until an operator clears it
 
+On the default-remote path, a rig with no Dolt remote yet but a git origin
+configured adopts that origin as its Dolt remote first, exactly as 'bd dolt push'
+does — so 'bd sync' works as a first-time federation bring-up step instead of
+reporting 'no remote' and doing nothing. Passing --remote never adopts anything.
+
 This is not 'bd federation sync', which syncs with named peer towns and takes a
 --strategy ours|theirs to resolve whatever conflicts it meets. 'bd sync' targets
 the configured remote and has no such switch: what it cannot settle, it halts on.
@@ -621,6 +626,15 @@ func init() {
 	syncCmd.Flags().Int("attempts", defaultSyncAttempts, "Maximum pull/push attempts before reporting a transient retry exhaustion (exit 3)")
 	rootCmd.AddCommand(syncCmd)
 }
+
+// syncAdoptGitOrigin is runSyncCommand's git-origin adoption step, held in a
+// variable purely as a test seam. Adoption's own machinery — resolving the
+// active workspace, shelling out to `git remote get-url origin`, writing
+// sync.remote into config.yaml and committing it — is exercised against the
+// real thing in dolt_test.go; letting it run for real from a runSyncCommand
+// unit test would mutate whatever repo the tests happen to be run from. The
+// production binding is pinned by TestSyncAdoptGitOriginIsWiredToAdoption.
+var syncAdoptGitOrigin = adoptGitOriginRemoteForPush
 
 func runSyncCommand(cmd *cobra.Command, _ []string) error {
 	if usesProxiedServer() {
@@ -657,6 +671,36 @@ func runSyncCommand(cmd *cobra.Command, _ []string) error {
 	recomputer, ok := storage.UnwrapStore(st).(storage.BlockedRecomputer)
 	if !ok {
 		return HandleErrorRespectJSON("storage backend does not support is_blocked recompute")
+	}
+
+	// Mirror what `bd dolt push` does before it pushes (dolt.go): a rig whose
+	// git origin implies a Dolt remote is not a remote-less rig, so adopt that
+	// remote before the loop runs.
+	//
+	// Without this the two verbs disagree about the same rig. On a first-time
+	// federation rig — git origin configured, no Dolt remote registered yet —
+	// `bd dolt push` adopts origin and pushes, while `bd sync` pulls, fails with
+	// Dolt's bare no-remote wording, and the confirmed-no-remote gate below
+	// agrees the rig has none (nothing ever adopted it), so bring-up by `bd sync`
+	// reports status=no-remote and exits 0, silently doing nothing (wy-gpzg7).
+	//
+	// Default-remote path only: an explicit --remote names a remote the operator
+	// expects to already exist, and inventing a different one there would sync
+	// somewhere they never asked for — the same reason the no-remote exit-0 gate
+	// is default-remote-only. Unlike `bd dolt push` this runs even under
+	// no-push, because sync's *pull* needs the remote as much as the push does;
+	// a no-push rig is a local-only mirror, not a rig forbidden to learn where it
+	// mirrors from. On a rig that already has a remote — listed in dolt_remotes
+	// or persisted on disk — adoption is a hasConfiguredRemote no-op, so the
+	// steady-state cost is the one listing the error path already paid.
+	if remote == "" {
+		adopted, adoptErr := syncAdoptGitOrigin(rootCtx, st)
+		if adoptErr != nil {
+			return HandleErrorRespectJSON("sync failed: adopting git origin as Dolt remote: %v", adoptErr)
+		}
+		if adopted && !jsonOutput && !isQuiet() {
+			fmt.Println("sync: configured Dolt remote origin from git origin.")
+		}
 	}
 
 	// A no-push rig still wants the pull and the recompute; only the publish

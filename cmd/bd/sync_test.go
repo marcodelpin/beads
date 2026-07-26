@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1209,6 +1210,14 @@ func (f *fakeSyncStore) ListRemotes(context.Context) ([]storage.RemoteInfo, erro
 // and the globals runSyncCommand reads directly (rootCtx, jsonOutput), and
 // restores everything on cleanup. Cannot be parallel: modifies process
 // globals.
+//
+// It also stubs syncAdoptGitOrigin to the "nothing to adopt" answer. That is
+// the default every pre-existing case here means (a solo rig with no git origin
+// to adopt), and it is load-bearing safety: the real adoption resolves the
+// active workspace, shells out to git, and can write and COMMIT
+// .beads/config.yaml, so leaving it live would let a unit test mutate whatever
+// repo the suite is run from. A case that is about adoption reassigns the seam
+// after calling this.
 func setupSyncCommandTest(t *testing.T, fake *fakeSyncStore) {
 	t.Helper()
 	saveAndRestoreGlobals(t)
@@ -1217,13 +1226,16 @@ func setupSyncCommandTest(t *testing.T, fake *fakeSyncStore) {
 	oldJSON := jsonOutput
 	oldCtx := rootCtx
 	oldQuiet := quietFlag
+	oldAdopt := syncAdoptGitOrigin
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		rootCtx = oldCtx
 		quietFlag = oldQuiet
+		syncAdoptGitOrigin = oldAdopt
 		_ = syncCmd.Flags().Set("attempts", fmt.Sprintf("%d", defaultSyncAttempts))
 		_ = syncCmd.Flags().Set("remote", "")
 	})
+	syncAdoptGitOrigin = func(context.Context, storage.DoltStorage) (bool, error) { return false, nil }
 
 	store = fake
 	rootCtx = context.Background()
@@ -1484,6 +1496,154 @@ func TestRunSyncCommandQuietDoesNotSilenceConflict(t *testing.T) {
 	stderr := captureStderr(t, func() { _ = runSyncCommand(syncCmd, nil) })
 	if !strings.Contains(stderr, "merge conflict") {
 		t.Errorf("stderr = %q, want a conflict report even under -q", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wy-gpzg7: sync's default-remote path adopts a git origin as the Dolt remote,
+// the same way `bd dolt push` does.
+// ---------------------------------------------------------------------------
+
+// The bug: a first-time federation rig (git origin configured, no Dolt remote
+// registered yet) that runs `bd sync` as its bring-up step used to get a silent
+// no-op — pull fails with Dolt's bare no-remote wording, the confirmed-no-remote
+// gate agrees because nothing ever adopted the origin, status=no-remote, exit 0
+// — where `bd dolt push` on the very same rig would have adopted origin and
+// pushed. Adoption must run BEFORE the loop, so the pull benefits from it too.
+func TestRunSyncCommandAdoptsGitOriginOnDefaultRemote(t *testing.T) {
+	fake := &fakeSyncStore{pullErr: errors.New("Error 1105: no remote"), recomputed: 2}
+	setupSyncCommandTest(t, fake)
+	adoptCalls := 0
+	syncAdoptGitOrigin = func(context.Context, storage.DoltStorage) (bool, error) {
+		adoptCalls++
+		// What adoption does on a real first-time rig: the remote now exists,
+		// so the pull that was failing with "no remote" succeeds and
+		// dolt_remotes lists it.
+		fake.pullErr = nil
+		fake.remotes = []storage.RemoteInfo{{Name: "origin"}}
+		return true, nil
+	}
+
+	jsonOutput = true
+	out := captureStdout(t, func() error { return runSyncCommand(syncCmd, nil) })
+
+	if adoptCalls != 1 {
+		t.Fatalf("adoption ran %d time(s), want exactly 1 on the default-remote path", adoptCalls)
+	}
+	var got syncOutcome
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", out, err)
+	}
+	if got.Status != syncStatusOK {
+		t.Errorf("Status = %q, want %q — adoption before the loop is what makes the pull work", got.Status, syncStatusOK)
+	}
+	if fake.pushCalls != 1 {
+		t.Errorf("Push() called %d time(s), want 1: an adopted rig must actually publish, not report no-remote", fake.pushCalls)
+	}
+}
+
+// Adoption must precede the PULL, not merely the push: a rig that had to adopt
+// its remote has nothing to pull from until it has one, so an adoption wired in
+// front of the push only (mirroring `bd dolt push` too literally) would still
+// leave sync failing on its first step.
+func TestRunSyncCommandAdoptsBeforePull(t *testing.T) {
+	fake := &fakeSyncStore{}
+	setupSyncCommandTest(t, fake)
+	pullsAtAdoption := -1
+	syncAdoptGitOrigin = func(context.Context, storage.DoltStorage) (bool, error) {
+		pullsAtAdoption = fake.pullCalls
+		return true, nil
+	}
+
+	if err := runSyncCommand(syncCmd, nil); err != nil {
+		t.Fatalf("runSyncCommand() error = %v, want nil", err)
+	}
+	if pullsAtAdoption != 0 {
+		t.Errorf("Pull() had run %d time(s) when adoption was reached, want 0 (adoption must come first)", pullsAtAdoption)
+	}
+}
+
+// A rig with no git origin to adopt is the ordinary solo rig, and it must keep
+// the benign exit-0 no-remote report rather than acquiring a failure mode:
+// adoption declining is not an error.
+func TestRunSyncCommandNoGitOriginStillExitsZero(t *testing.T) {
+	fake := &fakeSyncStore{pullErr: errors.New("Error 1105: no remote")}
+	setupSyncCommandTest(t, fake)
+	// setupSyncCommandTest already stubs "nothing to adopt"; assert the
+	// no-remote contract survives it explicitly.
+	jsonOutput = true
+
+	out := captureStdout(t, func() error { return runSyncCommand(syncCmd, nil) })
+	var got syncOutcome
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", out, err)
+	}
+	if got.Status != syncStatusNoRemote {
+		t.Errorf("Status = %q, want %q", got.Status, syncStatusNoRemote)
+	}
+}
+
+// An explicitly named --remote must never adopt: the operator named a remote
+// they expect to exist, and inventing a different one from git origin would
+// sync somewhere they never asked for. Same reason the no-remote exit-0 gate is
+// default-remote-only.
+func TestRunSyncCommandNamedRemoteNeverAdopts(t *testing.T) {
+	fake := &fakeSyncStore{}
+	setupSyncCommandTest(t, fake)
+	adoptCalls := 0
+	syncAdoptGitOrigin = func(context.Context, storage.DoltStorage) (bool, error) {
+		adoptCalls++
+		return true, nil
+	}
+	if err := syncCmd.Flags().Set("remote", "mini"); err != nil {
+		t.Fatalf("Flags().Set(remote, mini): %v", err)
+	}
+
+	if err := runSyncCommand(syncCmd, nil); err != nil {
+		t.Fatalf("runSyncCommand() error = %v, want nil", err)
+	}
+	if adoptCalls != 0 {
+		t.Errorf("adoption ran %d time(s) on --remote mini, want 0", adoptCalls)
+	}
+	if fake.pullRemoteCalls != 1 || fake.lastRemoteArg != "mini" {
+		t.Errorf("named-remote pull = (%d calls, %q), want (1, %q)", fake.pullRemoteCalls, fake.lastRemoteArg, "mini")
+	}
+}
+
+// A failed adoption is a real error, not a benign skip: it means the rig has no
+// Dolt remote AND bd could not derive one (a broken dolt_remotes listing, an
+// AddRemote refusal, an unwritable config.yaml). Reporting exit 0 there would
+// hide the very misconfiguration that stops the rig from ever federating, and
+// nothing may be pulled or pushed on top of it.
+func TestRunSyncCommandAdoptionErrorFailsLoudly(t *testing.T) {
+	fake := &fakeSyncStore{}
+	setupSyncCommandTest(t, fake)
+	adoptErr := errors.New("dolt_remotes unavailable")
+	syncAdoptGitOrigin = func(context.Context, storage.DoltStorage) (bool, error) {
+		return false, adoptErr
+	}
+
+	err := runSyncCommand(syncCmd, nil)
+	if err == nil {
+		t.Fatal("runSyncCommand() error = nil, want a failure when adoption errors")
+	}
+	if code, ok := exitCodeFromError(err); !ok || code != 1 {
+		t.Errorf("exitCodeFromError(err) = (%d, %v), want (1, true)", code, ok)
+	}
+	if fake.pullCalls != 0 || fake.pushCalls != 0 {
+		t.Errorf("pull/push ran (%d/%d) after a failed adoption, want (0/0)", fake.pullCalls, fake.pushCalls)
+	}
+}
+
+// The seam only buys hermetic tests if it is still bolted to the real thing in
+// production. Every case above replaces syncAdoptGitOrigin, so nothing else
+// would notice it being left rewired — or never wired at all, which is the
+// original bug restated.
+func TestSyncAdoptGitOriginIsWiredToAdoption(t *testing.T) {
+	got := reflect.ValueOf(syncAdoptGitOrigin).Pointer()
+	want := reflect.ValueOf(adoptGitOriginRemoteForPush).Pointer()
+	if got != want {
+		t.Error("syncAdoptGitOrigin is not bound to adoptGitOriginRemoteForPush; sync would silently stop adopting a git origin")
 	}
 }
 
