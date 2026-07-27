@@ -10,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 type pourProxiedResult struct {
@@ -46,7 +47,7 @@ func runPourProxiedServer(ctx context.Context, in pourInput) error {
 		subgraph := formulaSubgraph
 		protoID := formulaProtoID
 		if subgraph == nil {
-			resolvedID, err := resolveMolID(ctx, w, in.protoArg)
+			resolvedID, err := utils.ResolvePartialID(ctx, w, in.protoArg)
 			if err != nil {
 				return pourProxiedResult{}, "", fmt.Errorf("%s not found as formula or proto ID", in.protoArg)
 			}
@@ -71,7 +72,7 @@ func runPourProxiedServer(ctx context.Context, in pourInput) error {
 		}
 		var attachments []attachmentInfo
 		for _, attachArg := range in.attachArgs {
-			attachID, err := resolveMolID(ctx, w, attachArg)
+			attachID, err := utils.ResolvePartialID(ctx, w, attachArg)
 			if err != nil {
 				return pourProxiedResult{}, "", fmt.Errorf("resolving attachment ID %s: %w", attachArg, err)
 			}
@@ -154,7 +155,7 @@ func runMolShowProxiedServer(ctx context.Context, arg string) error {
 	defer uw.Close(ctx)
 
 	r := uowMolReader{uw: uw}
-	moleculeID, err := resolveMolID(ctx, r, arg)
+	moleculeID, err := utils.ResolvePartialID(ctx, r, arg)
 	if err != nil {
 		return HandleErrorRespectJSON("molecule '%s' not found", arg)
 	}
@@ -191,7 +192,7 @@ func runMolCurrentProxiedServer(ctx context.Context, args []string, agent string
 	var molecules []*MoleculeProgress
 
 	if len(args) == 1 {
-		moleculeID, err := resolveMolID(ctx, r, args[0])
+		moleculeID, err := utils.ResolvePartialID(ctx, r, args[0])
 		if err != nil {
 			return HandleErrorRespectJSON("molecule '%s' not found", args[0])
 		}
@@ -259,7 +260,7 @@ func runMolProgressProxiedServer(ctx context.Context, args []string) error {
 
 	var moleculeID string
 	if len(args) == 1 {
-		resolved, err := resolveMolID(ctx, r, args[0])
+		resolved, err := utils.ResolvePartialID(ctx, r, args[0])
 		if err != nil {
 			return HandleErrorRespectJSON("molecule '%s' not found", args[0])
 		}
@@ -309,7 +310,7 @@ func runMolLastActivityProxiedServer(ctx context.Context, arg string) error {
 	defer uw.Close(ctx)
 
 	r := uowMolReader{uw: uw}
-	moleculeID, err := resolveMolID(ctx, r, arg)
+	moleculeID, err := utils.ResolvePartialID(ctx, r, arg)
 	if err != nil {
 		return HandleErrorRespectJSON("molecule '%s' not found", arg)
 	}
@@ -446,7 +447,7 @@ func runMolSquashProxiedServer(ctx context.Context, in molSquashInput) error {
 		defer uw.Close(ctx)
 		r := uowMolReader{uw: uw}
 
-		moleculeID, err := resolveMolID(ctx, r, in.moleculeArg)
+		moleculeID, err := utils.ResolvePartialID(ctx, r, in.moleculeArg)
 		if err != nil {
 			return HandleErrorRespectJSON("resolving molecule ID %s: %v", in.moleculeArg, err)
 		}
@@ -469,7 +470,7 @@ func runMolSquashProxiedServer(ctx context.Context, in molSquashInput) error {
 	result, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (*SquashResult, string, error) {
 		w := newUOWMolWriter(uw)
 
-		moleculeID, err := resolveMolID(ctx, w, in.moleculeArg)
+		moleculeID, err := utils.ResolvePartialID(ctx, w, in.moleculeArg)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolving molecule ID %s: %w", in.moleculeArg, err)
 		}
@@ -518,7 +519,7 @@ func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force b
 	var persistentIDs []string
 	var failedResolve []string
 	for _, moleculeID := range args {
-		resolvedID, err := resolveMolID(ctx, r, moleculeID)
+		resolvedID, err := utils.ResolvePartialID(ctx, r, moleculeID)
 		if err != nil {
 			if !jsonOutput {
 				fmt.Fprintf(os.Stderr, "Warning: failed to resolve %s: %v\n", moleculeID, err)
@@ -593,29 +594,29 @@ func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force b
 		FailedCount: len(failedResolve),
 	}
 
-	err = uow.RunTx(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
-		w := newUOWMolWriter(uw)
-
-		if len(wispIDs) > 0 {
-			result, err := burnWispsInto(ctx, w, wispIDs, actor)
+	if len(wispIDs) > 0 {
+		result, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (*BurnResult, string, error) {
+			r, err := burnWispsInto(ctx, newUOWMolWriter(uw), wispIDs, actor)
 			if err != nil {
-				if !jsonOutput {
-					fmt.Fprintf(os.Stderr, "Error burning wisps: %v\n", err)
-				}
-			} else {
-				batchResult.TotalDeleted += result.DeletedCount
-				batchResult.Results = append(batchResult.Results, *result)
+				return nil, "", err
 			}
+			return r, fmt.Sprintf("bd: mol burn %d wisp(s)", len(wispIDs)), nil
+		})
+		if err != nil {
+			if !jsonOutput {
+				fmt.Fprintf(os.Stderr, "Error burning wisps: %v\n", err)
+			}
+		} else {
+			batchResult.TotalDeleted += result.DeletedCount
+			batchResult.Results = append(batchResult.Results, *result)
 		}
+	}
 
-		for _, id := range persistentIDs {
-			subgraph, err := loadTemplateSubgraph(ctx, w, id)
+	for _, id := range persistentIDs {
+		result, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (BurnResult, string, error) {
+			subgraph, err := loadTemplateSubgraph(ctx, newUOWMolWriter(uw), id)
 			if err != nil {
-				if !jsonOutput {
-					fmt.Fprintf(os.Stderr, "Warning: failed to load subgraph for %s: %v\n", id, err)
-				}
-				batchResult.FailedCount++
-				continue
+				return BurnResult{}, "", fmt.Errorf("loading subgraph for %s: %w", id, err)
 			}
 			issueIDs := make([]string, len(subgraph.Issues))
 			for i, issue := range subgraph.Issues {
@@ -627,20 +628,23 @@ func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force b
 				UpdateTextReferences: true,
 			}, actor)
 			if err != nil {
-				return "", fmt.Errorf("burning %s: %w", id, err)
+				return BurnResult{}, "", fmt.Errorf("burning %s: %w", id, err)
 			}
-			batchResult.TotalDeleted += res.DeletedCount
-			batchResult.Results = append(batchResult.Results, BurnResult{
+			return BurnResult{
 				MoleculeID:   id,
 				DeletedIDs:   issueIDs,
 				DeletedCount: res.DeletedCount,
-			})
+			}, fmt.Sprintf("bd: mol burn %s", id), nil
+		})
+		if err != nil {
+			if !jsonOutput {
+				fmt.Fprintf(os.Stderr, "Warning: failed to burn %s: %v\n", id, err)
+			}
+			batchResult.FailedCount++
+			continue
 		}
-
-		return fmt.Sprintf("bd: mol burn %d molecule(s)", len(wispIDs)+len(persistentIDs)), nil
-	})
-	if err != nil {
-		return HandleErrorRespectJSON("%v", err)
+		batchResult.TotalDeleted += result.DeletedCount
+		batchResult.Results = append(batchResult.Results, result)
 	}
 
 	if jsonOutput {
@@ -661,7 +665,7 @@ func runMolDistillProxiedServer(ctx context.Context, in molDistillInput) error {
 	defer uw.Close(ctx)
 
 	r := uowMolReader{uw: uw}
-	epicID, err := resolveMolID(ctx, r, in.epicID)
+	epicID, err := utils.ResolvePartialID(ctx, r, in.epicID)
 	if err != nil {
 		return HandleErrorRespectJSON("'%s' not found", in.epicID)
 	}

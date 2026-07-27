@@ -10,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/formula"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 // BeadsTemplateLabel is the label used to identify Beads-based templates
@@ -239,7 +240,7 @@ func findHierarchicalChildren(ctx context.Context, s molReader, parentID string)
 // Returns the proto ID if found, or an error if not found or ambiguous.
 func resolveProtoIDOrTitle(ctx context.Context, s molReader, input string) (string, error) {
 	// Strategy 1: Try to resolve as an ID
-	protoID, err := resolveMolID(ctx, s, input)
+	protoID, err := utils.ResolvePartialID(ctx, s, input)
 	if err == nil {
 		// Verify it's a proto (has template label)
 		issue, getErr := s.GetIssue(ctx, protoID)
@@ -555,14 +556,6 @@ func cloneSubgraph(ctx context.Context, s storage.DoltStorage, subgraph *Templat
 		return nil, fmt.Errorf("no database connection")
 	}
 
-	// Auto-register any non-built-in issue types used by the subgraph
-	// so that formula-generated beads (e.g., type "gate" for async
-	// coordination) pass type validation without requiring the operator
-	// to run `bd config set types.custom` manually first. See GH#3213.
-	if err := ensureSubgraphCustomTypes(ctx, s, subgraph); err != nil {
-		return nil, fmt.Errorf("registering custom types for subgraph: %w", err)
-	}
-
 	var result *InstantiateResult
 	err := transact(ctx, s, "bd: clone template subgraph", func(tx storage.Transaction) error {
 		r, err := cloneSubgraphInto(ctx, storeMolWriter{DoltStorage: s, tx: tx}, subgraph, opts)
@@ -579,6 +572,10 @@ func cloneSubgraph(ctx context.Context, s storage.DoltStorage, subgraph *Templat
 }
 
 func cloneSubgraphInto(ctx context.Context, w molWriter, subgraph *TemplateSubgraph, opts CloneOptions) (*InstantiateResult, error) {
+	if err := ensureSubgraphCustomTypes(ctx, w, subgraph); err != nil {
+		return nil, fmt.Errorf("registering custom types for subgraph: %w", err)
+	}
+
 	idMapping := make(map[string]string)
 
 	// First pass: create all issues with new IDs

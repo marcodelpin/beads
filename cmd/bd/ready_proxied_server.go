@@ -435,27 +435,7 @@ func runReadyProxiedGated(ctx context.Context, uw uow.UnitOfWork, _ readyInput) 
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
-
-	if jsonOutput {
-		output := GatedReadyOutput{Molecules: molecules, Count: len(molecules)}
-		if output.Molecules == nil {
-			output.Molecules = []*GatedMolecule{}
-		}
-		_ = outputJSON(output)
-		return nil
-	}
-	if len(molecules) == 0 {
-		fmt.Printf("\n%s No molecules ready for gate-resume dispatch\n\n", ui.RenderPass("✨"))
-		return nil
-	}
-	fmt.Printf("\n%s Molecules ready for gate-resume dispatch (%d):\n\n", ui.RenderAccent("🚪"), len(molecules))
-	for _, m := range molecules {
-		fmt.Printf("  %s: %s\n", ui.RenderID(m.MoleculeID), m.MoleculeTitle)
-		fmt.Printf("    Closed gate: %s (%s)\n", ui.RenderID(m.ClosedGate.ID), m.ClosedGate.Title)
-		fmt.Printf("    Ready step:  %s (%s)\n", ui.RenderID(m.ReadyStep.ID), m.ReadyStep.Title)
-		fmt.Println()
-	}
-	return nil
+	return renderGatedReadyMolecules(molecules)
 }
 
 func buildReadyIssueOutputProxied(ctx context.Context, uw uow.UnitOfWork, issues []*types.Issue) []*types.IssueWithCounts {

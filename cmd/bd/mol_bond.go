@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 var molBondCmd = &cobra.Command{
@@ -606,7 +607,7 @@ func minPriority(a, b int) int {
 // If it's an issue, issue is set. If it's a formula, formulaName is set.
 func resolveOrDescribe(ctx context.Context, s molReader, operand string) (*types.Issue, string, error) {
 	// First, try to resolve as an existing issue
-	id, err := resolveMolID(ctx, s, operand)
+	id, err := utils.ResolvePartialID(ctx, s, operand)
 	if err == nil {
 		issue, err := s.GetIssue(ctx, id)
 		if err == nil {
@@ -635,7 +636,7 @@ func resolveOrDescribe(ctx context.Context, s molReader, operand string) (*types
 // This implements gt-4v1eo: formulas are cooked to in-memory subgraphs (no DB storage).
 func resolveOrCookToSubgraph(ctx context.Context, s molReader, operand string, vars map[string]string) (*TemplateSubgraph, bool, error) {
 	// First, try to resolve as an existing issue
-	id, err := resolveMolID(ctx, s, operand)
+	id, err := utils.ResolvePartialID(ctx, s, operand)
 	if err == nil {
 		issue, err := s.GetIssue(ctx, id)
 		if err == nil {

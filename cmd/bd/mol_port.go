@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
-	"github.com/steveyegge/beads/internal/utils"
 )
 
 type molReader interface {
@@ -21,6 +20,7 @@ type molReader interface {
 	GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error)
 	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
+	SearchIssueIDs(ctx context.Context, query string, filter types.IssueFilter) ([]string, error)
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
 	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
@@ -209,6 +209,10 @@ func (r uowMolReader) SearchIssues(ctx context.Context, query string, filter typ
 	return page.Items, nil
 }
 
+func (r uowMolReader) SearchIssueIDs(ctx context.Context, query string, filter types.IssueFilter) ([]string, error) {
+	return r.uw.IssueUseCase().SearchIssueIDs(ctx, query, filter)
+}
+
 func (r uowMolReader) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
 	page, err := r.uw.IssueUseCase().GetReadyWork(ctx, filter)
 	if err != nil {
@@ -243,53 +247,95 @@ func (r uowMolReader) GetCustomStatusesDetailed(ctx context.Context) ([]types.Cu
 }
 
 func (r uowMolReader) GetMoleculeProgress(ctx context.Context, moleculeID string) (*types.MoleculeProgressStats, error) {
-	progress, err := getMoleculeProgress(ctx, r, moleculeID)
+	stats := &types.MoleculeProgressStats{MoleculeID: moleculeID}
+
+	root, err := r.GetIssue(ctx, moleculeID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get molecule: %w", err)
 	}
-	stats := &types.MoleculeProgressStats{
-		MoleculeID:    progress.MoleculeID,
-		MoleculeTitle: progress.MoleculeTitle,
-		Total:         progress.Total,
-		Completed:     progress.Completed,
+	if root != nil {
+		stats.MoleculeTitle = root.Title
 	}
-	if progress.CurrentStep != nil {
-		stats.CurrentStepID = progress.CurrentStep.ID
-		stats.InProgress = 1
+
+	dependents, err := r.GetDependentsWithMetadata(ctx, moleculeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get molecule children: %w", err)
+	}
+
+	for _, dependent := range dependents {
+		if dependent.DependencyType != types.DepParentChild {
+			continue
+		}
+		stats.Total++
+		switch dependent.Status {
+		case types.StatusClosed:
+			stats.Completed++
+		case types.StatusInProgress:
+			stats.InProgress++
+			if stats.CurrentStepID == "" {
+				stats.CurrentStepID = dependent.ID
+			}
+		}
 	}
 	return stats, nil
 }
 
 func (r uowMolReader) GetMoleculeLastActivity(ctx context.Context, moleculeID string) (*types.MoleculeLastActivity, error) {
-	root, err := r.GetIssue(ctx, moleculeID)
+	dependents, err := r.GetDependentsWithMetadata(ctx, moleculeID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get molecule children: %w", err)
 	}
-	subgraph, err := loadTemplateSubgraph(ctx, r, moleculeID)
-	if err != nil {
-		return nil, err
-	}
-	last := &types.MoleculeLastActivity{
-		MoleculeID:   moleculeID,
-		LastActivity: root.UpdatedAt,
-		Source:       "molecule_updated",
-	}
-	for _, issue := range subgraph.Issues {
-		if issue.ID == moleculeID {
+
+	var children []types.Issue
+	for _, dependent := range dependents {
+		if dependent.DependencyType != types.DepParentChild {
 			continue
 		}
-		if issue.UpdatedAt.After(last.LastActivity) {
-			last.LastActivity = issue.UpdatedAt
-			last.Source = "step_updated"
-			last.SourceStepID = issue.ID
+		children = append(children, dependent.Issue)
+	}
+
+	if len(children) == 0 {
+		root, err := r.GetIssue(ctx, moleculeID)
+		if err != nil {
+			return nil, fmt.Errorf("molecule %s not found: %w", moleculeID, err)
 		}
-		if issue.ClosedAt != nil && issue.ClosedAt.After(last.LastActivity) {
-			last.LastActivity = *issue.ClosedAt
-			last.Source = "step_closed"
-			last.SourceStepID = issue.ID
+		return &types.MoleculeLastActivity{
+			MoleculeID:   moleculeID,
+			LastActivity: root.UpdatedAt,
+			Source:       "molecule_updated",
+		}, nil
+	}
+
+	var lastUpdatedAt time.Time
+	var lastUpdatedID string
+	var lastClosedAt time.Time
+	var lastClosedID string
+	haveClosed := false
+
+	for _, child := range children {
+		if child.UpdatedAt.After(lastUpdatedAt) {
+			lastUpdatedAt = child.UpdatedAt
+			lastUpdatedID = child.ID
+		}
+		if child.ClosedAt != nil && (!haveClosed || child.ClosedAt.After(lastClosedAt)) {
+			lastClosedAt = *child.ClosedAt
+			lastClosedID = child.ID
+			haveClosed = true
 		}
 	}
-	return last, nil
+
+	result := &types.MoleculeLastActivity{
+		MoleculeID:   moleculeID,
+		LastActivity: lastUpdatedAt,
+		Source:       "step_updated",
+		SourceStepID: lastUpdatedID,
+	}
+	if haveClosed && lastClosedAt.After(lastUpdatedAt) {
+		result.LastActivity = lastClosedAt
+		result.Source = "step_closed"
+		result.SourceStepID = lastClosedID
+	}
+	return result, nil
 }
 
 func (r uowMolReader) FindWispDependentsRecursive(ctx context.Context, ids []string) (map[string]bool, error) {
@@ -316,7 +362,7 @@ func (w *uowMolWriter) isWisp(ctx context.Context, id string) bool {
 }
 
 func (w *uowMolWriter) CreateIssue(ctx context.Context, issue *types.Issue, actor string) error {
-	params := domain.CreateIssueParams{Issue: issue, ExplicitID: issue.ID}
+	params := domain.CreateIssueParams{Issue: issue, ExplicitID: issue.ID, Labels: issue.Labels}
 	var err error
 	if issue.Ephemeral || issue.NoHistory {
 		_, err = w.uw.IssueUseCase().CreateWisp(ctx, params, actor)
@@ -362,12 +408,10 @@ func (w *uowMolWriter) CloseIssue(ctx context.Context, id, reason, actor string)
 }
 
 func (w *uowMolWriter) DeleteIssue(ctx context.Context, id, actor string) error {
-	var err error
-	if w.isWisp(ctx, id) {
-		_, err = w.uw.IssueUseCase().DeleteWisp(ctx, id, actor)
-	} else {
-		_, err = w.uw.IssueUseCase().DeleteIssue(ctx, id, actor)
-	}
+	_, err := w.uw.IssueUseCase().DeleteIssues(ctx, domain.DeleteIssuesParams{
+		IDs:                  []string{id},
+		UpdateTextReferences: true,
+	}, actor)
 	return err
 }
 
@@ -382,67 +426,4 @@ func (w *uowMolWriter) ClaimStepIfOpen(ctx context.Context, id, actor string) er
 	}
 	_, err := w.uw.IssueUseCase().ClaimIssueIfOpen(ctx, id, actor)
 	return err
-}
-
-func resolveMolID(ctx context.Context, r molReader, input string) (string, error) {
-	if issues, err := r.SearchIssues(ctx, "", types.IssueFilter{IDs: []string{input}}); err == nil && len(issues) > 0 {
-		return issues[0].ID, nil
-	}
-
-	prefix, err := r.GetConfig(ctx, "issue_prefix")
-	if err != nil || prefix == "" {
-		prefix = "bd"
-	}
-	prefixWithHyphen := prefix
-	if !strings.HasSuffix(prefix, "-") {
-		prefixWithHyphen += "-"
-	}
-
-	normalized := input
-	if !strings.HasPrefix(input, prefixWithHyphen) && utils.ExtractIssuePrefix(input) == "" {
-		normalized = prefixWithHyphen + input
-	}
-
-	if issues, err := r.SearchIssues(ctx, "", types.IssueFilter{IDs: []string{normalized}}); err == nil && len(issues) > 0 {
-		return issues[0].ID, nil
-	}
-
-	hashPart := strings.TrimPrefix(normalized, prefixWithHyphen)
-	if hashPart == "" {
-		return "", fmt.Errorf("no issue found matching %q", input)
-	}
-
-	issues, err := r.SearchIssues(ctx, hashPart, types.IssueFilter{})
-	if err != nil {
-		return "", fmt.Errorf("searching for %q: %w", input, err)
-	}
-
-	var matches []string
-	var exactMatch string
-	for _, issue := range issues {
-		if issue.ID == input || issue.ID == normalized {
-			exactMatch = issue.ID
-			break
-		}
-		hash := issue.ID
-		if p := utils.ExtractIssuePrefix(issue.ID); p != "" {
-			hash = strings.TrimPrefix(issue.ID, p+"-")
-		}
-		if hash == hashPart {
-			exactMatch = issue.ID
-		}
-		if strings.Contains(hash, hashPart) {
-			matches = append(matches, issue.ID)
-		}
-	}
-	if exactMatch != "" {
-		return exactMatch, nil
-	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no issue found matching %q", input)
-	}
-	if len(matches) > 1 {
-		return "", fmt.Errorf("ambiguous ID %q matches %d issues: %v", input, len(matches), matches)
-	}
-	return matches[0], nil
 }

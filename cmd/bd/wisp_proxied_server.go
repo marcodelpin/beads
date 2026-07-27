@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/utils"
 )
 
 func runWispCreateProxiedServer(ctx context.Context, in wispCreateInput) error {
@@ -34,7 +37,7 @@ func runWispCreateProxiedServer(ctx context.Context, in wispCreateInput) error {
 			return err
 		}
 		r := uowMolReader{uw: uw}
-		protoID, err := resolveMolID(ctx, r, in.protoArg)
+		protoID, err := utils.ResolvePartialID(ctx, r, in.protoArg)
 		if err != nil {
 			uw.Close(ctx)
 			return HandleErrorWithHint(fmt.Sprintf("'%s' not found as formula or proto", in.protoArg), "run 'bd formula list' to see available formulas")
@@ -177,10 +180,30 @@ func runWispGCProxiedServer(ctx context.Context, dryRun bool, ageThreshold time.
 		return HandleError("%v", err)
 	}
 
+	return renderWispGCDeleteResult(ids, res)
+}
+
+func renderWispGCDeleteResult(ids []string, res domain.DeleteIssuesResult) error {
 	if jsonOutput {
-		return outputJSON(WispGCResult{CleanedIDs: ids, CleanedCount: res.DeletedCount})
+		return outputJSON(map[string]interface{}{
+			"deleted":              ids,
+			"deleted_count":        res.DeletedCount,
+			"dependencies_removed": res.DependenciesCount,
+			"labels_removed":       res.LabelsCount,
+			"events_removed":       res.EventsCount,
+			"references_updated":   res.ReferencesUpdated,
+			"orphaned_issues":      res.OrphanedIssues,
+		})
 	}
-	fmt.Printf("Cleaned %d abandoned wisp(s)\n", res.DeletedCount)
+	fmt.Printf("%s Deleted %d issue(s)\n", ui.RenderPass("✓"), res.DeletedCount)
+	fmt.Printf("  Removed %d dependency link(s)\n", res.DependenciesCount)
+	fmt.Printf("  Removed %d label(s)\n", res.LabelsCount)
+	fmt.Printf("  Removed %d event(s)\n", res.EventsCount)
+	fmt.Printf("  Updated text references in %d issue(s)\n", res.ReferencesUpdated)
+	if len(res.OrphanedIssues) > 0 {
+		fmt.Printf("  %s Orphaned %d issue(s): %s\n",
+			ui.RenderWarn("⚠"), len(res.OrphanedIssues), strings.Join(res.OrphanedIssues, ", "))
+	}
 	return nil
 }
 
@@ -284,9 +307,5 @@ func runWispPurgeClosedProxiedServer(ctx context.Context, dryRun, force bool, ex
 		return HandleError("%v", err)
 	}
 
-	if jsonOutput {
-		return outputJSON(map[string]interface{}{"deleted_count": res.DeletedCount})
-	}
-	fmt.Printf("Deleted %d closed wisp(s)\n", res.DeletedCount)
-	return nil
+	return renderWispGCDeleteResult(ids, res)
 }
