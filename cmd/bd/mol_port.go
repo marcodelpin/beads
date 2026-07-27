@@ -180,15 +180,7 @@ func (r uowMolReader) GetDependents(ctx context.Context, issueID string) ([]*typ
 
 func (r uowMolReader) GetDependentsWithMetadata(ctx context.Context, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
 	filter := domain.DepListFilter{Direction: domain.DepDirectionIn}
-	issueDeps, err := r.uw.DependencyUseCase().ListWithIssueMetadata(ctx, issueID, filter)
-	if err != nil {
-		return nil, err
-	}
-	wispDeps, err := r.uw.DependencyUseCase().ListWispWithIssueMetadata(ctx, issueID, filter)
-	if err != nil {
-		return issueDeps, nil //nolint:nilerr // wisp_dependencies table may not exist
-	}
-	return append(issueDeps, wispDeps...), nil
+	return r.uw.DependencyUseCase().ListWithIssueMetadata(ctx, issueID, filter)
 }
 
 func (r uowMolReader) GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error) {

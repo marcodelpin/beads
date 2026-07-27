@@ -244,13 +244,13 @@ func TestProxiedServerWispGC(t *testing.T) {
 			t.Fatalf("bd mol wisp gc --age 1h --json: %v\n%s", err, out)
 		}
 		var got struct {
-			CleanedIDs   []string `json:"cleaned_ids"`
-			CleanedCount int      `json:"cleaned_count"`
+			Deleted      []string `json:"deleted"`
+			DeletedCount int      `json:"deleted_count"`
 		}
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatalf("unmarshal: %v\n%s", err, out)
 		}
-		if got.CleanedCount != 1 || got.CleanedIDs[0] != abandoned.ID {
+		if got.DeletedCount != 1 || got.Deleted[0] != abandoned.ID {
 			t.Fatalf("expected only %s cleaned, got %+v", abandoned.ID, got)
 		}
 
@@ -285,13 +285,13 @@ func TestProxiedServerWispGC(t *testing.T) {
 			t.Fatalf("bd mol wisp gc --age 1h --json: %v\n%s", err, out)
 		}
 		var got struct {
-			CleanedIDs []string `json:"cleaned_ids"`
+			Deleted []string `json:"deleted"`
 		}
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatalf("unmarshal: %v\n%s", err, out)
 		}
 		cleaned := map[string]bool{}
-		for _, id := range got.CleanedIDs {
+		for _, id := range got.Deleted {
 			cleaned[id] = true
 		}
 		if !cleaned[parentWisp.ID] {
@@ -322,13 +322,13 @@ func TestProxiedServerWispGC(t *testing.T) {
 			t.Fatalf("bd mol wisp gc --exclude-type agent --json: %v\n%s", err, out)
 		}
 		var got struct {
-			CleanedIDs []string `json:"cleaned_ids"`
+			Deleted []string `json:"deleted"`
 		}
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatalf("unmarshal: %v\n%s", err, out)
 		}
 		cleaned := map[string]bool{}
-		for _, id := range got.CleanedIDs {
+		for _, id := range got.Deleted {
 			cleaned[id] = true
 		}
 		if cleaned[protected.ID] {

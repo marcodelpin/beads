@@ -518,6 +518,7 @@ func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force b
 	var wispIDs []string
 	var persistentIDs []string
 	var failedResolve []string
+	seenWispIDs := make(map[string]bool)
 	for _, moleculeID := range args {
 		resolvedID, err := utils.ResolvePartialID(ctx, r, moleculeID)
 		if err != nil {
@@ -536,7 +537,20 @@ func runMolBurnProxiedServer(ctx context.Context, args []string, dryRun, force b
 			continue
 		}
 		if issue.Ephemeral {
-			wispIDs = append(wispIDs, resolvedID)
+			subgraph, err := loadTemplateSubgraph(ctx, r, resolvedID)
+			if err != nil {
+				if !jsonOutput {
+					fmt.Fprintf(os.Stderr, "Warning: failed to load wisp subgraph for %s: %v\n", resolvedID, err)
+				}
+				failedResolve = append(failedResolve, moleculeID)
+				continue
+			}
+			for _, sgIssue := range subgraph.Issues {
+				if sgIssue.Ephemeral && !seenWispIDs[sgIssue.ID] {
+					seenWispIDs[sgIssue.ID] = true
+					wispIDs = append(wispIDs, sgIssue.ID)
+				}
+			}
 		} else {
 			persistentIDs = append(persistentIDs, resolvedID)
 		}
