@@ -997,8 +997,15 @@ func (s *DoltStore) BackupAdd(ctx context.Context, name, url string) error {
 }
 
 // BackupSync pushes the database to the named backup destination.
+// Runs on a long-timeout connection: a sync to a remote destination
+// streams the database and outlives the pool's 10s ReadTimeout.
 func (s *DoltStore) BackupSync(ctx context.Context, name string) error {
-	return versioncontrolops.BackupSync(ctx, s.db, name)
+	db, err := s.oneShotConn(0)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return versioncontrolops.BackupSync(ctx, db, name)
 }
 
 // BackupRemove removes a configured Dolt backup destination.
@@ -1023,6 +1030,12 @@ func (s *DoltStore) BackupDatabase(ctx context.Context, dir string) error {
 	}
 	backupName := "backup_export"
 
+	syncDB, err := s.oneShotConn(0)
+	if err != nil {
+		return err
+	}
+	defer syncDB.Close()
+
 	// Register as a backup remote (idempotent — remove first if exists).
 	_ = versioncontrolops.BackupRemove(ctx, s.db, backupName)
 	if err := versioncontrolops.BackupAdd(ctx, s.db, backupName, backupURL); err != nil {
@@ -1030,14 +1043,14 @@ func (s *DoltStore) BackupDatabase(ctx context.Context, dir string) error {
 		// already point to this URL. In that case, sync using the existing
 		// remote name rather than failing.
 		if conflict := versioncontrolops.ExtractAddressConflictName(err); conflict != "" {
-			if syncErr := versioncontrolops.BackupSync(ctx, s.db, conflict); syncErr != nil {
+			if syncErr := versioncontrolops.BackupSync(ctx, syncDB, conflict); syncErr != nil {
 				return fmt.Errorf("sync to backup: %w", syncErr)
 			}
 			return nil
 		}
 		return fmt.Errorf("register backup remote: %w", err)
 	}
-	if err := versioncontrolops.BackupSync(ctx, s.db, backupName); err != nil {
+	if err := versioncontrolops.BackupSync(ctx, syncDB, backupName); err != nil {
 		return fmt.Errorf("sync to backup: %w", err)
 	}
 	return nil
@@ -1058,7 +1071,12 @@ func (s *DoltStore) RestoreDatabase(ctx context.Context, dir string, force bool)
 	if err != nil {
 		return err
 	}
-	return versioncontrolops.BackupRestore(ctx, s.db, backupURL, s.database, force)
+	db, err := s.oneShotConn(0)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return versioncontrolops.BackupRestore(ctx, db, backupURL, s.database, force)
 }
 
 // QueryContext wraps s.db.QueryContext with retry for transient errors.
@@ -1774,19 +1792,35 @@ func (s *DoltStore) execWithLongTimeout(ctx context.Context, query string, args 
 // handling above, and DOLT_PUSH has diverged from direct `dolt push` behavior
 // when wrapped in a SQL transaction.
 func (s *DoltStore) execWithLongTimeoutNoTx(ctx context.Context, query string, args ...any) error {
-	cfg, err := mysql.ParseDSN(s.connStr)
+	db, err := s.oneShotConn(5 * time.Minute)
 	if err != nil {
-		return fmt.Errorf("failed to parse DSN for long-timeout connection: %w", err)
-	}
-	cfg.ReadTimeout = 5 * time.Minute
-	db, err := sql.Open("mysql", cfg.FormatDSN())
-	if err != nil {
-		return fmt.Errorf("failed to open long-timeout connection: %w", err)
+		return err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 	_, err = db.ExecContext(ctx, query, args...)
 	return err
+}
+
+// oneShotConn opens a one-shot connection with the given read deadline
+// (0 = no deadline), for callers that pass a DBConn into versioncontrolops.
+// The pool's 10s ReadTimeout kills any server-side procedure that performs
+// sustained network I/O; push/pull use 5m, while backup sync/restore use no
+// deadline at all — a first sync to a remote destination (gs://) can exceed
+// any fixed budget, and the server aborts the transfer when the client
+// connection drops, so a too-short deadline can never converge by retrying.
+// Caller closes.
+func (s *DoltStore) oneShotConn(readTimeout time.Duration) (*sql.DB, error) {
+	cfg, err := mysql.ParseDSN(s.connStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DSN for long-timeout connection: %w", err)
+	}
+	cfg.ReadTimeout = readTimeout
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		return nil, fmt.Errorf("failed to open long-timeout connection: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
 // applyPoolLimits configures the pool on db using the sensible-default
