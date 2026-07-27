@@ -122,7 +122,7 @@ func TestProxiedServerMolStale(t *testing.T) {
 		}
 		for _, m := range got.StaleMolecules {
 			if m.ID == lonely.ID {
-				t.Errorf("childless epic %s unexpectedly present; GetEpicsEligibleForClosure may have been fixed to surface it — update this test", lonely.ID)
+				t.Errorf("childless epic %s unexpectedly present (parity guard: GetEpicsEligibleForClosure skips zero-child epics in both backends)", lonely.ID)
 			}
 		}
 	})

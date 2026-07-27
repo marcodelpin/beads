@@ -44,7 +44,7 @@ func TestProxiedServerMolBond(t *testing.T) {
 			t.Fatalf("unmarshal: %v\n%s", err, out)
 		}
 		if got.ResultType != "compound_molecule" {
-			t.Errorf("result_type = %s, want compound_molecule (label-only DB protos are not detected as protos by bond dispatch — update this test if that changes)", got.ResultType)
+			t.Errorf("result_type = %s, want compound_molecule (parity guard: bond dispatch does not detect label-only DB issues as protos; see isProtoIssue in wisp.go)", got.ResultType)
 		}
 		if got.ResultID != protoA.ID {
 			t.Errorf("result_id = %s, want %s (mol+mol bonds attach B to A)", got.ResultID, protoA.ID)

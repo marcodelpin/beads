@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -344,21 +346,35 @@ func (r uowMolReader) FindWispDependentsRecursive(ctx context.Context, ids []str
 
 type uowMolWriter struct {
 	uowMolReader
-	wispIDs map[string]bool
+	wispIDs    map[string]bool
+	notWispIDs map[string]bool
 }
 
 func newUOWMolWriter(uw uow.UnitOfWork) *uowMolWriter {
-	return &uowMolWriter{uowMolReader: uowMolReader{uw: uw}, wispIDs: make(map[string]bool)}
+	return &uowMolWriter{
+		uowMolReader: uowMolReader{uw: uw},
+		wispIDs:      make(map[string]bool),
+		notWispIDs:   make(map[string]bool),
+	}
 }
 
-func (w *uowMolWriter) isWisp(ctx context.Context, id string) bool {
+func (w *uowMolWriter) isWisp(ctx context.Context, id string) (bool, error) {
 	if w.wispIDs[id] {
-		return true
+		return true, nil
 	}
-	if _, err := w.uw.IssueUseCase().GetWisp(ctx, id); err == nil {
-		return true
+	if w.notWispIDs[id] {
+		return false, nil
 	}
-	return false
+	_, err := w.uw.IssueUseCase().GetWisp(ctx, id)
+	if err == nil {
+		w.wispIDs[id] = true
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		w.notWispIDs[id] = true
+		return false, nil
+	}
+	return false, fmt.Errorf("determining wisp status for %s: %w", id, err)
 }
 
 func (w *uowMolWriter) CreateIssue(ctx context.Context, issue *types.Issue, actor string) error {
@@ -371,26 +387,41 @@ func (w *uowMolWriter) CreateIssue(ctx context.Context, issue *types.Issue, acto
 		}
 	} else {
 		_, err = w.uw.IssueUseCase().CreateIssue(ctx, params, actor)
+		if err == nil {
+			w.notWispIDs[issue.ID] = true
+		}
 	}
 	return err
 }
 
 func (w *uowMolWriter) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
-	if w.isWisp(ctx, dep.IssueID) {
+	isWisp, err := w.isWisp(ctx, dep.IssueID)
+	if err != nil {
+		return err
+	}
+	if isWisp {
 		return w.uw.DependencyUseCase().AddWispDependency(ctx, dep, actor)
 	}
 	return w.uw.DependencyUseCase().AddDependency(ctx, dep, actor)
 }
 
 func (w *uowMolWriter) AddLabel(ctx context.Context, issueID, label, actor string) error {
-	if w.isWisp(ctx, issueID) {
+	isWisp, err := w.isWisp(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	if isWisp {
 		return w.uw.LabelUseCase().AddWispLabel(ctx, issueID, label, actor)
 	}
 	return w.uw.LabelUseCase().AddLabel(ctx, issueID, label, actor)
 }
 
 func (w *uowMolWriter) UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error {
-	if w.isWisp(ctx, id) {
+	isWisp, err := w.isWisp(ctx, id)
+	if err != nil {
+		return err
+	}
+	if isWisp {
 		return w.uw.IssueUseCase().UpdateWisp(ctx, id, updates, actor)
 	}
 	return w.uw.IssueUseCase().UpdateIssue(ctx, id, updates, actor)
@@ -398,8 +429,11 @@ func (w *uowMolWriter) UpdateIssue(ctx context.Context, id string, updates map[s
 
 func (w *uowMolWriter) CloseIssue(ctx context.Context, id, reason, actor string) error {
 	params := domain.CloseIssueParams{Reason: reason}
-	var err error
-	if w.isWisp(ctx, id) {
+	isWisp, err := w.isWisp(ctx, id)
+	if err != nil {
+		return err
+	}
+	if isWisp {
 		_, err = w.uw.IssueUseCase().CloseWisp(ctx, id, params, actor)
 	} else {
 		_, err = w.uw.IssueUseCase().CloseIssue(ctx, id, params, actor)
@@ -420,10 +454,14 @@ func (w *uowMolWriter) SetConfig(ctx context.Context, key, value string) error {
 }
 
 func (w *uowMolWriter) ClaimStepIfOpen(ctx context.Context, id, actor string) error {
-	if w.isWisp(ctx, id) {
+	isWisp, err := w.isWisp(ctx, id)
+	if err != nil {
+		return err
+	}
+	if isWisp {
 		_, err := w.uw.IssueUseCase().ClaimWispIfOpen(ctx, id, actor)
 		return err
 	}
-	_, err := w.uw.IssueUseCase().ClaimIssueIfOpen(ctx, id, actor)
+	_, err = w.uw.IssueUseCase().ClaimIssueIfOpen(ctx, id, actor)
 	return err
 }
