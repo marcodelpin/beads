@@ -882,7 +882,8 @@ var rootCmd = &cobra.Command{
 			}{readonlyMode, true}
 		}
 		var dbNameFromDBFlag string
-		if cmd.Name() != "init" && cmd.Root().PersistentFlags().Changed("db") && dbPath != "" {
+		if cmd.Name() != "init" && cmd.Root().PersistentFlags().Changed("db") && dbPath != "" &&
+			dbidentifier.ValidateIdentifier(dbPath) == nil {
 			if _, statErr := os.Stat(dbPath); statErr != nil {
 				if !os.IsNotExist(statErr) {
 					return HandleError("--db %q: %v", dbPath, statErr)
