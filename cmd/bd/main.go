@@ -34,6 +34,7 @@ import (
 	"github.com/steveyegge/beads/internal/routing"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	dbidentifier "github.com/steveyegge/beads/internal/storage/domain/db"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/telemetry"
@@ -1366,7 +1367,7 @@ var rootCmd = &cobra.Command{
 			if !proxiedServerMode {
 				return HandleErrorRespectJSON("--database (or a --db value naming a database) is only supported in proxied-server mode")
 			}
-			if err := dolt.ValidateDatabaseName(databaseOverride); err != nil {
+			if err := dbidentifier.ValidateIdentifier(databaseOverride); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
 		}
