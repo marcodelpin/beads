@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
@@ -96,8 +95,6 @@ var (
 
 	// Dolt auto-commit policy (flag/config). Values: off | on
 	doltAutoCommit string
-
-	databaseIdentifierPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 	// commandDidWrite is set when a command performs a write that should trigger
 	// auto-flush. Used to decide whether to auto-commit Dolt after the command completes.
@@ -886,6 +883,9 @@ var rootCmd = &cobra.Command{
 		var dbNameFromDBFlag string
 		if cmd.Name() != "init" && cmd.Root().PersistentFlags().Changed("db") && dbPath != "" {
 			if _, statErr := os.Stat(dbPath); statErr != nil {
+				if !os.IsNotExist(statErr) {
+					return HandleError("--db %q: %v", dbPath, statErr)
+				}
 				dbNameFromDBFlag = dbPath
 				dbPath = ""
 			}
@@ -1366,8 +1366,8 @@ var rootCmd = &cobra.Command{
 			if !proxiedServerMode {
 				return HandleErrorRespectJSON("--database (or a --db value naming a database) is only supported in proxied-server mode")
 			}
-			if !databaseIdentifierPattern.MatchString(databaseOverride) {
-				return HandleErrorRespectJSON("invalid database name %q", databaseOverride)
+			if err := dolt.ValidateDatabaseName(databaseOverride); err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
 		}
 
