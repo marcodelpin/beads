@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -1875,12 +1876,18 @@ func showDoltConfig(testConnection bool) error {
 		}
 	}
 
-	// Show config sources
-	fmt.Println("\nConfig sources (priority order):")
-	fmt.Println("  1. Environment variables (BEADS_DOLT_*)")
-	fmt.Println("  2. metadata.json (local, gitignored)")
-	fmt.Println("  3. config.yaml (team defaults)")
+	printDoltShowConfigSources(os.Stdout)
 	return nil
+}
+
+// printDoltShowConfigSources renders doltserver.PortSourceLabels(), the same
+// slice DefaultConfig resolves against, so this list can't drift from actual
+// resolution behavior (GH#4511).
+func printDoltShowConfigSources(w io.Writer) {
+	fmt.Fprintln(w, "\nConfig sources for server port (priority order):")
+	for i, label := range doltserver.PortSourceLabels() {
+		fmt.Fprintf(w, "  %d. %s\n", i+1, label)
+	}
 }
 
 func setDoltConfig(key, value string, updateConfig bool) error {

@@ -2139,3 +2139,20 @@ func TestResolveDoltShowRemotesCorruptStateWarns(t *testing.T) {
 		t.Fatalf("expected a warning naming repo_state.json, got: %q", buf.String())
 	}
 }
+
+// GH#4511: show's config-source banner is rendered from doltserver.PortSourceLabels(),
+// the same slice DefaultConfig resolves against, so it cannot drift out of sync.
+// The behavioral precedence itself (env > port file > dolt yaml > beads yaml >
+// metadata.json) is proven against DefaultConfig in internal/doltserver, not here.
+func TestDoltShowConfigSourcesRendersPortSourceLabels(t *testing.T) {
+	var buf bytes.Buffer
+	printDoltShowConfigSources(&buf)
+	out := buf.String()
+
+	for i, label := range doltserver.PortSourceLabels() {
+		want := fmt.Sprintf("%d. %s", i+1, label)
+		if !strings.Contains(out, want) {
+			t.Errorf("printDoltShowConfigSources missing line %q in:\n%s", want, out)
+		}
+	}
+}
