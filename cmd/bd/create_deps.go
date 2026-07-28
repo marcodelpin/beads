@@ -10,6 +10,10 @@ import (
 )
 
 func parseDepSpecs(deps []string) ([]domain.DependencySpec, error) {
+	// deps arrives already comma-split: cobra's StringSlice flag CSV-decodes
+	// each --deps value, so re-splitting on "," here would double-decode a
+	// CSV-quoted target that legitimately contains a comma. Only trim and
+	// drop empties; splitting is cobra's job.
 	var out []domain.DependencySpec
 	for _, raw := range deps {
 		raw = strings.TrimSpace(raw)
@@ -21,6 +25,40 @@ func parseDepSpecs(deps []string) ([]domain.DependencySpec, error) {
 			return nil, err
 		}
 		out = append(out, spec)
+	}
+	return dedupeDepSpecs(out)
+}
+
+// dedupeDepSpecs collapses repeated identical edges and rejects edges that
+// would collide on the (issue_id, target) dependency-uniqueness key with a
+// *different* type. Type is not part of that key, so two different types on
+// the same target can't both be stored — but the storage layer already
+// treats a repeated identical (target, type) add as idempotent, so an exact
+// repeat here must be deduped rather than rejected.
+// GH#4626: discovered-from:X,blocked-by:X used to silently keep only one edge.
+func dedupeDepSpecs(specs []domain.DependencySpec) ([]domain.DependencySpec, error) {
+	// Key: swapDirection|target — same effective endpoint pair for a new issue.
+	seen := make(map[string]types.DependencyType, len(specs))
+	out := make([]domain.DependencySpec, 0, len(specs))
+	for _, s := range specs {
+		key := fmt.Sprintf("%t|%s", s.SwapDirection, s.TargetID)
+		prev, ok := seen[key]
+		switch {
+		case !ok:
+			seen[key] = s.Type
+			out = append(out, s)
+		case prev != s.Type:
+			return nil, fmt.Errorf(
+				"--deps cannot attach both %q and %q to the same target %q: a target can only carry one dependency type at a time. Pick one type, or open a separate issue for the second relationship (GH#4626)",
+				prev, s.Type, s.TargetID,
+			)
+		default:
+			// Identical edge repeated (e.g. blocked-by and depends-on both
+			// normalize to the same type/target) — silently dedupe.
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
@@ -97,6 +135,20 @@ func discoveredFromParent(deps []string) string {
 		target := strings.TrimSpace(parts[1])
 		if depType == types.DepDiscoveredFrom && target != "" {
 			return target
+		}
+	}
+	return ""
+}
+
+// discoveredFromParentSpec is discoveredFromParent's counterpart for callers
+// that already ran deps through parseDepSpecs. It reuses the canonical
+// parsed/normalized specs instead of re-deriving type:target parsing from
+// raw strings a second time, so it can't drift from parseDepSpec's rules
+// (e.g. the depends-on/blocked-by aliasing).
+func discoveredFromParentSpec(specs []domain.DependencySpec) string {
+	for _, s := range specs {
+		if s.Type == types.DepDiscoveredFrom && s.TargetID != "" {
+			return s.TargetID
 		}
 	}
 	return ""

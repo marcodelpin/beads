@@ -87,6 +87,35 @@ func TestParseDepSpecs(t *testing.T) {
 			in:      []string{":bd-1"},
 			wantErr: true,
 		},
+		{
+			// Cobra's StringSlice flag CSV-decodes "--deps a,b" into two
+			// elements before parseDepSpecs ever sees them; this is the
+			// representation parseDepSpecs actually receives in production,
+			// not a single comma-joined string (parseDepSpecs must not
+			// re-split on "," or it double-decodes a CSV-quoted value that
+			// legitimately contains a comma).
+			name: "multi-type different targets (already split by cobra)",
+			in:   []string{"discovered-from:bd-20", "blocks:bd-15"},
+			want: []domain.DependencySpec{
+				{Type: types.DepDiscoveredFrom, TargetID: "bd-20"},
+				{Type: types.DepBlocks, TargetID: "bd-15", SwapDirection: true},
+			},
+		},
+		{
+			name:    "multi-type same target rejected",
+			in:      []string{"discovered-from:bd-1", "blocked-by:bd-1"},
+			wantErr: true,
+		},
+		{
+			name: "duplicate identical edge is deduped, not rejected",
+			in:   []string{"blocked-by:bd-1", "depends-on:bd-1"},
+			// Both aliases normalize to the same {DepBlocks, bd-1, no swap}
+			// edge; storage already treats a repeated identical add as
+			// idempotent, so this must dedupe rather than error.
+			want: []domain.DependencySpec{
+				{Type: types.DepBlocks, TargetID: "bd-1"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
