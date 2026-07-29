@@ -196,6 +196,22 @@ var createCmd = &cobra.Command{
 		if wisp && noHistory {
 			return HandleError("--ephemeral and --no-history are mutually exclusive")
 		}
+		storageClassFlag, _ := cmd.Flags().GetString("storage-class")
+		storageClass, err := resolveStorageClass(storageClassFlag, types.IssueType(issueType).Normalize())
+		if err != nil {
+			return HandleError("%v", err)
+		}
+		// --storage-class ephemeral is the spelled-out spelling of --ephemeral
+		// (Protocol v0.1 C1.4: the wisp plane is today's ephemeral-class
+		// implementation). It routes to the wisp path exactly like the flag;
+		// the --no-history mutual exclusion above still applies.
+		if storageClass == types.StorageClassEphemeral {
+			if noHistory {
+				return HandleError("--storage-class ephemeral and --no-history are mutually exclusive")
+			}
+			wisp = true
+			storageClass = "" // wisp-plane rows derive ephemeral class (C1.2); no marker cell needed
+		}
 		molTypeStr, _ := cmd.Flags().GetString("mol-type")
 		var molType types.MolType
 		if molTypeStr != "" {
@@ -353,6 +369,7 @@ var createCmd = &cobra.Command{
 				EstimatedMinutes:   estimatedMinutes,
 				Ephemeral:          wisp,
 				NoHistory:          noHistory,
+				StorageClass:       storageClass,
 				CreatedBy:          getActorWithGit(),
 				Owner:              getOwner(),
 				Labels:             labels,
@@ -516,6 +533,7 @@ var createCmd = &cobra.Command{
 			EstimatedMinutes:   estimatedMinutes,
 			Ephemeral:          wisp,
 			NoHistory:          noHistory,
+			StorageClass:       storageClass,
 			CreatedBy:          getActorWithGit(),
 			Owner:              getOwner(),
 			Labels:             labels,
@@ -614,6 +632,7 @@ type createIssueParams struct {
 	EstimatedMinutes   *int
 	Ephemeral          bool
 	NoHistory          bool
+	StorageClass       types.StorageClass
 	CreatedBy          string
 	Owner              string
 	Labels             []string
@@ -627,6 +646,34 @@ type createIssueParams struct {
 	DueAt              *time.Time
 	DeferUntil         *time.Time
 	Metadata           json.RawMessage
+}
+
+// resolveStorageClass resolves the effective storage class at create time
+// (Protocol v0.1 C1.3): the explicit --storage-class flag wins; otherwise the
+// per-type config default storage-class.<type> applies; otherwise unset.
+// Versioned normalizes to unset — the class marker is omitted when versioned
+// (C2.4), and both spell identical semantics (C1.2). Values are validated
+// wherever they came from: a bad flag is a usage error, a bad config value is
+// a config bug and fails just as loudly.
+func resolveStorageClass(explicit string, issueType types.IssueType) (types.StorageClass, error) {
+	raw := explicit
+	if raw == "" {
+		raw = config.GetString("storage-class." + string(issueType))
+		if raw == "" {
+			return "", nil
+		}
+	}
+	class, err := types.ParseStorageClass(raw)
+	if err != nil {
+		if explicit == "" {
+			return "", fmt.Errorf("config storage-class.%s: %w", issueType, err)
+		}
+		return "", err
+	}
+	if class == types.StorageClassVersioned {
+		return "", nil
+	}
+	return class, nil
 }
 
 func buildCreateIssue(params createIssueParams) *types.Issue {
@@ -658,6 +705,7 @@ func buildCreateIssue(params createIssueParams) *types.Issue {
 		EstimatedMinutes:   params.EstimatedMinutes,
 		Ephemeral:          params.Ephemeral,
 		NoHistory:          params.NoHistory,
+		StorageClass:       params.StorageClass,
 		CreatedBy:          params.CreatedBy,
 		Owner:              params.Owner,
 		Labels:             append([]string(nil), params.Labels...),
@@ -784,6 +832,7 @@ func init() {
 	createCmd.Flags().IntP("estimate", "e", 0, "Time estimate in minutes (e.g., 60 for 1 hour)")
 	createCmd.Flags().Bool("ephemeral", false, "Create as ephemeral (short-lived, subject to TTL compaction)")
 	createCmd.Flags().Bool("no-history", false, "Skip Dolt commit history without making GC-eligible (for permanent agent beads)")
+	createCmd.Flags().String("storage-class", "", "Storage class: versioned, unversioned, or ephemeral (default: storage-class.<type> config, else versioned)")
 	createCmd.Flags().String("mol-type", "", "Molecule type: swarm (multi-agent), patrol (recurring ops), work (default)")
 	createCmd.Flags().String("wisp-type", "", "Wisp type for TTL-based compaction: heartbeat, ping, patrol, gc_report, recovery, error, escalation")
 	createCmd.Flags().Bool("validate", false, "Validate description contains required sections for issue type")
