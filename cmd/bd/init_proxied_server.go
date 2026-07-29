@@ -41,6 +41,7 @@ type initProxiedServerInput struct {
 	reinitLocal            bool
 	contributor            bool
 	team                   bool
+	teamServer             bool
 	fromJSONL              bool
 	nonInteractive         bool
 }
@@ -113,8 +114,9 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 	}
 
 	metadataBody, err := composeProxiedServerMetadataJSON(proxiedMetadataInputs{
-		dbName:    dbName,
-		projectID: projectID,
+		dbName:     dbName,
+		projectID:  projectID,
+		teamServer: in.teamServer,
 	})
 	if err != nil {
 		return fmt.Errorf("composing metadata.json: %v", err)
@@ -241,8 +243,9 @@ func resolveProxiedInitRemoteURL(ctx context.Context, gitUC domain.GitUseCase, i
 }
 
 type proxiedMetadataInputs struct {
-	dbName    string
-	projectID string
+	dbName     string
+	projectID  string
+	teamServer bool
 }
 
 func composeProxiedServerMetadataJSON(in proxiedMetadataInputs) ([]byte, error) {
@@ -252,6 +255,7 @@ func composeProxiedServerMetadataJSON(in proxiedMetadataInputs) ([]byte, error) 
 	cfg.DoltDatabase = in.dbName
 	cfg.DoltMode = configfile.DoltModeProxiedServer
 	cfg.ProjectID = in.projectID
+	cfg.DoltTeamServer = in.teamServer
 
 	if filepath.IsAbs(cfg.DoltDataDir) {
 		cfg.DoltDataDir = ""

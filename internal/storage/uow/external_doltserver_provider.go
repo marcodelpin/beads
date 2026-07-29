@@ -25,6 +25,7 @@ func NewExternalDoltServerUOWProvider(
 	rootPassword string,
 	proxyPort int,
 	idleTimeout time.Duration,
+	teamServer bool,
 ) (UnitOfWorkProvider, error) {
 	if idleTimeout == 0 {
 		idleTimeout = defaultProxyIdleTimeout
@@ -64,7 +65,7 @@ func NewExternalDoltServerUOWProvider(
 		return nil, fmt.Errorf("uow: get proxy endpoint: %w", err)
 	}
 
-	return openAndInitSchema(ctx, ep, database, rootUser, rootPassword, tlsConfigName)
+	return openAndInitSchema(ctx, ep, database, rootUser, rootPassword, tlsConfigName, teamServer)
 }
 
 func registerExternalTLSConfig(external configfile.ExternalDoltConfig) (string, error) {
