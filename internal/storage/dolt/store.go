@@ -2555,7 +2555,7 @@ func (s *DoltStore) commitWorkingSet(ctx context.Context, message string, mode c
 	}
 
 	for _, table := range tables {
-		if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD(?)", table); err != nil {
+		if err := schema.DrainCall(ctx, conn, "CALL DOLT_ADD(?)", table); err != nil {
 			// config when the mode intentionally includes it is the whole reason
 			// we stage here: silently skipping a failed DOLT_ADD('config') would
 			// leave config dirty and re-wedge the merge, so surface it instead.
@@ -2570,7 +2570,7 @@ func (s *DoltStore) commitWorkingSet(ctx context.Context, message string, mode c
 
 	// NOTE: In SQL procedure mode, Dolt defaults author to the authenticated SQL user
 	// (e.g. root@localhost). Always pass an explicit author for deterministic history.
-	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
+	if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-m', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
 		if isDoltNothingToCommit(err) {
 			return nil
 		}
@@ -2596,7 +2596,7 @@ func (s *DoltStore) concludeOpenMerge(ctx context.Context, conn *sql.Conn, messa
 	if !merging {
 		return nil
 	}
-	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
+	if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-m', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
 		if isDoltNothingToCommit(err) {
 			return nil
 		}
@@ -2658,7 +2658,7 @@ func (s *DoltStore) CommitWithConfig(ctx context.Context, message string) error 
 	}
 	defer conn.Close()
 
-	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
+	if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
 		if isDoltNothingToCommit(err) {
 			return nil
 		}
@@ -2678,11 +2678,11 @@ func (s *DoltStore) doltAddAndCommit(ctx context.Context, tables []string, commi
 	defer conn.Close()
 
 	for _, table := range tables {
-		if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD(?)", table); err != nil {
+		if err := schema.DrainCall(ctx, conn, "CALL DOLT_ADD(?)", table); err != nil {
 			return fmt.Errorf("dolt add %s: %w", table, err)
 		}
 	}
-	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+	if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
 		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
 		return fmt.Errorf("dolt commit: %w", err)
 	}
@@ -3450,19 +3450,19 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, remote string, quer
 		return fmt.Errorf("failed to set dolt_force_transaction_commit: %w", err)
 	}
 
-	_, pullErr := tx.ExecContext(ctx, query, args...)
+	pullErr := schema.DrainCall(ctx, tx, query, args...)
 
 	// GH#3144: When DOLT_PULL fails because upstream branch tracking is not
 	// configured in repo_state.json (common when remote was added via
 	// bd dolt remote add rather than bd bootstrap/dolt clone), fall back to
 	// DOLT_FETCH + DOLT_MERGE which does not require tracking config.
 	if pullErr != nil && isBranchTrackingError(pullErr) {
-		if _, err := tx.ExecContext(ctx, "CALL DOLT_FETCH(?, ?)", remote, s.branch); err != nil {
+		if err := schema.DrainCall(ctx, tx, "CALL DOLT_FETCH(?, ?)", remote, s.branch); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("fetch from %s/%s: %w", remote, s.branch, err)
 		}
 		trackingRef := remote + "/" + s.branch
-		_, mergeErr := tx.ExecContext(ctx, "CALL DOLT_MERGE(?)", trackingRef)
+		mergeErr := schema.DrainCall(ctx, tx, "CALL DOLT_MERGE(?)", trackingRef)
 		if mergeErr != nil && strings.Contains(mergeErr.Error(), "up to date") {
 			mergeErr = nil
 		}
