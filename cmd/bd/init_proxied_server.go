@@ -98,6 +98,12 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 	beadsDirIsLocal := proxiedInit.IsLocal
 	useLocalBeads := !hasExplicitBeadsDir || beadsDirIsLocal
 
+	if in.teamServer && proxiedInit.DBNameDerived {
+		return fmt.Errorf(
+			"--team-server requires --database (or an existing .beads/metadata.json naming the database): bd cannot guess the name of the bts-provisioned database (guessed %q from the prefix)",
+			dbName)
+	}
+
 	if strings.Contains(filepath.Clean(cwd), string(filepath.Separator)+".beads"+string(filepath.Separator)) ||
 		strings.HasSuffix(filepath.Clean(cwd), string(filepath.Separator)+".beads") {
 		return fmt.Errorf("cannot initialize bd inside a .beads directory\nCurrent directory: %s", cwd)
@@ -170,6 +176,7 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		fmt.Fprintf(os.Stderr, "Warning: could not compute clone ID: %v\n", err)
 	}
 
+	adoptedPrefix, adoptedProjectID := prefix, projectID
 	err = uow.RunTx(ctx, initUOWProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
 		bootstrapParams := domain.BootstrapProjectParams{
 			Prefix:         prefix,
@@ -183,6 +190,16 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 			bootstrapParams.RemoteName = "origin"
 			bootstrapParams.RemoteURL = remoteURL
 		}
+		if in.teamServer {
+			p, id, err := adoptTeamServerIdentity(ctx, uw.ConfigUseCase(), dbName, prefix, in.prefix != "", projectID)
+			if err != nil {
+				return "", err
+			}
+			adoptedPrefix, adoptedProjectID = p, id
+			bootstrapParams.Prefix = p
+			bootstrapParams.ProjectID = id
+			bootstrapParams.SkipIdentity = true
+		}
 
 		if _, err := uw.BootstrapUseCase().BootstrapProject(ctx, bootstrapParams); err != nil {
 			return "", fmt.Errorf("bootstrap project: %w", err)
@@ -194,9 +211,25 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		return HandleError("%v", err)
 	}
 
+	// Adoption is two-way: metadata.json was written with the locally-minted
+	// project id before any DB connection existed, so the adopted id must be
+	// patched back before runInitProxiedServerTail git-commits .beads/ —
+	// otherwise every later open fails PROJECT IDENTITY MISMATCH against the
+	// bts-minted id.
+	if in.teamServer && adoptedProjectID != projectID {
+		fileCfg, err := configfile.Load(beadsDir)
+		if err != nil || fileCfg == nil {
+			return HandleError("failed to reload %s to adopt the provisioned project identity: %v", configfile.ConfigFileName, err)
+		}
+		fileCfg.ProjectID = adoptedProjectID
+		if err := fileCfg.Save(beadsDir); err != nil {
+			return HandleError("failed to save the provisioned project identity to %s: %v", configfile.ConfigFileName, err)
+		}
+	}
+
 	return runInitProxiedServerTail(cmd, ctx, in, runInitTailContext{
 		beadsDir:      beadsDir,
-		prefix:        prefix,
+		prefix:        adoptedPrefix,
 		dbName:        dbName,
 		useLocalBeads: useLocalBeads,
 		remoteURL:     remoteURL,
@@ -240,6 +273,54 @@ func resolveProxiedInitRemoteURL(ctx context.Context, gitUC domain.GitUseCase, i
 		}
 	}
 	return ""
+}
+
+// teamServerIdentityReader is the slice of domain.ConfigUseCase that
+// adoptTeamServerIdentity needs.
+type teamServerIdentityReader interface {
+	GetConfig(ctx context.Context, key string) (string, error)
+	GetMetadata(ctx context.Context, key string) (string, error)
+}
+
+// adoptTeamServerIdentity reads the bts-provisioned identity out of the shared
+// database. In team-server mode bd never writes identity — bts owns it — so a
+// missing prefix or project id is a hard "not provisioned yet" error rather
+// than something to mint over, exactly the gateway contract implemented by
+// resolveInitIssuePrefix / resolveInitProjectID. localPrefix must be the
+// resolved (sanitized) init prefix; prefixIsExplicit reports whether the user
+// passed --prefix, in which case a value conflicting with the database's is
+// refused instead of silently ignored.
+func adoptTeamServerIdentity(ctx context.Context, reader teamServerIdentityReader, dbName, localPrefix string, prefixIsExplicit bool, localProjectID string) (prefix, projectID string, err error) {
+	dbPrefix, prefixReadErr := reader.GetConfig(ctx, "issue_prefix")
+	if _, _, err := resolveInitIssuePrefix(true, dbPrefix, dbName, localPrefix, prefixReadErr); err != nil {
+		if prefixReadErr == nil {
+			return "", "", fmt.Errorf(
+				"database %q has no project identity (config.issue_prefix) — provision it with 'bts init' (or heal an older bts database with 'bts migrate')",
+				dbName)
+		}
+		return "", "", err
+	}
+	// resolveInitIssuePrefix adopts an existing prefix silently; an explicit
+	// --prefix that disagrees must never be silently ignored. A merely derived
+	// prefix (cwd basename, issue-prefix config) adopts silently, mirroring
+	// bts, whose defaulted prefix also adopts silently.
+	if prefixIsExplicit && dbPrefix != localPrefix {
+		return "", "", fmt.Errorf(
+			"--prefix %q conflicts with issue_prefix %q provisioned in database %q; omit --prefix to adopt the provisioned one",
+			localPrefix, dbPrefix, dbName)
+	}
+
+	dbProjectID, idReadErr := reader.GetMetadata(ctx, "_project_id")
+	adoptedID, _, err := resolveInitProjectID(true, localProjectID, dbProjectID, dbName, idReadErr)
+	if err != nil {
+		if idReadErr == nil {
+			return "", "", fmt.Errorf(
+				"database %q has no project identity (metadata._project_id) — provision it with 'bts init' (or heal an older bts database with 'bts migrate')",
+				dbName)
+		}
+		return "", "", err
+	}
+	return dbPrefix, adoptedID, nil
 }
 
 type proxiedMetadataInputs struct {

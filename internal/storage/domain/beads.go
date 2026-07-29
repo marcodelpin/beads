@@ -59,6 +59,11 @@ type ResolveProxiedInitResult struct {
 	IsLocal     bool
 	DBName      string
 	ProjectID   string
+	// DBNameDerived reports that DBName was guessed (from the prefix or the
+	// package default) rather than pinned by the --database flag or an
+	// existing metadata.json. Team-server init refuses a guessed name: it
+	// must match the bts-provisioned database exactly.
+	DBNameDerived bool
 }
 
 type BeadsDirTemplates struct {
@@ -139,22 +144,22 @@ func (u *beadsDirFSUseCaseImpl) ResolveProxiedInit(ctx context.Context, params R
 		return ResolveProxiedInitResult{}, fmt.Errorf("ResolveProxiedInit: read config: %w", err)
 	}
 
-	result.DBName = resolveDoltDatabaseName(cfg, params.Prefix, params.DBFlag)
+	result.DBName, result.DBNameDerived = resolveDoltDatabaseName(cfg, params.Prefix, params.DBFlag)
 	result.ProjectID = resolveProjectID(cfg)
 	return result, nil
 }
 
-func resolveDoltDatabaseName(cfg *configfile.Config, prefix, dbFlag string) string {
+func resolveDoltDatabaseName(cfg *configfile.Config, prefix, dbFlag string) (name string, derived bool) {
 	if dbFlag != "" {
-		return dbFlag
+		return dbFlag, false
 	}
 	if cfg != nil && cfg.DoltDatabase != "" {
-		return cfg.DoltDatabase
+		return cfg.DoltDatabase, false
 	}
 	if prefix != "" {
-		return strings.ReplaceAll(prefix, "-", "_")
+		return strings.ReplaceAll(prefix, "-", "_"), true
 	}
-	return configfile.DefaultDoltDatabase
+	return configfile.DefaultDoltDatabase, true
 }
 
 func resolveProjectID(cfg *configfile.Config) string {
