@@ -18,8 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// teamServerHarness holds a running dolt sql-server plus the pieces needed to
-// open uow providers against it in either normal or team-server mode.
 type teamServerHarness struct {
 	port         int
 	storeRootDir string
@@ -69,8 +67,7 @@ func (h *teamServerHarness) openProvider(ctx context.Context, database string, t
 	)
 }
 
-// directDB opens a connection straight to the dolt sql-server (bypassing the
-// proxy) so tests can inspect and tamper with server state.
+// directDB connects straight to the dolt sql-server, bypassing the proxy.
 func (h *teamServerHarness) directDB(t *testing.T, database string) *sql.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("root:@tcp(127.0.0.1:%d)/%s?parseTime=true", h.port, database)
@@ -93,11 +90,6 @@ func snapshotMigrations(t *testing.T, ctx context.Context, db *sql.DB) migration
 	return s
 }
 
-// TestTeamServerMode_Integration exercises the full team-server contract
-// against a real dolt sql-server: a missing database is refused with bts
-// guidance, a provisioned database at the matching schema version opens
-// without touching schema_migrations, and a behind database is refused with
-// operator-facing advice instead of being migrated.
 func TestTeamServerMode_Integration(t *testing.T) {
 	h := newTeamServerHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -113,16 +105,14 @@ func TestTeamServerMode_Integration(t *testing.T) {
 	})
 
 	t.Run("existing empty database refused with bts init", func(t *testing.T) {
-		// The container pre-creates beads_test with no beads schema in it:
-		// USE succeeds but the version check must still refuse (v0).
+		// The container pre-creates beads_test with no beads schema in it.
 		p, err := h.openProvider(ctx, "beads_test", true)
 		require.Error(t, err)
 		assert.Nil(t, p)
 		assert.Contains(t, err.Error(), "bts init")
 	})
 
-	// Provision the database the way bts would: create + migrate to the
-	// binary's latest schema version (the normal, non-team-server open).
+	// Provision the database the way bts would (a normal, migrating open).
 	provisioner, err := h.openProvider(ctx, database, false)
 	require.NoError(t, err)
 	require.NoError(t, provisioner.Close(ctx))
@@ -146,8 +136,7 @@ func TestTeamServerMode_Integration(t *testing.T) {
 	})
 
 	t.Run("behind database refused with bts migrate", func(t *testing.T) {
-		// Simulate a client built against a newer schema than the shared DB
-		// by rolling the migration cursor back one version.
+		// Roll the migration cursor back one version to simulate a behind DB.
 		var savedHash sql.NullString
 		require.NoError(t, direct.QueryRowContext(ctx,
 			"SELECT content_hash FROM schema_migrations WHERE version = ?", before.maxVersion).Scan(&savedHash))

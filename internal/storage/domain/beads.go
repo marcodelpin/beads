@@ -59,10 +59,8 @@ type ResolveProxiedInitResult struct {
 	IsLocal     bool
 	DBName      string
 	ProjectID   string
-	// DBNameDerived reports that DBName was guessed (from the prefix or the
-	// package default) rather than pinned by the --database flag or an
-	// existing metadata.json. Team-server init refuses a guessed name: it
-	// must match the bts-provisioned database exactly.
+	// DBNameDerived: DBName was guessed (prefix or default) rather than
+	// pinned by the --database flag or an existing metadata.json.
 	DBNameDerived bool
 }
 

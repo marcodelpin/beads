@@ -22,10 +22,8 @@ type BootstrapProjectParams struct {
 	RemoteName string
 	RemoteURL  string
 
-	// SkipIdentity skips the issue_prefix and _project_id writes. Set in
-	// team-server mode, where the provisioner (bts) owns the database's
-	// identity and bd only adopts it. Prefix and ProjectID must still carry
-	// the adopted values — they are validated, just never written.
+	// SkipIdentity skips the issue_prefix and _project_id writes (team-server
+	// mode: bts owns identity). Prefix and ProjectID are still validated.
 	SkipIdentity bool
 }
 

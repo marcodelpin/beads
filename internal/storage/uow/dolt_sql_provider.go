@@ -24,9 +24,8 @@ const (
 type doltSQLProvider struct {
 	defaultBranch string
 	db            *sql.DB
-	// teamServer means the schema is owned by beads-team-server (bts): bd
-	// never issues CREATE DATABASE or runs migrations, and instead verifies
-	// the existing schema version matches this binary.
+	// teamServer: schema is owned by beads-team-server (bts) — bd never
+	// creates the database or migrates, only verifies the schema version.
 	teamServer bool
 }
 
@@ -100,8 +99,6 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string) error
 
 		ddl := db.NewDDLSQLRepository(conn)
 		if p.teamServer {
-			// The schema is owned by beads-team-server (bts): never create
-			// the database or migrate, only verify the schema version.
 			if err := ddl.UseDatabase(ctx, database); err != nil {
 				if isSerializationError(err) {
 					return fmt.Errorf("uow: switching to database: %w", err)

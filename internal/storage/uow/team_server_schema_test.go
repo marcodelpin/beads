@@ -114,8 +114,7 @@ func TestCheckTeamServerSchema_Ahead_ReturnsSchemaSkewError(t *testing.T) {
 	mock, db, closeDB := newVersionMockDB(t)
 	defer closeDB()
 	ahead := schema.LatestVersion() + 2
-	// checkTeamServerSchema reads the version once, then delegates the ahead
-	// case to schema.CheckForwardDrift, which reads it again.
+	// The ahead case delegates to CheckForwardDrift, which re-reads the version.
 	expectVersionQuery(mock, ahead)
 	expectVersionQuery(mock, ahead)
 

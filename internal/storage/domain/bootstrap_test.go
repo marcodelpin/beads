@@ -8,8 +8,6 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 )
 
-// recordingConfigRepo records identity/metadata writes; the embedded interface
-// panics on any method BootstrapProject is not expected to call.
 type recordingConfigRepo struct {
 	ConfigSQLRepository
 	config        map[string]string

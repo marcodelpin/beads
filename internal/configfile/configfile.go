@@ -342,10 +342,8 @@ func (c *Config) IsDoltProxiedServerMode() bool {
 	return strings.ToLower(c.DoltMode) == DoltModeProxiedServer
 }
 
-// IsTeamServerManaged reports whether the shared database's schema is owned by
-// beads-team-server (bts). In this mode bd never creates the database or runs
-// schema migrations — it only verifies the schema version matches the binary.
-// Only meaningful in proxied-server mode; the flag is inert otherwise.
+// IsTeamServerManaged reports whether the database's schema and identity are
+// owned by beads-team-server (bts). Only meaningful in proxied-server mode.
 func (c *Config) IsTeamServerManaged() bool {
 	return c.IsDoltProxiedServerMode() && c.DoltTeamServer
 }
