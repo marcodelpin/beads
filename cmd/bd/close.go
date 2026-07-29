@@ -279,7 +279,7 @@ the flags appear in the command line.`,
 
 		if continueFlag && len(resolvedIDs) == 1 && closedForCommand {
 			autoClaim := !noAuto
-			result, err := AdvanceToNextStep(ctx, postCloseStore, resolvedIDs[0], autoClaim, actor)
+			result, err := AdvanceToNextStep(ctx, newStandaloneStoreMolWriter(postCloseStore), resolvedIDs[0], autoClaim, actor)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not advance to next step: %v\n", err)
 			} else if result != nil {
@@ -548,7 +548,7 @@ func checkGateSatisfaction(issue *types.Issue) error {
 
 	switch {
 	case strings.HasPrefix(issue.AwaitType, "gh:run"):
-		resolved, escalated, reason, err = checkGHRun(issue, true)
+		resolved, escalated, reason, err = checkGHRun(issue, func(gateID, runID string) error { return updateGateAwaitIDFunc(nil, gateID, runID) })
 	case strings.HasPrefix(issue.AwaitType, "gh:pr"):
 		resolved, escalated, reason, err = checkGHPR(issue)
 	case issue.AwaitType == "timer":
@@ -704,7 +704,7 @@ func resolveCloseTargets(ctx context.Context, localStore storage.DoltStorage, id
 			return nil, fmt.Errorf("no auto-routed store available")
 		}
 		sharedRoutedTried = true
-		rs, routed, err := openRoutedReadStore(ctx, localStore)
+		rs, routed, _, err := openRoutedReadStore(ctx, localStore)
 		if err != nil {
 			return nil, err
 		}

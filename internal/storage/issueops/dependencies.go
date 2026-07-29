@@ -49,6 +49,25 @@ func depTargetEquals(alias string) string {
 	return depTargetExpr(alias) + " = ?"
 }
 
+// depTargetEqualsOr returns a SARGABLE target-equality predicate as an explicit
+// per-column OR — `(depends_on_issue_id = ? OR depends_on_wisp_id = ? OR
+// depends_on_external = ?)` — binding the target id once per typed column (three
+// args, in that column order). Unlike depTargetEquals's COALESCE wrapper (which
+// wraps the columns in an expression no index can match), each disjunct is a
+// bare indexed column.
+//
+// On an index-merging planner (e.g. Postgres) this plans as a BitmapOr
+// index-merge over idx_dep_{issue,wisp,external}_target (a Bitmap Heap Scan,
+// cost ~36 on a 5k-row table) where the COALESCE form is a Seq Scan (cost
+// ~104). On Dolt
+// (go-mysql-server) the optimizer does not index-merge an OR of distinct columns,
+// so the un-ordered COUNT still scans, but the COALESCE form never had any index
+// path either; the type-filtered path seeks the (type, target) composite on both.
+// Use it for target-keyed reads of a single fixed target.
+func depTargetEqualsOr() string {
+	return "(depends_on_issue_id = ? OR depends_on_wisp_id = ? OR depends_on_external = ?)"
+}
+
 func depTargetIn(alias, placeholders string) string {
 	return depTargetExpr(alias) + " IN (" + placeholders + ")"
 }

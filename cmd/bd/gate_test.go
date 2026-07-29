@@ -309,7 +309,7 @@ func TestCheckGHRunUsesRepositoryFromMetadata(t *testing.T) {
 		AwaitType: "gh:run",
 		AwaitID:   "12345",
 		Metadata:  json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
-	}, false,
+	}, nil,
 		fakeGHRunner(t,
 			`{"status":"completed","conclusion":"success","name":"CI"}`,
 			"run", "view", "12345", "--json", "status,conclusion,name", "--repo", "srobroek/agentic-packages",
@@ -479,7 +479,7 @@ func TestCheckGHRun_DryRunDoesNotPersistDiscoveredRunID(t *testing.T) {
 	resolved, escalated, reason, err := checkGHRun(&types.Issue{
 		ID:      "bd-gate",
 		AwaitID: "release.yml",
-	}, false)
+	}, nil)
 	if err != nil {
 		t.Fatalf("checkGHRun returned error: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestCheckGHRun_PersistsDiscoveredRunIDOutsideDryRun(t *testing.T) {
 	resolved, escalated, reason, err := checkGHRun(&types.Issue{
 		ID:      "bd-gate",
 		AwaitID: "release.yml",
-	}, true)
+	}, func(gateID, runID string) error { return updateGateAwaitIDFunc(nil, gateID, runID) })
 	if err != nil {
 		t.Fatalf("checkGHRun returned error: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestCheckGHRun_ReturnsErrorWhenPersistingDiscoveredRunIDFails(t *testing.T)
 	resolved, escalated, reason, err := checkGHRun(&types.Issue{
 		ID:      "bd-gate",
 		AwaitID: "release.yml",
-	}, true)
+	}, func(gateID, runID string) error { return updateGateAwaitIDFunc(nil, gateID, runID) })
 	if err == nil {
 		t.Fatal("expected checkGHRun to return an error when await_id persistence fails")
 	}
