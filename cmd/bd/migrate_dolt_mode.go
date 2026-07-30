@@ -299,6 +299,12 @@ func runMigrateFromProxiedServer(dryRun bool, shared bool) error {
 	if !cfg.IsDoltProxiedServerMode() {
 		return HandleError("repo is not in proxied-server mode (dolt_mode=%q); this command only migrates proxied-server repos", cfg.GetDoltMode())
 	}
+	// Leaving proxied mode would make dolt_team_server inert and resume
+	// bd-driven schema migrations on the bts-owned database.
+	if cfg.DoltTeamServer {
+		return HandleErrorWithHint("workspace is team-server managed (dolt_team_server in metadata.json); the shared database's schema is owned by beads-team-server",
+			"if the database is no longer bts-managed, remove dolt_team_server from .beads/metadata.json first")
+	}
 
 	rootDir, err := resolveProxiedServerRootPath(beadsDir)
 	if err != nil {

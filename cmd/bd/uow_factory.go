@@ -21,8 +21,10 @@ func newProxiedServerUOWProvider(ctx context.Context, beadsDir, databaseOverride
 
 	persisted, _ := configfile.Load(beadsDir)
 	database := configfile.DefaultDoltDatabase
+	var teamServer bool
 	if persisted != nil {
 		database = persisted.GetDoltDatabase()
+		teamServer = persisted.IsTeamServerManaged()
 	}
 	if databaseOverride != "" {
 		database = databaseOverride
@@ -36,10 +38,10 @@ func newProxiedServerUOWProvider(ctx context.Context, beadsDir, databaseOverride
 		proxyIdleTimeout = info.IdleTimeout
 	}
 	if info != nil && info.External != nil {
-		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External, proxyPort, proxyIdleTimeout)
+		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External, proxyPort, proxyIdleTimeout, teamServer)
 	}
 
-	return newManagedProxiedServerUOWProvider(ctx, beadsDir, database, proxyPort, proxyIdleTimeout)
+	return newManagedProxiedServerUOWProvider(ctx, beadsDir, database, proxyPort, proxyIdleTimeout, teamServer)
 }
 
 func newExternalProxiedServerUOWProvider(
@@ -48,6 +50,7 @@ func newExternalProxiedServerUOWProvider(
 	external *configfile.ExternalDoltConfig,
 	proxyPort int,
 	proxyIdleTimeout time.Duration,
+	teamServer bool,
 ) (uow.UnitOfWorkProvider, error) {
 	rootPath, err := resolveProxiedServerRootPath(beadsDir)
 	if err != nil {
@@ -81,6 +84,7 @@ func newExternalProxiedServerUOWProvider(
 		os.Getenv(configfile.ExternalDoltPasswordEnvVar),
 		proxyPort,
 		proxyIdleTimeout,
+		teamServer,
 	)
 }
 
@@ -89,6 +93,7 @@ func newManagedProxiedServerUOWProvider(
 	beadsDir, database string,
 	proxyPort int,
 	proxyIdleTimeout time.Duration,
+	teamServer bool,
 ) (uow.UnitOfWorkProvider, error) {
 	doltBin, err := exec.LookPath("dolt")
 	if err != nil {
@@ -136,5 +141,6 @@ func newManagedProxiedServerUOWProvider(
 		doltBin,
 		proxyPort,
 		proxyIdleTimeout,
+		teamServer,
 	)
 }

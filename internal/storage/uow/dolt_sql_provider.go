@@ -24,6 +24,9 @@ const (
 type doltSQLProvider struct {
 	defaultBranch string
 	db            *sql.DB
+	// teamServer: schema is owned by beads-team-server (bts) — bd never
+	// creates the database or migrates, only verifies the schema version.
+	teamServer bool
 }
 
 var (
@@ -95,6 +98,23 @@ func (p *doltSQLProvider) initSchema(ctx context.Context, database string) error
 		defer conn.Close()
 
 		ddl := db.NewDDLSQLRepository(conn)
+		if p.teamServer {
+			if err := ddl.UseDatabase(ctx, database); err != nil {
+				if isSerializationError(err) {
+					return fmt.Errorf("uow: switching to database: %w", err)
+				}
+				return backoff.Permanent(fmt.Errorf(
+					"uow: database %q not found — the schema is managed by beads-team-server; ask your operator to run 'bts init' first: %w",
+					database, err))
+			}
+			if err := checkTeamServerSchema(ctx, conn, database); err != nil {
+				if isSerializationError(err) {
+					return fmt.Errorf("uow: team-server schema check: %w", err)
+				}
+				return backoff.Permanent(err)
+			}
+			return nil
+		}
 		if created {
 			// Re-assert on retries so a database dropped between attempts
 			// (e.g. a concurrent clean-databases) is recreated rather than
@@ -156,7 +176,7 @@ func openDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	return conn, nil
 }
 
-func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUser, rootPassword, tlsConfigName string) (UnitOfWorkProvider, error) {
+func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUser, rootPassword, tlsConfigName string, teamServer bool) (UnitOfWorkProvider, error) {
 	initDB, err := openDB(ctx, buildDSN(ep, "", rootUser, rootPassword, tlsConfigName))
 	if err != nil {
 		return nil, err
@@ -165,6 +185,7 @@ func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUse
 	initProvider := &doltSQLProvider{
 		defaultBranch: defaultBranch,
 		db:            initDB,
+		teamServer:    teamServer,
 	}
 
 	if err := initProvider.initSchema(ctx, database); err != nil {
@@ -184,5 +205,6 @@ func openAndInitSchema(ctx context.Context, ep proxy.Endpoint, database, rootUse
 	return &doltSQLProvider{
 		defaultBranch: defaultBranch,
 		db:            dbConn,
+		teamServer:    teamServer,
 	}, nil
 }

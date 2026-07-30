@@ -34,6 +34,7 @@ type Config struct {
 	DoltServerTLS      bool   `json:"dolt_server_tls,omitempty"`      // Enable TLS for server connections (required for Hosted Dolt)
 	DoltDataDir        string `json:"dolt_data_dir,omitempty"`        // Custom dolt data directory (absolute path; default: .beads/dolt)
 	DoltRemotesAPIPort int    `json:"dolt_remotesapi_port,omitempty"` // Dolt remotesapi port for federation (default: 8080)
+	DoltTeamServer     bool   `json:"dolt_team_server,omitempty"`     // Schema is managed by beads-team-server (bts); bd never runs migrations (proxied-server mode only)
 	// Note: Password should be set via BEADS_DOLT_PASSWORD env var for security
 
 	// Deprecated backend fields are retained only to round-trip metadata written by
@@ -339,6 +340,12 @@ func (c *Config) IsDoltProxiedServerMode() bool {
 		return false
 	}
 	return strings.ToLower(c.DoltMode) == DoltModeProxiedServer
+}
+
+// IsTeamServerManaged reports whether the database's schema and identity are
+// owned by beads-team-server (bts). Only meaningful in proxied-server mode.
+func (c *Config) IsTeamServerManaged() bool {
+	return c.IsDoltProxiedServerMode() && c.DoltTeamServer
 }
 
 // GetDoltMode returns the Dolt connection mode, defaulting to server.
