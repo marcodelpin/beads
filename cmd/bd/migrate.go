@@ -319,7 +319,7 @@ func handleUpdateRepoID(dryRun bool, autoYes bool) error {
 	// not the process cwd. Otherwise `bd -C <dir> migrate --update-repo-id`
 	// stamps the target DB with the caller repo's fingerprint and the bad
 	// value propagates to every clone on the next sync (GH#4361).
-	newRepoID, err := beads.ComputeRepoIDForPath(beadsDir)
+	newRepoID, newRepoIDSource, err := beads.ComputeRepoIDForPathWithSource(beadsDir)
 	if err != nil {
 		if jsonOutput {
 			if jerr := outputJSON(map[string]interface{}{
@@ -374,7 +374,17 @@ func handleUpdateRepoID(dryRun bool, autoYes bool) error {
 	}
 
 	if oldRepoID != "" && oldRepoID != newRepoID && !autoYes && !jsonOutput {
-		fmt.Printf("WARNING: Changing repository ID can break sync if other clones exist.\n\n")
+		fmt.Printf("WARNING: Changing repository ID can break sync if other clones exist.\n")
+		// bd-46vla: repo_id lives in the versioned metadata table, so the new
+		// value propagates to every clone on the next sync. A path-fallback id
+		// (no origin remote here) is host-local — stamping it into shared
+		// state is almost never right on a synced clone.
+		if newRepoIDSource == beads.RepoIDSourcePath {
+			fmt.Printf("The new ID is a path hash (this checkout has no origin remote); it is\n")
+			fmt.Printf("local to this host but will propagate to every clone on the next sync.\n")
+			fmt.Printf("On a synced clone, keep the stored ID instead (see 'bd doctor').\n")
+		}
+		fmt.Printf("\n")
 		fmt.Printf("Current repo ID: %s\n", oldDisplay)
 		fmt.Printf("New repo ID:     %s\n\n", truncateID(newRepoID, 8))
 		fmt.Printf("Continue? [y/N] ")
