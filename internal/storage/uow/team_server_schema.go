@@ -3,7 +3,6 @@ package uow
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
@@ -24,16 +23,11 @@ func checkTeamServerSchema(ctx context.Context, conn schema.DBConn, database str
 	case current > latest:
 		return schema.CheckForwardDrift(ctx, conn)
 	case current < latest:
-		if os.Getenv("BD_IGNORE_SCHEMA_SKEW") == "1" {
-			fmt.Fprintf(os.Stderr,
-				"Warning: schema skew ignored — database %q is at schema v%d, this bd expects v%d; queries touching newer schema may fail\n",
-				database, current, latest)
-			return nil
-		}
-		// Not SchemaBehindError: its "run any bd write command to migrate"
-		// advice is wrong for a bts-owned schema.
+		// No BD_IGNORE_SCHEMA_SKEW hatch here: it would let a newer bd write
+		// against an older bts schema. Not SchemaBehindError either: its "run
+		// any bd write command to migrate" advice is wrong for a bts-owned schema.
 		return fmt.Errorf(
-			"uow: database %q is at schema v%d, this bd expects v%d; the schema is managed by beads-team-server — ask your operator to run 'bts migrate', or use a bd built against schema v%d (set BD_IGNORE_SCHEMA_SKEW=1 to proceed anyway)",
+			"uow: database %q is at schema v%d, this bd expects v%d; the schema is managed by beads-team-server — ask your operator to run 'bts migrate', or use a bd built against schema v%d",
 			database, current, latest, current)
 	}
 	return nil

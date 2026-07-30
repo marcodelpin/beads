@@ -178,6 +178,20 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 
 	adoptedPrefix, adoptedProjectID := prefix, projectID
 	err = uow.RunTx(ctx, initUOWProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
+		if in.teamServer {
+			// bts owns the shared database: adopt identity and write nothing —
+			// no identity, no tracking metadata (repo_id/clone_id are per-clone
+			// fingerprints; last-init-wins overwrites feed false cross-project
+			// mismatch diagnostics), no Dolt remote. Empty message skips the
+			// Dolt commit.
+			p, id, err := adoptTeamServerIdentity(ctx, uw.ConfigUseCase(), dbName, prefix, in.prefix != "", projectID)
+			if err != nil {
+				return "", err
+			}
+			adoptedPrefix, adoptedProjectID = p, id
+			return "", nil
+		}
+
 		bootstrapParams := domain.BootstrapProjectParams{
 			Prefix:         prefix,
 			ProjectID:      projectID,
@@ -189,16 +203,6 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		if remoteURL != "" {
 			bootstrapParams.RemoteName = "origin"
 			bootstrapParams.RemoteURL = remoteURL
-		}
-		if in.teamServer {
-			p, id, err := adoptTeamServerIdentity(ctx, uw.ConfigUseCase(), dbName, prefix, in.prefix != "", projectID)
-			if err != nil {
-				return "", err
-			}
-			adoptedPrefix, adoptedProjectID = p, id
-			bootstrapParams.Prefix = p
-			bootstrapParams.ProjectID = id
-			bootstrapParams.SkipIdentity = true
 		}
 
 		if _, err := uw.BootstrapUseCase().BootstrapProject(ctx, bootstrapParams); err != nil {

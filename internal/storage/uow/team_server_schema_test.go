@@ -124,21 +124,14 @@ func TestCheckTeamServerSchema_Ahead_ReturnsSchemaSkewError(t *testing.T) {
 	}
 }
 
-func TestCheckTeamServerSchema_Behind_EscapeHatchWarnsInsteadOfRefusing(t *testing.T) {
+func TestCheckTeamServerSchema_Behind_EscapeHatchDoesNotBypass(t *testing.T) {
 	t.Setenv("BD_IGNORE_SCHEMA_SKEW", "1")
 	mock, db, closeDB := newVersionMockDB(t)
 	defer closeDB()
 	expectVersionQuery(mock, schema.LatestVersion()-1)
 
-	var err error
-	stderr := captureStderr(t, func() {
-		err = checkTeamServerSchema(context.Background(), db, "beads_team")
-	})
-	if err != nil {
-		t.Fatalf("checkTeamServerSchema = %v, want nil with BD_IGNORE_SCHEMA_SKEW=1", err)
-	}
-	if !strings.Contains(stderr, "schema skew ignored") {
-		t.Errorf("stderr = %q, want a schema-skew warning", stderr)
+	if err := checkTeamServerSchema(context.Background(), db, "beads_team"); err == nil {
+		t.Fatal("checkTeamServerSchema = nil; BD_IGNORE_SCHEMA_SKEW must not allow writing against an older bts schema")
 	}
 }
 

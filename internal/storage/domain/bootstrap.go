@@ -21,10 +21,6 @@ type BootstrapProjectParams struct {
 
 	RemoteName string
 	RemoteURL  string
-
-	// SkipIdentity skips the issue_prefix and _project_id writes (team-server
-	// mode: bts owns identity). Prefix and ProjectID are still validated.
-	SkipIdentity bool
 }
 
 type BootstrapProjectResult struct {
@@ -59,13 +55,11 @@ func (u *bootstrapUseCaseImpl) BootstrapProject(ctx context.Context, params Boot
 		return BootstrapProjectResult{}, fmt.Errorf("BootstrapProject: LastImportTime must not be zero")
 	}
 
-	if !params.SkipIdentity {
-		if err := u.cfgRepo.SetConfig(ctx, "issue_prefix", params.Prefix); err != nil {
-			return BootstrapProjectResult{}, fmt.Errorf("BootstrapProject: set issue_prefix: %w", err)
-		}
-		if err := u.cfgRepo.SetMetadata(ctx, "_project_id", params.ProjectID); err != nil {
-			return BootstrapProjectResult{}, fmt.Errorf("BootstrapProject: set _project_id: %w", err)
-		}
+	if err := u.cfgRepo.SetConfig(ctx, "issue_prefix", params.Prefix); err != nil {
+		return BootstrapProjectResult{}, fmt.Errorf("BootstrapProject: set issue_prefix: %w", err)
+	}
+	if err := u.cfgRepo.SetMetadata(ctx, "_project_id", params.ProjectID); err != nil {
+		return BootstrapProjectResult{}, fmt.Errorf("BootstrapProject: set _project_id: %w", err)
 	}
 	if params.RepoID != "" {
 		if err := u.cfgRepo.SetMetadata(ctx, "repo_id", params.RepoID); err != nil {
