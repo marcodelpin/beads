@@ -23,7 +23,7 @@ func pidAlive(pid int) bool {
 		// No such process, or we may not open it.
 		return false
 	}
-	defer windows.CloseHandle(processHandle)
+	defer func() { _ = windows.CloseHandle(processHandle) }()
 
 	waitResult, err := windows.WaitForSingleObject(processHandle, 0)
 	if err != nil {
