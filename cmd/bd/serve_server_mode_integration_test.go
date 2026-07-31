@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 )
 
@@ -271,4 +272,60 @@ func TestServerModeServeSkipsPostRunMaintenance(t *testing.T) {
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat %s: %v", jsonl, err)
 	}
+}
+
+// SHARED-SERVER mode with --global. The flag swaps the database the provider
+// opens to the shared global one, exactly as it does for the store the CLI
+// opens — but GET /v0/beads/context answers from a workspace snapshot read out
+// of metadata.json, which knows nothing about the flag.
+//
+// That one endpoint is what automation is told to trust for this server's
+// identity, so it naming the project database while every operation answers
+// from the global one is a lie with a straight face. Without the fix the
+// handshake and the startup line both report p.database here.
+func TestSharedServerModeServeGlobalReportsTheServedDatabase(t *testing.T) {
+	requireSharedProxiedServer(t)
+	t.Parallel()
+	bd := buildEmbeddedBD(t)
+	p := newServerModeProject(t, bd, "srvgl")
+
+	// Shared-server mode is server mode plus this switch; the workspace is
+	// otherwise the same one every other case in this file uses. It also moves
+	// the proxy root under the shared dolt directory, so the project-local
+	// cleanup newServerModeProject registered does not cover the child this test
+	// leaves behind.
+	p.env = append(p.env, "BEADS_DOLT_SHARED_SERVER=1")
+	sharedProxyRoot := filepath.Join(p.dir, ".beads", "shared-server", "dolt")
+	t.Cleanup(func() {
+		if err := proxy.Shutdown(sharedProxyRoot); err != nil {
+			t.Logf("proxy.Shutdown(%s): %v", sharedProxyRoot, err)
+		}
+	})
+
+	// Control: the CLI reaches the global database in this workspace, so the
+	// server refusing or misreporting it is about serve, not about the setup.
+	p.run(t, bd, "--global", "list")
+
+	sp := startServe(t, bd, p.dir, p.env, "--global")
+
+	startup := sp.awaitLogLine(t, "event=startup")
+	if !strings.Contains(startup, "database="+doltserver.GlobalDatabaseName) {
+		t.Errorf("startup line does not name the database serve actually opened:\n%s", startup)
+	}
+	if strings.Contains(startup, "database="+p.database) {
+		t.Errorf("startup line names the project database while --global is in effect:\n%s", startup)
+	}
+
+	status, body, _ := sp.get(t, "/v0/beads/context")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if body["database"] != doltserver.GlobalDatabaseName {
+		t.Errorf("context database = %v, want %q: the handshake must name the database every operation answers from",
+			body["database"], doltserver.GlobalDatabaseName)
+	}
+
+	assertProxyChildNeverIdles(t, sharedProxyRoot)
+
+	sp.shutdown(t)
 }

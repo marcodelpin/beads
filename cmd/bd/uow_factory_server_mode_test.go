@@ -61,6 +61,48 @@ func TestResolveServerModeUOWTopology_ProxyNeverIdlesOut(t *testing.T) {
 		"zero is the sentinel NewExternalDoltServerUOWProvider replaces with the 30s default")
 }
 
+// The database the handshake reports and the database the provider opens are
+// the same string, and this is where it is decided. --global swaps it, so the
+// swap has to be visible to the caller that reports it (runServe).
+func TestResolveServerModeUOWTopology_GlobalSelectsTheGlobalDatabase(t *testing.T) {
+	beadsDir := serverModeBeadsDir(t, &configfile.Config{
+		DoltServerHost: "127.0.0.1",
+		DoltServerPort: 3521,
+		DoltDatabase:   "beads_project",
+	})
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+	old := globalFlag
+	globalFlag = true
+	t.Cleanup(func() { globalFlag = old })
+
+	topology, err := resolveServerModeUOWTopology(context.Background(), beadsDir)
+	require.NoError(t, err)
+	assert.Equal(t, "beads_global", topology.database)
+}
+
+// The no-metadata.json corner. The CLI store open in this same process takes
+// the literal default database name there (main.go's cfg == nil branch), and
+// the whole point of routing serve through the same resolution is that the two
+// cannot disagree about which database this workspace is.
+//
+// BEADS_DOLT_SERVER_DATABASE not being honored on that branch is a real gap,
+// but it is the CLI's gap: fixing it on serve's side alone would give one
+// process two databases.
+func TestResolveServerModeUOWTopology_NoMetadataMatchesTheCLIDatabase(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	require.NoError(t, os.MkdirAll(beadsDir, config.BeadsDirPerm))
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "3521")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "127.0.0.1")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "from_the_environment")
+	t.Setenv("BEADS_DOLT_CREDENTIAL_COMMAND", "")
+
+	topology, err := resolveServerModeUOWTopology(context.Background(), beadsDir)
+	require.NoError(t, err)
+	assert.Equal(t, configfile.DefaultDoltDatabase, topology.database,
+		"serve must open the database the CLI opens in this corner; main.go's cfg == nil branch ignores the env var")
+}
+
 // The gateway refusal must be decided from the CONFIGURATION, never from the
 // result of running the credential command. Reaching it any other way means
 // every refused `bd serve` has already spawned the operator's command and

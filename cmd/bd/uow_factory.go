@@ -41,29 +41,6 @@ func newProxiedServerUOWProvider(ctx context.Context, beadsDir, databaseOverride
 	return newSQLServerUOWProvider(ctx, beadsDir, resolveProxiedServerUOWTopology(beadsDir, databaseOverride))
 }
 
-// newServerModeUOWProvider builds the provider for a workspace whose Dolt SQL
-// server Beads does not front with a proxy of its own: `bd init --server`
-// (whether the server is one Beads auto-starts or one the operator runs),
-// and shared-server mode.
-//
-// Such a workspace has no proxied-server sidecar to read the topology from, so
-// it comes from the same Dolt connection settings the CLI's store open uses.
-// The server is ALWAYS described as external, including when Beads started it:
-// the local-server provider would spawn a second `dolt sql-server` on the data
-// directory the first one already holds an exclusive write lock on, which Dolt
-// refuses outright ("database is locked by another dolt process"). One server,
-// fronted — never a second one.
-func newServerModeUOWProvider(ctx context.Context, beadsDir string) (uow.UnitOfWorkProvider, error) {
-	if beadsDir == "" {
-		return nil, fmt.Errorf("newServerModeUOWProvider: beadsDir must be set")
-	}
-	topology, err := resolveServerModeUOWTopology(ctx, beadsDir)
-	if err != nil {
-		return nil, err
-	}
-	return newSQLServerUOWProvider(ctx, beadsDir, topology)
-}
-
 func newSQLServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology) (uow.UnitOfWorkProvider, error) {
 	if topology.external != nil {
 		return newExternalProxiedServerUOWProvider(ctx, beadsDir, topology)
@@ -118,22 +95,52 @@ func errServeGatewayCredential() error {
 			"process and cannot refresh it")
 }
 
-// resolveServerModeUOWTopology reads a server-mode workspace's Dolt SQL server
-// out of its configuration, in the shape the external provider takes.
+// resolveServerModeUOWTopology reads the topology for a workspace whose Dolt
+// SQL server Beads does not front with a proxy of its own: `bd init --server`
+// (whether the server is one Beads auto-starts or one the operator runs), and
+// shared-server mode.
 //
-// The connection itself is resolved by resolveDoltServerConnection, the same
-// function the CLI's store open goes through, so the HTTP server and a CLI
-// command in this workspace reach the same server as the same identity.
+// Such a workspace has no proxied-server sidecar to read the topology from, so
+// it comes from the same Dolt connection settings the CLI's store open uses —
+// resolveDoltServerConnection, so the HTTP server and a CLI command in this
+// workspace reach the same server as the same identity. The one corner where
+// that guarantee is narrower than it sounds is a workspace with no
+// metadata.json, where main.go resolves nothing and leaves the connection to
+// dolt.applyResolvedConfig; the ladders agree, but they are not the same call.
+//
+// The server is ALWAYS described as external, including when Beads started it:
+// the local-server provider would spawn a second `dolt sql-server` on the data
+// directory the first one already holds an exclusive write lock on, which Dolt
+// refuses outright ("database is locked by another dolt process"). One server,
+// fronted — never a second one.
+//
+// The caller is responsible for reporting topology.database as the served
+// workspace's database: it is the one place --global is applied, and the
+// handshake must not name a database the provider did not open.
 func resolveServerModeUOWTopology(ctx context.Context, beadsDir string) (sqlServerUOWTopology, error) {
+	if beadsDir == "" {
+		return sqlServerUOWTopology{}, fmt.Errorf("resolveServerModeUOWTopology: beadsDir must be set")
+	}
 	fileCfg, err := configfile.Load(beadsDir)
 	if err != nil {
 		return sqlServerUOWTopology{}, fmt.Errorf("load %s: %w", configfile.ConfigPath(beadsDir), err)
 	}
+	// The database is resolved here rather than from the connection because the
+	// no-metadata.json corner below has to answer it differently.
+	database := configfile.DefaultDoltDatabase
 	if fileCfg == nil {
 		// No metadata.json at all. The store open in this same process takes the
 		// defaults and carries on (shared-server mode reaches exactly that), so
-		// refusing here would refuse a workspace the CLI just opened.
+		// refusing here would refuse a workspace the CLI just opened — and it
+		// takes the LITERAL default database name (main.go's cfg == nil branch),
+		// not GetDoltDatabase, so BEADS_DOLT_SERVER_DATABASE is ignored there.
+		// Matching that is the point: honoring the env var on this side alone
+		// would have one process serving two different databases over HTTP and
+		// over the CLI, silently. The env var not reaching the CLI's branch is a
+		// real gap, but it is that branch's to close.
 		fileCfg = configfile.DefaultConfig()
+	} else {
+		database = fileCfg.GetDoltDatabase()
 	}
 
 	// Decide the gateway refusal from the CONFIGURATION, before anything runs
@@ -177,7 +184,6 @@ func resolveServerModeUOWTopology(ctx context.Context, beadsDir string) (sqlServ
 	}
 	external.TLSRequired = conn.ServerTLS
 
-	database := fileCfg.GetDoltDatabase()
 	// --global selects the shared-server global database, exactly as it does for
 	// the store the CLI opens (main.go rejects the flag outside shared-server
 	// mode); without this the HTTP surface would answer from the project

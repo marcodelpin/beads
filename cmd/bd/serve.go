@@ -129,7 +129,17 @@ func runServe() error {
 		// connection or two against the very server this process is about to
 		// pool twenty more on. Worth knowing when sizing a shared Dolt server's
 		// max_connections.
-		p, err := newServerModeUOWProvider(rootCtx, info.BeadsDir)
+		topology, err := resolveServerModeUOWTopology(rootCtx, info.BeadsDir)
+		if err != nil {
+			return HandleError("bd serve: %v", err)
+		}
+		// GET /v0/beads/context is the one endpoint automation is told to trust
+		// for this server's identity, and its Database comes from metadata.json,
+		// which knows nothing about --global. Report the database the provider
+		// actually opened, or the handshake names one database while every
+		// operation answers from another.
+		info.Database = topology.database
+		p, err := newSQLServerUOWProvider(rootCtx, info.BeadsDir, topology)
 		if err != nil {
 			return HandleError("bd serve: %v", err)
 		}
