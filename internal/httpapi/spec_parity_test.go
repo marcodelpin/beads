@@ -232,12 +232,54 @@ func TestSpecRouteParity(t *testing.T) {
 		}
 	}
 
+	// A row that DECLARES a specPath is compared against the document by a
+	// string the router never sees, so for those rows the check above proves
+	// nothing about what the server serves: the pattern could grow a wrong
+	// prefix or a wrong segment and this test would stay green while the
+	// documented path 404s. Bound the exception instead of trusting it — the
+	// pattern must be the documented path with its final segment replaced by
+	// one wildcard, which is the only thing ServeMux cannot spell — and refuse
+	// a declaration that is not needed at all.
+	//
+	// TestClaimPathReachesItsHandler (server_test.go) is the behavioral half.
+	for _, rt := range routeTable {
+		if rt.specPath == "" {
+			continue
+		}
+		specDir, specLast := splitLastSegment(rt.specPath)
+		patDir, patLast := splitLastSegment(rt.pattern)
+		if specDir != patDir {
+			t.Errorf("%s: pattern %q and declared spec path %q do not share a prefix; the documented path is not the one routed",
+				rt.op, rt.pattern, rt.specPath)
+		}
+		if !isWildcardSegment(patLast) {
+			t.Errorf("%s: pattern %q declares a different spec path, so its final segment must be a single-segment wildcard (got %q)",
+				rt.op, rt.pattern, patLast)
+		}
+		if isWildcardSegment(specLast) {
+			t.Errorf("%s: spec path %q is expressible as a ServeMux pattern; delete the specPath declaration rather than detaching the row from the router",
+				rt.op, rt.specPath)
+		}
+	}
+
 	// Build the server's real handler: ServeMux panics on a conflicting or
 	// malformed pattern, and that belongs here rather than on the first
 	// request after a deploy.
 	if h := (&Server{}).handler(); h == nil {
 		t.Fatal("handler() returned nil")
 	}
+}
+
+func splitLastSegment(path string) (dir, last string) {
+	i := strings.LastIndex(path, "/")
+	return path[:i+1], path[i+1:]
+}
+
+// isWildcardSegment reports whether seg is a ServeMux single-segment wildcard.
+// The multi-segment form ({x...}) is not one: it swallows the rest of the path,
+// which is wider surface than any documented operation.
+func isWildcardSegment(seg string) bool {
+	return strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") && !strings.Contains(seg, "...")
 }
 
 // TestSpecDefaultsMatchSharedConstants keeps the document honest about the two

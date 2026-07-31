@@ -95,7 +95,16 @@ var routeTable = []route{
 		// match a whole path segment, so `{id}:claim` is not expressible as a
 		// pattern: the handler takes the segment whole and splits the custom
 		// method off itself. Declaring specPath here keeps the parity test
-		// honest instead of teaching it this exception.
+		// honest instead of teaching it this exception; TestSpecRouteParity
+		// bounds the exception's shape and TestClaimPathReachesItsHandler
+		// drives the documented path.
+		//
+		// OBLIGATION FOR THE CLAIM SLICE: the wildcard takes the whole segment,
+		// so while this is a stub, POST /v0/beads/issues/{anything} answers 501
+		// — including the issue-detail path, which is documented GET-only.
+		// Harmless transitionally (501 is not documented surface either way),
+		// but the real handler must 404 a segment that does not end in
+		// ":claim" rather than treating it as an id.
 		specPath:   "/v0/beads/issues/{id}:claim",
 		capability: "issues.claim",
 		handler:    (*Server).handleNotImplemented,

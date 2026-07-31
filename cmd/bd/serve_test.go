@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
 
+	"github.com/steveyegge/beads/internal/httpapi"
 	"github.com/steveyegge/beads/internal/storage"
 )
 
@@ -39,6 +41,24 @@ func TestServeFlags(t *testing.T) {
 		t.Fatal("no --allow-non-loopback flag")
 	} else if nonLoopback.DefValue != "false" {
 		t.Errorf("--allow-non-loopback default = %q, want false", nonLoopback.DefValue)
+	}
+}
+
+// TestServeHelpTracksTheReadinessProbe. The help tells operators to probe
+// readiness with GET /v0/beads/ready?limit=1, which is a 501 stub in this
+// build — a probe wired from the help alone is permanently not-ready. The
+// caveat that says so is transitional, and this keeps it honest in both
+// directions: while ready.list is unimplemented the help must carry it, and
+// the moment the handler lands the caveat must go. Nobody has to remember.
+func TestServeHelpTracksTheReadinessProbe(t *testing.T) {
+	implemented := slices.Contains(httpapi.Capabilities(), "ready.list")
+	documented := strings.Contains(serveCmd.Long, "answers 501")
+
+	switch {
+	case implemented && documented:
+		t.Error("ready.list is implemented; delete the 501 caveat from the PROBES section of `bd serve --help`")
+	case !implemented && !documented:
+		t.Error("`bd serve --help` sends operators to a readiness endpoint this build answers 501 to, with no hint that it does")
 	}
 }
 

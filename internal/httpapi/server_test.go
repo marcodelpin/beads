@@ -170,6 +170,16 @@ func (ts *testServer) get(t *testing.T, path string) *http.Response {
 	return resp
 }
 
+func (ts *testServer) post(t *testing.T, path string) *http.Response {
+	t.Helper()
+	resp, err := ts.client.Post(ts.base+path, "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
 func decodeBody(t *testing.T, resp *http.Response) map[string]any {
 	t.Helper()
 	body, err := io.ReadAll(resp.Body)
@@ -506,6 +516,28 @@ func TestStubsAnswer501WithoutAdvertisingThemselves(t *testing.T) {
 		if c == "ready.list" {
 			t.Error("capabilities advertises ready.list while its handler is a 501 stub")
 		}
+	}
+}
+
+// TestClaimPathReachesItsHandler drives the path the DOCUMENT spells, which is
+// the one thing route parity cannot check for the claim row: that row declares
+// its spec path instead of deriving it from the pattern, because ServeMux
+// wildcards match whole segments and `{id}:claim` is not expressible. The parity
+// test bounds the shape of that exception; only a request proves the pattern
+// actually serves the documented path.
+func TestClaimPathReachesItsHandler(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	resp := ts.post(t, "/v0/beads/issues/bd-1:claim")
+	// A 404 here means the documented path reaches the catch-all: the route
+	// exists in the table, the parity test is green, and the endpoint does not
+	// exist.
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("POST the documented claim path: status = %d, want 501 from the claim stub", resp.StatusCode)
+	}
+	line := findLogLine(t, ts.stderr.String(), "path=/v0/beads/issues/bd-1:claim")
+	if !strings.Contains(line, "op="+OpClaimIssue) {
+		t.Errorf("the documented claim path is served by another operation:\n%s", line)
 	}
 }
 
