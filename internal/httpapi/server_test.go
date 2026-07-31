@@ -296,7 +296,13 @@ func TestNoQueryParametersAccepted(t *testing.T) {
 func TestHostHeaderAllowlist(t *testing.T) {
 	ts := newTestServer(t, Config{})
 
-	for _, host := range []string{"127.0.0.1", "localhost", "[::1]", "LOCALHOST"} {
+	// Every spelling of an allowed address is that address. A client that writes
+	// the IPv6 loopback the long way, or as an IPv4-mapped literal, is not an
+	// attacker — the rebinding attack carries a NAME.
+	for _, host := range []string{
+		"127.0.0.1", "localhost", "[::1]", "LOCALHOST",
+		"[0:0:0:0:0:0:0:1]", "[::ffff:127.0.0.1]",
+	} {
 		t.Run("allowed/"+host, func(t *testing.T) {
 			resp := requestWithHost(t, ts, "/healthz", host+":1234")
 			if resp.StatusCode != http.StatusOK {
@@ -341,26 +347,93 @@ func requestWithHost(t *testing.T, ts *testServer, path, host string) *http.Resp
 	return resp
 }
 
-// TestHostAllowlistUnderNonLoopbackBind pins both halves of the bind-dependent
-// rule: a specific non-loopback address answers to itself, and a wildcard bind
-// has no single address to allow, so the check is disabled and said so.
-func TestHostAllowlistUnderNonLoopbackBind(t *testing.T) {
-	specific := newHostAllowlist(net.ParseIP("10.0.0.5"))
-	if !specific["10.0.0.5"] {
-		t.Error("a specific non-loopback bind must answer to its own address")
+// TestHostPolicyPerBindAddress pins the bind-dependent rule for every bind shape
+// the validator accepts. The load-bearing row is the wildcard one: a wildcard
+// bind has no single configured address, and the answer is to allow IP LITERALS
+// rather than to switch the defense off. A rebound page cannot produce an
+// IP-literal Host — the browser sends the hostname from the attacker's URL — so
+// this keeps --allow-non-loopback fully usable while a foreign name is still
+// refused, including on the serving host's own loopback interface, which is
+// rebinding's canonical target.
+func TestHostPolicyPerBindAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bind    string
+		allow   []string
+		refuse  []string
+		inLabel string
+	}{
+		{
+			name:   "default loopback",
+			bind:   "127.0.0.1",
+			allow:  []string{"127.0.0.1:9000", "localhost", "[::1]:9000", "[0:0:0:0:0:0:0:1]"},
+			refuse: []string{"evil.example", "10.0.0.5", "beads.attacker.test:8080"},
+		},
+		{
+			// ValidateBindAddr accepts any 127/8 address, so the allowlist must
+			// answer to one. Otherwise a server the operator was allowed to
+			// configure refuses every client that dials the configured address.
+			name:   "alternate loopback",
+			bind:   "127.0.0.2",
+			allow:  []string{"127.0.0.2:9000", "127.0.0.1", "localhost"},
+			refuse: []string{"evil.example"},
+		},
+		{
+			name:   "specific non-loopback",
+			bind:   "10.0.0.5",
+			allow:  []string{"10.0.0.5:9000", "127.0.0.1", "localhost"},
+			refuse: []string{"evil.example", "192.168.1.10", "10.0.0.6"},
+		},
+		{
+			name:    "wildcard",
+			bind:    "0.0.0.0",
+			allow:   []string{"127.0.0.1", "localhost", "10.0.0.5:9000", "192.168.1.10", "[fe80::1]:9000"},
+			refuse:  []string{"evil.example", "beads.attacker.test:8080", "localhost.evil.example"},
+			inLabel: "any-ip-literal",
+		},
+		{
+			name:    "ipv6 wildcard",
+			bind:    "::",
+			allow:   []string{"[::1]", "localhost", "[2001:db8::1]:9000"},
+			refuse:  []string{"evil.example"},
+			inLabel: "any-ip-literal",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newHostPolicy(net.ParseIP(tc.bind))
+			for _, host := range tc.allow {
+				if !p.allows(host) {
+					t.Errorf("bind %s refuses Host %q, which is one of its own clients", tc.bind, host)
+				}
+			}
+			for _, host := range tc.refuse {
+				if p.allows(host) {
+					t.Errorf("bind %s accepts Host %q; the rebinding defense is not a defense", tc.bind, host)
+				}
+			}
+			// The policy is never empty and never off: the startup line states
+			// what it is, so an operator does not have to derive it.
+			if label := p.label(); !strings.Contains(label, tc.inLabel) || label == "" {
+				t.Errorf("bind %s startup label = %q, want it to mention %q", tc.bind, label, tc.inLabel)
+			}
+		})
 	}
-	if !specific["127.0.0.1"] {
-		t.Error("loopback spellings stay allowed on any bind")
-	}
-	if specific["evil.example"] {
-		t.Error("allowlist is not open")
-	}
+}
 
-	if wildcard := newHostAllowlist(net.ParseIP("0.0.0.0")); len(wildcard) != 0 {
-		t.Errorf("wildcard bind allowlist = %v, want empty (no single configured address exists)", wildcard)
+// TestAlternateLoopbackBindAnswersItsOwnClients is the end-to-end half of the
+// alternate-loopback row above: a bind ValidateBindAddr blesses must not produce
+// a server that 400s every client dialing the address it was configured with.
+func TestAlternateLoopbackBindAnswersItsOwnClients(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("127.0.0.2 is not bindable here: %v", err)
 	}
-	if got := allowlistLabel(nil); !strings.Contains(got, "disabled") {
-		t.Errorf("startup label for a disabled allowlist = %q, want it to say so", got)
+	_ = probe.Close()
+	ts := newTestServer(t, Config{Addr: "127.0.0.2:0"})
+
+	resp := requestWithHost(t, ts, "/healthz", ts.Addr())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Host %q against a server bound to it: status = %d, want 200", ts.Addr(), resp.StatusCode)
 	}
 }
 

@@ -142,9 +142,10 @@ type Server struct {
 	stdout  io.Writer
 	ctxBody apigen.ContextResponse
 
-	// hostAllow is the Host-header allowlist. Empty means "accept any Host",
-	// which happens only on a wildcard non-loopback bind; see newHostAllowlist.
-	hostAllow map[string]bool
+	// hosts is the Host-header allowlist, the DNS-rebinding defense. It is
+	// derived from the bind address and there is no configuration that turns it
+	// off; see newHostPolicy.
+	hosts hostPolicy
 
 	idPrefix  string
 	idSeq     atomic.Uint64
@@ -215,11 +216,11 @@ func Listen(cfg Config) (*Server, error) {
 		semTimeout: semAcquireTimeout,
 		semWarn:    saturationWarn,
 
-		log:       log.New(cfg.Stderr, "bd serve: ", log.LstdFlags|log.LUTC),
-		stdout:    cfg.Stdout,
-		ctxBody:   contextResponse(cfg.Workspace, cfg.SchemaVersion, Capabilities()),
-		hostAllow: newHostAllowlist(ip),
-		idPrefix:  prefix,
+		log:      log.New(cfg.Stderr, "bd serve: ", log.LstdFlags|log.LUTC),
+		stdout:   cfg.Stdout,
+		ctxBody:  contextResponse(cfg.Workspace, cfg.SchemaVersion, Capabilities()),
+		hosts:    newHostPolicy(ip),
+		idPrefix: prefix,
 	}
 
 	ln, err := net.Listen("tcp", cfg.Addr)
@@ -469,7 +470,7 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 // hostname in Host, which is what this rejects.
 func (s *Server) checkHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.hostAllow) > 0 && !s.hostAllow[hostOnly(r.Host)] {
+		if !s.hosts.allows(r.Host) {
 			s.fail(w, r, InvalidArgument("Host", ReasonInvalidValue,
 				"Host header is not one this server answers to"))
 			return
@@ -554,28 +555,81 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 // handler that needs to flush a large streamed page still can.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// newHostAllowlist returns the Host values this server answers to.
+// hostPolicy is the set of Host header values this server answers to. It is
+// data rather than a closure so the startup line can state the whole policy,
+// and so the wildcard case below is a visible rule instead of an absence.
+type hostPolicy struct {
+	// ips are the numeric addresses allowed, matched with net.IP.Equal so every
+	// spelling of one address matches: [0:0:0:0:0:0:0:1] and [::ffff:127.0.0.1]
+	// are the same hosts as ::1 and 127.0.0.1, and a client that spells one of
+	// them the long way is not an attacker.
+	ips []net.IP
+	// names are the allowed non-numeric Host values, lowercased. There is
+	// exactly one, "localhost", and no mechanism to add another: a DNS name in
+	// a Host header is precisely what the rebinding attack carries.
+	names map[string]bool
+	// anyIP additionally allows ANY numeric Host literal. Only a wildcard bind
+	// sets it; see newHostPolicy for why that is still a rebinding defense.
+	anyIP bool
+}
+
+// newHostPolicy returns the Host policy implied by a bind address.
 //
-// The three loopback spellings are always allowed. A specific non-loopback bind
-// adds its own address, since that is the name a legitimate client dials.
+// The loopback spellings are always allowed, and the bind's own address is too
+// — including an alternate loopback bind like 127.0.0.2, whose clients dial
+// exactly that address and would otherwise be refused by the defense meant to
+// protect them.
 //
-// A WILDCARD non-loopback bind (0.0.0.0, ::) returns an empty map, which
-// disables the check: there is no single configured address to allow, and every
-// candidate is a different interface's. This is stated at startup rather than
-// left to be discovered. It costs nothing that is not already spent — the check
-// exists to protect a service the operator believes is unreachable, and
-// --allow-non-loopback is the operator saying it is reachable and
-// unauthenticated.
-func newHostAllowlist(bind net.IP) map[string]bool {
-	allow := map[string]bool{"127.0.0.1": true, "::1": true, "localhost": true}
-	if bind.IsLoopback() {
-		return allow
+// A WILDCARD bind (0.0.0.0, ::) has no single configured address to allow, so
+// it allows any numeric IP literal instead — and still refuses foreign DNS
+// names, which is the whole defense. A rebound page cannot produce an IP-literal
+// Host: the browser sends the hostname from the attacker's URL, and fetching an
+// IP URL directly is a direct connection, which is the exposure the operator
+// accepted when they passed --allow-non-loopback. Disabling the check outright
+// would instead surrender the defense on the serving host's own loopback
+// interface, which is rebinding's canonical target, and on every LAN browser
+// behind a firewall the attacker cannot otherwise reach.
+func newHostPolicy(bind net.IP) hostPolicy {
+	p := hostPolicy{
+		ips:   []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		names: map[string]bool{"localhost": true},
+		anyIP: bind.IsUnspecified(),
 	}
-	if bind.IsUnspecified() {
-		return nil
+	if !p.anyIP && !containsIP(p.ips, bind) {
+		p.ips = append(p.ips, bind)
 	}
-	allow[bind.String()] = true
-	return allow
+	return p
+}
+
+// allows reports whether a Host header value is one this server answers to.
+func (p hostPolicy) allows(host string) bool {
+	h := hostOnly(host)
+	if p.names[h] {
+		return true
+	}
+	ip := net.ParseIP(h)
+	if ip == nil {
+		return false
+	}
+	return p.anyIP || containsIP(p.ips, ip)
+}
+
+// label renders the policy for the startup line, so an operator can read what
+// this server will answer to without deducing it from the bind address.
+func (p hostPolicy) label() string {
+	parts := make([]string, 0, len(p.ips)+len(p.names)+1)
+	for _, ip := range p.ips {
+		parts = append(parts, ip.String())
+	}
+	parts = append(parts, slices.Sorted(maps.Keys(p.names))...)
+	if p.anyIP {
+		parts = append(parts, "any-ip-literal (wildcard bind)")
+	}
+	return strings.Join(parts, ",")
+}
+
+func containsIP(ips []net.IP, want net.IP) bool {
+	return slices.ContainsFunc(ips, want.Equal)
 }
 
 // hostOnly strips the port and any IPv6 brackets from a Host header value.
@@ -609,7 +663,7 @@ func (s *Server) logStartup() {
 		"workspace", s.cfg.Workspace.RepoRoot,
 		"beads_dir", s.cfg.Workspace.BeadsDir,
 		"database", s.cfg.Workspace.Database,
-		"host_allowlist", allowlistLabel(s.hostAllow),
+		"host_allowlist", s.hosts.label(),
 		"capabilities", strings.Join(s.ctxBody.Capabilities, ","),
 	)
 	s.event("limits",
@@ -622,14 +676,6 @@ func (s *Server) logStartup() {
 		"pool_idle_time", servePoolLimits.ConnMaxIdleTime.String(),
 		"pool_lifetime", servePoolLimits.ConnMaxLifetime.String(),
 	)
-}
-
-func allowlistLabel(allow map[string]bool) string {
-	if len(allow) == 0 {
-		return "disabled (wildcard bind)"
-	}
-	names := slices.Sorted(maps.Keys(allow))
-	return strings.Join(names, ",")
 }
 
 // event writes one structured stderr line. Values are quoted when they are not
