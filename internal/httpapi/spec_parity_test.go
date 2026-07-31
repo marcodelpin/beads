@@ -3,6 +3,7 @@ package httpapi
 import (
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -334,14 +335,20 @@ func TestSpecStatusCodesMatchHandlerTable(t *testing.T) {
 	}
 }
 
-// TestDefaultLimitsMatchCLIFlags guards the interim duplication described in
-// defaults.go: until the shared constants move into internal/workapi, the CLI
-// flag registration is the other copy of these two numbers, and a silent
-// divergence between them is exactly the drift this API exists to prevent.
+// TestDefaultsMatchCLIFlags guards every default this document repeats from a
+// cobra flag registration. A client swapping a `bd` subprocess for an HTTP call
+// gets the same answer only if the two surfaces default the same way, and a
+// default is the one piece of the contract nobody passes explicitly — so a
+// divergence is invisible until the result sets differ.
 //
-// If the flag registration is reworded this fails loudly — re-point the regex,
+// The limits are the interim duplication described in defaults.go: until the
+// shared constants move into internal/workapi, the flag registration is the
+// other copy of those two numbers. `sort` has no constant to share at all; the
+// flag string IS the source of truth.
+//
+// If a flag registration is reworded this fails loudly — re-point the regex,
 // and check the values still agree while you are there.
-func TestDefaultLimitsMatchCLIFlags(t *testing.T) {
+func TestDefaultsMatchCLIFlags(t *testing.T) {
 	limitFlag := regexp.MustCompile(`IntP\("limit",\s*"n",\s*(-?\d+)`)
 
 	for _, tc := range []struct {
@@ -366,6 +373,42 @@ func TestDefaultLimitsMatchCLIFlags(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s registers --limit default %d, the shared constant is %d", tc.file, got, tc.want)
 		}
+	}
+
+	// The ready sort policy. Getting this wrong changes the item SET, not just
+	// the order, as soon as the limit truncates: `hybrid` demotes older
+	// high-priority work that `priority` surfaces first.
+	//
+	// Note for anyone tempted to "correct" the spec back to hybrid: the
+	// storage layer maps an EMPTY policy to hybrid
+	// (internal/storage/sqlbuild/ready.go), but the CLI never sends empty —
+	// the flag registers a concrete default — so that fallback is not `bd
+	// ready`'s behavior and must not be this parameter's default. A handler
+	// that forwards an absent `sort` as "" reintroduces the divergence with
+	// the spec still saying the right thing.
+	sortFlag := regexp.MustCompile(`StringP\("sort",\s*"s",\s*"([a-z]+)"`)
+	src, err := os.ReadFile("../../cmd/bd/ready.go")
+	if err != nil {
+		t.Fatalf("read cmd/bd/ready.go: %v", err)
+	}
+	m := sortFlag.FindSubmatch(src)
+	if m == nil {
+		t.Fatalf("cmd/bd/ready.go: no --sort flag registration found; re-point this guard at the CLI's default")
+	}
+	cliSort := string(m[1])
+
+	doc := loadSpec(t)
+	so, ok := specOps(t, doc)[OpListReadyWork]
+	if !ok {
+		t.Fatalf("operation %q missing from the spec", OpListReadyWork)
+	}
+	schema := mapAt(t, specParam(t, so, "sort"), "schema")
+	specSort, _ := schema["default"].(string)
+	if specSort != cliSort {
+		t.Errorf("spec documents sort default %q, `bd ready --sort` registers %q", specSort, cliSort)
+	}
+	if !slices.Contains(toStrings(t, schema["enum"]), specSort) {
+		t.Errorf("sort default %q is not in the documented enum %v", specSort, schema["enum"])
 	}
 }
 

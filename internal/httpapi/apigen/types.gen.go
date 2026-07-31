@@ -289,7 +289,9 @@ type ListReadyWorkParams struct {
 	// IncludeDeferred Include issues whose `defer_until` is still in the future.
 	IncludeDeferred *bool `form:"include_deferred,omitempty" json:"include_deferred,omitempty"`
 
-	// Sort Ready-work ordering. `hybrid` orders recent issues by priority and older ones by age; `priority` is priority-first; `oldest` is creation order. An unrecognized value is a 400.
+	// Sort Ready-work ordering. `priority` is priority-first; `hybrid` orders recent issues by priority and older ones by age; `oldest` is creation order. An unrecognized value is a 400.
+	//
+	// The default is the one `bd ready --sort` registers, so a client swapping `bd ready --json` for this operation gets the same items in the same order. The storage layer treats an EMPTY policy as `hybrid`, but that fallback is unreachable from the CLI and is NOT this parameter's default: `hybrid` demotes older high-priority work, so defaulting to it would change the item SET as soon as `limit` truncates — silently, and only for the clients this API exists to migrate.
 	Sort *ListReadyWorkParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
 
 	// Limit Maximum number of items to return. `0` means unlimited, exactly as `bd ready --limit 0` does — the two surfaces read the same shared default and the same zero semantics, so they cannot diverge. A negative value is a 400.
