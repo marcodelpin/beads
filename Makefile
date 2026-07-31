@@ -190,26 +190,40 @@ ci-pr-policy:
 ci-pr-lint:
 	@./scripts/ci/pr-lint.sh
 
-# OpenAPI spec paths for the drift gate below. The document is hand-written and
-# is the source of truth; the Go types are its output.
-API_SPEC_PATHS := internal/httpapi/spec internal/httpapi/apigen
+# The generated half of the wire contract. The document is hand-written and is
+# the source of truth; this file is its output.
+API_GEN_FILE := internal/httpapi/apigen/types.gen.go
 
 # Regenerate the wire types from internal/httpapi/spec/openapi.v0.yaml.
 api-gen:
 	go generate -tags "$(BUILD_TAGS)" ./internal/httpapi/apigen
 
-# Three-part spec drift gate: regenerate, fail on any diff, then run the spec
-# tests. Runs in the required PR policy job (scripts/ci/pr-policy.sh), never
-# only on push-to-main.
-api-check: api-gen
-	@if [ -n "$$(git status --porcelain --untracked-files=all -- $(API_SPEC_PATHS))" ]; then \
-		git --no-pager diff --stat -- $(API_SPEC_PATHS); \
-		git status --short --untracked-files=all -- $(API_SPEC_PATHS); \
-		echo "openapi drift: the spec and the generated types disagree."; \
+# Two-part spec drift gate: regenerate and fail if regeneration CHANGED
+# anything, then run the spec tests. Runs in the required PR policy job
+# (scripts/ci/pr-policy.sh), never only on push-to-main.
+#
+# The drift question is "do the checked-out types already match the checked-out
+# spec", so the comparison is before-vs-after regeneration rather than
+# working-tree-vs-HEAD. A `git status` check answers a different question: a
+# contributor mid-edit has a dirty spec AND a dirty generated file and is
+# perfectly in sync, and calling that drift sends them to run a command that
+# changes nothing.
+#
+# The test leg runs the whole package with no -run filter on purpose. A
+# hand-maintained list of test names degrades silently: rename one and `go test
+# -run` matches nothing, prints "no tests to run" and exits 0, so the step still
+# reports success while enforcing nothing.
+api-check:
+	@pre=$$(git hash-object $(API_GEN_FILE)) || exit 1; \
+	$(MAKE) --no-print-directory api-gen || exit 1; \
+	post=$$(git hash-object $(API_GEN_FILE)) || exit 1; \
+	if [ "$$pre" != "$$post" ]; then \
+		git --no-pager diff -- $(API_GEN_FILE); \
+		echo "openapi drift: $(API_GEN_FILE) is stale for the current spec (regenerating it changed it)."; \
 		echo "run 'make api-gen' and commit the result."; \
 		exit 1; \
 	fi
-	go test -tags "$(BUILD_TAGS)" ./internal/httpapi/ -count=1 -run 'TestSpecGovernance|TestSpecDefaultsMatchSharedConstants|TestSpecStatusCodesMatchHandlerTable|TestDefaultLimitsMatchCLIFlags|TestWireTagBijection|TestProblemMapping'
+	go test -tags "$(BUILD_TAGS)" ./internal/httpapi/... -count=1
 
 ci-package-mcp:
 	@./scripts/ci/package-mcp.sh
