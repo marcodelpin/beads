@@ -598,6 +598,41 @@ func TestContextResponseAllowlist(t *testing.T) {
 	}
 }
 
+// TestClaimRequestMembersMatchTheHandler is the same gate for the REQUEST side
+// of the claim, where the same unpinned-surface hazard runs the other way.
+//
+// The handler deliberately does not decode apigen.ClaimRequest: it reads raw
+// members so it can name the offending one in a refusal, which is what makes
+// the schema's additionalProperties: false enforceable by a client that has
+// stopped parsing prose. The price is that its accepted set is a hand-rolled
+// copy of the generated struct with nothing tying the two together — so a spec
+// revision adding an optional member would leave `make api-check` and every
+// other spec test green while the server refused the newly documented member as
+// unknown_parameter. Silent drift with all the gates passing is the one failure
+// this file exists to prevent.
+func TestClaimRequestMembersMatchTheHandler(t *testing.T) {
+	accepted := map[string]bool{claimActorMember: true}
+
+	goFields := jsonTagNames(t, reflect.TypeOf(apigen.ClaimRequest{}))
+	if extra := diff(goFields, accepted); len(extra) > 0 {
+		t.Errorf("generated ClaimRequest declares members the claim handler refuses as unknown: %v\n"+
+			"teach claimActor to honor them, or the document promises a member the server turns down", extra)
+	}
+	if missing := diff(accepted, goFields); len(missing) > 0 {
+		t.Errorf("the claim handler accepts members ClaimRequest does not declare: %v", missing)
+	}
+
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "ClaimRequest")
+	specProps := schemaProperties(t, doc, schema)
+	if extra := diff(specProps, accepted); len(extra) > 0 {
+		t.Errorf("the ClaimRequest schema documents members the claim handler refuses: %v", extra)
+	}
+	if missing := diff(accepted, specProps); len(missing) > 0 {
+		t.Errorf("the claim handler accepts members the ClaimRequest schema does not document: %v", missing)
+	}
+}
+
 func toStrings(t *testing.T, v any) []string {
 	t.Helper()
 	if v == nil {
