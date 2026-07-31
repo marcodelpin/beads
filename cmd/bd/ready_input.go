@@ -155,10 +155,21 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 	// routes hand this filter to --claim, --gated, --explain and --mol, none
 	// of which the Reader role expresses, and they stamp the --max-rows cap
 	// onto it below. Routing only the plain listing through the role would
-	// fork the command in two. The drift protection is one level down — this
-	// is the same builder, over the same issueops.ReadyRequest, that both
-	// Reader implementations call — and it is pinned by the builder's golden
-	// file. See issueops.Reader's doc comment.
+	// fork the command in two.
+	//
+	// CONSTRUCTION is shared with the role and always was: this is the same
+	// builder, over the same issueops.ReadyRequest, that both Reader
+	// implementations call, pinned by the builder's golden file.
+	//
+	// EXECUTION is shared on the proxied route, which runs the same
+	// workapi.FinishPage the role's two implementations run. It is NOT shared
+	// on the direct route, and that is a real and remaining difference: the
+	// role answers "did the limit hide anything" by fetching one row past the
+	// page, while `bd ready --json` answers the strictly larger question "how
+	// many were hidden" with a second counting query and reports the total in
+	// its pagination meta. That total is the CLI's published output, so the
+	// two epilogues cannot be collapsed without changing one surface's answer.
+	// See issueops.Reader's doc comment.
 	filter, err := workapi.BuildReadyFilter(in.ReadyRequest)
 	if err != nil {
 		return in, HandleErrorRespectJSON("%v", err)

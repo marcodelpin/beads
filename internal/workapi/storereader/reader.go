@@ -66,7 +66,12 @@ func (r *storeReader) Ready(ctx context.Context, req issueops.ReadyRequest) (iss
 	if err != nil {
 		return issueops.IssuePage{}, err
 	}
-	return page(items, limit), nil
+	// Ready has no display order to apply — the ordering is the sort POLICY
+	// the query ran under — so the epilogue's sort is a no-op here and only
+	// its trim and its verdict do any work. It is still the shared one: a
+	// second trim written out longhand is how the two arms of List came apart.
+	items, hasMore := workapi.FinishPage(items, "", false, limit, false)
+	return issueops.IssuePage{Items: items, HasMore: hasMore}, nil
 }
 
 func (r *storeReader) List(ctx context.Context, req issueops.ListRequest) (issueops.IssuePage, error) {
@@ -89,12 +94,14 @@ func (r *storeReader) List(ctx context.Context, req issueops.ListRequest) (issue
 		return issueops.IssuePage{}, err
 	}
 
-	// The display order is applied here, after the fetch, because it is the
-	// order the trim below has to cut on: filter.Limit is already 0 for a sort
-	// the database cannot express (SQLLimit), so those queries return
-	// everything and this is where the requested order first exists.
-	workapi.SortIssuesWithCounts(items, req.SortBy, req.Reverse)
-	return page(items, workapi.PageLimit(req)), nil
+	// The sort, the trim and the HasMore verdict are workapi.FinishPage's, not
+	// this implementation's: `bd list` on both its routes and the uow-backed
+	// sibling of this method call the same function, so the only thing left
+	// that can differ between a CLI listing and an HTTP one is presentation.
+	// This seam reports no HasMore of its own, so the over-fetched row above
+	// is what speaks.
+	items, hasMore := workapi.FinishPage(items, req.SortBy, req.Reverse, workapi.PageLimit(req), false)
+	return issueops.IssuePage{Items: items, HasMore: hasMore}, nil
 }
 
 func (r *storeReader) Get(ctx context.Context, req issueops.GetRequest) (*issueops.IssueDetails, error) {
@@ -107,22 +114,4 @@ func (r *storeReader) Get(ctx context.Context, req issueops.GetRequest) (*issueo
 		IncludeDependents: req.IncludeDependents,
 		IncludeComments:   req.IncludeComments,
 	})
-}
-
-// page trims an over-fetched result back to the requested limit and reports
-// whether the trim removed anything. A limit of 0 is unlimited, so nothing is
-// trimmed and there is by definition nothing more.
-//
-// Items is never nil on the way out: an empty page is an empty array on every
-// surface that serializes one, and a caller must not have to tell null from
-// empty to learn that nothing matched.
-func page(items []*types.IssueWithCounts, limit int) issueops.IssuePage {
-	hasMore := limit > 0 && len(items) > limit
-	if hasMore {
-		items = items[:limit]
-	}
-	if items == nil {
-		items = []*types.IssueWithCounts{}
-	}
-	return issueops.IssuePage{Items: items, HasMore: hasMore}
 }

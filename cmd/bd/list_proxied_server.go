@@ -88,28 +88,9 @@ func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) e
 		return err
 	}
 
-	workapi.SortIssues(page.Items, in.SortBy, in.Reverse)
-	issues, hasMore := trimToPageLimit(page.Items, in.effectiveLimit, page.HasMore)
+	issues, hasMore := workapi.FinishPage(page.Items, in.SortBy, in.Reverse, in.effectiveLimit, page.HasMore)
 
 	return renderProxiedListText(ctx, uw, issues, in, hasMore)
-}
-
-// trimToPageLimit cuts a page back to the number of rows the caller asked to
-// RECEIVE, and reports whether the cut removed anything.
-//
-// It runs AFTER the display sort, because the sort decides which rows the cut
-// keeps. For most queries it is a no-op: the row limit the query ran under and
-// the page limit are the same number, and this seam reports HasMore natively.
-// They come apart for a sort SQL cannot express — workapi.SQLLimit zeroes the
-// query's limit for `--sort id`, so the query returns the entire result set and
-// this trim is the only thing bounding the page. The direct route has always
-// trimmed there; without this, `bd list --sort id --limit 5` printed five rows
-// directly and every row under --proxied-server.
-func trimToPageLimit[T any](items []T, limit int, hasMore bool) ([]T, bool) {
-	if limit > 0 && len(items) > limit {
-		return items[:limit], true
-	}
-	return items, hasMore
 }
 
 func runListProxiedHierarchicalParent(ctx context.Context, uw uow.UnitOfWork, in listInput, filter types.IssueFilter) error {
@@ -177,8 +158,7 @@ func runListProxiedReady(_ *cobra.Command, ctx context.Context, in listInput) er
 		return err
 	}
 
-	workapi.SortIssues(page.Items, in.SortBy, in.Reverse)
-	issues, hasMore := trimToPageLimit(page.Items, in.effectiveLimit, page.HasMore)
+	issues, hasMore := workapi.FinishPage(page.Items, in.SortBy, in.Reverse, in.effectiveLimit, page.HasMore)
 
 	return renderProxiedListText(ctx, uw, issues, in, hasMore)
 }
@@ -210,24 +190,23 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 			if perr != nil {
 				return nil, false, nil, perr
 			}
-			issues, hasMore = page.Items, page.HasMore
-			workapi.SortIssues(issues, in.SortBy, in.Reverse)
+			issues, hasMore = workapi.FinishPage(page.Items, in.SortBy, in.Reverse, in.effectiveLimit, page.HasMore)
 		case in.ParentID != "":
 			issues, err = gatherProxiedHierarchical(ctx, uw, in.ParentID, filter)
 			if err != nil {
 				return nil, false, nil, err
 			}
-			workapi.SortIssues(issues, "id", false)
+			// The tree is gathered, not queried, so no seam reported a
+			// has-more: the cut is the only thing that can say the limit hid
+			// a descendant. Its order is the tree's own, not --sort's.
+			issues, hasMore = workapi.FinishPage(issues, "id", false, in.effectiveLimit, false)
 		default:
 			page, perr := uw.IssueUseCase().SearchIssues(ctx, "", filter)
 			if perr != nil {
 				return nil, false, nil, perr
 			}
-			issues, hasMore = page.Items, page.HasMore
-			workapi.SortIssues(issues, in.SortBy, in.Reverse)
+			issues, hasMore = workapi.FinishPage(page.Items, in.SortBy, in.Reverse, in.effectiveLimit, page.HasMore)
 		}
-
-		issues, hasMore = trimToPageLimit(issues, in.effectiveLimit, hasMore)
 
 		deps, err := loadDepsForIssues(ctx, uw, issues)
 		if err != nil {
@@ -276,11 +255,7 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 }
 
 func emitProxiedListJSONResult(iwc []*types.IssueWithCounts, in listInput, hasMore bool) error {
-	workapi.SortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
-	iwc, hasMore = trimToPageLimit(iwc, in.effectiveLimit, hasMore)
-	if iwc == nil {
-		iwc = []*types.IssueWithCounts{}
-	}
+	iwc, hasMore = workapi.FinishPage(iwc, in.SortBy, in.Reverse, in.effectiveLimit, hasMore)
 	var err error
 	if in.SkipLabels {
 		err = outputJSON(newSkipLabelsListJSONResponse(iwc))

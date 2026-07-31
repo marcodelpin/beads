@@ -384,13 +384,20 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return HandleError("--offset is only supported under --proxied-server")
 	}
 
-	// `bd list` builds the filter rather than calling IssueReader(), for the
-	// same reason `bd ready` does: this filter feeds --watch, the hierarchical
-	// --parent tree, the text renderings that want []*types.Issue rather than a
-	// counted page, and the --max-rows cap stamped on below — none of which the
-	// Reader role expresses. Both routes and both Reader implementations build
-	// from the same issueops.ListRequest through this same builder, and the
-	// builder's golden file pins it. See issueops.Reader's doc comment.
+	// `bd list` builds the filter rather than calling IssueReader(), because
+	// this filter feeds --watch, the hierarchical --parent tree, the text
+	// renderings that want []*types.Issue rather than a counted page, and the
+	// --max-rows cap stamped on below — none of which the Reader role
+	// expresses, and routing only the JSON path through it would fork the
+	// command in two.
+	//
+	// It shares CONSTRUCTION AND EXECUTION with the role all the same, and
+	// that is now the whole of it: the same issueops.ListRequest through the
+	// same builder (pinned by the builder's golden file), then the same
+	// workapi.FinishPage that both Reader implementations run — same sort,
+	// same trim, same has-more verdict. What differs between this listing and
+	// the HTTP one is presentation and the --max-rows cap, and nothing else.
+	// See issueops.Reader's doc comment.
 	cfg, err := workapi.LoadStoreListConfig(rootCtx, store)
 	if err != nil {
 		return HandleError("%v", err)
@@ -443,14 +450,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 			}
 			return HandleError("%v", err)
 		}
-		workapi.SortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
-		truncated := in.effectiveLimit > 0 && len(iwc) > in.effectiveLimit
-		if truncated {
-			iwc = iwc[:in.effectiveLimit]
-		}
-		if iwc == nil {
-			iwc = []*types.IssueWithCounts{}
-		}
+		iwc, truncated := workapi.FinishPage(iwc, in.SortBy, in.Reverse, in.effectiveLimit, false)
 		if in.SkipLabels {
 			if err := outputJSON(newSkipLabelsListJSONResponse(iwc)); err != nil {
 				return err
@@ -487,12 +487,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	workapi.SortIssues(issues, in.SortBy, in.Reverse)
-
-	truncated := in.effectiveLimit > 0 && len(issues) > in.effectiveLimit
-	if truncated {
-		issues = issues[:in.effectiveLimit]
-	}
+	issues, truncated := workapi.FinishPage(issues, in.SortBy, in.Reverse, in.effectiveLimit, false)
 
 	if in.prettyFormat && !jsonOutput {
 		if in.ParentID != "" && !in.ReadyFlag {

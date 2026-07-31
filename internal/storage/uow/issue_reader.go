@@ -59,7 +59,14 @@ func (r *issueReader) Ready(ctx context.Context, req publicops.ReadyRequest) (pu
 		if err != nil {
 			return publicops.IssuePage{}, err
 		}
-		return readerPage(page.Items, page.HasMore), nil
+		// The same epilogue the sibling implementation runs, through the same
+		// function. Ready has no display order to apply and this seam reports
+		// HasMore natively, so nothing here is expected to do work — which is
+		// exactly why it must be the shared one rather than a local shortcut:
+		// the two arms of List below came apart precisely by one of them
+		// deciding its epilogue was unnecessary.
+		items, hasMore := workapi.FinishPage(page.Items, "", false, filter.Limit, page.HasMore)
+		return publicops.IssuePage{Items: items, HasMore: hasMore}, nil
 	})
 }
 
@@ -97,17 +104,12 @@ func (r *issueReader) List(ctx context.Context, req publicops.ListRequest) (publ
 			return publicops.IssuePage{}, err
 		}
 
-		// This seam reports HasMore natively, so there is no over-fetch to
-		// trim — but the display order still has to be applied here, because a
-		// sort the database cannot express left the query unlimited and this is
-		// where the requested order first exists. The trim then cuts on that
-		// order.
-		workapi.SortIssuesWithCounts(page.Items, req.SortBy, req.Reverse)
-		items, hasMore := page.Items, page.HasMore
-		if limit := workapi.PageLimit(req); limit > 0 && len(items) > limit {
-			items, hasMore = items[:limit], true
-		}
-		return readerPage(items, hasMore), nil
+		// This seam reports HasMore natively, so the epilogue's seed is that
+		// verdict rather than an over-fetched row — the one thing that differs
+		// between this implementation and its store-backed sibling, and it is
+		// an argument to the shared function rather than a second copy of it.
+		items, hasMore := workapi.FinishPage(page.Items, req.SortBy, req.Reverse, workapi.PageLimit(req), page.HasMore)
+		return publicops.IssuePage{Items: items, HasMore: hasMore}, nil
 	})
 }
 
@@ -123,14 +125,4 @@ func (r *issueReader) Get(ctx context.Context, req publicops.GetRequest) (*publi
 			IncludeComments:   req.IncludeComments,
 		})
 	})
-}
-
-// readerPage normalizes a domain page onto the contract's page. Items is never
-// nil on the way out, so a caller never has to tell null from empty to learn
-// that nothing matched.
-func readerPage(items []*publicops.IssueWithCounts, hasMore bool) publicops.IssuePage {
-	if items == nil {
-		items = []*publicops.IssueWithCounts{}
-	}
-	return publicops.IssuePage{Items: items, HasMore: hasMore}
 }

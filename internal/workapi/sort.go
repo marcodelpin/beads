@@ -2,7 +2,6 @@ package workapi
 
 import (
 	"cmp"
-	"slices"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/types"
@@ -40,59 +39,6 @@ func CompareIssuesBy(a, b *types.Issue, sortBy string) int {
 		return cmp.Compare(a.Assignee, b.Assignee)
 	}
 	return 0
-}
-
-// SortIssues applies the display order to a page of issues.
-func SortIssues(issues []*types.Issue, sortBy string, reverse bool) {
-	if sortBy == "" {
-		return
-	}
-	slices.SortStableFunc(issues, func(a, b *types.Issue) int {
-		r := CompareIssuesBy(a, b, sortBy)
-		if reverse {
-			return -r
-		}
-		return r
-	})
-}
-
-// SortIssuesWithCounts applies the display order to a page of counted issues.
-//
-// The sort is STABLE, which matters for exactly one caller: a keyset-paged
-// read orders by (created_at DESC, id ASC), and CompareIssuesBy("created")
-// reports a same-second pair as equal. An unstable sort would permute those
-// rows out of the id order the cursor predicate resumes from, so a page
-// boundary landing inside a same-second group could skip or repeat rows.
-// Stability makes the tie-break fall back to the order storage returned, which
-// is the order the cursor assumes.
-func SortIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, reverse bool) {
-	if sortBy == "" {
-		return
-	}
-	slices.SortStableFunc(items, func(a, b *types.IssueWithCounts) int {
-		ai, bi := issueOrNil(a), issueOrNil(b)
-		if ai == nil {
-			if bi == nil {
-				return 0
-			}
-			return 1
-		}
-		if bi == nil {
-			return -1
-		}
-		r := CompareIssuesBy(ai, bi, sortBy)
-		if reverse {
-			return -r
-		}
-		return r
-	})
-}
-
-func issueOrNil(iwc *types.IssueWithCounts) *types.Issue {
-	if iwc == nil {
-		return nil
-	}
-	return iwc.Issue
 }
 
 // ReadyFilterFromIssueFilter projects a list filter onto the ready-work
