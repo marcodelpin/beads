@@ -37,6 +37,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/fdhygiene"
+	"github.com/steveyegge/beads/internal/githooksenv"
 	"github.com/steveyegge/beads/internal/lockfile"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 )
@@ -1288,7 +1289,13 @@ func Start(beadsDir string) (*State, error) {
 			cmd.Stderr = logFile
 			cmd.Stdin = nil
 			cmd.SysProcAttr = procAttrDetached()
-			cmd.Env = os.Environ()
+			// In server mode the CALL DOLT_PUSH runs inside THIS child, not in
+			// bd, so the hooks override has to be in the child's environment —
+			// setting it on bd's own process (what the embedded path does)
+			// would be invisible here. GH#4272; approach from PR #4281 by
+			// pmgledhill102.
+			cmd.Env = append(os.Environ(), githooksenv.ParametersEnv+"="+
+				githooksenv.AppendParameter(os.Getenv(githooksenv.ParametersEnv), githooksenv.NoHooksParam))
 
 			// GH#4634: the server outlives the caller, so any descriptor the
 			// caller left non-CLOEXEC (a shell `exec 9>lock`, a CI harness, an
