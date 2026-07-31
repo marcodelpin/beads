@@ -199,8 +199,9 @@ api-gen:
 	go generate -tags "$(BUILD_TAGS)" ./internal/httpapi/apigen
 
 # Two-part spec drift gate: regenerate and fail if regeneration CHANGED
-# anything, then run the spec tests. Runs in the required PR policy job
-# (scripts/ci/pr-policy.sh), never only on push-to-main.
+# anything, then run the spec tests. Runs in the PR workflow's policy job
+# (scripts/ci/pr-policy.sh), on every pull request, never only on
+# push-to-main.
 #
 # The drift question is "do the checked-out types already match the checked-out
 # spec", so the comparison is before-vs-after regeneration rather than

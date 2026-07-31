@@ -28,8 +28,11 @@ import (
 // misuse a builder, it hand-rolled `IssueFilter{}` — and internal/types is
 // reachable from here, for CheckFieldLen and IssueWithCounts below. So the
 // forbidigo rule in .golangci.yml denies NAMING types.IssueFilter or
-// types.WorkFilter in this package at all. Both rules are in `make ci-pr-lint`,
-// which is a required PR job.
+// types.WorkFilter in this package at all — every file of it, so a file added
+// here tomorrow is covered the moment it exists. Both rules run in
+// `make ci-pr-lint`, which the PR workflow runs on every pull request and
+// aggregates into its ci-gate job; what that gate is and is not worth as
+// enforcement is stated once, in doc.go.
 //
 // `bd ready` and `bd list` still call the builders directly, for the reasons
 // issueops.Reader's doc comment sets out. They are not unguarded for it: they

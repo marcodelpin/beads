@@ -24,7 +24,8 @@ import (
 
 // These are pure: the claim path runs end to end over a real listener against a
 // fake use case, so the wire edge — path split, media type, body rules, actor
-// rules, response and problem shapes — is covered by the required PR job. What
+// rules, response and problem shapes — is covered on every pull request by the
+// PR workflow's unconditional Go test job. What
 // a fake cannot prove is the CAS itself; the concurrent-claim race, the storage
 // commit, and the full-item parity oracle against `bd update --claim --json`
 // live in cmd/bd's proxied-server integration test, against real Dolt.

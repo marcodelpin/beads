@@ -18,10 +18,11 @@ import (
 )
 
 // These tests are the spec drift gates. They are pure — no database, no
-// server, no build tag — because they must run in the required PR job. With
+// server, no build tag — because they must run in the PR workflow's
+// unconditional Go test job, not in a shard that only some pushes reach. With
 // the wire structs pinned to canonical Go types via x-go-type, the compiler
 // cannot see the spec at all, so if these move to a conditional CI tier the
-// contract stops being enforced.
+// contract stops being checked.
 
 var httpVerbs = map[string]bool{
 	"get": true, "put": true, "post": true, "delete": true, "patch": true,

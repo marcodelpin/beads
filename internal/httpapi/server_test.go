@@ -25,7 +25,8 @@ import (
 // These tests are pure: no database, no cgo, no build tag. The whole request
 // lifecycle — limits, middleware, logging, shutdown — is exercised against a
 // fake unit-of-work provider over a real listener on 127.0.0.1:0, so it runs in
-// the required PR job rather than in a conditional cgo shard.
+// the PR workflow's unconditional Go test job rather than in a conditional cgo
+// shard.
 
 // fakeUOW embeds the interface so any method this test has not stubbed panics
 // instead of silently returning a zero value.
