@@ -15,6 +15,16 @@ import (
 )
 
 func runReadyProxiedServer(cmd *cobra.Command, ctx context.Context) error {
+	// --offset is supported here and nowhere else, so this is where a negative
+	// value is rejected. It stays out of the shared gatherer because the direct
+	// route reaches that gatherer too, and `bd ready --offset -1` has always
+	// been a no-op there rather than an error. HandleError, not the RespectJSON
+	// variant, for the same reason: this message is the proxied route's alone,
+	// and it has always gone to stderr as plain text.
+	if offset, _ := cmd.Flags().GetInt("offset"); offset < 0 {
+		return HandleError("--offset must be >= 0")
+	}
+
 	in, err := gatherReadyInput(cmd)
 	if err != nil {
 		return err

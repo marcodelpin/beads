@@ -80,6 +80,22 @@ func configureDirectoryLabel(t *testing.T, label string) {
 	}
 }
 
+// TestGatherReadyInputIgnoresNegativeOffset pins the direct route's oldest
+// answer to `bd ready --offset -1`: print ready work. Its RunE rejects
+// --offset > 0 as proxied-only and never looked at the flag again, so a
+// negative value has always been a no-op there. The shared gatherer must not
+// turn it into an exit-1 usage error; the proxied route, which is the only one
+// that pages, rejects it in its own RunE.
+func TestGatherReadyInputIgnoresNegativeOffset(t *testing.T) {
+	in, err := gatherReadyInput(newReadyFlagsCommand(t, "--offset", "-1"))
+	if err != nil {
+		t.Fatalf("gatherReadyInput(--offset -1) = %v, want no error", err)
+	}
+	if in.filter.Offset != 0 {
+		t.Errorf("filter.Offset = %d, want 0 (a negative offset must not reach storage)", in.filter.Offset)
+	}
+}
+
 // TestGatherReadyInputKeepsDirectoryLabelVerbatim pins GH#541's label against
 // the collapse into workapi. The configured label is not user input: `bd ready`
 // has always put it on the filter exactly as configured, so it must not be

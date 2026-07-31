@@ -49,11 +49,11 @@ func gatherReadyInput(cmd *cobra.Command) (readyInput, error) {
 	in.jsonOut = jsonOutput
 
 	in.Limit, _ = cmd.Flags().GetInt("limit")
-	if cmd.Flags().Changed("offset") {
-		offset, _ := cmd.Flags().GetInt("offset")
-		if offset < 0 {
-			return in, HandleErrorRespectJSON("--offset must be >= 0")
-		}
+	// A negative --offset is not a page request, so it never reaches the
+	// filter. Rejecting it belongs to the proxied RunE, the only route that
+	// pages at all: the direct route rejects --offset > 0 outright and has
+	// always ignored a negative value rather than failing on it.
+	if offset, _ := cmd.Flags().GetInt("offset"); offset > 0 {
 		in.Offset = offset
 	}
 	in.Assignee, _ = cmd.Flags().GetString("assignee")

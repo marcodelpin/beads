@@ -270,6 +270,24 @@ func TestEmbeddedReady(t *testing.T) {
 			t.Errorf("expected '--offset is only supported under --proxied-server' error, got: %s", out)
 		}
 	})
+
+	// Only the proxied route pages, so only it validates --offset. Outside
+	// proxied mode a negative value has always been ignored, not rejected:
+	// the RunE rejects --offset > 0 as proxied-only and never reads the flag
+	// again. Pinned live because the shared flag gatherer is one edit away
+	// from turning it into an exit-1 usage error.
+	t.Run("negative_offset_ignored_outside_proxied", func(t *testing.T) {
+		cmd := exec.Command(bd, "ready", "--offset", "-1")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		stdout, stderr, err := runCommandBuffers(t, cmd)
+		if err != nil {
+			t.Fatalf("bd ready --offset -1 in embedded mode should have listed ready work: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Ready test issue") {
+			t.Errorf("expected ready work in output, got: %s", stdout.String())
+		}
+	})
 }
 
 func TestEmbeddedReadyConcurrent(t *testing.T) {

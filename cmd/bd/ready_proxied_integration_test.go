@@ -317,6 +317,19 @@ func TestProxiedServerReady(t *testing.T) {
 		}
 	})
 
+	// The rejection lives on this route only: outside proxied mode a negative
+	// --offset is ignored (see TestEmbeddedReady's
+	// negative_offset_ignored_outside_proxied), because --offset is not
+	// supported there at all.
+	t.Run("negative_offset_rejected", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "rdoffneg")
+		out := bdProxiedReadyFail(t, bd, p, "--offset", "-1")
+		if !strings.Contains(out, "--offset must be >= 0") {
+			t.Errorf("expected '--offset must be >= 0' error, got: %s", out)
+		}
+	})
+
 	t.Run("offset_skips_leading_results", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "rdoff")

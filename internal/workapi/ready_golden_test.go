@@ -112,10 +112,16 @@ func TestReadyFilterGoldenDivergences(t *testing.T) {
 		"max_rows_flag":     "direct sets MaxRows/MaxRowsSource; the proxied path has no cap to thread",
 		"max_rows_negative": "direct validates --max-rows; the proxied RunE does that itself before gathering",
 
-		// Kept: gather's. The direct RunE rejects these combinations before
-		// building anything, so its builder never saw them. Not observable.
+		// Kept: gather's. The direct RunE rejects this combination before
+		// building anything, so its builder never saw it. Not observable.
 		"claim_with_gated": "direct's RunE rejects --claim --gated upstream",
-		"offset_negative":  "gather rejects a negative --offset; direct silently ignored it",
+
+		// Kept: both. The rejection the gather builder recorded is about
+		// --offset, which only the proxied route supports, so it moved to that
+		// route's RunE instead of into the shared gatherer; `bd ready
+		// --offset -1` still prints ready work on the direct route. See
+		// cmd/bd's TestGatherReadyInputIgnoresNegativeOffset.
+		"offset_negative": "gather rejects a negative --offset; direct silently ignored it",
 	}
 
 	for _, c := range loadReadyFilterGolden(t) {
