@@ -129,18 +129,50 @@ linters:
     # an aliased import of internal/types is caught and an unrelated package
     # that happens to be called `types` is not.
     #
-    # This linter carries this one rule and applies to this one package; the
-    # path-except exclusion below is what scopes it. There are ~750 legitimate
-    # filter literals elsewhere in the tree (storage, conformance, and the
-    # `bd ready`/`bd list` front doors that consume the filter for --claim,
-    # --watch and the --parent tree), so a tree-wide ban is not the claim being
-    # made and would not survive contact with the repository.
+    # This linter carries this one rule; the path-except exclusion below is what
+    # scopes it, and that list is the exact claim being made. There are ~750
+    # legitimate filter literals elsewhere in the tree - storage, conformance,
+    # every command that is not one of the three shared reads - so a tree-wide
+    # ban is not the claim and would not survive contact with the repository.
+    #
+    # WHAT THE SCOPE COVERS, and why each file is in it:
+    #
+    #   internal/httpapi/       every read handler; the surface has no other job
+    #   cmd/bd/list.go          `bd list`, direct route
+    #   cmd/bd/list_input.go    where `bd list`'s request is assembled
+    #   cmd/bd/list_proxied_server.go  `bd list`, proxied route
+    #   cmd/bd/show.go          `bd show`, direct route
+    #   cmd/bd/show_proxied_server.go  `bd show`, proxied route
+    #
+    # In those files the ONLY filter reachable is one a workapi builder handed
+    # back, because an inferred `filter, err := workapi.BuildListFilter(...)`
+    # names no type and a hand-rolled `types.IssueFilter{}` does. That is the
+    # whole difference the rule turns on, and it is the difference that matters:
+    # the builder is where the closed/done exclusions, the template, gate, infra
+    # and wisp suppression and the limit defaulting live, and a bare literal is
+    # exactly what a hosted viewer once shipped.
+    #
+    # WHAT IT DOES NOT COVER, named rather than left to inference:
+    #
+    #   cmd/bd/list_show_filter_modes.go - the modes that consume the filter as
+    #     a VALUE: the recursive --parent tree walk (it re-parents a copy at
+    #     every level), the --watch poll loop, the proxied route's builder call
+    #     (it has to name the type to hand the filter back), and --current
+    #     (which resolves an id from a deliberately BARE filter that must not
+    #     pick up the default listing's exclusions).
+    #   cmd/bd/ready.go, ready_input.go, ready_proxied_server.go - `bd ready`
+    #     hands its filter to --claim, --gated, --explain and --mol, and
+    #     readyInput carries it as a field for them. Routing only the plain
+    #     listing through the role would fork the command in two, so the filter
+    #     stays nameable there. `bd ready` is on the shared BUILDER and, on the
+    #     proxied route, the shared EPILOGUE; it is not on the role, and this
+    #     rule does not pretend otherwise.
     forbidigo:
       analyze-types: true
       forbid:
         - pattern: '^types\.(IssueFilter|WorkFilter)$'
           pkg: '^github\.com/steveyegge/beads/internal/types$'
-          msg: "internal/httpapi is transport only: it never builds a filter. Pass the whole request to issueops.Reader and let the builders in internal/workapi construct one - see internal/httpapi/reads.go"
+          msg: "this file answers one of the three shared reads and never builds a filter: pass the whole request to issueops.Reader, or take one back from a builder in internal/workapi - see issueops/reader.go"
     errcheck:
       exclude-functions:
         - (*database/sql.DB).Close
@@ -168,11 +200,12 @@ linters:
   exclusions:
     rules:
       # forbidigo holds exactly one rule - the filter-construction guard - and
-      # it is a statement about internal/httpapi, not about the tree. This is
-      # what scopes it there. A second forbidigo rule would need this widened
-      # or replaced; nothing else about the config would tell you that, so it
-      # is written here rather than left implicit.
-      - path-except: '^internal/httpapi/'
+      # it is a statement about the files that answer the three shared reads,
+      # not about the tree. This is what scopes it to them; the settings block
+      # above names every file in and out and why. A second forbidigo rule
+      # would need this widened or replaced; nothing else about the config
+      # would tell you that, so it is written here rather than left implicit.
+      - path-except: '^(internal/httpapi/|cmd/bd/(list|list_input|list_proxied_server|show|show_proxied_server)\.go$)'
         linters:
           - forbidigo
       # Tests are exempt for the same reason the depguard twin exempts them:
