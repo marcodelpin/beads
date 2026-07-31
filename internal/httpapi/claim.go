@@ -415,11 +415,22 @@ type timedProvider struct {
 	rec   *reqInfo
 }
 
-// IssueReader keeps the capability accessor available through the wrapper, so
-// a read handler asks the provider it holds for the role — the same two-step a
-// CLI command performs on a store — instead of reaching past it to a
-// constructor. Every unit of work the reader opens is therefore timed like
-// every other one.
+// timedProvider carries the capability accessor, so a read handler asks the
+// provider it holds for the role — the same two-step a CLI command performs on
+// a store — instead of reaching past it to a constructor.
+var _ uow.IssueReaderSource = timedProvider{}
+
+// IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
+// wrapped provider's own accessor, and that is the one place in this slice
+// where a constructor is the right call: the whole purpose of the wrapper is
+// that every unit of work the reader opens goes through NewUOW below and lands
+// in this request's uow_ms. `p.inner.IssueReader()` would return a reader
+// bound to the untimed provider and the measurement would silently read zero.
+//
+// The cost is that a provider whose own accessor decorated its reader would be
+// bypassed here. There is one provider (doltSQLProvider) and its accessor is
+// this same construction, so nothing is bypassed today — but if a decorating
+// provider ever appears, this is the line that has to grow a wrap.
 func (p timedProvider) IssueReader() (issueops.Reader, error) {
 	return uow.NewIssueReader(p)
 }

@@ -74,6 +74,27 @@ linters:
               desc: "internal/workapi is frontend-independent: the CLI parses flags and passes plain params - see internal/workapi/doc.go"
             - pkg: net/http
               desc: "internal/workapi is frontend-independent: the HTTP layer decodes requests and passes plain params - see internal/workapi/doc.go"
+        # The other half of that boundary. internal/httpapi is TRANSPORT: it
+        # decodes parameters, hands the whole request to issueops.Reader, and
+        # shapes the answer onto the wire. "No handler builds a filter or
+        # supplies a ConfigSource" is the Reader slice's acceptance criterion,
+        # and the rule above cannot enforce it - it constrains what workapi
+        # imports, not who imports workapi. Without this, a handler could call
+        # BuildListFilter tomorrow and every gate would stay green, which is
+        # exactly how a hosted viewer once shipped a bare IssueFilter and served
+        # in_progress rows as "ready".
+        #
+        # Tests are exempt: they read the shared default constants
+        # (workapi.DefaultReadyLimit) to prove the handler uses those rather
+        # than literals of its own, which is a guard, not a construction.
+        httpapi-transport-boundary:
+          list-mode: lax
+          files:
+            - "**/internal/httpapi/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/steveyegge/beads/internal/workapi
+              desc: "internal/httpapi is transport only: a read handler asks the provider for issueops.Reader and passes the whole request - it never builds a filter - see internal/httpapi/reads.go"
     errcheck:
       exclude-functions:
         - (*database/sql.DB).Close

@@ -354,8 +354,14 @@ func (s *Server) connState(_ net.Conn, state http.ConnState) {
 // work it opens are timed into THIS request's log line. That is the only
 // reason: the role itself is stateless, and the accessor is the API on this
 // seam exactly as it is on a store.
+//
+// The source is held by INTERFACE, not by the concrete wrapper. That is what
+// makes uow.IssueReaderSource load-bearing rather than decorative: this call
+// site type-checks against the accessor the provider seam publishes, so
+// renaming or dropping it is a compile error here.
 func (s *Server) reader(r *http.Request) (issueops.Reader, error) {
-	return timedProvider{inner: s.provider, rec: requestInfo(r.Context())}.IssueReader()
+	var src uow.IssueReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.IssueReader()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.
