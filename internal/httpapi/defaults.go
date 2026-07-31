@@ -14,9 +14,10 @@ package httpapi
 // delete these two constants and re-point the spec tests at it — nothing else
 // consumes them.
 //
-// Until then TestDefaultLimitsMatchCLIFlags reads the cobra flag registrations
-// in cmd/bd and fails if the CLI's defaults move away from these, so the
-// temporary duplication cannot drift in silence.
+// Until then TestDefaultsMatchCLIFlags reads the cobra flag registrations in
+// cmd/bd and fails if the CLI's defaults move away from these, so the temporary
+// duplication cannot drift in silence. That test also pins `bd ready`'s --sort
+// default, which has no constant to share at all.
 const (
 	// DefaultListLimit is `bd list`'s --limit default (cmd/bd/list.go).
 	DefaultListLimit = 50
