@@ -52,6 +52,14 @@ func newReadServer(t *testing.T, cfg Config) (*testServer, *recordingIssues) {
 // high-priority work, so as soon as `limit` truncates, the page contains
 // DIFFERENT ISSUES from the ones `bd ready` shows. The document tests pin the
 // document; only this pins the handler.
+//
+// The wanted value is the LITERAL, not readySortDefault. Comparing the filter
+// against the same constant the handler read would pass for every value that
+// constant could take, including hybrid — the assertion would say only that
+// the handler forwards its own default, which is not the property at risk.
+// TestDefaultsMatchCLIFlags ties that literal to `bd ready --sort`'s
+// registered default and to the frozen document, so all three move together or
+// one of them fails.
 func TestReadyForwardsAnExplicitSortPolicy(t *testing.T) {
 	ts, rec := newReadServer(t, Config{})
 
@@ -62,12 +70,9 @@ func TestReadyForwardsAnExplicitSortPolicy(t *testing.T) {
 	if len(filters) != 1 {
 		t.Fatalf("%d ready queries, want 1", len(filters))
 	}
-	if got := filters[0].SortPolicy; got != types.SortPolicy(readySortDefault) {
-		t.Errorf("SortPolicy = %q, want %q — an empty policy is the storage layer's hybrid fallback, which is not this operation's default",
-			got, readySortDefault)
-	}
-	if filters[0].SortPolicy == "" {
-		t.Error("SortPolicy is empty; the hybrid fallback is unreachable from `bd ready` and must be unreachable from here")
+	if got := filters[0].SortPolicy; got != types.SortPolicy("priority") {
+		t.Errorf("SortPolicy = %q, want \"priority\" — an empty policy is the storage layer's hybrid fallback, and hybrid re-SELECTS the page once the limit truncates",
+			got)
 	}
 	// The shared limit default reaches storage too: the document states the
 	// number, the CLI flag registers the same constant, and this is where the

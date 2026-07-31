@@ -520,6 +520,13 @@ func TestDefaultsMatchCLIFlags(t *testing.T) {
 	if !slices.Contains(toStrings(t, schema["enum"]), specSort) {
 		t.Errorf("sort default %q is not in the documented enum %v", specSort, schema["enum"])
 	}
+	// The third link in the chain. The two above tie the document to the CLI
+	// flag; without this one the HANDLER is free to send a different policy
+	// while both of them still read correctly, which is the only place a
+	// wrong default actually changes what a client receives.
+	if readySortDefault != cliSort {
+		t.Errorf("handleReady defaults `sort` to %q, `bd ready --sort` registers %q", readySortDefault, cliSort)
+	}
 }
 
 // contextResponseAllowlist is the ENTIRE field set of GET /v0/beads/context,

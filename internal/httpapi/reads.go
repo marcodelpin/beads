@@ -84,9 +84,14 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 // readySortDefault is the ordering this operation applies when `sort` is
-// absent. It is the same value `bd ready --sort` registers, and
-// TestDefaultsMatchCLIFlags pins the document to that flag; this constant is
-// what makes the HANDLER agree with both instead of only the document.
+// absent. It is the same value `bd ready --sort` registers.
+//
+// Three things have to agree: the frozen document, the CLI flag, and this.
+// TestDefaultsMatchCLIFlags compares all three against each other and
+// TestReadyForwardsAnExplicitSortPolicy asserts the LITERAL "priority" on the
+// filter the handler built — deliberately not this constant, because an
+// assertion against the value the handler itself read would hold for every
+// value it could take.
 const readySortDefault = "priority"
 
 // handleListIssues answers GET /v0/beads/issues.
