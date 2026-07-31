@@ -44,14 +44,18 @@ type DetailSource interface {
 	IterComments(ctx context.Context, id string, isWisp bool) (storage.Iter[types.Comment], error)
 }
 
-// IsNotFound reports whether err is any of the shapes a storage seam uses to
+// isNotFound reports whether err is any of the shapes a storage seam uses to
 // say "no such row".
 //
 // The seams disagree. The store wraps storage.ErrNotFound; the domain layer
 // wraps database/sql's ErrNoRows, because db.issueSQLRepositoryImpl.Get
 // returns sql.ErrNoRows unchanged and issueUseCaseImpl.get wraps it with the
-// id. Callers must not have to know which one they are talking to.
-func IsNotFound(err error) bool {
+// id. Callers must not have to know which one they are talking to - which is
+// why this stays unexported: the one way out of this package is through
+// GetIssueOrWisp, which has already collapsed both shapes onto
+// storage.ErrNotFound. Exporting it would hand frontends a second way to read
+// seam errors, and the whole point is that they never see one.
+func isNotFound(err error) bool {
 	return errors.Is(err, storage.ErrNotFound) || errors.Is(err, sql.ErrNoRows)
 }
 
@@ -79,7 +83,7 @@ func GetIssueOrWisp(ctx context.Context, src DetailSource, id string) (*types.Is
 	if err == nil && issue != nil {
 		return issue, false, nil
 	}
-	if err != nil && !IsNotFound(err) {
+	if err != nil && !isNotFound(err) {
 		return nil, false, err
 	}
 
@@ -87,7 +91,7 @@ func GetIssueOrWisp(ctx context.Context, src DetailSource, id string) (*types.Is
 	if wispErr == nil && wisp != nil {
 		return wisp, true, nil
 	}
-	if wispErr != nil && !IsNotFound(wispErr) {
+	if wispErr != nil && !isNotFound(wispErr) {
 		return nil, false, wispErr
 	}
 	return nil, false, notFound(id)

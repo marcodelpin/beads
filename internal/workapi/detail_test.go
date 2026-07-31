@@ -148,9 +148,13 @@ func (f fakeStoreReader) IterIssueComments(_ context.Context, id string) (storag
 // ---------------------------------------------------------------------------
 
 type fakeIssueUC struct {
-	fx      *detailFixture
-	hardErr error
-	nilNil  bool // report a miss as (nil, nil) instead of an error
+	fx *detailFixture
+
+	hardErr error // both lookups fail: the whole backend is down
+	// issueErr fails only the issue lookup, leaving the wisp table healthy.
+	// That asymmetry is the one a fall-through resolver gets wrong.
+	issueErr error
+	nilNil   bool // report a miss as (nil, nil) instead of an error
 }
 
 func (f fakeIssueUC) miss(id string) (*types.Issue, error) {
@@ -163,6 +167,9 @@ func (f fakeIssueUC) miss(id string) (*types.Issue, error) {
 func (f fakeIssueUC) GetIssue(_ context.Context, id string) (*types.Issue, error) {
 	if f.hardErr != nil {
 		return nil, f.hardErr
+	}
+	if f.issueErr != nil {
+		return nil, f.issueErr
 	}
 	if issue, ok := f.fx.issues[id]; ok {
 		return issue, nil
@@ -323,9 +330,15 @@ func TestGetIssueOrWispNormalizesNotFound(t *testing.T) {
 }
 
 // TestGetIssueOrWispKeepsHardErrors is the other half of the fix: a backend
-// failure must not decay into not-found. The frontends that write
-// `if err != nil || issue == nil { 404 }` report a dropped connection as a
-// missing issue; nothing downstream of here can.
+// failure must not decay into not-found, and it must short-circuit rather than
+// be retried against the wisp table.
+//
+// The discriminating case is the last one - the issue lookup fails while the
+// id happens to exist as a wisp. A resolver that falls through to the wisp
+// table on any issue-lookup failure answers that with (wisp, true, nil): a
+// dead backend reported as a successful read of a different table. Failing
+// both lookups does not test the ordering at all, because fall-through reaches
+// the same hard error by the longer route.
 func TestGetIssueOrWispKeepsHardErrors(t *testing.T) {
 	ctx := context.Background()
 	fx := newDetailFixture()
@@ -333,20 +346,34 @@ func TestGetIssueOrWispKeepsHardErrors(t *testing.T) {
 
 	cases := []struct {
 		name string
+		id   string
 		src  DetailSource
 	}{
-		{"store", NewStoreDetailSource(fakeStoreReader{fx: fx, hardErr: boom})},
-		{"use case", newUseCaseDetailSource(fakeIssueUC{fx: fx, hardErr: boom}, fakeLabelUC{fx: fx}, fakeDepUC{fx: fx}, fakeCommentUC{fx: fx})},
+		// The store resolves both tables inside its own GetIssue, so this
+		// adapter's GetWisp is a dead end and there is no fall-through to
+		// suppress. The case is here to pin that the store's hard error still
+		// reaches the caller unwrapped, not to test ordering.
+		{"store", "bd-1", NewStoreDetailSource(fakeStoreReader{fx: fx, hardErr: boom})},
+		{"use case, whole backend down", "bd-1",
+			newUseCaseDetailSource(fakeIssueUC{fx: fx, hardErr: boom}, fakeLabelUC{fx: fx}, fakeDepUC{fx: fx}, fakeCommentUC{fx: fx})},
+		{"use case, issue lookup fails while the id exists as a wisp", "bd-w1",
+			newUseCaseDetailSource(fakeIssueUC{fx: fx, issueErr: boom}, fakeLabelUC{fx: fx}, fakeDepUC{fx: fx}, fakeCommentUC{fx: fx})},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := GetIssueOrWisp(ctx, tc.src, "bd-1")
+			issue, isWisp, err := GetIssueOrWisp(ctx, tc.src, tc.id)
+			if err == nil {
+				t.Fatalf("issue = %+v, isWisp = %v, err = nil: a failed issue lookup must not answer with a row", issue, isWisp)
+			}
 			if !errors.Is(err, boom) {
 				t.Fatalf("err = %v, want the backend error", err)
 			}
 			if errors.Is(err, storage.ErrNotFound) {
 				t.Error("backend failure reported as not-found")
+			}
+			if issue != nil {
+				t.Errorf("issue = %+v, want nil alongside the error", issue)
 			}
 		})
 	}
