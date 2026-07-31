@@ -153,6 +153,9 @@ type Problem struct {
 	// Reason With `invalid_argument`: `unknown_parameter` (this server does not know that parameter — version skew; degrade or fall back) or `invalid_value` (the value is not one this server will act on: malformed, out of vocabulary, or — for `limit=0` under `--allow-non-loopback` — legal but refused in this server's configuration; `detail` says which). Either way `invalid_value` means send something different, never retry the same request. The set may grow; default-branch on unknown values.
 	Reason *string `json:"reason,omitempty"`
 
+	// RequestId Correlation id for this request, echoed in the server's request log line. Present on every problem response from every route, including the ones the middleware answers before a handler runs. Opaque and per-process: it identifies a log line, nothing else, so it is never a retry key and never survives a restart. Quote it in a bug report and the operator can find the one line that explains the failure.
+	RequestId *string `json:"request_id,omitempty"`
+
 	// Status The HTTP status code, repeated in the body.
 	Status int `json:"status"`
 

@@ -2,12 +2,20 @@
 // internal/httpapi/spec/openapi.v0.yaml — the /v0 wire contract `bd serve`
 // answers on.
 //
-// The contract lands before the server does. What lives here today is the
-// inert half: the problem+json error mapping, the shared limit defaults, and
-// the compile-time pins that keep the generated types welded to the canonical
-// structs. Nothing in this package is routed or reachable yet.
+// What is live: the process lifecycle (Listen and Serve), the bind policy, the
+// route table and the request path in front of it — Host allowlist, connection
+// cap, database semaphore, per-request deadline, structured request log — plus
+// the two operations that answer from the process itself, GET /healthz and
+// GET /v0/beads/context. The read and claim operations are registered as
+// transitional 501 stubs so the route table can be checked against the document
+// all at once; ContextResponse.capabilities is derived from the implemented
+// handlers only, so it never advertises one of them.
 //
-// Two rules govern everything added here later:
+// Around that sit the inert pieces the contract needs regardless: the
+// problem+json error mapping, the shared limit defaults, and the compile-time
+// pins that keep the generated types welded to the canonical structs.
+//
+// Two rules govern everything added here:
 //
 // The spec is the source of truth. Types come from it (`make api-gen`), never
 // the other way round, and `make api-check` fails a change that edits one

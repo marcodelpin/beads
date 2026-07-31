@@ -1474,3 +1474,12 @@ components:
           description: >-
             With `already_claimed` or `not_claimable`: the issue's status at
             the moment of refusal.
+        request_id:
+          type: string
+          description: >-
+            Correlation id for this request, echoed in the server's request log
+            line. Present on every problem response from every route, including
+            the ones the middleware answers before a handler runs. Opaque and
+            per-process: it identifies a log line, nothing else, so it is never
+            a retry key and never survives a restart. Quote it in a bug report
+            and the operator can find the one line that explains the failure.

@@ -1,0 +1,776 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/uow"
+)
+
+// These tests are pure: no database, no cgo, no build tag. The whole request
+// lifecycle — limits, middleware, logging, shutdown — is exercised against a
+// fake unit-of-work provider over a real listener on 127.0.0.1:0, so it runs in
+// the required PR job rather than in a conditional cgo shard.
+
+// fakeUOW embeds the interface so any method this test has not stubbed panics
+// instead of silently returning a zero value.
+type fakeUOW struct {
+	uow.UnitOfWork
+	mu sync.Mutex
+	// Recorded AT Close time. The state of the close context afterwards says
+	// nothing: WithUOW cancels it on the way out, as it must.
+	closed           bool
+	closeErr         error
+	closeHasDeadline bool
+}
+
+func (u *fakeUOW) Close(ctx context.Context) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.closed = true
+	u.closeErr = ctx.Err()
+	_, u.closeHasDeadline = ctx.Deadline()
+}
+
+func (u *fakeUOW) closeState() (closed bool, err error, hasDeadline bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.closed, u.closeErr, u.closeHasDeadline
+}
+
+type fakeProvider struct {
+	mu    sync.Mutex
+	uows  []*fakeUOW
+	err   error
+	delay time.Duration
+}
+
+func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
+	if p.delay > 0 {
+		select {
+		case <-time.After(p.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if p.err != nil {
+		return nil, p.err
+	}
+	u := &fakeUOW{}
+	p.mu.Lock()
+	p.uows = append(p.uows, u)
+	p.mu.Unlock()
+	return u, nil
+}
+
+func (p *fakeProvider) Close(context.Context) error { return nil }
+
+// tunableProvider is the provider shape serve expects: one that can be told
+// how many connections it may open.
+type tunableProvider struct {
+	fakeProvider
+	limits uow.PoolLimits
+	set    bool
+}
+
+func (p *tunableProvider) SetPoolLimits(l uow.PoolLimits) {
+	p.limits = l
+	p.set = true
+}
+
+type testServer struct {
+	*Server
+	stdout *bytes.Buffer
+	stderr *lockedBuffer
+	client *http.Client
+	base   string
+}
+
+// lockedBuffer is the stderr sink. The server logs from handler goroutines, so
+// reading it from the test goroutine needs the lock.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func newTestServer(t *testing.T, cfg Config) *testServer {
+	t.Helper()
+	stdout := &bytes.Buffer{}
+	stderr := &lockedBuffer{}
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:0"
+	}
+	if cfg.Provider == nil {
+		cfg.Provider = &fakeProvider{}
+	}
+	cfg.Stdout = stdout
+	cfg.Stderr = stderr
+
+	srv, err := Listen(cfg)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Error("Serve did not return after shutdown")
+		}
+	})
+
+	return &testServer{
+		Server: srv,
+		stdout: stdout,
+		stderr: stderr,
+		client: &http.Client{Timeout: 20 * time.Second},
+		base:   "http://" + srv.Addr(),
+	}
+}
+
+func (ts *testServer) get(t *testing.T, path string) *http.Response {
+	t.Helper()
+	resp, err := ts.client.Get(ts.base + path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func decodeBody(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+	return m
+}
+
+func TestValidateBindAddr(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		addr             string
+		allowNonLoopback bool
+		wantErr          string
+	}{
+		{name: "loopback ephemeral", addr: "127.0.0.1:0"},
+		{name: "loopback fixed", addr: "127.0.0.1:8080"},
+		{name: "ipv6 loopback", addr: "[::1]:8080"},
+		{name: "alternate loopback ip", addr: "127.0.0.2:8080"},
+
+		// A name is not a listener specification: it resolves to whatever the
+		// resolver says today, so the operator cannot tell from the flag which
+		// interfaces they opened. This is the same rule the managed Dolt child
+		// lives under.
+		{name: "localhost refused", addr: "localhost:8080", wantErr: "numeric IP literal"},
+		{name: "hostname refused", addr: "example.internal:8080", wantErr: "numeric IP literal"},
+
+		// A unix socket bypasses the loopback TCP boundary entirely.
+		{name: "unix socket refused", addr: "/tmp/bd.sock", wantErr: "unix sockets are not supported"},
+		{name: "bare port refused", addr: "8080", wantErr: "HOST:PORT"},
+		{name: "no port refused", addr: "127.0.0.1", wantErr: "HOST:PORT"},
+		{name: "service name refused", addr: "127.0.0.1:http", wantErr: "port must be a number"},
+		{name: "empty host refused", addr: ":8080", wantErr: "numeric IP literal"},
+
+		{name: "non-loopback needs opt-in", addr: "10.0.0.5:8080", wantErr: "--allow-non-loopback"},
+		{name: "non-loopback with opt-in", addr: "10.0.0.5:8080", allowNonLoopback: true},
+		{name: "wildcard with opt-in", addr: "0.0.0.0:8080", allowNonLoopback: true},
+		{name: "wildcard needs opt-in", addr: "0.0.0.0:8080", wantErr: "--allow-non-loopback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ValidateBindAddr(tc.addr, tc.allowNonLoopback)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateBindAddr(%q, %v) = %v, want no error", tc.addr, tc.allowNonLoopback, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateBindAddr(%q, %v) succeeded, want refusal mentioning %q", tc.addr, tc.allowNonLoopback, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	resp := ts.get(t, "/healthz")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	// A cached liveness answer is worse than none.
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if body := decodeBody(t, resp); body["status"] != "ok" {
+		t.Errorf("body = %v, want status ok", body)
+	}
+}
+
+// TestHealthzStaysUpWhileTheDatabaseIsDown pins the property that makes
+// /healthz liveness-only, and the reason /context shares it: neither touches
+// the provider, so both answer while every database slot is held or the
+// database is unreachable.
+func TestHealthzStaysUpWhileTheDatabaseIsDown(t *testing.T) {
+	dead := &fakeProvider{err: errors.New("dial tcp 127.0.0.1:3306: connect: connection refused")}
+	ts := newTestServer(t, Config{Provider: dead})
+
+	for _, path := range []string{"/healthz", "/v0/beads/context"} {
+		if resp := ts.get(t, path); resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200 with the database unreachable", path, resp.StatusCode)
+		}
+	}
+}
+
+func TestNoQueryParametersAccepted(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	for _, path := range []string{"/healthz?verbose=1", "/v0/beads/context?fields=all"} {
+		resp := ts.get(t, path)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, want 400", path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Content-Type"); got != "application/problem+json; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want problem+json", got)
+		}
+		body := decodeBody(t, resp)
+		if body["code"] != string(CodeInvalidArgument) {
+			t.Errorf("code = %v, want %s", body["code"], CodeInvalidArgument)
+		}
+		// unknown_parameter, not invalid_value: the client is one version
+		// ahead (or typing), and the recovery is to drop the parameter.
+		if body["reason"] != string(ReasonUnknownParameter) {
+			t.Errorf("reason = %v, want %s", body["reason"], ReasonUnknownParameter)
+		}
+		if body["param"] == nil || body["param"] == "" {
+			t.Errorf("no param member naming the offending key: %v", body)
+		}
+	}
+}
+
+// TestHostHeaderAllowlist is the DNS-rebinding defense. A page that re-resolves
+// its own name to 127.0.0.1 reaches this server with plain same-origin
+// requests; what it cannot do is change the Host header the browser sends.
+func TestHostHeaderAllowlist(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	for _, host := range []string{"127.0.0.1", "localhost", "[::1]", "LOCALHOST"} {
+		t.Run("allowed/"+host, func(t *testing.T) {
+			resp := requestWithHost(t, ts, "/healthz", host+":1234")
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Host %q: status = %d, want 200", host, resp.StatusCode)
+			}
+		})
+	}
+
+	for _, host := range []string{"evil.example", "beads.attacker.test:8080", "192.168.1.10"} {
+		t.Run("refused/"+host, func(t *testing.T) {
+			resp := requestWithHost(t, ts, "/healthz", host)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("Host %q: status = %d, want 400", host, resp.StatusCode)
+			}
+			body := decodeBody(t, resp)
+			if body["code"] != string(CodeInvalidArgument) || body["param"] != "Host" {
+				t.Errorf("body = %v, want invalid_argument on param Host", body)
+			}
+			// The refusal must be logged like any other request; the middleware
+			// runs inside the same per-request record.
+			if !strings.Contains(ts.stderr.String(), "status=400") {
+				t.Error("Host refusal produced no request log line")
+			}
+		})
+	}
+}
+
+// requestWithHost drives a raw request so the Host header can be a name the
+// resolver has never heard of.
+func requestWithHost(t *testing.T, ts *testServer, path, host string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, ts.base+path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = host
+	resp, err := ts.client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s with Host %q: %v", path, host, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// TestHostAllowlistUnderNonLoopbackBind pins both halves of the bind-dependent
+// rule: a specific non-loopback address answers to itself, and a wildcard bind
+// has no single address to allow, so the check is disabled and said so.
+func TestHostAllowlistUnderNonLoopbackBind(t *testing.T) {
+	specific := newHostAllowlist(net.ParseIP("10.0.0.5"))
+	if !specific["10.0.0.5"] {
+		t.Error("a specific non-loopback bind must answer to its own address")
+	}
+	if !specific["127.0.0.1"] {
+		t.Error("loopback spellings stay allowed on any bind")
+	}
+	if specific["evil.example"] {
+		t.Error("allowlist is not open")
+	}
+
+	if wildcard := newHostAllowlist(net.ParseIP("0.0.0.0")); len(wildcard) != 0 {
+		t.Errorf("wildcard bind allowlist = %v, want empty (no single configured address exists)", wildcard)
+	}
+	if got := allowlistLabel(nil); !strings.Contains(got, "disabled") {
+		t.Errorf("startup label for a disabled allowlist = %q, want it to say so", got)
+	}
+}
+
+// TestUnroutedPathsKeepTheErrorShape: the document promises that EVERY non-2xx
+// byte is problem+json, including from paths no operation owns. net/http's
+// default 404 is text/plain, so the catch-all is what makes that true.
+func TestUnroutedPathsKeepTheErrorShape(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	resp := ts.get(t, "/v1/beads/ready")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/problem+json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want problem+json", got)
+	}
+	body := decodeBody(t, resp)
+	if body["code"] != string(CodeNotFound) {
+		t.Errorf("code = %v, want %s", body["code"], CodeNotFound)
+	}
+	if body["request_id"] == nil {
+		t.Error("no request_id on the problem body")
+	}
+}
+
+// TestStubsAnswer501WithoutAdvertisingThemselves: a client that checks
+// capabilities before calling never reaches a stub, and one that calls anyway
+// gets a machine-readable refusal rather than a wrong answer.
+func TestStubsAnswer501WithoutAdvertisingThemselves(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	resp := ts.get(t, "/v0/beads/ready")
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	}
+	body := decodeBody(t, resp)
+	if body["code"] != "not_implemented" {
+		t.Errorf("code = %v", body["code"])
+	}
+	if body["request_id"] == nil {
+		t.Error("no request_id on the problem body")
+	}
+
+	ctxResp := ts.get(t, "/v0/beads/context")
+	caps, _ := decodeBody(t, ctxResp)["capabilities"].([]any)
+	for _, c := range caps {
+		if c == "ready.list" {
+			t.Error("capabilities advertises ready.list while its handler is a 501 stub")
+		}
+	}
+}
+
+func TestCapabilitiesListImplementedOperationsOnly(t *testing.T) {
+	implemented := map[string]bool{}
+	for _, rt := range routeTable {
+		if rt.implemented && rt.capability != "" {
+			implemented[rt.capability] = true
+		}
+	}
+	for _, got := range Capabilities() {
+		if !implemented[got] {
+			t.Errorf("Capabilities() lists %q, whose handler is not implemented", got)
+		}
+	}
+	if len(Capabilities()) != len(implemented) {
+		t.Errorf("Capabilities() = %v, want exactly %v", Capabilities(), implemented)
+	}
+}
+
+// TestSemaphoreShedsLoadInsteadOfQueueingForever is the wedge scenario in
+// miniature: the database stops answering, every slot fills, and the next
+// request must be TOLD to come back rather than parked until the deadline and
+// then answered with a non-retryable 500.
+//
+// It drives acquire directly against a hand-built server so the queue bound and
+// the saturation threshold can be milliseconds. The behavior under the real
+// constants is the same; only the waiting is shorter.
+func TestSemaphoreShedsLoadInsteadOfQueueingForever(t *testing.T) {
+	stderr := &lockedBuffer{}
+	s := &Server{
+		sem:        make(chan struct{}, 1),
+		semTimeout: 20 * time.Millisecond,
+		semWarn:    time.Nanosecond,
+		log:        newTestLogger(stderr),
+	}
+
+	held, err := s.acquire(context.Background(), &reqInfo{id: "holder"})
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	waiter := &reqInfo{id: "waiter"}
+	if _, err := s.acquire(context.Background(), waiter); !errors.Is(err, ErrBusy) {
+		t.Fatalf("acquire with the slot held = %v, want ErrBusy", err)
+	}
+	if waiter.semWait <= 0 {
+		t.Error("semaphore wait was not recorded; the log line cannot separate a saturated server from a slow database")
+	}
+	if !strings.Contains(stderr.String(), "event=semaphore_timeout") {
+		t.Errorf("a shed request produced no saturation event:\n%s", stderr.String())
+	}
+
+	// The shed maps onto a status the document already carries, so no new wire
+	// vocabulary enters through the back door.
+	res := ClassifyError(ErrBusy)
+	if res.Problem.Status != http.StatusServiceUnavailable || res.Problem.Code != string(CodeBusy) {
+		t.Fatalf("ErrBusy maps to %d/%s, want 503/busy", res.Problem.Status, res.Problem.Code)
+	}
+	if res.RetryAfterSeconds <= 0 {
+		t.Error("a saturation 503 must carry Retry-After")
+	}
+
+	// A wait that eventually succeeds is still a saturation datapoint.
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		held()
+	}()
+	slow := &reqInfo{id: "slow"}
+	release, err := s.acquire(context.Background(), slow)
+	if err != nil {
+		t.Fatalf("acquire after release: %v", err)
+	}
+	release()
+	if !strings.Contains(stderr.String(), "event=semaphore_saturated") {
+		t.Errorf("a long but successful wait produced no saturation event:\n%s", stderr.String())
+	}
+}
+
+// TestExemptRoutesAnswerUnderSaturation: liveness and identity must stay
+// observable while every database slot is held by a long scan — that is when an
+// operator most needs them, and it is why those two handlers touch no database.
+func TestExemptRoutesAnswerUnderSaturation(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	rec := &reqInfo{id: "holder"}
+	for range maxInflight {
+		release, err := ts.acquire(context.Background(), rec)
+		if err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		t.Cleanup(release)
+	}
+
+	for _, path := range []string{"/healthz", "/v0/beads/context"} {
+		if resp := ts.get(t, path); resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s = %d with every slot held, want 200", path, resp.StatusCode)
+		}
+	}
+}
+
+// TestWithUOWClosesWithADetachedContext is the one that protects the pinned
+// connection. Close sends ROLLBACK; if that send fails the transaction layer
+// poisons the connection rather than returning it, so closing with the
+// request's own canceled context would burn a session on every client
+// disconnect.
+func TestWithUOWClosesWithADetachedContext(t *testing.T) {
+	provider := &fakeProvider{}
+	ts := newTestServer(t, Config{Provider: provider})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := &reqInfo{id: "detached"}
+
+	err := ts.WithUOW(ctx, rec, func(uow.UnitOfWork) error {
+		// The client hangs up mid-request.
+		cancel()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithUOW: %v", err)
+	}
+
+	provider.mu.Lock()
+	uows := provider.uows
+	provider.mu.Unlock()
+	if len(uows) != 1 {
+		t.Fatalf("opened %d units of work, want 1", len(uows))
+	}
+
+	closed, closeErr, hasDeadline := uows[0].closeState()
+	if !closed {
+		t.Fatal("unit of work was never closed; the rollback is not guaranteed")
+	}
+	if closeErr != nil {
+		t.Fatalf("close context was already done (%v): the ROLLBACK cannot be sent, and the pinned connection is poisoned rather than returned", closeErr)
+	}
+	if !hasDeadline {
+		t.Error("close context has no deadline; a hung rollback would block shutdown forever")
+	}
+}
+
+func TestWithUOWRecordsAcquireTimeAndPropagatesErrors(t *testing.T) {
+	want := errors.New("dial failed")
+	provider := &fakeProvider{err: want, delay: 5 * time.Millisecond}
+	ts := newTestServer(t, Config{Provider: provider})
+
+	rec := &reqInfo{}
+	err := ts.WithUOW(context.Background(), rec, func(uow.UnitOfWork) error {
+		t.Fatal("body ran despite the provider failing")
+		return nil
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if rec.uowWait <= 0 {
+		t.Error("uow acquire time was not recorded; the log line cannot separate a slow database from a saturated server")
+	}
+}
+
+// TestRequestLogLine pins the observability floor. Without these fields an
+// operator cannot tell no-traffic from all-traffic-hanging from
+// all-traffic-503ing, and the endpoints alone cannot tell them either.
+func TestRequestLogLine(t *testing.T) {
+	ts := newTestServer(t, Config{})
+	ts.get(t, "/healthz")
+
+	line := findLogLine(t, ts.stderr.String(), "event=request ")
+	for _, field := range []string{
+		"request_id=", "op=health", "method=GET", "path=/healthz",
+		"status=200", "duration_ms=", "sem_wait_ms=", "uow_ms=",
+	} {
+		if !strings.Contains(line, field) {
+			t.Errorf("request log line is missing %q:\n%s", field, line)
+		}
+	}
+}
+
+// TestProblemResponsesCorrelateToTheirLogLine: a 5xx body carries a fixed
+// detail by design, so request_id is the client's only handle on the log line
+// that has the real error.
+func TestProblemResponsesCorrelateToTheirLogLine(t *testing.T) {
+	ts := newTestServer(t, Config{})
+
+	resp := ts.get(t, "/healthz?bogus=1")
+	id, _ := decodeBody(t, resp)["request_id"].(string)
+	if id == "" {
+		t.Fatal("problem body carries no request_id")
+	}
+
+	line := findLogLine(t, ts.stderr.String(), "status=400")
+	if !strings.Contains(line, "request_id="+id) {
+		t.Errorf("log line does not carry the body's request_id %q:\n%s", id, line)
+	}
+	if !strings.Contains(line, "code=invalid_argument") {
+		t.Errorf("log line does not carry the problem code:\n%s", line)
+	}
+}
+
+func TestStartupLines(t *testing.T) {
+	provider := &tunableProvider{}
+	ts := newTestServer(t, Config{
+		Provider: provider,
+		Mode:     "proxied-server (managed dolt)",
+		Workspace: domain.ContextInfo{
+			RepoRoot: "/w/repo",
+			BeadsDir: "/w/repo/.beads",
+			Database: "beads",
+		},
+	})
+
+	// stdout carries exactly the bound address, so a caller that asked for an
+	// ephemeral port can find it without parsing the log.
+	out := ts.stdout.String()
+	if !strings.Contains(out, ts.Addr()) {
+		t.Errorf("stdout %q does not name the bound address %s", out, ts.Addr())
+	}
+	if lines := strings.Count(strings.TrimSpace(out), "\n"); lines != 0 {
+		t.Errorf("stdout has %d extra lines; it must carry the address and nothing else:\n%s", lines, out)
+	}
+
+	startup := findLogLine(t, ts.stderr.String(), "event=startup")
+	for _, field := range []string{
+		"addr=" + ts.Addr(), `mode="proxied-server (managed dolt)"`,
+		"workspace=/w/repo", "beads_dir=/w/repo/.beads",
+	} {
+		if !strings.Contains(startup, field) {
+			t.Errorf("startup line is missing %q:\n%s", field, startup)
+		}
+	}
+
+	limits := findLogLine(t, ts.stderr.String(), "event=limits")
+	for _, field := range []string{"max_inflight=", "max_conns=", "sem_wait=", "deadline=", "pool_max_open="} {
+		if !strings.Contains(limits, field) {
+			t.Errorf("limits line is missing %q:\n%s", field, limits)
+		}
+	}
+
+	// The pool cap is defense in depth, not semaphore trust: retry attempts and
+	// poisoned-connection replacement both escape the semaphore.
+	if !provider.set {
+		t.Fatal("pool limits were never applied to the provider")
+	}
+	if provider.limits.MaxOpenConns <= maxInflight {
+		t.Errorf("MaxOpenConns = %d, want headroom above the %d in-flight bound",
+			provider.limits.MaxOpenConns, maxInflight)
+	}
+	if provider.limits.ConnMaxIdleTime <= 0 || provider.limits.ConnMaxLifetime <= 0 {
+		t.Errorf("idle/lifetime caps unset: %+v", provider.limits)
+	}
+}
+
+// TestPoolLimitsUnavailableIsAnnounced: running unbounded is a decision, so it
+// must not be a silent one.
+func TestPoolLimitsUnavailableIsAnnounced(t *testing.T) {
+	ts := newTestServer(t, Config{Provider: &fakeProvider{}})
+	if !strings.Contains(ts.stderr.String(), "event=pool_limits_unavailable") {
+		t.Errorf("a provider with no pool knob was accepted silently:\n%s", ts.stderr.String())
+	}
+}
+
+func TestShutdownLines(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &lockedBuffer{}
+	srv, err := Listen(Config{
+		Addr:     "127.0.0.1:0",
+		Provider: &fakeProvider{},
+		Stdout:   stdout,
+		Stderr:   stderr,
+	})
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+
+	resp, err := http.Get("http://" + srv.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Serve did not return after cancellation")
+	}
+
+	log := stderr.String()
+	for _, want := range []string{"event=shutdown_start", "event=shutdown_complete"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("shutdown log is missing %q:\n%s", want, log)
+		}
+	}
+
+	// The listener is gone: a graceful shutdown that leaves the port bound
+	// would make the "TCP bind is the mutual exclusion" claim false.
+	if _, err := http.Get("http://" + srv.Addr() + "/healthz"); err == nil {
+		t.Error("server still answering after shutdown")
+	}
+}
+
+// TestSecondBindFails is the whole mutual-exclusion story. There is no lock
+// file and no pid file by design; on a fixed port the operating system is the
+// arbiter, and the error names the address.
+func TestSecondBindFails(t *testing.T) {
+	first := newTestServer(t, Config{})
+
+	_, err := Listen(Config{
+		Addr:     first.Addr(),
+		Provider: &fakeProvider{},
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
+	})
+	if err == nil {
+		t.Fatal("a second bind on the same address succeeded")
+	}
+	if !strings.Contains(err.Error(), first.Addr()) {
+		t.Errorf("error %q does not name the address in use", err)
+	}
+}
+
+func TestListenRefusesAMissingProvider(t *testing.T) {
+	_, err := Listen(Config{Addr: "127.0.0.1:0"})
+	if err == nil {
+		t.Fatal("Listen succeeded with no provider")
+	}
+}
+
+func TestLogValueQuotesInjectableText(t *testing.T) {
+	// A path is caller-controlled, and the log is key=value: a space or a
+	// newline in it would otherwise forge fields, or whole lines.
+	for _, tc := range []struct{ in, want string }{
+		{"/healthz", "/healthz"},
+		{"/a b", `"/a b"`},
+		{"a=b", `"a=b"`},
+		{"line\nbreak", `"line\nbreak"`},
+		{"", `""`},
+	} {
+		if got := logValue(tc.in); got != tc.want {
+			t.Errorf("logValue(%q) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+}
+
+func newTestLogger(w io.Writer) *log.Logger {
+	return log.New(w, "bd serve: ", log.LstdFlags|log.LUTC)
+}
+
+func findLogLine(t *testing.T, log, needle string) string {
+	t.Helper()
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	t.Fatalf("no log line containing %q in:\n%s", needle, log)
+	return ""
+}

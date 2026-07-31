@@ -197,6 +197,18 @@ func (r Result) WithIssueStatus(status string) Result {
 	return r
 }
 
+// WithRequestID attaches the `request_id` extension member, the correlation id
+// echoed in the request log line. It is what makes a 5xx actionable: the body
+// carries a fixed static detail by design, so the id is the client's only
+// handle on the one log line that has the real error.
+func (r Result) WithRequestID(id string) Result {
+	if id == "" {
+		return r
+	}
+	r.Problem.RequestId = &id
+	return r
+}
+
 func newResult(code Code, detail string) Result {
 	status := code.Status()
 	if status == 0 {
