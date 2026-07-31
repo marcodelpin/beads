@@ -17,12 +17,12 @@
 // capability accessor — the same role, reached the same way, that `bd show
 // --json` reaches on a store. Filter construction, the workspace config it
 // depends on, the default limits and the wisp fallback all live inside that
-// role. A handler CANNOT build a filter here, and that is machine-checked by
-// two rules in .golangci.yml that cover the two ways it could be done:
+// role. A handler cannot WRITE a filter here, and that is machine-checked by
+// two rules in .golangci.yml covering the two ways one gets written:
 // httpapi-transport-boundary (depguard) denies internal/workapi from this
 // package's non-test files, so the builders are not callable; the forbidigo
 // rule denies naming types.IssueFilter or types.WorkFilter here at all, so a
-// hand-rolled filter is not writable either. The second is the one that
+// hand-rolled one is not writable either. The second is the one that
 // matches the failure — the hosted viewer's bug was a bare IssueFilter, not a
 // misused builder. What does stay here is transport — parameter decoding, the
 // opaque cursor codec, the loopback-only refusal of an unlimited read, and the
@@ -45,10 +45,33 @@
 // `bd ready`'s direct route keeps its own epilogue because it publishes a
 // hidden-row TOTAL this surface has no member for.
 //
-// So: every read this surface answers goes through the role and cannot do
-// otherwise; the CLI answers three reads, one of which is on the role and two
-// of which are on the same builders and the same page epilogue. That is the
-// claim, and nothing beyond it is enforced.
+// THE CLAIM, stated once and in full so it can be checked sentence by
+// sentence. SHARED: all three issue reads on this surface go through
+// issueops.Reader, and so does `bd show --json`'s detail view on both its
+// routes; `bd list` and `bd ready` are not on the role and share instead the
+// request types, the two builders in internal/workapi that their golden files
+// pin, and workapi.FinishPage — `bd list` on both routes in every mode but the
+// hierarchical --parent tree, `bd ready` on its proxied route only.
+// ENFORCED, and by what: depguard (httpapi-transport-boundary) denies
+// internal/workapi from every non-test file of this package, so no builder is
+// callable here, and a forbidigo rule denies naming types.IssueFilter or
+// types.WorkFilter here at all, so no filter is writable here either — both
+// are directory-scoped with no per-file exception, so a file added to this
+// package tomorrow is covered the moment it exists. That same forbidigo rule
+// covers cmd/bd deny-by-default with 64 named exceptions, so the files
+// implementing `bd list` and `bd show` cannot write a filter, and neither can
+// a file they are split or renamed into unless the new name lands on that
+// list. NOT ENFORCED: the rule forbids NAMING those types, not holding a
+// value, so the property is "no filter is written here", not "every filter
+// here came from a builder"; test files are exempt from both rules, because
+// the oracles hold filters in order to inspect them; GET /healthz and GET
+// /v0/beads/context answer from the process and its startup snapshot, are not
+// issue queries, and are on no role; `bd ready`'s direct route and `bd list`'s
+// hierarchical tree run epilogues of their own; and none of this is a merge
+// gate — the rules run in `make ci-pr-lint` on every pull request and
+// aggregate into the ci-gate job, but main carries no branch protection beyond
+// deletion and non-fast-forward, so no check is GitHub-required and a red gate
+// binds by convention.
 //
 // The claim OPERATION is the only mutation this surface has, and claim.go
 // states the two things a client must know before adopting it: the actor is

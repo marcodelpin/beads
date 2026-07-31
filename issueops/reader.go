@@ -230,11 +230,10 @@ type IssuePage struct {
 //
 // WHERE THAT IS ENFORCED, precisely, because the difference matters:
 //
-//   - The HTTP surface is on the role for all three operations, and two lint
-//     rules make reaching past it a lint failure rather than a review comment:
-//     httpapi-transport-boundary (depguard) denies the builders, and a
-//     forbidigo rule denies naming types.IssueFilter or types.WorkFilter in
-//     that package, which is the half that covers hand-rolling one.
+//   - The HTTP surface is on the role for all three of its issue reads, and
+//     two lint rules make writing a filter there a lint failure rather than a
+//     review comment. THE CLAIM at the bottom of this comment names them, and
+//     names what they cover and what they do not.
 //
 //   - `bd show --json`'s DETAIL VIEW is on the role on BOTH routes: the direct
 //     one reaches it through store.IssueReader(), the proxied one through the
@@ -283,12 +282,34 @@ type IssuePage struct {
 //     where this role answers only "were any hidden". Collapsing them would
 //     change one surface's published output.
 //
-// And in cmd/bd a forbidigo rule now makes a hand-rolled filter in `bd list`
-// or `bd show` — on either route — a lint failure too, with the files that
-// legitimately consume a filter named in .golangci.yml rather than blanket
-// excluded. `bd ready`'s files are among those named: its four flag-driven
-// modes are handed the filter itself, so it is guarded by the builder and the
-// golden files and not by the linter.
+// THE CLAIM, stated once and in full so it can be checked sentence by
+// sentence. SHARED: all three issue reads on the HTTP surface go through this
+// role, and so does `bd show --json`'s detail view on both its routes; `bd
+// list` and `bd ready` are not on it and share instead the request types
+// above, the two builders in internal/workapi that their golden files pin, and
+// workapi.FinishPage — `bd list` on both routes in every mode but the
+// hierarchical --parent tree, `bd ready` on its proxied route only. ENFORCED,
+// and by what: depguard (httpapi-transport-boundary) denies internal/workapi
+// from every non-test file of internal/httpapi, so no builder is callable
+// there, and a forbidigo rule denies naming types.IssueFilter or
+// types.WorkFilter there at all, so no filter is writable there either — both
+// are directory-scoped with no per-file exception, so a file added to that
+// package tomorrow is covered the moment it exists. That same forbidigo rule
+// covers cmd/bd deny-by-default with 64 named exceptions, so the files
+// implementing `bd list` and `bd show` cannot write a filter, and neither can
+// a file they are split or renamed into unless the new name lands on that
+// list. NOT ENFORCED: the rule forbids NAMING those types, not holding a
+// value, so the property is "no filter is written there", not "every filter
+// there came from a builder"; test files are exempt from both rules, because
+// the oracles hold filters in order to inspect them; `bd ready`'s files are
+// among the 64, since its four flag-driven modes are handed the filter itself,
+// so it is guarded by the builder and the golden files and not by the linter;
+// GET /healthz and GET /v0/beads/context are not issue queries and are on no
+// role; `bd ready`'s direct route and `bd list`'s hierarchical tree run
+// epilogues of their own; and none of this is a merge gate — the rules run in
+// `make ci-pr-lint` on every pull request and aggregate into the ci-gate job,
+// but main carries no branch protection beyond deletion and non-fast-forward,
+// so no check is GitHub-required and a red gate binds by convention.
 //
 // Closing the rest needs more roles (a claim role, an explain role), not more
 // methods here.
