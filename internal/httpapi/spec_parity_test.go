@@ -14,6 +14,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/internal/httpapi/spec"
+	"github.com/steveyegge/beads/internal/workapi"
 )
 
 // These tests are the spec drift gates. They are pure — no database, no
@@ -295,8 +296,8 @@ func TestSpecDefaultsMatchSharedConstants(t *testing.T) {
 		opID string
 		want int
 	}{
-		{OpListIssues, DefaultListLimit},
-		{OpListReadyWork, DefaultReadyLimit},
+		{OpListIssues, workapi.DefaultListLimit},
+		{OpListReadyWork, workapi.DefaultReadyLimit},
 	} {
 		so, ok := ops[tc.opID]
 		if !ok {
@@ -479,22 +480,26 @@ func TestSpecStatusCodesMatchHandlerTable(t *testing.T) {
 // default is the one piece of the contract nobody passes explicitly — so a
 // divergence is invisible until the result sets differ.
 //
-// The limits are the interim duplication described in defaults.go: until the
-// shared constants move into internal/workapi, the flag registration is the
-// other copy of those two numbers. `sort` has no constant to share at all; the
-// flag string IS the source of truth.
+// The two limits are now one constant each, in internal/workapi, which both
+// surfaces read: TestSpecDefaultsMatchSharedConstants pins the document to
+// workapi's numbers, and this pins the cobra flag to the same constants BY
+// NAME. Asserting the name rather than the value is the stronger half of the
+// chain — a flag that went back to a literal would still pass a value
+// comparison on the day it was written and drift the day someone edited one
+// side. `sort` has no constant to share at all; the flag string IS the source
+// of truth, so that half is still a value comparison.
 //
 // If a flag registration is reworded this fails loudly — re-point the regex,
 // and check the values still agree while you are there.
 func TestDefaultsMatchCLIFlags(t *testing.T) {
-	limitFlag := regexp.MustCompile(`IntP\("limit",\s*"n",\s*(-?\d+)`)
+	limitFlag := regexp.MustCompile(`IntP\("limit",\s*"n",\s*([^,]+),`)
 
 	for _, tc := range []struct {
 		file string
-		want int
+		want string
 	}{
-		{"../../cmd/bd/list.go", DefaultListLimit},
-		{"../../cmd/bd/ready.go", DefaultReadyLimit},
+		{"../../cmd/bd/list.go", "workapi.DefaultListLimit"},
+		{"../../cmd/bd/ready.go", "workapi.DefaultReadyLimit"},
 	} {
 		src, err := os.ReadFile(tc.file)
 		if err != nil {
@@ -504,12 +509,8 @@ func TestDefaultsMatchCLIFlags(t *testing.T) {
 		if m == nil {
 			t.Fatalf("%s: no --limit flag registration found; re-point this guard at the CLI's default", tc.file)
 		}
-		got, err := strconv.Atoi(string(m[1]))
-		if err != nil {
-			t.Fatalf("%s: limit default %q is not a number", tc.file, m[1])
-		}
-		if got != tc.want {
-			t.Errorf("%s registers --limit default %d, the shared constant is %d", tc.file, got, tc.want)
+		if got := strings.TrimSpace(string(m[1])); got != tc.want {
+			t.Errorf("%s registers --limit default %s, want the shared constant %s that this document is pinned to", tc.file, got, tc.want)
 		}
 	}
 
