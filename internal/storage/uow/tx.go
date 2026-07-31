@@ -40,10 +40,10 @@ const (
 // context is done — an HTTP client that hangs up mid-write, or an expired
 // deadline. The timeout keeps a hung rollback from blocking the caller forever.
 //
-// RunTxResult is the retry/commit implementation the HTTP claim and the proxied
-// CLI writes share, which is why it is converted here. RunTx and RunTxRead still
-// close with the caller's own context; they carry the same hazard and are a
-// separate change, not an oversight.
+// All three entry points below close through here. The hazard is not specific
+// to the HTTP claim: the ~nine proxied CLI commands that reach storage through
+// RunTx and RunTxRead burn a session the same way when a user interrupts one
+// mid-write.
 func closeAttempt(ctx context.Context, uw UnitOfWork) {
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txCloseTimeout)
 	defer cancel()
@@ -69,7 +69,7 @@ func RunTx(ctx context.Context, p UnitOfWorkProvider, work TxFunc) error {
 			}
 			return backoff.Permanent(err)
 		}
-		defer uw.Close(ctx)
+		defer closeAttempt(ctx, uw)
 
 		commitMsg, err := work(ctx, uw)
 		if err != nil {
@@ -150,7 +150,7 @@ func RunTxRead[T any](ctx context.Context, p UnitOfWorkProvider, work TxReadFunc
 	if err != nil {
 		return zero, err
 	}
-	defer uw.Close(ctx)
+	defer closeAttempt(ctx, uw)
 
 	return work(ctx, uw)
 }

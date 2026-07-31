@@ -307,6 +307,59 @@ func TestRunTxResult_ClosesWithADetachedContext(t *testing.T) {
 	}
 }
 
+// TestRunTxClosesWithADetachedContext and its RunTxRead twin: same hazard, same
+// protection, different entry point. These two are what the ~nine proxied CLI
+// commands run through, so the caller whose context goes away mid-attempt is a
+// user pressing Ctrl-C rather than an HTTP client hanging up — and it burns the
+// pinned session exactly the same way.
+func TestRunTxClosesWithADetachedContext(t *testing.T) {
+	uw := &mockUnitOfWork{}
+	provider := &mockUnitOfWorkProvider{uows: []*mockUnitOfWork{uw}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	err := RunTx(ctx, provider, func(context.Context, UnitOfWork) (string, error) {
+		cancel()
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("RunTx: %v", err)
+	}
+
+	if !uw.closed {
+		t.Fatal("unit of work was never closed; the rollback is not guaranteed")
+	}
+	if uw.closeErr != nil {
+		t.Fatalf("close context was already done (%v): the ROLLBACK cannot be sent, so the pinned connection is poisoned instead of returned", uw.closeErr)
+	}
+	if !uw.closeHasDeadline {
+		t.Error("close context has no deadline; a hung rollback would block the caller forever")
+	}
+}
+
+func TestRunTxReadClosesWithADetachedContext(t *testing.T) {
+	uw := &mockUnitOfWork{}
+	provider := &mockUnitOfWorkProvider{uows: []*mockUnitOfWork{uw}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := RunTxRead(ctx, provider, func(context.Context, UnitOfWork) (int, error) {
+		cancel()
+		return 1, nil
+	})
+	if err != nil {
+		t.Fatalf("RunTxRead: %v", err)
+	}
+
+	if !uw.closed {
+		t.Fatal("unit of work was never closed; the rollback is not guaranteed")
+	}
+	if uw.closeErr != nil {
+		t.Fatalf("close context was already done (%v): the ROLLBACK cannot be sent, so the pinned connection is poisoned instead of returned", uw.closeErr)
+	}
+	if !uw.closeHasDeadline {
+		t.Error("close context has no deadline; a hung rollback would block the caller forever")
+	}
+}
+
 func TestRunTxRead_Success(t *testing.T) {
 	uw := &mockUnitOfWork{}
 	provider := &mockUnitOfWorkProvider{uows: []*mockUnitOfWork{uw}}
