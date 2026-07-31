@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/uimd"
-	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/issueops"
 )
 
 var showCmd = &cobra.Command{
@@ -143,11 +143,26 @@ var showCmd = &cobra.Command{
 			}
 
 			if jsonOutput {
-				// Shaping the detail view is workapi's job, not the CLI's:
-				// the count-only default (be-ijck6q), the comments-omitted
-				// flag (ga-clgh), and the shallow dependent rows (be-4d36f2)
-				// have to read the same from every frontend.
-				details, derr := workapi.BuildIssueDetails(ctx, workapi.NewStoreDetailSource(issueStore), issue, false, workapi.DetailOptions{
+				// Shaping the detail view belongs to the reader role, not the
+				// CLI: the count-only default (be-ijck6q), the
+				// comments-omitted flag (ga-clgh), and the shallow dependent
+				// rows (be-4d36f2) have to read the same from every frontend,
+				// and going through the accessor is what makes that true by
+				// construction rather than by everyone remembering to call the
+				// same helper.
+				//
+				// The id handed over is the CANONICAL one this command already
+				// resolved. Fuzzy and cross-repo resolution stay here on
+				// purpose: an affordance that can answer with a different
+				// issue than the caller named has no place on a contract an
+				// unattended HTTP client also calls.
+				rd, rerr := issueStore.IssueReader()
+				if rerr != nil {
+					result.Close()
+					return HandleErrorRespectJSON("%v", rerr)
+				}
+				details, derr := rd.Get(ctx, issueops.GetRequest{
+					ID:                issue.ID,
 					IncludeDependents: includeDepends,
 					IncludeComments:   includeComments,
 				})

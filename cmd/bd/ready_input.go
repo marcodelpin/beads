@@ -9,14 +9,15 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // readyInput is everything `bd ready` parsed off the command line: the
-// frontend-independent query knobs (workapi.ReadyParams, which the filter is
-// built from), the filter itself, and the mode and presentation choices that
-// never leave the CLI.
+// frontend-independent query knobs (issueops.ReadyRequest, the request the
+// reader role takes and the filter is built from), the filter itself, and the
+// mode and presentation choices that never leave the CLI.
 type readyInput struct {
-	workapi.ReadyParams
+	issueops.ReadyRequest
 
 	filter types.WorkFilter
 
@@ -57,7 +58,8 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 	in.plainFormat, _ = cmd.Flags().GetBool("plain")
 	in.jsonOut = jsonOutput
 
-	in.Limit, _ = cmd.Flags().GetInt("limit")
+	limit, _ := cmd.Flags().GetInt("limit")
+	in.Limit = &limit
 	// A negative --offset is not a page request, so it never reaches the
 	// filter. Rejecting it belongs to the proxied RunE, the only route that
 	// pages at all: the direct route rejects --offset > 0 outright and has
@@ -67,7 +69,7 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 	}
 	in.Assignee, _ = cmd.Flags().GetString("assignee")
 	in.Unassigned, _ = cmd.Flags().GetBool("unassigned")
-	in.SortPolicy, _ = cmd.Flags().GetString("sort")
+	in.Sort, _ = cmd.Flags().GetString("sort")
 	in.Labels, _ = cmd.Flags().GetStringSlice("label")
 	in.LabelsAny, _ = cmd.Flags().GetStringSlice("label-any")
 	in.ExcludeLabels, _ = cmd.Flags().GetStringSlice("exclude-label")
@@ -77,7 +79,7 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 	in.ParentID, _ = cmd.Flags().GetString("parent")
 	in.IncludeDeferred, _ = cmd.Flags().GetBool("include-deferred")
 	in.IncludeEphemeral, _ = cmd.Flags().GetBool("include-ephemeral")
-	in.ExcludeTypeStrs, _ = cmd.Flags().GetStringSlice("exclude-type")
+	in.ExcludeTypes, _ = cmd.Flags().GetStringSlice("exclude-type")
 
 	if molTypeStr, _ := cmd.Flags().GetString("mol-type"); molTypeStr != "" {
 		mt := types.MolType(molTypeStr)
@@ -123,8 +125,8 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 
 	// Use Changed() to properly handle P0 (priority=0)
 	if cmd.Flags().Changed("priority") {
-		in.Priority, _ = cmd.Flags().GetInt("priority")
-		in.PrioritySet = true
+		priority, _ := cmd.Flags().GetInt("priority")
+		in.Priority = &priority
 	}
 
 	// Metadata filters (GH#1406)
@@ -149,7 +151,7 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 		in.HasMetadataKey = k
 	}
 
-	filter, err := workapi.BuildReadyFilter(in.ReadyParams)
+	filter, err := workapi.BuildReadyFilter(in.ReadyRequest)
 	if err != nil {
 		return in, HandleErrorRespectJSON("%v", err)
 	}

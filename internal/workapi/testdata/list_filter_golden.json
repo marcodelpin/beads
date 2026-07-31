@@ -2,7 +2,7 @@
   {
     "name": "defaults",
     "params": {
-      "SQLLimit": 50
+      "Limit": 50
     },
     "config": {},
     "filter": {
@@ -83,7 +83,8 @@
   {
     "name": "all_flag",
     "params": {
-      "AllFlag": true
+      "AllFlag": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -162,7 +163,7 @@
     "name": "ready_flag",
     "params": {
       "ReadyFlag": true,
-      "SQLLimit": 20
+      "Limit": 20
     },
     "config": {},
     "filter": {
@@ -240,7 +241,8 @@
   {
     "name": "status_single",
     "params": {
-      "Status": " in_progress "
+      "Status": " in_progress ",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -318,7 +320,8 @@
   {
     "name": "status_multi",
     "params": {
-      "Status": "open, blocked"
+      "Status": "open, blocked",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -399,7 +402,8 @@
   {
     "name": "status_all_keyword",
     "params": {
-      "Status": "all"
+      "Status": "all",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -477,7 +481,8 @@
   {
     "name": "status_pinned_keyword",
     "params": {
-      "Status": "pinned"
+      "Status": "pinned",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -555,7 +560,8 @@
   {
     "name": "status_hooked_keyword",
     "params": {
-      "Status": "hooked"
+      "Status": "hooked",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -633,7 +639,8 @@
   {
     "name": "status_invalid",
     "params": {
-      "Status": "not-a-status"
+      "Status": "not-a-status",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -707,7 +714,8 @@
   {
     "name": "status_custom",
     "params": {
-      "Status": "in_review"
+      "Status": "in_review",
+      "Limit": 0
     },
     "config": {
       "CustomStatuses": [
@@ -791,7 +799,9 @@
   },
   {
     "name": "custom_done_and_frozen_excluded_by_default",
-    "params": {},
+    "params": {
+      "Limit": 0
+    },
     "config": {
       "CustomStatuses": [
         {
@@ -888,7 +898,8 @@
   {
     "name": "pinned_flag",
     "params": {
-      "PinnedFlag": true
+      "PinnedFlag": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -967,7 +978,8 @@
     "name": "no_pinned_flag_with_all",
     "params": {
       "AllFlag": true,
-      "NoPinnedFlag": true
+      "NoPinnedFlag": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1045,7 +1057,8 @@
   {
     "name": "no_pinned_flag",
     "params": {
-      "NoPinnedFlag": true
+      "NoPinnedFlag": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1127,7 +1140,8 @@
     "name": "ready_flag_overrides_status",
     "params": {
       "ReadyFlag": true,
-      "Status": "closed"
+      "Status": "closed",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1206,7 +1220,8 @@
     "name": "status_with_all_flag",
     "params": {
       "AllFlag": true,
-      "Status": "closed"
+      "Status": "closed",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1285,7 +1300,8 @@
     "name": "include_templates_and_gates",
     "params": {
       "IncludeGates": true,
-      "IncludeTemplates": true
+      "IncludeTemplates": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1365,7 +1381,8 @@
   {
     "name": "type_gate",
     "params": {
-      "IssueType": "gate"
+      "IssueType": "gate",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1445,7 +1462,8 @@
   {
     "name": "type_invalid",
     "params": {
-      "IssueType": "banana"
+      "IssueType": "banana",
+      "Limit": 0
     },
     "config": {
       "CustomTypes": [
@@ -1527,7 +1545,8 @@
   {
     "name": "type_custom_valid",
     "params": {
-      "IssueType": "spike"
+      "IssueType": "spike",
+      "Limit": 0
     },
     "config": {
       "CustomTypes": [
@@ -1613,7 +1632,8 @@
   {
     "name": "include_infra",
     "params": {
-      "IncludeInfra": true
+      "IncludeInfra": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1692,7 +1712,8 @@
     "name": "include_infra_with_infra_type",
     "params": {
       "IncludeInfra": true,
-      "IssueType": "message"
+      "IssueType": "message",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1770,7 +1791,8 @@
   {
     "name": "infra_type_default_set",
     "params": {
-      "IssueType": "message"
+      "IssueType": "message",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1848,7 +1870,8 @@
   {
     "name": "infra_type_not_valid_without_custom_types",
     "params": {
-      "IssueType": "agent"
+      "IssueType": "agent",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -1925,7 +1948,8 @@
   {
     "name": "infra_type_valid_via_custom_types",
     "params": {
-      "IssueType": "agent"
+      "IssueType": "agent",
+      "Limit": 0
     },
     "config": {
       "CustomTypes": [
@@ -2007,7 +2031,8 @@
   {
     "name": "infra_type_custom_set",
     "params": {
-      "IssueType": "robot"
+      "IssueType": "robot",
+      "Limit": 0
     },
     "config": {
       "CustomTypes": [
@@ -2092,7 +2117,8 @@
   {
     "name": "non_infra_type_under_custom_set",
     "params": {
-      "IssueType": "message"
+      "IssueType": "message",
+      "Limit": 0
     },
     "config": {
       "InfraSet": {
@@ -2175,7 +2201,8 @@
   {
     "name": "exclude_type_strings",
     "params": {
-      "ExcludeTypeStrs": [
+      "Limit": 0,
+      "ExcludeTypes": [
         "bug, Feature",
         "",
         " chore "
@@ -2282,7 +2309,8 @@
       "NotesContains": "notes",
       "SpecPrefix": "spec-",
       "TitleContains": "contains",
-      "TitleSearch": "search me"
+      "TitleSearch": "search me",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -2378,7 +2406,8 @@
       "NoAssignee": true,
       "NoLabels": true,
       "NoParent": true,
-      "SkipLabels": true
+      "SkipLabels": true,
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -2459,11 +2488,10 @@
   {
     "name": "priority_ranges",
     "params": {
+      "Limit": 0,
       "Priority": 1,
-      "PriorityMax": 3,
-      "PriorityMaxSet": true,
-      "PriorityMinSet": true,
-      "PrioritySet": true
+      "PriorityMin": 0,
+      "PriorityMax": 3
     },
     "config": {},
     "filter": {
@@ -2555,7 +2583,8 @@
       "DueBefore": "2024-03-10T04:05:06Z",
       "OverdueFlag": true,
       "UpdatedAfter": "2024-03-03T04:05:06Z",
-      "UpdatedBefore": "2024-03-04T04:05:06Z"
+      "UpdatedBefore": "2024-03-04T04:05:06Z",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -2637,7 +2666,8 @@
     "name": "mol_and_wisp_types",
     "params": {
       "MolType": "swarm",
-      "WispType": "heartbeat"
+      "WispType": "heartbeat",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -2723,7 +2753,8 @@
       "MetadataFields": {
         "team": "core"
       },
-      "ParentID": "bd-parent"
+      "ParentID": "bd-parent",
+      "Limit": 0
     },
     "config": {},
     "filter": {
@@ -2808,8 +2839,8 @@
     "params": {
       "Offset": 14,
       "Reverse": true,
-      "SQLLimit": 7,
-      "SortBy": "created"
+      "SortBy": "created",
+      "Limit": 7
     },
     "config": {},
     "filter": {

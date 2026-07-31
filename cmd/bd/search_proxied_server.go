@@ -208,7 +208,7 @@ func runSearchProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 			return HandleErrorRespectJSON("%v", err)
 		}
 		items := page.Items
-		sortIssuesWithCounts(items, sortBy, reverse)
+		workapi.SortIssuesWithCounts(items, sortBy, reverse)
 		if items == nil {
 			items = []*types.IssueWithCounts{}
 		}
@@ -220,7 +220,7 @@ func runSearchProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		return HandleErrorRespectJSON("%v", err)
 	}
 	issues := page.Items
-	sortIssues(issues, sortBy, reverse)
+	workapi.SortIssues(issues, sortBy, reverse)
 	outputSearchResults(issues, query, longFormat)
 	return nil
 }

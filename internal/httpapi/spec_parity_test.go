@@ -361,44 +361,15 @@ func TestSpecStatusCodesMatchHandlerTable(t *testing.T) {
 	doc := loadSpec(t)
 	ops := specOps(t, doc)
 
-	// TRANSITIONAL EXEMPTION — delete this block together with the last stub.
-	//
-	// Operations whose handler has not landed are registered as 501 stubs, so
-	// that route/spec parity (TestSpecRouteParity) is provable all at once
-	// instead of carrying a hole that grows and shrinks each slice. 501 is not
-	// documented spec surface anywhere in this document, and `not_implemented`
-	// is deliberately absent from the frozen vocabulary in problem.go, so those
-	// handlers emit a status this test would otherwise forbid.
-	//
-	// The exemption is enumerated rather than implied, and it is self-deleting:
-	// the two-way check below fails if the route table and this list disagree,
-	// and once the route table reports no stubs at all a non-empty list here is
-	// itself the failure. Nobody has to remember to come back.
-	stubbedOperations := map[string]string{
-		OpListReadyWork: "read endpoints slice",
-		OpListIssues:    "read endpoints slice",
-		OpGetIssue:      "detail endpoint slice",
-	}
-	stubRoutes := map[string]bool{}
+	// There are no 501 stubs left. The check stays because it is the guard
+	// against one reappearing silently: 501 is not documented anywhere in this
+	// document and `not_implemented` is deliberately absent from the frozen
+	// vocabulary in problem.go, so a stub emits a status this test would
+	// otherwise forbid. The transitional exemption list that used to sit here
+	// was deleted with the last stub, which is what it was written to require.
 	for _, rt := range routeTable {
 		if !rt.implemented {
-			stubRoutes[rt.op] = true
-		}
-	}
-	if len(stubRoutes) == 0 && len(stubbedOperations) > 0 {
-		t.Errorf("every operation is implemented, but the 501 exemption still lists %d: delete the block", len(stubbedOperations))
-	}
-	for op := range stubRoutes {
-		if _, ok := stubbedOperations[op]; !ok {
-			t.Errorf("%s is a 501 stub but is not listed in the exemption; an undocumented status must never be silent", op)
-		}
-	}
-	for op, why := range stubbedOperations {
-		if why == "" {
-			t.Errorf("%s: exemption entry carries no justification", op)
-		}
-		if !stubRoutes[op] {
-			t.Errorf("%s is implemented; remove it from the 501 exemption", op)
+			t.Errorf("%s is a 501 stub; v0 has no undocumented statuses left, so a new stub needs an exemption block here that says why", rt.op)
 		}
 	}
 

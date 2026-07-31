@@ -14,14 +14,15 @@ import (
 	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/internal/validation"
 	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // listInput is everything `bd list` parsed off the command line: the
-// frontend-independent query knobs (workapi.ListParams, which is what the
-// filter is built from) plus the presentation choices that never leave the
-// CLI.
+// frontend-independent query knobs (issueops.ListRequest, the request the
+// reader role takes and the filter is built from) plus the presentation
+// choices that never leave the CLI.
 type listInput struct {
-	workapi.ListParams
+	issueops.ListRequest
 
 	longFormat   bool
 	prettyFormat bool
@@ -104,8 +105,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 		if err != nil {
 			return in, HandleError("%v", err)
 		}
-		in.Priority = p
-		in.PrioritySet = true
+		in.Priority = &p
 	}
 	if cmd.Flags().Changed("priority-min") {
 		s, _ := cmd.Flags().GetString("priority-min")
@@ -113,8 +113,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 		if err != nil {
 			return in, HandleError("parsing --priority-min: %v", err)
 		}
-		in.PriorityMin = p
-		in.PriorityMinSet = true
+		in.PriorityMin = &p
 	}
 	if cmd.Flags().Changed("priority-max") {
 		s, _ := cmd.Flags().GetString("priority-max")
@@ -122,8 +121,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 		if err != nil {
 			return in, HandleError("parsing --priority-max: %v", err)
 		}
-		in.PriorityMax = p
-		in.PriorityMaxSet = true
+		in.PriorityMax = &p
 	}
 
 	in.PinnedFlag, _ = cmd.Flags().GetBool("pinned")
@@ -135,7 +133,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 	in.IncludeTemplates, _ = cmd.Flags().GetBool("include-templates")
 	in.IncludeGates, _ = cmd.Flags().GetBool("include-gates")
 	in.IncludeInfra, _ = cmd.Flags().GetBool("include-infra")
-	in.ExcludeTypeStrs, _ = cmd.Flags().GetStringSlice("exclude-type")
+	in.ExcludeTypes, _ = cmd.Flags().GetStringSlice("exclude-type")
 
 	in.ParentID, _ = cmd.Flags().GetString("parent")
 	if in.ParentID == "" {
@@ -286,14 +284,12 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 	case ui.IsAgentMode():
 		in.effectiveLimit = 20
 	}
-	in.SQLLimit = in.effectiveLimit
-	// --sort id requires natural-numeric comparison (bd-9 < bd-10) that
-	// SQL can't express without a schema-side sort column. Fall back to
-	// fetching everything and sorting client-side. Other sorts (including
-	// title via LOWER()) are pushed into SQL ORDER BY.
-	if in.SortBy == "id" {
-		in.SQLLimit = 0
-	}
+	// The request carries the limit the caller receives. Which row limit that
+	// implies for the query - a sort SQL cannot express fetches everything and
+	// trims client-side - is workapi.SQLLimit's decision, made once, inside the
+	// builder, for every frontend.
+	pageLimit := in.effectiveLimit
+	in.Limit = &pageLimit
 
 	if cmd.Flags().Changed("offset") {
 		offset, _ := cmd.Flags().GetInt("offset")
@@ -305,7 +301,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 		// regardless, so combining them with --offset is misleading — the
 		// caller would think they're paging when they're really pulling
 		// the whole result set.
-		if offset > 0 && in.SQLLimit == 0 && in.SortBy == "id" {
+		if offset > 0 && workapi.SQLLimit(in.ListRequest) == 0 && in.SortBy == "id" {
 			return in, HandleError("--offset is not supported with --sort %s (sort requires fetching the full result set)", in.SortBy)
 		}
 		in.Offset = offset

@@ -252,7 +252,7 @@ Examples:
 		}
 
 		// Apply sorting
-		sortIssues(issues, sortBy, reverse)
+		workapi.SortIssues(issues, sortBy, reverse)
 
 		if jsonOutput {
 			// Get labels and dependency counts

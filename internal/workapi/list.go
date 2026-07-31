@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
-	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // DefaultListLimit is the default number of rows a list query returns when the
@@ -20,83 +19,25 @@ import (
 // unlimited.
 const DefaultListLimit = 50
 
-// ListParams is the frontend-independent input to BuildListFilter: the set of
-// list knobs that shape the query. Presentation choices (output format, pager,
-// tree rendering) are deliberately absent - they belong to the caller.
-type ListParams struct {
-	Status      string
-	IssueType   string
-	Assignee    string
-	TitleSearch string
-	SpecPrefix  string
-	IDFilter    string
+// PageLimit is the number of rows a list request asks to RECEIVE.
+func PageLimit(in issueops.ListRequest) int {
+	return LimitOr(in.Limit, DefaultListLimit)
+}
 
-	Labels        []string
-	LabelsAny     []string
-	ExcludeLabels []string
-	LabelPattern  string
-	LabelRegex    string
-
-	TitleContains    string
-	DescContains     string
-	NotesContains    string
-	ExternalContains string
-	ExternalRef      string
-
-	CreatedBefore *time.Time
-	CreatedAfter  *time.Time
-	UpdatedAfter  *time.Time
-	UpdatedBefore *time.Time
-	ClosedAfter   *time.Time
-	ClosedBefore  *time.Time
-	DeferAfter    *time.Time
-	DeferBefore   *time.Time
-	DueAfter      *time.Time
-	DueBefore     *time.Time
-
-	EmptyDesc  bool
-	NoAssignee bool
-	NoLabels   bool
-	SkipLabels bool
-
-	Priority       int
-	PrioritySet    bool
-	PriorityMin    int
-	PriorityMinSet bool
-	PriorityMax    int
-	PriorityMaxSet bool
-
-	PinnedFlag       bool
-	NoPinnedFlag     bool
-	IncludeTemplates bool
-	IncludeGates     bool
-	IncludeInfra     bool
-	ExcludeTypeStrs  []string
-
-	ParentID string
-	NoParent bool
-	MolType  *types.MolType
-	WispType *types.WispType
-
-	DeferredFlag bool
-	OverdueFlag  bool
-
-	MetadataFields map[string]string
-	HasMetadataKey string
-
-	AllFlag   bool
-	ReadyFlag bool
-
-	SortBy  string
-	Reverse bool
-
-	// SQLLimit is the row limit pushed into the query (0 = unlimited). It can
-	// differ from the limit the caller displays: a sort the database cannot
-	// express requires fetching everything and trimming afterwards.
-	SQLLimit int
-
-	// Offset is the 0-based starting offset. Only the proxied path honors it.
-	Offset int
+// SQLLimit is the row limit pushed into the query, which can differ from the
+// page limit: `--sort id` needs natural-numeric comparison (bd-9 < bd-10) that
+// SQL cannot express without a schema-side sort column, so that ordering
+// fetches the whole result set and trims in Go afterwards.
+//
+// This lives beside the builder rather than in a caller because it is the
+// second half of one decision — the first half is what the filter carries —
+// and splitting a decision across a library and its callers is how the two
+// halves drift.
+func SQLLimit(in issueops.ListRequest) int {
+	if in.SortBy == "id" {
+		return 0
+	}
+	return PageLimit(in)
 }
 
 // ListConfig is the store-derived configuration BuildListFilter needs: the
@@ -159,10 +100,26 @@ func (d storeConfigSource) GetInfraTypes(ctx context.Context) (map[string]bool, 
 	return d.store.GetInfraTypes(ctx), nil
 }
 
-type uowConfigSource struct{ uw uow.UnitOfWork }
+// UnitOfWork is the slice of an open unit of work this package reads through.
+//
+// It is declared here, structurally, rather than imported from
+// internal/storage/uow: that package's provider implements the Reader role and
+// therefore imports this one, so naming its interface here would close an
+// import cycle. uow.UnitOfWork satisfies it without an adapter, which is what
+// keeps the seam honest — this is the same object, described by what the
+// queries need from it.
+type UnitOfWork interface {
+	ConfigUseCase() domain.ConfigUseCase
+	IssueUseCase() domain.IssueUseCase
+	DependencyUseCase() domain.DependencyUseCase
+	LabelUseCase() domain.LabelUseCase
+	CommentUseCase() domain.CommentUseCase
+}
+
+type uowConfigSource struct{ uw UnitOfWork }
 
 // NewUOWConfigSource reads list configuration through an open unit of work.
-func NewUOWConfigSource(uw uow.UnitOfWork) ConfigSource {
+func NewUOWConfigSource(uw UnitOfWork) ConfigSource {
 	return uowConfigSource{uw: uw}
 }
 
@@ -218,7 +175,7 @@ func LoadStoreListConfig(ctx context.Context, store storage.DoltStorage) (ListCo
 }
 
 // LoadUOWListConfig loads the list configuration through an open unit of work.
-func LoadUOWListConfig(ctx context.Context, uw uow.UnitOfWork) (ListConfig, error) {
+func LoadUOWListConfig(ctx context.Context, uw UnitOfWork) (ListConfig, error) {
 	return LoadListConfig(ctx, NewUOWConfigSource(uw))
 }
 
@@ -226,12 +183,14 @@ func LoadUOWListConfig(ctx context.Context, uw uow.UnitOfWork) (ListConfig, erro
 // the single definition of what `bd list` means: the closed/done/frozen status
 // exclusions, the pinned and template defaults, and the gate, infra-type, and
 // wisp suppression that make the default listing show durable work only.
-func BuildListFilter(in ListParams, cfg ListConfig) (types.IssueFilter, error) {
+func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter, error) {
 	filter := types.IssueFilter{
-		Limit:    in.SQLLimit,
-		Offset:   in.Offset,
-		SortBy:   in.SortBy,
-		SortDesc: in.Reverse,
+		Limit:          SQLLimit(in),
+		Offset:         in.Offset,
+		SortBy:         in.SortBy,
+		SortDesc:       in.Reverse,
+		AfterCreatedAt: in.AfterCreatedAt,
+		AfterID:        in.AfterID,
 	}
 
 	if in.ReadyFlag {
@@ -253,8 +212,8 @@ func BuildListFilter(in ListParams, cfg ListConfig) (types.IssueFilter, error) {
 		filter.ExcludeStatus = excludeStatuses
 	}
 
-	if in.PrioritySet {
-		p := in.Priority
+	if in.Priority != nil {
+		p := *in.Priority
 		filter.Priority = &p
 	}
 	if in.Assignee != "" {
@@ -337,12 +296,12 @@ func BuildListFilter(in ListParams, cfg ListConfig) (types.IssueFilter, error) {
 		filter.SkipLabels = true
 	}
 
-	if in.PriorityMinSet {
-		p := in.PriorityMin
+	if in.PriorityMin != nil {
+		p := *in.PriorityMin
 		filter.PriorityMin = &p
 	}
-	if in.PriorityMaxSet {
-		p := in.PriorityMax
+	if in.PriorityMax != nil {
+		p := *in.PriorityMax
 		filter.PriorityMax = &p
 	}
 
@@ -369,7 +328,7 @@ func BuildListFilter(in ListParams, cfg ListConfig) (types.IssueFilter, error) {
 		}
 	}
 
-	for _, raw := range in.ExcludeTypeStrs {
+	for _, raw := range in.ExcludeTypes {
 		for _, t := range strings.Split(raw, ",") {
 			t = strings.TrimSpace(t)
 			if t != "" {

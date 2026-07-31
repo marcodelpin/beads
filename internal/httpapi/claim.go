@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 const (
@@ -90,7 +91,7 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		s.failClaim(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, apigen.ClaimResponse{
+	writeJSON(w, apigen.ClaimResponse{
 		Issue:          *out.issue,
 		AlreadyClaimed: out.alreadyClaimed,
 	})
@@ -412,6 +413,15 @@ func (s *Server) failClaim(w http.ResponseWriter, r *http.Request, err error) {
 type timedProvider struct {
 	inner uow.UnitOfWorkProvider
 	rec   *reqInfo
+}
+
+// IssueReader keeps the capability accessor available through the wrapper, so
+// a read handler asks the provider it holds for the role — the same two-step a
+// CLI command performs on a store — instead of reaching past it to a
+// constructor. Every unit of work the reader opens is therefore timed like
+// every other one.
+func (p timedProvider) IssueReader() (issueops.Reader, error) {
+	return uow.NewIssueReader(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

@@ -6,10 +6,22 @@
 // route table and the request path in front of it — Host allowlist, connection
 // cap, database semaphore, per-request deadline, structured request log — the
 // two operations that answer from the process itself, GET /healthz and
-// GET /v0/beads/context, and the one write, POST /v0/beads/issues/{id}:claim.
-// The read operations are registered as transitional 501 stubs so the route
-// table can be checked against the document all at once; ContextResponse.capabilities
-// is derived from the implemented handlers only, so it never advertises one of them.
+// GET /v0/beads/context, the three reads — GET /v0/beads/ready,
+// GET /v0/beads/issues and GET /v0/beads/issues/{id} — and the one write,
+// POST /v0/beads/issues/{id}:claim. ContextResponse.capabilities is derived
+// from the implemented handlers, so a release cut mid-slice never advertises
+// an operation that does not work.
+//
+// The reads hold no query logic of their own. Each decodes its parameters and
+// hands the whole request to issueops.Reader, obtained from the provider's own
+// capability accessor — the same role, reached the same way, that a CLI
+// command reaches on a store. Filter construction, the workspace config it
+// depends on, the default limits and the wisp fallback all live inside that
+// role, which is what makes "the CLI and this API cannot drift" a property of
+// the code rather than a claim about it: a handler CANNOT build a filter,
+// because the pieces are not reachable from here. What does stay here is
+// transport — parameter decoding, the opaque cursor codec, the loopback-only
+// refusal of an unlimited read, and the wire envelopes.
 //
 // The claim is the only mutation this surface has, and claim.go states the two
 // things a client must know before adopting it: the actor is caller-asserted

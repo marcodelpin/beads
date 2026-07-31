@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/beads/issueops"
 )
 
 type readyBuilderResult struct {
@@ -15,11 +17,11 @@ type readyBuilderResult struct {
 }
 
 type readyFilterGoldenCase struct {
-	Name   string             `json:"name"`
-	Args   []string           `json:"args"`
-	Params ReadyParams        `json:"params"`
-	Direct readyBuilderResult `json:"direct"`
-	Gather readyBuilderResult `json:"gather"`
+	Name   string                `json:"name"`
+	Args   []string              `json:"args"`
+	Params issueops.ReadyRequest `json:"params"`
+	Direct readyBuilderResult    `json:"direct"`
+	Gather readyBuilderResult    `json:"gather"`
 }
 
 func loadReadyFilterGolden(t *testing.T) []readyFilterGoldenCase {

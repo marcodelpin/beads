@@ -26,6 +26,7 @@ import (
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // APIVersion is the path major this package serves, reported as
@@ -344,6 +345,17 @@ func (s *Server) connState(_ net.Conn, state http.ConnState) {
 			s.connCapWarned.Store(false)
 		}
 	}
+}
+
+// reader returns the issue-query surface for one request, obtained from the
+// provider's own capability accessor.
+//
+// It is built per request rather than once at startup so that the units of
+// work it opens are timed into THIS request's log line. That is the only
+// reason: the role itself is stateless, and the accessor is the API on this
+// seam exactly as it is on a store.
+func (s *Server) reader(r *http.Request) (issueops.Reader, error) {
+	return timedProvider{inner: s.provider, rec: requestInfo(r.Context())}.IssueReader()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.
@@ -677,9 +689,13 @@ func (s *Server) failErr(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
+// writeJSON emits a success body. The status is always 200: every 2xx on this
+// surface is a 200, and every non-2xx byte goes through Write as problem+json
+// instead — so a status parameter here would only ever be a way to write one
+// that the document does not describe.
+func writeJSON(w http.ResponseWriter, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(body)
 }
 

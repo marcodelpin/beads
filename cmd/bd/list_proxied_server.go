@@ -53,7 +53,7 @@ func openAndPrepare(ctx context.Context, in listInput) (uow.UnitOfWork, types.Is
 		uw.Close(ctx)
 		return nil, types.IssueFilter{}, err
 	}
-	filter, err := workapi.BuildListFilter(in.ListParams, cfg)
+	filter, err := workapi.BuildListFilter(in.ListRequest, cfg)
 	if err != nil {
 		uw.Close(ctx)
 		return nil, types.IssueFilter{}, err
@@ -88,7 +88,7 @@ func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) e
 		return err
 	}
 
-	sortIssues(page.Items, in.SortBy, in.Reverse)
+	workapi.SortIssues(page.Items, in.SortBy, in.Reverse)
 
 	return renderProxiedListText(ctx, uw, page.Items, in, page.HasMore)
 }
@@ -143,7 +143,7 @@ func runListProxiedReady(_ *cobra.Command, ctx context.Context, in listInput) er
 	}
 	defer uw.Close(ctx)
 
-	wf := readyWorkFilterFromIssueFilter(filter)
+	wf := workapi.ReadyFilterFromIssueFilter(filter)
 
 	if jsonOutput {
 		page, err := uw.IssueUseCase().GetReadyWorkWithCounts(ctx, wf)
@@ -158,7 +158,7 @@ func runListProxiedReady(_ *cobra.Command, ctx context.Context, in listInput) er
 		return err
 	}
 
-	sortIssues(page.Items, in.SortBy, in.Reverse)
+	workapi.SortIssues(page.Items, in.SortBy, in.Reverse)
 
 	return renderProxiedListText(ctx, uw, page.Items, in, page.HasMore)
 }
@@ -185,26 +185,26 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 		var hasMore bool
 		switch {
 		case in.ReadyFlag:
-			wf := readyWorkFilterFromIssueFilter(filter)
+			wf := workapi.ReadyFilterFromIssueFilter(filter)
 			page, perr := uw.IssueUseCase().GetReadyWork(ctx, wf)
 			if perr != nil {
 				return nil, false, nil, perr
 			}
 			issues, hasMore = page.Items, page.HasMore
-			sortIssues(issues, in.SortBy, in.Reverse)
+			workapi.SortIssues(issues, in.SortBy, in.Reverse)
 		case in.ParentID != "":
 			issues, err = gatherProxiedHierarchical(ctx, uw, in.ParentID, filter)
 			if err != nil {
 				return nil, false, nil, err
 			}
-			sortIssues(issues, "id", false)
+			workapi.SortIssues(issues, "id", false)
 		default:
 			page, perr := uw.IssueUseCase().SearchIssues(ctx, "", filter)
 			if perr != nil {
 				return nil, false, nil, perr
 			}
 			issues, hasMore = page.Items, page.HasMore
-			sortIssues(issues, in.SortBy, in.Reverse)
+			workapi.SortIssues(issues, in.SortBy, in.Reverse)
 		}
 
 		deps, err := loadDepsForIssues(ctx, uw, issues)
@@ -254,7 +254,7 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 }
 
 func emitProxiedListJSONResult(iwc []*types.IssueWithCounts, in listInput, hasMore bool) error {
-	sortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
+	workapi.SortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
 	if iwc == nil {
 		iwc = []*types.IssueWithCounts{}
 	}

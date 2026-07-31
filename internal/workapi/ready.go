@@ -6,6 +6,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // DefaultReadyLimit is the default number of rows a ready-work query returns
@@ -14,62 +15,39 @@ import (
 // still means unlimited.
 const DefaultReadyLimit = 100
 
-// ReadyParams is the frontend-independent input to BuildReadyFilter: the set
-// of ready-work knobs that shape the query. Presentation choices (pretty vs
-// plain, JSON) and the mode switches that pick a different query entirely
-// (--claim, --mol, --gated, --explain) are deliberately absent - they belong
-// to the caller.
+// LimitOr resolves a request's optional limit: nil takes the surface's shared
+// default, and an explicit 0 stays 0, which means unlimited at both storage
+// seams. The pointer is what keeps "unset" and "explicitly unlimited"
+// distinguishable — collapsing them would make one constant unable to serve
+// both surfaces.
+func LimitOr(limit *int, fallback int) int {
+	if limit == nil {
+		return fallback
+	}
+	return *limit
+}
+
+// BuildReadyFilter turns a ready request into the storage-level work filter.
+// It is the single definition of what `bd ready` means: open issues only (an
+// empty WorkFilter would default to open plus in_progress), issue-type alias
+// expansion, label and exclude-type normalization, limit defaulting, and the
+// assignee rule that lets Unassigned win over a stale Assignee.
 //
-// Labels, LabelsAny and ExcludeLabels are normalized here, so a frontend can
-// pass raw user input. A frontend that has to decide something from the label
+// Labels, LabelsAny and ExcludeLabels are normalized here, so a caller can
+// pass raw user input. A caller that has to decide something from the label
 // sets - the CLI's directory-label default is the one such case - reads them
 // back off the returned filter, where they are already normalized, rather than
 // normalizing its own copy: a value it then puts on the filter itself is its
 // own to shape, and running it through here would change it.
-type ReadyParams struct {
-	IssueType  string
-	Assignee   string
-	Unassigned bool
-
-	Labels        []string
-	LabelsAny     []string
-	ExcludeLabels []string
-	LabelPattern  string
-	LabelRegex    string
-
-	Priority    int
-	PrioritySet bool
-
-	ParentID string
-	MolType  *types.MolType
-
-	IncludeDeferred  bool
-	IncludeEphemeral bool
-	ExcludeTypeStrs  []string
-
-	MetadataFields map[string]string
-	HasMetadataKey string
-
-	SortPolicy string
-
-	Limit  int
-	Offset int
-}
-
-// BuildReadyFilter turns ready parameters into the storage-level work filter.
-// It is the single definition of what `bd ready` means: open issues only (an
-// empty WorkFilter would default to open plus in_progress), issue-type alias
-// expansion, label and exclude-type normalization, and the assignee rule that
-// lets --unassigned win over a stale --assignee.
-func BuildReadyFilter(in ReadyParams) (types.WorkFilter, error) {
+func BuildReadyFilter(in issueops.ReadyRequest) (types.WorkFilter, error) {
 	filter := types.WorkFilter{
 		// Open only, not in_progress - the same set `bd list --ready` shows.
 		Status:           types.StatusOpen,
 		Type:             utils.NormalizeIssueType(in.IssueType),
-		Limit:            in.Limit,
+		Limit:            LimitOr(in.Limit, DefaultReadyLimit),
 		Offset:           in.Offset,
 		Unassigned:       in.Unassigned,
-		SortPolicy:       types.SortPolicy(in.SortPolicy),
+		SortPolicy:       types.SortPolicy(in.Sort),
 		Labels:           utils.NormalizeLabels(in.Labels),
 		LabelsAny:        utils.NormalizeLabels(in.LabelsAny),
 		ExcludeLabels:    utils.NormalizeLabels(in.ExcludeLabels),
@@ -77,12 +55,12 @@ func BuildReadyFilter(in ReadyParams) (types.WorkFilter, error) {
 		LabelRegex:       in.LabelRegex,
 		IncludeDeferred:  in.IncludeDeferred,
 		IncludeEphemeral: in.IncludeEphemeral,
-		ExcludeTypes:     normalizeExcludeTypes(in.ExcludeTypeStrs),
+		ExcludeTypes:     normalizeExcludeTypes(in.ExcludeTypes),
 		HasMetadataKey:   in.HasMetadataKey,
 	}
 
-	if in.PrioritySet {
-		p := in.Priority
+	if in.Priority != nil {
+		p := *in.Priority
 		filter.Priority = &p
 	}
 	if in.Assignee != "" && !in.Unassigned {
@@ -101,7 +79,7 @@ func BuildReadyFilter(in ReadyParams) (types.WorkFilter, error) {
 	}
 
 	if !filter.SortPolicy.IsValid() {
-		return filter, fmt.Errorf("invalid sort policy '%s'. Valid values: hybrid, priority, oldest", in.SortPolicy)
+		return filter, fmt.Errorf("invalid sort policy '%s'. Valid values: hybrid, priority, oldest", in.Sort)
 	}
 	return filter, nil
 }

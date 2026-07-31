@@ -42,11 +42,17 @@ type fakeUOW struct {
 	// work this provider hands out so a retry sees the same state. commits
 	// records what Commit was asked to write — for a claim, the audit-trail
 	// line the actor is interpolated into.
-	issues  *fakeIssues
-	commits []string
+	issues     *fakeIssues
+	readIssues domain.IssueUseCase
+	commits    []string
 }
 
-func (u *fakeUOW) IssueUseCase() domain.IssueUseCase { return u.issues }
+func (u *fakeUOW) IssueUseCase() domain.IssueUseCase {
+	if u.readIssues != nil {
+		return u.readIssues
+	}
+	return u.issues
+}
 
 func (u *fakeUOW) Commit(_ context.Context, message string) error {
 	u.mu.Lock()
@@ -76,11 +82,15 @@ func (u *fakeUOW) closeState() (closed bool, err error, hasDeadline bool) {
 }
 
 type fakeProvider struct {
-	mu     sync.Mutex
-	uows   []*fakeUOW
-	err    error
-	delay  time.Duration
-	issues *fakeIssues
+	mu    sync.Mutex
+	uows  []*fakeUOW
+	err   error
+	delay time.Duration
+	// issues answers the claim path. readIssues, when set, answers the read
+	// paths instead, so a read test can record the filter the reader built
+	// without teaching the claim fake to answer queries it has no opinion on.
+	issues     *fakeIssues
+	readIssues domain.IssueUseCase
 }
 
 func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
@@ -94,7 +104,7 @@ func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
-	u := &fakeUOW{issues: p.issues}
+	u := &fakeUOW{issues: p.issues, readIssues: p.readIssues}
 	p.mu.Lock()
 	p.uows = append(p.uows, u)
 	p.mu.Unlock()
@@ -515,30 +525,23 @@ func TestUnroutedPathsKeepTheErrorShape(t *testing.T) {
 	}
 }
 
-// TestStubsAnswer501WithoutAdvertisingThemselves: a client that checks
-// capabilities before calling never reaches a stub, and one that calls anyway
-// gets a machine-readable refusal rather than a wrong answer.
-func TestStubsAnswer501WithoutAdvertisingThemselves(t *testing.T) {
+// TestCapabilitiesAdvertiseEveryImplementedOperation: `capabilities` is how a
+// client checks for an operation — never the version string — so it has to be
+// derived from what this build actually serves. With the read endpoints landed
+// there are no 501 stubs left, which makes the whole v0 vocabulary the expected
+// answer; the derivation is what keeps it honest for the next operation, which
+// will arrive stubbed.
+func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 	ts := newTestServer(t, Config{})
 
-	resp := ts.get(t, "/v0/beads/ready")
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501", resp.StatusCode)
-	}
-	body := decodeBody(t, resp)
-	if body["code"] != "not_implemented" {
-		t.Errorf("code = %v", body["code"])
-	}
-	if body["request_id"] == nil {
-		t.Error("no request_id on the problem body")
-	}
-
-	ctxResp := ts.get(t, "/v0/beads/context")
-	caps, _ := decodeBody(t, ctxResp)["capabilities"].([]any)
+	caps, _ := decodeBody(t, ts.get(t, "/v0/beads/context"))["capabilities"].([]any)
+	var got []string
 	for _, c := range caps {
-		if c == "ready.list" {
-			t.Error("capabilities advertises ready.list while its handler is a 501 stub")
-		}
+		got = append(got, c.(string))
+	}
+	want := []string{"issues.claim", "issues.get", "issues.list", "ready.list"}
+	if !slices.Equal(got, want) {
+		t.Errorf("capabilities = %v, want %v", got, want)
 	}
 }
 

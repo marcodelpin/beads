@@ -6,14 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/beads/issueops"
 )
 
 type listFilterGoldenCase struct {
-	Name   string          `json:"name"`
-	Params ListParams      `json:"params"`
-	Config ListConfig      `json:"config"`
-	Filter json.RawMessage `json:"filter"`
-	Error  string          `json:"error,omitempty"`
+	Name   string               `json:"name"`
+	Params issueops.ListRequest `json:"params"`
+	Config ListConfig           `json:"config"`
+	Filter json.RawMessage      `json:"filter"`
+	Error  string               `json:"error,omitempty"`
 }
 
 // TestBuildListFilterGolden replays the filter table recorded from cmd/bd's

@@ -19,7 +19,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !s.requireNoQuery(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, apigen.Health{Status: apigen.Ok})
+	writeJSON(w, apigen.Health{Status: apigen.Ok})
 }
 
 // handleContext answers the identity handshake from the startup snapshot.
@@ -27,29 +27,7 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	if !s.requireNoQuery(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.ctxBody)
-}
-
-// handleNotImplemented is the transitional stub for an operation whose handler
-// has not landed. It is NOT wire surface: 501 appears nowhere in the document,
-// and `not_implemented` is deliberately absent from the frozen code vocabulary
-// in problem.go so it cannot leak into the spec parity check.
-//
-// The stubs exist so route/spec parity is provable now rather than accumulating
-// a per-slice exemption. They are enumerated in the route table (implemented:
-// false) and in the exemption list that
-// TestSpecStatusCodesMatchHandlerTable carries; when the last one becomes a
-// real handler, that list must be deleted and the test fails if it is not.
-func (s *Server) handleNotImplemented(w http.ResponseWriter, r *http.Request) {
-	rec := requestInfo(r.Context())
-	rec.code = Code("not_implemented")
-	detail := "this operation is not implemented by this build; check `capabilities` in GET /v0/beads/context before calling"
-	Write(w, Result{Problem: apigen.Problem{
-		Status: http.StatusNotImplemented,
-		Title:  http.StatusText(http.StatusNotImplemented),
-		Code:   string(rec.code),
-		Detail: &detail,
-	}}.WithRequestID(rec.id))
+	writeJSON(w, s.ctxBody)
 }
 
 // requireNoQuery enforces the document's unknown-parameter rule for the

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -156,21 +157,22 @@ func TestServerModeServe(t *testing.T) {
 		// assertion TestProxiedServerServeLifecycle makes against the proxied
 		// path — if the two ever have to be written differently, a mode has
 		// started changing the contract and that is the bug.
-		if len(caps) != 1 || caps[0] != "issues.claim" {
-			t.Errorf("capabilities = %v, want [issues.claim] while the read handlers are stubs", caps)
+		want := []any{"issues.claim", "issues.get", "issues.list", "ready.list"}
+		if !reflect.DeepEqual(caps, want) {
+			t.Errorf("capabilities = %v, want %v", caps, want)
 		}
 	})
 
-	t.Run("unimplemented operations refuse in vocabulary", func(t *testing.T) {
+	t.Run("a read operation answers from the server-mode database", func(t *testing.T) {
 		status, body, header := sp.get(t, "/v0/beads/ready")
-		if status != http.StatusNotImplemented {
-			t.Fatalf("status = %d, want 501", status)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %v", status, body)
 		}
-		if got := header.Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
-			t.Errorf("Content-Type = %q, want problem+json", got)
+		if got := header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("Content-Type = %q, want json", got)
 		}
-		if body["request_id"] == nil {
-			t.Error("no request_id to correlate with the log line")
+		if _, ok := body["items"].([]any); !ok {
+			t.Errorf("items = %#v, want an array (never null)", body["items"])
 		}
 	})
 

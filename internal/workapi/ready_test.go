@@ -5,15 +5,16 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // TestBuildReadyFilterPropagatesLabelPatternAndRegex moved here from cmd/bd's
 // ready_input_test.go with the builder it covers (bd-ehi).
 func TestBuildReadyFilterPropagatesLabelPatternAndRegex(t *testing.T) {
-	filter, err := BuildReadyFilter(ReadyParams{
+	filter, err := BuildReadyFilter(issueops.ReadyRequest{
 		LabelPattern: "tech-*",
 		LabelRegex:   "^tech-(debt|legacy)$",
-		SortPolicy:   "priority",
+		Sort:         "priority",
 	})
 	if err != nil {
 		t.Fatalf("BuildReadyFilter() error = %v", err)
@@ -30,13 +31,13 @@ func TestBuildReadyFilterPropagatesLabelPatternAndRegex(t *testing.T) {
 // free. The CLI reaches most of it pre-split by pflag, so these are the cases
 // only a non-CLI caller hits.
 func TestBuildReadyFilterNormalizes(t *testing.T) {
-	filter, err := BuildReadyFilter(ReadyParams{
-		IssueType:       "mr",
-		Labels:          []string{" alpha ", "alpha", "  ", "beta"},
-		LabelsAny:       []string{"gamma", "gamma"},
-		ExcludeLabels:   []string{" delta "},
-		ExcludeTypeStrs: []string{"epic, mol", "", "  "},
-		SortPolicy:      "priority",
+	filter, err := BuildReadyFilter(issueops.ReadyRequest{
+		IssueType:     "mr",
+		Labels:        []string{" alpha ", "alpha", "  ", "beta"},
+		LabelsAny:     []string{"gamma", "gamma"},
+		ExcludeLabels: []string{" delta "},
+		ExcludeTypes:  []string{"epic, mol", "", "  "},
+		Sort:          "priority",
 	})
 	if err != nil {
 		t.Fatalf("BuildReadyFilter() error = %v", err)
@@ -62,7 +63,7 @@ func TestBuildReadyFilterNormalizes(t *testing.T) {
 // TestBuildReadyFilterRejectsSortPolicy pins the message cmd/bd used to print
 // itself: `bd ready --sort bogus` renders this error verbatim behind "Error: ".
 func TestBuildReadyFilterRejectsSortPolicy(t *testing.T) {
-	_, err := BuildReadyFilter(ReadyParams{SortPolicy: "bogus"})
+	_, err := BuildReadyFilter(issueops.ReadyRequest{Sort: "bogus"})
 	if err == nil {
 		t.Fatal("BuildReadyFilter unexpectedly accepted an invalid sort policy")
 	}
@@ -71,7 +72,7 @@ func TestBuildReadyFilterRejectsSortPolicy(t *testing.T) {
 	}
 	// An unset policy is the library default, not a usage error: storage
 	// resolves it the same way it resolves "priority".
-	if _, err := BuildReadyFilter(ReadyParams{}); err != nil {
+	if _, err := BuildReadyFilter(issueops.ReadyRequest{}); err != nil {
 		t.Errorf("BuildReadyFilter with no sort policy: %v", err)
 	}
 }

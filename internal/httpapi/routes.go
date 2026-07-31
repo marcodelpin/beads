@@ -31,18 +31,20 @@ type route struct {
 	// legitimate for handlers that touch no database: liveness and identity
 	// must stay answerable while every slot is held by a long scan.
 	bypassSemaphore bool
-	// implemented is false while the handler is a transitional 501 stub. It
-	// gates two things at once — the capability list, so a release between
-	// slices never advertises an operation that does not work, and the
-	// in-test stub exemption in TestSpecStatusCodesMatchHandlerTable.
+	// implemented gates the capability list, so a release between slices never
+	// advertises an operation that does not work. Every v0 operation is
+	// implemented as of the read-endpoints slice; the flag stays because the
+	// next operation to be added will arrive stubbed, and because
+	// TestSpecStatusCodesMatchHandlerTable fails if a stub ever reappears
+	// without the 501 exemption that documents it.
 	implemented bool
 	handler     func(*Server, http.ResponseWriter, *http.Request)
 }
 
-// routeTable is the whole surface. Every operation in the spec appears here
-// from this slice on, stubbed if its handler has not landed, so route/spec
-// parity is a single all-at-once check rather than a list that grows a
-// per-slice exemption each time.
+// routeTable is the whole surface. Every operation in the spec appears here,
+// so route/spec parity is a single all-at-once check rather than a list that
+// grows a per-slice exemption each time. As of the read-endpoints slice every
+// row is implemented and none is a 501 stub.
 var routeTable = []route{
 	{
 		op:      OpHealth,
@@ -67,25 +69,28 @@ var routeTable = []route{
 		handler:         (*Server).handleContext,
 	},
 	{
-		op:         OpListReadyWork,
-		method:     http.MethodGet,
-		pattern:    "/v0/beads/ready",
-		capability: "ready.list",
-		handler:    (*Server).handleNotImplemented,
+		op:          OpListReadyWork,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/ready",
+		capability:  "ready.list",
+		implemented: true,
+		handler:     (*Server).handleReady,
 	},
 	{
-		op:         OpListIssues,
-		method:     http.MethodGet,
-		pattern:    "/v0/beads/issues",
-		capability: "issues.list",
-		handler:    (*Server).handleNotImplemented,
+		op:          OpListIssues,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/issues",
+		capability:  "issues.list",
+		implemented: true,
+		handler:     (*Server).handleListIssues,
 	},
 	{
-		op:         OpGetIssue,
-		method:     http.MethodGet,
-		pattern:    "/v0/beads/issues/{id}",
-		capability: "issues.get",
-		handler:    (*Server).handleNotImplemented,
+		op:          OpGetIssue,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/issues/{id}",
+		capability:  "issues.get",
+		implemented: true,
+		handler:     (*Server).handleGetIssue,
 	},
 	{
 		op:      OpClaimIssue,

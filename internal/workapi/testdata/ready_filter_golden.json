@@ -4,7 +4,7 @@
     "args": null,
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -74,7 +74,7 @@
     "params": {
       "IssueType": "bug",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -144,7 +144,7 @@
     "params": {
       "IssueType": "mr",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -214,7 +214,7 @@
     "params": {
       "IssueType": "FEAT",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -289,7 +289,7 @@
         "beta"
       ],
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -368,7 +368,7 @@
         "beta"
       ],
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -452,7 +452,7 @@
         "  "
       ],
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -531,7 +531,7 @@
         "wip"
       ],
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -608,7 +608,7 @@
       "LabelPattern": "tech-*",
       "LabelRegex": "^tech-(debt|legacy)$",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -676,7 +676,8 @@
       "0"
     ],
     "params": {
-      "SortPolicy": "priority"
+      "Limit": 0,
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -745,7 +746,7 @@
     ],
     "params": {
       "Limit": 7,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -813,9 +814,9 @@
       "3"
     ],
     "params": {
-      "Limit": 100,
       "Offset": 3,
-      "SortPolicy": "priority"
+      "Limit": 100,
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -884,7 +885,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -953,7 +954,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -986,7 +987,7 @@
     },
     "gather": {
       "error": "exit code 1",
-      "stderr": "Error: --offset must be \u003e= 0\n"
+      "stderr": "Error: --offset must be >= 0\n"
     }
   },
   {
@@ -998,7 +999,7 @@
     "params": {
       "Assignee": "alice",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1065,9 +1066,9 @@
       "--unassigned"
     ],
     "params": {
+      "Unassigned": true,
       "Limit": 100,
-      "SortPolicy": "priority",
-      "Unassigned": true
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1137,9 +1138,9 @@
     ],
     "params": {
       "Assignee": "alice",
+      "Unassigned": true,
       "Limit": 100,
-      "SortPolicy": "priority",
-      "Unassigned": true
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1208,8 +1209,8 @@
     ],
     "params": {
       "Limit": 100,
-      "PrioritySet": true,
-      "SortPolicy": "priority"
+      "Sort": "priority",
+      "Priority": 0
     },
     "direct": {
       "filter": {
@@ -1278,9 +1279,8 @@
     ],
     "params": {
       "Limit": 100,
-      "Priority": 2,
-      "PrioritySet": true,
-      "SortPolicy": "priority"
+      "Sort": "priority",
+      "Priority": 2
     },
     "direct": {
       "filter": {
@@ -1349,7 +1349,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "hybrid"
+      "Sort": "hybrid"
     },
     "direct": {
       "filter": {
@@ -1418,7 +1418,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "oldest"
+      "Sort": "oldest"
     },
     "direct": {
       "filter": {
@@ -1487,7 +1487,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "bogus"
+      "Sort": "bogus"
     },
     "direct": {
       "error": "exit code 1",
@@ -1505,9 +1505,9 @@
       "bd-epic"
     ],
     "params": {
-      "Limit": 100,
       "ParentID": "bd-epic",
-      "SortPolicy": "priority"
+      "Limit": 100,
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1575,9 +1575,9 @@
       "swarm"
     ],
     "params": {
-      "Limit": 100,
       "MolType": "swarm",
-      "SortPolicy": "priority"
+      "Limit": 100,
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1646,7 +1646,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "error": "exit code 1",
@@ -1665,7 +1665,7 @@
     "params": {
       "IncludeDeferred": true,
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1734,7 +1734,7 @@
     "params": {
       "IncludeEphemeral": true,
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -1804,13 +1804,13 @@
       "mr"
     ],
     "params": {
-      "ExcludeTypeStrs": [
+      "Limit": 100,
+      "Sort": "priority",
+      "ExcludeTypes": [
         "convoy",
         " epic",
         "mr"
-      ],
-      "Limit": 100,
-      "SortPolicy": "priority"
+      ]
     },
     "direct": {
       "filter": {
@@ -1886,14 +1886,14 @@
       "epic,,  ,task"
     ],
     "params": {
-      "ExcludeTypeStrs": [
+      "Limit": 100,
+      "Sort": "priority",
+      "ExcludeTypes": [
         "epic",
         "",
         "  ",
         "task"
-      ],
-      "Limit": 100,
-      "SortPolicy": "priority"
+      ]
     },
     "direct": {
       "filter": {
@@ -1969,12 +1969,12 @@
       "env=prod"
     ],
     "params": {
-      "Limit": 100,
       "MetadataFields": {
         "env": "prod",
         "team": "platform"
       },
-      "SortPolicy": "priority"
+      "Limit": 100,
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -2049,7 +2049,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "error": "exit code 1",
@@ -2068,7 +2068,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "error": "exit code 1",
@@ -2088,7 +2088,7 @@
     "params": {
       "HasMetadataKey": "team",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -2157,7 +2157,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "error": "exit code 1",
@@ -2176,7 +2176,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -2245,7 +2245,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "error": "exit code 1",
@@ -2291,7 +2291,7 @@
     "params": {
       "Assignee": "alice",
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "error": "exit code 1",
@@ -2310,7 +2310,7 @@
     ],
     "params": {
       "Limit": 100,
-      "SortPolicy": "priority"
+      "Sort": "priority"
     },
     "direct": {
       "filter": {
@@ -2389,10 +2389,6 @@
       "ExcludeLabels": [
         "c"
       ],
-      "ExcludeTypeStrs": [
-        "epic",
-        "convoy"
-      ],
       "HasMetadataKey": "env",
       "IncludeDeferred": true,
       "IncludeEphemeral": true,
@@ -2405,16 +2401,19 @@
       "LabelsAny": [
         "b"
       ],
-      "Limit": 5,
       "MetadataFields": {
         "team": "platform"
       },
       "MolType": "work",
       "Offset": 2,
       "ParentID": "bd-root",
-      "Priority": 1,
-      "PrioritySet": true,
-      "SortPolicy": "oldest"
+      "Limit": 5,
+      "Sort": "oldest",
+      "ExcludeTypes": [
+        "epic",
+        "convoy"
+      ],
+      "Priority": 1
     },
     "direct": {
       "filter": {

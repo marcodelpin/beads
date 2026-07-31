@@ -8,7 +8,6 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
-	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -346,7 +345,7 @@ type useCaseDetailSource struct {
 }
 
 // NewUOWDetailSource reads detail through an open unit of work.
-func NewUOWDetailSource(uw uow.UnitOfWork) DetailSource {
+func NewUOWDetailSource(uw UnitOfWork) DetailSource {
 	return newUseCaseDetailSource(uw.IssueUseCase(), uw.LabelUseCase(), uw.DependencyUseCase(), uw.CommentUseCase())
 }
 

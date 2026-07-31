@@ -1,12 +1,10 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -16,7 +14,6 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
-	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/internal/workapi"
 )
 
@@ -38,78 +35,6 @@ func withStorage(ctx context.Context, store storage.DoltStorage, dbPath string, 
 		return fn(roStore)
 	}
 	return fmt.Errorf("no storage available")
-}
-
-// withFetchOneExtra bumps Limit by one so the caller can detect "more
-// results than the limit" (GH#3212) by comparing len(results) against the
-// original limit.
-//
-// `--limit N --max-rows N` (equal) needs special handling so this bump
-// doesn't collide with the MaxRows cap check: EffectiveSearchLimit treats
-// Limit==MaxRows as "no overage sniff" (returns Limit verbatim, no +1 — see
-// EffectiveSearchLimit's doc and the WithLimit_LimitAtCap_NoError storage
-// test), but bumping Limit to N+1 alone flips that to Limit>MaxRows, which
-// *does* sniff for overage — so the probe row itself would trip
-// EnforceMaxRowsCap(N+1, N, ...) even though the delivered set is always
-// trimmed back to N. Bumping MaxRows by one in lockstep, only in this exact
-// N==M case, keeps the probe row inside the (temporarily N+1) cap so
-// EnforceMaxRowsCap never fires on it while still fetching N+1 rows for the
-// truncation check below. This can't false-negative a real violation: the
-// query's own LIMIT is capped at N+1 either way, so "more than N+1 matches
-// exist" was already undetectable at Limit==MaxRows before this bump ever
-// existed (same "no overage detection above the equal cap" contract
-// EffectiveSearchLimit documents for the unbumped case).
-//
-// This does not change the Limit>MaxRows (tighter-cap) or Limit<MaxRows
-// cases: EffectiveSearchLimit's branch selection there is unaffected by a
-// one-row bump to Limit, and MaxRows is left untouched, so a genuine
-// tighter-cap violation still fires with the correct (unbumped) Cap value
-// in the error message.
-func withFetchOneExtra(filter types.IssueFilter) types.IssueFilter {
-	if filter.Limit > 0 {
-		if filter.MaxRows > 0 && filter.Limit == filter.MaxRows {
-			filter.MaxRows++
-		}
-		filter.Limit++
-	}
-	return filter
-}
-
-func readyWorkFilterFromIssueFilter(filter types.IssueFilter) types.WorkFilter {
-	wf := types.WorkFilter{
-		Status:         types.StatusOpen,
-		Limit:          filter.Limit,
-		Offset:         filter.Offset,
-		Labels:         filter.Labels,
-		LabelsAny:      filter.LabelsAny,
-		ExcludeLabels:  filter.ExcludeLabels,
-		LabelPattern:   filter.LabelPattern,
-		LabelRegex:     filter.LabelRegex,
-		ParentID:       filter.ParentID,
-		MolType:        filter.MolType,
-		WispType:       filter.WispType,
-		ExcludeTypes:   filter.ExcludeTypes,
-		MetadataFields: filter.MetadataFields,
-		HasMetadataKey: filter.HasMetadataKey,
-		MaxRows:        filter.MaxRows,
-		MaxRowsSource:  filter.MaxRowsSource,
-	}
-	if filter.IssueType != nil {
-		wf.Type = string(*filter.IssueType)
-	}
-	if filter.Priority != nil {
-		wf.Priority = filter.Priority
-	}
-	if filter.Assignee != nil {
-		wf.Assignee = filter.Assignee
-	}
-	if filter.NoAssignee {
-		wf.Unassigned = true
-	}
-	if filter.Ephemeral != nil && *filter.Ephemeral {
-		wf.IncludeEphemeral = true
-	}
-	return wf
 }
 
 // getHierarchicalChildren handles the --tree --parent combination logic.
@@ -193,11 +118,11 @@ type watchListDependencyStore interface {
 
 func loadWatchedIssues(ctx context.Context, store storage.DoltStorage, filter types.IssueFilter, ready bool, parentID string, sortBy string, reverse bool) ([]*types.Issue, error) {
 	if ready {
-		issues, err := store.GetReadyWork(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
+		issues, err := store.GetReadyWork(ctx, workapi.ReadyFilterFromIssueFilter(workapi.WithFetchOneExtra(filter)))
 		if err != nil {
 			return nil, err
 		}
-		sortIssues(issues, sortBy, reverse)
+		workapi.SortIssues(issues, sortBy, reverse)
 		return issues, nil
 	}
 
@@ -208,15 +133,15 @@ func loadWatchedIssues(ctx context.Context, store storage.DoltStorage, filter ty
 		}
 		// getHierarchicalChildren builds its result from a map, so normalize the
 		// slice before snapshot comparison to avoid spurious redraws.
-		sortIssues(issues, "id", false)
+		workapi.SortIssues(issues, "id", false)
 		return issues, nil
 	}
 
-	issues, err := store.SearchIssues(ctx, "", withFetchOneExtra(filter))
+	issues, err := store.SearchIssues(ctx, "", workapi.WithFetchOneExtra(filter))
 	if err != nil {
 		return nil, err
 	}
-	sortIssues(issues, sortBy, reverse)
+	workapi.SortIssues(issues, sortBy, reverse)
 	return issues, nil
 }
 
@@ -297,80 +222,6 @@ func issueSnapshot(issues []*types.Issue) string {
 		fmt.Fprintf(&b, "%s:%s:%d;", issue.ID, issue.Status, issue.UpdatedAt.UnixNano())
 	}
 	return b.String()
-}
-
-func compareIssuesBy(a, b *types.Issue, sortBy string) int {
-	switch sortBy {
-	case "priority":
-		return cmp.Compare(a.Priority, b.Priority)
-	case "created":
-		return b.CreatedAt.Compare(a.CreatedAt)
-	case "updated":
-		return b.UpdatedAt.Compare(a.UpdatedAt)
-	case "closed":
-		if a.ClosedAt == nil && b.ClosedAt == nil {
-			return 0
-		} else if a.ClosedAt == nil {
-			return 1
-		} else if b.ClosedAt == nil {
-			return -1
-		}
-		return b.ClosedAt.Compare(*a.ClosedAt)
-	case "status":
-		return cmp.Compare(a.Status, b.Status)
-	case "id":
-		return utils.NaturalCompareIDs(a.ID, b.ID)
-	case "title":
-		return cmp.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title))
-	case "type":
-		return cmp.Compare(a.IssueType, b.IssueType)
-	case "assignee":
-		return cmp.Compare(a.Assignee, b.Assignee)
-	}
-	return 0
-}
-
-func sortIssues(issues []*types.Issue, sortBy string, reverse bool) {
-	if sortBy == "" {
-		return
-	}
-	slices.SortFunc(issues, func(a, b *types.Issue) int {
-		r := compareIssuesBy(a, b, sortBy)
-		if reverse {
-			return -r
-		}
-		return r
-	})
-}
-
-func sortIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, reverse bool) {
-	if sortBy == "" {
-		return
-	}
-	slices.SortFunc(items, func(a, b *types.IssueWithCounts) int {
-		ai, bi := issueOrNil(a), issueOrNil(b)
-		if ai == nil {
-			if bi == nil {
-				return 0
-			}
-			return 1
-		}
-		if bi == nil {
-			return -1
-		}
-		r := compareIssuesBy(ai, bi, sortBy)
-		if reverse {
-			return -r
-		}
-		return r
-	})
-}
-
-func issueOrNil(iwc *types.IssueWithCounts) *types.Issue {
-	if iwc == nil {
-		return nil
-	}
-	return iwc.Issue
 }
 
 // skipLabelsIssueView wraps IssueWithCounts so the JSON encoder always emits
@@ -537,7 +388,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return HandleError("%v", err)
 	}
-	filter, err := workapi.BuildListFilter(in.ListParams, cfg)
+	filter, err := workapi.BuildListFilter(in.ListRequest, cfg)
 	if err != nil {
 		return HandleError("%v", err)
 	}
@@ -575,9 +426,9 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		var iwc []*types.IssueWithCounts
 		var err error
 		if in.ReadyFlag {
-			iwc, err = activeStore.GetReadyWorkWithCounts(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
+			iwc, err = activeStore.GetReadyWorkWithCounts(ctx, workapi.ReadyFilterFromIssueFilter(workapi.WithFetchOneExtra(filter)))
 		} else {
-			iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", withFetchOneExtra(filter))
+			iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", workapi.WithFetchOneExtra(filter))
 		}
 		if err != nil {
 			if capErr := handleMaxRowsError(err); capErr != nil {
@@ -585,7 +436,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 			}
 			return HandleError("%v", err)
 		}
-		sortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
+		workapi.SortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
 		truncated := in.effectiveLimit > 0 && len(iwc) > in.effectiveLimit
 		if truncated {
 			iwc = iwc[:in.effectiveLimit]
@@ -609,7 +460,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 
 	var issues []*types.Issue
 	if in.ReadyFlag {
-		wf := readyWorkFilterFromIssueFilter(withFetchOneExtra(filter))
+		wf := workapi.ReadyFilterFromIssueFilter(workapi.WithFetchOneExtra(filter))
 		var err error
 		issues, err = activeStore.GetReadyWork(ctx, wf)
 		if err != nil {
@@ -620,7 +471,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	} else {
 		var err error
-		issues, err = activeStore.SearchIssues(ctx, "", withFetchOneExtra(filter))
+		issues, err = activeStore.SearchIssues(ctx, "", workapi.WithFetchOneExtra(filter))
 		if err != nil {
 			if capErr := handleMaxRowsError(err); capErr != nil {
 				return capErr
@@ -629,7 +480,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	sortIssues(issues, in.SortBy, in.Reverse)
+	workapi.SortIssues(issues, in.SortBy, in.Reverse)
 
 	truncated := in.effectiveLimit > 0 && len(issues) > in.effectiveLimit
 	if truncated {

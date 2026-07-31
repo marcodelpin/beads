@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -220,14 +221,16 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 		}
 		// The handshake advertises exactly what this build implements. A client
 		// that gates on capabilities is then correct without knowing which
-		// release it hit: the reads are still stubs here, so they must not
-		// appear, and the claim is live, so it must.
+		// release it hit. With the read endpoints landed that is the whole v0
+		// vocabulary; the assertion is on the derived list, not on a count, so
+		// the next operation to arrive stubbed still fails here.
 		caps, ok := body["capabilities"].([]any)
 		if !ok {
 			t.Fatalf("capabilities = %#v, want an array", body["capabilities"])
 		}
-		if len(caps) != 1 || caps[0] != "issues.claim" {
-			t.Errorf("capabilities = %v, want [issues.claim] while the read handlers are stubs", caps)
+		want := []any{"issues.claim", "issues.get", "issues.list", "ready.list"}
+		if !reflect.DeepEqual(caps, want) {
+			t.Errorf("capabilities = %v, want %v", caps, want)
 		}
 		// The allowlist is enforced in internal/httpapi; this is the end-to-end
 		// half — a real workspace's real config, over a real socket.
@@ -238,16 +241,19 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("unimplemented operations refuse in vocabulary", func(t *testing.T) {
+	t.Run("a read operation answers from the database", func(t *testing.T) {
 		status, body, header := sp.get(t, "/v0/beads/ready")
-		if status != http.StatusNotImplemented {
-			t.Fatalf("status = %d, want 501", status)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %v", status, body)
 		}
-		if got := header.Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
-			t.Errorf("Content-Type = %q, want problem+json", got)
+		if got := header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("Content-Type = %q, want json", got)
 		}
-		if body["request_id"] == nil {
-			t.Error("no request_id to correlate with the log line")
+		if _, ok := body["items"].([]any); !ok {
+			t.Errorf("items = %#v, want an array (never null)", body["items"])
+		}
+		if _, ok := body["has_more"].(bool); !ok {
+			t.Errorf("has_more = %#v, want a boolean", body["has_more"])
 		}
 	})
 
@@ -295,7 +301,7 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 	requests := []struct{ path, op, status string }{
 		{"/healthz", "health", "200"},
 		{"/v0/beads/context", "getContext", "200"},
-		{"/v0/beads/ready", "listReadyWork", "501"},
+		{"/v0/beads/ready", "listReadyWork", "200"},
 	}
 	for _, want := range requests {
 		line := sp.awaitLogLine(t, "path="+want.path+" ")

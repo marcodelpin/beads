@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // TestApplyCountIncludeInfraMirrorsListFilter pins `bd count --include-infra`
@@ -24,7 +25,7 @@ func TestApplyCountIncludeInfraMirrorsListFilter(t *testing.T) {
 			name = "none"
 		}
 		t.Run("type_"+name, func(t *testing.T) {
-			in := workapi.ListParams{AllFlag: true, IncludeInfra: true, IssueType: issueType}
+			in := issueops.ListRequest{AllFlag: true, IncludeInfra: true, IssueType: issueType}
 			want, err := workapi.BuildListFilter(in, cfg)
 			if err != nil {
 				t.Fatalf("workapi.BuildListFilter(%q): %v", issueType, err)
