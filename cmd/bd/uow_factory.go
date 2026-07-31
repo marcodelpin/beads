@@ -99,6 +99,25 @@ func resolveProxiedServerUOWTopology(beadsDir, databaseOverride string) sqlServe
 	return topology
 }
 
+// errServeGatewayCredential refuses a workspace that authenticates to Dolt with
+// a minted credential.
+//
+// The command mints a SHORT-LIVED token that is presented as the connection
+// username. A command resolves it once and exits; a server would pin that token
+// for its whole lifetime and start failing authentication at an hour nobody is
+// watching. Refuse while the workspace still says so.
+//
+// It is deliberately a plain error, not a storage.ErrUnsupported like the
+// embedded refusal: that type names a BACKEND, and the backend here is plain
+// dolt, which bd serve supports. Typing this as "serve is unsupported on dolt"
+// would be a worse lie than an untyped error.
+func errServeGatewayCredential() error {
+	return fmt.Errorf(
+		"this workspace authenticates to Dolt with a credential command (BEADS_DOLT_CREDENTIAL_COMMAND), " +
+			"which mints a short-lived token; bd serve holds one connection identity for the life of the " +
+			"process and cannot refresh it")
+}
+
 // resolveServerModeUOWTopology reads a server-mode workspace's Dolt SQL server
 // out of its configuration, in the shape the external provider takes.
 //
@@ -117,19 +136,28 @@ func resolveServerModeUOWTopology(ctx context.Context, beadsDir string) (sqlServ
 		fileCfg = configfile.DefaultConfig()
 	}
 
+	// Decide the gateway refusal from the CONFIGURATION, before anything runs
+	// the operator's command. resolveDoltServerConnection would otherwise
+	// execute it — spawning a subprocess, minting a token, and spending
+	// whatever the credential endpoint rate-limits or audits — only for the
+	// refusal below to throw the result away. PersistentPreRunE already ran it
+	// once for the DoltStore serve never touches; a refused `bd serve` must not
+	// make that twice.
+	if fileCfg.GetDoltCredentialCommand() != "" {
+		return sqlServerUOWTopology{}, errServeGatewayCredential()
+	}
+
 	conn := &dolt.Config{BeadsDir: beadsDir, ServerMode: true}
 	if err := resolveDoltServerConnection(ctx, beadsDir, fileCfg, conn); err != nil {
 		return sqlServerUOWTopology{}, err
 	}
 	if conn.Gateway {
-		// The credential command mints a SHORT-LIVED token that is presented as
-		// the connection username. A command resolves it once and exits; a
-		// server would pin that token for its whole lifetime and start failing
-		// authentication at an hour nobody is watching. Refuse while it says so.
-		return sqlServerUOWTopology{}, fmt.Errorf(
-			"this workspace authenticates to Dolt with a credential command (BEADS_DOLT_CREDENTIAL_COMMAND), " +
-				"which mints a short-lived token; bd serve holds one connection identity for the life of the " +
-				"process and cannot refresh it")
+		// Unreachable while a configured command is the only thing that can set
+		// Gateway (dolt.ApplyGatewayCredential is its sole writer, and the check
+		// above already refused that case). It stays because this is a
+		// fail-closed boundary: if the credential ladder ever grows a second
+		// source, the refusal must not quietly stop applying.
+		return sqlServerUOWTopology{}, errServeGatewayCredential()
 	}
 
 	external := &configfile.ExternalDoltConfig{User: conn.ServerUser}
