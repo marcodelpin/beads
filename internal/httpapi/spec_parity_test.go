@@ -377,7 +377,6 @@ func TestSpecStatusCodesMatchHandlerTable(t *testing.T) {
 		OpListReadyWork: "read endpoints slice",
 		OpListIssues:    "read endpoints slice",
 		OpGetIssue:      "detail endpoint slice",
-		OpClaimIssue:    "claim endpoint slice",
 	}
 	stubRoutes := map[string]bool{}
 	for _, rt := range routeTable {

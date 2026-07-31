@@ -24,7 +24,31 @@ type TxProvider interface {
 const (
 	txRetryInitialInterval = 25 * time.Millisecond
 	txRetryMaxElapsed      = 15 * time.Second
+	// txCloseTimeout bounds the detached per-attempt close below.
+	txCloseTimeout = 5 * time.Second
 )
+
+// closeAttempt rolls an attempt's unit of work back on a context that outlives
+// the caller's.
+//
+// Close sends ROLLBACK on the pinned connection, and the transaction layer
+// POISONS that connection when the send fails (doltserver_tx.go) — go-sql-driver's
+// session reset does not clear an open transaction, so a session that may still
+// be in one must never go back to the pool. Correctness is safe either way; what
+// is not safe is closing with an ALREADY-CANCELED context, which fails the
+// ROLLBACK immediately and burns one pinned session every time a caller's
+// context is done — an HTTP client that hangs up mid-write, or an expired
+// deadline. The timeout keeps a hung rollback from blocking the caller forever.
+//
+// RunTxResult is the retry/commit implementation the HTTP claim and the proxied
+// CLI writes share, which is why it is converted here. RunTx and RunTxRead still
+// close with the caller's own context; they carry the same hazard and are a
+// separate change, not an oversight.
+func closeAttempt(ctx context.Context, uw UnitOfWork) {
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txCloseTimeout)
+	defer cancel()
+	uw.Close(closeCtx)
+}
 
 type TxFunc func(ctx context.Context, uw UnitOfWork) (commitMsg string, err error)
 
@@ -87,7 +111,7 @@ func RunTxResult[T any](ctx context.Context, p UnitOfWorkProvider, work TxFuncRe
 			}
 			return backoff.Permanent(err)
 		}
-		defer uw.Close(ctx)
+		defer closeAttempt(ctx, uw)
 
 		r, commitMsg, err := work(ctx, uw)
 		if err != nil {

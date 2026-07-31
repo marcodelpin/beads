@@ -4,12 +4,16 @@
 //
 // What is live: the process lifecycle (Listen and Serve), the bind policy, the
 // route table and the request path in front of it — Host allowlist, connection
-// cap, database semaphore, per-request deadline, structured request log — plus
-// the two operations that answer from the process itself, GET /healthz and
-// GET /v0/beads/context. The read and claim operations are registered as
-// transitional 501 stubs so the route table can be checked against the document
-// all at once; ContextResponse.capabilities is derived from the implemented
-// handlers only, so it never advertises one of them.
+// cap, database semaphore, per-request deadline, structured request log — the
+// two operations that answer from the process itself, GET /healthz and
+// GET /v0/beads/context, and the one write, POST /v0/beads/issues/{id}:claim.
+// The read operations are registered as transitional 501 stubs so the route
+// table can be checked against the document all at once; ContextResponse.capabilities
+// is derived from the implemented handlers only, so it never advertises one of them.
+//
+// The claim is the only mutation this surface has, and claim.go states the two
+// things a client must know before adopting it: the actor is caller-asserted
+// provenance rather than authenticated identity, and hooks do not fire.
 //
 // The Host allowlist is the DNS-rebinding defense, and it has no off switch.
 // Every bind answers to the loopback spellings and to the bound address itself;

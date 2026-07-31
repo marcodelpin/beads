@@ -213,15 +213,16 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 		if body["bd_version"] == "" || body["bd_version"] == nil {
 			t.Error("bd_version is empty")
 		}
-		// Nothing is implemented beyond liveness and identity in this build, so
-		// the handshake must advertise nothing. A client that gates on
-		// capabilities is then correct without knowing which release it hit.
+		// The handshake advertises exactly what this build implements. A client
+		// that gates on capabilities is then correct without knowing which
+		// release it hit: the reads are still stubs here, so they must not
+		// appear, and the claim is live, so it must.
 		caps, ok := body["capabilities"].([]any)
 		if !ok {
 			t.Fatalf("capabilities = %#v, want an array", body["capabilities"])
 		}
-		if len(caps) != 0 {
-			t.Errorf("capabilities = %v, want empty while the read and claim handlers are stubs", caps)
+		if len(caps) != 1 || caps[0] != "issues.claim" {
+			t.Errorf("capabilities = %v, want [issues.claim] while the read handlers are stubs", caps)
 		}
 		// The allowlist is enforced in internal/httpapi; this is the end-to-end
 		// half — a real workspace's real config, over a real socket.
