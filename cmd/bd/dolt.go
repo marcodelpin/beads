@@ -63,6 +63,7 @@ Configuration keys for 'bd dolt set':
   host      Server host (default: 127.0.0.1)
   port      Server port (auto-detected; override with bd dolt set port <N>)
   user      MySQL user (default: root)
+  tls       Require TLS for the server connection (true/false; default: false)
   data-dir  Custom dolt data directory (absolute path; default: .beads/dolt)
 
 Flags for 'bd dolt set':
@@ -1855,6 +1856,7 @@ func showDoltConfig(testConnection bool) error {
 				result["host"] = showHost
 				result["port"] = showPort
 				result["user"] = cfg.GetDoltServerUser()
+				result["tls"] = cfg.GetDoltServerTLS()
 				result["shared_server"] = doltserver.IsSharedServerMode()
 				if testConnection {
 					result["connection_ok"] = testServerConnection(showHost, showPort)
@@ -1882,6 +1884,7 @@ func showDoltConfig(testConnection bool) error {
 		fmt.Printf("  Host:     %s\n", showHost)
 		fmt.Printf("  Port:     %d\n", showPort)
 		fmt.Printf("  User:     %s\n", cfg.GetDoltServerUser())
+		fmt.Printf("  TLS:      %t\n", cfg.GetDoltServerTLS())
 		if doltserver.IsSharedServerMode() {
 			fmt.Println("  Mode:     shared server")
 			if sharedDir, err := doltserver.SharedServerDir(); err == nil {
@@ -1983,7 +1986,8 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 		if lower != "true" && lower != "false" {
 			return HandleError("tls must be 'true' or 'false'")
 		}
-		cfg.DoltServerTLS = lower == "true"
+		enabled := lower == "true"
+		cfg.DoltServerTLS = &enabled
 		yamlKey = "dolt.tls"
 
 	case "data-dir":

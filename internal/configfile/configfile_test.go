@@ -1029,6 +1029,8 @@ func TestGlobalDoltDatabase_OmittedFromJSON(t *testing.T) {
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestGetDoltServerTLSConfigYaml(t *testing.T) {
 	// Mirror of the dolt.host config.yaml layering for tls.
 	// Precedence: env > metadata.json > config.yaml > default (false).
@@ -1048,16 +1050,58 @@ func TestGetDoltServerTLSConfigYaml(t *testing.T) {
 
 	emptyCfg := &Config{}
 	if !emptyCfg.GetDoltServerTLS() {
-		t.Error("empty cfg + config.yaml dolt.tls=true: GetDoltServerTLS() = false, want true")
+		t.Error("unset metadata + config.yaml dolt.tls=true: GetDoltServerTLS() = false, want true")
 	}
 
-	metaCfg := &Config{DoltServerTLS: true}
+	metaCfg := &Config{DoltServerTLS: boolPtr(true)}
 	if !metaCfg.GetDoltServerTLS() {
 		t.Error("metadata dolt_server_tls=true: GetDoltServerTLS() = false, want true")
+	}
+
+	metaOff := &Config{DoltServerTLS: boolPtr(false)}
+	if metaOff.GetDoltServerTLS() {
+		t.Error("metadata dolt_server_tls=false over config.yaml true: GetDoltServerTLS() = true, want false")
 	}
 
 	t.Setenv("BEADS_DOLT_SERVER_TLS", "false")
 	if emptyCfg.GetDoltServerTLS() {
 		t.Error("env BEADS_DOLT_SERVER_TLS=false over config.yaml: GetDoltServerTLS() = true, want false")
+	}
+}
+
+func TestDoltServerTLSSaveLoadRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		tls  *bool
+	}{
+		{"explicit false survives save/load", boolPtr(false)},
+		{"explicit true survives save/load", boolPtr(true)},
+		{"unset stays unset", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.DoltServerTLS = tc.tls
+			if err := cfg.Save(dir); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			got, err := Load(dir)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if tc.tls == nil {
+				if got.DoltServerTLS != nil {
+					t.Errorf("DoltServerTLS = %v, want nil", *got.DoltServerTLS)
+				}
+				return
+			}
+			if got.DoltServerTLS == nil {
+				t.Fatalf("DoltServerTLS = nil, want %t", *tc.tls)
+			}
+			if *got.DoltServerTLS != *tc.tls {
+				t.Errorf("DoltServerTLS = %t, want %t", *got.DoltServerTLS, *tc.tls)
+			}
+		})
 	}
 }

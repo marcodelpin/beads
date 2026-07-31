@@ -31,7 +31,7 @@ type Config struct {
 	DoltServerSocket   string `json:"dolt_server_socket,omitempty"`   // Unix domain socket path (overrides host/port)
 	DoltServerUser     string `json:"dolt_server_user,omitempty"`     // MySQL user (default: root)
 	DoltDatabase       string `json:"dolt_database,omitempty"`        // SQL database name (default: beads)
-	DoltServerTLS      bool   `json:"dolt_server_tls,omitempty"`      // Enable TLS for server connections (required for Hosted Dolt)
+	DoltServerTLS      *bool  `json:"dolt_server_tls,omitempty"`      // Enable TLS for server connections (required for Hosted Dolt); nil = unset, so an explicit false can override config.yaml
 	DoltDataDir        string `json:"dolt_data_dir,omitempty"`        // Custom dolt data directory (absolute path; default: .beads/dolt)
 	DoltRemotesAPIPort int    `json:"dolt_remotesapi_port,omitempty"` // Dolt remotesapi port for federation (default: 8080)
 	DoltTeamServer     bool   `json:"dolt_team_server,omitempty"`     // Schema is managed by beads-team-server (bts); bd never runs migrations (proxied-server mode only)
@@ -494,8 +494,8 @@ func (c *Config) GetDoltServerTLS() bool {
 	if t := os.Getenv("BEADS_DOLT_SERVER_TLS"); t != "" {
 		return t == "1" || strings.ToLower(t) == "true"
 	}
-	if c.DoltServerTLS {
-		return true
+	if c.DoltServerTLS != nil {
+		return *c.DoltServerTLS
 	}
 	return strings.EqualFold(config.GetYamlConfig("dolt.tls"), "true")
 }

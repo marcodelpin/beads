@@ -75,12 +75,9 @@ func ApplyCentralDefaults(project *Config, central *Config) {
 	if project.DoltServerUser == "" && central.DoltServerUser != "" {
 		project.DoltServerUser = central.DoltServerUser
 	}
-	// Note: DoltServerTLS is a bool — zero value (false) is indistinguishable
-	// from "not set". We only apply central TLS=true when project has TLS=false,
-	// which means central can enable TLS but project cannot explicitly disable it
-	// via the zero value. To disable TLS when central enables it, use the
-	// BEADS_DOLT_SERVER_TLS=0 env var.
-	if !project.DoltServerTLS && central.DoltServerTLS {
+	// DoltServerTLS is a *bool: nil means "not set", so a project-level
+	// explicit false is preserved and overrides a central true.
+	if project.DoltServerTLS == nil && central.DoltServerTLS != nil {
 		project.DoltServerTLS = central.DoltServerTLS
 	}
 }
