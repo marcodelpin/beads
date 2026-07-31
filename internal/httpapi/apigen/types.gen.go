@@ -66,7 +66,7 @@ type ClaimResponse struct {
 // Comment defines model for Comment.
 type Comment = types.Comment
 
-// ContextResponse The server's identity handshake. Every member is a deliberate, permanent choice; the field set is an allowlist enforced by a test, so a future field on the underlying context struct cannot leak here by default. In particular the workspace's sync remote is EXCLUDED, in this and every future version, because remote URLs routinely embed credentials — as are the database bind host/port (advertising them invites clients to bypass this API and dial the database directly).
+// ContextResponse The server's identity handshake. Every member is a deliberate, permanent choice; the field set is an allowlist frozen by a test that checks it against BOTH this document and the generated Go struct, so a field cannot arrive here as a side effect of the server's configuration growing one. In particular the workspace's sync remote is EXCLUDED, in this and every future version, because remote URLs routinely embed credentials — as are the database bind host/port (advertising them invites clients to bypass this API and dial the database directly) and the loopback/non-loopback bind mode.
 type ContextResponse struct {
 	// ApiVersion The path major this server serves. `v0` for this document.
 	ApiVersion string `json:"api_version"`

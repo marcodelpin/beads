@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -11,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/internal/httpapi/spec"
 )
 
@@ -409,6 +411,54 @@ func TestDefaultsMatchCLIFlags(t *testing.T) {
 	}
 	if !slices.Contains(toStrings(t, schema["enum"]), specSort) {
 		t.Errorf("sort default %q is not in the documented enum %v", specSort, schema["enum"])
+	}
+}
+
+// contextResponseAllowlist is the ENTIRE field set of GET /v0/beads/context,
+// frozen. The handshake is assembled from the server's own configuration, which
+// is exactly the kind of struct that grows a field nobody meant to publish, so
+// this list is the gate: adding a member to the response is an edit here, in
+// the spec, and in review — never a side effect of something upstream growing.
+//
+// Deliberately absent, in this and every future version: the workspace's sync
+// remote (remote URLs routinely embed credentials) and the database bind
+// host/port (advertising it invites clients to bypass this API and dial the
+// database directly). Both are named here rather than only in prose so that
+// re-adding one costs a test edit.
+var contextResponseAllowlist = []string{
+	"api_version", "backend", "bd_version", "beads_dir", "capabilities",
+	"database", "dolt_mode", "project_id", "repo_root", "schema_version",
+}
+
+// TestContextResponseAllowlist pins that field set from both sides: the
+// generated Go struct (what the server can marshal) and the document (what
+// clients are promised). ContextResponse is not x-go-type-pinned — it is new
+// wire surface with no canonical struct behind it — so the bijection test does
+// not cover it, and without this the document's own claim that the field set is
+// enforced would be aspirational.
+func TestContextResponseAllowlist(t *testing.T) {
+	want := map[string]bool{}
+	for _, name := range contextResponseAllowlist {
+		want[name] = true
+	}
+
+	goFields := jsonTagNames(t, reflect.TypeOf(apigen.ContextResponse{}))
+	if extra := diff(goFields, want); len(extra) > 0 {
+		t.Errorf("generated ContextResponse carries fields that are not on the allowlist: %v\n"+
+			"a member of this response is a permanent, deliberate disclosure — add it here only with the review that implies", extra)
+	}
+	if missing := diff(want, goFields); len(missing) > 0 {
+		t.Errorf("allowlisted fields absent from the generated ContextResponse: %v", missing)
+	}
+
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "ContextResponse")
+	specProps := schemaProperties(t, doc, schema)
+	if extra := diff(specProps, want); len(extra) > 0 {
+		t.Errorf("the ContextResponse schema documents fields that are not on the allowlist: %v", extra)
+	}
+	if missing := diff(want, specProps); len(missing) > 0 {
+		t.Errorf("allowlisted fields absent from the ContextResponse schema: %v", missing)
 	}
 }
 
