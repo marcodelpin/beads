@@ -102,20 +102,14 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			return runReadyExplain(cmd)
 		}
 
-		in, err := gatherReadyInput(cmd)
+		// The row cap is meaningful on this route alone - the proxied one
+		// rejects a live cap outright - so this is the only caller that hands
+		// the gatherer a resolver for it.
+		in, err := gatherReadyInput(cmd, resolveMaxRows)
 		if err != nil {
 			return err
 		}
 		filter := in.filter
-		// The row cap is the one ready knob that stays out of the shared
-		// input: only this route can enforce it (the proxied one rejects a
-		// live cap outright), so it is resolved and stamped on here.
-		maxRows, maxRowsSource, err := resolveMaxRows(cmd)
-		if err != nil {
-			return err
-		}
-		filter.MaxRows = maxRows
-		filter.MaxRowsSource = maxRowsSource
 
 		ctx := rootCtx
 

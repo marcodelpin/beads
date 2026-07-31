@@ -25,7 +25,11 @@ func runReadyProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		return HandleError("--offset must be >= 0")
 	}
 
-	in, err := gatherReadyInput(cmd)
+	// No cap resolver: the RunE that routed here has already resolved
+	// --max-rows / BEADS_MAX_ROWS, either to reject a live one or to validate
+	// the value it then ignores for --claim. Resolving it again would repeat
+	// the malformed-value warning and stamp a cap this route cannot enforce.
+	in, err := gatherReadyInput(cmd, nil)
 	if err != nil {
 		return err
 	}

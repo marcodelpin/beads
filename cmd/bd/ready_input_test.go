@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -14,10 +16,11 @@ import (
 )
 
 // newReadyFlagsCommand clones readyCmd's flag definitions onto a fresh command
-// so each case parses from pristine defaults. Cloning beats re-declaring the
-// flags here: a hand-copied default would be a second place for `bd ready` to
-// drift, which is the very thing gatherReadyInput exists to stop. The clone is
-// by value, not AddFlagSet, so setting a flag here cannot leak into readyCmd.
+// and parses args against them, so each case starts from pristine defaults.
+// Cloning beats re-declaring the flags here: a hand-copied default would be a
+// second place for `bd ready` to drift, which is the very thing gatherReadyInput
+// exists to stop. The clone is by value, not AddFlagSet, so a flag set here
+// cannot leak into readyCmd.
 func newReadyFlagsCommand(t *testing.T, args ...string) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{Use: "ready"}
@@ -53,9 +56,61 @@ func newReadyFlagsCommand(t *testing.T, args ...string) *cobra.Command {
 	return cmd
 }
 
+// gatherOutcome is everything a `bd ready` invocation would have shown the user
+// before the query runs: the input, the error, and both streams. Usage errors
+// go to stderr, or to stdout as a JSON object under --json, and the cap warning
+// only ever goes to stderr - so a test that pins where a message goes, or in
+// what order two of them appear, has to watch both.
+type gatherOutcome struct {
+	in     readyInput
+	err    error
+	stdout string
+	stderr string
+}
+
+func runGatherReadyInput(t *testing.T, cmd *cobra.Command, resolveCap func(*cobra.Command) (int, string, error)) gatherOutcome {
+	t.Helper()
+
+	stdioMutex.Lock()
+	defer stdioMutex.Unlock()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout, os.Stderr = wOut, wErr
+
+	drain := func(r *os.File) <-chan string {
+		done := make(chan string, 1)
+		go func() {
+			var buf bytes.Buffer
+			_, _ = buf.ReadFrom(r)
+			done <- buf.String()
+		}()
+		return done
+	}
+	outDone, errDone := drain(rOut), drain(rErr)
+
+	out := gatherOutcome{}
+	out.in, out.err = gatherReadyInput(cmd, resolveCap)
+
+	wOut.Close()
+	wErr.Close()
+	os.Stdout, os.Stderr = oldStdout, oldStderr
+	out.stdout, out.stderr = <-outDone, <-errDone
+	_ = rOut.Close()
+	_ = rErr.Close()
+	return out
+}
+
 // configureDirectoryLabel points directory.labels at the test's own working
-// directory and returns nothing: GetDirectoryLabels resolves against the cwd,
-// so the test has to own both ends.
+// directory: GetDirectoryLabels resolves against the cwd, so the test has to
+// own both ends.
 func configureDirectoryLabel(t *testing.T, label string) {
 	t.Helper()
 
@@ -80,6 +135,96 @@ func configureDirectoryLabel(t *testing.T, label string) {
 	}
 }
 
+// TestGatherReadyInputResolvesCapWhereTheDirectBuilderDid pins where in the
+// sequence of checks --max-rows / BEADS_MAX_ROWS is resolved. That is not
+// decoration: resolveMaxRowsEnvOnly warns about a malformed BEADS_MAX_ROWS as a
+// side effect of resolving, so moving the resolution past another check
+// silently drops the warning for every command line that trips that check.
+func TestGatherReadyInputResolvesCapWhereTheDirectBuilderDid(t *testing.T) {
+	t.Run("malformed_env_still_warns_when_a_later_check_aborts", func(t *testing.T) {
+		t.Setenv(maxRowsEnvVar, "bogus")
+
+		got := runGatherReadyInput(t, newReadyFlagsCommand(t, "--sort", "bogus"), resolveMaxRows)
+		if got.err == nil {
+			t.Fatal("gatherReadyInput(--sort bogus) = nil, want the sort-policy error")
+		}
+		warning := strings.Index(got.stderr, "is not a non-negative integer")
+		sortErr := strings.Index(got.stderr, "invalid sort policy")
+		switch {
+		case warning < 0:
+			t.Errorf("BEADS_MAX_ROWS warning missing; stderr was:\n%s", got.stderr)
+		case sortErr < 0:
+			t.Errorf("sort-policy error missing; stderr was:\n%s", got.stderr)
+		case warning > sortErr:
+			t.Errorf("the warning must come first; stderr was:\n%s", got.stderr)
+		}
+	})
+
+	t.Run("bad_cap_flag_is_reported_before_the_sort_error", func(t *testing.T) {
+		got := runGatherReadyInput(t, newReadyFlagsCommand(t, "--max-rows", "-1", "--sort", "bogus"), resolveMaxRows)
+		if got.err == nil {
+			t.Fatal("gatherReadyInput(--max-rows -1 --sort bogus) = nil, want an error")
+		}
+		if !strings.Contains(got.stderr, "--max-rows must be non-negative") {
+			t.Errorf("expected the --max-rows error, got:\n%s", got.stderr)
+		}
+	})
+
+	// The other half of the ordering: the guards the direct builder ran before
+	// it resolved the cap still win.
+	t.Run("bad_cap_flag_loses_to_the_earlier_guards", func(t *testing.T) {
+		cases := []struct {
+			name string
+			args []string
+			want string
+		}{
+			{"mol_type", []string{"--max-rows", "-1", "--mol-type", "bogus"}, "invalid mol-type"},
+			{"claim_assignee", []string{"--max-rows", "-1", "--claim", "--assignee", "alice"}, "--claim cannot be combined with --assignee"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				got := runGatherReadyInput(t, newReadyFlagsCommand(t, c.args...), resolveMaxRows)
+				if got.err == nil {
+					t.Fatalf("gatherReadyInput(%v) = nil, want an error", c.args)
+				}
+				if !strings.Contains(got.stderr, c.want) {
+					t.Errorf("expected %q, got:\n%s", c.want, got.stderr)
+				}
+				if strings.Contains(got.stderr, "--max-rows must be non-negative") {
+					t.Errorf("the cap was resolved too early; stderr was:\n%s", got.stderr)
+				}
+			})
+		}
+	})
+
+	t.Run("resolved_cap_lands_on_the_filter", func(t *testing.T) {
+		got := runGatherReadyInput(t, newReadyFlagsCommand(t, "--max-rows", "5"), resolveMaxRows)
+		if got.err != nil {
+			t.Fatalf("gatherReadyInput: %v", got.err)
+		}
+		if want := "--" + maxRowsFlagName; got.in.filter.MaxRows != 5 || got.in.filter.MaxRowsSource != want {
+			t.Errorf("filter cap = (%d, %q), want (5, %q)", got.in.filter.MaxRows, got.in.filter.MaxRowsSource, want)
+		}
+	})
+
+	// The proxied route passes no resolver: it cannot enforce a cap, and its
+	// RunE has already resolved the flag to reject it.
+	t.Run("no_resolver_leaves_the_filter_uncapped", func(t *testing.T) {
+		t.Setenv(maxRowsEnvVar, "5")
+
+		got := runGatherReadyInput(t, newReadyFlagsCommand(t, "--max-rows", "5"), nil)
+		if got.err != nil {
+			t.Fatalf("gatherReadyInput: %v", got.err)
+		}
+		if got.in.filter.MaxRows != 0 || got.in.filter.MaxRowsSource != "" {
+			t.Errorf("filter cap = (%d, %q), want it unset", got.in.filter.MaxRows, got.in.filter.MaxRowsSource)
+		}
+		if got.stderr != "" {
+			t.Errorf("no resolver should mean no cap output, got:\n%s", got.stderr)
+		}
+	})
+}
+
 // TestGatherReadyInputIgnoresNegativeOffset pins the direct route's oldest
 // answer to `bd ready --offset -1`: print ready work. Its RunE rejects
 // --offset > 0 as proxied-only and never looked at the flag again, so a
@@ -87,12 +232,12 @@ func configureDirectoryLabel(t *testing.T, label string) {
 // turn it into an exit-1 usage error; the proxied route, which is the only one
 // that pages, rejects it in its own RunE.
 func TestGatherReadyInputIgnoresNegativeOffset(t *testing.T) {
-	in, err := gatherReadyInput(newReadyFlagsCommand(t, "--offset", "-1"))
-	if err != nil {
-		t.Fatalf("gatherReadyInput(--offset -1) = %v, want no error", err)
+	got := runGatherReadyInput(t, newReadyFlagsCommand(t, "--offset", "-1"), nil)
+	if got.err != nil {
+		t.Fatalf("gatherReadyInput(--offset -1) = %v, want no error", got.err)
 	}
-	if in.filter.Offset != 0 {
-		t.Errorf("filter.Offset = %d, want 0 (a negative offset must not reach storage)", in.filter.Offset)
+	if got.in.filter.Offset != 0 {
+		t.Errorf("filter.Offset = %d, want 0 (a negative offset must not reach storage)", got.in.filter.Offset)
 	}
 }
 
@@ -106,12 +251,12 @@ func TestGatherReadyInputKeepsDirectoryLabelVerbatim(t *testing.T) {
 	const configured = "  scope:web  "
 	configureDirectoryLabel(t, configured)
 
-	in, err := gatherReadyInput(newReadyFlagsCommand(t))
-	if err != nil {
-		t.Fatalf("gatherReadyInput: %v", err)
+	got := runGatherReadyInput(t, newReadyFlagsCommand(t), nil)
+	if got.err != nil {
+		t.Fatalf("gatherReadyInput: %v", got.err)
 	}
-	if want := []string{configured}; !slices.Equal(in.filter.LabelsAny, want) {
-		t.Errorf("filter.LabelsAny = %q, want %q (the configured value, unnormalized)", in.filter.LabelsAny, want)
+	if want := []string{configured}; !slices.Equal(got.in.filter.LabelsAny, want) {
+		t.Errorf("filter.LabelsAny = %q, want %q (the configured value, unnormalized)", got.in.filter.LabelsAny, want)
 	}
 }
 
@@ -134,13 +279,13 @@ func TestGatherReadyInputDirectoryLabelDefaultsOnlyWhenNoLabelsGiven(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			configureDirectoryLabel(t, configured)
 
-			in, err := gatherReadyInput(newReadyFlagsCommand(t, tc.args...))
-			if err != nil {
-				t.Fatalf("gatherReadyInput: %v", err)
+			got := runGatherReadyInput(t, newReadyFlagsCommand(t, tc.args...), nil)
+			if got.err != nil {
+				t.Fatalf("gatherReadyInput: %v", got.err)
 			}
-			if got := in.filter.LabelsAny; len(got) != 0 || len(tc.wantLabelsAny) != 0 {
-				if !slices.Equal(got, tc.wantLabelsAny) {
-					t.Errorf("filter.LabelsAny = %q, want %q", got, tc.wantLabelsAny)
+			if labels := got.in.filter.LabelsAny; len(labels) != 0 || len(tc.wantLabelsAny) != 0 {
+				if !slices.Equal(labels, tc.wantLabelsAny) {
+					t.Errorf("filter.LabelsAny = %q, want %q", labels, tc.wantLabelsAny)
 				}
 			}
 		})

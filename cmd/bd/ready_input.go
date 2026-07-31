@@ -35,9 +35,15 @@ type readyInput struct {
 // accepts. Usage errors are reported through HandleErrorRespectJSON, which is
 // what a --json caller has always gotten from the direct route.
 //
-// The only knob it does not own is --max-rows: the cap is meaningful only on
-// the direct route, which resolves and applies it itself.
-func gatherReadyInput(cmd *cobra.Command) (readyInput, error) {
+// resolveCap resolves --max-rows / BEADS_MAX_ROWS and is passed in rather than
+// called directly because only the direct route has a cap to enforce: the
+// proxied route rejects a live one in its own RunE and ignores it for --claim,
+// and resolving a second time here would repeat resolveMaxRowsEnvOnly's
+// malformed-value warning. It runs where the direct route's inline builder ran
+// it, ahead of the metadata and sort checks, so a doubly-invalid command line
+// still reports the cap first and a malformed BEADS_MAX_ROWS still warns even
+// when a later check aborts the command.
+func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, string, error)) (readyInput, error) {
 	in := readyInput{}
 
 	in.claim, _ = cmd.Flags().GetBool("claim")
@@ -103,6 +109,15 @@ func gatherReadyInput(cmd *cobra.Command) (readyInput, error) {
 		return in, HandleErrorRespectJSON("--offset cannot be combined with --explain")
 	}
 
+	var maxRows int
+	var maxRowsSource string
+	if resolveCap != nil {
+		var err error
+		if maxRows, maxRowsSource, err = resolveCap(cmd); err != nil {
+			return in, err
+		}
+	}
+
 	// Use Changed() to properly handle P0 (priority=0)
 	if cmd.Flags().Changed("priority") {
 		in.Priority, _ = cmd.Flags().GetInt("priority")
@@ -135,6 +150,8 @@ func gatherReadyInput(cmd *cobra.Command) (readyInput, error) {
 	if err != nil {
 		return in, HandleErrorRespectJSON("%v", err)
 	}
+	filter.MaxRows = maxRows
+	filter.MaxRowsSource = maxRowsSource
 
 	// Directory-aware label scoping (GH#541). It is applied to the built
 	// filter rather than passed in as a parameter for two reasons: it is

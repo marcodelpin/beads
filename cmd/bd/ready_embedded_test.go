@@ -276,6 +276,31 @@ func TestEmbeddedReady(t *testing.T) {
 	// the RunE rejects --offset > 0 as proxied-only and never reads the flag
 	// again. Pinned live because the shared flag gatherer is one edit away
 	// from turning it into an exit-1 usage error.
+	// The cap is resolved before the sort policy is validated, so a typo'd
+	// BEADS_MAX_ROWS still tells the user their cap is being ignored even
+	// though the command is about to fail for an unrelated reason. Pinned
+	// live: the warning is a side effect of resolving, so it disappears the
+	// moment the resolution moves later in the sequence.
+	t.Run("malformed_max_rows_env_warns_before_the_sort_error", func(t *testing.T) {
+		cmd := exec.Command(bd, "ready", "--sort", "bogus")
+		cmd.Dir = dir
+		cmd.Env = append(bdEnv(dir), "BEADS_MAX_ROWS=bogus")
+		stdout, stderr, err := runCommandBuffers(t, cmd)
+		if err == nil {
+			t.Fatalf("bd ready --sort bogus should have failed; stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+		}
+		warning := strings.Index(stderr.String(), "BEADS_MAX_ROWS=\"bogus\" is not a non-negative integer")
+		sortErr := strings.Index(stderr.String(), "invalid sort policy")
+		switch {
+		case warning < 0:
+			t.Errorf("expected the BEADS_MAX_ROWS warning, got stderr:\n%s", stderr.String())
+		case sortErr < 0:
+			t.Errorf("expected the sort-policy error, got stderr:\n%s", stderr.String())
+		case warning > sortErr:
+			t.Errorf("warning must precede the sort error, got stderr:\n%s", stderr.String())
+		}
+	})
+
 	t.Run("negative_offset_ignored_outside_proxied", func(t *testing.T) {
 		cmd := exec.Command(bd, "ready", "--offset", "-1")
 		cmd.Dir = dir
