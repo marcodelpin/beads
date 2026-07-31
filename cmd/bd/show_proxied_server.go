@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/uimd"
 	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/issueops"
 )
 
 type showProxiedInput struct {
@@ -66,6 +67,27 @@ func proxiedOpenReadUOW(ctx context.Context) (uow.UnitOfWork, error) {
 		return nil, HandleErrorRespectJSON("open unit of work: %v", err)
 	}
 	return uw, nil
+}
+
+// proxiedIssueReader hands back the guarded issue-query surface for the
+// proxied-server provider, through the provider's OWN capability accessor —
+// the same two-step a direct command performs on a store.
+//
+// The accessor is the door and there is no other: the cmd-bd-reader-constructor
+// depguard rule keeps the shared implementation's constructor out of cmd/bd
+// entirely, because a decorator adds its layer in its own accessor and a
+// command that built a reader directly would get an undecorated one. A
+// provider that cannot answer says so with an error rather than being wired
+// around.
+func proxiedIssueReader() (issueops.Reader, error) {
+	if uowProvider == nil {
+		return nil, errors.New("proxied-server UOW provider not initialized")
+	}
+	src, ok := uowProvider.(uow.IssueReaderSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the issue-query surface", uowProvider)
+	}
+	return src.IssueReader()
 }
 
 func runShowProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
@@ -419,10 +441,53 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 		return t.Format("2006-01-02 15:04")
 	}
 
+	// Shaping the detail view belongs to the reader role, not the CLI, and
+	// this route reaches it the same way the direct one does: through the
+	// provider's own accessor. The count-only default (be-ijck6q), the
+	// comments-omitted flag (ga-clgh) and the shallow dependent rows
+	// (be-4d36f2) then read the same from every frontend by construction
+	// rather than by everyone remembering to call the same helper. The
+	// role opens one unit of work per call; the one this function holds stays
+	// for the terminal rendering below, which is not on the contract.
+	var rd issueops.Reader
+	if jsonOutput && !in.shortMode {
+		var rerr error
+		if rd, rerr = proxiedIssueReader(); rerr != nil {
+			return HandleErrorRespectJSON("%v", rerr)
+		}
+	}
+
 	src := workapi.NewUOWDetailSource(uw)
 	var allDetails []interface{}
 	foundCount := 0
 	for idx, id := range in.ids {
+		if rd != nil {
+			details, derr := rd.Get(ctx, issueops.GetRequest{
+				ID:                id,
+				IncludeDependents: in.includeDepends,
+				IncludeComments:   in.includeComments,
+			})
+			if derr != nil {
+				if errors.Is(derr, storage.ErrNotFound) {
+					// The corpus pins this pair for a missing id: the human
+					// line here, and the envelope below once the batch ends
+					// with nothing to emit.
+					reportIssueLookupFailure("fetching", id, derr)
+					continue
+				}
+				// A BACKEND failure, which the split this replaced reported
+				// per-id and carried on from when it surfaced during
+				// resolution, and aborted on when it surfaced one call later
+				// during assembly. One call means one answer, and abort is
+				// the one to keep: a JSON array missing the rows a database
+				// error swallowed is indistinguishable from a complete one.
+				return HandleErrorRespectJSON("%v", derr)
+			}
+			foundCount++
+			allDetails = append(allDetails, details)
+			continue
+		}
+
 		issue, isWisp, err := workapi.GetIssueOrWisp(ctx, src, id)
 		if err != nil {
 			reportIssueLookupFailure("fetching", id, err)
@@ -432,18 +497,6 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 
 		if in.shortMode {
 			fmt.Println(formatShortIssue(issue))
-			continue
-		}
-
-		if jsonOutput {
-			details, derr := workapi.BuildIssueDetails(ctx, src, issue, isWisp, workapi.DetailOptions{
-				IncludeDependents: in.includeDepends,
-				IncludeComments:   in.includeComments,
-			})
-			if derr != nil {
-				return HandleErrorRespectJSON("%v", derr)
-			}
-			allDetails = append(allDetails, details)
 			continue
 		}
 
