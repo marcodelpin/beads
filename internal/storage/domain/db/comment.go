@@ -6,10 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -130,13 +129,20 @@ func (r *commentSQLRepositoryImpl) Insert(ctx context.Context, issueID, author, 
 		return nil, fmt.Errorf("db: CommentSQLRepository.Insert: issue %s not found", issueID)
 	}
 
-	createdAt := time.Now().UTC()
-	id := uuid.Must(uuid.NewV7()).String()
 	commentTable := pickCommentTable(opts.UseWispsTable)
-	//nolint:gosec // G201: commentTable is one of two hardcoded constants
-	if _, err := r.runner.ExecContext(ctx,
-		fmt.Sprintf("INSERT INTO %s (id, issue_id, author, text, created_at) VALUES (?, ?, ?, ?, ?)", commentTable),
-		id, issueID, author, text, createdAt); err != nil {
+	// Live add: advance past the issue's newest comment so a burst inside one
+	// second still reads back in write order (issueops.NextLiveCommentTime).
+	stamp, err := issueops.NextLiveCommentTime(ctx, r.runner, commentTable, issueID, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("db: CommentSQLRepository.Insert: %w", err)
+	}
+	createdAtText := issueops.FormatAuxTime(stamp)
+	id, _, err := issueops.InsertDerivedComment(ctx, r.runner, commentTable, issueID, author, text, createdAtText)
+	if err != nil {
+		return nil, fmt.Errorf("db: CommentSQLRepository.Insert: %w", err)
+	}
+	createdAt, err := issueops.ParseAuxTime(createdAtText)
+	if err != nil {
 		return nil, fmt.Errorf("db: CommentSQLRepository.Insert: %w", err)
 	}
 

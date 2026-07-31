@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/types"
@@ -669,11 +668,12 @@ func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue, actor, e
 		}
 		result.markChanged(labelTable)
 		comment := "Added label: " + label
-		//nolint:gosec // G201: eventTable is determined by ephemeral flag
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-			INSERT INTO %s (id, issue_id, event_type, actor, comment)
-			VALUES (?, ?, ?, ?, ?)
-		`, eventTable), NewEventID(), issue.ID, types.EventLabelAdded, actor, comment); err != nil {
+		if err := InsertDerivedEvent(ctx, tx, eventTable, AuxEvent{
+			IssueID:   issue.ID,
+			EventType: types.EventLabelAdded,
+			Actor:     actor,
+			Comment:   str(comment),
+		}); err != nil {
 			return result, fmt.Errorf("failed to record label event %q for %s: %w", label, issue.ID, err)
 		}
 		result.markChanged(eventTable)
@@ -693,32 +693,49 @@ func PersistComments(ctx context.Context, tx *sql.Tx, issue *types.Issue) (Creat
 	for _, comment := range issue.Comments {
 		createdAt := comment.CreatedAt
 		if createdAt.IsZero() {
-			createdAt = time.Now().UTC()
+			// No supplied timestamp: this is a live comment, so stamp it the
+			// same way AddIssueComment does — one second past the issue's
+			// newest comment when the clock second would collide. Otherwise
+			// several such comments in one create share a second and read back
+			// in content-digest order rather than the order they were listed.
+			stamped, err := NextLiveCommentTime(ctx, tx, commentTable, issue.ID, time.Now())
+			if err != nil {
+				return result, fmt.Errorf("failed to insert comment for %s: %w", issue.ID, err)
+			}
+			createdAt = stamped
 		}
-		// Check for existing identical comment to prevent duplicates on re-import.
-		// The UUID PK means ON DUPLICATE KEY UPDATE would never fire,
-		// so we do an explicit existence check instead.
+		createdAtText := FormatAuxTime(createdAt)
+		if comment.ID == "" {
+			// No incoming id (fresh comment): content-derived id, collapsing
+			// onto an identical existing row exactly like the import dedup.
+			id, existed, err := InsertDerivedComment(ctx, tx, commentTable, issue.ID, comment.Author, comment.Text, createdAtText)
+			if err != nil {
+				return result, fmt.Errorf("failed to insert comment for %s: %w", issue.ID, err)
+			}
+			comment.ID = id
+			if !existed {
+				result.markChanged(commentTable)
+			}
+			continue
+		}
+		// Incoming id (import/interchange): preserve it, with the historical
+		// existence check preventing duplicates on re-import.
 		var exists int
 		//nolint:gosec // G201: table is determined by ephemeral flag
 		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 				SELECT COUNT(*) FROM %s
 				WHERE issue_id = ? AND author = ? AND created_at = ? AND text = ?
-			`, commentTable), issue.ID, comment.Author, createdAt, comment.Text).Scan(&exists); err != nil {
+			`, commentTable), issue.ID, comment.Author, createdAtText, comment.Text).Scan(&exists); err != nil {
 			return result, fmt.Errorf("failed to check comment existence for %s: %w", issue.ID, err)
 		}
 		if exists > 0 {
 			continue
 		}
-		commentID := comment.ID
-		if commentID == "" {
-			commentID = uuid.Must(uuid.NewV7()).String()
-			comment.ID = commentID
-		}
 		//nolint:gosec // G201: table is determined by ephemeral flag
 		_, err := tx.ExecContext(ctx, fmt.Sprintf(`
 			INSERT INTO %s (id, issue_id, author, text, created_at)
 			VALUES (?, ?, ?, ?, ?)
-		`, commentTable), commentID, issue.ID, comment.Author, comment.Text, createdAt)
+		`, commentTable), comment.ID, issue.ID, comment.Author, comment.Text, createdAtText)
 		if err != nil {
 			return result, fmt.Errorf("failed to insert comment for %s: %w", issue.ID, err)
 		}

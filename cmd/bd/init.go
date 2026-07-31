@@ -23,6 +23,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/backends"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -113,12 +114,17 @@ func resolveInitIssuePrefix(gateway bool, existing, dbName, prefix string, readE
 // Gateway: the hosted database's identity is server-authoritative, so an adopted
 // server id always wins and is reconciled onto local even when localID is already
 // set. A re-init or orchestrator-preseeded workspace must not keep a stale local
-// id: init opens with CreateIfMissing, which skips the storage identity verifier
-// (store.go verifyProjectIdentity), so a stale id would be saved as success and
-// every later normal open would then hard-fail with PROJECT IDENTITY MISMATCH. A
-// missing server id is a provisioning-contract violation bd will not mint over —
-// even when a local id already exists — and a read error is surfaced as the
-// transient failure it is, so a flaky connection is not misdiagnosed as an
+// id: for Gateway specifically, init's CreateIfMissing:true open still skips the
+// storage identity verifier (store.go verifyProjectIdentity/newServerMode — see
+// its dbAlreadyExisted comment for why Gateway is exempt from the
+// otherwise-CreateIfMissing:true check), so a stale id would be saved as success
+// and every later normal open would then hard-fail with PROJECT IDENTITY
+// MISMATCH. This CreateIfMissing skip is Gateway-only: a non-gateway
+// CreateIfMissing:true init against an already-existing database now DOES run
+// the verifier (GH#4637 Part A) and fails before reaching this reconciliation.
+// A missing server id is a provisioning-contract violation bd will not mint
+// over — even when a local id already exists — and a read error is surfaced as
+// the transient failure it is, so a flaky connection is not misdiagnosed as an
 // unprovisioned database.
 //
 // Non-gateway (legacy, unchanged): a non-empty localID is kept as-is (readErr
@@ -291,6 +297,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		externalServer, _ := cmd.Flags().GetBool("external")
 		debugMode, _ := cmd.Flags().GetBool("debug")
 		initProxiedServer, _ := cmd.Flags().GetBool("proxied-server")
+		initTeamServer, _ := cmd.Flags().GetBool("team-server")
 		serverConfigPath, _ := cmd.Flags().GetString("proxied-server-config-path")
 		serverLogPath, _ := cmd.Flags().GetString("proxied-server-log-path")
 		serverRootPath, _ := cmd.Flags().GetString("proxied-server-root-path")
@@ -327,6 +334,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" {
 				return fmt.Errorf("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
 			}
+		}
+		if initTeamServer && !initProxiedServer {
+			return fmt.Errorf("--team-server requires --proxied-server")
 		}
 		if serverConfigPath != "" {
 			if !initProxiedServer {
@@ -425,6 +435,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 			return fmt.Errorf("unknown backend %q: the supported backend is \"dolt\" (default)", backendFlag)
 		}
+		// A registered extension backend passes IsSupportedBackend so its
+		// existing workspaces can be opened, but init provisions Dolt only and
+		// would otherwise create the workspace and persist backend: dolt. Reject
+		// it here rather than silently creating the wrong workspace; downstream
+		// registrants supply their own workspace-creation path.
+		if backends.Registered(backendFlag) {
+			return fmt.Errorf("backend %q cannot be created by bd init; it can only open an existing workspace (bd init provisions \"dolt\", the default)", backendFlag)
+		}
 		for _, legacyFlag := range removedBackendInitFlags {
 			if cmd.Flags().Changed(legacyFlag.name) {
 				return fmt.Errorf("--%s belonged to %s: %s; use --backend=dolt (the default)", legacyFlag.name, legacyFlag.origin, legacyFlag.rationale)
@@ -518,6 +536,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				reinitLocal:            reinitLocal,
 				contributor:            contributor,
 				team:                   team,
+				teamServer:             initTeamServer,
 				fromJSONL:              fromJSONL,
 				nonInteractive:         nonInteractive,
 			}); err != nil {
@@ -812,6 +831,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// to ensure consistent path representation.
 		beadsDir := beadsDirForInit
 
+		if initProxiedServer && externalConfig == nil {
+			if err := validateManagedProxiedServerConfigAtInit(beadsDir, serverConfigPath, serverRootPath); err != nil {
+				return fmt.Errorf("managed proxied-server config: %w", err)
+			}
+		}
+
 		// Prevent nested .beads directories
 		// Check if current working directory is inside a .beads directory
 		if strings.Contains(filepath.Clean(cwd), string(filepath.Separator)+".beads"+string(filepath.Separator)) ||
@@ -833,6 +858,34 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if err != nil {
 			initDBDirAbs = filepath.Clean(initDBDir)
 		}
+
+		// Workspace operation gate: bd init REPLACES/creates workspace state,
+		// so it holds the workspace gate (plus any resolvable physical-root
+		// gates, e.g. a shared-server dolt dir) EXCLUSIVELY for the rest of
+		// init. init is in noDbCommands, so the PersistentPreRunE chokepoint
+		// never covers it — this is its own acquisition site. The workspace
+		// gate file lives BESIDE .beads (<parent>/.beads.gate.lock), so it
+		// works before .beads exists; the acquisition must come before any
+		// directory writes below, and before acquireEmbeddedLock (lock
+		// ordering: gates rank before every other beads lock).
+		initDBPathAbs, err := filepath.Abs(initDBPath)
+		if err != nil {
+			initDBPathAbs = filepath.Clean(initDBPath)
+		}
+		// Physical-root gates guard DIRECTORIES. With --db the path can be
+		// a database FILE; gating it verbatim would create
+		// <file>.gate.lock and leave the directory that actually holds the
+		// data ungated, so normalize to the containing directory. A
+		// nonexistent path is assumed to be a directory (the default
+		// resolver paths are all dolt data dirs).
+		if fi, statErr := os.Stat(initDBPathAbs); statErr == nil && !fi.IsDir() {
+			initDBPathAbs = filepath.Dir(initDBPathAbs)
+		}
+		initGateHandle, gateErr := acquireExclusiveWorkspaceGates(rootCtx, beadsDirAbs, "bd init", initDBPathAbs)
+		if gateErr != nil {
+			return fmt.Errorf("bd init refuses to run over live bd activity on this workspace: %w", gateErr)
+		}
+		defer func() { _ = initGateHandle.Release() }()
 
 		// Always create local .beads/ when using default location (CWD/.beads).
 		// The local directory is needed for metadata.json, config.yaml,
@@ -1393,10 +1446,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// at all (a missing identity is a provisioning-contract violation),
 			// and because the hosted server is authoritative it reconciles the
 			// identity on every init — even a re-init or preseeded workspace whose
-			// metadata.json already carries a stale project_id. Otherwise init
-			// (which opens with CreateIfMissing, skipping the storage identity
-			// verifier) would save the stale id as success and every later normal
-			// open would hard-fail with PROJECT IDENTITY MISMATCH.
+			// metadata.json already carries a stale project_id. This reconciliation
+			// depends on Gateway's CreateIfMissing:true open skipping the storage
+			// identity verifier (store.go newServerMode/verifyProjectIdentity) —
+			// Gateway-only, not init in general: a non-gateway CreateIfMissing:true
+			// init against an already-existing database now runs the verifier
+			// (GH#4637 Part A) and fails before this code runs at all. Without the
+			// Gateway skip, init would save the stale id as success and every later
+			// normal open would hard-fail with PROJECT IDENTITY MISMATCH.
 			adoptedFromDB := ""
 			var adoptReadErr error
 			if store != nil && shouldConsultInitProjectID(doltCfg.Gateway, cfg.ProjectID, database, bootstrappedFromRemote) {
@@ -2065,12 +2122,12 @@ func init() {
 	initCmd.Flags().Int("server-port", 0, "Dolt server port (default: 3307)")
 	initCmd.Flags().String("server-socket", "", "Unix domain socket path (overrides host/port)")
 	initCmd.Flags().String("server-user", "", "Dolt server MySQL user (default: root)")
-	initCmd.Flags().String("database", "", "Use existing server database name (overrides prefix-based naming)")
 	initCmd.Flags().Bool("shared-server", false, "Enable shared Dolt server mode (all projects share one server at ~/.beads/shared-server/)")
 	initCmd.Flags().Bool("external", false, "Server is externally managed (skip server startup); use with --shared-server or --server")
 	initCmd.Flags().Bool("debug", false, "Run the managed Dolt sql-server with --loglevel=debug and CPU profiling (--prof cpu). Persisted to config.yaml as dolt.debug. No effect on externally-managed servers.")
 	initCmd.Flags().Bool("proxied-server", false, "[EXPERIMENTAL] Use a per-workspace proxied dolt sql-server (proxy + child dolt) rooted at .beads/dolt")
-	initCmd.Flags().String("proxied-server-config-path", "", "[EXPERIMENTAL] Absolute path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one. Relative paths are rejected.")
+	initCmd.Flags().Bool("team-server", false, "[EXPERIMENTAL] The shared database's schema is managed by beads-team-server (bts): bd never creates the database or runs schema migrations, only verifies the schema version (proxied-server mode only). Not related to --team.")
+	initCmd.Flags().String("proxied-server-config-path", "", "[EXPERIMENTAL] Absolute path to an existing dolt sql-server YAML config (proxied-server mode only). When set, bd uses this file instead of auto-generating one. Relative paths are rejected. Managed mode requires listener.host to be a numeric loopback IP (hostnames including localhost, non-loopback addresses, listener.socket, remotesapi, and cluster config are rejected); the same policy applies to BEADS_PROXIED_SERVER_CONFIG.")
 	initCmd.Flags().String("proxied-server-log-path", "", "[EXPERIMENTAL] Absolute path to the proxied dolt sql-server log file (proxied-server mode only). Default: <beadsDir>/dolt/server.log. Relative paths are rejected.")
 	initCmd.Flags().String("proxied-server-root-path", "", "[EXPERIMENTAL] Absolute directory holding the proxied dolt sql-server's lockfiles, pidfiles, and child .dolt repository (proxied-server mode only). Default: <beadsDir>/dolt. May not exist yet — bd will create it. Relative paths are rejected.")
 	initCmd.Flags().Int("proxied-server-port", 0, "[EXPERIMENTAL] Fixed TCP port for the proxy's loopback listener (proxied-server mode only). Default 0 = an OS-assigned free port. Startup fails if the port is already in use.")

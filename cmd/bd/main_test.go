@@ -246,8 +246,9 @@ func TestListUsesRepoBeadsDirWhenDoltDataDirEscapesDotBeads(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 	t.Setenv("BEADS_DOLT_PORT", "")
 
-	// Shared bd binary (built once, reused across cmd/bd tests; see
-	// buildBDForInitTests in test_helpers_pure_test.go, bda-9l1).
+	// Shared once-per-process binary (honors BEADS_TEST_BD_BINARY) instead of
+	// a per-test go build — the in-test link steps dominated cmd/bd's wall
+	// clock (wy-4mtr0).
 	binPath := buildBDForInitTests(t)
 
 	listCmd := exec.Command(binPath, "list", "--json")

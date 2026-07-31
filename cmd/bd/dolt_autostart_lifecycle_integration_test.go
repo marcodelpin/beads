@@ -128,6 +128,9 @@ func TestE2E_AutoStartedRepoLocalServerPersistsAcrossCommands(t *testing.T) {
 // of each helper rebuilding its own copy (bda-9l1).
 func buildLifecycleTestBinary(t *testing.T) string {
 	t.Helper()
+	// Shared once-per-process binary (honors BEADS_TEST_BD_BINARY) instead of
+	// a per-test go build — the in-test link steps dominated cmd/bd's wall
+	// clock (wy-4mtr0).
 	return buildBDForInitTests(t)
 }
 

@@ -27,8 +27,8 @@ func TestCLI_Import_ForeignPrefix_E2E(t *testing.T) {
 		t.Skip("skipping: Dolt test container not available")
 	}
 
-	// Step 0: use the shared bd binary (built once, reused across cmd/bd
-	// tests; see buildBDForInitTests in test_helpers_pure_test.go, bda-9l1)
+	// Step 0: Locate the bd binary — shared once-per-process build (honors
+	// BEADS_TEST_BD_BINARY) instead of a per-test go build (wy-4mtr0).
 	tmpDir := t.TempDir()
 	bdBinary := buildBDForInitTests(t)
 

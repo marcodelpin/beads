@@ -21,10 +21,19 @@ func TestScripts(t *testing.T) {
 		t.Skip("scripttest uses Unix shell commands (sh -c), skipping on Windows")
 	}
 
-	// Use the shared bd binary (built once, reused across cmd/bd tests; see
-	// buildBDForInitTests in test_helpers_pure_test.go, bda-9l1).
-	exe := buildBDForInitTests(t)
-	binDir := filepath.Dir(exe)
+	// Locate or build the bd binary. Prebuilt fast path (scripts/test.sh and
+	// CI export BEADS_TEST_BD_BINARY, wy-4mtr0); the scripts invoke plain
+	// `bd` via `sh -c`, so the prebuilt is only usable when its basename is
+	// exactly the expected executable name.
+	exeName := "bd"
+	binDir := t.TempDir()
+	exe := filepath.Join(binDir, exeName)
+	if prebuilt, err := findPrebuiltBDBinary(); err == nil && prebuilt != "" && filepath.Base(prebuilt) == exeName {
+		exe = prebuilt
+		binDir = filepath.Dir(prebuilt)
+	} else if err := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", exe, ".").Run(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create minimal engine with default commands plus bd
 	timeout := 2 * time.Second
