@@ -60,7 +60,7 @@ func TestProxiedServerServeClaim(t *testing.T) {
 	t.Parallel()
 	bd := buildEmbeddedBD(t)
 	p := newSharedProxiedProject(t, bd, "srvcl")
-	sp := startServe(t, bd, p)
+	sp := startServe(t, bd, p.dir, bdProxiedEnv(p.dir))
 
 	t.Run("a claim over HTTP is the same claim the CLI sees", func(t *testing.T) {
 		issue := bdProxiedCreate(t, bd, p.dir, "claim over http", "-p", "1")
