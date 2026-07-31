@@ -1180,13 +1180,28 @@ func TestListenRefusesAMissingProvider(t *testing.T) {
 
 func TestLogValueQuotesInjectableText(t *testing.T) {
 	// A path is caller-controlled, and the log is key=value: a space or a
-	// newline in it would otherwise forge fields, or whole lines.
+	// newline in it would otherwise forge fields, or whole lines. The claim
+	// route widened the audience for this helper — it records a rejected body
+	// member NAME and a rejected Content-Type, both arbitrary caller strings —
+	// so the escape-sequence rows below are as load-bearing as the framing ones.
 	for _, tc := range []struct{ in, want string }{
 		{"/healthz", "/healthz"},
 		{"/a b", `"/a b"`},
 		{"a=b", `"a=b"`},
 		{"line\nbreak", `"line\nbreak"`},
 		{"", `""`},
+		// C1. U+009B is a one-byte CSI on a VT-conformant console, so an
+		// unquoted one paints the terminal of whoever tails the log; U+0085 is
+		// a line break there, which forges a log line.
+		{"csi\u009b31m", `"csi\u009b31m"`},
+		{"nel\u0085forged", `"nel\u0085forged"`},
+		// A raw obs-text byte: legal in an HTTP/1 field value, so it reaches
+		// this helper from Content-Type as invalid UTF-8 rather than as a rune.
+		{"raw\x9b31m", `"raw\x9b31m"`},
+		{"\xff\xfe", `"\xff\xfe"`},
+		// Unicode line separators split a line for anything that splits on
+		// Unicode breaks.
+		{"ls\u2028forged", `"ls\u2028forged"`},
 	} {
 		if got := logValue(tc.in); got != tc.want {
 			t.Errorf("logValue(%q) = %s, want %s", tc.in, got, tc.want)
