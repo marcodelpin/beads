@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"os/exec"
@@ -169,6 +170,16 @@ func TestServerModeServe(t *testing.T) {
 		}
 	})
 
+	// The proxy serve fronts the server through must survive every quiet period
+	// the process can have. Its only client is serve's pool, which drops its last
+	// connection after ConnMaxIdleTime (5m) of no requests; a proxy with a finite
+	// idle timeout then exits and takes the OS-assigned port the provider's DSN
+	// pinned at construction, permanently, with /healthz still green.
+	//
+	// Asserted on the spawned child's own command line because the failure is
+	// otherwise only visible after five idle minutes, which no test can wait for.
+	assertProxyChildNeverIdles(t, filepath.Join(p.beadsDir, "dolt"))
+
 	sp.shutdown(t)
 
 	// The workspace is still the CLI's afterwards. Building a provider against a
@@ -176,6 +187,39 @@ func TestServerModeServe(t *testing.T) {
 	// DoltStore also manages; this is the check that the two agree.
 	if out := p.run(t, bd, "list"); !strings.Contains(out, issue) {
 		t.Errorf("bd list no longer shows %s after bd serve ran:\n%s", issue, out)
+	}
+}
+
+// assertProxyChildNeverIdles reads the running proxy's pid record and checks the
+// process was started with no idle timeout.
+func assertProxyChildNeverIdles(t *testing.T, proxyRoot string) {
+	t.Helper()
+
+	record, err := os.ReadFile(filepath.Join(proxyRoot, "proxy.pid"))
+	if err != nil {
+		t.Fatalf("read the proxy pid record: %v", err)
+	}
+	var pid struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(record, &pid); err != nil {
+		t.Fatalf("parse %s: %v", record, err)
+	}
+	cmdline, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid.PID), "cmdline"))
+	if err != nil {
+		t.Skipf("cannot read the proxy child's command line on this platform: %v", err)
+	}
+
+	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+	var idle string
+	for i, a := range args {
+		if a == "--idle-timeout" && i+1 < len(args) {
+			idle = args[i+1]
+		}
+	}
+	if want := proxy.IdleTimeoutNever.String(); idle != want {
+		t.Errorf("proxy child --idle-timeout = %q, want %q: a finite timeout lets the proxy exit during a quiet period and strands serve on a dead port\nargv: %v",
+			idle, want, args)
 	}
 }
 
