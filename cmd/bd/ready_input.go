@@ -33,7 +33,10 @@ type readyInput struct {
 // routes call it - the direct one in ready.go and the proxied one in
 // ready_proxied_server.go - so there is one definition of what the command
 // accepts. Usage errors are reported through HandleErrorRespectJSON, which is
-// what a --json caller has always gotten from the direct route.
+// what a --json caller has always gotten from the direct route; the proxied
+// route printed five of them as plain stderr text before the two builders were
+// collapsed, so TestGatherReadyInputUsageErrorsRespectJSON pins the unified
+// behavior that replaced them.
 //
 // resolveCap resolves --max-rows / BEADS_MAX_ROWS and is passed in rather than
 // called directly because only the direct route has a cap to enforce: the

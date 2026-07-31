@@ -92,10 +92,20 @@ func TestBuildReadyFilterGolden(t *testing.T) {
 }
 
 // TestReadyFilterGoldenDivergences pins the ways cmd/bd's two pre-collapse
-// builders disagreed. The collapse had to keep one branch of each disagreement,
-// so the list is the record of what was chosen and why - the alternative was
-// absorbing them silently, which is how the two copies drifted in the first
-// place.
+// builders disagreed *in what the golden recorded*. The collapse had to keep
+// one branch of each disagreement, so the list is the record of what was
+// chosen and why - the alternative was absorbing them silently, which is how
+// the two copies drifted in the first place.
+//
+// It is not the whole record, and cannot be. The golden was recorded with
+// jsonOutput false, where HandleError and HandleErrorRespectJSON print the
+// same stderr line, so the two builders' disagreement over which of those
+// helpers reports a usage error is invisible here: every case where they
+// differ shows identical stderr. That divergence - five usage errors on the
+// proxied route that now emit a JSON error object on stdout for a --json
+// caller instead of stderr text - is pinned by cmd/bd's
+// TestGatherReadyInputUsageErrorsRespectJSON and by the proxied integration
+// test json_usage_errors_are_json_on_stdout instead.
 func TestReadyFilterGoldenDivergences(t *testing.T) {
 	known := map[string]string{
 		// Kept: gather's. The direct path rejects --offset > 0 before it

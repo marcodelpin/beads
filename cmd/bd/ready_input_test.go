@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -223,6 +224,69 @@ func TestGatherReadyInputResolvesCapWhereTheDirectBuilderDid(t *testing.T) {
 			t.Errorf("no resolver should mean no cap output, got:\n%s", got.stderr)
 		}
 	})
+}
+
+// TestGatherReadyInputUsageErrorsRespectJSON pins the one behavior change in
+// the collapse that the ready-filter golden structurally cannot see: the golden
+// was recorded with jsonOutput false, where HandleError and
+// HandleErrorRespectJSON print the same stderr line, so the divergence table in
+// internal/workapi has no entry for it and no entry it could have.
+//
+// The two pre-collapse builders disagreed on which helper reported these five
+// usage errors: the direct route used the RespectJSON variant, the proxied one
+// did not. One shared gatherer can only have one, and it kept the direct
+// route's - which leaves the direct route byte-identical and makes the proxied
+// route emit a JSON error object on stdout for a --json caller, where it used
+// to print "Error: ..." to stderr. That is the observable change, and this is
+// what would fail if it were reverted or drifted back.
+func TestGatherReadyInputUsageErrorsRespectJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"sort_policy", []string{"--sort", "bogus"}, "invalid sort policy"},
+		{"mol_type", []string{"--mol-type", "bogus"}, "invalid mol-type"},
+		{"metadata_field_syntax", []string{"--metadata-field", "team"}, "invalid --metadata-field"},
+		{"metadata_field_key", []string{"--metadata-field", "bad$key=x"}, "invalid --metadata-field key"},
+		{"has_metadata_key", []string{"--has-metadata-key", "bad$key"}, "invalid --has-metadata-key"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			restore := jsonOutput
+			jsonOutput = true
+			t.Cleanup(func() { jsonOutput = restore })
+
+			got := runGatherReadyInput(t, newReadyFlagsCommand(t, c.args...), nil)
+			if got.err == nil {
+				t.Fatalf("gatherReadyInput(%v) = nil, want an error", c.args)
+			}
+			if got.stderr != "" {
+				t.Errorf("under --json nothing should reach stderr, got:\n%s", got.stderr)
+			}
+			if msg := jsonErrorMessage(t, got.stdout); !strings.Contains(msg, c.want) {
+				t.Errorf("stdout error = %q, want it to contain %q", msg, c.want)
+			}
+		})
+	}
+}
+
+// jsonErrorMessage pulls the message out of whichever error shape
+// buildJSONError produced - bare or BD_JSON_ENVELOPE-wrapped.
+func jsonErrorMessage(t *testing.T, stdout string) string {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not a JSON object: %v\n%s", err, stdout)
+	}
+	if data, ok := payload["data"].(map[string]any); ok {
+		payload = data
+	}
+	msg, ok := payload["error"].(string)
+	if !ok {
+		t.Fatalf("no string \"error\" key in JSON error object:\n%s", stdout)
+	}
+	return msg
 }
 
 // TestGatherReadyInputIgnoresNegativeOffset pins the direct route's oldest
