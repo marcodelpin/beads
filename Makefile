@@ -45,6 +45,7 @@ endif
 
 .PHONY: all build doctor-build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration corpus-regen bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm
+.PHONY: api-gen api-check
 
 # Default target
 all: build
@@ -188,6 +189,27 @@ ci-pr-policy:
 
 ci-pr-lint:
 	@./scripts/ci/pr-lint.sh
+
+# OpenAPI spec paths for the drift gate below. The document is hand-written and
+# is the source of truth; the Go types are its output.
+API_SPEC_PATHS := internal/httpapi/spec internal/httpapi/apigen
+
+# Regenerate the wire types from internal/httpapi/spec/openapi.v0.yaml.
+api-gen:
+	go generate -tags "$(BUILD_TAGS)" ./internal/httpapi/apigen
+
+# Three-part spec drift gate: regenerate, fail on any diff, then run the spec
+# tests. Runs in the required PR policy job (scripts/ci/pr-policy.sh), never
+# only on push-to-main.
+api-check: api-gen
+	@if [ -n "$$(git status --porcelain --untracked-files=all -- $(API_SPEC_PATHS))" ]; then \
+		git --no-pager diff --stat -- $(API_SPEC_PATHS); \
+		git status --short --untracked-files=all -- $(API_SPEC_PATHS); \
+		echo "openapi drift: the spec and the generated types disagree."; \
+		echo "run 'make api-gen' and commit the result."; \
+		exit 1; \
+	fi
+	go test -tags "$(BUILD_TAGS)" ./internal/httpapi/ -count=1 -run 'TestSpecGovernance|TestSpecDefaultsMatchSharedConstants|TestSpecStatusCodesMatchHandlerTable|TestDefaultLimitsMatchCLIFlags|TestWireTagBijection|TestProblemMapping'
 
 ci-package-mcp:
 	@./scripts/ci/package-mcp.sh
@@ -390,6 +412,8 @@ help:
 	@echo "  make fmt          - Format all Go files with gofmt"
 	@echo "  make fmt-check    - Check Go formatting (for CI)"
 	@echo "  make check-docs   - Validate docs against CLI flags"
+	@echo "  make api-gen      - Regenerate HTTP API types from the OpenAPI spec"
+	@echo "  make api-check    - OpenAPI drift gate (regenerate, diff-or-fail, spec tests)"
 	@echo "  make clean        - Remove build artifacts and profile files"
 	@echo "  make clean-test-tmp - Sweep orphaned cmd/bd test temp dirs from \$$TMPDIR"
 	@echo "  make help         - Show this help message"

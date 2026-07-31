@@ -81,3 +81,7 @@ ci_time "check doc flags" -- ./scripts/check-doc-flags.sh "$tmpdir/bd"
 ci_time "check doc freshness" -- ./scripts/check-doc-freshness.sh
 ci_time "check testing.Short boundaries" -- ./scripts/check-testing-short.sh
 ci_time "check no .beads/issues.jsonl changes" -- check_no_beads_jsonl_changes
+# The OpenAPI drift gate belongs to a REQUIRED PR job. The Main workflow is
+# perpetually concurrency-cancelled, so a gate that only ran there would be
+# unenforced in practice.
+ci_time "check openapi spec gate" -- make api-check
