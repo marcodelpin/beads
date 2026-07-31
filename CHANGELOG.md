@@ -90,8 +90,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (bd-serve reader role). `IssueReader() (issueops.Reader, error)` is the read
   counterpart of `IssueLifecycle()`: one accessor returning a role that answers
   `Ready`, `List` and `Get` with filter construction, workspace-config loading,
-  default limits and the wisp fallback all performed *inside* it, so the CLI and
-  `bd serve` cannot answer the same question two different ways. It is a role of
+  default limits and the wisp fallback all performed *inside* it, so a caller
+  cannot half-perform that construction and answer the same question a different
+  way. All three of `bd serve`'s issue reads and `bd show --json`'s detail view
+  are on the role; `bd list` and `bd ready` are not yet, and share the
+  `internal/workapi` builders instead — see `issueops.Reader`'s doc comment for
+  exactly what that does and does not cover. It is a role of
   its own rather than three more methods on `issueops.Lifecycle` — a capability
   that role does not cover gets its own accessor. Consumers that only *call* the
   interface are unaffected; any external type that *implements* it (a custom
