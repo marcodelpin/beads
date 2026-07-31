@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -399,44 +398,4 @@ func init() {
 	showCmd.Flags().Bool("include-comments", false, "Stream full comment bodies in JSON output (--json only; may be slow on issues with many comments)")
 	showCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(showCmd)
-}
-
-// resolveCurrentIssueID determines the current active issue for the agent.
-// Priority: in-progress assigned to actor > hooked > last touched.
-func resolveCurrentIssueID(ctx context.Context) string {
-	if store == nil {
-		// No store — fall back to last touched
-		return GetLastTouchedID()
-	}
-
-	currentActor := getActorWithGit()
-
-	// 1. In-progress issues assigned to current actor
-	if currentActor != "" {
-		status := types.StatusInProgress
-		filter := types.IssueFilter{
-			Status:   &status,
-			Assignee: &currentActor,
-		}
-		issues, err := store.SearchIssues(ctx, "", filter)
-		if err == nil && len(issues) > 0 {
-			return issues[0].ID
-		}
-	}
-
-	// 2. Hooked issues assigned to current actor
-	if currentActor != "" {
-		status := types.StatusHooked
-		filter := types.IssueFilter{
-			Status:   &status,
-			Assignee: &currentActor,
-		}
-		issues, err := store.SearchIssues(ctx, "", filter)
-		if err == nil && len(issues) > 0 {
-			return issues[0].ID
-		}
-	}
-
-	// 3. Last touched issue (fallback)
-	return GetLastTouchedID()
 }

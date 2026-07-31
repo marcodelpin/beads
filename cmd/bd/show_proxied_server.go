@@ -133,22 +133,6 @@ func runShowProxiedServer(cmd *cobra.Command, ctx context.Context, args []string
 	return nil
 }
 
-func resolveCurrentIssueIDProxied(ctx context.Context, uw uow.UnitOfWork) string {
-	currentActor := getActorWithGit()
-	if currentActor == "" {
-		return ""
-	}
-	for _, status := range []types.Status{types.StatusInProgress, types.StatusHooked} {
-		st := status
-		filter := types.IssueFilter{Status: &st, Assignee: &currentActor}
-		page, err := uw.IssueUseCase().SearchIssues(ctx, "", filter)
-		if err == nil && len(page.Items) > 0 {
-			return page.Items[0].ID
-		}
-	}
-	return ""
-}
-
 // proxiedListDeps and proxiedGetComments stay CLI-local: they feed the
 // terminal rendering below, which is presentation, not the shared detail
 // shape. The domain-shaped reads live in internal/workapi.

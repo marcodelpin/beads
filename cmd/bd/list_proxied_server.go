@@ -43,24 +43,6 @@ func openProxiedListUOW(ctx context.Context) (uow.UnitOfWork, error) {
 	return uw, nil
 }
 
-func openAndPrepare(ctx context.Context, in listInput) (uow.UnitOfWork, types.IssueFilter, error) {
-	uw, err := openProxiedListUOW(ctx)
-	if err != nil {
-		return nil, types.IssueFilter{}, err
-	}
-	cfg, err := workapi.LoadUOWListConfig(ctx, uw)
-	if err != nil {
-		uw.Close(ctx)
-		return nil, types.IssueFilter{}, err
-	}
-	filter, err := workapi.BuildListFilter(in.ListRequest, cfg)
-	if err != nil {
-		uw.Close(ctx)
-		return nil, types.IssueFilter{}, err
-	}
-	return uw, filter, nil
-}
-
 func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) error {
 	uw, filter, err := openAndPrepare(ctx, in)
 	if err != nil {
@@ -91,49 +73,6 @@ func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) e
 	issues, hasMore := workapi.FinishPage(page.Items, in.SortBy, in.Reverse, in.effectiveLimit, page.HasMore)
 
 	return renderProxiedListText(ctx, uw, issues, in, hasMore)
-}
-
-func runListProxiedHierarchicalParent(ctx context.Context, uw uow.UnitOfWork, in listInput, filter types.IssueFilter) error {
-	treeIssues, err := gatherProxiedHierarchical(ctx, uw, in.ParentID, filter)
-	if err != nil {
-		return err
-	}
-	if len(treeIssues) == 0 {
-		fmt.Printf("Issue '%s' has no children\n", in.ParentID)
-		return nil
-	}
-
-	depsByIssueID, err := loadDepsForIssues(ctx, uw, treeIssues)
-	if err != nil {
-		return err
-	}
-
-	displayPrettyListWithDepsMode(treeIssues, false, depsByIssueID, in.depsMode)
-	printSkipLabelsFooter(in.SkipLabels)
-	return nil
-}
-
-func gatherProxiedHierarchical(ctx context.Context, uw uow.UnitOfWork, parentID string, baseFilter types.IssueFilter) ([]*types.Issue, error) {
-	parent, err := uw.IssueUseCase().GetIssue(ctx, parentID)
-	if err != nil {
-		return nil, fmt.Errorf("error checking parent issue: %w", err)
-	}
-	if parent == nil {
-		return nil, fmt.Errorf("parent issue %q not found", parentID)
-	}
-
-	descendants, err := uw.IssueUseCase().GetDescendants(ctx, parentID, baseFilter)
-	if err != nil {
-		return nil, fmt.Errorf("error finding descendants: %w", err)
-	}
-	if len(descendants) == 0 {
-		return nil, nil
-	}
-
-	out := make([]*types.Issue, 0, len(descendants)+1)
-	out = append(out, parent)
-	out = append(out, descendants...)
-	return out, nil
 }
 
 func runListProxiedReady(_ *cobra.Command, ctx context.Context, in listInput) error {
