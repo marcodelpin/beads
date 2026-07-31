@@ -15,7 +15,21 @@ import (
 )
 
 func runReadyProxiedServer(cmd *cobra.Command, ctx context.Context) error {
-	in, err := gatherReadyInput(cmd)
+	// --offset is supported here and nowhere else, so this is where a negative
+	// value is rejected. It stays out of the shared gatherer because the direct
+	// route reaches that gatherer too, and `bd ready --offset -1` has always
+	// been a no-op there rather than an error. HandleError, not the RespectJSON
+	// variant, for the same reason: this message is the proxied route's alone,
+	// and it has always gone to stderr as plain text.
+	if offset, _ := cmd.Flags().GetInt("offset"); offset < 0 {
+		return HandleError("--offset must be >= 0")
+	}
+
+	// No cap resolver: the RunE that routed here has already resolved
+	// --max-rows / BEADS_MAX_ROWS, either to reject a live one or to validate
+	// the value it then ignores for --claim. Resolving it again would repeat
+	// the malformed-value warning and stamp a cap this route cannot enforce.
+	in, err := gatherReadyInput(cmd, nil)
 	if err != nil {
 		return err
 	}
