@@ -58,12 +58,6 @@ PROBES
   readiness use GET /v0/beads/ready?limit=1 — a real query, where 200 means
   ready and 503 means live but not ready.
 
-  This build does not implement that endpoint yet: it answers 501, and
-  ready.list is absent from the capabilities list in GET /v0/beads/context.
-  Wire a readiness probe to it once that capability appears — until then a
-  probe configured this way never reports ready, which is the safe direction
-  but is not a readiness signal.
-
 WHAT THIS DOES NOT DO
 
   No authentication and no TLS. The trust model is the loopback boundary, which
