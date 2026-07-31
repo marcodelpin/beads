@@ -64,16 +64,44 @@ func TestServeHelpTracksTheReadinessProbe(t *testing.T) {
 
 func TestServeCommandIsRegistered(t *testing.T) {
 	for _, cmd := range rootCmd.Commands() {
-		if cmd.Name() == "serve" {
+		if cmd.Name() == serveCmdName {
 			return
 		}
 	}
 	t.Fatal("serve is not registered under the root command")
 }
 
-// TestServeRefusalsPromiseNothing is the honesty gate on the mode gate. Both
-// refusals are typed so a caller can dispatch on them; what differs is what
-// they claim, and getting that wrong sends an operator to do the wrong work.
+// TestServeSkipsPostCommandMaintenance. In a server-mode workspace bd serve
+// takes the non-proxied PersistentPostRunE branch, which is the one that runs
+// the auto-commit / backup / export / push net — so on the way out of a SIGTERM
+// a server would push and export, hours of requests attributed to the shutdown.
+// The proxied branch never had that, and this is what keeps the two modes
+// telling the operator the same story.
+func TestServeSkipsPostCommandMaintenance(t *testing.T) {
+	if runsPostCommandMaintenance(serveCmdName, false) {
+		t.Error("bd serve runs post-command maintenance; the server would export and push at shutdown")
+	}
+	// The exclusion is serve's alone: a write command in the same workspace
+	// still gets the whole net.
+	if !runsPostCommandMaintenance("update", false) {
+		t.Error("bd update no longer runs post-command maintenance")
+	}
+	// And strict readonly still wins over everything, serve included.
+	if runsPostCommandMaintenance("update", true) {
+		t.Error("strict readonly no longer suppresses post-command maintenance")
+	}
+}
+
+// TestServeRefusalsPromiseNothing is the honesty gate on the mode gate. The
+// refusal is typed so a caller can dispatch on it, and it must promise nothing
+// — claiming otherwise sends an operator to do the wrong work.
+//
+// The second case was, until bd-emv, the mirror image: it pinned the STAGED
+// refusal for dolt server mode and required its text to read as "not yet". That
+// wiring landed, so the case now asserts the reality it was staging for rather
+// than being deleted with the refusal. Deleting it would have left nothing
+// asserting that these workspaces are served: a later change could route them
+// back into a refusal and no test would notice.
 func TestServeRefusalsPromiseNothing(t *testing.T) {
 	t.Run("embedded is permanent", func(t *testing.T) {
 		err := errServeEmbedded()
@@ -103,29 +131,66 @@ func TestServeRefusalsPromiseNothing(t *testing.T) {
 		}
 	})
 
-	t.Run("dolt server mode is staged", func(t *testing.T) {
-		err := errServeDoltServerMode()
+	t.Run("the dolt server modes are served, not refused", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			apply func(t *testing.T)
+		}{
+			{
+				name:  "server / external-server",
+				apply: func(t *testing.T) { serverMode = true },
+			},
+			{
+				name: "shared-server",
+				apply: func(t *testing.T) {
+					t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+				},
+			},
+			{
+				name:  "proxied-server",
+				apply: func(t *testing.T) { proxiedServerMode = true },
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				useStorageModeGlobals(t)
+				tc.apply(t)
+				if err := serveModeGate(); err != nil {
+					t.Fatalf("serveModeGate() = %v, want nil: this mode has a SQL server and bd serve builds a provider for it", err)
+				}
+			})
+		}
+	})
 
+	t.Run("embedded is still gated", func(t *testing.T) {
+		useStorageModeGlobals(t)
+		if !isEmbeddedMode() {
+			// The !cgo build has no embedded backend to refuse: isEmbeddedMode
+			// is a constant false there, so there is no case to make.
+			t.Skip("this build cannot open an embedded workspace")
+		}
+		err := serveModeGate()
 		var unsupported *storage.ErrUnsupported
 		if !errors.As(err, &unsupported) {
-			t.Fatalf("err = %v, want a typed storage.ErrUnsupported", err)
+			t.Fatalf("serveModeGate() = %v, want the typed embedded refusal", err)
 		}
-		if unsupported.Backend != "dolt" {
-			t.Errorf("Backend = %q, want dolt (the mode belongs in the message text)", unsupported.Backend)
+		if unsupported.Backend != "embedded-dolt" {
+			t.Errorf("Backend = %q, want embedded-dolt", unsupported.Backend)
 		}
+	})
+}
 
-		msg := err.Error()
-		// It must say this is not supported YET, and name what is supported
-		// today, so nobody reads it as a permanent architectural limit.
-		if !strings.Contains(msg, "not yet supported by bd serve") {
-			t.Errorf("staged refusal does not say the support is not yet there: %q", msg)
-		}
-		if !strings.Contains(msg, "proxied-server") || !strings.Contains(msg, "today") {
-			t.Errorf("staged refusal does not name what works today: %q", msg)
-		}
-		// And it must not claim the mode it is refusing works.
-		if strings.Contains(msg, "dolt server mode is supported") {
-			t.Errorf("staged refusal claims the refused mode works: %q", msg)
-		}
+// useStorageModeGlobals points the storage-mode accessors at the package
+// globals for the duration of one test and restores them after. The mode gate
+// reads them through cmdCtx otherwise, which no unit test builds.
+func useStorageModeGlobals(t *testing.T) {
+	t.Helper()
+	oldServerMode, oldProxied := serverMode, proxiedServerMode
+	oldCmdCtx, oldUseGlobals := cmdCtx, testModeUseGlobals
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "0")
+	serverMode, proxiedServerMode = false, false
+	cmdCtx, testModeUseGlobals = nil, true
+	t.Cleanup(func() {
+		serverMode, proxiedServerMode = oldServerMode, oldProxied
+		cmdCtx, testModeUseGlobals = oldCmdCtx, oldUseGlobals
 	})
 }

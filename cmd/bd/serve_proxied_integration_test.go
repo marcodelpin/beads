@@ -50,15 +50,20 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// startServe launches `bd serve` and waits for the bound address it prints.
-// Under the ephemeral default that line is the ONLY way to find the port, which
-// is why it is stdout's first line and why this parses it rather than guessing.
-func startServe(t *testing.T, bd string, p proxiedProject, args ...string) *serveProcess {
+// startServe launches `bd serve` in dir and waits for the bound address it
+// prints. Under the ephemeral default that line is the ONLY way to find the
+// port, which is why it is stdout's first line and why this parses it rather
+// than guessing.
+//
+// It takes the environment rather than a proxied project because the same
+// lifecycle is the contract in every mode serve supports: the server-mode
+// integration test drives this exact harness with a server-mode env.
+func startServe(t *testing.T, bd, dir string, env []string, args ...string) *serveProcess {
 	t.Helper()
 
 	cmd := exec.Command(bd, append([]string{"serve", "--addr", "127.0.0.1:0"}, args...)...)
-	cmd.Dir = p.dir
-	cmd.Env = bdProxiedEnv(p.dir)
+	cmd.Dir = dir
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -166,7 +171,7 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 	bd := buildEmbeddedBD(t)
 	p := newSharedProxiedProject(t, bd, "srvl")
 
-	sp := startServe(t, bd, p)
+	sp := startServe(t, bd, p.dir, bdProxiedEnv(p.dir))
 
 	// Startup lines: what the operator needs before the first request, and the
 	// only record of which workspace this process is serving.

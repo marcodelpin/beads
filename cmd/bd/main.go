@@ -199,6 +199,66 @@ func backendSupportsStrictReadonly(cfg *configfile.Config) bool {
 	return cfg == nil || !cfg.IsDoltProxiedServerMode()
 }
 
+// runsPostCommandMaintenance reports whether PersistentPostRunE should run the
+// post-command maintenance net — Dolt auto-commit, the tip-metadata commit,
+// auto-backup, auto-export and auto-push.
+//
+// `bd serve` is excluded, and not as an optimization. Those steps are per-
+// COMMAND bookkeeping, and a server is not a command: it is a process that ran
+// for hours and committed each mutation inside its own transaction as it
+// happened. Running them when the operator finally sends SIGTERM would push and
+// export on the way out of a signal handler — the worst possible moment — and
+// attribute a whole process lifetime of requests to the shutdown. Proxied-mode
+// serve never reached this branch at all (PersistentPostRunE only closes the
+// provider there); server and shared-server mode do, so the exclusion has to be
+// stated rather than inherited.
+func runsPostCommandMaintenance(cmdName string, strictReadonly bool) bool {
+	if cmdName == serveCmdName {
+		return false
+	}
+	return effectiveRootStorePolicy(cmdName, strictReadonly).runMaintenance
+}
+
+// resolveDoltServerConnection fills in how to reach the workspace's Dolt SQL
+// server — host, port, socket, user, password, TLS — on doltCfg.
+//
+// Both consumers of a SQL server in this process go through here: the CLI's own
+// store open, and the unit-of-work provider `bd serve` builds for a server-mode
+// workspace. That matters more than the deduplication: an HTTP request and a
+// CLI command in the same workspace must reach the same server as the same
+// identity, and the only way to guarantee that is to resolve it once.
+//
+// It mirrors dolt.applyResolvedConfig, which this hand-built doltCfg path
+// bypasses.
+func resolveDoltServerConnection(ctx context.Context, beadsDir string, fileCfg *configfile.Config, doltCfg *dolt.Config) error {
+	doltCfg.ServerHost = fileCfg.GetDoltServerHost()
+	// Use doltserver.DefaultConfig for port resolution (env > port file >
+	// config.yaml). Port 0 is fine here — auto-start will resolve it.
+	doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
+	doltCfg.ServerSocket = fileCfg.GetDoltServerSocket()
+	// A configured credential command targets an authenticating gateway server:
+	// run it for a short-lived token used as the connection username. Fail closed
+	// — never fall back to the static/root user when a command was configured but
+	// failed. Server mode only: embedded stores never present a username, so the
+	// command must not run (or fail) embedded opens even when the env var is set.
+	// Dolt-only: the gateway credential command mints a Dolt server
+	// username. IsSharedServerMode() forces ServerMode true with no backend
+	// guard, so non-Dolt metadata must not try to resolve a server username.
+	if doltCfg.ServerMode && fileCfg.GetBackend() == configfile.BackendDolt {
+		if _, err := dolt.ApplyGatewayCredential(ctx, fileCfg, doltCfg); err != nil {
+			return fmt.Errorf("resolving dolt credential command: %w", err)
+		}
+	}
+	if doltCfg.ServerUser == "" {
+		doltCfg.ServerUser = fileCfg.GetDoltServerUser()
+	}
+	// Use the resolved port for credential lookup — metadata.json port
+	// and runtime port can diverge (e.g., tunnel on 3308 vs local on 3307).
+	doltCfg.ServerPassword = fileCfg.GetDoltServerPasswordForPort(doltCfg.ServerPort)
+	doltCfg.ServerTLS = fileCfg.GetDoltServerTLS()
+	return nil
+}
+
 var (
 	runPostRunAutoCommit = maybeAutoCommit
 	runPostRunAutoBackup = maybeAutoBackup
@@ -1286,32 +1346,9 @@ var rootCmd = &cobra.Command{
 				logConfigDiscovery(beadsDir, fmt.Sprintf("metadata loaded without dolt_database; using default database name %q", configfile.DefaultDoltDatabase))
 			}
 
-			doltCfg.ServerHost = cfg.GetDoltServerHost()
-			// Use doltserver.DefaultConfig for port resolution (env > port file >
-			// config.yaml). Port 0 is fine here — auto-start will resolve it.
-			doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
-			doltCfg.ServerSocket = cfg.GetDoltServerSocket()
-			// A configured credential command targets an authenticating gateway server:
-			// run it for a short-lived token used as the connection username. Fail closed
-			// — never fall back to the static/root user when a command was configured but
-			// failed. Mirrors applyResolvedConfig, which this hand-built doltCfg path
-			// bypasses. Server mode only: embedded stores never present a username, so the
-			// command must not run (or fail) embedded opens even when the env var is set.
-			// Dolt-only: the gateway credential command mints a Dolt server
-			// username. IsSharedServerMode() forces ServerMode true with no backend
-			// guard, so non-Dolt metadata must not try to resolve a server username.
-			if doltCfg.ServerMode && cfg.GetBackend() == configfile.BackendDolt {
-				if _, credErr := dolt.ApplyGatewayCredential(rootCtx, cfg, doltCfg); credErr != nil {
-					return HandleError("resolving dolt credential command: %v", credErr)
-				}
+			if err := resolveDoltServerConnection(rootCtx, beadsDir, cfg, doltCfg); err != nil {
+				return HandleError("%v", err)
 			}
-			if doltCfg.ServerUser == "" {
-				doltCfg.ServerUser = cfg.GetDoltServerUser()
-			}
-			// Use the resolved port for credential lookup — metadata.json port
-			// and runtime port can diverge (e.g., tunnel on 3308 vs local on 3307).
-			doltCfg.ServerPassword = cfg.GetDoltServerPasswordForPort(doltCfg.ServerPort)
-			doltCfg.ServerTLS = cfg.GetDoltServerTLS()
 		} else if cfgErr == nil {
 			logConfigDiscovery(beadsDir, "config discovery")
 			// Load returned (nil, nil) — no config file found.
@@ -1516,7 +1553,7 @@ var rootCmd = &cobra.Command{
 				uowProvider = nil
 			}
 		} else {
-			if effectiveRootStorePolicy(cmd.Name(), readonlyMode).runMaintenance {
+			if runsPostCommandMaintenance(cmd.Name(), readonlyMode) {
 				// Dolt auto-commit: after a successful write command (and after final flush),
 				// create a Dolt commit so changes don't remain only in the working set.
 				if commandDidWrite.Load() && !commandDidExplicitDoltCommit {

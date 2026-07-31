@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -13,13 +15,22 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 )
 
+// serveCmdName is the command name, shared with the root command's post-run
+// policy (runsPostCommandMaintenance) so the exclusion cannot drift from the
+// command it names.
+const serveCmdName = "serve"
+
+// providerCloseTimeout bounds the shutdown close of a provider serve built
+// itself. It is not the drain budget — the server has already drained by then.
+const providerCloseTimeout = 10 * time.Second
+
 var (
 	serveAddr             string
 	serveAllowNonLoopback bool
 )
 
 var serveCmd = &cobra.Command{
-	Use:   "serve",
+	Use:   serveCmdName,
 	Short: "Serve the beads HTTP API over loopback",
 	Long: `Serve the beads HTTP API — the same work surface the CLI answers, for
 automation clients that would otherwise fork a bd subprocess per call.
@@ -96,11 +107,6 @@ func runServe() error {
 	if err := serveModeGate(); err != nil {
 		return HandleError("%v", err)
 	}
-	if uowProvider == nil {
-		// Unreachable: proxied mode builds the provider in PersistentPreRunE,
-		// and every other mode is refused above.
-		return HandleError("bd serve: this workspace has no unit-of-work provider")
-	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -109,6 +115,34 @@ func runServe() error {
 	info, err := contextinfo.NewContextProvider(cwd, Version).ContextUseCase().GetContextInfo(rootCtx)
 	if err != nil {
 		return HandleError("cannot resolve workspace context: %v", err)
+	}
+
+	provider := uowProvider
+	if provider == nil {
+		// Server, external-server and shared-server workspaces: PersistentPreRunE
+		// builds a DoltStore for those and no unit-of-work provider, so serve
+		// builds its own from the same connection settings the store used.
+		//
+		// That store stays open for the life of the process and serve never
+		// touches it. Opening and closing it is the root command's business, not
+		// a single command's, but it is not free either: its pool holds an idle
+		// connection or two against the very server this process is about to
+		// pool twenty more on. Worth knowing when sizing a shared Dolt server's
+		// max_connections.
+		p, err := newServerModeUOWProvider(rootCtx, info.BeadsDir)
+		if err != nil {
+			return HandleError("bd serve: %v", err)
+		}
+		defer func() {
+			// By the time this runs the signal context is already canceled, so a
+			// close that inherited it could not do any of its work.
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(rootCtx), providerCloseTimeout)
+			defer cancel()
+			if err := p.Close(closeCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "bd serve: closing the unit-of-work provider: %v\n", err)
+			}
+		}()
+		provider = p
 	}
 
 	if serveAllowNonLoopback {
@@ -121,7 +155,7 @@ func runServe() error {
 	srv, err := httpapi.Listen(httpapi.Config{
 		Addr:             serveAddr,
 		AllowNonLoopback: serveAllowNonLoopback,
-		Provider:         uowProvider,
+		Provider:         provider,
 		Workspace:        info,
 		SchemaVersion:    JSONSchemaVersion,
 		Mode:             serveResolvedMode(info),
@@ -131,21 +165,26 @@ func runServe() error {
 	}
 
 	// Graceful shutdown rides the signal context the root command already sets
-	// up (SIGINT/SIGTERM/SIGHUP). The provider is closed where every proxied
-	// command closes it, in PersistentPostRunE — which in proxied mode does
-	// nothing else, so none of the auto-commit, export or push maintenance can
-	// fire behind a server.
+	// up (SIGINT/SIGTERM/SIGHUP). A proxied provider is closed where every
+	// proxied command closes it, in PersistentPostRunE — which in proxied mode
+	// does nothing else; the provider serve built for a server-mode workspace is
+	// closed by the defer above. Neither path runs the auto-commit, export or
+	// push maintenance: proxied mode never had it, and server mode is excluded
+	// from it by name (runsPostCommandMaintenance, cmd/bd/main.go).
 	return srv.Serve(rootCtx)
 }
 
-// serveModeGate refuses the workspace modes bd serve cannot answer for.
+// serveModeGate refuses the one workspace mode bd serve cannot answer for.
 //
-// The two refusals are NOT the same kind of statement, and the messages say so.
-// Embedded is permanent: there is no SQL server to open a unit of work against,
-// and there never will be on that backend. Dolt server mode is staged: the
-// provider construction it needs exists, it just is not wired into serve yet —
-// so the text says it is not yet supported and names what IS supported today,
-// rather than implying the mode is out of scope.
+// Embedded is permanent, and the message is written to promise nothing: there
+// is no unit-of-work provider for that backend, and there will not be one. Its
+// commit protocol runs outside the SQL transaction on a separate connection, so
+// the per-request atomicity this server's contract states would be a lie there
+// even if a provider were written.
+//
+// Every mode that does have a SQL server behind it is served: proxied (managed
+// or external), and — since bd-emv — server, external-server and shared-server,
+// which build their provider in runServe.
 //
 // The mode belongs in the message, not in ErrUnsupported.Backend: that field is
 // documented as a BACKEND name and is the embryo of the pluggable-backend error
@@ -154,9 +193,6 @@ func runServe() error {
 func serveModeGate() error {
 	if isEmbeddedMode() {
 		return errServeEmbedded()
-	}
-	if !usesProxiedServer() {
-		return errServeDoltServerMode()
 	}
 	return nil
 }
@@ -169,23 +205,18 @@ func errServeEmbedded() error {
 		&storage.ErrUnsupported{Op: "serve", Backend: "embedded-dolt"})
 }
 
-// errServeDoltServerMode is the STAGED refusal. The provider construction this
-// mode needs already exists and is already tested; it is simply not wired into
-// serve yet. So the text names what works today and says this does not — it
-// must never read as "bd serve does not support this", which would send an
-// operator off to change their topology for no reason.
-func errServeDoltServerMode() error {
-	return fmt.Errorf("%w: bd serve supports proxied-server workspaces (managed or external dolt) today; "+
-		"dolt server mode is not yet supported by bd serve",
-		&storage.ErrUnsupported{Op: "serve", Backend: "dolt"})
-}
-
 // serveResolvedMode labels the topology for the startup log line. Cosmetic —
 // nothing dispatches on it — but the managed/external distinction is worth
 // naming: an external dolt sql-server shares its max_connections budget with
 // every other bd process pointed at it, and this server's pool is a claim on
 // that budget.
 func serveResolvedMode(info domain.ContextInfo) string {
+	if !usesProxiedServer() {
+		// Server, external-server and shared-server: serve fronts the running
+		// dolt sql-server rather than starting one, so from this process the
+		// server is external even when Beads is what started it.
+		return info.DoltMode + " (external dolt)"
+	}
 	client, err := configfile.LoadProxiedServerClientInfo(info.BeadsDir)
 	if err == nil && client != nil && client.External != nil {
 		return info.DoltMode + " (external dolt)"
