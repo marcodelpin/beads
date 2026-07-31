@@ -152,9 +152,12 @@ func TestServerModeServe(t *testing.T) {
 			t.Fatalf("capabilities = %#v, want an array", body["capabilities"])
 		}
 		// Same build, same handlers: what a mode changes is where the data lives,
-		// never what the handshake advertises.
-		if len(caps) != 0 {
-			t.Errorf("capabilities = %v, want empty while the read and claim handlers are stubs", caps)
+		// never what the handshake advertises. This is deliberately the same
+		// assertion TestProxiedServerServeLifecycle makes against the proxied
+		// path — if the two ever have to be written differently, a mode has
+		// started changing the contract and that is the bug.
+		if len(caps) != 1 || caps[0] != "issues.claim" {
+			t.Errorf("capabilities = %v, want [issues.claim] while the read handlers are stubs", caps)
 		}
 	})
 
