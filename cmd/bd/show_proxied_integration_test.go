@@ -83,6 +83,11 @@ func TestProxiedServerShow(t *testing.T) {
 		if err := json.Unmarshal([]byte(jsonStdout[start:]), &envelope); err != nil {
 			t.Fatalf("--json stdout is not a JSON object: %v\nraw: %s", err, jsonStdout)
 		}
+		// The key sits at the top level or under "data" depending on the
+		// envelope setting; either way it has to be there.
+		if !strings.Contains(jsonStdout, `"error"`) {
+			t.Errorf("--json stdout carries no error key: %s", jsonStdout)
+		}
 	})
 
 	t.Run("show_no_args_errors", func(t *testing.T) {
