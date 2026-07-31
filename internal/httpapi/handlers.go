@@ -63,43 +63,44 @@ func (s *Server) requireNoQuery(w http.ResponseWriter, r *http.Request) bool {
 
 // contextResponse projects the workspace snapshot onto the wire.
 //
-// This is an ALLOWLIST, written out field by field, and that is the whole
-// point: the source struct is the server's own configuration, which is exactly
-// the kind of struct that grows a member nobody meant to publish. Marshaling
-// it directly — or copying it field-for-field "to keep them in sync" — would
-// turn every future addition into a silent disclosure.
+// The snapshot's own fields come from domain.PublishedContext, which is the
+// projection `bd context` publishes too — so the identity this server hands an
+// automation client and the identity the CLI prints beside it are the same
+// seven values read the same way, not two field-by-field copies kept in sync
+// by hand.
 //
-// Three exclusions are load-bearing:
+// That projection is also where the EXCLUSIONS live, and living there is what
+// makes them structural rather than remembered. domain.PublishedContextFields
+// has no SyncRemote member at all — it is populated unconditionally from the
+// workspace's sync.remote config and remote URLs routinely embed credentials
+// — so this handler cannot publish one by forgetting to leave it out. Nor can
+// it publish the database bind endpoint (advertising it invites clients to
+// bypass this API and dial a server whose trust model is "root with an empty
+// password on loopback") or the absolute host paths. BeadsDir and RepoRoot ARE
+// published, deliberately: they are the single-workspace server's only
+// workspace-identity handshake, and the document says so.
 //
-// SyncRemote, above all. It is populated unconditionally from the workspace's
-// sync.remote config, and remote URLs routinely embed credentials
-// (https://x-access-token:TOKEN@host/...). It is excluded in this and every
-// future version.
-//
-// ServerHost/ServerPort, the database bind endpoint: advertising it invites
-// clients to bypass this API and dial the database directly, on a server whose
-// trust model is "root with an empty password on loopback".
-//
-// DataDir, ProxiedDir and CWDRepoRoot, absolute host paths that identify
-// nothing a client needs. BeadsDir and RepoRoot ARE published, deliberately:
-// they are the single-workspace server's only workspace-identity handshake, and
-// the document says so.
+// The three members that are NOT the workspace's are named here, because they
+// are this surface's own: the API version, the schema version, and the
+// capability set derived from the implemented handlers.
 func contextResponse(info domain.ContextInfo, schemaVersion int, capabilities []string) apigen.ContextResponse {
 	if capabilities == nil {
 		// The document types this as an array; a client must never have to
 		// tell null from empty to learn that nothing is implemented.
 		capabilities = []string{}
 	}
+	published := domain.PublishedContext(info)
 	return apigen.ContextResponse{
 		ApiVersion:    APIVersion,
-		BdVersion:     info.BdVersion,
 		SchemaVersion: schemaVersion,
-		Backend:       info.Backend,
-		DoltMode:      info.DoltMode,
-		Database:      info.Database,
-		BeadsDir:      info.BeadsDir,
-		RepoRoot:      info.RepoRoot,
-		ProjectId:     info.ProjectID,
 		Capabilities:  capabilities,
+
+		BdVersion: published.BdVersion,
+		Backend:   published.Backend,
+		DoltMode:  published.DoltMode,
+		Database:  published.Database,
+		BeadsDir:  published.BeadsDir,
+		RepoRoot:  published.RepoRoot,
+		ProjectId: published.ProjectID,
 	}
 }
