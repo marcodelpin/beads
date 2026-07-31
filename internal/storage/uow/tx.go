@@ -21,10 +21,13 @@ type TxProvider interface {
 	BeginTx(ctx context.Context) (Tx, error)
 }
 
-const (
-	txRetryInitialInterval = 25 * time.Millisecond
-	txRetryMaxElapsed      = 15 * time.Second
-)
+const txRetryInitialInterval = 25 * time.Millisecond
+
+// DefaultTxRetryMaxElapsed is how long the retry loop keeps redoing an attempt
+// that loses Dolt's commit-time merge before giving up. Exported so callers
+// that pass their own budget to RunTxResultWithin can derive it from this one
+// instead of restating the number and drifting from it.
+const DefaultTxRetryMaxElapsed = 15 * time.Second
 
 type TxFunc func(ctx context.Context, uw UnitOfWork) (commitMsg string, err error)
 
@@ -32,49 +35,17 @@ type TxFuncResult[T any] func(ctx context.Context, uw UnitOfWork) (result T, com
 
 type TxReadFunc[T any] func(ctx context.Context, uw UnitOfWork) (T, error)
 
+// RunTx is RunTxResult for work that produces no result.
 func RunTx(ctx context.Context, p UnitOfWorkProvider, work TxFunc) error {
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = txRetryInitialInterval
-	bo.MaxElapsedTime = txRetryMaxElapsed
-
-	return backoff.Retry(func() error {
-		uw, err := p.NewUOW(ctx)
-		if err != nil {
-			if isSerializationError(err) {
-				return err
-			}
-			return backoff.Permanent(err)
-		}
-		defer uw.Close(ctx)
-
+	_, err := RunTxResult(ctx, p, func(ctx context.Context, uw UnitOfWork) (struct{}, string, error) {
 		commitMsg, err := work(ctx, uw)
-		if err != nil {
-			if isSerializationError(err) {
-				return err
-			}
-			return backoff.Permanent(err)
-		}
-
-		if commitMsg == "" {
-			return nil
-		}
-
-		if err := uw.Commit(ctx, commitMsg); err != nil {
-			if issueops.IsNothingToCommitError(err) {
-				return nil
-			}
-			if isSerializationError(err) {
-				return err
-			}
-			return backoff.Permanent(err)
-		}
-
-		return nil
-	}, backoff.WithContext(bo, ctx))
+		return struct{}{}, commitMsg, err
+	})
+	return err
 }
 
 func RunTxResult[T any](ctx context.Context, p UnitOfWorkProvider, work TxFuncResult[T]) (T, error) {
-	return RunTxResultWithin(ctx, p, txRetryMaxElapsed, work)
+	return RunTxResultWithin(ctx, p, DefaultTxRetryMaxElapsed, work)
 }
 
 // RunTxResultWithin is RunTxResult with an explicit retry budget, for callers

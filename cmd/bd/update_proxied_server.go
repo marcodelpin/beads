@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -21,9 +20,9 @@ import (
 )
 
 // proxiedUpdateRetryMaxElapsed bounds the whole-attempt retry loop for one
-// issue's update (matches uow.RunTxResult's default budget). A var so tests can
-// shrink it when exercising conflict exhaustion.
-var proxiedUpdateRetryMaxElapsed = 15 * time.Second
+// issue's update. A var so tests can shrink it when exercising conflict
+// exhaustion; it tracks the shared default rather than restating it.
+var proxiedUpdateRetryMaxElapsed = uow.DefaultTxRetryMaxElapsed
 
 func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -124,8 +123,9 @@ func (u *uowStageRecorder) Commit(ctx context.Context, message string) error {
 
 // applyUpdateProxiedOne applies one issue's update through uow.RunTxResultWithin,
 // which redoes the WHOLE read-merge-write in a fresh unit of work when Dolt
-// reports a serialization failure — the one retry/commit implementation every
-// write path in the tree shares.
+// reports a serialization failure. It is the retry/commit implementation every
+// unit-of-work write path shares: uow.RunTx and uow.RunTxResult both delegate
+// to it.
 //
 // The retry must wrap the whole attempt, never just the commit: a
 // serialization failure means the server already rolled the transaction back,
