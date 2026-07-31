@@ -360,3 +360,66 @@ func TestApplyUpdateProxiedOne_CommitFailureIsPerIDFailure(t *testing.T) {
 		t.Errorf("unit-of-work attempts = %d, want 1 (a permanent commit failure must not be retried)", n)
 	}
 }
+
+// TestApplyUpdateProxiedOne_CommitCanceledStaysPerIDFailure guards the seam
+// between "the commit failed" and "the retry loop was cut short". Both surface
+// as a context error, but they are different verdicts: a commit that fails
+// while the process is tearing down on SIGINT is still one ID's commit
+// failure, and must be recorded as one so reportUpdateFailures still runs for
+// the whole batch — including any earlier guard mismatch, whose exit 13 tells
+// scripts not to retry. Only cancellation BETWEEN attempts aborts the batch.
+func TestApplyUpdateProxiedOne_CommitCanceledStaysPerIDFailure(t *testing.T) {
+	provider := &fakeUOWProvider{
+		issue:  &types.Issue{ID: "bd-commit-2", Status: types.StatusOpen},
+		commit: func(int64) error { return context.Canceled },
+	}
+	withFakeProxiedUpdateEnv(t, provider)
+
+	var got *types.Issue
+	var fail *updateIDFailure
+	var err error
+	stderr := captureStderrDuring(t, func() {
+		in := &updateInput{fields: map[string]any{"title": "commit interrupted"}}
+		got, fail, err = applyUpdateProxiedOne(context.Background(), "bd-commit-2", in)
+	})
+	if err != nil {
+		t.Fatalf("applyUpdateProxiedOne returned hard error %v: a commit that failed with a context error is still a per-ID verdict", err)
+	}
+	if fail == nil || got != nil {
+		t.Fatalf("fail=%v issue=%v: a write whose commit failed must be reported as a failure", fail, got)
+	}
+	if !strings.Contains(fail.Error, "committing:") {
+		t.Errorf("fail.Error = %q, want it attributed to the commit", fail.Error)
+	}
+	if !strings.Contains(stderr, "Error committing bd-commit-2") {
+		t.Errorf("stderr = %q, want the commit failure named on stderr", stderr)
+	}
+}
+
+// TestApplyUpdateProxiedOne_CanceledBetweenAttemptsAbortsBatch is the other
+// side of that seam: when cancellation lands between two conflict retries the
+// retry loop reports the context's own error, no stage failed, and no verdict
+// was reached for this ID. Abort the batch rather than inventing a per-ID
+// failure for a write whose outcome nobody observed.
+func TestApplyUpdateProxiedOne_CanceledBetweenAttemptsAbortsBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	provider := &fakeUOWProvider{
+		issue: &types.Issue{ID: "bd-cancel-1", Status: types.StatusOpen},
+		commit: func(int64) error {
+			cancel() // SIGINT lands while this attempt is losing Dolt's merge
+			return serializationFailure()
+		},
+	}
+	withFakeProxiedUpdateEnv(t, provider)
+
+	in := &updateInput{fields: map[string]any{"title": "interrupted"}}
+	got, fail, err := applyUpdateProxiedOne(ctx, "bd-cancel-1", in)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the context error so the batch aborts", err)
+	}
+	if fail != nil || got != nil {
+		t.Fatalf("fail=%v issue=%v: an unobserved outcome is not a per-ID verdict", fail, got)
+	}
+}

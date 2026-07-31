@@ -88,23 +88,38 @@ type proxiedUpdateAttempt struct {
 	notesOverwritten bool
 }
 
-// uowStageProvider records the outcome of the last NewUOW call so the caller
-// can attribute an error to the stage that produced it. The attempt function
-// only ever returns serialization failures, so any other error out of
-// uow.RunTxResultWithin came from NewUOW (before the attempt ran), from the
-// commit that follows it, or from the context being canceled between attempts
-// — three different outcomes for the batch. newUOWErr is overwritten on every
-// call, so it is non-nil exactly when the final attempt never got a unit of
-// work.
+// uowStageProvider records the errors the two stages the shared retry loop
+// owns — opening the unit of work and committing it — hand back on the most
+// recent attempt, so applyUpdateProxiedOne can attribute the error it gets
+// from uow.RunTxResultWithin to the stage that produced it. The bespoke loop
+// this replaced attributed errors inline, at the site that produced them; the
+// recorded errors put attribution back on identity rather than on guesswork
+// about what an error looks like. Both fields are reset on every NewUOW, so
+// they describe the final attempt only.
 type uowStageProvider struct {
 	uow.UnitOfWorkProvider
 	newUOWErr error
+	commitErr error
 }
 
 func (p *uowStageProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
 	uw, err := p.UnitOfWorkProvider.NewUOW(ctx)
-	p.newUOWErr = err
-	return uw, err
+	p.newUOWErr, p.commitErr = err, nil
+	if err != nil {
+		return uw, err
+	}
+	return &uowStageRecorder{UnitOfWork: uw, provider: p}, nil
+}
+
+type uowStageRecorder struct {
+	uow.UnitOfWork
+	provider *uowStageProvider
+}
+
+func (u *uowStageRecorder) Commit(ctx context.Context, message string) error {
+	err := u.UnitOfWork.Commit(ctx, message)
+	u.provider.commitErr = err
+	return err
 }
 
 // applyUpdateProxiedOne applies one issue's update through uow.RunTxResultWithin,
@@ -131,23 +146,37 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 			return applyUpdateProxiedAttempt(ctx, uw, id, in)
 		})
 	if err != nil {
+		// The retry loop hands back the error a stage returned, unchanged
+		// (backoff unwraps its Permanent envelope), so the errors recorded by
+		// provider identify the stage by identity. The one error no stage
+		// produced is the context's own: backoff substitutes ctx.Err() when
+		// cancellation cuts the loop short between attempts.
 		switch {
+		case provider.newUOWErr != nil && errors.Is(err, provider.newUOWErr):
+			fmt.Fprintf(os.Stderr, "Error opening unit of work for %s: %v\n", id, err)
+			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("opening unit of work: %v", err)}, nil
 		case uow.IsSerializationError(err):
 			// Retries exhausted while losing Dolt's commit-time merge. The
 			// write did NOT land; fail loudly instead of exiting 0.
 			fmt.Fprintf(os.Stderr, "Error updating %s: retries exhausted on write conflicts: %v\n", id, err)
 			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("retries exhausted on write conflicts: %v", err)}, nil
-		case provider.newUOWErr != nil:
-			fmt.Fprintf(os.Stderr, "Error opening unit of work for %s: %v\n", id, err)
-			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("opening unit of work: %v", err)}, nil
+		case provider.commitErr != nil && errors.Is(err, provider.commitErr):
+			fmt.Fprintf(os.Stderr, "Error committing %s: %v\n", id, err)
+			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("committing: %v", err)}, nil
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			// Cancellation cut the retry loop short between attempts (SIGINT
 			// cancels bd's root context). That is not a per-issue verdict:
-			// abort the whole batch, as the loop this replaced did.
+			// abort the whole batch, as the loop this replaced did. A commit
+			// that itself failed with a context error is NOT this case — it is
+			// a per-ID commit failure, caught by the arm above.
 			return nil, nil, err
 		default:
-			fmt.Fprintf(os.Stderr, "Error committing %s: %v\n", id, err)
-			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("committing: %v", err)}, nil
+			// Unreachable today: the attempt returns terminal per-issue
+			// failures as an attempt result, never as an error, so the only
+			// errors it can produce are serialization failures. Attribute
+			// anything new it grows to the update, which is where it came from.
+			fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
+			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("updating: %v", err)}, nil
 		}
 	}
 	if attempt.fail != nil {
