@@ -84,7 +84,16 @@ const (
 	stubBackendError = "connection reset by peer"
 )
 
-// proxiedLookupCommands is every proxied-server command that resolves an id
+// showViewCmd builds the command for one of `bd show`'s alternate views.
+// Only the named flag is registered; gatherShowProxiedInput reads the rest off
+// an empty flag set, which yields their zero values.
+func showViewCmd(view string) *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool(view, true, "")
+	return cmd
+}
+
+// proxiedLookupCommands is every proxied-server call site that resolves an id
 // through workapi.GetIssueOrWisp, driven at its real entry point with an id
 // that cannot resolve. Each names the exact stderr line for the two ways that
 // resolution can fail; the phrasings differ per command because they are the
@@ -99,6 +108,11 @@ var proxiedLookupCommands = []struct {
 	wantNotFound string
 	// wantHardErr is stderr when the lookup fails for any other reason.
 	wantHardErr string
+	// exitsZero marks the views that report per id and keep going. --refs and
+	// --children print the failure and move to the next id, so one bad id out
+	// of one still leaves the command at exit 0. That predates this slice; the
+	// branch under test is what they print, not what they return.
+	exitsZero bool
 }{
 	{
 		name: "comments",
@@ -146,16 +160,42 @@ var proxiedLookupCommands = []struct {
 			return runShowProxiedServer(&cobra.Command{}, ctx, []string{stubMissingID})
 		},
 		// show reports per id and keeps going, so its line has no "Error: "
-		// prefix and the non-zero exit comes from the empty result.
+		// prefix; the non-zero exit comes from the empty result at the end.
 		wantNotFound: "Issue bd-missing not found",
 		wantHardErr:  "Error fetching bd-missing: connection reset by peer",
+	},
+	{
+		name: "show --refs",
+		run: func(ctx context.Context) error {
+			return runShowProxiedServer(showViewCmd("refs"), ctx, []string{stubMissingID})
+		},
+		wantNotFound: "Issue bd-missing not found",
+		wantHardErr:  "Error resolving bd-missing: connection reset by peer",
+		exitsZero:    true,
+	},
+	{
+		name: "show --children",
+		run: func(ctx context.Context) error {
+			return runShowProxiedServer(showViewCmd("children"), ctx, []string{stubMissingID})
+		},
+		wantNotFound: "Issue bd-missing not found",
+		wantHardErr:  "Error resolving bd-missing: connection reset by peer",
+		exitsZero:    true,
+	},
+	{
+		name: "show --thread",
+		run: func(ctx context.Context) error {
+			return runShowProxiedServer(showViewCmd("thread"), ctx, []string{stubMissingID})
+		},
+		wantNotFound: "Error: message bd-missing not found",
+		wantHardErr:  "Error: fetching message bd-missing: connection reset by peer",
 	},
 }
 
 // TestProxiedLookupReportsMissingIssue covers the errors.Is(storage.ErrNotFound)
-// branch that bd-hc1 added to all six proxied commands. Every one of them used
-// to hand the user db.issueSQLRepositoryImpl.Get's raw sql.ErrNoRows for a
-// typo'd id; gate list is the exception, and its own regression is in
+// branch bd-hc1 added at every proxied call site. All but one used to hand the
+// user db.issueSQLRepositoryImpl.Get's raw sql.ErrNoRows for a typo'd id; gate
+// list is the exception, and its own regression is in
 // TestProxiedLookupReportsBackendFailure.
 func TestProxiedLookupReportsMissingIssue(t *testing.T) {
 	for _, tc := range proxiedLookupCommands {
@@ -165,8 +205,8 @@ func TestProxiedLookupReportsMissingIssue(t *testing.T) {
 			var err error
 			stderr := captureStderrDuring(t, func() { err = tc.run(context.Background()) })
 
-			if err == nil {
-				t.Error("a missing id must exit non-zero")
+			if gotZero := err == nil; gotZero != tc.exitsZero {
+				t.Errorf("exit zero = %v, want %v (err = %v)", gotZero, tc.exitsZero, err)
 			}
 			if got := strings.TrimSpace(stderr); got != tc.wantNotFound {
 				t.Errorf("stderr = %q, want %q", got, tc.wantNotFound)
@@ -190,8 +230,8 @@ func TestProxiedLookupReportsBackendFailure(t *testing.T) {
 			var err error
 			stderr := captureStderrDuring(t, func() { err = tc.run(context.Background()) })
 
-			if err == nil {
-				t.Error("a failed lookup must exit non-zero")
+			if gotZero := err == nil; gotZero != tc.exitsZero {
+				t.Errorf("exit zero = %v, want %v (err = %v)", gotZero, tc.exitsZero, err)
 			}
 			if got := strings.TrimSpace(stderr); got != tc.wantHardErr {
 				t.Errorf("stderr = %q, want %q", got, tc.wantHardErr)
