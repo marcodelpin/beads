@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/workapi"
 	publicops "github.com/steveyegge/beads/issueops"
 )
@@ -76,21 +77,29 @@ func (r *issueReader) List(ctx context.Context, req publicops.ListRequest) (publ
 		if err != nil {
 			return publicops.IssuePage{}, err
 		}
+		// WHICH QUERY is the only thing --ready changes. The epilogue below is
+		// deliberately outside the branch: when it lived inside the non-ready
+		// arm only, the two arms of one contract method answered in different
+		// orders, and a --ready page under a sort the database cannot express
+		// came back untrimmed. The sibling implementation
+		// (workapi.storeReader.List) sorts and trims both arms, so the split
+		// was drift between two implementations of one method — seeded inside
+		// the seam built to eliminate drift.
+		var page domain.SearchCountsPage
 		if req.ReadyFlag {
-			page, err := uw.IssueUseCase().GetReadyWorkWithCounts(ctx, workapi.ReadyFilterFromIssueFilter(filter))
-			if err != nil {
-				return publicops.IssuePage{}, err
-			}
-			return readerPage(page.Items, page.HasMore), nil
+			page, err = uw.IssueUseCase().GetReadyWorkWithCounts(ctx, workapi.ReadyFilterFromIssueFilter(filter))
+		} else {
+			page, err = uw.IssueUseCase().SearchIssuesWithCounts(ctx, "", filter)
 		}
-		page, err := uw.IssueUseCase().SearchIssuesWithCounts(ctx, "", filter)
 		if err != nil {
 			return publicops.IssuePage{}, err
 		}
+
 		// This seam reports HasMore natively, so there is no over-fetch to
 		// trim — but the display order still has to be applied here, because a
 		// sort the database cannot express left the query unlimited and this is
-		// where the requested order first exists.
+		// where the requested order first exists. The trim then cuts on that
+		// order.
 		workapi.SortIssuesWithCounts(page.Items, req.SortBy, req.Reverse)
 		items, hasMore := page.Items, page.HasMore
 		if limit := workapi.PageLimit(req); limit > 0 && len(items) > limit {
