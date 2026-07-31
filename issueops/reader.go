@@ -159,6 +159,9 @@ type ListRequest struct {
 	DeferredFlag bool
 	OverdueFlag  bool
 
+	// MetadataFields is a top-level metadata equality filter and
+	// HasMetadataKey a top-level key-presence filter. Keys are validated
+	// inside, as they are for ReadyRequest.
 	MetadataFields map[string]string
 	HasMetadataKey string
 

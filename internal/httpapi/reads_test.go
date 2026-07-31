@@ -18,14 +18,22 @@ import (
 type recordingIssues struct {
 	domain.IssueUseCase
 
-	mu    sync.Mutex
-	ready []types.WorkFilter
-	items []*types.IssueWithCounts
+	mu     sync.Mutex
+	ready  []types.WorkFilter
+	search []types.IssueFilter
+	items  []*types.IssueWithCounts
 }
 
 func (f *recordingIssues) GetReadyWorkWithCounts(_ context.Context, filter types.WorkFilter) (domain.SearchCountsPage, error) {
 	f.mu.Lock()
 	f.ready = append(f.ready, filter)
+	f.mu.Unlock()
+	return domain.SearchCountsPage{Items: f.items}, nil
+}
+
+func (f *recordingIssues) SearchIssuesWithCounts(_ context.Context, _ string, filter types.IssueFilter) (domain.SearchCountsPage, error) {
+	f.mu.Lock()
+	f.search = append(f.search, filter)
 	f.mu.Unlock()
 	return domain.SearchCountsPage{Items: f.items}, nil
 }
@@ -36,10 +44,26 @@ func (f *recordingIssues) readyFilters() []types.WorkFilter {
 	return append([]types.WorkFilter(nil), f.ready...)
 }
 
+func (f *recordingIssues) searchFilters() []types.IssueFilter {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]types.IssueFilter(nil), f.search...)
+}
+
+// emptyConfig is the workspace vocabulary a bare fixture has: no custom
+// statuses, no custom types, no infra overrides. The list reader loads it
+// through the unit of work before it builds a filter, so a read test that
+// drives the list path has to answer it.
+type emptyConfig struct{ domain.ConfigUseCase }
+
+func (emptyConfig) GetCustomStatuses(context.Context) ([]types.CustomStatus, error) { return nil, nil }
+func (emptyConfig) GetCustomTypes(context.Context) ([]string, error)                { return nil, nil }
+func (emptyConfig) GetInfraTypes(context.Context) (map[string]bool, error)          { return nil, nil }
+
 func newReadServer(t *testing.T, cfg Config) (*testServer, *recordingIssues) {
 	t.Helper()
 	rec := &recordingIssues{}
-	cfg.Provider = &fakeProvider{issues: &fakeIssues{}, readIssues: rec}
+	cfg.Provider = &fakeProvider{issues: &fakeIssues{}, readIssues: rec, readConfig: emptyConfig{}}
 	return newTestServer(t, cfg), rec
 }
 
@@ -98,6 +122,69 @@ func TestReadySortIsValidatedAgainstTheDocumentedEnum(t *testing.T) {
 	}
 	if n := len(rec.readyFilters()); n != 0 {
 		t.Errorf("%d ready queries ran; a refused request must not reach storage", n)
+	}
+}
+
+// TestABuilderRefusalIsTheDocumentedBadRequest drives every row of
+// invalidFilterParam end to end, through the real builders.
+//
+// The mapping is prose matching on this repository's own error strings, which
+// is only safe while something fails when one of those strings is reworded.
+// Nothing did: the builders' golden files record successful filters and never
+// see a message, so `invalid issue type ` in particular was pinned nowhere and
+// a reworded builder would have quietly demoted `?type=bogus` from 400
+// invalid_value to 500 internal.
+//
+// metadata_field and has_metadata_key are here for a second reason: their keys
+// used to be checked only in the SQL builder, whose error arrives wrapped in
+// the storage method's name and therefore cannot be classified at all. The
+// frozen document says an invalid key is a 400; it was a 500.
+func TestABuilderRefusalIsTheDocumentedBadRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		path  string
+		param string
+	}{
+		{"an issue type outside the workspace vocabulary", "/v0/beads/issues?type=bogus", "type"},
+		{"a status that is not a status", "/v0/beads/issues?status=bogus", "status"},
+		{"a metadata field key the query layer cannot spell", "/v0/beads/issues?metadata_field=1bad=x", "metadata_field"},
+		{"a has-metadata key the query layer cannot spell", "/v0/beads/issues?has_metadata_key=1bad", "has_metadata_key"},
+		{"a metadata field key on the ready surface", "/v0/beads/ready?metadata_field=1bad=x", "metadata_field"},
+		{"a has-metadata key on the ready surface", "/v0/beads/ready?has_metadata_key=1bad", "has_metadata_key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, _ := newReadServer(t, Config{})
+			resp := ts.get(t, tc.path)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("GET %s: status = %d, want 400", tc.path, resp.StatusCode)
+			}
+			body := decodeBody(t, resp)
+			if body["code"] != string(CodeInvalidArgument) || body["param"] != tc.param || body["reason"] != string(ReasonInvalidValue) {
+				t.Errorf("GET %s: body = %v, want invalid_argument on param %s with reason invalid_value", tc.path, body, tc.param)
+			}
+			// The detail reflects the caller's own input back, which is what a
+			// 4xx detail is for — and is the half that stops being true if the
+			// builder's message moves.
+			if detail, _ := body["detail"].(string); detail == "" {
+				t.Errorf("GET %s: no detail; the builder's own message is the detail", tc.path)
+			}
+		})
+	}
+}
+
+// TestAnInvalidMetadataKeyNeverReachesStorage: the refusal is worth having only
+// if it happens before the query runs. A key that reached the SQL builder came
+// back as a 500 with the storage method's name wrapped around it.
+func TestAnInvalidMetadataKeyNeverReachesStorage(t *testing.T) {
+	ts, rec := newReadServer(t, Config{})
+	if resp := ts.get(t, "/v0/beads/issues?metadata_field=1bad=x"); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if n := len(rec.searchFilters()); n != 0 {
+		t.Errorf("%d list queries ran; the refusal must happen before the database is touched", n)
+	}
+	if n := len(rec.readyFilters()); n != 0 {
+		t.Errorf("%d ready queries ran; the refusal must happen before the database is touched", n)
 	}
 }
 

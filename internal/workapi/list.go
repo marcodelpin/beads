@@ -374,6 +374,9 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	if in.HasMetadataKey != "" {
 		filter.HasMetadataKey = in.HasMetadataKey
 	}
+	if err := ValidateMetadataFilters(in.MetadataFields, in.HasMetadataKey); err != nil {
+		return filter, err
+	}
 
 	if !in.IncludeInfra && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
 		filter.SkipWisps = true

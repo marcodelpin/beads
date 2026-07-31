@@ -44,6 +44,7 @@ type fakeUOW struct {
 	// line the actor is interpolated into.
 	issues     *fakeIssues
 	readIssues domain.IssueUseCase
+	readConfig domain.ConfigUseCase
 	commits    []string
 }
 
@@ -53,6 +54,10 @@ func (u *fakeUOW) IssueUseCase() domain.IssueUseCase {
 	}
 	return u.issues
 }
+
+// ConfigUseCase answers the list reader's config load. It is nil for the claim
+// path, which never asks for one.
+func (u *fakeUOW) ConfigUseCase() domain.ConfigUseCase { return u.readConfig }
 
 func (u *fakeUOW) Commit(_ context.Context, message string) error {
 	u.mu.Lock()
@@ -91,6 +96,7 @@ type fakeProvider struct {
 	// without teaching the claim fake to answer queries it has no opinion on.
 	issues     *fakeIssues
 	readIssues domain.IssueUseCase
+	readConfig domain.ConfigUseCase
 }
 
 func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
@@ -104,7 +110,7 @@ func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
-	u := &fakeUOW{issues: p.issues, readIssues: p.readIssues}
+	u := &fakeUOW{issues: p.issues, readIssues: p.readIssues, readConfig: p.readConfig}
 	p.mu.Lock()
 	p.uows = append(p.uows, u)
 	p.mu.Unlock()

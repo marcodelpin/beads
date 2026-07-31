@@ -78,6 +78,10 @@ func BuildReadyFilter(in issueops.ReadyRequest) (types.WorkFilter, error) {
 		filter.MetadataFields = in.MetadataFields
 	}
 
+	if err := ValidateMetadataFilters(in.MetadataFields, in.HasMetadataKey); err != nil {
+		return filter, err
+	}
+
 	if !filter.SortPolicy.IsValid() {
 		return filter, fmt.Errorf("invalid sort policy '%s'. Valid values: hybrid, priority, oldest", in.Sort)
 	}

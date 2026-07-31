@@ -263,11 +263,16 @@ func (s *Server) failReadErr(w http.ResponseWriter, r *http.Request, err error) 
 //
 // It matches on the builder's message prefixes, and that is a deliberate,
 // bounded exception to this package's "never classify by prose" rule: these
-// are THIS repository's own error strings, pinned by the builders' golden
-// tests, not a foreign library's. The alternative — typed errors for each — is
-// the right end state and is a change to internal/workapi, not to the wire.
-// A message that stops matching degrades to a 500, which is loud, rather than
-// to a wrong 400.
+// are THIS repository's own error strings, not a foreign library's. The
+// alternative — typed errors for each — is the right end state and is a change
+// to internal/workapi, not to the wire. A message that stops matching degrades
+// to a 500, which is loud, rather than to a wrong 400.
+//
+// Every row here is driven end to end by a case in
+// TestABuilderRefusalIsTheDocumentedBadRequest, so a reworded builder message
+// fails a test rather than silently demoting its parameter to a 500. That
+// test IS the pin: the builders' golden files record successful filters only,
+// and cannot see a message at all.
 func invalidFilterParam(err error) (string, bool) {
 	msg := err.Error()
 	switch {
@@ -277,6 +282,10 @@ func invalidFilterParam(err error) (string, bool) {
 		return "type", true
 	case strings.HasPrefix(msg, "invalid sort policy "):
 		return "sort", true
+	case strings.HasPrefix(msg, "invalid metadata field key"):
+		return "metadata_field", true
+	case strings.HasPrefix(msg, "invalid metadata key filter"):
+		return "has_metadata_key", true
 	}
 	return "", false
 }
