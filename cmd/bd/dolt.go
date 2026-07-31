@@ -97,6 +97,7 @@ Keys:
   host      Server host (default: 127.0.0.1)
   port      Server port (auto-detected; override with bd dolt set port <N>)
   user      MySQL user (default: root)
+  tls       Require TLS for the server connection (true/false; default: false)
   data-dir  Custom dolt data directory (absolute path; default: .beads/dolt)
 
 Use --update-config to also write to config.yaml for team-wide defaults.
@@ -105,6 +106,7 @@ Examples:
   bd dolt set database myproject
   bd dolt set host 192.168.1.100
   bd dolt set port 3307 --update-config
+  bd dolt set tls true
   bd dolt set data-dir /home/user/.beads-dolt/myproject`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1976,6 +1978,14 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 		cfg.DoltServerUser = value
 		yamlKey = "dolt.user"
 
+	case "tls":
+		lower := strings.ToLower(value)
+		if lower != "true" && lower != "false" {
+			return HandleError("tls must be 'true' or 'false'")
+		}
+		cfg.DoltServerTLS = lower == "true"
+		yamlKey = "dolt.tls"
+
 	case "data-dir":
 		// GH#2438: In server mode, data-dir has no effect on which database
 		// the server connects to. Setting it silently switches the local
@@ -2037,7 +2047,7 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown key '%s'\n", key)
-		fmt.Fprintf(os.Stderr, "Valid keys: database, host, port, socket, user, data-dir, shared-server\n")
+		fmt.Fprintf(os.Stderr, "Valid keys: database, host, port, socket, user, tls, data-dir, shared-server\n")
 		return SilentExit()
 	}
 

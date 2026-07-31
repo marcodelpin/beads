@@ -1028,3 +1028,36 @@ func TestGlobalDoltDatabase_OmittedFromJSON(t *testing.T) {
 		t.Error("global_dolt_database should be omitted from JSON when empty")
 	}
 }
+
+func TestGetDoltServerTLSConfigYaml(t *testing.T) {
+	// Mirror of the dolt.host config.yaml layering for tls.
+	// Precedence: env > metadata.json > config.yaml > default (false).
+
+	t.Setenv("BEADS_DOLT_SERVER_TLS", "")
+
+	configDir := t.TempDir()
+	configYaml := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configYaml, []byte("dolt.tls: \"true\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", configDir)
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("config.Initialize: %v", err)
+	}
+	t.Cleanup(config.ResetForTesting)
+
+	emptyCfg := &Config{}
+	if !emptyCfg.GetDoltServerTLS() {
+		t.Error("empty cfg + config.yaml dolt.tls=true: GetDoltServerTLS() = false, want true")
+	}
+
+	metaCfg := &Config{DoltServerTLS: true}
+	if !metaCfg.GetDoltServerTLS() {
+		t.Error("metadata dolt_server_tls=true: GetDoltServerTLS() = false, want true")
+	}
+
+	t.Setenv("BEADS_DOLT_SERVER_TLS", "false")
+	if emptyCfg.GetDoltServerTLS() {
+		t.Error("env BEADS_DOLT_SERVER_TLS=false over config.yaml: GetDoltServerTLS() = true, want false")
+	}
+}

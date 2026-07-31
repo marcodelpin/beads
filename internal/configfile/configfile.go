@@ -494,7 +494,10 @@ func (c *Config) GetDoltServerTLS() bool {
 	if t := os.Getenv("BEADS_DOLT_SERVER_TLS"); t != "" {
 		return t == "1" || strings.ToLower(t) == "true"
 	}
-	return c.DoltServerTLS
+	if c.DoltServerTLS {
+		return true
+	}
+	return strings.EqualFold(config.GetYamlConfig("dolt.tls"), "true")
 }
 
 // GetDoltDataDir returns the custom dolt data directory path.
