@@ -277,6 +277,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
+		promoteExplicitServerConnFlags(cmd)
 
 		// --force is a deprecated alias for --reinit-local. They share
 		// semantics for the local data-safety guard; both refuse remote
@@ -2755,6 +2756,30 @@ func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
 		return remoteCloneExternalServer
 	}
 	return remoteCloneCLI
+}
+
+// promoteExplicitServerConnFlags makes an explicit --server-host/--server-port/
+// --server-user flag outrank the corresponding BEADS_DOLT_SERVER_* environment
+// variable. Every downstream resolver (configfile getters, doltserver
+// DefaultConfig) consults the environment first, so without promotion a stale
+// shell-profile value silently redirects init to a different server than the
+// one named on the command line.
+func promoteExplicitServerConnFlags(cmd *cobra.Command) {
+	if cmd.Flags().Changed("server-host") {
+		if v, _ := cmd.Flags().GetString("server-host"); v != "" {
+			os.Setenv("BEADS_DOLT_SERVER_HOST", v)
+		}
+	}
+	if cmd.Flags().Changed("server-port") {
+		if v, _ := cmd.Flags().GetInt("server-port"); v > 0 {
+			os.Setenv("BEADS_DOLT_SERVER_PORT", strconv.Itoa(v))
+		}
+	}
+	if cmd.Flags().Changed("server-user") {
+		if v, _ := cmd.Flags().GetString("server-user"); v != "" {
+			os.Setenv("BEADS_DOLT_SERVER_USER", v)
+		}
+	}
 }
 
 func initDoltServerTLSFromEnv() bool {
