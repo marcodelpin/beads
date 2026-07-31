@@ -13,6 +13,14 @@ import (
 // Because the generator emits a type alias for them, the compiler cannot see
 // the spec's property list at all — this test is the ONLY guard that the
 // document still describes the struct it claims to describe.
+//
+// EVERY x-go-type-pinned schema belongs here, not just the top-level response
+// bodies. Dependency, Comment and BondRef are nested inside issue bodies, so a
+// field added to one of them ships on the wire just as silently — and more
+// silently than an Issue field, which a populated `omitempty` tag would at
+// least surface in the byte-pinned CLI protocol corpus. internal/httpapi/
+// pinning.go proves those three are aliases; only this test proves the document
+// still describes them.
 var pinnedSchemas = []struct {
 	name   string
 	goType string
@@ -22,6 +30,9 @@ var pinnedSchemas = []struct {
 	{"IssueWithCounts", "types.IssueWithCounts", types.IssueWithCounts{}},
 	{"IssueDetails", "types.IssueDetails", types.IssueDetails{}},
 	{"IssueWithDependencyMetadata", "types.IssueWithDependencyMetadata", types.IssueWithDependencyMetadata{}},
+	{"Dependency", "types.Dependency", types.Dependency{}},
+	{"Comment", "types.Comment", types.Comment{}},
+	{"BondRef", "types.BondRef", types.BondRef{}},
 }
 
 // omittedProperties lists JSON field names a pinned schema deliberately does
@@ -87,6 +98,11 @@ func TestWireTagBijection(t *testing.T) {
 // name and are excluded by construction, which is what keeps internal-only
 // fields (content hashes, row versions, routing overrides, the lite-partial
 // marker) out of the contract without an allowlist entry.
+//
+// An exported field with NO json tag is a wire field too — encoding/json keys
+// it by its Go name — so it counts under that name. Treating a missing tag as
+// "not on the wire" would have left the only hole in this gate: an untagged
+// field ships in every response while the schema says nothing about it.
 func jsonTagNames(t *testing.T, rt reflect.Type) map[string]bool {
 	t.Helper()
 	for rt.Kind() == reflect.Pointer {
@@ -116,9 +132,15 @@ func jsonTagNames(t *testing.T, rt reflect.Type) map[string]bool {
 				}
 				continue
 			}
+			// An embedded non-struct (or embedded pointer to one) marshals
+			// under its TYPE name.
+			name = f.Name
 		}
-		if name == "-" || name == "" || !f.IsExported() {
+		if name == "-" || !f.IsExported() {
 			continue
+		}
+		if name == "" {
+			name = f.Name
 		}
 		out[name] = true
 	}
