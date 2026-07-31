@@ -8,7 +8,6 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
-	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/internal/workapi"
 )
 
@@ -104,20 +103,6 @@ func gatherReadyInput(cmd *cobra.Command) (readyInput, error) {
 		return in, HandleErrorRespectJSON("--offset cannot be combined with --explain")
 	}
 
-	// The label sets are normalized here as well as in BuildReadyFilter
-	// (NormalizeLabels is idempotent) because the directory-aware default
-	// below has to be decided against normalized sets — and that default is
-	// derived from the client's cwd, so it cannot live in workapi. The CLI
-	// resolves it and hands the result over as an ordinary parameter.
-	in.Labels = utils.NormalizeLabels(in.Labels)
-	in.LabelsAny = utils.NormalizeLabels(in.LabelsAny)
-	in.ExcludeLabels = utils.NormalizeLabels(in.ExcludeLabels)
-	if len(in.Labels) == 0 && len(in.LabelsAny) == 0 {
-		if dirLabels := config.GetDirectoryLabels(); len(dirLabels) > 0 {
-			in.LabelsAny = dirLabels // Directory-aware label scoping (GH#541)
-		}
-	}
-
 	// Use Changed() to properly handle P0 (priority=0)
 	if cmd.Flags().Changed("priority") {
 		in.Priority, _ = cmd.Flags().GetInt("priority")
@@ -149,6 +134,23 @@ func gatherReadyInput(cmd *cobra.Command) (readyInput, error) {
 	filter, err := workapi.BuildReadyFilter(in.ReadyParams)
 	if err != nil {
 		return in, HandleErrorRespectJSON("%v", err)
+	}
+
+	// Directory-aware label scoping (GH#541). It is applied to the built
+	// filter rather than passed in as a parameter for two reasons: it is
+	// derived from the client's cwd, which a server process does not share,
+	// and `bd ready` has always put the configured label on the filter
+	// verbatim. Routing it through ReadyParams would run it through
+	// NormalizeLabels, so a directory.labels value with stray whitespace
+	// would start matching a different label than it does today.
+	//
+	// The emptiness test reads the filter's label sets, which BuildReadyFilter
+	// has already normalized: `--label "  "` is no label at all and must not
+	// suppress the default.
+	if len(filter.Labels) == 0 && len(filter.LabelsAny) == 0 {
+		if dirLabels := config.GetDirectoryLabels(); len(dirLabels) > 0 {
+			filter.LabelsAny = dirLabels
+		}
 	}
 	in.filter = filter
 

@@ -21,10 +21,11 @@ const DefaultReadyLimit = 100
 // to the caller.
 //
 // Labels, LabelsAny and ExcludeLabels are normalized here, so a frontend can
-// pass raw user input. A caller that has to decide something from the label
-// sets before calling - the CLI's directory-label default is the one such
-// case - must normalize first, because that decision is its own, not the
-// filter's.
+// pass raw user input. A frontend that has to decide something from the label
+// sets - the CLI's directory-label default is the one such case - reads them
+// back off the returned filter, where they are already normalized, rather than
+// normalizing its own copy: a value it then puts on the filter itself is its
+// own to shape, and running it through here would change it.
 type ReadyParams struct {
 	IssueType  string
 	Assignee   string
