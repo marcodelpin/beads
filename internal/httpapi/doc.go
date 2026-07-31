@@ -28,17 +28,33 @@
 // opaque cursor codec, the loopback-only refusal of an unlimited read, and the
 // wire envelopes.
 //
-// The other front door is only PARTLY on the role. `bd ready` and `bd list`
-// still build filters from the same request types through the same builders,
-// because they consume the filter for modes the role does not express; see
-// issueops.Reader's doc comment for the list and for why splitting those
-// commands would be worse. So the accurate statement of the anti-drift
-// property is: both surfaces answer from one library, and this surface can
-// reach it only through the role.
+// The other front door is only PARTLY on the role, and the accurate statement
+// of the anti-drift property is worth getting exactly right, because
+// overstating it is what stops the next person checking.
 //
-// The claim is the only mutation this surface has, and claim.go states the two
-// things a client must know before adopting it: the actor is caller-asserted
-// provenance rather than authenticated identity, and hooks do not fire.
+// `bd show --json` is on the role, on both its routes. `bd ready` and `bd
+// list` are not, on either: they consume the filter for modes the role does
+// not express (see issueops.Reader's doc comment for the list, and for why
+// splitting those commands would be worse). What they share instead is
+// CONSTRUCTION — the same request types through the same builders, pinned by
+// the builders' golden files — and, for `bd list` on both routes and `bd
+// ready` on the proxied one, EXECUTION: workapi.FinishPage is the sort, trim
+// and has-more verdict this surface's reader runs too. `bd ready`'s direct
+// route keeps its own epilogue because it publishes a hidden-row TOTAL this
+// surface has no member for.
+//
+// So: every read this surface answers goes through the role and cannot do
+// otherwise; the CLI answers three reads, one of which is on the role and two
+// of which are on the same builders and the same page epilogue. That is the
+// claim, and nothing beyond it is enforced.
+//
+// The claim OPERATION is the only mutation this surface has, and claim.go
+// states the two things a client must know before adopting it: the actor is
+// caller-asserted provenance rather than authenticated identity, and hooks do
+// not fire. It shares no function with `bd update --claim` above the
+// transaction and deliberately so — the CAS itself is already one
+// implementation one level down, in the domain's issue use case, which both
+// reach. claimOnUOW says why nothing above that is worth extracting.
 //
 // The Host allowlist is the DNS-rebinding defense, and it has no off switch.
 // Every bind answers to the loopback spellings and to the bound address itself;

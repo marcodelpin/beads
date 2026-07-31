@@ -32,14 +32,16 @@ import (
 // execute" ritual: it has no way to reach the pieces.
 //
 // THE BOUNDARY, stated once here because this is where the constructor lives:
-// today the store-backed role answers `bd show --json`, and the HTTP surface
-// reaches the uow-backed one. `bd ready` and `bd list` still call the workapi
-// builders directly — they consume the FILTER for the max-rows cap, --claim,
-// --watch, the hierarchical --parent tree and the text renderings — so Ready
-// and List below are reached only by tests until a front door moves. They are
-// covered by reader_test.go for exactly that reason. See issueops.Reader's doc
-// comment for why routing only those commands' JSON paths through the role
-// would be worse.
+// today the store-backed role answers `bd show --json` on the direct route,
+// and the HTTP surface and the proxied `bd show --json` reach the uow-backed
+// one. `bd ready` and `bd list` still call the workapi builders directly —
+// they consume the FILTER for the max-rows cap, --claim, --watch, the
+// hierarchical --parent tree and the text renderings — so Ready and List below
+// are reached only by tests until a front door moves. They are covered by
+// reader_test.go for exactly that reason, and their page epilogue is
+// workapi.FinishPage, which those commands DO run, so the untravelled path
+// here is the query and not the tail. See issueops.Reader's doc comment for
+// why routing only those commands' JSON paths through the role would be worse.
 func New(store storage.DoltStorage) (issueops.Reader, error) {
 	if store == nil {
 		return nil, &storage.ErrUnsupported{Op: "storereader.New", Backend: "nil"}

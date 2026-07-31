@@ -32,8 +32,12 @@ import (
 // which is a required PR job.
 //
 // `bd ready` and `bd list` still call the builders directly, for the reasons
-// issueops.Reader's doc comment sets out; this half of the boundary is the
-// half that can be enforced, so it is.
+// issueops.Reader's doc comment sets out. They are not unguarded for it: they
+// build from the same request types through the same builders, and they run
+// the same workapi.FinishPage epilogue the reader below runs — so what a CLI
+// listing and one of these bodies can differ by is presentation, not the query
+// and not the page. `bd show --json` is on the role outright, on both its
+// routes.
 //
 // What DOES stay here is transport: parameter decoding, the opaque cursor
 // codec, the bind-mode refusal of an unlimited read, and the wire envelopes.

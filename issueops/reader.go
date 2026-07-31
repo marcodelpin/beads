@@ -235,27 +235,60 @@ type IssuePage struct {
 //     httpapi-transport-boundary (depguard) denies the builders, and a
 //     forbidigo rule denies naming types.IssueFilter or types.WorkFilter in
 //     that package, which is the half that covers hand-rolling one.
-//   - `bd show --json` is on the role, and it reaches it through
-//     store.IssueReader(). The shared implementation behind that accessor
+//
+//   - `bd show --json`'s DETAIL VIEW is on the role on BOTH routes: the direct
+//     one reaches it through store.IssueReader(), the proxied one through the
+//     unit-of-work provider's accessor. Its ALTERNATE views are not, and are
+//     not the same question: --refs, --children, --thread and --as-of each
+//     answer with their own shape, which this contract does not describe and
+//     no HTTP operation serves. --short is not either; it prints one line from
+//     the issue, not a detail view.
+//
+//     The shared implementation behind the store accessor
 //     lives in internal/workapi/storereader, which the
 //     cmd-bd-reader-constructor depguard rule keeps out of cmd/bd: the
 //     accessor is where each storage decorator adds its layer, so a command
-//     that constructed a reader directly would get an unspanned one.
-//   - `bd ready` and `bd list` are NOT, on either route. They consume the
+//     that constructed a reader directly would get an unspanned one. `bd show`
+//     keeps its own id RESOLUTION — fuzzy ids, cross-repo routing, --current —
+//     and hands this contract the canonical id it resolved, because an
+//     affordance that can answer with a different issue than the caller named
+//     has no place on a contract an unattended HTTP client also calls.
+//
+//   - `bd ready` and `bd list` are NOT, on either route, and they will not be
+//     until there are more roles to route them through. They consume the
 //     FILTER itself for things this role does not express — the --max-rows
 //     cap, --claim, --gated, --explain, --mol, --watch, the hierarchical
 //     --parent tree, and the text renderings that want []*types.Issue rather
-//     than a counted page — so they still call the workapi builders directly.
-//     Their protection against drift is one level down: both routes and both
-//     Reader implementations build from these same request types through the
-//     same builders, which the builders' golden files pin. Routing only their
-//     JSON paths through the role would fork each command in two, which is
-//     more drift, not less.
+//     than a counted page. Routing only their JSON paths through the role
+//     would fork each command in two, which is more drift, not less.
 //
-// Closing that gap needs more roles (a claim role, an explain role), not more
-// methods here. Until then the acceptance criterion is "no HTTP handler
-// constructs a filter", and it should be stated that way wherever it is
-// claimed.
+// WHAT THOSE TWO DO SHARE, stated exactly, because "not on the role" is not
+// the same as "unprotected":
+//
+//   - CONSTRUCTION. Every route of both commands, and both implementations of
+//     this interface, build from these same request types through the same
+//     two builders in internal/workapi, which the builders' golden files pin.
+//   - EXECUTION, for `bd list` on both routes: the sort, the trim to the page
+//     limit and the has-more verdict are workapi.FinishPage, the one function
+//     both implementations of List below also call. What is left differing
+//     between a CLI listing and an HTTP one is presentation and the
+//     --max-rows cap.
+//   - EXECUTION, for `bd ready`, on the PROXIED route only. The direct route
+//     keeps an epilogue of its own and cannot give it up: it answers the
+//     strictly larger question "how many rows did the limit hide" with a
+//     second counting query and publishes the total in its pagination meta,
+//     where this role answers only "were any hidden". Collapsing them would
+//     change one surface's published output.
+//
+// And in cmd/bd a forbidigo rule now makes a hand-rolled filter in `bd list`
+// or `bd show` — on either route — a lint failure too, with the files that
+// legitimately consume a filter named in .golangci.yml rather than blanket
+// excluded. `bd ready`'s files are among those named: its four flag-driven
+// modes are handed the filter itself, so it is guarded by the builder and the
+// golden files and not by the linter.
+//
+// Closing the rest needs more roles (a claim role, an explain role), not more
+// methods here.
 type Reader interface {
 	// Ready returns unblocked open work in the requested policy's order.
 	Ready(ctx context.Context, req ReadyRequest) (IssuePage, error)

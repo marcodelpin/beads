@@ -314,6 +314,34 @@ type claimOutcome struct {
 // protocol in here would be the second implementation that rule exists to
 // prevent.
 //
+// WHY THIS SHARES NO FUNCTION WITH `bd update --claim`, recorded here rather
+// than left as an oversight for someone to rediscover.
+//
+// The claim itself already IS one implementation, one level below both
+// surfaces: domain issueUseCaseImpl.claim holds the CAS, the eligibility
+// rules, the claim-pool case and the exact text of both refusals, and
+// ClaimIssue below and ApplyUpdate's spec.Claim arm — which is what the CLI
+// reaches — are two names for that one call. There is no claim logic above it
+// to extract.
+//
+// What sits above it on each surface is that surface's own protocol, and the
+// two have almost nothing in common. The CLI's is a batch over N ids that
+// accumulates a per-id failure list so a later winner cannot flip the exit code
+// and hide the ones that lost, resolves issue-or-wisp, applies guard
+// preconditions and merge-shaped field edits in the same attempt, fires hooks
+// after the write lands, and sorts its failures into an exit-code taxonomy
+// (ExitGuardMismatch is not exit 1). This one takes a single id, refuses wisps
+// outright, and answers a typed 409 carrying the assignee and status read back
+// inside the losing transaction so that a client never has to classify a
+// refusal by parsing its prose. A "shared claim function" spanning those would
+// be the batch loop and the problem-details shaping welded together, which is
+// not a claim and would have exactly one caller for each half.
+//
+// If that assessment stops holding it will be because a role appears — a claim
+// role beside issueops.Lifecycle, with its own accessor — and then both
+// surfaces move onto it. Until then they meet at uow.RunTxResult and at the
+// domain use case, which is where the correctness actually lives.
+//
 // WISPS ARE NOT CLAIMABLE OVER v0. This dispatches to the issues table only, so
 // a wisp id answers 404 — the wisp-aware resolve the CLI's `bd update --claim`
 // performs is the shared read path the detail slice introduces, and inventing a
