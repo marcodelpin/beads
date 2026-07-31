@@ -17,11 +17,16 @@
 // capability accessor — the same role, reached the same way, that `bd show
 // --json` reaches on a store. Filter construction, the workspace config it
 // depends on, the default limits and the wisp fallback all live inside that
-// role. A handler CANNOT build a filter here, and that is machine-checked: the
-// depguard rule httpapi-transport-boundary denies internal/workapi from this
-// package's non-test files. What does stay here is transport — parameter
-// decoding, the opaque cursor codec, the loopback-only refusal of an unlimited
-// read, and the wire envelopes.
+// role. A handler CANNOT build a filter here, and that is machine-checked by
+// two rules in .golangci.yml that cover the two ways it could be done:
+// httpapi-transport-boundary (depguard) denies internal/workapi from this
+// package's non-test files, so the builders are not callable; the forbidigo
+// rule denies naming types.IssueFilter or types.WorkFilter here at all, so a
+// hand-rolled filter is not writable either. The second is the one that
+// matches the failure — the hosted viewer's bug was a bare IssueFilter, not a
+// misused builder. What does stay here is transport — parameter decoding, the
+// opaque cursor codec, the loopback-only refusal of an unlimited read, and the
+// wire envelopes.
 //
 // The other front door is only PARTLY on the role. `bd ready` and `bd list`
 // still build filters from the same request types through the same builders,

@@ -20,12 +20,20 @@ import (
 // a bare IssueFilter and silently served in_progress rows as "ready" — is not
 // writable from here.
 //
-// That is a MACHINE claim, not a convention: the depguard rule
+// That is a MACHINE claim, not a convention, and it takes two rules because
+// there are two ways to build a filter. The depguard rule
 // httpapi-transport-boundary denies internal/workapi from this package's
-// non-test files, so the builders are not importable here at all. `bd ready`
-// and `bd list` still call them directly, for the reasons issueops.Reader's
-// doc comment sets out; this half of the boundary is the half that can be
-// enforced, so it is.
+// non-test files, so the builders are not importable here at all. That alone
+// would leave the door the hosted viewer actually walked through: it did not
+// misuse a builder, it hand-rolled `IssueFilter{}` — and internal/types is
+// reachable from here, for CheckFieldLen and IssueWithCounts below. So the
+// forbidigo rule in .golangci.yml denies NAMING types.IssueFilter or
+// types.WorkFilter in this package at all. Both rules are in `make ci-pr-lint`,
+// which is a required PR job.
+//
+// `bd ready` and `bd list` still call the builders directly, for the reasons
+// issueops.Reader's doc comment sets out; this half of the boundary is the
+// half that can be enforced, so it is.
 //
 // What DOES stay here is transport: parameter decoding, the opaque cursor
 // codec, the bind-mode refusal of an unlimited read, and the wire envelopes.

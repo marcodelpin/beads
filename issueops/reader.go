@@ -230,9 +230,11 @@ type IssuePage struct {
 //
 // WHERE THAT IS ENFORCED, precisely, because the difference matters:
 //
-//   - The HTTP surface is on the role for all three operations, and a
-//     depguard rule (httpapi-transport-boundary) makes reaching past it a
-//     lint failure rather than a review comment.
+//   - The HTTP surface is on the role for all three operations, and two lint
+//     rules make reaching past it a lint failure rather than a review comment:
+//     httpapi-transport-boundary (depguard) denies the builders, and a
+//     forbidigo rule denies naming types.IssueFilter or types.WorkFilter in
+//     that package, which is the half that covers hand-rolling one.
 //   - `bd show --json` is on the role.
 //   - `bd ready` and `bd list` are NOT, on either route. They consume the
 //     FILTER itself for things this role does not express — the --max-rows

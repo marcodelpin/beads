@@ -9,6 +9,7 @@ linters:
   enable:
     - depguard
     - errcheck
+    - forbidigo
     - gosec
     - misspell
     - unconvert
@@ -95,6 +96,31 @@ linters:
           deny:
             - pkg: github.com/steveyegge/beads/internal/workapi
               desc: "internal/httpapi is transport only: a read handler asks the provider for issueops.Reader and passes the whole request - it never builds a filter - see internal/httpapi/reads.go"
+    # The CONSTRUCTION half of that same boundary, and the half that actually
+    # matches the failure. The depguard rule above denies a handler IMPORTING
+    # the builders; it does not deny a handler naming the filter types, which
+    # internal/httpapi can already reach (reads.go uses types.CheckFieldLen and
+    # types.IssueWithCounts). A hand-rolled `types.IssueFilter{}` would skip the
+    # builders entirely and still lint clean - which is EXACTLY what the hosted
+    # viewer shipped: a bare IssueFilter that leaked gates, wisps, templates and
+    # closed beads that `bd list` hides.
+    #
+    # analyze-types resolves the selector to the type it actually denotes, so
+    # an aliased import of internal/types is caught and an unrelated package
+    # that happens to be called `types` is not.
+    #
+    # This linter carries this one rule and applies to this one package; the
+    # path-except exclusion below is what scopes it. There are ~750 legitimate
+    # filter literals elsewhere in the tree (storage, conformance, and the
+    # `bd ready`/`bd list` front doors that consume the filter for --claim,
+    # --watch and the --parent tree), so a tree-wide ban is not the claim being
+    # made and would not survive contact with the repository.
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^types\.(IssueFilter|WorkFilter)$'
+          pkg: '^github\.com/steveyegge/beads/internal/types$'
+          msg: "internal/httpapi is transport only: it never builds a filter. Pass the whole request to issueops.Reader and let the builders in internal/workapi construct one - see internal/httpapi/reads.go"
     errcheck:
       exclude-functions:
         - (*database/sql.DB).Close
@@ -121,6 +147,23 @@ linters:
 
   exclusions:
     rules:
+      # forbidigo holds exactly one rule - the filter-construction guard - and
+      # it is a statement about internal/httpapi, not about the tree. This is
+      # what scopes it there. A second forbidigo rule would need this widened
+      # or replaced; nothing else about the config would tell you that, so it
+      # is written here rather than left implicit.
+      - path-except: '^internal/httpapi/'
+        linters:
+          - forbidigo
+      # Tests are exempt for the same reason the depguard twin exempts them:
+      # recordingIssues in reads_test.go holds []types.WorkFilter and
+      # []types.IssueFilter to CAPTURE what the reader asked storage for, which
+      # is how the guard is checked, not a construction. `run.tests: false`
+      # already means this never fires - this is here so flipping that switch
+      # does not turn the guard into a landmine on its own oracle.
+      - path: '_test\.go'
+        linters:
+          - forbidigo
       # G304: File inclusion via variable in tests is safe (test data)
       - path: '_test\.go'
         linters:
