@@ -12,6 +12,7 @@ func newServerFlagsCmd() *cobra.Command {
 	c.Flags().String("server-host", "", "")
 	c.Flags().Int("server-port", 0, "")
 	c.Flags().String("server-user", "", "")
+	c.Flags().Bool("server-tls", false, "")
 	return c
 }
 
@@ -56,6 +57,36 @@ func TestPromoteExplicitServerConnFlags(t *testing.T) {
 		}
 		if got := os.Getenv("BEADS_DOLT_SERVER_PORT"); got != "3307" {
 			t.Errorf("BEADS_DOLT_SERVER_PORT = %q, want 3307", got)
+		}
+	})
+
+	t.Run("server-tls flag promotes both directions", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_TLS", "1")
+
+		c := newServerFlagsCmd()
+		if err := c.Flags().Set("server-tls", "false"); err != nil {
+			t.Fatal(err)
+		}
+		promoteExplicitServerConnFlags(c)
+		if got := os.Getenv("BEADS_DOLT_SERVER_TLS"); got != "0" {
+			t.Errorf("BEADS_DOLT_SERVER_TLS = %q, want 0 (explicit --server-tls=false)", got)
+		}
+
+		c = newServerFlagsCmd()
+		if err := c.Flags().Set("server-tls", "true"); err != nil {
+			t.Fatal(err)
+		}
+		promoteExplicitServerConnFlags(c)
+		if got := os.Getenv("BEADS_DOLT_SERVER_TLS"); got != "1" {
+			t.Errorf("BEADS_DOLT_SERVER_TLS = %q, want 1 (explicit --server-tls)", got)
+		}
+	})
+
+	t.Run("unset server-tls leaves environment untouched", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_TLS", "true")
+		promoteExplicitServerConnFlags(newServerFlagsCmd())
+		if got := os.Getenv("BEADS_DOLT_SERVER_TLS"); got != "true" {
+			t.Errorf("BEADS_DOLT_SERVER_TLS = %q, want true (untouched)", got)
 		}
 	})
 
