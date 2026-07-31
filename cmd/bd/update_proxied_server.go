@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/hooks"
@@ -22,7 +21,7 @@ import (
 )
 
 // proxiedUpdateRetryMaxElapsed bounds the whole-attempt retry loop for one
-// issue's update (matches uow.CommitWithRetries' budget). A var so tests can
+// issue's update (matches uow.RunTxResult's default budget). A var so tests can
 // shrink it when exercising conflict exhaustion.
 var proxiedUpdateRetryMaxElapsed = 15 * time.Second
 
@@ -78,9 +77,40 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	return nil
 }
 
-// applyUpdateProxiedOne applies one issue's update, redoing the WHOLE
-// read-merge-write in a fresh unit of work when Dolt reports a serialization
-// failure (the withRetryTx idiom from internal/storage/dolt).
+// proxiedUpdateAttempt is what one read-merge-write attempt hands back to the
+// shared retry loop. Exactly one of issue and fail is set; before and
+// notesOverwritten feed the reporting that must run once per landed write
+// rather than once per attempt.
+type proxiedUpdateAttempt struct {
+	issue            *types.Issue
+	before           *types.Issue
+	fail             *updateIDFailure
+	notesOverwritten bool
+}
+
+// uowStageProvider records the outcome of the last NewUOW call so the caller
+// can attribute an error to the stage that produced it. The attempt function
+// only ever returns serialization failures, so any other error out of
+// uow.RunTxResultWithin came from NewUOW (before the attempt ran), from the
+// commit that follows it, or from the context being canceled between attempts
+// — three different outcomes for the batch. newUOWErr is overwritten on every
+// call, so it is non-nil exactly when the final attempt never got a unit of
+// work.
+type uowStageProvider struct {
+	uow.UnitOfWorkProvider
+	newUOWErr error
+}
+
+func (p *uowStageProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
+	uw, err := p.UnitOfWorkProvider.NewUOW(ctx)
+	p.newUOWErr = err
+	return uw, err
+}
+
+// applyUpdateProxiedOne applies one issue's update through uow.RunTxResultWithin,
+// which redoes the WHOLE read-merge-write in a fresh unit of work when Dolt
+// reports a serialization failure — the one retry/commit implementation every
+// write path in the tree shares.
 //
 // The retry must wrap the whole attempt, never just the commit: a
 // serialization failure means the server already rolled the transaction back,
@@ -95,51 +125,58 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 		return nil, nil, HandleError("proxied-server UOW provider not initialized")
 	}
 
-	var issue *types.Issue
-	var fail *updateIDFailure
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = 25 * time.Millisecond
-	bo.MaxElapsedTime = proxiedUpdateRetryMaxElapsed
-	err := backoff.Retry(func() error {
-		var retryable bool
-		var attemptErr error
-		issue, fail, retryable, attemptErr = applyUpdateProxiedAttempt(ctx, id, in)
-		if attemptErr == nil {
-			return nil
-		}
-		if retryable {
-			return attemptErr
-		}
-		return backoff.Permanent(attemptErr)
-	}, backoff.WithContext(bo, ctx))
+	provider := &uowStageProvider{UnitOfWorkProvider: uowProvider}
+	attempt, err := uow.RunTxResultWithin(ctx, provider, proxiedUpdateRetryMaxElapsed,
+		func(ctx context.Context, uw uow.UnitOfWork) (proxiedUpdateAttempt, string, error) {
+			return applyUpdateProxiedAttempt(ctx, uw, id, in)
+		})
 	if err != nil {
-		if uow.IsSerializationError(err) {
+		switch {
+		case uow.IsSerializationError(err):
 			// Retries exhausted while losing Dolt's commit-time merge. The
 			// write did NOT land; fail loudly instead of exiting 0.
 			fmt.Fprintf(os.Stderr, "Error updating %s: retries exhausted on write conflicts: %v\n", id, err)
 			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("retries exhausted on write conflicts: %v", err)}, nil
+		case provider.newUOWErr != nil:
+			fmt.Fprintf(os.Stderr, "Error opening unit of work for %s: %v\n", id, err)
+			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("opening unit of work: %v", err)}, nil
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// Cancellation cut the retry loop short between attempts (SIGINT
+			// cancels bd's root context). That is not a per-issue verdict:
+			// abort the whole batch, as the loop this replaced did.
+			return nil, nil, err
+		default:
+			fmt.Fprintf(os.Stderr, "Error committing %s: %v\n", id, err)
+			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("committing: %v", err)}, nil
 		}
-		return nil, nil, err
 	}
-	return issue, fail, nil
+	if attempt.fail != nil {
+		return nil, attempt.fail, nil
+	}
+
+	// Post-commit reporting: the write has landed (or was the legitimately
+	// empty working set of a wisp-only update, which RunTxResultWithin
+	// tolerates), so these run exactly once no matter how many attempts the
+	// conflict retry burned.
+	if attempt.notesOverwritten {
+		warnNotesReplacement(id)
+	}
+	if err := fireProxiedUpdateHooks(ctx, attempt.before, attempt.issue); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", id, err)
+	}
+	return attempt.issue, nil, nil
 }
 
-// applyUpdateProxiedAttempt runs one full read-merge-write attempt in a fresh
-// unit of work. retryable is true only for serialization failures, where the
-// server-side rollback guarantees nothing landed and the whole attempt is safe
-// to redo. Terminal per-issue failures (not found, claim conflicts, commit
-// errors) print to stderr and return a non-nil fail with no error, so the
-// multi-ID loop records the failed ID, keeps going, and still exits non-zero
-// — matching the non-proxied path. A guard refusal sets fail.GuardMismatch so
-// the exit code distinguishes it (ExitGuardMismatch vs 1).
-func applyUpdateProxiedAttempt(ctx context.Context, id string, in *updateInput) (issue *types.Issue, fail *updateIDFailure, retryable bool, err error) {
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening unit of work for %s: %v\n", id, err)
-		return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("opening unit of work: %v", err)}, false, nil
-	}
-	defer uw.Close(ctx)
-
+// applyUpdateProxiedAttempt runs one full read-merge-write attempt in the fresh
+// unit of work handed to it. It returns a serialization failure verbatim so the
+// shared retry loop redoes the whole attempt — the server-side rollback
+// guarantees nothing landed. Terminal per-issue failures (not found, claim
+// conflicts, guard mismatches) print to stderr and come back as a non-nil fail
+// with an empty commit message, so nothing is committed, the multi-ID loop
+// records the failed ID, keeps going, and still exits non-zero — matching the
+// non-proxied path. A guard refusal sets fail.GuardMismatch so the exit code
+// distinguishes it (ExitGuardMismatch vs 1).
+func applyUpdateProxiedAttempt(ctx context.Context, uw uow.UnitOfWork, id string, in *updateInput) (proxiedUpdateAttempt, string, error) {
 	issueUC := uw.IssueUseCase()
 	current, err := issueUC.GetIssue(ctx, id)
 	if err != nil || current == nil {
@@ -148,15 +185,15 @@ func applyUpdateProxiedAttempt(ctx context.Context, id string, in *updateInput) 
 			current = wispCurrent
 		} else if err != nil {
 			fmt.Fprintf(os.Stderr, "Error resolving %s: %v\n", id, err)
-			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("resolving issue: %v", err)}, false, nil
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: fmt.Sprintf("resolving issue: %v", err)})
 		} else {
 			fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
-			return nil, &updateIDFailure{ID: id, Error: "issue not found"}, false, nil
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: "issue not found"})
 		}
 	}
 	if err := validateIssueUpdatable(id, current); err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
-		return nil, &updateIDFailure{ID: id, Error: err.Error()}, false, nil
+		return failedUpdateAttempt(&updateIDFailure{ID: id, Error: err.Error()})
 	}
 
 	// bd-98s5c: an unguarded assignee update must not silently overwrite
@@ -173,7 +210,7 @@ func applyUpdateProxiedAttempt(ctx context.Context, id string, in *updateInput) 
 		if err := validateIssueReassignable(id, current, actor, newAssignee,
 			uowClaimPoolAliases(ctx, uw), in.force); err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", err)
-			return nil, &updateIDFailure{ID: id, Error: err.Error()}, false, nil
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: err.Error()})
 		}
 	}
 
@@ -183,48 +220,42 @@ func applyUpdateProxiedAttempt(ctx context.Context, id string, in *updateInput) 
 	updated, err := issueUC.ApplyUpdate(ctx, id, spec, actor)
 	if err != nil {
 		if uow.IsSerializationError(err) {
-			return nil, nil, true, err
+			return proxiedUpdateAttempt{}, "", err
 		}
 		if errors.Is(err, storage.ErrAlreadyClaimed) || errors.Is(err, storage.ErrNotClaimable) {
 			fmt.Fprintf(os.Stderr, "Error claiming %s: %v\n", id, err)
-			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("claiming issue: %v", err)}, false, nil
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: fmt.Sprintf("claiming issue: %v", err)})
 		}
 		if isGuardMismatch(err) {
 			// bd-wsqvw guard verdict: the precondition no longer holds, nothing
 			// was written. Loud and non-zero, never collapsed to success —
 			// GuardMismatch routes the batch to ExitGuardMismatch.
 			fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
-			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("precondition failed: %v", err), GuardMismatch: true}, false, nil
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: fmt.Sprintf("precondition failed: %v", err), GuardMismatch: true})
 		}
 		fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, err)
-		return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("updating: %v", err)}, false, nil
+		return failedUpdateAttempt(&updateIDFailure{ID: id, Error: fmt.Sprintf("updating: %v", err)})
 	}
 
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: update %s", id)); err != nil {
-		if uow.IsSerializationError(err) {
-			// Dolt rolled the whole transaction back server-side; nothing
-			// landed. Signal the caller to redo the read-merge-write.
-			return nil, nil, true, err
-		}
-		if !isDoltNothingToCommit(err) {
-			fmt.Fprintf(os.Stderr, "Error committing %s: %v\n", id, err)
-			return nil, &updateIDFailure{ID: id, Error: fmt.Sprintf("committing: %v", err)}, false, nil
-		}
-		// "Nothing to commit" here is the legitimately-empty working set:
-		// wisp-only updates live in dolt_ignored tables, so a successful
-		// ApplyUpdate can leave nothing for the Dolt commit layer. The
-		// lost-write flavor — nothing-to-commit from re-committing a
-		// rolled-back session — cannot reach this branch because each attempt
-		// commits its own fresh unit of work exactly once.
-	}
-	if notesOverwritten {
-		warnNotesReplacement(id)
-	}
+	// The commit belongs to RunTxResultWithin: it retries the whole attempt on a
+	// serialization failure (Dolt rolled the transaction back server-side, so
+	// nothing landed) and tolerates "nothing to commit", the legitimately-empty
+	// working set of a wisp-only update — those live in dolt_ignored tables, so a
+	// successful ApplyUpdate can leave the Dolt commit layer with nothing to do.
+	// The lost-write flavor of nothing-to-commit — re-committing a rolled-back
+	// session — cannot arise, because each attempt commits its own fresh unit of
+	// work exactly once.
+	return proxiedUpdateAttempt{
+		issue:            updated,
+		before:           current,
+		notesOverwritten: notesOverwritten,
+	}, fmt.Sprintf("bd: update %s", id), nil
+}
 
-	if err := fireProxiedUpdateHooks(ctx, current, updated); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", id, err)
-	}
-	return updated, nil, false, nil
+// failedUpdateAttempt returns a terminal per-issue failure with no commit
+// message, so the shared retry loop skips the commit and stops retrying.
+func failedUpdateAttempt(fail *updateIDFailure) (proxiedUpdateAttempt, string, error) {
+	return proxiedUpdateAttempt{fail: fail}, "", nil
 }
 
 func fireProxiedUpdateHooks(ctx context.Context, before, after *types.Issue) error {

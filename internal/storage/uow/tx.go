@@ -74,10 +74,19 @@ func RunTx(ctx context.Context, p UnitOfWorkProvider, work TxFunc) error {
 }
 
 func RunTxResult[T any](ctx context.Context, p UnitOfWorkProvider, work TxFuncResult[T]) (T, error) {
+	return RunTxResultWithin(ctx, p, txRetryMaxElapsed, work)
+}
+
+// RunTxResultWithin is RunTxResult with an explicit retry budget, for callers
+// whose deadline differs from the default and for tests that need the
+// conflict-exhaustion path to arrive in milliseconds. When the budget runs out
+// the last serialization failure is returned unwrapped, so callers can tell an
+// exhausted write conflict from a permanent error.
+func RunTxResultWithin[T any](ctx context.Context, p UnitOfWorkProvider, maxElapsed time.Duration, work TxFuncResult[T]) (T, error) {
 	var result T
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = txRetryInitialInterval
-	bo.MaxElapsedTime = txRetryMaxElapsed
+	bo.MaxElapsedTime = maxElapsed
 
 	err := backoff.Retry(func() error {
 		uw, err := p.NewUOW(ctx)

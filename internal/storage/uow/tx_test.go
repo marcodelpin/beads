@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -251,6 +252,38 @@ func TestRunTxResult_RetriesOnSerializationError(t *testing.T) {
 	}
 	if result < 2 {
 		t.Errorf("expected result from retry attempt, got %d", result)
+	}
+}
+
+// TestRunTxResultWithin_ExhaustedBudgetReturnsSerializationError pins what a
+// caller branches on when every attempt loses Dolt's commit-time merge: the
+// explicit budget bounds the loop, and the error handed back is the last
+// serialization failure itself — not a context error, not a wrapper. Callers
+// (bd update on the proxied-server path, and the HTTP claim endpoint after it)
+// use IsSerializationError on this error to report an exhausted write conflict
+// loudly instead of exiting 0 on a write that never landed.
+func TestRunTxResultWithin_ExhaustedBudgetReturnsSerializationError(t *testing.T) {
+	provider := &mockUnitOfWorkProvider{}
+
+	var callCount int32
+	start := time.Now()
+	_, err := RunTxResultWithin(context.Background(), provider, 100*time.Millisecond,
+		func(ctx context.Context, uw UnitOfWork) (int, string, error) {
+			atomic.AddInt32(&callCount, 1)
+			return 0, "", newMySQLError(1213)
+		})
+
+	if err == nil {
+		t.Fatal("expected an error once the retry budget ran out")
+	}
+	if !IsSerializationError(err) {
+		t.Errorf("err = %v, want the last serialization failure", err)
+	}
+	if callCount < 2 {
+		t.Errorf("attempts = %d, want more than one before the budget ran out", callCount)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("elapsed = %s: the explicit budget was not honored", elapsed)
 	}
 }
 
