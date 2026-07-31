@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -313,5 +314,46 @@ func TestCursorRoundTrips(t *testing.T) {
 		if _, ok := decodeCursor(bad); ok {
 			t.Errorf("decodeCursor(%q) succeeded; every unreadable token is the same client situation", bad)
 		}
+	}
+}
+
+// TestAReadRouteTimesTheUnitsOfWorkItsReaderOpens pins the one property of
+// timedProvider.IssueReader that is invisible from reading it, and it is here
+// because a reviewer proposed removing it: build the reader OVER THE WRAPPER,
+// so every unit of work it opens goes through the wrapper's NewUOW and lands in
+// this request's uow_ms.
+//
+// The tempting edit is `p.inner.IssueReader()` — "add the layer by recursion,
+// the way every other decorator does". Recursion is right for a decorator whose
+// layer is on the RESULT: telemetry's accessor recurses because it wraps the
+// reader it gets back. This decorator's layer is on NewUOW, which only a reader
+// holding THIS wrapper can reach, so recursion would hand back a reader bound
+// to the untimed provider. It compiles, every other test still passes, and
+// every read route reports uow_ms=0.000 from then on. So this asserts the
+// NUMBER on the request line, which is the only place the difference shows.
+func TestAReadRouteTimesTheUnitsOfWorkItsReaderOpens(t *testing.T) {
+	// A provider that takes a measurable moment to hand out a unit of work, so
+	// the field is checkable rather than a rounded zero either way.
+	provider := &fakeProvider{
+		issues:     &fakeIssues{},
+		readIssues: &recordingIssues{},
+		readConfig: emptyConfig{},
+		delay:      5 * time.Millisecond,
+	}
+	ts := newTestServer(t, Config{Provider: provider})
+
+	if resp := ts.get(t, "/v0/beads/ready"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if n := len(provider.openedUOWs()); n != 1 {
+		t.Fatalf("opened %d units of work, want 1", n)
+	}
+
+	line := findLogLine(t, ts.stderr.String(), "op="+OpListReadyWork)
+	if !strings.Contains(line, "uow_ms=") {
+		t.Fatalf("read request line has no uow_ms field:\n%s", line)
+	}
+	if strings.Contains(line, "uow_ms=0.000") {
+		t.Errorf("read request line reports no unit-of-work time though the provider took 5ms; the reader is bound to the untimed provider:\n%s", line)
 	}
 }

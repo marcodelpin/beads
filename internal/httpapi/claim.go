@@ -427,6 +427,15 @@ var _ uow.IssueReaderSource = timedProvider{}
 // in this request's uow_ms. `p.inner.IssueReader()` would return a reader
 // bound to the untimed provider and the measurement would silently read zero.
 //
+// THAT IS NOT A HYPOTHETICAL, which is why it now has a test. This decorator's
+// layer is on NewUOW, so only a reader holding this wrapper can reach it —
+// unlike telemetry's storage accessor, whose layer is on the RESULT and which
+// therefore recurses and wraps. A reviewer reading the two side by side
+// proposed making this one recurse for symmetry; the whole internal/httpapi
+// suite passes with that change and every read route logs uow_ms=0.000
+// forever. TestAReadRouteTimesTheUnitsOfWorkItsReaderOpens is the assertion
+// that fails instead.
+//
 // The cost is that a provider whose own accessor decorated its reader would be
 // bypassed here. There is one provider (doltSQLProvider) and its accessor is
 // this same construction, so nothing is bypassed today — but if a decorating
