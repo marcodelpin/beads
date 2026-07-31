@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/internal/workapi"
 )
 
 // storageExecutor handles operations that need a store connection
@@ -528,15 +529,15 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	if in.offset > 0 {
+	if in.Offset > 0 {
 		return HandleError("--offset is only supported under --proxied-server")
 	}
 
-	cfg, err := loadDirectListFilterConfig(rootCtx, store)
+	cfg, err := workapi.LoadStoreListConfig(rootCtx, store)
 	if err != nil {
 		return HandleError("%v", err)
 	}
-	filter, err := buildListFilter(in, cfg)
+	filter, err := workapi.BuildListFilter(in.ListParams, cfg)
 	if err != nil {
 		return HandleError("%v", err)
 	}
@@ -561,7 +562,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	}
 
 	if in.watchMode {
-		if err := watchIssues(ctx, activeStore, filter, in.readyFlag, in.parentID, in.sortBy, in.reverse, in.effectiveLimit); err != nil {
+		if err := watchIssues(ctx, activeStore, filter, in.ReadyFlag, in.ParentID, in.SortBy, in.Reverse, in.effectiveLimit); err != nil {
 			if capErr := handleMaxRowsError(err); capErr != nil {
 				return capErr
 			}
@@ -573,7 +574,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	if jsonOutput {
 		var iwc []*types.IssueWithCounts
 		var err error
-		if in.readyFlag {
+		if in.ReadyFlag {
 			iwc, err = activeStore.GetReadyWorkWithCounts(ctx, readyWorkFilterFromIssueFilter(withFetchOneExtra(filter)))
 		} else {
 			iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", withFetchOneExtra(filter))
@@ -584,7 +585,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 			}
 			return HandleError("%v", err)
 		}
-		sortIssuesWithCounts(iwc, in.sortBy, in.reverse)
+		sortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
 		truncated := in.effectiveLimit > 0 && len(iwc) > in.effectiveLimit
 		if truncated {
 			iwc = iwc[:in.effectiveLimit]
@@ -592,7 +593,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		if iwc == nil {
 			iwc = []*types.IssueWithCounts{}
 		}
-		if in.skipLabels {
+		if in.SkipLabels {
 			if err := outputJSON(newSkipLabelsListJSONResponse(iwc)); err != nil {
 				return err
 			}
@@ -607,7 +608,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	}
 
 	var issues []*types.Issue
-	if in.readyFlag {
+	if in.ReadyFlag {
 		wf := readyWorkFilterFromIssueFilter(withFetchOneExtra(filter))
 		var err error
 		issues, err = activeStore.GetReadyWork(ctx, wf)
@@ -628,7 +629,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	sortIssues(issues, in.sortBy, in.reverse)
+	sortIssues(issues, in.SortBy, in.Reverse)
 
 	truncated := in.effectiveLimit > 0 && len(issues) > in.effectiveLimit
 	if truncated {
@@ -636,14 +637,14 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	}
 
 	if in.prettyFormat && !jsonOutput {
-		if in.parentID != "" && !in.readyFlag {
-			treeIssues, err := getHierarchicalChildren(ctx, activeStore, "", in.parentID, filter)
+		if in.ParentID != "" && !in.ReadyFlag {
+			treeIssues, err := getHierarchicalChildren(ctx, activeStore, "", in.ParentID, filter)
 			if err != nil {
 				return HandleError("%v", err)
 			}
 
 			if len(treeIssues) == 0 {
-				fmt.Printf("Issue '%s' has no children\n", in.parentID)
+				fmt.Printf("Issue '%s' has no children\n", in.ParentID)
 				return nil
 			}
 
@@ -652,7 +653,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 				return HandleError("loading dependencies for --deps: %v", depErr)
 			}
 			displayPrettyListWithDepsMode(treeIssues, false, allDeps, in.depsMode)
-			printSkipLabelsFooter(in.skipLabels)
+			printSkipLabelsFooter(in.SkipLabels)
 			return nil
 		}
 
@@ -662,7 +663,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 		displayPrettyListWithDepsMode(issues, false, allDeps, in.depsMode)
 		printTruncationHint(truncated, in.effectiveLimit)
-		printSkipLabelsFooter(in.skipLabels)
+		printSkipLabelsFooter(in.SkipLabels)
 		return nil
 	}
 
@@ -700,7 +701,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		buf.WriteString(fmt.Sprintf("\nFound %d issues:\n\n", len(issues)))
 		for _, issue := range issues {
 			labels := labelsMap[issue.ID]
-			formatIssueLong(&buf, issue, labels, in.skipLabels)
+			formatIssueLong(&buf, issue, labels, in.SkipLabels)
 		}
 	} else {
 		for _, issue := range issues {
@@ -709,7 +710,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	if in.skipLabels && !isQuiet() {
+	if in.SkipLabels && !isQuiet() {
 		buf.WriteString(skipLabelsFooterText())
 	}
 
@@ -740,7 +741,7 @@ func init() {
 	listCmd.Flags().String("title", "", "Filter by title text (case-insensitive substring match)")
 	listCmd.Flags().String("spec", "", "Filter by spec_id prefix")
 	listCmd.Flags().String("id", "", "Filter by specific issue IDs (comma-separated, e.g., bd-1,bd-5,bd-10)")
-	listCmd.Flags().IntP("limit", "n", 50, "Limit results (default 50, use 0 for unlimited)")
+	listCmd.Flags().IntP("limit", "n", workapi.DefaultListLimit, "Limit results (default 50, use 0 for unlimited)")
 	listCmd.Flags().Int("offset", 0, "Skip the first N matching results (0-based). Only supported under --proxied-server.")
 	listCmd.Flags().String("format", "", "Output format: 'digraph' (for golang.org/x/tools/cmd/digraph), 'dot' (Graphviz), or Go template")
 	listCmd.Flags().Bool("all", false, "Show all issues including closed (overrides default filter)")
