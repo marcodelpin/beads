@@ -67,6 +67,13 @@ const (
 	CodeInternal      Code = "internal"
 )
 
+// codeClientClosed is a LOG-ONLY outcome, not wire vocabulary: it is
+// deliberately absent from codeStatus, from operationCodes and from the
+// document, and it never reaches a response body — the client it describes has
+// already gone. It exists so that the request line does not book a client
+// hanging up as a server fault. See failErr.
+const codeClientClosed Code = "client_closed"
+
 // codeStatus freezes one HTTP status per code. A code that could arrive with
 // two different statuses would defeat the point of dispatching on it.
 var codeStatus = map[Code]int{
@@ -194,6 +201,18 @@ func (r Result) WithAssignee(assignee string) Result {
 // status at the moment of refusal). Same rule as WithAssignee.
 func (r Result) WithIssueStatus(status string) Result {
 	r.Problem.IssueStatus = &status
+	return r
+}
+
+// WithRequestID attaches the `request_id` extension member, the correlation id
+// echoed in the request log line. It is what makes a 5xx actionable: the body
+// carries a fixed static detail by design, so the id is the client's only
+// handle on the one log line that has the real error.
+func (r Result) WithRequestID(id string) Result {
+	if id == "" {
+		return r
+	}
+	r.Problem.RequestId = &id
 	return r
 }
 

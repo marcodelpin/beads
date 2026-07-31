@@ -1,0 +1,137 @@
+package httpapi
+
+import (
+	"net/http"
+	"slices"
+)
+
+// route is one row of the surface: an operation, where it lives in the
+// document, where it lives in the router, and what the request lifecycle owes
+// it. TestSpecRouteParity compares this table against the spec's paths, and
+// s.handler builds the router from it, so "the routes" and "the document" are
+// the same statement made twice.
+type route struct {
+	// op is the spec's operationId. It also names the operation in the
+	// request log line.
+	op string
+	// method and pattern are what the router registers.
+	method string
+	// pattern is the ServeMux pattern. It usually equals specPath, and must
+	// not be assumed to: see the claim row.
+	pattern string
+	// specPath is the path as the DOCUMENT spells it. Declared, never derived
+	// from pattern, because the two genuinely differ for the custom-method
+	// claim route and a derivation would have to encode that exception.
+	specPath string
+	// capability is the token this operation contributes to
+	// ContextResponse.capabilities, or "" for operations outside that
+	// vocabulary. A stub contributes nothing whatever this says.
+	capability string
+	// bypassSemaphore exempts an operation from the database slot limit. Only
+	// legitimate for handlers that touch no database: liveness and identity
+	// must stay answerable while every slot is held by a long scan.
+	bypassSemaphore bool
+	// implemented is false while the handler is a transitional 501 stub. It
+	// gates two things at once — the capability list, so a release between
+	// slices never advertises an operation that does not work, and the
+	// in-test stub exemption in TestSpecStatusCodesMatchHandlerTable.
+	implemented bool
+	handler     func(*Server, http.ResponseWriter, *http.Request)
+}
+
+// routeTable is the whole surface. Every operation in the spec appears here
+// from this slice on, stubbed if its handler has not landed, so route/spec
+// parity is a single all-at-once check rather than a list that grows a
+// per-slice exemption each time.
+var routeTable = []route{
+	{
+		op:      OpHealth,
+		method:  http.MethodGet,
+		pattern: "/healthz",
+		// Liveness answers from the process and touches nothing that can
+		// fail, so it must not queue behind the database. That is exactly
+		// what makes it liveness-only: it stays green while Dolt is wedged.
+		bypassSemaphore: true,
+		implemented:     true,
+		handler:         (*Server).handleHealth,
+	},
+	{
+		op:      OpGetContext,
+		method:  http.MethodGet,
+		pattern: "/v0/beads/context",
+		// A startup snapshot, so it touches no database either — and identity
+		// staying observable under saturation is half of how an operator
+		// tells one wedged server from another.
+		bypassSemaphore: true,
+		implemented:     true,
+		handler:         (*Server).handleContext,
+	},
+	{
+		op:         OpListReadyWork,
+		method:     http.MethodGet,
+		pattern:    "/v0/beads/ready",
+		capability: "ready.list",
+		handler:    (*Server).handleNotImplemented,
+	},
+	{
+		op:         OpListIssues,
+		method:     http.MethodGet,
+		pattern:    "/v0/beads/issues",
+		capability: "issues.list",
+		handler:    (*Server).handleNotImplemented,
+	},
+	{
+		op:         OpGetIssue,
+		method:     http.MethodGet,
+		pattern:    "/v0/beads/issues/{id}",
+		capability: "issues.get",
+		handler:    (*Server).handleNotImplemented,
+	},
+	{
+		op:      OpClaimIssue,
+		method:  http.MethodPost,
+		pattern: "/v0/beads/issues/{idop}",
+		// The one row where pattern and specPath differ. ServeMux wildcards
+		// match a whole path segment, so `{id}:claim` is not expressible as a
+		// pattern: the handler takes the segment whole and splits the custom
+		// method off itself. Declaring specPath here keeps the parity test
+		// honest instead of teaching it this exception; TestSpecRouteParity
+		// bounds the exception's shape and TestClaimPathReachesItsHandler
+		// drives the documented path.
+		//
+		// OBLIGATION FOR THE CLAIM SLICE: the wildcard takes the whole segment,
+		// so while this is a stub, POST /v0/beads/issues/{anything} answers 501
+		// — including the issue-detail path, which is documented GET-only.
+		// Harmless transitionally (501 is not documented surface either way),
+		// but the real handler must 404 a segment that does not end in
+		// ":claim" rather than treating it as an id.
+		specPath:   "/v0/beads/issues/{id}:claim",
+		capability: "issues.claim",
+		handler:    (*Server).handleNotImplemented,
+	},
+}
+
+// specPathOf is the document path for a route, defaulting to the router
+// pattern for the rows where they agree.
+func (r route) specPathOf() string {
+	if r.specPath != "" {
+		return r.specPath
+	}
+	return r.pattern
+}
+
+// Capabilities lists the operations this build actually implements, which is
+// what ContextResponse.capabilities carries. Derived from the route table and
+// gated on `implemented`, so a stub can never advertise itself: a client that
+// checks capabilities before calling gets a truthful answer from every release,
+// including one cut halfway through the endpoint slices.
+func Capabilities() []string {
+	var out []string
+	for _, rt := range routeTable {
+		if rt.implemented && rt.capability != "" {
+			out = append(out, rt.capability)
+		}
+	}
+	slices.Sort(out)
+	return out
+}

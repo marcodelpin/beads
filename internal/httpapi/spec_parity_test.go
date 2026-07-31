@@ -187,6 +187,101 @@ func TestSpecGovernance(t *testing.T) {
 	}
 }
 
+// TestSpecRouteParity is the gate that the document and the server describe the
+// same surface. Exact set equality, both directions: a documented operation
+// with no route is a promise nothing keeps, and a route with no documentation
+// is undisclosed surface. It also checks the operationId on each pair, so two
+// operations cannot quietly swap paths while the set still matches.
+//
+// The route table IS the router — internal/httpapi/server.go builds the mux
+// from it and from nothing else — so this compares what the server actually
+// serves. The last step builds a real ServeMux from the table for the same
+// reason: a pattern ServeMux refuses (a conflict, a malformed wildcard) is a
+// panic on the first request, and it should be a test failure instead.
+func TestSpecRouteParity(t *testing.T) {
+	type methodPath struct{ method, path string }
+
+	doc := loadSpec(t)
+	specSet := map[methodPath]string{}
+	for id, so := range specOps(t, doc) {
+		specSet[methodPath{so.method, so.path}] = id
+	}
+
+	routeSet := map[methodPath]string{}
+	for _, rt := range routeTable {
+		key := methodPath{rt.method, rt.specPathOf()}
+		if prev, dup := routeSet[key]; dup {
+			t.Fatalf("%s %s is routed twice: %q and %q", key.method, key.path, prev, rt.op)
+		}
+		routeSet[key] = rt.op
+	}
+
+	for key, id := range specSet {
+		op, ok := routeSet[key]
+		if !ok {
+			t.Errorf("spec documents %s %s (%s) with no route", key.method, key.path, id)
+			continue
+		}
+		if op != id {
+			t.Errorf("%s %s: route serves operation %q, the spec calls it %q", key.method, key.path, op, id)
+		}
+	}
+	for key, op := range routeSet {
+		if _, ok := specSet[key]; !ok {
+			t.Errorf("route %s %s (%s) is not in the spec; undocumented surface", key.method, key.path, op)
+		}
+	}
+
+	// A row that DECLARES a specPath is compared against the document by a
+	// string the router never sees, so for those rows the check above proves
+	// nothing about what the server serves: the pattern could grow a wrong
+	// prefix or a wrong segment and this test would stay green while the
+	// documented path 404s. Bound the exception instead of trusting it — the
+	// pattern must be the documented path with its final segment replaced by
+	// one wildcard, which is the only thing ServeMux cannot spell — and refuse
+	// a declaration that is not needed at all.
+	//
+	// TestClaimPathReachesItsHandler (server_test.go) is the behavioral half.
+	for _, rt := range routeTable {
+		if rt.specPath == "" {
+			continue
+		}
+		specDir, specLast := splitLastSegment(rt.specPath)
+		patDir, patLast := splitLastSegment(rt.pattern)
+		if specDir != patDir {
+			t.Errorf("%s: pattern %q and declared spec path %q do not share a prefix; the documented path is not the one routed",
+				rt.op, rt.pattern, rt.specPath)
+		}
+		if !isWildcardSegment(patLast) {
+			t.Errorf("%s: pattern %q declares a different spec path, so its final segment must be a single-segment wildcard (got %q)",
+				rt.op, rt.pattern, patLast)
+		}
+		if isWildcardSegment(specLast) {
+			t.Errorf("%s: spec path %q is expressible as a ServeMux pattern; delete the specPath declaration rather than detaching the row from the router",
+				rt.op, rt.specPath)
+		}
+	}
+
+	// Build the server's real handler: ServeMux panics on a conflicting or
+	// malformed pattern, and that belongs here rather than on the first
+	// request after a deploy.
+	if h := (&Server{}).handler(); h == nil {
+		t.Fatal("handler() returned nil")
+	}
+}
+
+func splitLastSegment(path string) (dir, last string) {
+	i := strings.LastIndex(path, "/")
+	return path[:i+1], path[i+1:]
+}
+
+// isWildcardSegment reports whether seg is a ServeMux single-segment wildcard.
+// The multi-segment form ({x...}) is not one: it swallows the rest of the path,
+// which is wider surface than any documented operation.
+func isWildcardSegment(seg string) bool {
+	return strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") && !strings.Contains(seg, "...")
+}
+
 // TestSpecDefaultsMatchSharedConstants keeps the document honest about the two
 // limit defaults and about limit=0. The whole point of sharing constants
 // between the CLI flag and the HTTP parameter is that the two surfaces cannot
@@ -264,6 +359,48 @@ func specParam(t *testing.T, so specOp, name string) map[string]any {
 func TestSpecStatusCodesMatchHandlerTable(t *testing.T) {
 	doc := loadSpec(t)
 	ops := specOps(t, doc)
+
+	// TRANSITIONAL EXEMPTION — delete this block together with the last stub.
+	//
+	// Operations whose handler has not landed are registered as 501 stubs, so
+	// that route/spec parity (TestSpecRouteParity) is provable all at once
+	// instead of carrying a hole that grows and shrinks each slice. 501 is not
+	// documented spec surface anywhere in this document, and `not_implemented`
+	// is deliberately absent from the frozen vocabulary in problem.go, so those
+	// handlers emit a status this test would otherwise forbid.
+	//
+	// The exemption is enumerated rather than implied, and it is self-deleting:
+	// the two-way check below fails if the route table and this list disagree,
+	// and once the route table reports no stubs at all a non-empty list here is
+	// itself the failure. Nobody has to remember to come back.
+	stubbedOperations := map[string]string{
+		OpListReadyWork: "read endpoints slice",
+		OpListIssues:    "read endpoints slice",
+		OpGetIssue:      "detail endpoint slice",
+		OpClaimIssue:    "claim endpoint slice",
+	}
+	stubRoutes := map[string]bool{}
+	for _, rt := range routeTable {
+		if !rt.implemented {
+			stubRoutes[rt.op] = true
+		}
+	}
+	if len(stubRoutes) == 0 && len(stubbedOperations) > 0 {
+		t.Errorf("every operation is implemented, but the 501 exemption still lists %d: delete the block", len(stubbedOperations))
+	}
+	for op := range stubRoutes {
+		if _, ok := stubbedOperations[op]; !ok {
+			t.Errorf("%s is a 501 stub but is not listed in the exemption; an undocumented status must never be silent", op)
+		}
+	}
+	for op, why := range stubbedOperations {
+		if why == "" {
+			t.Errorf("%s: exemption entry carries no justification", op)
+		}
+		if !stubRoutes[op] {
+			t.Errorf("%s is implemented; remove it from the 501 exemption", op)
+		}
+	}
 
 	if len(ops) != len(operationCodes) {
 		t.Errorf("spec documents %d operations, the handler table declares %d", len(ops), len(operationCodes))

@@ -94,6 +94,8 @@
 
 15 12 TestProxiedServerDep
 15 12 TestProxiedServerLint
+15 12 TestProxiedServerServeLifecycle
+15 12 TestProxiedServerServeModeGate
 15 12 TestProxiedServerShow3
 15 12 TestProxiedServerStale
 15 12 TestProxiedServerTag
