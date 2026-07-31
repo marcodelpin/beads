@@ -169,10 +169,10 @@ func watchIssues(ctx context.Context, store storage.DoltStorage, filter types.Is
 	if err != nil {
 		return err
 	}
-	truncated := effectiveLimit > 0 && len(issues) > effectiveLimit
-	if truncated {
-		issues = issues[:effectiveLimit]
-	}
+	// The order is already loadWatchedIssues', which the snapshot comparison
+	// below depends on; what is left is the cut and its verdict, and those are
+	// the shared epilogue's on every other listing this command has.
+	issues, truncated := workapi.FinishPage(issues, "", false, effectiveLimit, false)
 	displayWatchedIssueList(ctx, store, issues)
 	printTruncationHint(truncated, effectiveLimit)
 	lastSnapshot := issueSnapshot(issues)
@@ -199,10 +199,7 @@ func watchIssues(ctx context.Context, store storage.DoltStorage, filter types.Is
 				fmt.Fprintf(os.Stderr, "Error refreshing issues: %v\n", err)
 				continue
 			}
-			truncated := effectiveLimit > 0 && len(issues) > effectiveLimit
-			if truncated {
-				issues = issues[:effectiveLimit]
-			}
+			issues, truncated := workapi.FinishPage(issues, "", false, effectiveLimit, false)
 			snap := issueSnapshot(issues)
 			if snap != lastSnapshot {
 				lastSnapshot = snap
