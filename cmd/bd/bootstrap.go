@@ -539,6 +539,29 @@ func executeBootstrapPlan(plan BootstrapPlan, cfg *configfile.Config, nonInterac
 
 	ctx := context.Background()
 
+	// Workspace operation gate: every bootstrap action below replaces or
+	// creates workspace state (sync/restore/jsonl-import/init), and
+	// bootstrap is a skip-store command that the PersistentPreRunE
+	// chokepoint never gates. This is the single point where the target
+	// workspace is known and no state has been touched yet, so acquire the
+	// workspace + physical-root gates EXCLUSIVELY here for the rest of the
+	// plan execution. Exclusive failures are hard errors: bootstrap
+	// refuses to run over live bd activity rather than pretend.
+	//
+	// The resolved PhysicalRoots for plan.BeadsDir do not necessarily cover
+	// the directory the actions below actually open — executeInitAction,
+	// executeRestoreAction, and executeJSONLImportAction all open
+	// doltserver.ResolveDoltDir(plan.BeadsDir) directly (e.g. .beads/dolt
+	// for an embedded-metadata workspace). Pass it as an extraRoot,
+	// mirroring how bd init passes its own resolved db path, so the
+	// physical directory bootstrap writes is actually gated.
+	gateHandle, gateErr := acquireExclusiveWorkspaceGates(ctx, plan.BeadsDir, "bd bootstrap "+plan.Action,
+		doltserver.ResolveDoltDir(plan.BeadsDir))
+	if gateErr != nil {
+		return fmt.Errorf("bd bootstrap refuses to run over live bd activity on this workspace: %w", gateErr)
+	}
+	defer func() { _ = gateHandle.Release() }()
+
 	switch plan.Action {
 	case "sync":
 		return executeSyncAction(ctx, plan, cfg)
