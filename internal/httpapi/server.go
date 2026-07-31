@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -445,12 +446,13 @@ func requestInfo(ctx context.Context) *reqInfo {
 }
 
 // withRequestContext assigns the correlation id, applies response-wide
-// headers, and writes the one log line per request. It is outermost so that a
-// request refused by the Host check is logged like any other.
+// headers, recovers panics, and writes the one log line per request. It is
+// outermost so that a request refused by the Host check is logged like any
+// other.
 func (s *Server) withRequestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &reqInfo{id: s.nextID(), status: http.StatusOK}
-		ctx := context.WithValue(r.Context(), reqInfoKey{}, rec)
+		r = r.WithContext(context.WithValue(r.Context(), reqInfoKey{}, rec))
 
 		// No client or intermediary may cache an answer about live work.
 		w.Header().Set("Cache-Control", "no-store")
@@ -465,36 +467,83 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 		sw.extendWriteDeadline(sw.budget)
 
 		start := time.Now()
-		next.ServeHTTP(sw, r.WithContext(ctx))
 
-		// net/http flushes what is left of the buffered response after the
-		// handler returns, so extend once more to cover it. The extension has to
-		// outlast the idle timeout too: the deadline stays armed while a
-		// keep-alive connection waits for its next request, and net/http answers
-		// some requests (a malformed request line, oversized headers) without
-		// reaching this middleware — an expired deadline would turn those into a
-		// dropped connection. Anything that does reach here re-arms above,
-		// before a handler writes a byte.
-		sw.extendWriteDeadline(sw.budget + idleTimeout)
+		// Deferred, so that the two things this middleware promises — an answer
+		// in the documented shape, and one log line per request — survive the
+		// one failure where correlating them matters most.
+		defer func() {
+			p := recover()
+			if p != nil && p != http.ErrAbortHandler {
+				s.panicked(sw, r, rec, p)
+			}
 
-		if sw.status != 0 {
-			// Still zero means the handler returned without writing anything,
-			// in which case net/http has sent the 200 rec already carries.
-			rec.status = sw.status
-		}
+			// net/http flushes what is left of the buffered response after the
+			// handler returns, so extend once more to cover it. The extension has
+			// to outlast the idle timeout too: the deadline stays armed while a
+			// keep-alive connection waits for its next request, and net/http
+			// answers some requests (a malformed request line, oversized headers)
+			// without reaching this middleware — an expired deadline would turn
+			// those into a dropped connection. Anything that does reach here
+			// re-arms above, before a handler writes a byte.
+			sw.extendWriteDeadline(sw.budget + idleTimeout)
 
-		s.event("request",
-			"request_id", rec.id,
-			"op", rec.op,
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"code", string(rec.code),
-			"duration_ms", millis(time.Since(start)),
-			"sem_wait_ms", millis(rec.semWait),
-			"uow_ms", millis(rec.uowWait),
-		)
+			if sw.status != 0 {
+				// Still zero means the handler returned without writing
+				// anything, in which case net/http has sent the 200 rec already
+				// carries.
+				rec.status = sw.status
+			}
+
+			s.event("request",
+				"request_id", rec.id,
+				"op", rec.op,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"code", string(rec.code),
+				"duration_ms", millis(time.Since(start)),
+				"sem_wait_ms", millis(rec.semWait),
+				"uow_ms", millis(rec.uowWait),
+			)
+
+			if p == http.ErrAbortHandler {
+				// net/http's documented "abandon this response silently" signal.
+				// It gets its log line like every other request, and then it gets
+				// the abort it asked for.
+				panic(p)
+			}
+		}()
+
+		next.ServeHTTP(sw, r)
 	})
+}
+
+// panicked gives a panicking handler the same shape as every other failure: one
+// problem+json response and one log line, both carrying the request id.
+//
+// Without it the panic reaches net/http's per-connection recover, which prints
+// an unstructured stack trace to stderr with nothing on it to tie to a client
+// report, drops the connection with no body at all, and skips the request line —
+// so the one class of failure where correlation matters most is the one class
+// that has none. The panic text stays out of the response for the same reason
+// every other 5xx detail does.
+func (s *Server) panicked(sw *statusWriter, r *http.Request, rec *reqInfo, p any) {
+	rec.code = CodeInternal
+	s.event("panic",
+		"request_id", rec.id,
+		"op", rec.op,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"error", fmt.Sprint(p),
+		"stack", string(debug.Stack()),
+	)
+	if sw.status != 0 {
+		// The response is already on the wire; a truncated body is all the
+		// client can be told, and writing a second header would only add a
+		// superfluous-WriteHeader line to the log.
+		return
+	}
+	s.fail(sw, r, newResult(CodeInternal, ""))
 }
 
 // checkHost is the DNS-rebinding defense. An unauthenticated service on

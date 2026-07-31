@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -631,6 +632,112 @@ func TestStalledResponseWriteReleasesItsSlot(t *testing.T) {
 		t.Fatalf("acquiring a slot after the stalled request = %v; it was never released", err)
 	}
 	release()
+}
+
+// TestPanickingHandlerStaysInTheContract. A panic is the one failure where
+// correlating a client report with a server log matters most, and it was the one
+// failure with no correlation at all: net/http's per-connection recover prints a
+// bare stack to stderr, the client gets a dropped connection instead of
+// problem+json, and the request line — the observability floor's one-line-per-
+// request guarantee — is never written.
+//
+// It runs through the real route() chain, so it also pins what already held: the
+// deferred slot release and unit-of-work rollback run during unwinding.
+func TestPanickingHandlerStaysInTheContract(t *testing.T) {
+	stderr := &lockedBuffer{}
+	s := &Server{
+		sem:        make(chan struct{}, 1),
+		semTimeout: 5 * time.Second,
+		log:        newTestLogger(stderr),
+	}
+	boom := route{op: "boom", handler: func(*Server, http.ResponseWriter, *http.Request) {
+		panic("handler exploded on bd-1")
+	}}
+	h := s.withRequestContext(s.route(boom))
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v0/beads/issues/bd-1", nil))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (a panic must still answer in the documented shape)", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/problem+json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want problem+json", got)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rr.Body.String(), err)
+	}
+	if body["code"] != string(CodeInternal) {
+		t.Errorf("code = %v, want %s", body["code"], CodeInternal)
+	}
+	if body["detail"] != staticDetail[CodeInternal] {
+		t.Errorf("detail = %v, want the static 5xx detail; a panic message is server state", body["detail"])
+	}
+	if strings.Contains(rr.Body.String(), "exploded") {
+		t.Errorf("the panic value reached the client: %s", rr.Body.String())
+	}
+	id, _ := body["request_id"].(string)
+	if id == "" {
+		t.Fatal("no request_id on the problem body: nothing ties a client report to the stack trace")
+	}
+
+	// One structured line per request, including this one.
+	line := findLogLine(t, stderr.String(), "event=request ")
+	for _, want := range []string{"request_id=" + id, "op=boom", "status=500", "code=internal"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("request log line is missing %q:\n%s", want, line)
+		}
+	}
+
+	// And the stack, correlated and on one line.
+	panicLine := findLogLine(t, stderr.String(), "event=panic")
+	for _, want := range []string{"request_id=" + id, "path=/v0/beads/issues/bd-1", "exploded", "stack="} {
+		if !strings.Contains(panicLine, want) {
+			t.Errorf("panic log line is missing %q:\n%s", want, panicLine)
+		}
+	}
+	if !strings.Contains(panicLine, "TestPanickingHandlerStaysInTheContract") {
+		t.Errorf("the logged stack does not reach the panic site:\n%s", panicLine)
+	}
+
+	// The database slot came back: route()'s deferred release runs during
+	// unwinding, before this middleware recovers.
+	release, err := s.acquire(context.Background(), &reqInfo{id: "after"})
+	if err != nil {
+		t.Fatalf("acquiring a slot after the panic = %v; a panicking handler leaks its slot", err)
+	}
+	release()
+}
+
+// TestAbortHandlerPanicIsStillLogged: net/http documents a panic with
+// ErrAbortHandler as "abandon this response silently", so it must not become a
+// 500 body — but a request that happened is still a request, and it gets its
+// line before the abort is handed back.
+func TestAbortHandlerPanicIsStillLogged(t *testing.T) {
+	stderr := &lockedBuffer{}
+	s := &Server{log: newTestLogger(stderr)}
+	h := s.withRequestContext(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+
+	rr := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if p := recover(); p != http.ErrAbortHandler {
+				t.Errorf("recovered %v, want ErrAbortHandler propagated to net/http", p)
+			}
+		}()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	}()
+
+	if rr.Body.Len() != 0 {
+		t.Errorf("an aborted response wrote a body: %q", rr.Body.String())
+	}
+	findLogLine(t, stderr.String(), "event=request ")
+	if strings.Contains(stderr.String(), "event=panic") {
+		t.Errorf("a documented abort was logged as a crash:\n%s", stderr.String())
+	}
 }
 
 // TestExemptRoutesAnswerUnderSaturation: liveness and identity must stay
