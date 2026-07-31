@@ -84,6 +84,12 @@ type UpdateIssueOptions = storage.UpdateIssueOptions
 // name it without importing internal/storage.
 type CommentPageCursor = storage.CommentPageCursor
 
+// ErrUnsupported reports that an operation is unavailable for a storage
+// backend — for example Storage.IssueLifecycle on a backend that cannot serve
+// guarded issue mutations. Exported so consumers can match it with errors.As
+// without importing internal/storage.
+type ErrUnsupported = storage.ErrUnsupported
+
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
 //

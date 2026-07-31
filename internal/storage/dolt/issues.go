@@ -209,8 +209,12 @@ func (s *DoltStore) UpdateIssue(ctx context.Context, id string, updates map[stri
 	// (https://www.dolthub.com/blog/2023-10-23-hold-my-beer/) — so retry is the
 	// only safety net. withRetryTx owns BeginTx and the final Commit.
 	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		if _, err := issueops.UpdateIssueInTx(ctx, tx, id, updates, actor); err != nil {
+		result, err := issueops.UpdateIssueInTx(ctx, tx, id, updates, actor)
+		if err != nil {
 			return err
+		}
+		if !result.Changed {
+			return nil
 		}
 
 		for _, table := range []string{"issues", "events"} {
@@ -283,8 +287,12 @@ func (s *DoltStore) UpdateIssueChecked(ctx context.Context, id string, updates m
 			if err := issueops.CheckExpectedFieldsInTx(ctx, tx, id, opts.ExpectedAssignee, opts.ExpectedStatus); err != nil {
 				return err
 			}
-			if _, err := issueops.UpdateIssueInTx(ctx, tx, id, updates, actor); err != nil {
+			result, err := issueops.UpdateIssueInTx(ctx, tx, id, updates, actor)
+			if err != nil {
 				return err
+			}
+			if !result.Changed {
+				return nil
 			}
 
 			for _, table := range []string{"issues", "events"} {
@@ -568,23 +576,26 @@ func (s *DoltStore) UnclaimIssueIfAssignee(ctx context.Context, id string, actor
 	})
 }
 
-// ReopenIssue reopens a closed issue, setting status to open and clearing
-// closed_at and defer_until. If reason is non-empty, it is recorded as a comment.
-// Wraps UpdateIssue for Dolt-specific concerns (wisp routing, DOLT_COMMIT, etc.).
+// ReopenIssue reopens a done-category issue atomically and stages only the
+// versioned tables that this transaction concretely changed.
 func (s *DoltStore) ReopenIssue(ctx context.Context, id string, reason string, actor string) error {
-	updates := map[string]interface{}{
-		"status":      string(types.StatusOpen),
-		"defer_until": nil,
-	}
-	if err := s.UpdateIssue(ctx, id, updates, actor); err != nil {
-		return err
-	}
-	if reason != "" {
-		if err := s.AddComment(ctx, id, actor, reason); err != nil {
-			return fmt.Errorf("reopen comment: %w", err)
+	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		res, err := issueops.ReopenIssueInTx(ctx, tx, id, reason, actor)
+		if err != nil {
+			return err
 		}
-	}
-	return nil
+		if !res.Changed {
+			return nil
+		}
+		switch {
+		case !res.IsWisp:
+			return s.doltAddAndCommitInTx(ctx, tx, []string{"issues", "events"}, fmt.Sprintf("bd: reopen %s", id))
+		case res.IssueRowsChanged:
+			return s.doltAddAndCommitInTx(ctx, tx, []string{"issues"}, fmt.Sprintf("bd: reopen %s", id))
+		default:
+			return nil
+		}
+	})
 }
 
 // UpdateIssueType changes the issue_type field of an issue.
@@ -654,7 +665,7 @@ func (s *DoltStore) CloseIssueChecked(ctx context.Context, id string, actor stri
 		if err != nil {
 			return err
 		}
-		result = storage.CloseIssueResult{Unchanged: res.AlreadyClosed}
+		result = storage.CloseIssueResult{Unchanged: res.AlreadyClosed, OpenChildren: res.OpenChildren}
 
 		// Dolt versioning for permanent issues.
 		// GH#2455: Stage only the tables we modified, then commit without -A.
@@ -937,8 +948,6 @@ func generateHashID(prefix, title, description, creator string, timestamp time.T
 // Thin wrappers around exported issueops functions, kept for internal callers.
 var (
 	isAllowedUpdateField = issueops.IsAllowedUpdateField
-	manageClosedAt       = issueops.ManageClosedAt
-	determineEventType   = issueops.DetermineEventType
 )
 
 // Aliases for shared nullable helpers from issueops.

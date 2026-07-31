@@ -872,8 +872,8 @@ func TestEmbeddedUpdate(t *testing.T) {
 		issue := bdCreate(t, bd, dir, "Session test", "--type", "task")
 		bdUpdate(t, bd, dir, issue.ID, "--status", "closed", "--session", "sess-123")
 		got := bdShow(t, bd, dir, issue.ID)
-		// Verify the issue is closed (closed_by_session is stored but not
-		// included in IssueSelectColumns, so we verify status + closed_at).
+		// closed_by_session is selected by IssueSelectColumns and hydrated onto
+		// the issue; here we just verify the close itself landed.
 		if got.Status != types.StatusClosed {
 			t.Errorf("expected status closed, got %s", got.Status)
 		}

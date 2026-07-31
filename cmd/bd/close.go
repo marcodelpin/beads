@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/validation"
+	"github.com/steveyegge/beads/issueops"
 )
 
 var closeCmd = &cobra.Command{
@@ -81,6 +82,10 @@ the flags appear in the command line.`,
 		}
 
 		ctx := rootCtx
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 
 		if continueFlag && len(args) > 1 {
 			return HandleErrorRespectJSON("--continue only works when closing a single issue")
@@ -145,11 +150,18 @@ the flags appear in the command line.`,
 				}
 			}
 
-			// Delegate the is_blocked guard to the engine (GH#962). CloseIssueChecked
-			// runs the guard and the close in ONE transaction, so there is no
-			// read-then-write TOCTOU window between the check and the close. --force
-			// bypasses the guard; ExpectedVersion is unused on this path.
-			res, err := activeStore.CloseIssueChecked(ctx, id, actor, storage.CloseIssueOptions{
+			// Delegate the is_blocked guard to the engine (GH#962). The close
+			// operation runs the guard and the close in ONE transaction, so there is
+			// no read-then-write TOCTOU window between the check and the close.
+			// --force bypasses the guard; ExpectedVersion is unused on this path.
+			ops, err := writeOps(activeStore)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error closing %s: %v\n", id, err)
+				continue
+			}
+			res, err := ops.Close(opsCtx, issueops.CloseRequest{
+				Actor:   actor,
+				IssueID: id,
 				Reason:  reason,
 				Session: session,
 				Force:   force,
@@ -164,7 +176,7 @@ the flags appear in the command line.`,
 				}
 				continue
 			}
-			if res.Unchanged {
+			if !res.Changed {
 				// Already closed: an idempotent no-op on the step's stored state. The
 				// old CloseIssue path also returned nil here and still reported the
 				// (already-closed) issue, so keep OUTPUT parity via the shared display
@@ -217,9 +229,15 @@ the flags appear in the command line.`,
 				firstSettledID = id
 			}
 
-			// Re-fetch for display. A real close and an idempotent no-op both report
-			// the closed issue here, matching the historical output shape.
-			closedIssue, _ := activeStore.GetIssue(ctx, id)
+			// The operation's own post-state snapshot is what gets reported. A
+			// real close and an idempotent no-op both report the closed issue
+			// here, matching the historical output shape. Dependency records are
+			// dropped from it because `bd close` has never printed them: the
+			// re-read this replaced did not hydrate them either.
+			closedIssue := res.Issue
+			if closedIssue != nil {
+				closedIssue.Dependencies = nil
+			}
 
 			if jsonOutput {
 				if closedIssue != nil {

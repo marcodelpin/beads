@@ -24,6 +24,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/validation"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // validateCreateArgs runs as cobra's Args validation, which executes before
@@ -551,6 +552,15 @@ var createCmd = &cobra.Command{
 
 		ctx := createCtx
 
+		// Resolve partial --deps targets the way `bd dep add` does, so a bare
+		// slug becomes a qualified id rather than a dangling edge, and an
+		// unknown target fails closed here instead of reaching the write.
+		resolvedDepSpecs, resolveErr := resolveDepSpecTargets(ctx, store, depSpecs)
+		if resolveErr != nil {
+			return HandleErrorRespectJSON("%v", resolveErr)
+		}
+		depSpecs = resolvedDepSpecs
+
 		// If a discovered-from dependency is present, inherit source_repo
 		// from the referenced parent issue. Reuse the already-parsed specs
 		// (not the raw --deps strings) so this can't drift from parseDepSpec's
@@ -563,20 +573,52 @@ var createCmd = &cobra.Command{
 			// If error getting parent or parent has no source_repo, continue with default
 		}
 
-		edges := createDepEdges{parentID: parentID, specs: depSpecs, waitsFor: waitsForSpec}
-		if err := createIssueWithDeps(ctx, store, issue, actor, edges); err != nil {
+		ops, err := writeOps(store)
+		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		// Label inheritance stays CLI-side (mergeCreateLabels above) because the
+		// dry-run preview needs it too; asking the facade to inherit as well
+		// would append the parent's labels a second time.
+		result, err := ops.Create(opsCtx, issueops.CreateRequest{
+			Actor:         actor,
+			Issue:         issue,
+			ParentID:      parentID,
+			Dependencies:  createDependencyRequests(depSpecs),
+			WaitsFor:      waitsForRequest(waitsForSpec),
+			ForceIDPrefix: forceCreate,
+		})
+		if err != nil {
+			// RULING R1: an occupied --id is a refusal, not a silent full-row
+			// upsert reported as success.
+			if errors.Is(err, storage.ErrAlreadyExists) && explicitID != "" {
+				return HandleErrorRespectJSON("%s already exists; use bd update, or bd import for upsert semantics", explicitID)
+			}
+			return HandleErrorRespectJSON("%v", err)
+		}
+		// Every post-write read comes from the facade's result snapshot, never
+		// from the local struct: the facade clones its request, so the local
+		// struct still has no ID for an auto-minted create and no persisted
+		// timestamps. Dependencies and comments are dropped because `bd create`
+		// has never printed them.
+		created := result.Issue
+		created.Dependencies = nil
+		created.Comments = nil
 
+		edges := createDepEdges{parentID: parentID, specs: depSpecs, waitsFor: waitsForSpec}
 		if edges.empty() {
 			// Bare create: preserve the embedded-mode follow-up Dolt commit.
 			// The deps path commits inside its transaction instead.
-			shouldCommit, err := shouldCommitCreatePostWrites(issue, false)
+			shouldCommit, err := shouldCommitCreatePostWrites(created, false)
 			if err != nil {
 				return HandleError("dolt auto-commit failed: %v", err)
 			}
 			if shouldCommit {
-				commitMsg := fmt.Sprintf("bd: create %s", issue.ID)
+				commitMsg := fmt.Sprintf("bd: create %s", created.ID)
 				if err := store.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
 					WarnError("failed to commit: %v", err)
 				}
@@ -586,7 +628,7 @@ var createCmd = &cobra.Command{
 		if repoPath != "." && targetStore != nil {
 			if err := commitPendingIfEmbedded(ctx, targetStore, actor, doltAutoCommitParams{
 				Command:  "create",
-				IssueIDs: []string{issue.ID},
+				IssueIDs: []string{created.ID},
 			}); err != nil {
 				debug.Logf("warning: failed to commit routed repo: %v", err)
 			}
@@ -599,20 +641,20 @@ var createCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			if err := outputJSON(issue); err != nil {
+			if err := outputJSON(created); err != nil {
 				return err
 			}
 		} else if silent {
-			fmt.Println(issue.ID)
+			fmt.Println(created.ID)
 		} else {
-			debug.PrintNormal("%s Created issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(issue.ID, issue.Title))
-			debug.PrintNormal("  Priority: P%d\n", issue.Priority)
-			debug.PrintNormal("  Status: %s\n", issue.Status)
+			debug.PrintNormal("%s Created issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(created.ID, created.Title))
+			debug.PrintNormal("  Priority: P%d\n", created.Priority)
+			debug.PrintNormal("  Status: %s\n", created.Status)
 
 			maybeShowTip(store)
 		}
 
-		SetLastTouchedID(issue.ID)
+		SetLastTouchedID(created.ID)
 		return nil
 	},
 }
@@ -783,17 +825,7 @@ func renderCreateDryRunPreview(issue *types.Issue, labels, deps []string) {
 }
 
 func shouldCommitCreatePostWrites(_ *types.Issue, _ bool) (bool, error) {
-	if isEmbeddedMode() {
-		if strings.TrimSpace(doltAutoCommit) == "" {
-			return true, nil
-		}
-		mode, err := getDoltAutoCommitMode()
-		if err != nil {
-			return false, err
-		}
-		return mode == doltAutoCommitOn, nil
-	}
-	return false, nil
+	return embeddedWritesCommitNow()
 }
 
 func createDepsAcceptedTypeList() string {

@@ -15,7 +15,7 @@ import (
 // transaction. Automatically routes to wisp_comments if the ID is an active wisp.
 //
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
-func GetIssueCommentsInTx(ctx context.Context, tx *sql.Tx, issueID string) ([]*types.Comment, error) {
+func GetIssueCommentsInTx(ctx context.Context, tx DBTX, issueID string) ([]*types.Comment, error) {
 	table := "comments"
 	if IsActiveWispInTx(ctx, tx, issueID) {
 		table = "wisp_comments"

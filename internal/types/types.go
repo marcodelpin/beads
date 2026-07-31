@@ -123,11 +123,12 @@ type Issue struct {
 	NoHistory bool     `json:"no_history,omitempty"` // If true, stored in wisps table but NOT GC-eligible
 	WispType  WispType `json:"wisp_type,omitempty"`  // Classification for TTL-based compaction (gt-9br)
 
-	// StorageClass declares the record's history/replication contract
-	// (Protocol v0.1 §C, bd-7vb13). Empty means unset: effective class is
-	// ephemeral for wisp-plane records (Ephemeral/NoHistory), else versioned
-	// (C1.2) — see EffectiveStorageClass. Omitted from JSONL when versioned
-	// (C2.4). Set at create, immutable except via promotion (C1.3/C4).
+	// StorageClass is the create-selected marker for the record's history and
+	// replication contract. Persistence plane transitions preserve it except
+	// where coherence requires normalizing explicit versioned to empty on
+	// demotion or explicit ephemeral to empty on promotion. When the marker is
+	// empty, the effective class follows the plane: ephemeral for Ephemeral or
+	// NoHistory rows and versioned otherwise.
 	StorageClass StorageClass `json:"storage_class,omitempty"`
 	// NOTE: RepliesTo, RelatesTo, DuplicateOf, SupersededBy moved to dependencies table
 	// per Decision 004 (Edge Schema Consolidation). Use dependency API instead.
@@ -263,13 +264,13 @@ func (w hashFieldWriter) flag(b bool, label string) {
 	w.h.Write([]byte{0})
 }
 
-// MaxFieldLen is the maximum length (in characters) of the assignee, owner, and
-// label fields, matching their VARCHAR(255) columns.
+// MaxFieldLen is the maximum length (in characters) of common bounded text
+// fields, matching their VARCHAR(255) columns.
 const MaxFieldLen = 255
 
-// ErrFieldTooLong is returned when assignee, owner, or a label exceeds
-// MaxFieldLen characters. Callers can errors.Is it instead of matching a raw
-// backend "data too long" string.
+// ErrFieldTooLong is returned when a bounded text field exceeds MaxFieldLen
+// characters. Callers can errors.Is it instead of matching a raw backend "data
+// too long" string.
 var ErrFieldTooLong = errors.New("field exceeds maximum length")
 
 // CheckFieldLen returns ErrFieldTooLong (wrapped with context) when val exceeds
@@ -279,6 +280,35 @@ var ErrFieldTooLong = errors.New("field exceeds maximum length")
 func CheckFieldLen(name, val string) error {
 	if n := utf8.RuneCountInString(val); n > MaxFieldLen {
 		return fmt.Errorf("%w: %s is %d characters (max %d)", ErrFieldTooLong, name, n, MaxFieldLen)
+	}
+	return nil
+}
+
+// ValidateIssueTitle checks the canonical issue-title requirements. The title
+// must be nonempty and at most 500 bytes.
+func ValidateIssueTitle(title string) error {
+	if len(title) == 0 {
+		return fmt.Errorf("title is required")
+	}
+	if len(title) > 500 {
+		return fmt.Errorf("title must be 500 characters or less (got %d)", len(title))
+	}
+	return nil
+}
+
+// ValidateIssuePriority checks that priority is in the canonical P0-P4 range.
+func ValidateIssuePriority(priority int) error {
+	if priority < 0 || priority > 4 {
+		return fmt.Errorf("priority must be between 0 and 4 (got %d)", priority)
+	}
+	return nil
+}
+
+// ValidateIssueEstimatedMinutes checks that a supplied estimate is
+// nonnegative. A nil estimate is valid.
+func ValidateIssueEstimatedMinutes(estimatedMinutes *int) error {
+	if estimatedMinutes != nil && *estimatedMinutes < 0 {
+		return fmt.Errorf("estimated_minutes cannot be negative")
 	}
 	return nil
 }
@@ -297,14 +327,11 @@ func (i *Issue) ValidateWithCustomStatuses(customStatuses []string) error {
 // ValidateWithCustom checks if the issue has valid field values,
 // allowing custom statuses and types in addition to built-in ones.
 func (i *Issue) ValidateWithCustom(customStatuses, customTypes []string) error {
-	if len(i.Title) == 0 {
-		return fmt.Errorf("title is required")
+	if err := ValidateIssueTitle(i.Title); err != nil {
+		return err
 	}
-	if len(i.Title) > 500 {
-		return fmt.Errorf("title must be 500 characters or less (got %d)", len(i.Title))
-	}
-	if i.Priority < 0 || i.Priority > 4 {
-		return fmt.Errorf("priority must be between 0 and 4 (got %d)", i.Priority)
+	if err := ValidateIssuePriority(i.Priority); err != nil {
+		return err
 	}
 	if !i.Status.IsValidWithCustom(customStatuses) {
 		return fmt.Errorf("invalid status: %s", i.Status)
@@ -312,8 +339,8 @@ func (i *Issue) ValidateWithCustom(customStatuses, customTypes []string) error {
 	if !i.IssueType.IsValidWithCustom(customTypes) {
 		return fmt.Errorf("invalid issue type: %s", i.IssueType)
 	}
-	if i.EstimatedMinutes != nil && *i.EstimatedMinutes < 0 {
-		return fmt.Errorf("estimated_minutes cannot be negative")
+	if err := ValidateIssueEstimatedMinutes(i.EstimatedMinutes); err != nil {
+		return err
 	}
 	// Enforce closed_at invariant: closed_at should be set if and only if status is closed
 	if i.Status == StatusClosed && i.ClosedAt == nil {
@@ -335,8 +362,7 @@ func (i *Issue) ValidateWithCustom(customStatuses, customTypes []string) error {
 	// Storage class must be a known value, and a declared class must agree
 	// with the wisp-plane flags: wisp-plane records are ephemeral-class by
 	// construction, and a durable class on one (or ephemeral class off one)
-	// would silently promise semantics the row's plane doesn't deliver
-	// (Protocol v0.1 §C1.3/C2.1).
+	// would silently promise semantics the row's plane does not deliver.
 	if !i.StorageClass.IsValid() {
 		return fmt.Errorf("invalid storage class %q (must be %s)", i.StorageClass, ValidStorageClassNames())
 	}
@@ -365,14 +391,11 @@ func (i *Issue) ValidateWithCustom(customStatuses, customTypes []string) error {
 // since the source repo already validated them when the issue was created.
 // This implements "trust the chain below you" from the HOP federation model.
 func (i *Issue) ValidateForImport(customStatuses []string) error {
-	if len(i.Title) == 0 {
-		return fmt.Errorf("title is required")
+	if err := ValidateIssueTitle(i.Title); err != nil {
+		return err
 	}
-	if len(i.Title) > 500 {
-		return fmt.Errorf("title must be 500 characters or less (got %d)", len(i.Title))
-	}
-	if i.Priority < 0 || i.Priority > 4 {
-		return fmt.Errorf("priority must be between 0 and 4 (got %d)", i.Priority)
+	if err := ValidateIssuePriority(i.Priority); err != nil {
+		return err
 	}
 	if !i.Status.IsValidWithCustom(customStatuses) {
 		return fmt.Errorf("invalid status: %s", i.Status)
@@ -385,8 +408,8 @@ func (i *Issue) ValidateForImport(customStatuses []string) error {
 	} else if i.IssueType != "" && !i.IssueType.IsValid() {
 		// Non-built-in type - trust it (child repo already validated)
 	}
-	if i.EstimatedMinutes != nil && *i.EstimatedMinutes < 0 {
-		return fmt.Errorf("estimated_minutes cannot be negative")
+	if err := ValidateIssueEstimatedMinutes(i.EstimatedMinutes); err != nil {
+		return err
 	}
 	// Enforce closed_at invariant
 	if i.Status == StatusClosed && i.ClosedAt == nil {
@@ -830,28 +853,106 @@ func ValidWispTypeNames() string {
 	return joinNamesWithOr(validWispTypes)
 }
 
-// StorageClass declares how a record's history and replication are priced
-// (Protocol v0.1 §C, bd-7vb13). The class is a semantic contract, not a table
-// or backend (C1.4): ephemeral happens to live in the dolt_ignore'd wisps
-// plane today, and unversioned's replication leg is tracked separately
-// (bd-1quyq) — the class marker must not imply either mechanism.
+// StorageClass is the create-selected marker for a record's history and
+// replication contract. Persistence plane transitions preserve the marker
+// except for normalization required by demotion or promotion. The effective
+// class can change with the plane when the marker is empty.
 type StorageClass string
 
 const (
-	// StorageClassVersioned is the default (C1.2): durable, replicated with
-	// history, mergeable. Serialized as the empty string — the storage_class
-	// field is omitted when versioned (C2.4), so every pre-v0.1 record is a
-	// valid versioned record unchanged.
+	// StorageClassVersioned is the default durable, replicated-with-history
+	// class. It serializes as the empty storage_class value.
 	StorageClassVersioned StorageClass = "versioned"
 	// StorageClassUnversioned is durable and interchanged with no revision-
-	// history promise: only current state is retained and replicated (C2.2).
+	// history promise: only current state is retained and replicated.
 	StorageClassUnversioned StorageClass = "unversioned"
 	// StorageClassEphemeral is operational state that is never exported and
-	// never replicated (C2.1) — typically TTL-bounded, though not always:
+	// never replicated — typically TTL-bounded, though not always:
 	// no-history rows are class-ephemeral yet TTL-exempt. The existing
 	// wisp/lease planes have this character.
 	StorageClassEphemeral StorageClass = "ephemeral"
 )
+
+// PersistenceMode selects an issue's storage plane and retention behavior.
+// Unlike StorageClass, it has no unset value; callers represent omission
+// separately from an explicit requested mode.
+type PersistenceMode string
+
+const (
+	// PersistenceModePersistent selects persistent storage. Existing
+	// unversioned records remain unversioned when this mode is selected.
+	PersistenceModePersistent PersistenceMode = "persistent"
+	// PersistenceModeEphemeral selects ephemeral storage.
+	PersistenceModeEphemeral PersistenceMode = "ephemeral"
+	// PersistenceModeNoHistory selects ephemeral storage without history.
+	PersistenceModeNoHistory PersistenceMode = "no_history"
+)
+
+var validPersistenceModes = []PersistenceMode{
+	PersistenceModePersistent,
+	PersistenceModeEphemeral,
+	PersistenceModeNoHistory,
+}
+
+// IsValid reports whether a persistence mode is a known explicit value.
+// Empty is invalid because it would be indistinguishable from an omitted mode.
+func (m PersistenceMode) IsValid() bool {
+	return slices.Contains(validPersistenceModes, m)
+}
+
+// NormalizePersistenceMode maps a requested mode from current to its exact
+// persistence fields without mutating an issue. The returned values are
+// Ephemeral, NoHistory, and StorageClass, respectively. Plane and retention
+// changes preserve the create-selected class. Promotion clears an explicit
+// ephemeral class marker to select normalized versioned storage. An
+// unversioned record may remain persistent but cannot move to a wisp mode.
+func NormalizePersistenceMode(current Issue, mode PersistenceMode) (bool, bool, StorageClass, error) {
+	if !mode.IsValid() {
+		return false, false, "", fmt.Errorf("invalid persistence mode %q", mode)
+	}
+	if current.Ephemeral && current.NoHistory {
+		return false, false, "", fmt.Errorf("ephemeral and no_history are mutually exclusive")
+	}
+	if !current.StorageClass.IsValid() {
+		return false, false, "", fmt.Errorf("invalid storage class %q", current.StorageClass)
+	}
+	wispPlane := current.Ephemeral || current.NoHistory
+	if wispPlane && current.StorageClass != "" && current.StorageClass != StorageClassEphemeral {
+		return false, false, "", fmt.Errorf("storage class %q conflicts with ephemeral/no_history", current.StorageClass)
+	}
+	if !wispPlane && current.StorageClass == StorageClassEphemeral {
+		return false, false, "", fmt.Errorf("storage class ephemeral requires ephemeral or no_history")
+	}
+	if current.StorageClass == StorageClassUnversioned && mode != PersistenceModePersistent {
+		return false, false, "", fmt.Errorf("cannot move unversioned record to persistence mode %q", mode)
+	}
+	if persistenceMode(current) == mode {
+		return current.Ephemeral, current.NoHistory, current.StorageClass, nil
+	}
+
+	switch mode {
+	case PersistenceModePersistent:
+		storageClass := current.StorageClass
+		if storageClass == StorageClassEphemeral {
+			storageClass = ""
+		}
+		return false, false, storageClass, nil
+	case PersistenceModeEphemeral:
+		storageClass := current.StorageClass
+		if storageClass == StorageClassVersioned {
+			storageClass = ""
+		}
+		return true, false, storageClass, nil
+	case PersistenceModeNoHistory:
+		storageClass := current.StorageClass
+		if storageClass == StorageClassVersioned {
+			storageClass = ""
+		}
+		return false, true, storageClass, nil
+	default:
+		return false, false, "", fmt.Errorf("invalid persistence mode %q", mode)
+	}
+}
 
 // validStorageClasses is the canonical value list; IsValid,
 // ParseStorageClass, and ValidStorageClassNames all derive from it.
@@ -859,8 +960,9 @@ var validStorageClasses = []StorageClass{
 	StorageClassVersioned, StorageClassUnversioned, StorageClassEphemeral,
 }
 
-// IsValid reports whether the storage class value is valid. Empty is valid
-// and means "unset": the effective class defaults per C1.2/C1.3.
+// IsValid reports whether the storage class value is valid. Empty is valid:
+// its effective class is ephemeral for Ephemeral or NoHistory rows and
+// versioned otherwise.
 func (s StorageClass) IsValid() bool {
 	if s == "" {
 		return true
@@ -885,8 +987,8 @@ func ParseStorageClass(v string) (StorageClass, error) {
 }
 
 // Normalize maps the explicit versioned spelling to unset: the two are
-// semantically identical (C1.2) and the marker is omitted when versioned
-// (C2.4) — in storage cells and JSONL alike. Both insert stacks call this so
+// semantically identical and the marker is omitted when versioned in storage
+// cells and serialized records alike. Both insert stacks call this so
 // the database never persists the literal "versioned".
 func (s StorageClass) Normalize() StorageClass {
 	if s == StorageClassVersioned {
@@ -895,9 +997,9 @@ func (s StorageClass) Normalize() StorageClass {
 	return s
 }
 
-// EffectiveStorageClass resolves the record's class per C1.2/C1.3: an
-// explicit declaration wins; otherwise wisp-plane records (Ephemeral or
-// NoHistory) are ephemeral and everything else is versioned.
+// EffectiveStorageClass resolves the record's class: an explicit declaration
+// wins; otherwise wisp-plane records (Ephemeral or NoHistory) are ephemeral
+// and everything else is versioned.
 func (i *Issue) EffectiveStorageClass() StorageClass {
 	if i.StorageClass != "" {
 		return i.StorageClass
@@ -906,6 +1008,16 @@ func (i *Issue) EffectiveStorageClass() StorageClass {
 		return StorageClassEphemeral
 	}
 	return StorageClassVersioned
+}
+
+func persistenceMode(i Issue) PersistenceMode {
+	if i.NoHistory {
+		return PersistenceModeNoHistory
+	}
+	if i.Ephemeral {
+		return PersistenceModeEphemeral
+	}
+	return PersistenceModePersistent
 }
 
 // joinNamesWithOr formats a value list as "a, b, or c" for error messages.

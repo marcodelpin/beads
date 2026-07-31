@@ -56,7 +56,8 @@ func bdDepAdd(t *testing.T, bd, dir string, args ...string) {
 	}
 }
 
-// querySessionSQL queries closed_by_session via raw SQL since it's not in IssueSelectColumns.
+// querySessionSQL queries closed_by_session via raw SQL. IssueSelectColumns
+// selects and hydrates the column too; this reads the stored row directly.
 func querySessionSQL(t *testing.T, beadsDir, id string) string {
 	t.Helper()
 	dataDir := filepath.Join(beadsDir, "embeddeddolt")

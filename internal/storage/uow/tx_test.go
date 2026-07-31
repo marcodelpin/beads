@@ -13,9 +13,14 @@ import (
 
 // mockUnitOfWork implements UnitOfWork for testing
 type mockUnitOfWork struct {
-	commitErr   error
-	commitCount int
-	closed      bool
+	commitErr         error
+	commitCount       int
+	closed            bool
+	configUseCase     domain.ConfigUseCase
+	issueUseCase      domain.IssueUseCase
+	dependencyUseCase domain.DependencyUseCase
+	labelUseCase      domain.LabelUseCase
+	commentUseCase    domain.CommentUseCase
 }
 
 func (m *mockUnitOfWork) Close(ctx context.Context) {
@@ -29,23 +34,25 @@ func (m *mockUnitOfWork) Commit(ctx context.Context, message string) error {
 
 func (m *mockUnitOfWork) SwitchDatabase(ctx context.Context, database string) error { return nil }
 
-func (m *mockUnitOfWork) ConfigUseCase() domain.ConfigUseCase         { return nil }
+func (m *mockUnitOfWork) ConfigUseCase() domain.ConfigUseCase         { return m.configUseCase }
 func (m *mockUnitOfWork) DoltRemoteUseCase() domain.DoltRemoteUseCase { return nil }
 func (m *mockUnitOfWork) BootstrapUseCase() domain.BootstrapUseCase   { return nil }
-func (m *mockUnitOfWork) IssueUseCase() domain.IssueUseCase           { return nil }
-func (m *mockUnitOfWork) DependencyUseCase() domain.DependencyUseCase { return nil }
-func (m *mockUnitOfWork) LabelUseCase() domain.LabelUseCase           { return nil }
-func (m *mockUnitOfWork) CommentUseCase() domain.CommentUseCase       { return nil }
+func (m *mockUnitOfWork) IssueUseCase() domain.IssueUseCase           { return m.issueUseCase }
+func (m *mockUnitOfWork) DependencyUseCase() domain.DependencyUseCase { return m.dependencyUseCase }
+func (m *mockUnitOfWork) LabelUseCase() domain.LabelUseCase           { return m.labelUseCase }
+func (m *mockUnitOfWork) CommentUseCase() domain.CommentUseCase       { return m.commentUseCase }
 func (m *mockUnitOfWork) RawSQLUseCase() domain.RawSQLUseCase         { return nil }
 
 // mockUnitOfWorkProvider implements UnitOfWorkProvider for testing
 type mockUnitOfWorkProvider struct {
-	uows      []*mockUnitOfWork
-	uowIndex  int
-	newUOWErr error
+	uows        []*mockUnitOfWork
+	uowIndex    int
+	newUOWCalls int
+	newUOWErr   error
 }
 
 func (m *mockUnitOfWorkProvider) NewUOW(ctx context.Context) (UnitOfWork, error) {
+	m.newUOWCalls++
 	if m.newUOWErr != nil {
 		return nil, m.newUOWErr
 	}
@@ -64,6 +71,11 @@ func (m *mockUnitOfWorkProvider) Close(ctx context.Context) error {
 func newMySQLError(code uint16) error {
 	return &mysql.MySQLError{Number: code, Message: "test error"}
 }
+
+type sqlStateError string
+
+func (e sqlStateError) Error() string    { return "sqlstate " + string(e) }
+func (e sqlStateError) SQLState() string { return string(e) }
 
 func TestRunTx_Success(t *testing.T) {
 	uw := &mockUnitOfWork{}
@@ -163,6 +175,28 @@ func TestRunTx_RetriesOnLockWaitTimeout(t *testing.T) {
 	}
 	if callCount < 2 {
 		t.Errorf("expected at least 2 calls (retry), got %d", callCount)
+	}
+}
+
+func TestRunTx_RetriesOnPostgresSerializationStates(t *testing.T) {
+	for _, state := range []string{"40001", "40P01"} {
+		t.Run(state, func(t *testing.T) {
+			first := &mockUnitOfWork{commitErr: sqlStateError(state)}
+			second := &mockUnitOfWork{}
+			provider := &mockUnitOfWorkProvider{uows: []*mockUnitOfWork{first, second}}
+
+			var calls int32
+			err := RunTx(context.Background(), provider, func(context.Context, UnitOfWork) (string, error) {
+				atomic.AddInt32(&calls, 1)
+				return "retry postgres serialization", nil
+			})
+			if err != nil {
+				t.Fatalf("RunTx() error = %v", err)
+			}
+			if calls != 2 {
+				t.Fatalf("work calls = %d, want 2", calls)
+			}
+		})
 	}
 }
 
