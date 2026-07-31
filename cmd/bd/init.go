@@ -283,11 +283,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
-		var serverTLS *bool
-		if cmd.Flags().Changed("server-tls") {
-			v, _ := cmd.Flags().GetBool("server-tls")
-			serverTLS = &v
-		}
 		promoteExplicitServerConnFlags(cmd)
 
 		// --force is a deprecated alias for --reinit-local. They share
@@ -337,7 +332,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 		if initProxiedServer {
 			if sharedServer || externalServer ||
-				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" || serverTLS != nil {
+				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" || cmd.Flags().Changed("server-tls") {
 				return fmt.Errorf("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
 			}
 		}
@@ -1169,7 +1164,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 		if syncFromRemote {
 			var err error
-			cloneCfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName, serverTLS)
+			cloneCfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
 			err = cloneFromRemoteWithMode(ctx, beadsDir, syncURL, dbName, cloneCfg, initRemoteCloneMode(initServerMode, externalServer))
 			if err != nil {
 				if isEmptyRemoteCloneError(err) {
@@ -1324,7 +1319,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					// bd bootstrap sync path produces (GH#3201) so
 					// `bd migrate --force` (or BD_ALLOW_REMOTE_MIGRATE=1) and
 					// `bd dolt push` can open the cloned database.
-					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName, serverTLS)
+					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
 					if ferr := finalizeSyncedBootstrap(beadsDir, syncURL, fcfg, dbName); ferr != nil {
 						fmt.Fprintf(os.Stderr, "Warning: failed to finalize bootstrapped workspace: %v\n", ferr)
 					}
@@ -1562,9 +1557,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					}
 					if serverUser != "" {
 						cfg.DoltServerUser = serverUser
-					}
-					if serverTLS != nil {
-						cfg.DoltServerTLS = serverTLS
 					}
 				}
 
@@ -2151,7 +2143,7 @@ func init() {
 	// Dolt server connection flags
 	initCmd.Flags().Bool("server", false, "Use external dolt sql-server instead of embedded engine")
 	initCmd.Flags().String("server-host", "", "Dolt server host (default: 127.0.0.1)")
-	initCmd.Flags().Bool("server-tls", false, "Require TLS for the Dolt server connection (server mode; overrides BEADS_DOLT_SERVER_TLS)")
+	initCmd.Flags().Bool("server-tls", false, "Require TLS for the init-time Dolt server connection (overrides BEADS_DOLT_SERVER_TLS for this run; not persisted - set the env var or credentials file for later commands)")
 	initCmd.Flags().Int("server-port", 0, "Dolt server port (default: 3307)")
 	initCmd.Flags().String("server-socket", "", "Unix domain socket path (overrides host/port)")
 	initCmd.Flags().String("server-user", "", "Dolt server MySQL user (default: root)")
@@ -2932,11 +2924,13 @@ func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
 }
 
 // promoteExplicitServerConnFlags makes an explicit --server-host/--server-port/
-// --server-user flag outrank the corresponding BEADS_DOLT_SERVER_* environment
-// variable. Every downstream resolver (configfile getters, doltserver
-// DefaultConfig) consults the environment first, so without promotion a stale
-// shell-profile value silently redirects init to a different server than the
-// one named on the command line.
+// --server-user/--server-tls flag outrank the corresponding BEADS_DOLT_SERVER_*
+// environment variable. Every downstream resolver (configfile getters,
+// doltserver DefaultConfig) consults the environment first, so without
+// promotion a stale shell-profile value silently redirects init to a different
+// server than the one named on the command line. The promotion is scoped to
+// this process's environment only; nothing here is persisted to metadata.json
+// (TLS in particular stays env/credentials-file configured, per bd dolt help).
 func promoteExplicitServerConnFlags(cmd *cobra.Command) {
 	if cmd.Flags().Changed("server-host") {
 		if v, _ := cmd.Flags().GetString("server-host"); v != "" {
@@ -2967,7 +2961,7 @@ func initDoltServerTLSFromEnv() bool {
 	return (&configfile.Config{}).GetDoltServerTLS()
 }
 
-func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, serverSocket, serverUser, dbName string, serverTLS *bool) *configfile.Config {
+func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, serverSocket, serverUser, dbName string) *configfile.Config {
 	cfg := configfile.DefaultConfig()
 	cfg.Backend = configfile.BackendDolt
 	cfg.DoltDatabase = dbName
@@ -2989,9 +2983,6 @@ func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, ser
 	}
 	if serverUser != "" {
 		cfg.DoltServerUser = serverUser
-	}
-	if serverTLS != nil {
-		cfg.DoltServerTLS = serverTLS
 	}
 	return cfg
 }

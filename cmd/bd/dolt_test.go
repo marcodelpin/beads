@@ -1477,13 +1477,12 @@ func TestRunExternalDoltStatus_Unreachable(t *testing.T) {
 	// Use 127.0.0.1 so the OS RSTs the connect() fast (connection refused)
 	// rather than taking the 5s DSN timeout against a routable-but-silent
 	// host. runExternalDoltStatus does not consult isLocalHost itself.
-	tlsOn := true
 	cfg := &configfile.Config{
 		DoltMode:       "server",
 		DoltServerHost: "127.0.0.1",
 		DoltServerUser: "root",
 		DoltDatabase:   "beads_ext",
-		DoltServerTLS:  &tlsOn,
+		DoltServerTLS:  true,
 	}
 
 	t.Run("text output", func(t *testing.T) {

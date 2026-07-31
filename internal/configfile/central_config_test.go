@@ -31,7 +31,7 @@ func TestLoadCentralConfig_FileExists(t *testing.T) {
 		DoltServerHost: "central.example.com",
 		DoltServerPort: 3308,
 		DoltServerUser: "centraluser",
-		DoltServerTLS:  boolPtr(true),
+		DoltServerTLS:  true,
 	})
 
 	cfg, err := LoadCentralConfig(centralPath)
@@ -53,8 +53,8 @@ func TestLoadCentralConfig_FileExists(t *testing.T) {
 	if cfg.DoltMode != DoltModeServer {
 		t.Errorf("DoltMode = %q, want %q", cfg.DoltMode, DoltModeServer)
 	}
-	if cfg.DoltServerTLS == nil || !*cfg.DoltServerTLS {
-		t.Error("DoltServerTLS = false/unset, want true")
+	if !cfg.DoltServerTLS {
+		t.Error("DoltServerTLS = false, want true")
 	}
 }
 
@@ -90,7 +90,7 @@ func TestApplyCentralDefaults_FillsEmptyFields(t *testing.T) {
 		DoltServerHost: "central.example.com",
 		DoltServerPort: 3308,
 		DoltServerUser: "centraluser",
-		DoltServerTLS:  boolPtr(true),
+		DoltServerTLS:  true,
 	}
 	project := &Config{
 		Database: "mydb",
@@ -110,8 +110,8 @@ func TestApplyCentralDefaults_FillsEmptyFields(t *testing.T) {
 	if project.DoltServerUser != "centraluser" {
 		t.Errorf("DoltServerUser = %q, want centraluser", project.DoltServerUser)
 	}
-	if project.DoltServerTLS == nil || !*project.DoltServerTLS {
-		t.Error("DoltServerTLS = false/unset, want true")
+	if !project.DoltServerTLS {
+		t.Error("DoltServerTLS = false, want true")
 	}
 }
 
@@ -121,14 +121,14 @@ func TestApplyCentralDefaults_ProjectOverridesCentral(t *testing.T) {
 		DoltServerHost: "central.example.com",
 		DoltServerPort: 3308,
 		DoltServerUser: "centraluser",
-		DoltServerTLS:  boolPtr(true),
+		DoltServerTLS:  true,
 	}
 	project := &Config{
 		DoltMode:       DoltModeEmbedded,
 		DoltServerHost: "project.local",
 		DoltServerPort: 3309,
 		DoltServerUser: "projuser",
-		DoltServerTLS:  boolPtr(false), // explicit false — preserved over central true
+		DoltServerTLS:  false, // zero value — cannot override to false
 	}
 
 	ApplyCentralDefaults(project, central)
@@ -144,9 +144,6 @@ func TestApplyCentralDefaults_ProjectOverridesCentral(t *testing.T) {
 	}
 	if project.DoltServerUser != "projuser" {
 		t.Errorf("DoltServerUser = %q, want projuser (project override)", project.DoltServerUser)
-	}
-	if project.DoltServerTLS == nil || *project.DoltServerTLS {
-		t.Error("DoltServerTLS = true/unset, want explicit false preserved over central true")
 	}
 }
 

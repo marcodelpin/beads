@@ -255,15 +255,18 @@ func collectMetadataEntries() []configEntry {
 			entries = append(entries, configEntry{Key: key, Value: fmt.Sprintf("%d", value), Source: "metadata"})
 		}
 	}
+	addBool := func(key string, value bool) {
+		if value {
+			entries = append(entries, configEntry{Key: key, Value: "true", Source: "metadata"})
+		}
+	}
 
 	add("dolt_mode", cfg.DoltMode)
 	add("dolt_server_host", cfg.DoltServerHost)
 	addInt("dolt_server_port", cfg.DoltServerPort)
 	add("dolt_server_user", cfg.DoltServerUser)
 	add("dolt_database", cfg.DoltDatabase)
-	if cfg.DoltServerTLS != nil {
-		entries = append(entries, configEntry{Key: "dolt_server_tls", Value: fmt.Sprintf("%t", *cfg.DoltServerTLS), Source: "metadata"})
-	}
+	addBool("dolt_server_tls", cfg.DoltServerTLS)
 	add("dolt_data_dir", cfg.DoltDataDir)
 	addInt("dolt_remotesapi_port", cfg.DoltRemotesAPIPort)
 	add("project_id", cfg.ProjectID)
