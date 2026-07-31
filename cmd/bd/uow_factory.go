@@ -76,6 +76,11 @@ func resolveProxiedServerUOWTopology(beadsDir, databaseOverride string) sqlServe
 	return topology
 }
 
+// serverModeSocketProbeTimeout is how long the socket-first / TCP-fallback
+// probe waits, matching the store open's budget so both consumers make the same
+// call on the same workspace.
+const serverModeSocketProbeTimeout = 500 * time.Millisecond
+
 // errServeGatewayCredential refuses a workspace that authenticates to Dolt with
 // a minted credential.
 //
@@ -168,9 +173,15 @@ func resolveServerModeUOWTopology(ctx context.Context, beadsDir string) (sqlServ
 	}
 
 	external := &configfile.ExternalDoltConfig{User: conn.ServerUser}
+	// Socket-first / TCP-fallback, the same policy dolt's own server-mode open
+	// applies (dolt.ResolveSocketTransport): a configured socket that is not
+	// currently connectable must not block a workspace whose server answers over
+	// TCP. Without this, serve fails to construct in a workspace where every CLI
+	// command succeeds.
+	socket := dolt.ResolveSocketTransport(conn.ServerSocket, conn.ServerHost, conn.ServerPort, serverModeSocketProbeTimeout)
 	switch {
-	case conn.ServerSocket != "":
-		external.Socket = conn.ServerSocket
+	case socket != "":
+		external.Socket = socket
 	case conn.ServerPort > 0:
 		external.Host = conn.ServerHost
 		external.Port = conn.ServerPort

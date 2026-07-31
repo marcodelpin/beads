@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -101,6 +103,58 @@ func TestResolveServerModeUOWTopology_NoMetadataMatchesTheCLIDatabase(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, configfile.DefaultDoltDatabase, topology.database,
 		"serve must open the database the CLI opens in this corner; main.go's cfg == nil branch ignores the env var")
+}
+
+// A stale socket path with a live TCP server is a workspace the CLI works in:
+// dolt's store open probes the socket and transparently falls back to TCP. Serve
+// has to make the same call or the parity this resolution exists for is a claim
+// rather than a fact.
+//
+// Without the fix the socket wins unconditionally and serve fails to connect in
+// a workspace where every CLI command succeeds.
+func TestResolveServerModeUOWTopology_FallsBackToTCPWhenTheSocketIsDead(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	beadsDir := serverModeBeadsDir(t, &configfile.Config{
+		DoltServerHost:   "127.0.0.1",
+		DoltServerPort:   port,
+		DoltServerSocket: filepath.Join(t.TempDir(), "not-a-live-socket.sock"),
+		DoltDatabase:     "beads_serve",
+	})
+	t.Setenv("BEADS_DOLT_SERVER_PORT", strconv.Itoa(port))
+
+	topology, err := resolveServerModeUOWTopology(context.Background(), beadsDir)
+	require.NoError(t, err)
+
+	assert.Empty(t, topology.external.Socket,
+		"a dead socket must not win over a live TCP port; the CLI falls back and serve has to agree")
+	assert.Equal(t, port, topology.external.Port)
+	assert.Equal(t, "127.0.0.1", topology.external.Host)
+}
+
+// A live socket still wins: the fallback is a fallback, not a preference for
+// TCP. Without this the previous test could be satisfied by deleting socket
+// support outright.
+func TestResolveServerModeUOWTopology_KeepsALiveSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "dolt.sock")
+	ln, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	beadsDir := serverModeBeadsDir(t, &configfile.Config{
+		DoltServerHost:   "127.0.0.1",
+		DoltServerPort:   3521,
+		DoltServerSocket: socket,
+		DoltDatabase:     "beads_serve",
+	})
+
+	topology, err := resolveServerModeUOWTopology(context.Background(), beadsDir)
+	require.NoError(t, err)
+	assert.Equal(t, socket, topology.external.Socket)
+	assert.Zero(t, topology.external.Port, "a live socket is the transport; host/port must stay unset")
 }
 
 // The gateway refusal must be decided from the CONFIGURATION, never from the
