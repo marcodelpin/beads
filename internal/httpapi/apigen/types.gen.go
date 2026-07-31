@@ -150,7 +150,7 @@ type Problem struct {
 	// Param With `invalid_argument`: the offending query parameter, body member or header name. Present on every 400 except a body that fails to parse at all.
 	Param *string `json:"param,omitempty"`
 
-	// Reason With `invalid_argument`: `unknown_parameter` (this server does not know that parameter — version skew; degrade or fall back) or `invalid_value` (the value is malformed — a client bug, fail loud). The set may grow; default-branch on unknown values.
+	// Reason With `invalid_argument`: `unknown_parameter` (this server does not know that parameter — version skew; degrade or fall back) or `invalid_value` (the value is not one this server will act on: malformed, out of vocabulary, or — for `limit=0` under `--allow-non-loopback` — legal but refused in this server's configuration; `detail` says which). Either way `invalid_value` means send something different, never retry the same request. The set may grow; default-branch on unknown values.
 	Reason *string `json:"reason,omitempty"`
 
 	// Status The HTTP status code, repeated in the body.
@@ -187,9 +187,11 @@ type Unavailable = Problem
 // ListIssuesParams defines parameters for ListIssues.
 type ListIssuesParams struct {
 	// Status Status filter. Repeat the parameter, or pass a comma-separated list. Custom statuses configured for the workspace are honored.
+	//
+	// Setting this REPLACES the default status exclusions rather than fighting with them: `status=closed` on its own returns closed issues, and does NOT also need `all=true`. Leave it unset to get the default view described above.
 	Status *[]string `form:"status,omitempty" json:"status,omitempty"`
 
-	// Type Issue type.
+	// Type Issue type. Shorthand aliases are expanded exactly as `bd list --type` expands them (`mr`, `feat`, `mol`, `enhancement`, `dec`, `adr`); there is no plural folding. Unlike on `ready`, an unknown type is a 400 `invalid_argument` with `reason: "invalid_value"`, because `bd list` validates the type against the workspace's configured vocabulary and this operation keeps that behavior.
 	Type *string `form:"type,omitempty" json:"type,omitempty"`
 
 	// Assignee Only issues assigned to this actor.
@@ -207,7 +209,7 @@ type ListIssuesParams struct {
 	// Parent Restrict to recursive descendants of this issue.
 	Parent *string `form:"parent,omitempty" json:"parent,omitempty"`
 
-	// All Drop the default status exclusions (closed plus any custom statuses in the done/frozen categories).
+	// All Drop the default status exclusions (closed plus any custom statuses in the done/frozen categories). Redundant when `status` is set, which drops them already.
 	All *bool `form:"all,omitempty" json:"all,omitempty"`
 
 	// IncludeTemplates Include template molecules.
@@ -231,14 +233,18 @@ type ListIssuesParams struct {
 	// HasMetadataKey Only issues carrying this top-level metadata key.
 	HasMetadataKey *string `form:"has_metadata_key,omitempty" json:"has_metadata_key,omitempty"`
 
-	// Cursor Opaque keyset position, taken verbatim from a previous response's `next_cursor`. Clients MUST NOT construct, parse or mutate it: its encoding is server-private and versioned, and an undecodable or unknown-version value is refused with 400 `invalid_cursor`. It composes with every filter above; a page requested with a cursor must repeat the same filters, since the cursor carries a position and nothing else.
+	// Cursor Opaque keyset position, taken verbatim from a previous response's `next_cursor`. Clients MUST NOT construct, parse or mutate it: its encoding is server-private and versioned, and an undecodable or unknown-version value is refused with 400 `invalid_cursor`. The recovery for that refusal is normative: restart paging with no `cursor` at all — the position cannot be salvaged, and re-sending the same value cannot succeed.
+	//
+	// LIFETIME: a cursor holds a position and a private encoding version, and nothing else. The server keeps no state for it, so it does not expire, does not become invalid when the server restarts, and is not tied to the connection that issued it; the only thing that invalidates one is a change to the encoding, which surfaces as `invalid_cursor`.
+	//
+	// MISUSE IS NOT DETECTABLE, which is why repeating the filters matters. Because the token carries no filters, a page fetched with a cursor minted under DIFFERENT filters is not refused: the server applies the filters of the current request from the position of the old one, silently skipping every row the new filter set would have placed before that position. Repeat every filter verbatim for the whole traversal, and start a new traversal when they change.
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 
 	// Limit Maximum number of items to return. `0` means unlimited, exactly as `bd list --limit 0` does — the two surfaces read the same shared default and the same zero semantics, so they cannot diverge. An unlimited page reports `has_more: false` and carries no `next_cursor`. A negative value is a 400.
 	//
 	// The default below is the shared list limit constant (`workapi.DefaultListLimit`, the value `bd list`'s `--limit` flag registers).
 	//
-	// One exception, and it is mode-dependent: when the server was started with `--allow-non-loopback`, `limit=0` is refused with 400 `invalid_argument` ("unlimited reads are loopback-only; pass an explicit limit"). An unlimited read buffers the whole active set and its JSON encoding inside one shared process, which must not be reachable by arbitrary network peers.
+	// One exception, and it is mode-dependent: when the server was started with `--allow-non-loopback`, `limit=0` is refused with 400 `invalid_argument`, `param: "limit"`, `reason: "invalid_value"` and detail "unlimited reads are loopback-only; pass an explicit limit". An unlimited read buffers the whole active set and its JSON encoding inside one shared process, which must not be reachable by arbitrary network peers. The bind mode is deliberately NOT advertised in `ContextResponse` — a client that wants an unlimited read asks for one and, on that 400, re-issues with an explicit limit (and pages with `cursor`); it is a client-side fix, never a retry.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
@@ -250,7 +256,11 @@ type ListReadyWorkParams struct {
 	// Unassigned Only issues with no assignee.
 	Unassigned *bool `form:"unassigned,omitempty" json:"unassigned,omitempty"`
 
-	// Type Issue type, normalized server-side (singular/plural spellings are accepted). When set, `exclude_type` is ignored.
+	// Type Issue type. The only normalization is shorthand ALIAS expansion, exactly what `bd ready --type` does: `mr` → `merge-request`, `feat` → `feature`, `mol` → `molecule`, `enhancement` → `feature`, `dec`/`adr` → `decision`. Every other value is used as written — there is NO plural folding, so `bugs` is not `bug`.
+	//
+	// An unrecognized type is not an error here: the type vocabulary is workspace-configurable, and `bd ready` does not validate it either, so it simply matches nothing and `items` comes back empty. (The list operation differs — `bd list` DOES validate the type, so `GET /v0/beads/issues?type=bugs` is a 400.)
+	//
+	// When set, `exclude_type` is ignored, and so are the default type exclusions described above.
 	Type *string `form:"type,omitempty" json:"type,omitempty"`
 
 	// ExcludeType Issue types to exclude. Repeat the parameter, or pass a comma-separated list. Ignored when `type` is set.
@@ -298,7 +308,7 @@ type ListReadyWorkParams struct {
 	//
 	// The default below is the shared ready-work limit constant (`workapi.DefaultReadyLimit`, the value `bd ready`'s `--limit` flag registers).
 	//
-	// One exception, and it is mode-dependent: when the server was started with `--allow-non-loopback`, `limit=0` is refused with 400 `invalid_argument` ("unlimited reads are loopback-only; pass an explicit limit"). An unlimited read buffers the whole active set and its JSON encoding inside one shared process, which must not be reachable by arbitrary network peers.
+	// One exception, and it is mode-dependent: when the server was started with `--allow-non-loopback`, `limit=0` is refused with 400 `invalid_argument`, `param: "limit"`, `reason: "invalid_value"` and detail "unlimited reads are loopback-only; pass an explicit limit". An unlimited read buffers the whole active set and its JSON encoding inside one shared process, which must not be reachable by arbitrary network peers. The bind mode is deliberately NOT advertised in `ContextResponse` — a client that wants an unlimited read asks for one and, on that 400, re-issues with an explicit limit; it is a client-side fix, never a retry.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 

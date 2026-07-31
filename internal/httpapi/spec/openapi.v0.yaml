@@ -44,30 +44,35 @@ info:
     one error shape on this surface.
 
 
-    ## One status code applies to every route, and is documented here once
+    ## Two 400s apply to every route, and are documented here once
 
 
-    A request whose `Host` header is not in the server's allowlist is refused
-    with `400` / `code: invalid_argument` / `param: "Host"` by middleware that
-    runs before any handler, on every route including `GET /healthz`. It is
-    documented here rather than repeated on all six operations; the
-    per-operation `responses` below list only the codes the operation's own
-    handler can produce.
+    * **Host header.** A request whose `Host` header is not in the server's
+      allowlist is refused with `400` / `code: invalid_argument` /
+      `param: "Host"` by middleware that runs before any handler.
+
+    * **Unknown query parameter.** Every operation rejects any query parameter
+      outside its own parameter table with `400` / `code: invalid_argument` /
+      `reason: "unknown_parameter"` and `param` naming the offending key.
+      Operations with no parameters at all (`GET /healthz`,
+      `GET /v0/beads/context`, `GET /v0/beads/issues/{id}`,
+      `POST /v0/beads/issues/{id}:claim`) reject every query key the same way.
 
 
-    ## Unknown query parameters are rejected
+    Both are uniform rules, reachable on EVERY route including `GET /healthz`,
+    and are stated here instead of being repeated on all six operations. The
+    per-operation `responses` below therefore list what an operation produces
+    BEYOND these two: a generated client must treat `400 invalid_argument` as
+    possible everywhere, including on the operations whose documented statuses
+    are only `404`/`500`/`503`.
 
 
-    Every operation rejects any query parameter outside its own parameter table
-    with `400` / `code: invalid_argument` / `reason: "unknown_parameter"` and
-    `param` naming the offending key. Operations with no parameters at all
-    (`GET /healthz`, `GET /v0/beads/context`, `GET /v0/beads/issues/{id}`,
-    `POST /v0/beads/issues/{id}:claim`) reject every query key the same way.
-    This is deliberate and load-bearing: silently ignoring an unrecognized
-    FILTER parameter widens the result set, so a client one version ahead of
-    the server would receive — and act on — rows it believed it had filtered
-    out. Strict rejection is also a client's only per-parameter capability
-    probe, since `capabilities` (see `ContextResponse`) is operation-level.
+    The unknown-parameter rule is deliberate and load-bearing: silently
+    ignoring an unrecognized FILTER parameter widens the result set, so a
+    client one version ahead of the server would receive — and act on — rows it
+    believed it had filtered out. Strict rejection is also a client's only
+    per-parameter capability probe, since `capabilities` (see
+    `ContextResponse`) is operation-level.
 
 
     ## Version skew: what a client may gate on
@@ -91,14 +96,14 @@ info:
     ## Schema evolution while `/v0` is the newest path version
 
 
-    The `Issue`, `IssueWithCounts`, `IssueDetails` and
-    `IssueWithDependencyMetadata` schemas are pinned to the canonical Go
-    structs (`x-go-type`), so the CLI's `--json` output and these response
-    bodies are one compatibility domain and cannot drift apart. Changes to them
-    are limited to NEW optional fields, and each addition must land with its
-    entry in this document in the same change — a two-way JSON-tag bijection
-    test fails CI otherwise. A breaking change to those shapes requires cutting
-    `/v1`, not editing `/v0`.
+    `Issue`, `IssueWithCounts`, `IssueDetails`,
+    `IssueWithDependencyMetadata`, `Dependency`, `Comment` and `BondRef` are
+    pinned to the canonical Go structs (`x-go-type`), so the CLI's `--json`
+    output and these response bodies are one compatibility domain and cannot
+    drift apart. Changes to them are limited to NEW optional fields, and each
+    addition must land with its entry in this document in the same change — a
+    two-way JSON-tag bijection test, covering all seven, fails CI otherwise. A
+    breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
 
 paths:
 
@@ -151,6 +156,15 @@ paths:
         The result set is always restricted to `status=open`; there is no
         status parameter. There is no cursor either: the sort policies admit no
         keyset predicate, and the intended usage is snapshot-and-requery.
+
+
+        SOME TYPES ARE EXCLUDED BY DEFAULT, exactly as `bd ready` excludes them:
+        `merge-request`, `gate`, `molecule`, `rig` and the workspace's
+        configured infrastructure types, plus anything named in `exclude_type`.
+        Setting `type` DROPS THAT ENTIRE EXCLUSION SET (also matching the CLI),
+        so `type=molecule` returns records the default view never shows. A
+        client scanning the active set with `limit=0` and no `type` therefore
+        never sees those classes at all.
       parameters:
         - name: assignee
           in: query
@@ -165,8 +179,22 @@ paths:
         - name: type
           in: query
           description: >-
-            Issue type, normalized server-side (singular/plural spellings are
-            accepted). When set, `exclude_type` is ignored.
+            Issue type. The only normalization is shorthand ALIAS expansion,
+            exactly what `bd ready --type` does: `mr` → `merge-request`,
+            `feat` → `feature`, `mol` → `molecule`, `enhancement` → `feature`,
+            `dec`/`adr` → `decision`. Every other value is used as written —
+            there is NO plural folding, so `bugs` is not `bug`.
+
+
+            An unrecognized type is not an error here: the type vocabulary is
+            workspace-configurable, and `bd ready` does not validate it either,
+            so it simply matches nothing and `items` comes back empty. (The
+            list operation differs — `bd list` DOES validate the type, so
+            `GET /v0/beads/issues?type=bugs` is a 400.)
+
+
+            When set, `exclude_type` is ignored, and so are the default type
+            exclusions described above.
           schema:
             type: string
         - name: exclude_type
@@ -291,10 +319,14 @@ paths:
 
             One exception, and it is mode-dependent: when the server was
             started with `--allow-non-loopback`, `limit=0` is refused with 400
-            `invalid_argument` ("unlimited reads are loopback-only; pass an
-            explicit limit"). An unlimited read buffers the whole active set
-            and its JSON encoding inside one shared process, which must not be
-            reachable by arbitrary network peers.
+            `invalid_argument`, `param: "limit"`, `reason: "invalid_value"` and
+            detail "unlimited reads are loopback-only; pass an explicit limit".
+            An unlimited read buffers the whole active set and its JSON encoding
+            inside one shared process, which must not be reachable by arbitrary
+            network peers. The bind mode is deliberately NOT advertised in
+            `ContextResponse` — a client that wants an unlimited read asks for
+            one and, on that 400, re-issues with an explicit limit; it is a
+            client-side fix, never a retry.
           schema:
             type: integer
             minimum: 0
@@ -335,12 +367,26 @@ paths:
 
         The item set, and each item's JSON, are identical to `bd list --json`;
         only the order differs.
+
+
+        EPHEMERAL (WISP) ROWS ARE NOT IN SCOPE for this operation in v0: there
+        is no `include_ephemeral` parameter here, unlike on `ready`. `bd list`
+        cannot emit those rows either, so there is no CLI behavior to diverge
+        from — but it does mean a client whose workload spans the ephemeral
+        tier still needs the CLI for that half. Adding the parameter later is
+        additive.
       parameters:
         - name: status
           in: query
           description: >-
             Status filter. Repeat the parameter, or pass a comma-separated
             list. Custom statuses configured for the workspace are honored.
+
+
+            Setting this REPLACES the default status exclusions rather than
+            fighting with them: `status=closed` on its own returns closed
+            issues, and does NOT also need `all=true`. Leave it unset to get
+            the default view described above.
           style: form
           explode: true
           schema:
@@ -349,7 +395,14 @@ paths:
               type: string
         - name: type
           in: query
-          description: Issue type.
+          description: >-
+            Issue type. Shorthand aliases are expanded exactly as
+            `bd list --type` expands them (`mr`, `feat`, `mol`, `enhancement`,
+            `dec`, `adr`); there is no plural folding. Unlike on `ready`, an
+            unknown type is a 400 `invalid_argument` with
+            `reason: "invalid_value"`, because `bd list` validates the type
+            against the workspace's configured vocabulary and this operation
+            keeps that behavior.
           schema:
             type: string
         - name: assignee
@@ -393,7 +446,8 @@ paths:
           in: query
           description: >-
             Drop the default status exclusions (closed plus any custom statuses
-            in the done/frozen categories).
+            in the done/frozen categories). Redundant when `status` is set,
+            which drops them already.
           schema:
             type: boolean
             default: false
@@ -449,10 +503,27 @@ paths:
             Opaque keyset position, taken verbatim from a previous response's
             `next_cursor`. Clients MUST NOT construct, parse or mutate it: its
             encoding is server-private and versioned, and an undecodable or
-            unknown-version value is refused with 400 `invalid_cursor`. It
-            composes with every filter above; a page requested with a cursor
-            must repeat the same filters, since the cursor carries a position
-            and nothing else.
+            unknown-version value is refused with 400 `invalid_cursor`. The
+            recovery for that refusal is normative: restart paging with no
+            `cursor` at all — the position cannot be salvaged, and re-sending
+            the same value cannot succeed.
+
+
+            LIFETIME: a cursor holds a position and a private encoding version,
+            and nothing else. The server keeps no state for it, so it does not
+            expire, does not become invalid when the server restarts, and is
+            not tied to the connection that issued it; the only thing that
+            invalidates one is a change to the encoding, which surfaces as
+            `invalid_cursor`.
+
+
+            MISUSE IS NOT DETECTABLE, which is why repeating the filters
+            matters. Because the token carries no filters, a page fetched with
+            a cursor minted under DIFFERENT filters is not refused: the server
+            applies the filters of the current request from the position of the
+            old one, silently skipping every row the new filter set would have
+            placed before that position. Repeat every filter verbatim for the
+            whole traversal, and start a new traversal when they change.
           schema:
             type: string
         - name: limit
@@ -472,10 +543,14 @@ paths:
 
             One exception, and it is mode-dependent: when the server was
             started with `--allow-non-loopback`, `limit=0` is refused with 400
-            `invalid_argument` ("unlimited reads are loopback-only; pass an
-            explicit limit"). An unlimited read buffers the whole active set
-            and its JSON encoding inside one shared process, which must not be
-            reachable by arbitrary network peers.
+            `invalid_argument`, `param: "limit"`, `reason: "invalid_value"` and
+            detail "unlimited reads are loopback-only; pass an explicit limit".
+            An unlimited read buffers the whole active set and its JSON encoding
+            inside one shared process, which must not be reachable by arbitrary
+            network peers. The bind mode is deliberately NOT advertised in
+            `ContextResponse` — a client that wants an unlimited read asks for
+            one and, on that 400, re-issues with an explicit limit (and pages
+            with `cursor`); it is a client-side fix, never a retry.
           schema:
             type: integer
             minimum: 0
@@ -513,9 +588,14 @@ paths:
         fallback when no issue matches.
 
 
-        Comments and dependents are returned as counts by default, with
-        `comments_omitted` marking the difference between "no comments" and
-        "comments not included".
+        COMMENT BODIES AND DEPENDENTS ARE NOT REACHABLE OVER v0. This operation
+        takes no query parameters, and every query key is rejected, so there is
+        no way to ask for them: `comments` and `dependents` are always absent,
+        and `comment_count`, `dependent_count` and `comments_omitted` are what
+        this surface reports about them. A workflow that must read comment text
+        keeps using `bd show --json --include-comments` for now. Adding
+        `include_comments` / `include_dependents` parameters later is additive
+        and needs no schema change — the fields are already specified.
       parameters:
         - $ref: '#/components/parameters/IssueID'
       responses:
@@ -653,7 +733,7 @@ components:
     # ---------------------------------------------------------------------
     # Pinned schemas.
     #
-    # Each of the four below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the seven below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.
@@ -763,6 +843,16 @@ components:
             persist in older rows. Clients MUST NOT decode this into a
             string-to-string map; a strict decode fails on the first typed
             value and takes the whole response with it.
+
+
+            The object-at-top-level shape is the contract every producer and
+            every metadata filter (`metadata_field`, `has_metadata_key`)
+            assumes, but be aware the store validates only that the value is
+            WELL-FORMED JSON: a row created with a non-object (e.g.
+            `bd create --metadata '[1,2]'`) can carry an array or a scalar
+            here. That is a storage-side gap, not licence for a producer to
+            emit one — but a tolerant client should skip such a row rather than
+            fail the whole response.
         compaction_level:
           type: integer
         compacted_at:
@@ -1013,15 +1103,19 @@ components:
         comments:
           type: array
           description: >-
-            Populated only when comments were explicitly requested; see
-            `comments_omitted`.
+            NOT POPULATED IN v0 — `getIssue` has no parameter that requests
+            comment bodies and rejects every query key, so this is always
+            absent. Use `comment_count` and `comments_omitted`. Documented
+            because the struct carries the field and a later version may add
+            the parameter that fills it.
           items: { $ref: '#/components/schemas/Comment' }
         # --- added by IssueDetails ---
         dependents:
           type: array
           description: >-
-            Issues that depend on this one, each carrying its edge type.
-            Populated only when dependents were explicitly requested.
+            Issues that depend on this one, each carrying its edge type. NOT
+            POPULATED IN v0, for the same reason as `comments`: use
+            `dependent_count`.
           items: { $ref: '#/components/schemas/IssueWithDependencyMetadata' }
         parent:
           type: string
@@ -1038,9 +1132,11 @@ components:
         comments_omitted:
           type: boolean
           description: >-
-            True when `comment_count` is nonzero and `comments` was left out.
-            Without it, an absent `comments` key is ambiguous between "no
-            comments" and "comments not included in this response".
+            True when `comment_count` is nonzero and `comments` was left out —
+            which over v0 HTTP is every such issue, since bodies cannot be
+            requested. Without it, an absent `comments` key is ambiguous
+            between "no comments" and "comments not included in this
+            response".
         epic_total_children:
           type: integer
         epic_closed_children:
@@ -1361,8 +1457,12 @@ components:
           description: >-
             With `invalid_argument`: `unknown_parameter` (this server does not
             know that parameter — version skew; degrade or fall back) or
-            `invalid_value` (the value is malformed — a client bug, fail loud).
-            The set may grow; default-branch on unknown values.
+            `invalid_value` (the value is not one this server will act on:
+            malformed, out of vocabulary, or — for `limit=0` under
+            `--allow-non-loopback` — legal but refused in this server's
+            configuration; `detail` says which). Either way `invalid_value`
+            means send something different, never retry the same request. The
+            set may grow; default-branch on unknown values.
         assignee:
           type: string
           description: >-

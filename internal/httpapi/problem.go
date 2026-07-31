@@ -95,8 +95,11 @@ const (
 	// only per-parameter capability probe, since `capabilities` is
 	// operation-level.
 	ReasonUnknownParameter Reason = "unknown_parameter"
-	// ReasonInvalidValue means the value is malformed: a client bug, fail
-	// loud.
+	// ReasonInvalidValue means the server will not act on that value:
+	// malformed, outside the vocabulary, or legal-but-refused in this
+	// server's configuration (limit=0 under --allow-non-loopback). The
+	// recovery is always to send something different, never to retry; the
+	// detail says which case it was.
 	ReasonInvalidValue Reason = "invalid_value"
 )
 
@@ -147,10 +150,14 @@ const (
 // in both directions, so an undocumented emission and an unemittable
 // documented status both fail CI.
 //
-// The Host-header middleware's 400 invalid_argument is reachable on every
-// route including /healthz, and is deliberately absent from every row here: it
-// runs before any handler and is documented once at the document level rather
-// than repeated on all six operations.
+// Two 400 invalid_argument paths are reachable on every route including
+// /healthz — the Host-header middleware, and the unknown-query-parameter
+// refusal every decoder performs — and both are deliberately absent from every
+// row here. They are uniform rules, not per-operation behavior, and the spec
+// documents them once at the document level rather than repeating them on all
+// six operations; these rows carry what an operation produces beyond them.
+// Keep the two documents in step: a row here and the document-level prose are
+// the only two places that carve-out exists.
 var operationCodes = map[string][]Code{
 	// Liveness answers from the process and touches nothing that can fail.
 	OpHealth: nil,
