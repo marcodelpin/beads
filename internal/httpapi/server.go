@@ -163,9 +163,16 @@ type Server struct {
 	// off; see newHostPolicy.
 	hosts hostPolicy
 
-	idPrefix  string
-	idSeq     atomic.Uint64
-	liveConns atomic.Int64
+	idPrefix string
+	idSeq    atomic.Uint64
+
+	// maxConns mirrors the constant so a test can exercise the cap without
+	// opening 64 sockets. liveConns is the accepted-connection gauge, reported
+	// on every request line; connCapWarned makes the saturation event
+	// edge-triggered rather than once per connection.
+	maxConns      int
+	liveConns     atomic.Int64
+	connCapWarned atomic.Bool
 }
 
 // ValidateBindAddr enforces the bind posture, following the policy the managed
@@ -237,13 +244,14 @@ func Listen(cfg Config) (*Server, error) {
 		ctxBody:  contextResponse(cfg.Workspace, cfg.SchemaVersion, Capabilities()),
 		hosts:    newHostPolicy(ip),
 		idPrefix: prefix,
+		maxConns: maxConns,
 	}
 
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("bind %s: %w", cfg.Addr, err)
 	}
-	s.listener = netutil.LimitListener(ln, maxConns)
+	s.listener = netutil.LimitListener(ln, s.maxConns)
 
 	s.http = &http.Server{
 		Handler:           s.handler(),
@@ -310,12 +318,30 @@ func (s *Server) Serve(ctx context.Context) error {
 	return nil
 }
 
+// connState tracks accepted connections, and says out loud when the cap is
+// reached.
+//
+// It has to: netutil.LimitListener simply stops calling Accept at the cap, so
+// further connections wait in the kernel backlog with nothing on stderr — and
+// /healthz needs a fresh accept too, so an exhausted cap is indistinguishable
+// from no traffic at all. Request lines just stop. This is the connection
+// tier's version of the semaphore's saturation event, and the one wedge mode
+// this slice can actually exhibit.
+//
+// The event is edge-triggered: once when the cap is reached, again only after
+// it has cleared. The conns gauge on every request line is what shows it
+// climbing beforehand.
 func (s *Server) connState(_ net.Conn, state http.ConnState) {
 	switch state {
 	case http.StateNew:
-		s.liveConns.Add(1)
+		n := s.liveConns.Add(1)
+		if s.maxConns > 0 && n >= int64(s.maxConns) && s.connCapWarned.CompareAndSwap(false, true) {
+			s.event("conn_cap_saturated", "conns", n, "max_conns", s.maxConns)
+		}
 	case http.StateHijacked, http.StateClosed:
-		s.liveConns.Add(-1)
+		if s.liveConns.Add(-1) < int64(s.maxConns) {
+			s.connCapWarned.Store(false)
+		}
 	}
 }
 
@@ -369,7 +395,8 @@ func (s *Server) acquire(ctx context.Context, rec *reqInfo) (release func(), err
 		return release, nil
 	case <-timer.C:
 		rec.semWait = time.Since(start)
-		s.event("semaphore_timeout", "request_id", rec.id, "wait_ms", millis(rec.semWait), "inflight", maxInflight)
+		s.event("semaphore_timeout", "request_id", rec.id, "wait_ms", millis(rec.semWait),
+			"inflight", maxInflight, "conns", s.liveConns.Load())
 		return nil, ErrBusy
 	case <-ctx.Done():
 		// The client hung up, or the request deadline expired, while queued.
@@ -390,7 +417,7 @@ func (s *Server) noteSaturation(rec *reqInfo, outcome string) {
 	}
 	s.event("semaphore_saturated",
 		"request_id", rec.id, "wait_ms", millis(rec.semWait),
-		"inflight", maxInflight, "outcome", outcome)
+		"inflight", maxInflight, "conns", s.liveConns.Load(), "outcome", outcome)
 }
 
 func orDefault(v, fallback time.Duration) time.Duration {
@@ -430,7 +457,21 @@ type reqInfo struct {
 	code    Code
 	semWait time.Duration
 	uowWait time.Duration
+	// refused is the caller-supplied value a middleware turned down: the Host
+	// this server does not answer to, or the unrecognized parameter name. It
+	// goes on the request line so a refusal is attributable — a rebinding probe
+	// that leaves no server-side trace is a control nobody can investigate.
+	// logValue quotes it, which is what makes logging attacker-controlled text
+	// safe.
+	//
+	// A pointer, so that the request line carries the field only when there was
+	// a refusal: the empty parameter name in `?=1` is a refusal with an empty
+	// value, not the absence of one.
+	refused *string
 }
+
+// refuse records the value a middleware turned down, for the request line.
+func (rec *reqInfo) refuse(value string) { rec.refused = &value }
 
 type reqInfoKey struct{}
 
@@ -494,7 +535,7 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 				rec.status = sw.status
 			}
 
-			s.event("request",
+			fields := []any{
 				"request_id", rec.id,
 				"op", rec.op,
 				"method", r.Method,
@@ -504,7 +545,17 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 				"duration_ms", millis(time.Since(start)),
 				"sem_wait_ms", millis(rec.semWait),
 				"uow_ms", millis(rec.uowWait),
-			)
+				// The connection gauge belongs on the busiest line in the log:
+				// it is the only place an operator watches it climb toward the
+				// cap. remote_addr answers "which client", which on loopback
+				// means "which local process" via the port.
+				"conns", s.liveConns.Load(),
+				"remote_addr", r.RemoteAddr,
+			}
+			if rec.refused != nil {
+				fields = append(fields, "refused", *rec.refused)
+			}
+			s.event("request", fields...)
 
 			if p == http.ErrAbortHandler {
 				// net/http's documented "abandon this response silently" signal.
@@ -554,6 +605,7 @@ func (s *Server) panicked(sw *statusWriter, r *http.Request, rec *reqInfo, p any
 func (s *Server) checkHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.hosts.allows(r.Host) {
+			requestInfo(r.Context()).refuse(r.Host)
 			s.fail(w, r, InvalidArgument("Host", ReasonInvalidValue,
 				"Host header is not one this server answers to"))
 			return

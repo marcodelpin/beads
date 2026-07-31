@@ -269,10 +269,18 @@ func TestHealthzStaysUpWhileTheDatabaseIsDown(t *testing.T) {
 func TestNoQueryParametersAccepted(t *testing.T) {
 	ts := newTestServer(t, Config{})
 
-	for _, path := range []string{"/healthz?verbose=1", "/v0/beads/context?fields=all"} {
-		resp := ts.get(t, path)
+	for _, tc := range []struct{ path, param string }{
+		{"/healthz?verbose=1", "verbose"},
+		{"/v0/beads/context?fields=all", "fields"},
+		// The degenerate spelling: url.Values keys this under the empty string,
+		// and the document promises `param` on every 400 except a body that
+		// fails to parse at all. Naming it as "" is the honest answer — the
+		// offending parameter name really is empty.
+		{"/healthz?=1", ""},
+	} {
+		resp := ts.get(t, tc.path)
 		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("GET %s status = %d, want 400", path, resp.StatusCode)
+			t.Fatalf("GET %s status = %d, want 400", tc.path, resp.StatusCode)
 		}
 		if got := resp.Header.Get("Content-Type"); got != "application/problem+json; charset=utf-8" {
 			t.Errorf("Content-Type = %q, want problem+json", got)
@@ -286,8 +294,15 @@ func TestNoQueryParametersAccepted(t *testing.T) {
 		if body["reason"] != string(ReasonUnknownParameter) {
 			t.Errorf("reason = %v, want %s", body["reason"], ReasonUnknownParameter)
 		}
-		if body["param"] == nil || body["param"] == "" {
-			t.Errorf("no param member naming the offending key: %v", body)
+		param, ok := body["param"].(string)
+		if !ok || param != tc.param {
+			t.Errorf("GET %s: param = %#v, want %q", tc.path, body["param"], tc.param)
+		}
+		// And the log line names it too: "which local process keeps sending bad
+		// requests, with what" is not answerable from a status alone.
+		line := findLogLine(t, ts.stderr.String(), "request_id="+body["request_id"].(string)+" ")
+		if !strings.Contains(line, "refused="+logValue(tc.param)) {
+			t.Errorf("GET %s: request line does not name the refused parameter:\n%s", tc.path, line)
 		}
 	}
 }
@@ -324,9 +339,15 @@ func TestHostHeaderAllowlist(t *testing.T) {
 				t.Errorf("body = %v, want invalid_argument on param Host", body)
 			}
 			// The refusal must be logged like any other request; the middleware
-			// runs inside the same per-request record.
-			if !strings.Contains(ts.stderr.String(), "status=400") {
-				t.Error("Host refusal produced no request log line")
+			// runs inside the same per-request record. And it must name the
+			// Host it refused: this check IS the rebinding defense, so a probe
+			// that leaves no attributable trace is a control nobody can
+			// investigate. logValue quotes the attacker-controlled value.
+			line := findLogLine(t, ts.stderr.String(), "refused="+logValue(host))
+			for _, field := range []string{"status=400", "code=invalid_argument", "remote_addr=127.0.0.1:"} {
+				if !strings.Contains(line, field) {
+					t.Errorf("Host refusal log line is missing %q:\n%s", field, line)
+				}
 			}
 		})
 	}
@@ -887,10 +908,60 @@ func TestRequestLogLine(t *testing.T) {
 	for _, field := range []string{
 		"request_id=", "op=health", "method=GET", "path=/healthz",
 		"status=200", "duration_ms=", "sem_wait_ms=", "uow_ms=",
+		// conns is the connection-cap gauge: the cap is enforced by the
+		// listener, so this line is the only place it can be watched climbing.
+		// remote_addr answers "which client" — on loopback, "which local
+		// process", via the port.
+		"conns=", "remote_addr=127.0.0.1:",
 	} {
 		if !strings.Contains(line, field) {
 			t.Errorf("request log line is missing %q:\n%s", field, line)
 		}
+	}
+	// A request nothing refused carries no refused field; it is not noise on
+	// every line.
+	if strings.Contains(line, "refused=") {
+		t.Errorf("request log line carries a refusal it did not make:\n%s", line)
+	}
+}
+
+// TestConnectionCapSaturationIsAnnounced. netutil.LimitListener parks Accept at
+// the cap, so further connections sit in the kernel backlog with nothing on
+// stderr — and /healthz needs a fresh accept too, which makes an exhausted cap
+// look exactly like no traffic. The semaphore got a saturation event for the
+// same reason; this is the connection tier's.
+func TestConnectionCapSaturationIsAnnounced(t *testing.T) {
+	stderr := &lockedBuffer{}
+	s := &Server{maxConns: 2, log: newTestLogger(stderr)}
+
+	s.connState(nil, http.StateNew)
+	if strings.Contains(stderr.String(), "event=conn_cap_saturated") {
+		t.Fatalf("announced saturation below the cap:\n%s", stderr.String())
+	}
+
+	s.connState(nil, http.StateNew)
+	line := findLogLine(t, stderr.String(), "event=conn_cap_saturated")
+	for _, field := range []string{"conns=2", "max_conns=2"} {
+		if !strings.Contains(line, field) {
+			t.Errorf("saturation line is missing %q:\n%s", field, line)
+		}
+	}
+
+	// Edge-triggered: a server sitting at the cap logs once, not once per
+	// connection attempt.
+	before := strings.Count(stderr.String(), "event=conn_cap_saturated")
+	s.connState(nil, http.StateNew)
+	if got := strings.Count(stderr.String(), "event=conn_cap_saturated"); got != before {
+		t.Errorf("saturation events = %d, want %d: the event repeats while the cap is held", got, before)
+	}
+
+	// And it re-arms, so the NEXT exhaustion is its own event rather than
+	// silence.
+	s.connState(nil, http.StateClosed)
+	s.connState(nil, http.StateClosed)
+	s.connState(nil, http.StateNew)
+	if got := strings.Count(stderr.String(), "event=conn_cap_saturated"); got != before+1 {
+		t.Errorf("saturation events = %d, want %d after the cap cleared and filled again", got, before+1)
 	}
 }
 

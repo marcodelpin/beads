@@ -266,6 +266,9 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 		if body["code"] != "invalid_argument" || body["param"] != "Host" {
 			t.Errorf("body = %v, want invalid_argument on param Host", body)
 		}
+		// The rebinding defense has to leave a trace naming what it refused,
+		// or an actual probe is invisible server-side.
+		sp.awaitLogLine(t, "refused=evil.example")
 	})
 
 	t.Run("unrouted paths keep the error shape", func(t *testing.T) {
@@ -293,6 +296,10 @@ func TestProxiedServerServeLifecycle(t *testing.T) {
 		for _, field := range []string{
 			"request_id=", "op=" + want.op, "method=GET", "status=" + want.status,
 			"duration_ms=", "sem_wait_ms=", "uow_ms=",
+			// The connection gauge and the caller. The cap is enforced by the
+			// listener, so this line is where an operator watches it climb;
+			// on loopback the remote port names the calling process.
+			"conns=", "remote_addr=127.0.0.1:",
 		} {
 			if !strings.Contains(line, field) {
 				t.Errorf("request log line for %s is missing %q:\n%s", want.path, field, line)

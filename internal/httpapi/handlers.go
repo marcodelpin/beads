@@ -69,8 +69,17 @@ func (s *Server) requireNoQuery(w http.ResponseWriter, r *http.Request) bool {
 	// Name one key, and always the same one for the same request: `param` is
 	// what the client dispatches on, so it must not depend on map order.
 	offender := slices.Min(slices.Collect(maps.Keys(q)))
-	s.fail(w, r, InvalidArgument(offender, ReasonUnknownParameter,
-		"this operation takes no query parameters"))
+	res := InvalidArgument(offender, ReasonUnknownParameter,
+		"this operation takes no query parameters")
+	if offender == "" {
+		// The degenerate `?=1` spelling parses to a parameter whose name is the
+		// empty string. InvalidArgument reads "" as "this input has no nameable
+		// part" and omits `param` — true of an unparseable body, not of this —
+		// and the document promises `param` on every other 400. Name it.
+		res.Problem.Param = &offender
+	}
+	requestInfo(r.Context()).refuse(offender)
+	s.fail(w, r, res)
 	return false
 }
 
