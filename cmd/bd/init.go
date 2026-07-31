@@ -23,6 +23,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/backends"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -433,6 +434,14 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				return fmt.Errorf("storage backend %q is no longer supported: %s; the supported backend is \"dolt\" (default)", backendFlag, configfile.RemovedSQLiteRationale)
 			}
 			return fmt.Errorf("unknown backend %q: the supported backend is \"dolt\" (default)", backendFlag)
+		}
+		// A registered extension backend passes IsSupportedBackend so its
+		// existing workspaces can be opened, but init provisions Dolt only and
+		// would otherwise create the workspace and persist backend: dolt. Reject
+		// it here rather than silently creating the wrong workspace; downstream
+		// registrants supply their own workspace-creation path.
+		if backends.Registered(backendFlag) {
+			return fmt.Errorf("backend %q cannot be created by bd init; it can only open an existing workspace (bd init provisions \"dolt\", the default)", backendFlag)
 		}
 		for _, legacyFlag := range removedBackendInitFlags {
 			if cmd.Flags().Changed(legacyFlag.name) {

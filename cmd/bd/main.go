@@ -33,6 +33,7 @@ import (
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/routing"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/backends"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	dbidentifier "github.com/steveyegge/beads/internal/storage/domain/db"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -1091,12 +1092,13 @@ var rootCmd = &cobra.Command{
 		if dbPath == "" {
 			if bd := beads.FindBeadsDir(); bd != "" {
 				cfg, cfgErr := configfile.Load(bd)
-				if cfgErr != nil || cfg != nil && (cfg.IsDoltProxiedServerMode() || !configfile.IsSupportedBackend(cfg.Backend)) {
-					// Proxied-server and removed-backend workspaces may have no
-					// local Dolt database file. Invalid or unknown metadata likewise must
-					// reach config validation instead of becoming a generic "no database"
-					// result. metadata.json identifies the workspace so store selection can
-					// route or reject it explicitly.
+				if cfgErr != nil || cfg != nil && (cfg.IsDoltProxiedServerMode() ||
+					registeredBackendWorkspaceIsBeadsDir(cfg) ||
+					!configfile.IsSupportedBackend(cfg.Backend)) {
+					// Proxied-server, registered remote, and removed-backend
+					// workspaces may have no local Dolt database file. Invalid
+					// or unknown metadata likewise must reach config validation
+					// instead of becoming a generic "no database" result.
 					dbPath = bd
 				}
 			}
@@ -1433,7 +1435,15 @@ var rootCmd = &cobra.Command{
 		// Removing them WILL cause unrecoverable data corruption and data loss.
 		// Dolt manages these files itself; external interference is never safe.
 
-		store, err = newDoltStore(rootCtx, doltCfg)
+		if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
+			if useReadOnly {
+				store, err = backend.OpenReadOnly(rootCtx, beadsDir)
+			} else {
+				store, err = backend.Open(rootCtx, beadsDir)
+			}
+		} else {
+			store, err = newDoltStore(rootCtx, doltCfg)
+		}
 
 		// Track final read-only state for staleness checks (GH#1089)
 		storeIsReadOnly = doltCfg.ReadOnly
@@ -1499,10 +1509,13 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		// Initialize hook runner
-		// dbPath is .beads/something.db, so workspace root is parent of .beads
-		if dbPath != "" {
-			beadsDir := filepath.Dir(dbPath)
+		// Initialize hook runner using the .beads directory resolved above via
+		// resolveCommandBeadsDir. Do not use filepath.Dir(dbPath): for a
+		// registered WorkspaceIsBeadsDir backend dbPath is the .beads directory
+		// itself, so filepath.Dir(dbPath) would load hooks from the repo root
+		// (<repo>/hooks) instead of .beads/hooks; custom dolt_data_dir layouts
+		// can likewise place the Dolt data outside .beads.
+		if beadsDir != "" {
 			hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
 		}
 
@@ -1520,7 +1533,9 @@ var rootCmd = &cobra.Command{
 		// Templates are loaded after auto-import to ensure the database is up-to-date.
 		// Skip for import command to avoid conflicts during import operations.
 		if cmd.Name() != "import" && store != nil {
-			beadsDir := filepath.Dir(dbPath)
+			// Reuse the resolved .beads directory (see the hook runner note
+			// above) so a registered WorkspaceIsBeadsDir workspace loads
+			// .beads/molecules.jsonl rather than <repo>/molecules.jsonl.
 			loader := molecules.NewLoader(store)
 			if result, err := loader.LoadAll(rootCtx, beadsDir); err != nil {
 				debug.Logf("warning: failed to load molecules: %v", err)

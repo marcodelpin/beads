@@ -283,6 +283,16 @@ func requireBootstrapDoltBackend(cfg *configfile.Config) error {
 	if err := validateConfiguredBackend(cfg); err != nil {
 		return err
 	}
+	// A registered extension backend passes validateConfiguredBackend so its
+	// existing workspaces can be opened, but every bd bootstrap action
+	// (sync, restore, jsonl-import, init) provisions or imports Dolt. Registered
+	// backends are open/discover-only, so reject them here — before
+	// detectBootstrapAction or executeBootstrapPlan — mirroring bd init's
+	// fail-closed gate. Downstream registrants supply their own workspace
+	// provisioning path.
+	if cfg != nil && cfg.GetBackend() != configfile.BackendDolt {
+		return fmt.Errorf("backend %q cannot be bootstrapped by bd bootstrap; it can only open an existing workspace (bd bootstrap provisions %q, the default)", cfg.GetBackend(), configfile.BackendDolt)
+	}
 	return nil
 }
 
