@@ -63,8 +63,24 @@ Configuration keys for 'bd dolt set':
   host      Server host (default: 127.0.0.1)
   port      Server port (auto-detected; override with bd dolt set port <N>)
   user      MySQL user (default: root)
-  tls       Require TLS for the server connection (true/false; default: false)
   data-dir  Custom dolt data directory (absolute path; default: .beads/dolt)
+
+Remote server authentication (password + TLS) is NOT stored via 'bd dolt set'
+(keeps secrets out of metadata.json). Configure them with:
+
+  BEADS_DOLT_PASSWORD       Server password (highest priority)
+  BEADS_DOLT_SERVER_TLS     Enable TLS (set to "1" or "true")
+  BEADS_DOLT_SERVER_USER    MySQL user override (else use 'bd dolt set user')
+  BEADS_CREDENTIALS_FILE    Optional path to credentials file
+
+  Default credentials file: ~/.config/beads/credentials (Linux/macOS)
+                            %APPDATA%\beads\credentials (Windows)
+  Format (INI, section = host:port of the resolved connection):
+    [127.0.0.1:3307]
+    password = secret
+
+  Password resolution: BEADS_DOLT_PASSWORD → credentials [host:port] → empty.
+  Full reference: docs/architecture/dolt.md (Environment Variables / Credentials).
 
 Flags for 'bd dolt set':
   --update-config  Also write to config.yaml for team-wide defaults
@@ -73,6 +89,7 @@ Examples:
   bd dolt set database myproject
   bd dolt set host 192.168.1.100 --update-config
   bd dolt set data-dir /home/user/.beads-dolt/myproject
+  export BEADS_DOLT_PASSWORD=... BEADS_DOLT_SERVER_TLS=1
   bd dolt test`,
 }
 
@@ -98,8 +115,21 @@ Keys:
   host      Server host (default: 127.0.0.1)
   port      Server port (auto-detected; override with bd dolt set port <N>)
   user      MySQL user (default: root)
-  tls       Require TLS for the server connection (true/false; default: false)
   data-dir  Custom dolt data directory (absolute path; default: .beads/dolt)
+
+There is no 'password' or 'tls' key here on purpose — secrets and TLS must
+not land in metadata.json. Use environment variables or the credentials file:
+
+  BEADS_DOLT_PASSWORD     Server password (highest priority)
+  BEADS_DOLT_SERVER_TLS   Enable TLS ("1" or "true")
+  BEADS_CREDENTIALS_FILE  Optional override path for credentials
+
+  Default credentials file: ~/.config/beads/credentials
+  Format:
+    [host:port]
+    password = secret
+
+  See: bd dolt --help and docs/architecture/dolt.md
 
 Use --update-config to also write to config.yaml for team-wide defaults.
 
@@ -107,8 +137,8 @@ Examples:
   bd dolt set database myproject
   bd dolt set host 192.168.1.100
   bd dolt set port 3307 --update-config
-  bd dolt set tls true
-  bd dolt set data-dir /home/user/.beads-dolt/myproject`,
+  bd dolt set data-dir /home/user/.beads-dolt/myproject
+  export BEADS_DOLT_PASSWORD=... BEADS_DOLT_SERVER_TLS=1`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		beadsDir := selectedDoltBeadsDir()
@@ -411,20 +441,35 @@ func printNoRemoteGuidance() {
 // when the persisted remote and the git origin disagree — a Dolt remote
 // deliberately pointed elsewhere, or a renamed/redirected origin — the rig
 // starts pushing somewhere else on the strength of a stale listing (wy-82hc5).
-func adoptGitOriginRemoteForPush(ctx context.Context, st storage.DoltStorage) (bool, error) {
+//
+// Adoption requires consent (#5068). The policy is decided by
+// decideRemoteAdoption in dolt_remote_adopt.go and applied here, after the URL
+// is known and before anything is written: nothing below this point is
+// reachable without either --yes or an interactive confirmation.
+func adoptGitOriginRemoteForPush(ctx context.Context, st storage.DoltStorage, policy adoptPolicy, optIn adoptOptIn) (bool, error) {
 	configured, err := hasConfiguredRemote(ctx, st)
 	if err != nil || configured {
 		return false, err
 	}
-	beadsDir := selectedDoltBeadsDir()
-	if beadsDir == "" {
-		return false, fmt.Errorf("no active beads workspace")
-	}
+	// Deriving the URL comes first and is read-only (`git remote get-url`).
+	// Workspace resolution is deliberately NOT done yet: selectedDoltBeadsDir
+	// calls prepareSelectedNoDBContext, which mutates process and on-disk
+	// workspace state, and nothing may mutate before consent is established.
 	originURL, err := gitOriginGetURLForActiveRepo(ctx)
 	if err != nil || originURL == "" {
 		return false, nil
 	}
 	remoteURL := normalizeRemoteURL(originURL)
+
+	if proceed, err := applyAdoptionConsent(remoteURL, policy, optIn); err != nil || !proceed {
+		return false, err
+	}
+
+	beadsDir := selectedDoltBeadsDir()
+	if beadsDir == "" {
+		return false, fmt.Errorf("no active beads workspace")
+	}
+
 	if err := st.AddRemote(ctx, "origin", remoteURL); err != nil {
 		return false, err
 	}
@@ -432,6 +477,7 @@ func adoptGitOriginRemoteForPush(ctx context.Context, st storage.DoltStorage) (b
 	if err := config.SetYamlConfigInDir(beadsDir, "sync.remote", remoteURL); err != nil {
 		return false, fmt.Errorf("failed to persist sync.remote to config.yaml: %w", err)
 	}
+	fmt.Fprintln(os.Stderr, "Committing .beads/config.yaml (sync.remote) under your git identity.")
 	commitBeadsConfigForActiveRepo(ctx, "bd: update sync.remote")
 	return true, nil
 }
@@ -468,7 +514,10 @@ var doltPushCmd = &cobra.Command{
 	Short:         "Push commits to Dolt remote",
 	Long: `Push local Dolt commits to the configured remote.
 
-Requires a Dolt remote to be configured in the database directory.
+Requires a Dolt remote to be configured in the database directory. With no
+remote configured, bd can adopt one derived from git origin — only with
+consent: interactively, or via --yes; --no-adopt or BD_NO_REMOTE_ADOPT=1
+disables adoption entirely.
 For Hosted Dolt, set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD environment
 variables for authentication.
 
@@ -519,8 +568,11 @@ The remote must already exist (see 'bd dolt remote add').`,
 			fmt.Println("Push complete.")
 			return nil
 		}
-		if adopted, err := adoptGitOriginRemoteForPush(ctx, st); err != nil {
-			return HandleError("failed to adopt git origin as Dolt remote: %v", err)
+		assumeYes, _ := cmd.Flags().GetBool("yes")
+		noAdopt, _ := cmd.Flags().GetBool("no-adopt")
+		policy := currentAdoptPolicy(assumeYes, noAdopt, stdinIsTerminal(), jsonOutput)
+		if adopted, err := adoptGitOriginRemoteForPush(ctx, st, policy, pushAdoptOptIn); err != nil {
+			return HandleError("%v", err)
 		} else if adopted {
 			fmt.Println("Configured Dolt remote origin from git origin.")
 		}
@@ -1717,6 +1769,8 @@ func init() {
 	doltStopCmd.Flags().Bool("force", false, "Force stop (proxied recovery still requires a bd/dolt executable match)")
 	doltPushCmd.Flags().Bool("force", false, "Force push (overwrite remote changes)")
 	doltPushCmd.Flags().String("remote", "", "Push to a specific named remote instead of the default")
+	doltPushCmd.Flags().BoolP("yes", "y", false, "Consent to adopting a Dolt remote derived from git origin when none is configured")
+	doltPushCmd.Flags().Bool("no-adopt", false, "Never derive a Dolt remote from git origin (also BD_NO_REMOTE_ADOPT=1)")
 	doltPullCmd.Flags().String("remote", "", "Pull from a specific named remote instead of the default")
 	doltPullCmd.Flags().String("strategy", "", "Conflict resolution strategy for conflicts the auto-resolver declines: 'ours' or 'theirs' (embedded storage only, #4992)")
 	doltCommitCmd.Flags().StringP("message", "m", "", "Commit message (default: auto-generated)")
@@ -1856,7 +1910,6 @@ func showDoltConfig(testConnection bool) error {
 				result["host"] = showHost
 				result["port"] = showPort
 				result["user"] = cfg.GetDoltServerUser()
-				result["tls"] = cfg.GetDoltServerTLS()
 				result["shared_server"] = doltserver.IsSharedServerMode()
 				if testConnection {
 					result["connection_ok"] = testServerConnection(showHost, showPort)
@@ -1884,7 +1937,6 @@ func showDoltConfig(testConnection bool) error {
 		fmt.Printf("  Host:     %s\n", showHost)
 		fmt.Printf("  Port:     %d\n", showPort)
 		fmt.Printf("  User:     %s\n", cfg.GetDoltServerUser())
-		fmt.Printf("  TLS:      %t\n", cfg.GetDoltServerTLS())
 		if doltserver.IsSharedServerMode() {
 			fmt.Println("  Mode:     shared server")
 			if sharedDir, err := doltserver.SharedServerDir(); err == nil {
@@ -1981,15 +2033,6 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 		cfg.DoltServerUser = value
 		yamlKey = "dolt.user"
 
-	case "tls":
-		lower := strings.ToLower(value)
-		if lower != "true" && lower != "false" {
-			return HandleError("tls must be 'true' or 'false'")
-		}
-		enabled := lower == "true"
-		cfg.DoltServerTLS = &enabled
-		yamlKey = "dolt.tls"
-
 	case "data-dir":
 		// GH#2438: In server mode, data-dir has no effect on which database
 		// the server connects to. Setting it silently switches the local
@@ -2051,7 +2094,7 @@ func setDoltConfig(key, value string, updateConfig bool) error {
 
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown key '%s'\n", key)
-		fmt.Fprintf(os.Stderr, "Valid keys: database, host, port, socket, user, tls, data-dir, shared-server\n")
+		fmt.Fprintf(os.Stderr, "Valid keys: database, host, port, socket, user, data-dir, shared-server\n")
 		return SilentExit()
 	}
 
