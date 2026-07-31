@@ -600,11 +600,28 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, res Result) {
 // embed the DSN, and the response detail is a fixed string per code. The
 // request_id in both places is what reconnects them.
 func (s *Server) failErr(w http.ResponseWriter, r *http.Request, err error) {
+	rec := requestInfo(r.Context())
 	res := ClassifyError(err)
-	if res.Problem.Status >= 500 {
-		s.event("request_error", "request_id", requestInfo(r.Context()).id, "error", err.Error())
-	}
 	s.fail(w, r, res)
+
+	// A client that hung up — while queued for a slot, or mid unit of work — is
+	// not a server fault, and this is the moment it would be counted as one:
+	// context.Canceled has nowhere better to go than the generic 500, and every
+	// >=500 emits request_error. On a saturated server, which is exactly when
+	// clients time out and disconnect, that turns impatient callers into a spike
+	// in the one signal an operator alerts on. The status stays as classified
+	// (it is written to a socket nobody is reading either way); only the
+	// accounting changes.
+	//
+	// An EXPIRED request deadline is a different statement and keeps the 500:
+	// nothing about it says the client left.
+	if errors.Is(err, context.Canceled) {
+		rec.code = codeClientClosed
+		return
+	}
+	if res.Problem.Status >= 500 {
+		s.event("request_error", "request_id", rec.id, "error", err.Error())
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

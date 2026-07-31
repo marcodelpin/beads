@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -759,6 +760,61 @@ func TestExemptRoutesAnswerUnderSaturation(t *testing.T) {
 		if resp := ts.get(t, path); resp.StatusCode != http.StatusOK {
 			t.Errorf("GET %s = %d with every slot held, want 200", path, resp.StatusCode)
 		}
+	}
+}
+
+// TestClientHangupIsNotBookedAsAServerFault. A saturated server is exactly when
+// clients time out and disconnect, and it is exactly when an operator is reading
+// the 500 and request_error counts. Attributing those disconnects to the server
+// would make the one signal worth alerting on peak whenever load does.
+//
+// An expired request deadline is the control row: it keeps the contract's
+// specified 500/internal, because nothing about it says the client left.
+func TestClientHangupIsNotBookedAsAServerFault(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode string
+		wantErrs bool
+	}{
+		{
+			name:     "client hung up",
+			err:      fmt.Errorf("new uow: %w", context.Canceled),
+			wantCode: "code=" + string(codeClientClosed),
+		},
+		{
+			name:     "request deadline expired",
+			err:      fmt.Errorf("new uow: %w", context.DeadlineExceeded),
+			wantCode: "code=" + string(CodeInternal),
+			wantErrs: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stderr := &lockedBuffer{}
+			s := &Server{log: newTestLogger(stderr)}
+			hangup := route{op: "hangup", bypassSemaphore: true,
+				handler: func(s *Server, w http.ResponseWriter, r *http.Request) {
+					s.failErr(w, r, tc.err)
+				}}
+			h := s.withRequestContext(s.route(hangup))
+
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v0/beads/ready", nil))
+
+			// The wire answer is unchanged either way; it goes to a socket
+			// nobody is reading.
+			if rr.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", rr.Code)
+			}
+
+			line := findLogLine(t, stderr.String(), "event=request ")
+			if !strings.Contains(line, tc.wantCode) {
+				t.Errorf("request line does not carry %q:\n%s", tc.wantCode, line)
+			}
+			if got := strings.Contains(stderr.String(), "event=request_error"); got != tc.wantErrs {
+				t.Errorf("event=request_error present = %v, want %v:\n%s", got, tc.wantErrs, stderr.String())
+			}
+		})
 	}
 }
 

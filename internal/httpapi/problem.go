@@ -67,6 +67,13 @@ const (
 	CodeInternal      Code = "internal"
 )
 
+// codeClientClosed is a LOG-ONLY outcome, not wire vocabulary: it is
+// deliberately absent from codeStatus, from operationCodes and from the
+// document, and it never reaches a response body — the client it describes has
+// already gone. It exists so that the request line does not book a client
+// hanging up as a server fault. See failErr.
+const codeClientClosed Code = "client_closed"
+
 // codeStatus freezes one HTTP status per code. A code that could arrive with
 // two different statuses would defeat the point of dispatching on it.
 var codeStatus = map[Code]int{
