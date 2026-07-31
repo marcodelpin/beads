@@ -8,7 +8,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
-	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/internal/workapi/storereader"
 	publicops "github.com/steveyegge/beads/issueops"
 )
 
@@ -111,9 +111,9 @@ func TestBothReaderImplementationsAgreeOnTheListEpilogue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewIssueReader: %v", err)
 			}
-			overStore, err := workapi.NewStoreReader(readerStore{rows: readerRows()})
+			overStore, err := storereader.New(readerStore{rows: readerRows()})
 			if err != nil {
-				t.Fatalf("NewStoreReader: %v", err)
+				t.Fatalf("storereader.New: %v", err)
 			}
 
 			fromUOW, err := overUOW.List(context.Background(), req)

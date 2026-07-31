@@ -1,4 +1,4 @@
-package workapi
+package storereader
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 // The store-backed reader answers `bd show --json` today and nothing else: the
 // CLI's paging commands still reach storage through the builders directly (see
-// reader_store.go's boundary note), so Ready and List here run in production
+// reader.go's boundary note), so Ready and List here run in production
 // only once a front door moves onto the role. That is precisely why they need
 // tests — the over-fetch and trim they inherited from cmd/bd/list.go would
 // otherwise be unexercised until the day something depends on them.
@@ -67,9 +67,9 @@ func readerFixture(n int) []*types.IssueWithCounts {
 func storeReaderFor(t *testing.T, rows []*types.IssueWithCounts) (issueops.Reader, *fakeReaderStore) {
 	t.Helper()
 	store := &fakeReaderStore{rows: rows}
-	rd, err := NewStoreReader(store)
+	rd, err := New(store)
 	if err != nil {
-		t.Fatalf("NewStoreReader: %v", err)
+		t.Fatalf("storereader.New: %v", err)
 	}
 	return rd, store
 }
@@ -199,18 +199,18 @@ func TestStoreReaderListOverFetchesForAPushdownSort(t *testing.T) {
 // that hands back a reader over nothing would fail on the first query with a
 // nil dereference instead of at the seam that knows what is missing.
 func TestStoreReaderRefusesANilStore(t *testing.T) {
-	rd, err := NewStoreReader(nil)
+	rd, err := New(nil)
 	if err == nil {
-		t.Fatalf("NewStoreReader(nil) = %v, want an error", rd)
+		t.Fatalf("New(nil) = %v, want an error", rd)
 	}
 	if rd != nil {
-		t.Errorf("NewStoreReader(nil) returned %T alongside its error", rd)
+		t.Errorf("New(nil) returned %T alongside its error", rd)
 	}
 	var unsupported *storage.ErrUnsupported
 	if !errors.As(err, &unsupported) {
-		t.Fatalf("NewStoreReader(nil) error = %v, want *storage.ErrUnsupported", err)
+		t.Fatalf("New(nil) error = %v, want *storage.ErrUnsupported", err)
 	}
-	if unsupported.Op != "NewStoreReader" {
-		t.Errorf("ErrUnsupported.Op = %q, want NewStoreReader — the Op names the function that refused", unsupported.Op)
+	if unsupported.Op != "storereader.New" {
+		t.Errorf("ErrUnsupported.Op = %q, want storereader.New — the Op names the function that refused", unsupported.Op)
 	}
 }

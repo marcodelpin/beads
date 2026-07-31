@@ -235,7 +235,12 @@ type IssuePage struct {
 //     httpapi-transport-boundary (depguard) denies the builders, and a
 //     forbidigo rule denies naming types.IssueFilter or types.WorkFilter in
 //     that package, which is the half that covers hand-rolling one.
-//   - `bd show --json` is on the role.
+//   - `bd show --json` is on the role, and it reaches it through
+//     store.IssueReader(). The shared implementation behind that accessor
+//     lives in internal/workapi/storereader, which the
+//     cmd-bd-reader-constructor depguard rule keeps out of cmd/bd: the
+//     accessor is where each storage decorator adds its layer, so a command
+//     that constructed a reader directly would get an unspanned one.
 //   - `bd ready` and `bd list` are NOT, on either route. They consume the
 //     FILTER itself for things this role does not express — the --max-rows
 //     cap, --claim, --gated, --explain, --mol, --watch, the hierarchical

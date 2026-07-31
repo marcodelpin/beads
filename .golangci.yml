@@ -96,6 +96,26 @@ linters:
           deny:
             - pkg: github.com/steveyegge/beads/internal/workapi
               desc: "internal/httpapi is transport only: a read handler asks the provider for issueops.Reader and passes the whole request - it never builds a filter - see internal/httpapi/reads.go"
+        # store.IssueReader() is the door to the reader role, and a store wears
+        # decorators (telemetry spans, hook firing) that each add their layer in
+        # their OWN accessor. A command holding the storage.DoltStorage
+        # interface that called the shared constructor directly would get a
+        # bare, unspanned reader - and would look like perfectly ordinary code.
+        # That constructor used to live in internal/workapi, which 22 cmd/bd
+        # files already import for the builders, so it was one line away at all
+        # times. It now lives in internal/workapi/storereader and this is what
+        # keeps it there.
+        #
+        # No matching entry for internal/httpapi: depguard matches pkg by
+        # prefix, so httpapi-transport-boundary above already denies the
+        # subpackage along with its parent.
+        cmd-bd-reader-constructor:
+          list-mode: lax
+          files:
+            - "**/cmd/bd/**"
+          deny:
+            - pkg: github.com/steveyegge/beads/internal/workapi/storereader
+              desc: "a command reaches the reader role through store.IssueReader(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storereader/reader.go"
     # The CONSTRUCTION half of that same boundary, and the half that actually
     # matches the failure. The depguard rule above denies a handler IMPORTING
     # the builders; it does not deny a handler naming the filter types, which
