@@ -11,6 +11,18 @@
 // all at once; ContextResponse.capabilities is derived from the implemented
 // handlers only, so it never advertises one of them.
 //
+// The Host allowlist is the DNS-rebinding defense, and it has no off switch.
+// Every bind answers to the loopback spellings and to the bound address itself;
+// a WILDCARD bind (0.0.0.0, ::) has no single configured address, so it answers
+// to any numeric IP literal and still refuses foreign DNS names. That last rule
+// is the one place this deviates from the design's letter, which enumerated
+// "the configured bind address" without saying what a wildcard means: a rebound
+// page cannot produce an IP-literal Host, because the browser sends the hostname
+// from the attacker's URL, so allowing literals keeps --allow-non-loopback
+// usable on every interface while the defense survives — including on the
+// serving host's own loopback, which is rebinding's canonical target. Matching
+// is on parsed addresses, so every spelling of an allowed address is allowed.
+//
 // Around that sit the inert pieces the contract needs regardless: the
 // problem+json error mapping, the shared limit defaults, and the compile-time
 // pins that keep the generated types welded to the canonical structs.
