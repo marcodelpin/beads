@@ -16,21 +16,26 @@ import (
 
 // The modes of `bd list` and `bd show` that consume the FILTER ITSELF rather
 // than the page a query answers with, gathered here because that is exactly
-// what the guard on the rest of those commands' files is a statement about.
+// what the guard on the rest of cmd/bd is a statement about.
 //
-// cmd/bd/list.go, cmd/bd/list_proxied_server.go, cmd/bd/show.go and
-// cmd/bd/show_proxied_server.go may not NAME types.IssueFilter or
-// types.WorkFilter — the forbidigo rule in .golangci.yml makes it a lint
-// failure — so the only filter reachable in them is one a workapi builder
-// handed back. What lives here is everything that genuinely needs the filter
-// as a value: the recursive --parent tree walk, which re-parents a copy of it
-// at every level; the --watch poll loop, which re-runs the same filter on a
-// ticker; the proxied route's builder call, which has to name the type to hand
-// the filter back; and --current, which resolves an id from a deliberately
-// BARE filter that must not pick up the default listing's exclusions.
+// A forbidigo rule in .golangci.yml makes NAMING types.IssueFilter or
+// types.WorkFilter a lint failure anywhere under cmd/bd, and this file is one
+// of the exceptions the config lists by name with its reason. So no file
+// implementing `bd list` or `bd show` can WRITE a filter — it takes one back
+// from a workapi builder instead — and that keeps holding for a file those
+// commands are split or renamed into tomorrow, which is why the rule is deny
+// by default rather than a list of filenames. What it does NOT establish is
+// that every filter over there came from a builder: an inferred assignment
+// names no type, so a helper in this file could hand one back.
 //
-// This file is named in the config as the exception, so widening the hole is
-// an edit there and a diff a reviewer sees.
+// What lives here is everything that genuinely needs the filter as a value:
+// the recursive --parent tree walk, which re-parents a copy of it at every
+// level; the --watch poll loop, which re-runs the same filter on a ticker; the
+// proxied route's builder call, which has to name the type to hand the filter
+// back; and --current, which resolves an id from a deliberately BARE filter
+// that must not pick up the default listing's exclusions.
+//
+// Widening the hole is an edit in the config and a diff a reviewer sees.
 
 // getHierarchicalChildren handles the --tree --parent combination logic.
 // baseFilter carries CLI filters (--type, --status, etc.) through the recursive walk.

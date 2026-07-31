@@ -129,50 +129,40 @@ linters:
     # an aliased import of internal/types is caught and an unrelated package
     # that happens to be called `types` is not.
     #
-    # This linter carries this one rule; the path-except exclusion below is what
-    # scopes it, and that list is the exact claim being made. There are ~750
-    # legitimate filter literals elsewhere in the tree - storage, conformance,
-    # every command that is not one of the three shared reads - so a tree-wide
-    # ban is not the claim and would not survive contact with the repository.
+    # WHAT THE RULE FORBIDS IS NAMING THESE TYPES - a composite literal, a var,
+    # a struct field, a parameter, a return. It does not forbid HOLDING one:
+    # `filter, err := workapi.BuildListFilter(...)` names no type and passes,
+    # which is the point, but so would an inferred assignment from any other
+    # source, including a helper in one of the excepted files below. So the
+    # rule forecloses WRITING a filter in scope - which is what hand-rolling
+    # looks like - and it is not a proof that every filter in scope came from a
+    # builder. That is still the difference that matters: the builder is where
+    # the closed/done exclusions, the template, gate, infra and wisp
+    # suppression and the limit defaulting live.
     #
-    # WHAT THE SCOPE COVERS, and why each file is in it:
+    # SCOPE, set by the exclusion rules near the bottom of this file:
     #
-    #   internal/httpapi/       every read handler; the surface has no other job
-    #   cmd/bd/list.go          `bd list`, direct route
-    #   cmd/bd/list_input.go    where `bd list`'s request is assembled
-    #   cmd/bd/list_proxied_server.go  `bd list`, proxied route
-    #   cmd/bd/show.go          `bd show`, direct route
-    #   cmd/bd/show_proxied_server.go  `bd show`, proxied route
+    #   internal/httpapi/**  every file, no exceptions. Each read handler hands
+    #                        the whole request to issueops.Reader and the
+    #                        surface has no other job, so a file added here
+    #                        tomorrow is covered the moment it exists.
+    #   cmd/bd/**            DENY BY DEFAULT, with the files that legitimately
+    #                        build a filter named as exceptions below. This is
+    #                        the way round that survives a rename: `bd list`
+    #                        split into a new helper, or show.go renamed, stays
+    #                        guarded. An inclusion list of five filenames -
+    #                        which is what this was - stops applying the moment
+    #                        the code moves, silently.
     #
-    # In those files the ONLY filter reachable is one a workapi builder handed
-    # back, because an inferred `filter, err := workapi.BuildListFilter(...)`
-    # names no type and a hand-rolled `types.IssueFilter{}` does. That is the
-    # whole difference the rule turns on, and it is the difference that matters:
-    # the builder is where the closed/done exclusions, the template, gate, infra
-    # and wisp suppression and the limit defaulting live, and a bare literal is
-    # exactly what a hosted viewer once shipped.
-    #
-    # WHAT IT DOES NOT COVER, named rather than left to inference:
-    #
-    #   cmd/bd/list_show_filter_modes.go - the modes that consume the filter as
-    #     a VALUE: the recursive --parent tree walk (it re-parents a copy at
-    #     every level), the --watch poll loop, the proxied route's builder call
-    #     (it has to name the type to hand the filter back), and --current
-    #     (which resolves an id from a deliberately BARE filter that must not
-    #     pick up the default listing's exclusions).
-    #   cmd/bd/ready.go, ready_input.go, ready_proxied_server.go - `bd ready`
-    #     hands its filter to --claim, --gated, --explain and --mol, and
-    #     readyInput carries it as a field for them. Routing only the plain
-    #     listing through the role would fork the command in two, so the filter
-    #     stays nameable there. `bd ready` is on the shared BUILDER and, on the
-    #     proxied route, the shared EPILOGUE; it is not on the role, and this
-    #     rule does not pretend otherwise.
+    # Nothing else in the tree is in scope, deliberately: there are ~750
+    # legitimate filter literals in storage, the domain, conformance and the
+    # tests, and a tree-wide ban is not the claim.
     forbidigo:
       analyze-types: true
       forbid:
         - pattern: '^types\.(IssueFilter|WorkFilter)$'
           pkg: '^github\.com/steveyegge/beads/internal/types$'
-          msg: "this file answers one of the three shared reads and never builds a filter: pass the whole request to issueops.Reader, or take one back from a builder in internal/workapi - see issueops/reader.go"
+          msg: "do not write a filter here: take one back from a builder in internal/workapi, or pass the whole request to issueops.Reader. internal/httpapi may never name these types; cmd/bd denies them by default and lists the files that legitimately build their own, with the reason for each, in .golangci.yml - see issueops/reader.go"
     errcheck:
       exclude-functions:
         - (*database/sql.DB).Close
@@ -200,12 +190,67 @@ linters:
   exclusions:
     rules:
       # forbidigo holds exactly one rule - the filter-construction guard - and
-      # it is a statement about the files that answer the three shared reads,
-      # not about the tree. This is what scopes it to them; the settings block
-      # above names every file in and out and why. A second forbidigo rule
-      # would need this widened or replaced; nothing else about the config
-      # would tell you that, so it is written here rather than left implicit.
-      - path-except: '^(internal/httpapi/|cmd/bd/(list|list_input|list_proxied_server|show|show_proxied_server)\.go$)'
+      # the entries from here to the test exemption are its entire scope. This
+      # one keeps it off the rest of the tree; the settings block above says
+      # why. A second forbidigo rule would need this widened or replaced, and
+      # nothing else about the config would tell you that, so it is written
+      # here rather than left implicit.
+      - path-except: '^(internal/httpapi/|cmd/bd/)'
+        linters:
+          - forbidigo
+      # Inside cmd/bd the rule is deny-by-default, so each entry below is a
+      # HOLE in it and carries the reason that hole exists. 64 of the 382
+      # non-test files under cmd/bd are on this list; widening it is an edit
+      # here and a diff a reviewer sees. internal/httpapi has no entry and is
+      # meant not to.
+      #
+      # The modes of `bd list` and `bd show` that consume the filter as a
+      # VALUE: the recursive --parent tree walk (it re-parents a copy at every
+      # level), the --watch poll loop, the proxied route's builder call (it has
+      # to name the type to hand the filter back), and --current (which
+      # resolves an id from a deliberately BARE filter that must not pick up
+      # the default listing's exclusions).
+      - path: '^cmd/bd/list_show_filter_modes\.go$'
+        linters:
+          - forbidigo
+      # `bd ready` hands its filter to --claim, --gated, --explain and --mol,
+      # and readyInput carries it as a field for them. Routing only the plain
+      # listing through the role would fork the command in two, so the filter
+      # stays nameable here. `bd ready` is on the shared BUILDER and, on the
+      # proxied route, the shared EPILOGUE; it is not on the role, and this
+      # rule does not pretend otherwise.
+      - path: '^cmd/bd/ready(_input|_proxied_server)?\.go$'
+        linters:
+          - forbidigo
+      # Everything below this point is a command that is NOT one of the three
+      # shared reads. Each asks storage its own question and builds the filter
+      # that question needs; none is on the reader role or claims to be. They
+      # are grouped by family only so the reasons stay readable - every file is
+      # still named, and a new file in a family is still an edit here.
+      #
+      # Commands with a direct route and a proxied twin that build the same
+      # filter on both:
+      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|purge|search|status|todo|wisp)(_proxied_server)?\.go$'
+        linters:
+          - forbidigo
+      # Molecule reporting: each selects the members of one molecule.
+      - path: '^cmd/bd/mol_(current|port|progress|ready_gated|stale)\.go$'
+        linters:
+          - forbidigo
+      # External-tracker sync: each selects the beads to push to its tracker.
+      - path: '^cmd/bd/(ado|gitlab|jira|linear)\.go$'
+        linters:
+          - forbidigo
+      # Bulk movement of issues in, out and across prefixes.
+      - path: '^cmd/bd/(export|export_auto|import|migrate|migrate_issues|migrate_personal|rename|rename_prefix)\.go$'
+        linters:
+          - forbidigo
+      # doctor's diagnostics and the fixes that follow them.
+      - path: '^cmd/bd/doctor_(conventions|pollution)\.go$|^cmd/bd/doctor/(maintenance|fix/maintenance|fix/migrate)\.go$'
+        linters:
+          - forbidigo
+      # One command each, no family to join.
+      - path: '^cmd/bd/(cleanup|completions|count|gate_discover|human|lint|ping|repo|swarm|template)\.go$'
         linters:
           - forbidigo
       # Tests are exempt for the same reason the depguard twin exempts them:
