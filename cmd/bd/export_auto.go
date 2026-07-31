@@ -691,7 +691,15 @@ func gitAddFile(path string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), gitAddTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "add", path)
+	// Pass the basename only, defensively: cmd.Dir is the parent of path, so
+	// a full path argument would double-root (cd .beads && git add
+	// .beads/issues.jsonl → pathspec looks under .beads/.beads/) if a caller
+	// ever passed a relative path here. Both current callers pass absolute
+	// paths, so this guards against a regression rather than fixing a live
+	// failure. See GH#4351.
+	// Keep cmd.Dir = parent so GH#3311 hook worktree staging still resolves
+	// the index path under the repo root (not bare "issues.jsonl" at root).
+	cmd := exec.CommandContext(ctx, "git", "add", "--", filepath.Base(path))
 	cmd.Dir = filepath.Dir(path)
 	cmd.Env = env
 	// Capture combined output so the caller's warning surfaces git's stderr
