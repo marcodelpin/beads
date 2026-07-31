@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/workapi"
 )
 
 func runLabelAddProxiedServer(ctx context.Context, args []string) error {
@@ -106,12 +109,12 @@ func runLabelListProxiedServer(ctx context.Context, args []string) error {
 	}
 	defer uw.Close(ctx)
 
-	issue, isWisp, err := proxiedGetIssueOrWisp(ctx, uw, args[0])
+	issue, isWisp, err := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), args[0])
+	if errors.Is(err, storage.ErrNotFound) {
+		return HandleErrorRespectJSON("resolving %s: not found", args[0])
+	}
 	if err != nil {
 		return HandleErrorRespectJSON("resolving %s: %v", args[0], err)
-	}
-	if issue == nil {
-		return HandleErrorRespectJSON("resolving %s: not found", args[0])
 	}
 	issueID := issue.ID
 

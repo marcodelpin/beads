@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,10 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/uimd"
+	"github.com/steveyegge/beads/internal/workapi"
 )
 
 func runCommentsProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
@@ -25,12 +28,12 @@ func runCommentsProxiedServer(cmd *cobra.Command, ctx context.Context, args []st
 	}
 	defer uw.Close(ctx)
 
-	issue, isWisp, err := proxiedGetIssueOrWisp(ctx, uw, issueID)
+	issue, isWisp, err := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), issueID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return HandleErrorRespectJSON("issue %s not found", issueID)
+	}
 	if err != nil {
 		return HandleErrorRespectJSON("resolving %s: %v", issueID, err)
-	}
-	if issue == nil {
-		return HandleErrorRespectJSON("issue %s not found", issueID)
 	}
 	issueID = issue.ID
 
