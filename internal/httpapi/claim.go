@@ -106,10 +106,25 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 // it gets the same 404 the catch-all gives any other unrouted path. That is
 // what keeps POST on the issue-detail path, which the document declares
 // GET-only, from being answered as a claim of the issue named there.
+//
+// The id itself is bounded HERE, for the same reason the actor is: this is the
+// last point before a request buys a concurrency slot and two database round
+// trips. `issues.id` is VARCHAR(255) and the document calls the parameter an
+// exact canonical id, so a longer one — or one carrying a control character,
+// which a percent-escape in the path decodes to — names no row that can exist.
+// Answering it from the edge costs the server nothing and tells the caller
+// exactly what a read would have: 404.
 func (s *Server) claimTarget(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id, ok := strings.CutSuffix(r.PathValue(claimPathValue), claimSuffix)
 	if !ok || id == "" {
 		s.fail(w, r, newResult(CodeNotFound, "no such route on this server"))
+		return "", false
+	}
+	if types.CheckFieldLen("id", id) != nil || strings.ContainsFunc(id, isControlChar) {
+		// The SAME 404 a real miss gets. A distinct refusal here would let a
+		// caller map the server's notion of a well-formed id, and there is
+		// nothing to learn from it: no such row exists either way.
+		s.fail(w, r, NotFound())
 		return "", false
 	}
 	return id, true

@@ -322,6 +322,53 @@ func TestClaimUnknownIDIs404(t *testing.T) {
 	}
 }
 
+// TestClaimRefusesUnrowableIDsBeforeAnyDatabaseWork: `issues.id` is
+// VARCHAR(255) and the document calls the path parameter an exact canonical id,
+// so these name no row that can exist. Answering them from the edge is what
+// keeps an absurd id from buying a concurrency slot and two round trips — the
+// same refuse-before-database-work rule the actor lives under, applied to the
+// one input on this write path that had no edge check.
+//
+// The refusal is byte-for-byte the 404 a real miss gets, so a caller cannot map
+// which ids the server considers well-formed.
+func TestClaimRefusesUnrowableIDsBeforeAnyDatabaseWork(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{"one character past the id column", strings.Repeat("x", types.MaxFieldLen+1)},
+		{"absurd", strings.Repeat("x", 64<<10)},
+		// A percent-escape in the path decodes before the handler sees it, so
+		// this is how a control character reaches an id at all.
+		{"percent-escaped newline", "bd-1%0Abd-2"},
+		{"percent-escaped NUL", "bd-1%00"},
+		{"percent-escaped C1 control sequence introducer", "bd-1%C2%9B31m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issues := &fakeIssues{issue: seededIssue("bd-1", "alice", types.StatusInProgress)}
+			ts, provider := newClaimServer(t, issues)
+
+			resp := ts.claim(t, "/v0/beads/issues/"+tc.id+":claim", `{"actor":"alice"}`)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404: %s", resp.StatusCode, readAll(t, resp))
+			}
+			body := decodeBody(t, resp)
+			if body["code"] != string(CodeNotFound) {
+				t.Errorf("code = %v, want %s", body["code"], CodeNotFound)
+			}
+			if want := *NotFound().Problem.Detail; body["detail"] != want {
+				t.Errorf("detail = %v, want the same text a real miss carries (%q)", body["detail"], want)
+			}
+			if got := issues.claimed(); len(got) != 0 {
+				t.Errorf("the CAS ran on an id no row could hold: %v", got)
+			}
+			if got := provider.openedUOWs(); len(got) != 0 {
+				t.Errorf("an unrowable id opened %d units of work; the bound precedes the database", len(got))
+			}
+		})
+	}
+}
+
 // TestClaimRejectsActorsBeforeAnyDatabaseWork is the wire-edge rule. The domain
 // layer refuses only actor == "", so without this a whitespace-only or megabyte
 // actor would land in the assignee column and in the storage commit message —
