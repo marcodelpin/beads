@@ -81,12 +81,25 @@ var servePoolLimits = uow.PoolLimits{
 }
 
 // HTTP-level timeouts. WriteTimeout is deliberately absent: `limit=0` means
-// unlimited on both list operations, and a large body must not be truncated
-// mid-write. Slowloris exposure is covered by the header and idle timeouts.
+// unlimited on both list operations, and a whole-response deadline would
+// truncate a large body mid-write.
+//
+// writeStallTimeout is what replaces it — a deadline rolled forward before
+// every write (statusWriter.extendWriteDeadline), which bounds a STALLED write
+// without bounding total transfer. That bound is load-bearing, not hygiene:
+// route() releases the database slot when the handler returns, and the handler
+// returns only after writing the body, so without it a client that opens
+// maxInflight requests and then stops reading pins every slot and its pinned
+// connection until the process is restarted — while /healthz stays green. A
+// context deadline cannot substitute: nothing cancels a blocked socket write.
+//
+// The read, header and idle timeouts bound request READING and keep-alive idle.
+// They say nothing about a response write, and must not be cited as if they did.
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
 	idleTimeout       = 120 * time.Second
+	writeStallTimeout = 30 * time.Second
 	maxHeaderBytes    = 64 << 10
 )
 
@@ -132,11 +145,13 @@ type Server struct {
 	// sem bounds handlers that touch the database. Buffered channel rather
 	// than sync.Semaphore so the acquisition can select on a timer.
 	sem chan struct{}
-	// semTimeout and semWarn default to the constants above. They are fields
-	// rather than constants at the point of use so the queueing behavior can be
-	// exercised in milliseconds instead of tens of seconds.
+	// semTimeout, semWarn and writeStall default to the constants above. They
+	// are fields rather than constants at the point of use so the queueing and
+	// stalled-write behavior can be exercised in milliseconds instead of tens of
+	// seconds.
 	semTimeout time.Duration
 	semWarn    time.Duration
+	writeStall time.Duration
 
 	log     *log.Logger
 	stdout  io.Writer
@@ -440,9 +455,28 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 		// No client or intermediary may cache an answer about live work.
 		w.Header().Set("Cache-Control", "no-store")
 
-		sw := &statusWriter{ResponseWriter: w}
+		sw := &statusWriter{
+			ResponseWriter: w,
+			rc:             http.NewResponseController(w),
+			budget:         orDefault(s.writeStall, writeStallTimeout),
+		}
+		// Arm before the handler runs: a handler that writes nothing still has a
+		// response, written by net/http on the way out.
+		sw.extendWriteDeadline(sw.budget)
+
 		start := time.Now()
 		next.ServeHTTP(sw, r.WithContext(ctx))
+
+		// net/http flushes what is left of the buffered response after the
+		// handler returns, so extend once more to cover it. The extension has to
+		// outlast the idle timeout too: the deadline stays armed while a
+		// keep-alive connection waits for its next request, and net/http answers
+		// some requests (a malformed request line, oversized headers) without
+		// reaching this middleware — an expired deadline would turn those into a
+		// dropped connection. Anything that does reach here re-arms above,
+		// before a handler writes a byte.
+		sw.extendWriteDeadline(sw.budget + idleTimeout)
+
 		if sw.status != 0 {
 			// Still zero means the handler returned without writing anything,
 			// in which case net/http has sent the 200 rec already carries.
@@ -530,10 +564,13 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// statusWriter records the status for the log line. It intentionally does not
-// buffer the body: an unlimited read must stream.
+// statusWriter records the status for the log line and bounds how long any one
+// write may stall. It intentionally does not buffer the body: an unlimited read
+// must stream.
 type statusWriter struct {
 	http.ResponseWriter
+	rc     *http.ResponseController
+	budget time.Duration
 	status int
 }
 
@@ -541,6 +578,7 @@ func (w *statusWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
 	}
+	w.extendWriteDeadline(w.budget)
 	w.ResponseWriter.WriteHeader(status)
 }
 
@@ -548,7 +586,24 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	w.extendWriteDeadline(w.budget)
 	return w.ResponseWriter.Write(b)
+}
+
+// extendWriteDeadline rolls the connection's write deadline d into the future.
+// Rolling it before every write bounds each write rather than the transfer: a
+// client that keeps reading streams a body of any size, while one that stops
+// reading fails its handler within d — which is what lets the deferred
+// semaphore release and unit-of-work rollback actually run.
+//
+// SetWriteDeadline is unsupported on a ResponseWriter with no connection under
+// it (httptest's recorder), where there is nothing to stall; the error is
+// dropped for that reason and no other.
+func (w *statusWriter) extendWriteDeadline(d time.Duration) {
+	if w.rc == nil || d <= 0 {
+		return
+	}
+	_ = w.rc.SetWriteDeadline(time.Now().Add(d))
 }
 
 // Unwrap keeps http.ResponseController working through the wrapper, so a

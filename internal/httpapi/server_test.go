@@ -562,6 +562,77 @@ func TestSemaphoreShedsLoadInsteadOfQueueingForever(t *testing.T) {
 	}
 }
 
+// TestStalledResponseWriteReleasesItsSlot closes the same black hole as the
+// semaphore's bounded wait, one layer out. The slot is released when the handler
+// returns, and the handler returns only after writing the body — so a client
+// that opens a request and then stops reading would hold its slot, and the SQL
+// connection pinned to it, until the process restarted. Nothing interrupts a
+// blocked socket write: not the request deadline, not Shutdown, not client
+// cancellation. Only a write deadline does.
+//
+// The stub handlers in this build emit bodies small enough to fit in net/http's
+// buffers, so this drives a streaming handler through the real route() chain —
+// which is where the read slices' unlimited list responses will land.
+func TestStalledResponseWriteReleasesItsSlot(t *testing.T) {
+	stderr := &lockedBuffer{}
+	s := &Server{
+		sem: make(chan struct{}, 1),
+		// Generous: the point is whether the slot comes back at all.
+		semTimeout: 5 * time.Second,
+		writeStall: 100 * time.Millisecond,
+		log:        newTestLogger(stderr),
+	}
+
+	writeErr := make(chan error, 1)
+	stream := route{op: "stream", handler: func(_ *Server, w http.ResponseWriter, _ *http.Request) {
+		body := make([]byte, 32<<10)
+		var err error
+		for guard := time.Now().Add(30 * time.Second); err == nil && time.Now().Before(guard); {
+			_, err = w.Write(body)
+		}
+		writeErr <- err
+	}}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	hs := &http.Server{
+		Handler:  s.withRequestContext(s.route(stream)),
+		ErrorLog: newTestLogger(stderr),
+	}
+	go func() { _ = hs.Serve(ln) }()
+	t.Cleanup(func() { _ = hs.Close() })
+
+	// A client that asks for the body and never reads a byte of it. Both socket
+	// buffers fill, and the server's write blocks in the kernel.
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := io.WriteString(conn, "GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	select {
+	case err := <-writeErr:
+		if err == nil {
+			t.Fatal("the response write never blocked; this test proves nothing about a stalled client")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a client that stopped reading stalled the response write with no bound: the handler never returns, so its database slot and pinned connection are held until the process restarts — while /healthz stays green")
+	}
+
+	// And the slot is back, because the handler returned and route()'s deferred
+	// release ran.
+	release, err := s.acquire(context.Background(), &reqInfo{id: "after"})
+	if err != nil {
+		t.Fatalf("acquiring a slot after the stalled request = %v; it was never released", err)
+	}
+	release()
+}
+
 // TestExemptRoutesAnswerUnderSaturation: liveness and identity must stay
 // observable while every database slot is held by a long scan — that is when an
 // operator most needs them, and it is why those two handlers touch no database.
