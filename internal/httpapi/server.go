@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/netutil"
 
@@ -868,6 +869,17 @@ func (s *Server) event(name string, kv ...any) {
 	s.log.Print(b.String())
 }
 
+// logValue renders one value of the k=v request line, quoting anything that
+// would disturb either the line or the terminal reading it.
+//
+// Two audiences, two rules. The k=v framing needs space, '"' and '=' quoted, or
+// a caller-supplied value forges fields and whole lines. The operator's console
+// needs every CONTROL character quoted, C1 included: an unquoted U+009B is a
+// CSI introducer, so a refusal recorded from a request body member name or a
+// Content-Type header would paint the terminal of whoever tails the log. Bytes
+// 0x80-0xFF are legal obs-text in an HTTP/1 field value and arrive here as
+// invalid UTF-8 rather than as runes, so validity is checked separately —
+// ContainsFunc would see only U+FFFD, which is not a control character.
 func logValue(v any) string {
 	str, ok := v.(string)
 	if !ok {
@@ -876,8 +888,8 @@ func logValue(v any) string {
 	if str == "" {
 		return `""`
 	}
-	if strings.ContainsFunc(str, func(r rune) bool {
-		return r <= ' ' || r == '"' || r == '=' || r == 0x7f
+	if !utf8.ValidString(str) || strings.ContainsFunc(str, func(r rune) bool {
+		return r <= ' ' || r == '"' || r == '=' || isControlChar(r)
 	}) {
 		return strconv.Quote(str)
 	}

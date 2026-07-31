@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 // These tests are pure: no database, no cgo, no build tag. The whole request
@@ -35,6 +37,28 @@ type fakeUOW struct {
 	closed           bool
 	closeErr         error
 	closeHasDeadline bool
+
+	// issues is the use case the claim path drives, shared by every unit of
+	// work this provider hands out so a retry sees the same state. commits
+	// records what Commit was asked to write — for a claim, the audit-trail
+	// line the actor is interpolated into.
+	issues  *fakeIssues
+	commits []string
+}
+
+func (u *fakeUOW) IssueUseCase() domain.IssueUseCase { return u.issues }
+
+func (u *fakeUOW) Commit(_ context.Context, message string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.commits = append(u.commits, message)
+	return nil
+}
+
+func (u *fakeUOW) commitMessages() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.commits)
 }
 
 func (u *fakeUOW) Close(ctx context.Context) {
@@ -52,10 +76,11 @@ func (u *fakeUOW) closeState() (closed bool, err error, hasDeadline bool) {
 }
 
 type fakeProvider struct {
-	mu    sync.Mutex
-	uows  []*fakeUOW
-	err   error
-	delay time.Duration
+	mu     sync.Mutex
+	uows   []*fakeUOW
+	err    error
+	delay  time.Duration
+	issues *fakeIssues
 }
 
 func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
@@ -69,11 +94,19 @@ func (p *fakeProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
-	u := &fakeUOW{}
+	u := &fakeUOW{issues: p.issues}
 	p.mu.Lock()
 	p.uows = append(p.uows, u)
 	p.mu.Unlock()
 	return u, nil
+}
+
+// openedUOWs is the count of units of work this provider handed out — zero is
+// the assertion that a refusal happened before any database work.
+func (p *fakeProvider) openedUOWs() []*fakeUOW {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.uows)
 }
 
 func (p *fakeProvider) Close(context.Context) error { return nil }
@@ -165,16 +198,6 @@ func (ts *testServer) get(t *testing.T, path string) *http.Response {
 	resp, err := ts.client.Get(ts.base + path)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
-	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	return resp
-}
-
-func (ts *testServer) post(t *testing.T, path string) *http.Response {
-	t.Helper()
-	resp, err := ts.client.Post(ts.base+path, "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST %s: %v", path, err)
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
@@ -526,14 +549,15 @@ func TestStubsAnswer501WithoutAdvertisingThemselves(t *testing.T) {
 // test bounds the shape of that exception; only a request proves the pattern
 // actually serves the documented path.
 func TestClaimPathReachesItsHandler(t *testing.T) {
-	ts := newTestServer(t, Config{})
+	issues := &fakeIssues{issue: seededIssue("bd-1", "alice", types.StatusInProgress)}
+	ts, _ := newClaimServer(t, issues)
 
-	resp := ts.post(t, "/v0/beads/issues/bd-1:claim")
+	resp := ts.claim(t, "/v0/beads/issues/bd-1:claim", `{"actor":"alice"}`)
 	// A 404 here means the documented path reaches the catch-all: the route
-	// exists in the table, the parity test is green, and the endpoint does not
-	// exist.
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("POST the documented claim path: status = %d, want 501 from the claim stub", resp.StatusCode)
+	// exists in the table, the parity test is green, and the endpoint is
+	// unreachable.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST the documented claim path: status = %d, want 200", resp.StatusCode)
 	}
 	line := findLogLine(t, ts.stderr.String(), "path=/v0/beads/issues/bd-1:claim")
 	if !strings.Contains(line, "op="+OpClaimIssue) {
@@ -1156,13 +1180,28 @@ func TestListenRefusesAMissingProvider(t *testing.T) {
 
 func TestLogValueQuotesInjectableText(t *testing.T) {
 	// A path is caller-controlled, and the log is key=value: a space or a
-	// newline in it would otherwise forge fields, or whole lines.
+	// newline in it would otherwise forge fields, or whole lines. The claim
+	// route widened the audience for this helper — it records a rejected body
+	// member NAME and a rejected Content-Type, both arbitrary caller strings —
+	// so the escape-sequence rows below are as load-bearing as the framing ones.
 	for _, tc := range []struct{ in, want string }{
 		{"/healthz", "/healthz"},
 		{"/a b", `"/a b"`},
 		{"a=b", `"a=b"`},
 		{"line\nbreak", `"line\nbreak"`},
 		{"", `""`},
+		// C1. U+009B is a one-byte CSI on a VT-conformant console, so an
+		// unquoted one paints the terminal of whoever tails the log; U+0085 is
+		// a line break there, which forges a log line.
+		{"csi\u009b31m", `"csi\u009b31m"`},
+		{"nel\u0085forged", `"nel\u0085forged"`},
+		// A raw obs-text byte: legal in an HTTP/1 field value, so it reaches
+		// this helper from Content-Type as invalid UTF-8 rather than as a rune.
+		{"raw\x9b31m", `"raw\x9b31m"`},
+		{"\xff\xfe", `"\xff\xfe"`},
+		// Unicode line separators split a line for anything that splits on
+		// Unicode breaks.
+		{"ls\u2028forged", `"ls\u2028forged"`},
 	} {
 		if got := logValue(tc.in); got != tc.want {
 			t.Errorf("logValue(%q) = %s, want %s", tc.in, got, tc.want)

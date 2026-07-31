@@ -21,13 +21,40 @@ type TxProvider interface {
 	BeginTx(ctx context.Context) (Tx, error)
 }
 
-const txRetryInitialInterval = 25 * time.Millisecond
+const (
+	txRetryInitialInterval = 25 * time.Millisecond
+	// txCloseTimeout bounds the detached per-attempt close below.
+	txCloseTimeout = 5 * time.Second
+)
 
 // DefaultTxRetryMaxElapsed is how long the retry loop keeps redoing an attempt
 // that loses Dolt's commit-time merge before giving up. Exported so callers
 // that pass their own budget to RunTxResultWithin can derive it from this one
 // instead of restating the number and drifting from it.
 const DefaultTxRetryMaxElapsed = 15 * time.Second
+
+// closeAttempt rolls an attempt's unit of work back on a context that outlives
+// the caller's.
+//
+// Close sends ROLLBACK on the pinned connection, and the transaction layer
+// POISONS that connection when the send fails (doltserver_tx.go) — go-sql-driver's
+// session reset does not clear an open transaction, so a session that may still
+// be in one must never go back to the pool. Correctness is safe either way; what
+// is not safe is closing with an ALREADY-CANCELED context, which fails the
+// ROLLBACK immediately and burns one pinned session every time a caller's
+// context is done — an HTTP client that hangs up mid-write, or an expired
+// deadline. The timeout keeps a hung rollback from blocking the caller forever.
+//
+// All three entry points below close through here — RunTx and RunTxResult by
+// way of RunTxResultWithin, plus RunTxRead. The hazard is not specific to the
+// HTTP claim: the ~nine proxied CLI commands that reach storage through RunTx
+// and RunTxRead burn a session the same way when a user interrupts one
+// mid-write.
+func closeAttempt(ctx context.Context, uw UnitOfWork) {
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txCloseTimeout)
+	defer cancel()
+	uw.Close(closeCtx)
+}
 
 type TxFunc func(ctx context.Context, uw UnitOfWork) (commitMsg string, err error)
 
@@ -67,7 +94,7 @@ func RunTxResultWithin[T any](ctx context.Context, p UnitOfWorkProvider, maxElap
 			}
 			return backoff.Permanent(err)
 		}
-		defer uw.Close(ctx)
+		defer closeAttempt(ctx, uw)
 
 		r, commitMsg, err := work(ctx, uw)
 		if err != nil {
@@ -106,7 +133,7 @@ func RunTxRead[T any](ctx context.Context, p UnitOfWorkProvider, work TxReadFunc
 	if err != nil {
 		return zero, err
 	}
-	defer uw.Close(ctx)
+	defer closeAttempt(ctx, uw)
 
 	return work(ctx, uw)
 }

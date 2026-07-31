@@ -260,6 +260,15 @@ func InvalidCursor() Result {
 	return newResult(CodeInvalidCursor, "cursor is not valid for this server; restart paging without it")
 }
 
+// NotFound builds the 404 for an id this server cannot resolve. It is one
+// function rather than a literal per site so that a handler which decides a
+// miss WITHOUT reading storage — an id no row could hold — is indistinguishable
+// on the wire from one that read and missed. A client that could tell them
+// apart would be probing which ids are well-formed.
+func NotFound() Result {
+	return newResult(CodeNotFound, "no issue or wisp with that id")
+}
+
 // ClassifyError maps an error from the storage seam onto the wire. The caller
 // is responsible for logging err: everything mapped to a 5xx deliberately
 // drops the error text on the floor (see staticDetail).
@@ -276,7 +285,7 @@ func ClassifyError(err error) Result {
 	// error as a miss — stays closed, because only these two sentinels reach
 	// 404 and everything else falls through to 500.
 	case errors.Is(err, storage.ErrNotFound), errors.Is(err, sql.ErrNoRows):
-		return newResult(CodeNotFound, "no issue or wisp with that id")
+		return NotFound()
 
 	case errors.Is(err, storage.ErrAlreadyClaimed):
 		return newResult(CodeAlreadyClaimed, "issue is claimed by another actor")
