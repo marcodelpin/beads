@@ -151,10 +151,21 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 		in.HasMetadataKey = k
 	}
 
+	// `bd ready` builds the filter rather than calling IssueReader(): its
+	// routes hand this filter to --claim, --gated, --explain and --mol, none
+	// of which the Reader role expresses, and they stamp the --max-rows cap
+	// onto it below. Routing only the plain listing through the role would
+	// fork the command in two. The drift protection is one level down — this
+	// is the same builder, over the same issueops.ReadyRequest, that both
+	// Reader implementations call — and it is pinned by the builder's golden
+	// file. See issueops.Reader's doc comment.
 	filter, err := workapi.BuildReadyFilter(in.ReadyRequest)
 	if err != nil {
 		return in, HandleErrorRespectJSON("%v", err)
 	}
+	// The cap is deliberately NOT a field on ReadyRequest: it is a local
+	// defense against a runaway query on this machine, not a property of the
+	// question being asked, and a server has no business honoring a client's.
 	filter.MaxRows = maxRows
 	filter.MaxRowsSource = maxRowsSource
 
@@ -162,7 +173,7 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 	// filter rather than passed in as a parameter for two reasons: it is
 	// derived from the client's cwd, which a server process does not share,
 	// and `bd ready` has always put the configured label on the filter
-	// verbatim. Routing it through ReadyParams would run it through
+	// verbatim. Routing it through issueops.ReadyRequest would run it through
 	// NormalizeLabels, so a directory.labels value with stray whitespace
 	// would start matching a different label than it does today.
 	//

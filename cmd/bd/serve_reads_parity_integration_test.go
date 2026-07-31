@@ -31,14 +31,24 @@ import (
 // them), so there is nothing left for an item to differ by. An entry here is a
 // permanent, reviewed divergence — not a place to record a surprise.
 //
-// The two differences that DO exist are structural rather than per-field, and
-// are asserted explicitly below instead of being waved through here:
+// The three differences that DO exist are structural rather than per-field, so
+// every comparison below states its terms explicitly instead of waving them
+// through here:
 //
 //   - `bd show --json` emits an array of one; GET /v0/beads/issues/{id} emits
 //     the object. The CLI envelope is byte-pinned by the protocol corpus.
 //   - `bd list`'s default order is priority-first; the list endpoint's is
 //     (created_at DESC, id ASC), because the cursor is a keyset position in
 //     the created order. The ITEM SET and every item's JSON still match.
+//   - THE DEFAULT LIMIT. The endpoint always defaults to
+//     workapi.DefaultListLimit; `bd list` resolves a five-way CLI policy
+//     first (an explicit --limit, --all, a configured list.limit, piped
+//     stdout -> unlimited per GH#4094, agent mode -> 20), so the shared
+//     request-level default is unreachable from the CLI. A client swapping
+//     `bd list --json | ...` for the HTTP call therefore loses rows past 50.
+//     TestListLimitPolicyIsResolvedBeforeTheRequest pins that policy branch by
+//     branch; every comparison here passes an EXPLICIT limit on both sides so
+//     it is comparing the operation and not that policy.
 var readsParityAllowlist = map[string]string{}
 
 // getJSONArray fetches a page endpoint and returns its decoded items.

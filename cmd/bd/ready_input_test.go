@@ -308,7 +308,8 @@ func TestGatherReadyInputIgnoresNegativeOffset(t *testing.T) {
 // TestGatherReadyInputKeepsDirectoryLabelVerbatim pins GH#541's label against
 // the collapse into workapi. The configured label is not user input: `bd ready`
 // has always put it on the filter exactly as configured, so it must not be
-// routed through ReadyParams, whose label sets BuildReadyFilter normalizes.
+// routed through issueops.ReadyRequest, whose label sets BuildReadyFilter
+// normalizes.
 // The label below is one NormalizeLabels would visibly change, which is what
 // makes this a test and not a tautology.
 func TestGatherReadyInputKeepsDirectoryLabelVerbatim(t *testing.T) {

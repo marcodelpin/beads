@@ -384,6 +384,13 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return HandleError("--offset is only supported under --proxied-server")
 	}
 
+	// `bd list` builds the filter rather than calling IssueReader(), for the
+	// same reason `bd ready` does: this filter feeds --watch, the hierarchical
+	// --parent tree, the text renderings that want []*types.Issue rather than a
+	// counted page, and the --max-rows cap stamped on below — none of which the
+	// Reader role expresses. Both routes and both Reader implementations build
+	// from the same issueops.ListRequest through this same builder, and the
+	// builder's golden file pins it. See issueops.Reader's doc comment.
 	cfg, err := workapi.LoadStoreListConfig(rootCtx, store)
 	if err != nil {
 		return HandleError("%v", err)

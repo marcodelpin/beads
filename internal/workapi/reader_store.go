@@ -13,10 +13,24 @@ import (
 // *DoltStore and *EmbeddedDoltStore answer identically because the difference
 // between them is below storage.DoltStorage, not above it.
 //
-// The reader supplies its own ConfigSource from the store it already holds.
-// That is the point of the role: a front door has no way to build one, so the
-// "load config, build filter, execute" ritual is not writable from a command
-// or a handler, and the two surfaces cannot half-perform it in different ways.
+// The reader supplies its own ConfigSource from the store it already holds, so
+// a caller ON THE ROLE cannot half-perform the "load config, build filter,
+// execute" ritual: it has no way to reach the pieces.
+//
+// THE BOUNDARY, stated once here because this is where the constructor lives:
+// today the store-backed role answers `bd show --json`, and the HTTP surface
+// reaches the uow-backed one. `bd ready` and `bd list` still call the builders
+// in this package directly — they consume the FILTER for the max-rows cap,
+// --claim, --watch, the hierarchical --parent tree and the text renderings —
+// so Ready and List below are reached only by tests until a front door moves.
+// They are covered by reader_store_test.go for exactly that reason. See
+// issueops.Reader's doc comment for why routing only those commands' JSON
+// paths through the role would be worse.
+//
+// This constructor is exported because both Dolt store packages need one shared
+// body, and it therefore sits in the package all 16 cmd/bd front-door files
+// already import. A command could mint a reader from it and skip the telemetry
+// decorator's reader-level spans. Nothing does; the accessor is the door.
 func NewStoreReader(store storage.DoltStorage) (issueops.Reader, error) {
 	if store == nil {
 		return nil, &storage.ErrUnsupported{Op: "NewStoreReader", Backend: "nil"}

@@ -66,9 +66,11 @@ func (r *issueReader) Ready(ctx context.Context, req publicops.ReadyRequest) (pu
 func (r *issueReader) List(ctx context.Context, req publicops.ListRequest) (publicops.IssuePage, error) {
 	return RunTxRead(ctx, r.provider, func(ctx context.Context, uw UnitOfWork) (publicops.IssuePage, error) {
 		// The config source comes from the unit of work this call already
-		// holds. A front door never supplies one — it has nothing to supply it
-		// from — which is what makes the skip-the-ritual failure mode
-		// unwritable rather than merely discouraged.
+		// holds, so a caller reaching this method through the role has nothing
+		// to supply and no step to skip. (`bd list --proxied-server` opens its
+		// own unit of work and loads the same config directly — see
+		// issueops.Reader's doc comment for why those two paging commands are
+		// still off the role.)
 		cfg, err := workapi.LoadUOWListConfig(ctx, uw)
 		if err != nil {
 			return publicops.IssuePage{}, err

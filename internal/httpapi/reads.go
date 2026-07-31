@@ -15,10 +15,17 @@ import (
 // WHAT IS NOT HERE IS THE POINT. No filter is built, no ConfigSource is wired,
 // no default limit is applied, no status exclusion is chosen, no wisp fallback
 // is arranged: all of that is inside issueops.Reader's implementation, which
-// the CLI reaches through the same accessor. A handler that skipped a step of
-// that construction — which is exactly how a hosted viewer once shipped a bare
-// IssueFilter and silently served in_progress rows as "ready" — is not
-// writable from here, because the pieces to skip are not reachable.
+// `bd show --json` reaches through the same accessor. A handler that skipped a
+// step of that construction — which is exactly how a hosted viewer once shipped
+// a bare IssueFilter and silently served in_progress rows as "ready" — is not
+// writable from here.
+//
+// That is a MACHINE claim, not a convention: the depguard rule
+// httpapi-transport-boundary denies internal/workapi from this package's
+// non-test files, so the builders are not importable here at all. `bd ready`
+// and `bd list` still call them directly, for the reasons issueops.Reader's
+// doc comment sets out; this half of the boundary is the half that can be
+// enforced, so it is.
 //
 // What DOES stay here is transport: parameter decoding, the opaque cursor
 // codec, the bind-mode refusal of an unlimited read, and the wire envelopes.

@@ -223,11 +223,32 @@ type IssuePage struct {
 // new role interface and its own accessor; never append a method here.
 //
 // Each method takes the whole request and performs filter and default
-// construction INTERNALLY. That is the point of the role: a front door can
-// only say rd.List(ctx, req), so the four-step ritual of building a config
-// source, loading config, building a filter and executing it is not writable
-// from a handler or a command at all. Implementations never mutate
-// caller-owned request values.
+// construction INTERNALLY. A caller of this interface can only say
+// rd.List(ctx, req): the four-step ritual of building a config source, loading
+// config, building a filter and executing it is not reachable through it.
+// Implementations never mutate caller-owned request values.
+//
+// WHERE THAT IS ENFORCED, precisely, because the difference matters:
+//
+//   - The HTTP surface is on the role for all three operations, and a
+//     depguard rule (httpapi-transport-boundary) makes reaching past it a
+//     lint failure rather than a review comment.
+//   - `bd show --json` is on the role.
+//   - `bd ready` and `bd list` are NOT, on either route. They consume the
+//     FILTER itself for things this role does not express — the --max-rows
+//     cap, --claim, --gated, --explain, --mol, --watch, the hierarchical
+//     --parent tree, and the text renderings that want []*types.Issue rather
+//     than a counted page — so they still call the workapi builders directly.
+//     Their protection against drift is one level down: both routes and both
+//     Reader implementations build from these same request types through the
+//     same builders, which the builders' golden files pin. Routing only their
+//     JSON paths through the role would fork each command in two, which is
+//     more drift, not less.
+//
+// Closing that gap needs more roles (a claim role, an explain role), not more
+// methods here. Until then the acceptance criterion is "no HTTP handler
+// constructs a filter", and it should be stated that way wherever it is
+// claimed.
 type Reader interface {
 	// Ready returns unblocked open work in the requested policy's order.
 	Ready(ctx context.Context, req ReadyRequest) (IssuePage, error)
