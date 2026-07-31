@@ -60,6 +60,20 @@ linters:
           deny:
             - pkg: github.com/dolthub
               desc: "Dolt engine access is restricted to the storage adapter packages (internal/storage, internal/doltserver) - see engdocs/PROJECT_CHARTER.md 'Storage Boundary'"
+        # internal/workapi is the work-query contract shared by every bd
+        # frontend, so it must be callable from a cobra command and from an
+        # HTTP handler alike - which means it can depend on neither. Same
+        # allowlist shape as the metrics exception above: no "$all", because
+        # depguard expands it to "**/*.go" and the rule would apply nowhere.
+        workapi-frontend-boundary:
+          list-mode: lax
+          files:
+            - "**/internal/workapi/**"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: "internal/workapi is frontend-independent: the CLI parses flags and passes plain params - see internal/workapi/doc.go"
+            - pkg: net/http
+              desc: "internal/workapi is frontend-independent: the HTTP layer decodes requests and passes plain params - see internal/workapi/doc.go"
     errcheck:
       exclude-functions:
         - (*database/sql.DB).Close
