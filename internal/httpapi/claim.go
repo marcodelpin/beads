@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
@@ -245,16 +246,30 @@ func validateActor(actor string) (string, *Result) {
 			claimActorMember, utf8.RuneCountInString(trimmed), types.MaxFieldLen))
 
 	// Newline above all: the actor is interpolated into the storage commit
-	// message, so a multiline value would forge audit-trail lines. The set
-	// matches the schema's pattern exactly — no stricter, or a value the
-	// document promises is legal would be refused.
+	// message, so a multiline value would forge audit-trail lines.
 	case strings.ContainsFunc(trimmed, isControlChar):
 		return "", refuse("`" + claimActorMember + "` must not contain control characters")
 	}
 	return trimmed, nil
 }
 
-func isControlChar(r rune) bool { return r < 0x20 || r == 0x7f }
+// isControlChar reports whether a rune is one no actor may carry: every Unicode
+// control character (category Cc — C0, DEL, and the C1 block) plus the
+// U+2028/U+2029 line separators.
+//
+// This is deliberately WIDER than the schema's pattern, which excludes only C0
+// and DEL. The document's prose is what governs here — it promises refusal of
+// "any control character including newline" — and C1 qualifies: U+0085 is NEL,
+// a line break on a VT-conformant terminal, so "alice<U+0085>bd serve: claim bd-9
+// by mallory" forges exactly the audit-trail line the C0 check exists to
+// prevent once the actor reaches the storage commit message. U+009B is the
+// one-byte CSI introducer, which makes an unfiltered actor an escape-sequence
+// payload in anything that prints an assignee. Widening refuses more than the
+// pattern advertises and can therefore never persist a value the document
+// forbids; the pattern is what should move at the next spec window.
+func isControlChar(r rune) bool {
+	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+}
 
 // claimOutcome is what one successful attempt produces: the row as it stands
 // after the CAS, and whether the caller already held it.

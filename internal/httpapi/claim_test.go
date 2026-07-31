@@ -345,6 +345,20 @@ func TestClaimRejectsActorsBeforeAnyDatabaseWork(t *testing.T) {
 		{"embedded carriage return", "alice\rmallory"},
 		{"embedded NUL", "alice\x00mallory"},
 		{"delete character", "alice\x7f"},
+		// The C1 block. The schema's pattern excludes only C0 and DEL, but the
+		// document's prose says "any control character", and these two are the
+		// ones that bite: U+0085 is NEL, a line break on a VT-conformant
+		// terminal, so this row is the same forged commit line as the newline
+		// row above; U+009B is the one-byte CSI introducer, so the second is
+		// escape-sequence injection into anything that prints an assignee.
+		{"embedded C1 next line", "alice\u0085bd serve: claim bd-2 by mallory"},
+		{"embedded C1 control sequence introducer", "alice\u009b31mmallory"},
+		{"embedded C1 lower bound", "alice\u0080mallory"},
+		{"embedded C1 upper bound", "alice\u009fmallory"},
+		// Not Cc, but they end a line for anything that splits on Unicode
+		// breaks — including a log viewer reading the storage commit message.
+		{"embedded line separator", "alice\u2028mallory"},
+		{"embedded paragraph separator", "alice\u2029mallory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issues := &fakeIssues{issue: seededIssue("bd-1", "alice", types.StatusInProgress)}
