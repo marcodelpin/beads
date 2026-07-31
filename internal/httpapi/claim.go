@@ -138,6 +138,14 @@ func (s *Server) claimTarget(w http.ResponseWriter, r *http.Request) (string, bo
 // for this would be permanent wire surface. `param` is documented as carrying a
 // header name for exactly this kind of refusal — it is what the Host middleware
 // already does.
+//
+// SPEC GAP, deliberate and to be closed at the next revision window: the frozen
+// document does not mention Content-Type anywhere, so this refusal is the one
+// 400 on this route a client generated from the schema cannot predict. It is
+// unreachable for a conformant client — requestBody already declares
+// application/json — and the status/code/param/reason are all in the documented
+// vocabulary, so the fix is prose describing the CSRF control, not a behavior
+// change.
 func (s *Server) requireJSONContent(w http.ResponseWriter, r *http.Request) bool {
 	got := r.Header.Get("Content-Type")
 	if media, _, err := mime.ParseMediaType(got); err == nil && media == claimContentType {
@@ -188,13 +196,18 @@ func (s *Server) claimActor(w http.ResponseWriter, r *http.Request) (string, boo
 			"`"+claimActorMember+"` is required"))
 		return "", false
 	}
-	var actor string
-	if err := json.Unmarshal(raw, &actor); err != nil {
+	// Through a POINTER, so that `null` reaches the type-mismatch branch:
+	// unmarshaling JSON null into a string is a no-op, which would have let a
+	// null slide down to the actor rules and be reported as "empty after
+	// trimming" — the right status, code, param and reason attached to prose
+	// that misdescribes what the client sent.
+	var actor *string
+	if err := json.Unmarshal(raw, &actor); err != nil || actor == nil {
 		s.fail(w, r, InvalidArgument(claimActorMember, ReasonInvalidValue,
 			"`"+claimActorMember+"` must be a string"))
 		return "", false
 	}
-	trimmed, res := validateActor(actor)
+	trimmed, res := validateActor(*actor)
 	if res != nil {
 		s.fail(w, r, *res)
 		return "", false

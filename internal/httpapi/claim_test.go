@@ -322,6 +322,25 @@ func TestClaimUnknownIDIs404(t *testing.T) {
 	}
 }
 
+// TestClaimNullActorReadsAsATypeMismatch: `detail` is prose, but it is the part
+// of a 400 a human reads to find their own mistake, so it has to describe the
+// input that was actually sent. Unmarshaling JSON null into a string is a
+// no-op, so a null used to fall through to the actor rules and come back as
+// "empty after trimming" — which sends a client looking for whitespace in a
+// value they never supplied.
+func TestClaimNullActorReadsAsATypeMismatch(t *testing.T) {
+	issues := &fakeIssues{issue: seededIssue("bd-1", "alice", types.StatusInProgress)}
+	ts, _ := newClaimServer(t, issues)
+
+	resp := ts.claim(t, claimPath, `{"actor":null}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", resp.StatusCode, readAll(t, resp))
+	}
+	if got := decodeBody(t, resp)["detail"]; got != "`"+claimActorMember+"` must be a string" {
+		t.Errorf("detail = %v, want the type-mismatch text: null is not an empty string", got)
+	}
+}
+
 // TestClaimRefusesUnrowableIDsBeforeAnyDatabaseWork: `issues.id` is
 // VARCHAR(255) and the document calls the path parameter an exact canonical id,
 // so these name no row that can exist. Answering them from the edge is what
@@ -504,6 +523,10 @@ func TestClaimRejectsMalformedRequests(t *testing.T) {
 		{
 			name: "actor is not a string", contentType: "application/json",
 			body: `{"actor":42}`, wantParam: claimActorMember, wantReason: ReasonInvalidValue,
+		},
+		{
+			name: "actor is null", contentType: "application/json",
+			body: `{"actor":null}`, wantParam: claimActorMember, wantReason: ReasonInvalidValue,
 		},
 		// A body with no nameable part carries no `param`: the document
 		// promises the member on every other 400, and promises its absence
