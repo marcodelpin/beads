@@ -19,7 +19,7 @@ import (
 // or a handler, and the two surfaces cannot half-perform it in different ways.
 func NewStoreReader(store storage.DoltStorage) (issueops.Reader, error) {
 	if store == nil {
-		return nil, &storage.ErrUnsupported{Op: "IssueReader", Backend: "nil"}
+		return nil, &storage.ErrUnsupported{Op: "NewStoreReader", Backend: "nil"}
 	}
 	return &storeReader{store: store}, nil
 }

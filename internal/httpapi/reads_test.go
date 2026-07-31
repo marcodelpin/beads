@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
@@ -283,21 +284,29 @@ func TestGetIssueRefusesAnImpossibleIDFromTheEdge(t *testing.T) {
 
 // TestCursorRoundTrips: the token is opaque and server-private, and the only
 // thing that invalidates one is a change to the encoding.
+//
+// The fixture's CreatedAt has to be NON-ZERO for this test to test anything.
+// decodeCursor rejects a zero instant — an empty position is one of its
+// documented failure modes — so a fixture left at the zero time made the
+// happy-path assertions unreachable and the test passed while asserting
+// nothing, encodeCursor broken outright included.
 func TestCursorRoundTrips(t *testing.T) {
-	items := []*types.IssueWithCounts{{Issue: &types.Issue{ID: "bd-7"}}}
-	items[0].CreatedAt = items[0].CreatedAt.UTC()
+	created := time.Now().UTC().Truncate(time.Second)
+	items := []*types.IssueWithCounts{{Issue: &types.Issue{ID: "bd-7", CreatedAt: created}}}
 
 	token := cursorFor(items)
 	if token == "" {
 		t.Fatal("cursorFor returned no token for a nonempty page")
 	}
 	pos, ok := decodeCursor(token)
-	if ok {
-		if pos.ID != "bd-7" {
-			t.Errorf("decoded id = %q, want bd-7", pos.ID)
-		}
-	} else if !items[0].CreatedAt.IsZero() {
-		t.Error("a token this server minted did not decode")
+	if !ok {
+		t.Fatalf("a token this server minted did not decode: %q", token)
+	}
+	if pos.ID != "bd-7" {
+		t.Errorf("decoded id = %q, want bd-7", pos.ID)
+	}
+	if !pos.CreatedAt.Equal(created) {
+		t.Errorf("decoded created_at = %s, want %s — the position is a keyset predicate, so a lossy instant skips or repeats rows", pos.CreatedAt, created)
 	}
 
 	for _, bad := range []string{"", "v0.abc", "v1.!!!", "v1.", "not-a-cursor"} {
