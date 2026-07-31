@@ -267,6 +267,46 @@ func TestProxiedServerServeReadParity(t *testing.T) {
 		assertItemsMatch(t, "list --label alpha", cli, got)
 	})
 
+	t.Run("a limit truncates on both surfaces, and to the same rows", func(t *testing.T) {
+		// The whole oracle above runs at limit 0, so until this subtest no
+		// comparison exercised truncation at all — and truncation is where the
+		// read epilogue (fetch, sort, trim, has_more) can differ without
+		// changing the unlimited answer.
+		//
+		// `--sort created` is what makes the two surfaces comparable under a
+		// limit: the endpoint's order is welded to the cursor contract and is
+		// always (created_at DESC, id ASC), so asking the CLI for the same
+		// order is the only way a truncated page can be compared row for row
+		// rather than by count.
+		cli := cliItems(t, bd, p.dir, "list", "--json", "--limit", "2", "--sort", "created")
+		got := sp.items(t, "/v0/beads/issues?limit=2")
+		if len(cli) != 2 {
+			t.Fatalf("`bd list --limit 2` returned %d items, want 2", len(cli))
+		}
+		if len(got) != 2 {
+			t.Fatalf("GET issues?limit=2 returned %d items, want 2", len(got))
+		}
+		assertItemsMatch(t, "list --limit 2", cli, got)
+	})
+
+	t.Run("a limit the database cannot push down still truncates", func(t *testing.T) {
+		// `--sort id` needs natural-numeric comparison (bd-9 < bd-10) that SQL
+		// cannot express, so workapi.SQLLimit zeroes the query's row limit and
+		// the whole result set comes back. The client-side trim is then the
+		// ONLY thing bounding the page — and the proxied route had no trim, so
+		// this command answered with every row while the direct route answered
+		// with two.
+		//
+		// There is no HTTP half to compare against: the list endpoint takes no
+		// `sort` parameter. What is being pinned is that the CLI's two routes
+		// agree, which is the same property by a different pair.
+		cli := cliItems(t, bd, p.dir, "list", "--json", "--limit", "2", "--sort", "id")
+		if len(cli) != 2 {
+			t.Errorf("`bd list --sort id --limit 2` returned %d items (%v), want 2 — a sort SQL cannot express still has to respect the limit",
+				len(cli), itemIDs(cli))
+		}
+	})
+
 	t.Run("show", func(t *testing.T) {
 		for _, id := range []string{top.ID, mid.ID, blocked.ID} {
 			// `bd show --json` emits an array of one; the endpoint emits the

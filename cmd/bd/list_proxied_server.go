@@ -89,8 +89,27 @@ func runListProxiedSearch(_ *cobra.Command, ctx context.Context, in listInput) e
 	}
 
 	workapi.SortIssues(page.Items, in.SortBy, in.Reverse)
+	issues, hasMore := trimToPageLimit(page.Items, in.effectiveLimit, page.HasMore)
 
-	return renderProxiedListText(ctx, uw, page.Items, in, page.HasMore)
+	return renderProxiedListText(ctx, uw, issues, in, hasMore)
+}
+
+// trimToPageLimit cuts a page back to the number of rows the caller asked to
+// RECEIVE, and reports whether the cut removed anything.
+//
+// It runs AFTER the display sort, because the sort decides which rows the cut
+// keeps. For most queries it is a no-op: the row limit the query ran under and
+// the page limit are the same number, and this seam reports HasMore natively.
+// They come apart for a sort SQL cannot express — workapi.SQLLimit zeroes the
+// query's limit for `--sort id`, so the query returns the entire result set and
+// this trim is the only thing bounding the page. The direct route has always
+// trimmed there; without this, `bd list --sort id --limit 5` printed five rows
+// directly and every row under --proxied-server.
+func trimToPageLimit[T any](items []T, limit int, hasMore bool) ([]T, bool) {
+	if limit > 0 && len(items) > limit {
+		return items[:limit], true
+	}
+	return items, hasMore
 }
 
 func runListProxiedHierarchicalParent(ctx context.Context, uw uow.UnitOfWork, in listInput, filter types.IssueFilter) error {
@@ -159,8 +178,9 @@ func runListProxiedReady(_ *cobra.Command, ctx context.Context, in listInput) er
 	}
 
 	workapi.SortIssues(page.Items, in.SortBy, in.Reverse)
+	issues, hasMore := trimToPageLimit(page.Items, in.effectiveLimit, page.HasMore)
 
-	return renderProxiedListText(ctx, uw, page.Items, in, page.HasMore)
+	return renderProxiedListText(ctx, uw, issues, in, hasMore)
 }
 
 func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) error {
@@ -206,6 +226,8 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 			issues, hasMore = page.Items, page.HasMore
 			workapi.SortIssues(issues, in.SortBy, in.Reverse)
 		}
+
+		issues, hasMore = trimToPageLimit(issues, in.effectiveLimit, hasMore)
 
 		deps, err := loadDepsForIssues(ctx, uw, issues)
 		if err != nil {
@@ -255,6 +277,7 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 
 func emitProxiedListJSONResult(iwc []*types.IssueWithCounts, in listInput, hasMore bool) error {
 	workapi.SortIssuesWithCounts(iwc, in.SortBy, in.Reverse)
+	iwc, hasMore = trimToPageLimit(iwc, in.effectiveLimit, hasMore)
 	if iwc == nil {
 		iwc = []*types.IssueWithCounts{}
 	}
