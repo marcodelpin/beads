@@ -211,13 +211,17 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	// expresses, and routing only the JSON path through it would fork the
 	// command in two.
 	//
-	// It shares CONSTRUCTION AND EXECUTION with the role all the same, and
-	// that is now the whole of it: the same issueops.ListRequest through the
-	// same builder (pinned by the builder's golden file), then the same
-	// workapi.FinishPage that both Reader implementations run — same sort,
-	// same trim, same has-more verdict. What differs between this listing and
-	// the HTTP one is presentation and the --max-rows cap, and nothing else.
-	// See issueops.Reader's doc comment.
+	// It shares CONSTRUCTION with the role unconditionally: the same
+	// issueops.ListRequest through the same builder, pinned by the builder's
+	// golden file.
+	//
+	// It shares EXECUTION — the same workapi.FinishPage, same sort, same trim,
+	// same has-more verdict — in every mode but one. The exception is the
+	// hierarchical --parent tree under pretty output below: it renders the
+	// recursive walk's own result and never reaches the epilogue, on this
+	// route or the proxied one. For the modes that do reach it (JSON, plain
+	// text, --watch, --ready) what differs from the HTTP listing is
+	// presentation and the --max-rows cap. See issueops.Reader's doc comment.
 	cfg, err := workapi.LoadStoreListConfig(rootCtx, store)
 	if err != nil {
 		return HandleError("%v", err)

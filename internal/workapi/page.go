@@ -100,10 +100,16 @@ func SortIssuesWithCounts(items []*types.IssueWithCounts, sortBy string, reverse
 // does not passes false and lets the over-fetched row speak. Either way a cut
 // that removes a row wins over a seam that said there was nothing more.
 //
-// A limit of 0 is unlimited: nothing is cut and there is by definition nothing
-// more. Rows are never nil on the way out — an empty page is an empty array on
-// every surface that serializes one, and a caller must not have to tell null
-// from empty to learn that nothing matched.
+// A limit of 0 skips the cut entirely: every row passes through in the
+// requested order, and the verdict returned is the seed the caller passed in,
+// unchanged. It is NOT forced to false. An unlimited request cannot be
+// truncated here, but a seam that already reported more rows behind it — a
+// backend page bound, a cap applied before this point — is still saying
+// something true, and this function is in no position to contradict it.
+//
+// Rows are never nil on the way out — an empty page is an empty array on every
+// surface that serializes one, and a caller must not have to tell null from
+// empty to learn that nothing matched.
 func FinishPage[T PageRow](rows []T, sortBy string, reverse bool, limit int, hasMore bool) ([]T, bool) {
 	SortRows(rows, sortBy, reverse)
 	if limit > 0 && len(rows) > limit {

@@ -57,11 +57,23 @@ func TestFinishPageIsTheOneEpilogue(t *testing.T) {
 		wantIDs: []string{"a", "b"},
 		wantHas: true,
 	}, {
-		name:    "an unlimited page is never cut and never has more",
+		name:    "an unlimited page is never cut",
 		rows:    pageRows("a", "b", "c"),
 		limit:   0,
 		wantIDs: []string{"a", "b", "c"},
 		wantHas: false,
+	}, {
+		// The cut is the only thing this function can ADD to the verdict, so
+		// with no cut the seam's answer passes through untouched. An
+		// unlimited request that the seam bounded anyway must not come back
+		// reported as complete — which is what "0 means there is by
+		// definition nothing more" would have meant.
+		name:    "an unlimited page still carries the seam's verdict",
+		rows:    pageRows("a", "b", "c"),
+		limit:   0,
+		hasMore: true,
+		wantIDs: []string{"a", "b", "c"},
+		wantHas: true,
 	}, {
 		// The bug this ordering exists to prevent: a sort SQL cannot express
 		// leaves the query unlimited, so the cut must run AFTER the order or

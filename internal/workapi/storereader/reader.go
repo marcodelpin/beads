@@ -39,9 +39,10 @@ import (
 // hierarchical --parent tree and the text renderings — so Ready and List below
 // are reached only by tests until a front door moves. They are covered by
 // reader_test.go for exactly that reason, and their page epilogue is
-// workapi.FinishPage, which those commands DO run, so the untravelled path
-// here is the query and not the tail. See issueops.Reader's doc comment for
-// why routing only those commands' JSON paths through the role would be worse.
+// workapi.FinishPage, which `bd list` DOES run in every mode but the
+// hierarchical --parent tree, so the untravelled path here is the query and
+// not the tail. See issueops.Reader's doc comment for why routing only those
+// commands' JSON paths through the role would be worse.
 func New(store storage.DoltStorage) (issueops.Reader, error) {
 	if store == nil {
 		return nil, &storage.ErrUnsupported{Op: "storereader.New", Backend: "nil"}

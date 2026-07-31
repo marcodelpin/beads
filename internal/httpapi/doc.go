@@ -37,11 +37,13 @@
 // not express (see issueops.Reader's doc comment for the list, and for why
 // splitting those commands would be worse). What they share instead is
 // CONSTRUCTION — the same request types through the same builders, pinned by
-// the builders' golden files — and, for `bd list` on both routes and `bd
-// ready` on the proxied one, EXECUTION: workapi.FinishPage is the sort, trim
-// and has-more verdict this surface's reader runs too. `bd ready`'s direct
-// route keeps its own epilogue because it publishes a hidden-row TOTAL this
-// surface has no member for.
+// the builders' golden files — and, where it reaches, EXECUTION:
+// workapi.FinishPage, the sort, trim and has-more verdict this surface's
+// reader runs too, is `bd list`'s epilogue on both routes in every mode but
+// the hierarchical --parent tree (which renders its recursive walk's result
+// directly, on either route), and `bd ready`'s on the proxied route only.
+// `bd ready`'s direct route keeps its own epilogue because it publishes a
+// hidden-row TOTAL this surface has no member for.
 //
 // So: every read this surface answers goes through the role and cannot do
 // otherwise; the CLI answers three reads, one of which is on the role and two

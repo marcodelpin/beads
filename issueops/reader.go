@@ -268,10 +268,13 @@ type IssuePage struct {
 //   - CONSTRUCTION. Every route of both commands, and both implementations of
 //     this interface, build from these same request types through the same
 //     two builders in internal/workapi, which the builders' golden files pin.
-//   - EXECUTION, for `bd list` on both routes: the sort, the trim to the page
-//     limit and the has-more verdict are workapi.FinishPage, the one function
-//     both implementations of List below also call. What is left differing
-//     between a CLI listing and an HTTP one is presentation and the
+//   - EXECUTION, for `bd list` on both routes and in every mode but one: the
+//     sort, the trim to the page limit and the has-more verdict are
+//     workapi.FinishPage, the one function both implementations of List below
+//     also call. The exception is the hierarchical --parent tree under pretty
+//     output, which renders the recursive walk's own result and reaches no
+//     epilogue on either route. Where the epilogue does run, what is left
+//     differing between a CLI listing and an HTTP one is presentation and the
 //     --max-rows cap.
 //   - EXECUTION, for `bd ready`, on the PROXIED route only. The direct route
 //     keeps an epilogue of its own and cannot give it up: it answers the
