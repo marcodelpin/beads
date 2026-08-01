@@ -289,6 +289,146 @@ func RunIssueOperationsUpdateClosePolicy(t *testing.T, ctx context.Context, fixt
 	assertClosePolicyStatus(t, ctx, fixture, parentID, types.StatusInProgress)
 }
 
+// RunIssueOperationsUpdateAssigneeTransferFence pins what an assignee edit does
+// when it takes an issue away from a live foreign holder: it is refused with
+// ErrAlreadyClaimed, and ForceAssigneeTransfer, an ExpectedAssignee
+// compare-and-set, or a configured claim.pools alias are the only ways past it.
+// The contract had no assignee-transfer case at all, and that gap is exactly how
+// one backend came to permit a transfer the other two refuse.
+func RunIssueOperationsUpdateAssigneeTransferFence(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	heldID := fixture.IssuePrefix + "-xferfence-held"
+	seedClosePolicyIssue(t, ctx, fixture, heldID, publicops.CreateRequest{})
+	claimed, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{Actor: "holder", IssueID: heldID, Claim: true})
+	if err != nil {
+		t.Fatalf("claim %s for holder: %v", heldID, err)
+	}
+	if !claimed.Changed {
+		t.Fatalf("claiming %s reported Changed = false, want a committed claim", heldID)
+	}
+	assertLiveAssignee(t, ctx, fixture, heldID, "holder")
+
+	// The fence itself: an unforced transfer away from the live holder is
+	// refused, and the refusal writes nothing — not the row, not an event.
+	events := newIssueOperationsEventCounter(t, ctx, fixture, heldID)
+	if _, err := fixture.Operations.Update(ctx, assigneeTransferRequest(heldID, "rival", "rival")); !errors.Is(err, publicops.ErrAlreadyClaimed) {
+		t.Fatalf("unforced transfer of %s away from its holder: err = %v, want ErrAlreadyClaimed", heldID, err)
+	}
+	assertLiveAssignee(t, ctx, fixture, heldID, "holder")
+	events.assert(t, "refused transfer", 0, nil)
+
+	// A stale precondition is orthogonal to the fence and is checked ahead of
+	// it, so a request that fails both reports the precondition — the same
+	// ordering a forced close-policy crossing gets.
+	staleVersion := int64(-1)
+	staleVersionRequest := assigneeTransferRequest(heldID, "rival", "rival")
+	staleVersionRequest.ExpectedVersion = &staleVersion
+	if _, err := fixture.Operations.Update(ctx, staleVersionRequest); !errors.Is(err, publicops.ErrVersionMismatch) {
+		t.Fatalf("fenced transfer of %s with a stale version: err = %v, want ErrVersionMismatch", heldID, err)
+	}
+	staleStatus := types.StatusOpen
+	staleStatusRequest := assigneeTransferRequest(heldID, "rival", "rival")
+	staleStatusRequest.ExpectedStatus = &staleStatus
+	if _, err := fixture.Operations.Update(ctx, staleStatusRequest); !errors.Is(err, publicops.ErrStatusMismatch) {
+		t.Fatalf("fenced transfer of %s with a stale status: err = %v, want ErrStatusMismatch", heldID, err)
+	}
+	assertLiveAssignee(t, ctx, fixture, heldID, "holder")
+
+	// Restating the holder's own name is not a transfer, so a third party may
+	// do it unforced — and it changes nothing.
+	reassert, err := fixture.Operations.Update(ctx, assigneeTransferRequest(heldID, "bystander", "holder"))
+	if err != nil {
+		t.Fatalf("reassert %s's current assignee: %v", heldID, err)
+	}
+	if reassert.Changed {
+		t.Errorf("reasserting %s's current assignee reported Changed = true, want a no-op", heldID)
+	}
+
+	// An ExpectedAssignee compare-and-set naming the holder replaces the fence:
+	// the caller proved its view of the claim is current.
+	casRequest := assigneeTransferRequest(heldID, "rival", "rival")
+	holder := "holder"
+	casRequest.ExpectedAssignee = &holder
+	cas, err := fixture.Operations.Update(ctx, casRequest)
+	if err != nil {
+		t.Fatalf("compare-and-set transfer of %s: %v", heldID, err)
+	}
+	if !cas.Changed || cas.Issue.Assignee != "rival" {
+		t.Fatalf("compare-and-set transfer of %s = %#v, want a committed transfer to rival", heldID, cas.Issue)
+	}
+	assertLiveAssignee(t, ctx, fixture, heldID, "rival")
+
+	// ForceAssigneeTransfer is the unconditional override.
+	forcedRequest := assigneeTransferRequest(heldID, "usurper", "usurper")
+	forcedRequest.ForceAssigneeTransfer = true
+	forced, err := fixture.Operations.Update(ctx, forcedRequest)
+	if err != nil {
+		t.Fatalf("forced transfer of %s: %v", heldID, err)
+	}
+	if !forced.Changed || forced.Issue.Assignee != "usurper" {
+		t.Fatalf("forced transfer of %s = %#v, want a committed transfer to usurper", heldID, forced.Issue)
+	}
+	assertLiveAssignee(t, ctx, fixture, heldID, "usurper")
+
+	// A holder that is a configured claim.pools alias is a group placeholder,
+	// not an owner, so taking work from the pool needs no force.
+	if err := fixture.SetConfig(ctx, "claim.pools", "pool-crew"); err != nil {
+		t.Fatalf("SetConfig(claim.pools): %v", err)
+	}
+	pooledID := fixture.IssuePrefix + "-xferfence-pooled"
+	seedClosePolicyIssue(t, ctx, fixture, pooledID, publicops.CreateRequest{})
+	pooledRequest := assigneeTransferRequest(pooledID, "seed", "pool-crew")
+	pooledRequest.Claim = true
+	if _, err := fixture.Operations.Update(ctx, pooledRequest); err != nil {
+		t.Fatalf("assign %s to the pool: %v", pooledID, err)
+	}
+	assertLiveAssignee(t, ctx, fixture, pooledID, "pool-crew")
+	taken, err := fixture.Operations.Update(ctx, assigneeTransferRequest(pooledID, "member", "member"))
+	if err != nil {
+		t.Fatalf("unforced transfer of pooled %s: %v", pooledID, err)
+	}
+	if !taken.Changed || taken.Issue.Assignee != "member" {
+		t.Fatalf("unforced transfer of pooled %s = %#v, want a committed transfer to member", pooledID, taken.Issue)
+	}
+	assertLiveAssignee(t, ctx, fixture, pooledID, "member")
+
+	// The alias set is the only carve-out: a real holder is still fenced while
+	// pools are configured.
+	if _, err := fixture.Operations.Update(ctx, assigneeTransferRequest(pooledID, "rival", "rival")); !errors.Is(err, publicops.ErrAlreadyClaimed) {
+		t.Fatalf("unforced transfer of %s away from a non-pool holder: err = %v, want ErrAlreadyClaimed", pooledID, err)
+	}
+	assertLiveAssignee(t, ctx, fixture, pooledID, "member")
+}
+
+// assigneeTransferRequest builds the bare assignee edit whose fencing this case
+// pins: actor asks for the issue to be assigned to newAssignee.
+func assigneeTransferRequest(id, actor, newAssignee string) publicops.UpdateRequest {
+	return publicops.UpdateRequest{
+		Actor:   actor,
+		IssueID: id,
+		Patch:   publicops.IssuePatch{Assignee: publicops.Field[string]{Set: true, Value: newAssignee}},
+	}
+}
+
+// assertLiveAssignee checks the stored holder of an in-progress issue. Every
+// state this case asserts is a live claim — the fence only speaks over one — so
+// the expected status is fixed, and reading it back proves an assignee edit
+// leaves the claim's status alone.
+func assertLiveAssignee(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id, wantAssignee string) {
+	t.Helper()
+	var assignee, status string
+	if err := fixture.QueryScalar(ctx, "SELECT assignee, status FROM issues WHERE id = ?", []any{id}, &assignee, &status); err != nil {
+		t.Fatalf("read assignee and status for %s: %v", id, err)
+	}
+	if assignee != wantAssignee {
+		t.Errorf("%s assignee = %q, want %q", id, assignee, wantAssignee)
+	}
+	if types.Status(status) != types.StatusInProgress {
+		t.Errorf("%s status = %q, want %q", id, status, types.StatusInProgress)
+	}
+}
+
 // closePolicyStatusRequest builds the generic status update that crosses into
 // the done category — the operation whose policy this case pins.
 func closePolicyStatusRequest(id string, force bool) publicops.UpdateRequest {
