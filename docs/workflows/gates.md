@@ -53,7 +53,8 @@ back to the current repository.
 
 A formula step declares a gate with a `[steps.gate]` block. When the formula
 is instantiated, bd creates the gate issue and wires it as a blocker of that
-step. The schema has four fields: `type`, `id`, `await_id`, and `timeout`.
+step. The schema has five fields: `type`, `id`, `await_id`, `timeout`, and
+`repo`.
 
 This is the release gate from beads' own release formula — the step that
 waits for the GitHub release workflow:
@@ -67,6 +68,21 @@ title = "Wait for release workflow"
 type = "gh:run"
 id = "release.yml"       # which workflow to watch
 timeout = "30m"          # escalate if it takes longer
+```
+
+For a `gh:run` or `gh:pr` gate that watches another repository, set `repo`
+the same way a `metadata.repo` value works for an ad-hoc gate — `OWNER/REPO`
+or `HOST/OWNER/REPO`. Malformed values are rejected when the gate is checked:
+
+```toml
+[[steps]]
+id = "wait-for-downstream"
+title = "Wait for downstream release"
+
+[steps.gate]
+type = "gh:run"
+id = "release.yml"
+repo = "org/downstream-repo"   # check gh:run against this repo, not the current one
 ```
 
 A human sign-off gate:

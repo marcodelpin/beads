@@ -270,6 +270,7 @@ func TestSubstituteFormulaVars_GateFields(t *testing.T) {
 					ID:      "{{legacy_id}}",
 					AwaitID: "{{pr}}",
 					Timeout: "{{timeout}}",
+					Repo:    "{{repo}}",
 				},
 			},
 		},
@@ -280,6 +281,7 @@ func TestSubstituteFormulaVars_GateFields(t *testing.T) {
 		"legacy_id": "legacy-42",
 		"pr":        "https://github.com/org/repo/pull/123",
 		"timeout":   "1h",
+		"repo":      "srobroek/agentic-packages",
 	})
 
 	gate := f.Steps[0].Gate
@@ -294,6 +296,9 @@ func TestSubstituteFormulaVars_GateFields(t *testing.T) {
 	}
 	if gate.Timeout != "1h" {
 		t.Errorf("Gate.Timeout = %q, want 1h", gate.Timeout)
+	}
+	if gate.Repo != "srobroek/agentic-packages" {
+		t.Errorf("Gate.Repo = %q, want srobroek/agentic-packages", gate.Repo)
 	}
 }
 
@@ -495,6 +500,57 @@ func TestCreateGateIssue(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCreateGateIssue_Repo covers SF2: a formula gate's `repo` field must be
+// propagated onto the created gate issue's metadata, matching the
+// declarative `metadata.repo` selector documented for ad-hoc gates.
+func TestCreateGateIssue_Repo(t *testing.T) {
+	t.Run("propagates_repo_to_metadata", func(t *testing.T) {
+		step := &formula.Step{
+			ID:    "await-ci",
+			Title: "Wait for CI",
+			Gate: &formula.Gate{
+				Type: "gh:run",
+				ID:   "release.yml",
+				Repo: "srobroek/agentic-packages",
+			},
+		}
+
+		gateIssue := createGateIssue(step, "mol-release")
+		if gateIssue == nil {
+			t.Fatal("createGateIssue returned nil")
+		}
+
+		var metadata struct {
+			Repo string `json:"repo"`
+		}
+		if err := json.Unmarshal(gateIssue.Metadata, &metadata); err != nil {
+			t.Fatalf("gateIssue.Metadata = %s, not valid JSON: %v", gateIssue.Metadata, err)
+		}
+		if metadata.Repo != "srobroek/agentic-packages" {
+			t.Errorf("metadata.repo = %q, want %q", metadata.Repo, "srobroek/agentic-packages")
+		}
+	})
+
+	t.Run("no_repo_no_metadata", func(t *testing.T) {
+		step := &formula.Step{
+			ID:    "await-ci",
+			Title: "Wait for CI",
+			Gate: &formula.Gate{
+				Type: "gh:run",
+				ID:   "release.yml",
+			},
+		}
+
+		gateIssue := createGateIssue(step, "mol-release")
+		if gateIssue == nil {
+			t.Fatal("createGateIssue returned nil")
+		}
+		if len(gateIssue.Metadata) != 0 {
+			t.Errorf("gateIssue.Metadata = %s, want empty", gateIssue.Metadata)
+		}
+	})
 }
 
 // TestCreateGateIssue_NilGate tests that nil Gate returns nil

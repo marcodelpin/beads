@@ -510,7 +510,7 @@ func createGateIssue(step *formula.Step, parentID string) *types.Issue {
 		}
 	}
 
-	return &types.Issue{
+	gateIssue := &types.Issue{
 		ID:          gateID,
 		Title:       title,
 		Description: fmt.Sprintf("Async gate for step %s", step.ID),
@@ -524,6 +524,19 @@ func createGateIssue(step *formula.Step, parentID string) *types.Issue {
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
+
+	// Propagate the formula-declared repo selector (SF2), matching the
+	// declarative `metadata.repo` selector documented for ad-hoc gates.
+	// Malformed values are left for check time (githubRepoFromIssue) to
+	// reject, consistent with how a check-time-only value on any other
+	// gate created outside `bd gate create` is validated.
+	if step.Gate.Repo != "" {
+		if metaJSON, err := json.Marshal(map[string]string{"repo": step.Gate.Repo}); err == nil {
+			gateIssue.Metadata = metaJSON
+		}
+	}
+
+	return gateIssue
 }
 
 func gateAwaitID(gate *formula.Gate) string {
@@ -1089,6 +1102,7 @@ func substituteStepVars(steps []*formula.Step, vars map[string]string) {
 			step.Gate.ID = substituteVariables(step.Gate.ID, vars)
 			step.Gate.AwaitID = substituteVariables(step.Gate.AwaitID, vars)
 			step.Gate.Timeout = substituteVariables(step.Gate.Timeout, vars)
+			step.Gate.Repo = substituteVariables(step.Gate.Repo, vars)
 		}
 		if len(step.Children) > 0 {
 			substituteStepVars(step.Children, vars)
