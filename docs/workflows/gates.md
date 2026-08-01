@@ -87,6 +87,20 @@ id = "release.yml"
 repo = "org/downstream-repo"   # check gh:run against this repo, not the current one
 ```
 
+`repo` accepts a `{{var}}` placeholder (e.g. `repo = "{{gate_repo}}"`); for a
+formula persisted with `bd cook --persist`, the placeholder is substituted
+when the proto is later poured with `bd mol pour --var gate_repo=...`, the
+same as `title`, `description`, and `await_id`.
+
+`bd gate discover` (auto-discovery of a `gh:run` gate's run ID) requires a
+workflow name hint (`await_id`/`id`, not left blank) for a gate targeting
+another repository — without one, the local commit/branch heuristics that
+narrow a same-repo match don't apply across repos, so nothing but the
+workflow name can identify the right run. A cross-repo gate discovery also
+ignores the local checkout's branch unless `--branch` is passed explicitly;
+an auto-detected local branch has no relationship to the target repo's
+branches.
+
 A human sign-off gate:
 
 ```toml
