@@ -786,40 +786,59 @@ func isNumericID(s string) bool {
 }
 
 // githubRepoFromIssue returns a validated [HOST/]OWNER/REPO value from metadata.repo.
-// An empty value means the current Git repository should be used.
+// A missing repo key, or metadata without a repo key at all, means the current
+// Git repository should be used. An explicit `"repo":null` or a non-string
+// repo value is rejected as malformed rather than silently falling back to
+// the current repository - the docs promise malformed values are rejected,
+// and a silent fallback here is the dangerous direction (it can point a
+// cross-repo check at the wrong repository instead of failing loudly).
 func githubRepoFromIssue(issue *types.Issue) (string, error) {
 	if issue == nil || len(issue.Metadata) == 0 || string(issue.Metadata) == "null" {
 		return "", nil
 	}
 
-	var metadata struct {
-		Repo string `json:"repo"`
-	}
-	if err := json.Unmarshal(issue.Metadata, &metadata); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(issue.Metadata, &raw); err != nil {
 		return "", fmt.Errorf("metadata must be a JSON object: %w", err)
 	}
-	if metadata.Repo == "" {
+	repoRaw, hasRepo := raw["repo"]
+	if !hasRepo {
 		return "", nil
 	}
 
-	parts := strings.Split(metadata.Repo, "/")
+	var repoValue interface{}
+	if err := json.Unmarshal(repoRaw, &repoValue); err != nil {
+		return "", fmt.Errorf("metadata.repo: %w", err)
+	}
+	if repoValue == nil {
+		return "", fmt.Errorf("metadata.repo must not be null")
+	}
+	repo, ok := repoValue.(string)
+	if !ok {
+		return "", fmt.Errorf("metadata.repo must be a string, got %T", repoValue)
+	}
+	if repo == "" {
+		return "", nil
+	}
+
+	parts := strings.Split(repo, "/")
 	if len(parts) != 2 && len(parts) != 3 {
-		return "", fmt.Errorf("repo %q must use OWNER/REPO or HOST/OWNER/REPO", metadata.Repo)
+		return "", fmt.Errorf("repo %q must use OWNER/REPO or HOST/OWNER/REPO", repo)
 	}
 	for _, part := range parts {
 		if part == "" {
-			return "", fmt.Errorf("repo %q contains an empty path component", metadata.Repo)
+			return "", fmt.Errorf("repo %q contains an empty path component", repo)
 		}
 		for _, char := range part {
 			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
 				(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
 				continue
 			}
-			return "", fmt.Errorf("repo %q contains invalid character %q", metadata.Repo, char)
+			return "", fmt.Errorf("repo %q contains invalid character %q", repo, char)
 		}
 	}
 
-	return metadata.Repo, nil
+	return repo, nil
 }
 
 // queryGitHubRunsForWorkflow queries recent runs for a specific workflow using gh CLI.

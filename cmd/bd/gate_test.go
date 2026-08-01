@@ -342,15 +342,55 @@ func TestQueryGitHubRunsForWorkflowUsesRepository(t *testing.T) {
 }
 
 func TestGitHubRepoFromIssueRejectsInvalidMetadata(t *testing.T) {
-	tests := []json.RawMessage{
-		json.RawMessage(`{"repo":"missing-owner"}`),
-		json.RawMessage(`{"repo":"owner/repo;echo"}`),
-		json.RawMessage(`"not-an-object"`),
+	tests := []struct {
+		name     string
+		metadata json.RawMessage
+	}{
+		{"missing_owner", json.RawMessage(`{"repo":"missing-owner"}`)},
+		{"shell_metacharacter", json.RawMessage(`{"repo":"owner/repo;echo"}`)},
+		{"metadata_not_an_object", json.RawMessage(`"not-an-object"`)},
+		// SF3: an explicit JSON null must be rejected rather than silently
+		// falling back to the current repository - the dangerous direction,
+		// since it could point a cross-repo check at the wrong repo.
+		{"repo_null", json.RawMessage(`{"repo":null}`)},
+		{"repo_number", json.RawMessage(`{"repo":42}`)},
+		{"repo_bool", json.RawMessage(`{"repo":true}`)},
+		{"repo_object", json.RawMessage(`{"repo":{"owner":"a","name":"b"}}`)},
+		{"repo_array", json.RawMessage(`{"repo":["a","b"]}`)},
 	}
-	for _, metadata := range tests {
-		if repo, err := githubRepoFromIssue(&types.Issue{Metadata: metadata}); err == nil {
-			t.Fatalf("githubRepoFromIssue(%s) = %q, nil; want validation error", metadata, repo)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if repo, err := githubRepoFromIssue(&types.Issue{Metadata: tt.metadata}); err == nil {
+				t.Fatalf("githubRepoFromIssue(%s) = %q, nil; want validation error", tt.metadata, repo)
+			}
+		})
+	}
+}
+
+// TestGitHubRepoFromIssueAllowsMissingRepoKey verifies metadata without a
+// "repo" key at all (as opposed to an explicit null) still falls back to the
+// current repository without error - only an explicit malformed value is
+// rejected (SF3).
+func TestGitHubRepoFromIssueAllowsMissingRepoKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata json.RawMessage
+	}{
+		{"nil_metadata", nil},
+		{"null_metadata", json.RawMessage(`null`)},
+		{"empty_object", json.RawMessage(`{}`)},
+		{"unrelated_key", json.RawMessage(`{"priority":"high"}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, err := githubRepoFromIssue(&types.Issue{Metadata: tt.metadata})
+			if err != nil {
+				t.Fatalf("githubRepoFromIssue(%s) returned error: %v", tt.metadata, err)
+			}
+			if repo != "" {
+				t.Fatalf("githubRepoFromIssue(%s) = %q, want empty", tt.metadata, repo)
+			}
+		})
 	}
 }
 
