@@ -192,6 +192,71 @@ func TestGateDiscoveryQueryFailures_IgnoresMetadataErrors(t *testing.T) {
 	}
 }
 
+// TestBranchFilterForRepo covers the cross-repo-discovery-is-inert fix: the
+// local branch filter must never be forwarded to a foreign repo's query -
+// a cross-repo gate's target branch has no relationship to the branch
+// checked out locally, so filtering that repo's runs by it would match
+// nothing, forever.
+func TestBranchFilterForRepo(t *testing.T) {
+	tests := []struct {
+		name              string
+		localBranchFilter string
+		repo              string
+		want              string
+	}{
+		{name: "current repo keeps branch filter", localBranchFilter: "feature/foo", repo: "", want: "feature/foo"},
+		{name: "foreign repo drops branch filter", localBranchFilter: "feature/foo", repo: "other-owner/other-repo", want: ""},
+		{name: "foreign repo drops empty branch filter too", localBranchFilter: "", repo: "other-owner/other-repo", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := branchFilterForRepo(tt.localBranchFilter, tt.repo); got != tt.want {
+				t.Errorf("branchFilterForRepo(%q, %q) = %q, want %q", tt.localBranchFilter, tt.repo, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchGateToRun_NeutralizesLocalHeuristicsForForeignRepo covers the
+// scoring half of the cross-repo-discovery-is-inert fix: run.HeadSha and
+// run.HeadBranch describe a run in the FOREIGN repo, so comparing them
+// against the local checkout's commit/branch is meaningless (and could
+// spuriously "match" by coincidence). A run that would only match a
+// non-foreign gate by commit/branch heuristics must not match a foreign one.
+func TestMatchGateToRun_NeutralizesLocalHeuristicsForForeignRepo(t *testing.T) {
+	localCommit := getGitCommitForGateDiscovery()
+	localBranch := getGitBranchForGateDiscovery()
+	if localCommit == "" || localBranch == "" {
+		t.Skip("test requires a git checkout with a resolvable commit and branch")
+	}
+
+	gate := &types.Issue{
+		ID:        "bd-cross",
+		AwaitType: "gh:run",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	}
+	runs := []GHWorkflowRun{
+		{
+			DatabaseID: 999,
+			HeadSha:    localCommit,
+			HeadBranch: localBranch,
+			Status:     "completed",
+			// 1h away from gate.CreatedAt: outside all three time-proximity
+			// bands (5/10/30 min), so only the commit/branch heuristics can
+			// produce a score here.
+			CreatedAt: time.Now().Add(-time.Hour),
+		},
+	}
+
+	if got := matchGateToRun(gate, runs, 3*time.Hour, false); got == nil {
+		t.Fatal("non-foreign gate: expected commit+branch match to select the run")
+	}
+
+	if got := matchGateToRun(gate, runs, 3*time.Hour, true); got != nil {
+		t.Errorf("foreign gate: expected no match (commit/branch heuristics neutralized), got run %d", got.DatabaseID)
+	}
+}
+
 func TestQueryGitHubRunsInRepoWithRunner(t *testing.T) {
 	runs, err := queryGitHubRunsInRepoWithRunner(
 		"main",

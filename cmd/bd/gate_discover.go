@@ -113,7 +113,7 @@ func runGateDiscover(cmd *cobra.Command, args []string) error {
 	// from the current repo. matchGatesToRuns groups gates by their
 	// validated repo and issues one query per distinct repo.
 	matches := matchGatesToRuns(gates, maxAge, func(repo string) ([]GHWorkflowRun, error) {
-		return queryGitHubRunsInRepo(branchFilter, limit, repo)
+		return queryGitHubRunsInRepo(branchFilterForRepo(branchFilter, repo), limit, repo)
 	})
 
 	// Step 3/4: report matches (and, outside dry-run, persist them)
@@ -221,6 +221,19 @@ func gateDiscoveryQueryFailures(matches []gateDiscoveryMatch) map[string]error {
 	return failures
 }
 
+// branchFilterForRepo returns the branch filter to use when querying a gate's
+// repo. It only applies the local branch filter to the current repo
+// (repo == ""); a cross-repo gate's target branch has no relationship to the
+// branch checked out locally, so `gh run list --repo <other> --branch
+// <local-branch>` would filter out every run in that repo and the gate would
+// never be discoverable (this was the cross-repo-discovery-is-inert bug).
+func branchFilterForRepo(localBranchFilter, repo string) string {
+	if repo != "" {
+		return ""
+	}
+	return localBranchFilter
+}
+
 // matchGatesToRuns scopes run discovery per gate's own repo selector (SF1).
 // Gates are grouped by their validated metadata.repo (via githubRepoFromIssue;
 // "" means the current repository), and queryRuns is called at most once per
@@ -256,7 +269,11 @@ func matchGatesToRuns(gates []*types.Issue, maxAge time.Duration, queryRuns func
 			runs = queried
 		}
 
-		results = append(results, gateDiscoveryMatch{gate: gate, run: matchGateToRun(gate, runs, maxAge)})
+		// A gate's local-commit/local-branch heuristics only make sense
+		// against the current repo's runs; a foreign repo (repo != "") never
+		// shares a commit SHA or branch name with the local checkout, so
+		// those heuristics are neutralized for it (see matchGateToRun).
+		results = append(results, gateDiscoveryMatch{gate: gate, run: matchGateToRun(gate, runs, maxAge, repo != "")})
 	}
 
 	return results
@@ -422,10 +439,19 @@ func queryGitHubRunsInRepoWithRunner(branch string, limit int, repo string, runG
 
 // matchGateToRun finds the best matching run for a gate using heuristics.
 // If the gate has a workflow name hint in AwaitID, only runs matching that workflow are considered.
-func matchGateToRun(gate *types.Issue, runs []GHWorkflowRun, maxAge time.Duration) *GHWorkflowRun {
+//
+// foreignRepo must be true when runs were queried from a repo other than the
+// current one (SF1: a gate whose metadata.repo targets another repository).
+// In that case the local commit SHA and branch name are meaningless - they
+// describe the current checkout, not the foreign repo - so the commit/branch
+// heuristics are skipped entirely rather than comparing against them anyway.
+func matchGateToRun(gate *types.Issue, runs []GHWorkflowRun, maxAge time.Duration, foreignRepo bool) *GHWorkflowRun {
 	now := time.Now()
-	currentCommit := getGitCommitForGateDiscovery()
-	currentBranch := getGitBranchForGateDiscovery()
+	var currentCommit, currentBranch string
+	if !foreignRepo {
+		currentCommit = getGitCommitForGateDiscovery()
+		currentBranch = getGitBranchForGateDiscovery()
+	}
 	workflowHint := getWorkflowNameHint(gate)
 
 	var bestMatch *GHWorkflowRun
@@ -451,13 +477,16 @@ func matchGateToRun(gate *types.Issue, runs []GHWorkflowRun, maxAge time.Duratio
 			score += 200
 		}
 
-		// Heuristic 1: Commit SHA match (strongest signal after workflow match)
+		// Heuristic 1: Commit SHA match (strongest signal after workflow
+		// match). Skipped for a foreign repo (currentCommit is "" there).
 		if currentCommit != "" && run.HeadSha == currentCommit {
 			score += 100
 		}
 
-		// Heuristic 2: Branch match
-		if run.HeadBranch == currentBranch {
+		// Heuristic 2: Branch match. Skipped for a foreign repo
+		// (currentBranch is "" there; a run with an empty HeadBranch, if
+		// GitHub ever returns one, must not accidentally "match" it).
+		if !foreignRepo && run.HeadBranch == currentBranch {
 			score += 50
 		}
 
