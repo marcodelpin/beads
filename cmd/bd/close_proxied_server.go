@@ -16,6 +16,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/workapi"
 )
 
 type closeProxiedInput struct {
@@ -203,9 +204,13 @@ func gatherCloseProxiedInput(cmd *cobra.Command) closeProxiedInput {
 }
 
 func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, in closeProxiedInput, errs *[]string) (closeProxiedOutcome, bool) {
-	current, isWisp := proxiedResolveIssueOrWisp(ctx, uw, id)
-	if current == nil {
+	current, isWisp, err := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), id)
+	if errors.Is(err, storage.ErrNotFound) {
 		*errs = append(*errs, fmt.Sprintf("Issue %s not found", id))
+		return closeProxiedOutcome{}, false
+	}
+	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("Error resolving %s: %v", id, err))
 		return closeProxiedOutcome{}, false
 	}
 
@@ -216,13 +221,13 @@ func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, 
 
 	if !in.force && current.IssueType == types.TypeEpic {
 		var openChildren int
-		var err error
+		var cerr error
 		if isWisp {
-			openChildren, err = uw.IssueUseCase().CountOpenWispChildren(ctx, id)
+			openChildren, cerr = uw.IssueUseCase().CountOpenWispChildren(ctx, id)
 		} else {
-			openChildren, err = uw.IssueUseCase().CountOpenChildren(ctx, id)
+			openChildren, cerr = uw.IssueUseCase().CountOpenChildren(ctx, id)
 		}
-		if err == nil && openChildren > 0 {
+		if cerr == nil && openChildren > 0 {
 			*errs = append(*errs, fmt.Sprintf("cannot close epic %s: %d open child issue(s); close children first or use --force to override", id, openChildren))
 			return closeProxiedOutcome{}, false
 		}
@@ -236,10 +241,7 @@ func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, 
 	}
 
 	params := domain.CloseIssueParams{Reason: reason, Session: in.session}
-	var (
-		res domain.CloseIssueResult
-		err error
-	)
+	var res domain.CloseIssueResult
 	// The is_blocked guard lives in the library's checked close, so the embedded
 	// and proxied paths converge on storage.ErrCloseBlocked and its message. The
 	// guard and the close share this unit-of-work transaction.
@@ -285,18 +287,6 @@ func closeProxiedCommitMessage(outcomes []closeProxiedOutcome, claimed *types.Is
 		msg += "; claim " + claimed.ID
 	}
 	return msg
-}
-
-func proxiedResolveIssueOrWisp(ctx context.Context, uw uow.UnitOfWork, id string) (*types.Issue, bool) {
-	issue, err := uw.IssueUseCase().GetIssue(ctx, id)
-	if err == nil && issue != nil {
-		return issue, false
-	}
-	wisp, err := uw.IssueUseCase().GetWisp(ctx, id)
-	if err == nil && wisp != nil {
-		return wisp, true
-	}
-	return nil, false
 }
 
 func fireProxiedCloseHooks(ctx context.Context, before, after *types.Issue) error {
