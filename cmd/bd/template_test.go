@@ -95,40 +95,71 @@ func TestSubstituteVariables(t *testing.T) {
 func TestSubstituteMetadataRepo(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		metadata string
-		vars     map[string]string
-		want     string
+		name      string
+		metadata  string
+		awaitType string
+		vars      map[string]string
+		want      string
 	}{
 		{
-			name:     "substitutes repo variable",
-			metadata: `{"repo":"{{gate_repo}}"}`,
-			vars:     map[string]string{"gate_repo": "srobroek/agentic-packages"},
-			want:     `{"repo":"srobroek/agentic-packages"}`,
+			name:      "substitutes repo variable",
+			metadata:  `{"repo":"{{gate_repo}}"}`,
+			awaitType: "gh:run",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      `{"repo":"srobroek/agentic-packages"}`,
 		},
 		{
-			name:     "missing var leaves placeholder",
-			metadata: `{"repo":"{{gate_repo}}"}`,
-			vars:     map[string]string{},
-			want:     `{"repo":"{{gate_repo}}"}`,
+			name:      "gh:pr gate type also substitutes",
+			metadata:  `{"repo":"{{gate_repo}}"}`,
+			awaitType: "gh:pr",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      `{"repo":"srobroek/agentic-packages"}`,
 		},
 		{
-			name:     "no repo key untouched",
-			metadata: `{"other":"value"}`,
-			vars:     map[string]string{"gate_repo": "srobroek/agentic-packages"},
-			want:     `{"other":"value"}`,
+			name:      "missing var leaves placeholder",
+			metadata:  `{"repo":"{{gate_repo}}"}`,
+			awaitType: "gh:run",
+			vars:      map[string]string{},
+			want:      `{"repo":"{{gate_repo}}"}`,
 		},
 		{
-			name:     "empty metadata untouched",
-			metadata: "",
-			vars:     map[string]string{"gate_repo": "srobroek/agentic-packages"},
-			want:     "",
+			name:      "no repo key untouched",
+			metadata:  `{"other":"value"}`,
+			awaitType: "gh:run",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      `{"other":"value"}`,
 		},
 		{
-			name:     "null repo left for check-time validation",
-			metadata: `{"repo":null}`,
-			vars:     map[string]string{"gate_repo": "srobroek/agentic-packages"},
-			want:     `{"repo":null}`,
+			name:      "empty metadata untouched",
+			metadata:  "",
+			awaitType: "gh:run",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      "",
+		},
+		{
+			name:      "null repo left for check-time validation",
+			metadata:  `{"repo":null}`,
+			awaitType: "gh:run",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      `{"repo":null}`,
+		},
+		{
+			// SF4 consistency: a repo field on a non-gh:* gate (or any other
+			// issue with an unrelated "repo" metadata key) is ordinary
+			// metadata, not a GitHub repo selector - matching createGateIssue's
+			// write-side isGitHubGateType restriction.
+			name:      "non-github gate type leaves repo untouched",
+			metadata:  `{"repo":"{{gate_repo}}"}`,
+			awaitType: "human",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      `{"repo":"{{gate_repo}}"}`,
+		},
+		{
+			name:      "empty await type leaves repo untouched",
+			metadata:  `{"repo":"{{gate_repo}}"}`,
+			awaitType: "",
+			vars:      map[string]string{"gate_repo": "srobroek/agentic-packages"},
+			want:      `{"repo":"{{gate_repo}}"}`,
 		},
 	}
 
@@ -138,10 +169,10 @@ func TestSubstituteMetadataRepo(t *testing.T) {
 			if tt.metadata != "" {
 				metadata = json.RawMessage(tt.metadata)
 			}
-			got := substituteMetadataRepo(metadata, tt.vars)
+			got := substituteMetadataRepo(metadata, tt.awaitType, tt.vars)
 			if tt.want == "" {
 				if len(got) != 0 {
-					t.Errorf("substituteMetadataRepo(%q, %v) = %q, want empty", tt.metadata, tt.vars, got)
+					t.Errorf("substituteMetadataRepo(%q, %q, %v) = %q, want empty", tt.metadata, tt.awaitType, tt.vars, got)
 				}
 				return
 			}
@@ -156,9 +187,46 @@ func TestSubstituteMetadataRepo(t *testing.T) {
 			gotJSON, _ := json.Marshal(gotObj)
 			wantJSON, _ := json.Marshal(wantObj)
 			if string(gotJSON) != string(wantJSON) {
-				t.Errorf("substituteMetadataRepo(%q, %v) = %s, want %s", tt.metadata, tt.vars, got, tt.want)
+				t.Errorf("substituteMetadataRepo(%q, %q, %v) = %s, want %s", tt.metadata, tt.awaitType, tt.vars, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestSubstituteMetadataRepo_PreservesUnrelatedValuesByteIdentical covers the
+// round-trip-fidelity half of the SF2/SF4 follow-up: substituteMetadataRepo
+// must decode into map[string]json.RawMessage, not map[string]interface{},
+// so a sibling key's value survives untouched when "repo" is substituted -
+// a decode into interface{} would mangle a JSON number to float64 (losing
+// its original formatting/precision on re-encode), reorder a nested object's
+// keys, and HTML-escape '<'/'>'/'&' inside string values that were never
+// touched by the substitution.
+func TestSubstituteMetadataRepo_PreservesUnrelatedValuesByteIdentical(t *testing.T) {
+	t.Parallel()
+	metadata := json.RawMessage(`{"repo":"{{gate_repo}}","count":123456789012345,"nested":{"z":1,"a":2,"m":3},"note":"a <b> & c"}`)
+
+	got := substituteMetadataRepo(metadata, "gh:run", map[string]string{"gate_repo": "srobroek/agentic-packages"})
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(got, &raw); err != nil {
+		t.Fatalf("result %s is not valid JSON: %v", got, err)
+	}
+
+	if string(raw["count"]) != "123456789012345" {
+		t.Errorf(`metadata["count"] = %s, want 123456789012345 (byte-identical, not float64-mangled)`, raw["count"])
+	}
+	if string(raw["nested"]) != `{"z":1,"a":2,"m":3}` {
+		t.Errorf(`metadata["nested"] = %s, want {"z":1,"a":2,"m":3} (byte-identical key order)`, raw["nested"])
+	}
+	if string(raw["note"]) != `"a <b> & c"` {
+		t.Errorf(`metadata["note"] = %s, want "a <b> & c" (no HTML-escaping)`, raw["note"])
+	}
+	var repo string
+	if err := json.Unmarshal(raw["repo"], &repo); err != nil {
+		t.Fatalf("metadata[\"repo\"] = %s is not a JSON string: %v", raw["repo"], err)
+	}
+	if repo != "srobroek/agentic-packages" {
+		t.Errorf(`metadata["repo"] = %q, want "srobroek/agentic-packages"`, repo)
 	}
 }
 
