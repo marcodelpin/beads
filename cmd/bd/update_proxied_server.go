@@ -255,6 +255,18 @@ func applyUpdateProxiedAttempt(ctx context.Context, uw uow.UnitOfWork, id string
 			fmt.Fprintf(os.Stderr, "Error claiming %s: %v\n", id, err)
 			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: fmt.Sprintf("claiming issue: %v", err)})
 		}
+		// Close policy refused the status change. Same copy the proxied close
+		// prints for the same two refusals, so the boundary reads identically
+		// whichever verb a script reached it through. A policy refusal is a
+		// terminal per-issue failure — exit 1, never GuardMismatch/13.
+		if errors.Is(err, storage.ErrCloseOpenChildren) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: err.Error()})
+		}
+		if errors.Is(err, storage.ErrCloseBlocked) {
+			fmt.Fprintf(os.Stderr, "%v (use --force to override)\n", err)
+			return failedUpdateAttempt(&updateIDFailure{ID: id, Error: fmt.Sprintf("%v (use --force to override)", err)})
+		}
 		if isGuardMismatch(err) {
 			// bd-wsqvw guard verdict: the precondition no longer holds, nothing
 			// was written. Loud and non-zero, never collapsed to success —
@@ -357,6 +369,12 @@ func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) domain.Updat
 	}
 	if len(in.unsetMetadata) > 0 {
 		fields[issueops.OpUnsetMetadata] = in.unsetMetadata
+	}
+	// --force means both of its halves here too. The assignee half is applied
+	// above by validateIssueReassignable; this is the close-policy half, which
+	// the repository pops before it validates fields.
+	if in.force {
+		fields[issueops.OpForceClosePolicy] = true
 	}
 
 	return domain.UpdateSpec{
