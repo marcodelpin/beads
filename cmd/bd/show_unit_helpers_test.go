@@ -36,6 +36,16 @@ func TestValidateIssueClosable(t *testing.T) {
 		t.Fatalf("expected pinned close to succeed with force, got %v", err)
 	}
 
+	// ga-z3vht: pinned=true protects the bead independently of status, so
+	// `bd close` refuses it without --force on both the direct and proxied path.
+	booleanPinned := &types.Issue{Status: types.StatusOpen, Pinned: true}
+	if err := validateIssueClosable("bd-6", booleanPinned, "alice", false); err == nil {
+		t.Fatalf("expected boolean-pinned close error")
+	}
+	if err := validateIssueClosable("bd-6", booleanPinned, "alice", true); err != nil {
+		t.Fatalf("expected boolean-pinned close to succeed with force, got %v", err)
+	}
+
 	// be-035: actor != assignee must be refused without --force.
 	mismatched := &types.Issue{Assignee: "bob"}
 	if err := validateIssueClosable("bd-3", mismatched, "alice", false); err == nil {

@@ -99,6 +99,20 @@ func TestNotPinned(t *testing.T) {
 			force:   true,
 			wantErr: false,
 		},
+		// ga-z3vht: the pinned boolean is a second, independent trigger — an
+		// issue carrying pinned=true is protected whatever its status.
+		{
+			name:    "boolean-pinned issue without force fails",
+			issue:   &types.Issue{ID: "bd-test", Status: types.StatusOpen, Pinned: true},
+			force:   false,
+			wantErr: true,
+		},
+		{
+			name:    "boolean-pinned issue with force passes",
+			issue:   &types.Issue{ID: "bd-test", Status: types.StatusOpen, Pinned: true},
+			force:   true,
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -594,6 +608,14 @@ func TestForClose(t *testing.T) {
 			issue:   &types.Issue{ID: "bd-test", Status: types.StatusPinned},
 			force:   true,
 			wantErr: false,
+		},
+		// ga-z3vht: the chain inherits both pinned triggers, so a boolean-pinned
+		// issue is refused even though its status is open.
+		{
+			name:    "boolean-pinned without force fails",
+			issue:   &types.Issue{ID: "bd-test", Status: types.StatusOpen, Pinned: true},
+			force:   false,
+			wantErr: true,
 		},
 		{
 			name:    "regular open issue passes",
