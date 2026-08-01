@@ -34,12 +34,18 @@ func TestMatchGatesToRuns_ScopesPerGateRepo(t *testing.T) {
 	}
 
 	queryCalls := map[string]int{}
-	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+	queryRuns := func(repo, workflowHint string) ([]GHWorkflowRun, error) {
 		queryCalls[repo]++
 		switch repo {
 		case "":
+			if workflowHint != "" {
+				t.Errorf("current-repo query got workflowHint %q, want empty (only foreign queries are narrowed)", workflowHint)
+			}
 			return []GHWorkflowRun{{DatabaseID: 111, Name: "release", WorkflowName: "release.yml", Status: "in_progress", CreatedAt: time.Now()}}, nil
 		case "other-owner/other-repo":
+			if workflowHint != "release.yml" {
+				t.Errorf("cross-repo query got workflowHint %q, want %q", workflowHint, "release.yml")
+			}
 			return []GHWorkflowRun{{DatabaseID: 222, Name: "release", WorkflowName: "release.yml", Status: "in_progress", CreatedAt: time.Now()}}, nil
 		default:
 			t.Fatalf("unexpected repo queried: %q", repo)
@@ -92,7 +98,7 @@ func TestMatchGatesToRuns_RejectsInvalidRepoMetadata(t *testing.T) {
 	}
 
 	queried := false
-	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+	queryRuns := func(repo, workflowHint string) ([]GHWorkflowRun, error) {
 		queried = true
 		return nil, nil
 	}
@@ -122,7 +128,7 @@ func TestMatchGatesToRuns_CachesQueryErrorPerRepo(t *testing.T) {
 
 	queryCalls := 0
 	wantErr := errors.New("gh run list failed: rate limited")
-	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+	queryRuns := func(repo, workflowHint string) ([]GHWorkflowRun, error) {
 		queryCalls++
 		return nil, wantErr
 	}
@@ -135,6 +141,40 @@ func TestMatchGatesToRuns_CachesQueryErrorPerRepo(t *testing.T) {
 		if !errors.Is(r.err, wantErr) {
 			t.Errorf("gate %s: err = %v, want %v", r.gate.ID, r.err, wantErr)
 		}
+	}
+}
+
+// TestMatchGatesToRuns_ForeignGateWithoutHintNeverQueried covers the query
+// half of the "cross-repo discovery requires a hint" fix: a foreign gate
+// with no workflow name hint can never match (matchGateToRun always returns
+// nil for it), so matchGatesToRuns must skip the GitHub query entirely for
+// it rather than spend an API call on a gate that can't be discovered.
+func TestMatchGatesToRuns_ForeignGateWithoutHintNeverQueried(t *testing.T) {
+	gate := &types.Issue{
+		ID:        "bd-cross-no-hint",
+		AwaitType: "gh:run",
+		CreatedAt: time.Now(),
+		Metadata:  json.RawMessage(`{"repo":"other-owner/other-repo"}`),
+	}
+
+	queried := false
+	queryRuns := func(repo, workflowHint string) ([]GHWorkflowRun, error) {
+		queried = true
+		return nil, nil
+	}
+
+	results := matchGatesToRuns([]*types.Issue{gate}, 30*time.Minute, queryRuns)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if results[0].err != nil {
+		t.Errorf("gate %s: unexpected error: %v", results[0].gate.ID, results[0].err)
+	}
+	if results[0].run != nil {
+		t.Errorf("expected no matched run for a hintless foreign gate, got %+v", results[0].run)
+	}
+	if queried {
+		t.Error("expected no GitHub query for a foreign gate with no workflow hint")
 	}
 }
 
@@ -152,7 +192,7 @@ func TestGateDiscoveryQueryFailures_DetectsFailedQueries(t *testing.T) {
 
 	wantErrA := errors.New("gh CLI not found")
 	wantErrB := errors.New("rate limited")
-	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+	queryRuns := func(repo, workflowHint string) ([]GHWorkflowRun, error) {
 		if repo == "other-owner/other-repo" {
 			return nil, wantErrB
 		}
@@ -181,7 +221,7 @@ func TestGateDiscoveryQueryFailures_IgnoresMetadataErrors(t *testing.T) {
 	gate := &types.Issue{ID: "bd-bad-repo", AwaitType: "gh:run", AwaitID: "release.yml", CreatedAt: time.Now(),
 		Metadata: json.RawMessage(`{"repo":null}`)}
 
-	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+	queryRuns := func(repo, workflowHint string) ([]GHWorkflowRun, error) {
 		t.Fatal("expected no GitHub query for a gate with malformed repo metadata")
 		return nil, nil
 	}
@@ -192,28 +232,73 @@ func TestGateDiscoveryQueryFailures_IgnoresMetadataErrors(t *testing.T) {
 	}
 }
 
-// TestBranchFilterForRepo covers the cross-repo-discovery-is-inert fix: the
-// local branch filter must never be forwarded to a foreign repo's query -
-// a cross-repo gate's target branch has no relationship to the branch
-// checked out locally, so filtering that repo's runs by it would match
-// nothing, forever.
+// TestBranchFilterForRepo covers the cross-repo-discovery-is-inert fix: an
+// AUTO-DETECTED local branch filter must never be forwarded to a foreign
+// repo's query - a cross-repo gate's target branch has no relationship to
+// the branch checked out locally, so filtering that repo's runs by it would
+// match nothing, forever. But an EXPLICIT `--branch` must survive for a
+// foreign repo too: it is a deliberate instruction about the target repo's
+// branch, not a guess about the local checkout, and dropping it silently
+// would make `bd gate discover --branch main` appear to work cross-repo
+// while actually doing nothing.
 func TestBranchFilterForRepo(t *testing.T) {
 	tests := []struct {
 		name              string
 		localBranchFilter string
 		repo              string
+		userSpecified     bool
 		want              string
 	}{
-		{name: "current repo keeps branch filter", localBranchFilter: "feature/foo", repo: "", want: "feature/foo"},
-		{name: "foreign repo drops branch filter", localBranchFilter: "feature/foo", repo: "other-owner/other-repo", want: ""},
-		{name: "foreign repo drops empty branch filter too", localBranchFilter: "", repo: "other-owner/other-repo", want: ""},
+		{name: "current repo keeps auto-detected branch filter", localBranchFilter: "feature/foo", repo: "", userSpecified: false, want: "feature/foo"},
+		{name: "current repo keeps explicit branch filter", localBranchFilter: "main", repo: "", userSpecified: true, want: "main"},
+		{name: "foreign repo drops auto-detected branch filter", localBranchFilter: "feature/foo", repo: "other-owner/other-repo", userSpecified: false, want: ""},
+		{name: "foreign repo drops empty auto-detected branch filter too", localBranchFilter: "", repo: "other-owner/other-repo", userSpecified: false, want: ""},
+		{name: "foreign repo keeps explicit branch filter", localBranchFilter: "main", repo: "other-owner/other-repo", userSpecified: true, want: "main"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := branchFilterForRepo(tt.localBranchFilter, tt.repo); got != tt.want {
-				t.Errorf("branchFilterForRepo(%q, %q) = %q, want %q", tt.localBranchFilter, tt.repo, got, tt.want)
+			if got := branchFilterForRepo(tt.localBranchFilter, tt.repo, tt.userSpecified); got != tt.want {
+				t.Errorf("branchFilterForRepo(%q, %q, %v) = %q, want %q", tt.localBranchFilter, tt.repo, tt.userSpecified, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestMatchGateToRun_ForeignRepoWithoutHintNeverMatches covers the follow-up
+// fix to the cross-repo-discovery-is-inert bug: neutralizing the commit/
+// branch heuristics for a foreign repo (see the test below) is not enough by
+// itself - a hintless foreign gate can still reach bestScore >= 30 on time
+// proximity (+30) plus an in-progress/queued run (+5) alone, and pinning that
+// run's ID onto the gate would be just as wrong as the commit/branch
+// coincidence this fix set out to prevent (the persisted await_id pins the
+// gate permanently). A foreign gate therefore must never match without a
+// workflow name hint, full stop - regardless of what score the remaining
+// heuristics would otherwise produce.
+func TestMatchGateToRun_ForeignRepoWithoutHintNeverMatches(t *testing.T) {
+	gate := &types.Issue{
+		ID:        "bd-cross-no-hint",
+		AwaitType: "gh:run",
+		// AwaitID intentionally empty: no workflow name hint.
+		CreatedAt: time.Now(),
+	}
+	runs := []GHWorkflowRun{
+		{
+			DatabaseID: 777,
+			Status:     "in_progress", // +5
+			CreatedAt:  time.Now(),    // within 5 minutes of gate.CreatedAt: +30
+		},
+	}
+
+	// Sanity check: the same run does score >= 30 for a non-foreign gate on
+	// time proximity + status alone (commit/branch won't coincidentally
+	// match empty HeadSha/HeadBranch against this repo's real values), so
+	// the foreign case below isn't vacuously nil for an unrelated reason.
+	if got := matchGateToRun(gate, runs, 30*time.Minute, false); got == nil {
+		t.Fatal("non-foreign gate: expected time-proximity+status alone to select the run")
+	}
+
+	if got := matchGateToRun(gate, runs, 30*time.Minute, true); got != nil {
+		t.Errorf("foreign gate without a workflow hint: expected no match, got run %d", got.DatabaseID)
 	}
 }
 
@@ -223,6 +308,10 @@ func TestBranchFilterForRepo(t *testing.T) {
 // against the local checkout's commit/branch is meaningless (and could
 // spuriously "match" by coincidence). A run that would only match a
 // non-foreign gate by commit/branch heuristics must not match a foreign one.
+// (This gate has no workflow hint either, so the result is now also covered
+// by TestMatchGateToRun_ForeignRepoWithoutHintNeverMatches's stricter,
+// hint-independent guard - both are kept because they document distinct
+// failure modes the fix addresses.)
 func TestMatchGateToRun_NeutralizesLocalHeuristicsForForeignRepo(t *testing.T) {
 	localCommit := getGitCommitForGateDiscovery()
 	localBranch := getGitBranchForGateDiscovery()
@@ -262,6 +351,7 @@ func TestQueryGitHubRunsInRepoWithRunner(t *testing.T) {
 		"main",
 		10,
 		"srobroek/agentic-packages",
+		"",
 		fakeGHRunner(t,
 			`[{"databaseId":555,"name":"release","status":"completed","conclusion":"success","workflowName":"release.yml"}]`,
 			"run", "list", "--json", "databaseId,displayTitle,headBranch,headSha,name,status,conclusion,createdAt,updatedAt,workflowName,url", "--limit", "10", "--branch", "main", "--repo", "srobroek/agentic-packages",
@@ -280,6 +370,7 @@ func TestQueryGitHubRunsInRepoWithRunner_OmitsRepoFlagForCurrentRepo(t *testing.
 		"",
 		10,
 		"",
+		"",
 		fakeGHRunner(t,
 			`[]`,
 			"run", "list", "--json", "databaseId,displayTitle,headBranch,headSha,name,status,conclusion,createdAt,updatedAt,workflowName,url", "--limit", "10",
@@ -287,5 +378,29 @@ func TestQueryGitHubRunsInRepoWithRunner_OmitsRepoFlagForCurrentRepo(t *testing.
 	)
 	if err != nil {
 		t.Fatalf("queryGitHubRunsInRepoWithRunner returned error: %v", err)
+	}
+}
+
+// TestQueryGitHubRunsInRepoWithRunner_AddsWorkflowFlagForForeignRepo covers
+// the narrowing half of the cross-repo-discovery-is-inert fix: a foreign
+// repo's query is narrowed with --workflow when matchGatesToRuns has a hint,
+// recovering the visibility --limit would otherwise cost an unfiltered
+// cross-repo query.
+func TestQueryGitHubRunsInRepoWithRunner_AddsWorkflowFlagForForeignRepo(t *testing.T) {
+	runs, err := queryGitHubRunsInRepoWithRunner(
+		"",
+		10,
+		"srobroek/agentic-packages",
+		"release.yml",
+		fakeGHRunner(t,
+			`[]`,
+			"run", "list", "--json", "databaseId,displayTitle,headBranch,headSha,name,status,conclusion,createdAt,updatedAt,workflowName,url", "--limit", "10", "--repo", "srobroek/agentic-packages", "--workflow", "release.yml",
+		),
+	)
+	if err != nil {
+		t.Fatalf("queryGitHubRunsInRepoWithRunner returned error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs = %#v, want none", runs)
 	}
 }
