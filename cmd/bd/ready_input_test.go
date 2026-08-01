@@ -109,6 +109,23 @@ func runGatherReadyInput(t *testing.T, cmd *cobra.Command, resolveCap func(*cobr
 	return out
 }
 
+// pinJSONOutput fixes the package-level --json state for the duration of a
+// test and puts it back afterwards.
+//
+// gatherReadyInput reports its usage errors through HandleErrorRespectJSON, so
+// this global alone decides whether they land as text on stderr or as a JSON
+// object on stdout. jsonOutput is not per-test state: several cmd/bd tests set
+// it and never restore it (saveAndRestoreGlobals, which a number of them use,
+// does not cover it), so a test that reads it instead of setting it passes
+// under a narrow -run and fails in a full-package run depending on what ran
+// first. Every test below that asserts on where a message went pins it.
+func pinJSONOutput(t *testing.T, on bool) {
+	t.Helper()
+	restore := jsonOutput
+	jsonOutput = on
+	t.Cleanup(func() { jsonOutput = restore })
+}
+
 // configureDirectoryLabel points directory.labels at the test's own working
 // directory: GetDirectoryLabels resolves against the cwd, so the test has to
 // own both ends.
@@ -142,6 +159,13 @@ func configureDirectoryLabel(t *testing.T, label string) {
 // side effect of resolving, so moving the resolution past another check
 // silently drops the warning for every command line that trips that check.
 func TestGatherReadyInputResolvesCapWhereTheDirectBuilderDid(t *testing.T) {
+	// Text mode, explicitly: the ordering this pins is an ordering WITHIN
+	// stderr, and under --json the usage errors leave stderr entirely for a
+	// JSON object on stdout while the cap warning stays behind. Comparing
+	// positions across two streams would not be the same assertion, so the
+	// test picks the mode it is about instead of inheriting one.
+	pinJSONOutput(t, false)
+
 	t.Run("malformed_env_still_warns_when_a_later_check_aborts", func(t *testing.T) {
 		t.Setenv(maxRowsEnvVar, "bogus")
 
@@ -253,9 +277,7 @@ func TestGatherReadyInputUsageErrorsRespectJSON(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			restore := jsonOutput
-			jsonOutput = true
-			t.Cleanup(func() { jsonOutput = restore })
+			pinJSONOutput(t, true)
 
 			got := runGatherReadyInput(t, newReadyFlagsCommand(t, c.args...), nil)
 			if got.err == nil {
