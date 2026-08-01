@@ -551,6 +551,29 @@ func TestCreateGateIssue_Repo(t *testing.T) {
 			t.Errorf("gateIssue.Metadata = %s, want empty", gateIssue.Metadata)
 		}
 	})
+
+	// Non-gh:* gate types (SF4): `repo` on a human/timer/bead gate step is
+	// unrelated, ordinary metadata, not a GitHub repo selector - it must not
+	// be written to gateIssue.Metadata, matching repoMetadataForGate's
+	// isGitHubGateType restriction for ad-hoc gate creation.
+	t.Run("non_github_gate_type_ignores_repo", func(t *testing.T) {
+		step := &formula.Step{
+			ID:    "human-approval",
+			Title: "Wait for approval",
+			Gate: &formula.Gate{
+				Type: "human",
+				Repo: "srobroek/agentic-packages",
+			},
+		}
+
+		gateIssue := createGateIssue(step, "mol-release")
+		if gateIssue == nil {
+			t.Fatal("createGateIssue returned nil")
+		}
+		if len(gateIssue.Metadata) != 0 {
+			t.Errorf("gateIssue.Metadata = %s, want empty (non-gh:* gate type must not get metadata.repo)", gateIssue.Metadata)
+		}
+	})
 }
 
 // TestCreateGateIssue_NilGate tests that nil Gate returns nil

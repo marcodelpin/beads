@@ -530,7 +530,12 @@ func createGateIssue(step *formula.Step, parentID string) *types.Issue {
 	// Malformed values are left for check time (githubRepoFromIssue) to
 	// reject, consistent with how a check-time-only value on any other
 	// gate created outside `bd gate create` is validated.
-	if step.Gate.Repo != "" {
+	//
+	// Restricted to gh:* gate types (SF4), same as repoMetadataForGate: a
+	// `repo` field on a human/timer/bead gate step is unrelated, ordinary
+	// metadata, not a GitHub repo selector, so only gh:run/gh:pr gates
+	// write it here.
+	if isGitHubGateType(step.Gate.Type) && step.Gate.Repo != "" {
 		if metaJSON, err := json.Marshal(map[string]string{"repo": step.Gate.Repo}); err == nil {
 			gateIssue.Metadata = metaJSON
 		}

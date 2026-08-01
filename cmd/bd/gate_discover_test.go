@@ -10,7 +10,7 @@ import (
 )
 
 // TestMatchGatesToRuns_ScopesPerGateRepo is the core SF1 regression test:
-// queryGitHubRuns previously built `gh run list` without --repo, and the
+// queryGitHubRunsInRepo previously built `gh run list` without --repo, and the
 // discovery pass loaded every pending gh:run gate and matched those
 // current-repo runs into all of them - a gate targeting another repository
 // could be assigned a same-named workflow run from the current repo and

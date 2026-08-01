@@ -388,12 +388,6 @@ func getGitCommitForGateDiscovery() string {
 	return strings.TrimSpace(string(output))
 }
 
-// queryGitHubRuns queries recent workflow runs from GitHub using gh CLI,
-// scoped to the current repository.
-func queryGitHubRuns(branch string, limit int) ([]GHWorkflowRun, error) {
-	return queryGitHubRunsInRepo(branch, limit, "")
-}
-
 // queryGitHubRunsInRepo queries recent workflow runs from GitHub using gh
 // CLI, scoped to repo ("" means the current repository). This is the query
 // path for `bd gate discover`'s branch/heuristic matching (SF1) - distinct
