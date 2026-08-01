@@ -47,6 +47,10 @@ queries recent GitHub workflow runs, and matches them using heuristics:
 Once matched, the gate's await_id is updated with the GitHub run ID, enabling
 subsequent polling to check the run's status.
 
+A gate whose metadata.repo targets another repository is only matched
+against runs queried from that repository, never against the current
+repository's runs of a same-named workflow.
+
 Examples:
   bd gate discover           # Auto-discover run IDs for all matching gates
   bd gate discover --dry-run # Preview what would be matched (no updates)
@@ -101,49 +105,49 @@ func runGateDiscover(cmd *cobra.Command, args []string) error {
 		branchFilter = getGitBranchForGateDiscovery()
 	}
 
-	runs, err := queryGitHubRuns(branchFilter, limit)
-	if err != nil {
-		return HandleError("querying GitHub runs: %v", err)
-	}
+	// Scope run discovery per gate's own repo selector (SF1): a gate whose
+	// metadata targets another repository must only be matched against runs
+	// queried FROM that repository, never against a same-named workflow run
+	// from the current repo. matchGatesToRuns groups gates by their
+	// validated repo and issues one query per distinct repo.
+	matches := matchGatesToRuns(gates, maxAge, func(repo string) ([]GHWorkflowRun, error) {
+		return queryGitHubRunsInRepo(branchFilter, limit, repo)
+	})
 
-	if len(runs) == 0 {
-		fmt.Println("No recent workflow runs found on GitHub")
-		return nil
-	}
-
-	fmt.Printf("Found %d recent workflow run(s) on branch '%s'\n\n", len(runs), branchFilter)
-
-	// Step 3: Match runs to gates
+	// Step 3/4: report matches (and, outside dry-run, persist them)
 	matchCount := 0
-	for _, gate := range gates {
-		match := matchGateToRun(gate, runs, maxAge)
-		if match == nil {
+	for _, m := range matches {
+		if m.err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %s - %v\n",
+				ui.RenderFail("✗"), ui.RenderID(m.gate.ID), m.err)
+			continue
+		}
+		if m.run == nil {
 			if jsonOutput {
 				continue
 			}
 			fmt.Printf("  %s %s - no matching run found\n",
-				ui.RenderFail("✗"), ui.RenderID(gate.ID))
+				ui.RenderFail("✗"), ui.RenderID(m.gate.ID))
 			continue
 		}
 
 		matchCount++
-		runIDStr := strconv.FormatInt(match.DatabaseID, 10)
+		runIDStr := strconv.FormatInt(m.run.DatabaseID, 10)
 
 		if dryRun {
 			fmt.Printf("  %s %s → run %s (%s) [dry-run]\n",
-				ui.RenderPass("✓"), ui.RenderID(gate.ID), runIDStr, match.Status)
+				ui.RenderPass("✓"), ui.RenderID(m.gate.ID), runIDStr, m.run.Status)
 			continue
 		}
 
-		// Step 4: Update gate with discovered run ID
-		if err := updateGateAwaitID(ctx, gate.ID, runIDStr); err != nil {
+		if err := updateGateAwaitID(ctx, m.gate.ID, runIDStr); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s %s - update failed: %v\n",
-				ui.RenderFail("✗"), ui.RenderID(gate.ID), err)
+				ui.RenderFail("✗"), ui.RenderID(m.gate.ID), err)
 			continue
 		}
 
 		fmt.Printf("  %s %s → run %s (%s)\n",
-			ui.RenderPass("✓"), ui.RenderID(gate.ID), runIDStr, match.Status)
+			ui.RenderPass("✓"), ui.RenderID(m.gate.ID), runIDStr, m.run.Status)
 	}
 
 	fmt.Println()
@@ -153,6 +157,56 @@ func runGateDiscover(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Updated %d gate(s) with discovered run IDs.\n", matchCount)
 	}
 	return nil
+}
+
+// gateDiscoveryMatch pairs a gate with the run matched for it, or an error
+// explaining why it could not be matched (invalid repo metadata, or the
+// GitHub query for its repo failed).
+type gateDiscoveryMatch struct {
+	gate *types.Issue
+	run  *GHWorkflowRun
+	err  error
+}
+
+// matchGatesToRuns scopes run discovery per gate's own repo selector (SF1).
+// Gates are grouped by their validated metadata.repo (via githubRepoFromIssue;
+// "" means the current repository), and queryRuns is called at most once per
+// distinct repo among the given gates. A gate is only ever matched against
+// runs queried from ITS repo - never against another repo's runs of a
+// same-named workflow, which would otherwise persist the wrong await_id
+// permanently (the persisted ID pins the gate).
+func matchGatesToRuns(gates []*types.Issue, maxAge time.Duration, queryRuns func(repo string) ([]GHWorkflowRun, error)) []gateDiscoveryMatch {
+	runsByRepo := make(map[string][]GHWorkflowRun)
+	queryErrByRepo := make(map[string]error)
+	results := make([]gateDiscoveryMatch, 0, len(gates))
+
+	for _, gate := range gates {
+		repo, repoErr := githubRepoFromIssue(gate)
+		if repoErr != nil {
+			results = append(results, gateDiscoveryMatch{gate: gate, err: fmt.Errorf("invalid repo metadata: %w", repoErr)})
+			continue
+		}
+
+		runs, cached := runsByRepo[repo]
+		if !cached {
+			if qErr, queried := queryErrByRepo[repo]; queried {
+				results = append(results, gateDiscoveryMatch{gate: gate, err: qErr})
+				continue
+			}
+			queried, err := queryRuns(repo)
+			if err != nil {
+				queryErrByRepo[repo] = err
+				results = append(results, gateDiscoveryMatch{gate: gate, err: err})
+				continue
+			}
+			runsByRepo[repo] = queried
+			runs = queried
+		}
+
+		results = append(results, gateDiscoveryMatch{gate: gate, run: matchGateToRun(gate, runs, maxAge)})
+	}
+
+	return results
 }
 
 // isNumericRunID returns true if the string looks like a GitHub numeric run ID.
@@ -264,14 +318,26 @@ func getGitCommitForGateDiscovery() string {
 	return strings.TrimSpace(string(output))
 }
 
-// queryGitHubRuns queries recent workflow runs from GitHub using gh CLI
+// queryGitHubRuns queries recent workflow runs from GitHub using gh CLI,
+// scoped to the current repository.
 func queryGitHubRuns(branch string, limit int) ([]GHWorkflowRun, error) {
-	// Check if gh CLI is available
+	return queryGitHubRunsInRepo(branch, limit, "")
+}
+
+// queryGitHubRunsInRepo queries recent workflow runs from GitHub using gh
+// CLI, scoped to repo ("" means the current repository). This is the query
+// path for `bd gate discover`'s branch/heuristic matching (SF1) - distinct
+// from queryGitHubRunsForWorkflowInRepo in gate.go, which filters by a
+// specific --workflow name for the direct await_id discovery used by
+// `bd gate check`.
+func queryGitHubRunsInRepo(branch string, limit int, repo string) ([]GHWorkflowRun, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, fmt.Errorf("gh CLI not found: install from https://cli.github.com")
 	}
+	return queryGitHubRunsInRepoWithRunner(branch, limit, repo, runGHCommand)
+}
 
-	// Build gh run list command with JSON output
+func queryGitHubRunsInRepoWithRunner(branch string, limit int, repo string, runGH ghCommandRunner) ([]GHWorkflowRun, error) {
 	args := []string{
 		"run", "list",
 		"--json", "databaseId,displayTitle,headBranch,headSha,name,status,conclusion,createdAt,updatedAt,workflowName,url",
@@ -281,12 +347,14 @@ func queryGitHubRuns(branch string, limit int) ([]GHWorkflowRun, error) {
 	if branch != "" {
 		args = append(args, "--branch", branch)
 	}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
 
-	cmd := exec.Command("gh", args...)
-	output, err := cmd.Output()
+	output, stderr, err := runGH(args...)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("gh run list failed: %s", string(exitErr.Stderr))
+		if len(stderr) > 0 {
+			return nil, fmt.Errorf("gh run list failed: %s", string(stderr))
 		}
 		return nil, fmt.Errorf("gh run list: %w", err)
 	}
