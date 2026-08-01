@@ -362,11 +362,11 @@ Examples:
 			CreatedBy:   getActorWithGit(),
 			Owner:       getOwner(),
 		}
-		if repo, repoErr := githubRepoFromIssue(targetIssue); repoErr != nil {
-			return HandleErrorRespectJSON("invalid GitHub repository metadata on %s: %v", targetIssue.ID, repoErr)
-		} else if repo != "" {
-			gate.Metadata, _ = json.Marshal(map[string]string{"repo": repo})
+		metadata, metaErr := repoMetadataForGate(gateType, targetIssue)
+		if metaErr != nil {
+			return HandleErrorRespectJSON("invalid GitHub repository metadata on %s: %v", targetIssue.ID, metaErr)
 		}
+		gate.Metadata = metadata
 
 		if err := store.CreateIssue(ctx, gate, actor); err != nil {
 			return HandleErrorRespectJSON("creating gate: %v", err)
@@ -839,6 +839,39 @@ func githubRepoFromIssue(issue *types.Issue) (string, error) {
 	}
 
 	return repo, nil
+}
+
+// isGitHubGateType returns true for gate types whose condition is checked
+// against a GitHub repository (gh:run, gh:pr, and any future gh:* type).
+func isGitHubGateType(gateType string) bool {
+	return strings.HasPrefix(gateType, "gh:")
+}
+
+// repoMetadataForGate computes the metadata to store on a new ad-hoc gate,
+// inheriting a validated GitHub repo selector from the blocked issue.
+//
+// This is restricted to gh:* gate types (SF4): "repo" is legal, unrelated
+// metadata on any issue (the metadata contract allows arbitrary JSON), so
+// running GitHub-repo validation for human/timer gates would fail ordinary
+// gate creation whenever the blocked issue happened to carry a non-GitHub-
+// shaped "repo" key. Only gh:run/gh:pr gates need the value at check time,
+// so only they inherit and validate it here.
+func repoMetadataForGate(gateType string, targetIssue *types.Issue) (json.RawMessage, error) {
+	if !isGitHubGateType(gateType) {
+		return nil, nil
+	}
+	repo, err := githubRepoFromIssue(targetIssue)
+	if err != nil {
+		return nil, err
+	}
+	if repo == "" {
+		return nil, nil
+	}
+	metadata, err := json.Marshal(map[string]string{"repo": repo})
+	if err != nil {
+		return nil, err
+	}
+	return metadata, nil
 }
 
 // queryGitHubRunsForWorkflow queries recent runs for a specific workflow using gh CLI.

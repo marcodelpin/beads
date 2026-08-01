@@ -394,6 +394,64 @@ func TestGitHubRepoFromIssueAllowsMissingRepoKey(t *testing.T) {
 	}
 }
 
+// TestRepoMetadataForGateRestrictsToGitHubTypes covers SF4: repo metadata
+// inheritance/validation must only run for gh:* gate types. A human or timer
+// gate blocking an issue with non-GitHub-shaped "repo" metadata (legal per
+// the metadata contract - "any valid JSON") must not fail gate creation.
+func TestRepoMetadataForGateRestrictsToGitHubTypes(t *testing.T) {
+	badRepoMetadata := json.RawMessage(`{"repo":"not-owner-slash-repo"}`)
+
+	nonGitHubTypes := []string{"human", "timer", "bead"}
+	for _, gateType := range nonGitHubTypes {
+		t.Run("ignores_bad_repo_metadata_for_"+gateType, func(t *testing.T) {
+			metadata, err := repoMetadataForGate(gateType, &types.Issue{Metadata: badRepoMetadata})
+			if err != nil {
+				t.Fatalf("repoMetadataForGate(%q) returned error: %v; non-GitHub gates must tolerate arbitrary repo metadata", gateType, err)
+			}
+			if metadata != nil {
+				t.Fatalf("repoMetadataForGate(%q) = %s, want nil metadata", gateType, metadata)
+			}
+		})
+	}
+
+	githubTypes := []string{"gh:run", "gh:pr"}
+	for _, gateType := range githubTypes {
+		t.Run("rejects_bad_repo_metadata_for_"+gateType, func(t *testing.T) {
+			if _, err := repoMetadataForGate(gateType, &types.Issue{Metadata: badRepoMetadata}); err == nil {
+				t.Fatalf("repoMetadataForGate(%q) = nil error, want validation error", gateType)
+			}
+		})
+
+		t.Run("inherits_valid_repo_for_"+gateType, func(t *testing.T) {
+			metadata, err := repoMetadataForGate(gateType, &types.Issue{
+				Metadata: json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
+			})
+			if err != nil {
+				t.Fatalf("repoMetadataForGate(%q) returned error: %v", gateType, err)
+			}
+			var decoded struct {
+				Repo string `json:"repo"`
+			}
+			if unmarshalErr := json.Unmarshal(metadata, &decoded); unmarshalErr != nil {
+				t.Fatalf("repoMetadataForGate(%q) = %s, not valid JSON: %v", gateType, metadata, unmarshalErr)
+			}
+			if decoded.Repo != "srobroek/agentic-packages" {
+				t.Fatalf("repoMetadataForGate(%q) repo = %q, want srobroek/agentic-packages", gateType, decoded.Repo)
+			}
+		})
+	}
+
+	t.Run("no_metadata_no_repo", func(t *testing.T) {
+		metadata, err := repoMetadataForGate("gh:run", &types.Issue{})
+		if err != nil {
+			t.Fatalf("repoMetadataForGate(gh:run) returned error: %v", err)
+		}
+		if metadata != nil {
+			t.Fatalf("repoMetadataForGate(gh:run) = %s, want nil", metadata)
+		}
+	})
+}
+
 func TestIsNumericID(t *testing.T) {
 	tests := []struct {
 		input string
