@@ -31,6 +31,13 @@ func TestEmbeddedIssueOperationsUpdateFoldsMetadataIntoOneEvent(t *testing.T) {
 	conformance.RunIssueOperationsUpdateFoldsMetadataIntoOneEvent(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "metaevent"))
 }
 
+func TestEmbeddedIssueOperationsUpdateClosePolicy(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "closepol")
+	ctx := t.Context()
+	conformance.RunIssueOperationsUpdateClosePolicy(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "closepol"))
+}
+
 func newEmbeddedIssueOperationsFixture(t *testing.T, ctx context.Context, te *testEnv, prefix string) conformance.IssueOperationsStagingFixture {
 	t.Helper()
 	operations, err := embeddeddolt.NewIssueOperations(te.store)

@@ -86,6 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: `bd update --status <done-status>` now enforces close policy.**
+  Moving an issue into `closed` (or any configured done-category status) via
+  `bd update`, `bd batch update`, or the issueops facade now refuses when the
+  issue has open children or a live direct blocker — matching `bd close`.
+  Override with `bd update --force`, which now means: allow `-a/--assignee` to
+  overwrite another actor's live in_progress claim, AND allow a status change
+  into done despite open children or a live blocker (same as
+  `bd close --force`). `bd update --force` without `-a` was previously a
+  validation error on the direct path; it is now valid. In `bd batch`, spell the
+  override `update <id> status=closed force=true`; an unforced refusal rolls
+  back the entire batch. Facade consumers: set `UpdateRequest.ForceClosePolicy`.
+  Tracker sync-pull always forces (remote state is authoritative).
+  `bd batch close` remains unchecked, as before.
+
 - **`beads.BulkIssueStore.ReclaimExpiredLeases` gained a `types.ReclaimFilter`
   parameter** (wy-jpd3.3), threaded through the domain use-case/repository
   interfaces and every backend. Callers that reclaim globally pass the zero

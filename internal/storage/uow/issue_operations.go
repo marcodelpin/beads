@@ -273,6 +273,11 @@ func updateSpec(request publicops.UpdateRequest) (domain.UpdateSpec, error) {
 			fields[storageissueops.OpUnsetMetadata] = patch.Metadata.Unset
 		}
 	}
+	// Spelled only alongside a status change, matching the embedded backend:
+	// without one the funnel has no crossing to judge.
+	if request.ForceClosePolicy && patch.Status.Set {
+		fields[storageissueops.OpForceClosePolicy] = true
+	}
 	var persistence *types.PersistenceMode
 	if patch.Persistence.Set {
 		value := patch.Persistence.Value
