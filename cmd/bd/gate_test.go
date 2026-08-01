@@ -323,6 +323,58 @@ func TestCheckGHRunUsesRepositoryFromMetadata(t *testing.T) {
 	}
 }
 
+// TestCheckGHRun_CrossRepoDiscoveryUsesInjectedRunner covers the standards
+// note on the SF1 review: discoverRunIDByWorkflowNameInRepo was hard-wired to
+// runGHCommand, so the cross-repo discovery path (a workflow-name hint plus
+// metadata.repo) could not be exercised through the injected ghCommandRunner
+// seam at all. Both the discovery "run list" call and the follow-up "run
+// view" call must go through the same fake runner - if either one reached
+// the real runGHCommand this test would fail (or hang) instead of using the
+// canned response below.
+func TestCheckGHRun_CrossRepoDiscoveryUsesInjectedRunner(t *testing.T) {
+	var calls [][]string
+	fakeRunner := func(args ...string) (stdout, stderr []byte, err error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch args[0] {
+		case "run":
+			if len(args) > 1 && args[1] == "list" {
+				return []byte(`[{"databaseId":999,"name":"release","status":"completed","conclusion":"success","workflowName":"release.yml"}]`), nil, nil
+			}
+			if len(args) > 1 && args[1] == "view" {
+				return []byte(`{"status":"completed","conclusion":"success","name":"CI"}`), nil, nil
+			}
+		}
+		t.Fatalf("unexpected gh invocation: %v", args)
+		return nil, nil, nil
+	}
+
+	resolved, escalated, reason, err := checkGHRunWithRunner(&types.Issue{
+		IssueType: "gate",
+		AwaitType: "gh:run",
+		AwaitID:   "release.yml",
+		Metadata:  json.RawMessage(`{"repo":"srobroek/agentic-packages"}`),
+	}, nil, fakeRunner)
+	if err != nil {
+		t.Fatalf("checkGHRun returned error: %v", err)
+	}
+	if !resolved || escalated {
+		t.Fatalf("resolved, escalated = %v, %v; want true, false (%s)", resolved, escalated, reason)
+	}
+
+	wantCalls := [][]string{
+		{"run", "list", "--workflow", "release.yml", "--json", "databaseId,name,status,conclusion,createdAt,workflowName", "--limit", "5", "--repo", "srobroek/agentic-packages"},
+		{"run", "view", "999", "--json", "status,conclusion,name", "--repo", "srobroek/agentic-packages"},
+	}
+	if len(calls) != len(wantCalls) {
+		t.Fatalf("gh invocations = %v, want %v", calls, wantCalls)
+	}
+	for i, want := range wantCalls {
+		if !slices.Equal(calls[i], want) {
+			t.Errorf("gh invocation %d = %v, want %v", i, calls[i], want)
+		}
+	}
+}
+
 func TestQueryGitHubRunsForWorkflowUsesRepository(t *testing.T) {
 	runs, err := queryGitHubRunsForWorkflowInRepoWithRunner(
 		"release.yml",

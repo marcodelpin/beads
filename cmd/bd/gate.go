@@ -921,8 +921,18 @@ func discoverRunIDByWorkflowName(workflowHint string) (string, error) {
 }
 
 func discoverRunIDByWorkflowNameInRepo(workflowHint, repo string) (string, error) {
+	return discoverRunIDByWorkflowNameInRepoWithRunner(workflowHint, repo, runGHCommand)
+}
+
+// discoverRunIDByWorkflowNameInRepoWithRunner is the runner-injectable form of
+// discoverRunIDByWorkflowNameInRepo. checkGHRunWithRunner's cross-repo branch
+// must call this (not discoverRunIDByWorkflowNameInRepo directly) so the same
+// injected ghCommandRunner seam used everywhere else in the gh:run/gh:pr
+// checks also covers cross-repo discovery, keeping that path unit-testable
+// without a live `gh` CLI (standards note on the SF1 review).
+func discoverRunIDByWorkflowNameInRepoWithRunner(workflowHint, repo string, runGH ghCommandRunner) (string, error) {
 	// Query GitHub directly for this workflow (efficient, avoids limit issues)
-	runs, err := queryGitHubRunsForWorkflowInRepo(workflowHint, 5, repo)
+	runs, err := queryGitHubRunsForWorkflowInRepoWithRunner(workflowHint, 5, repo, runGH)
 	if err != nil {
 		return "", fmt.Errorf("failed to query workflow runs: %w", err)
 	}
@@ -960,7 +970,7 @@ func checkGHRunWithRunner(gate *types.Issue, persistAwaitID func(gateID, runID s
 		if repo == "" {
 			discoveredID, discoverErr = discoverRunIDByWorkflowNameFunc(gate.AwaitID)
 		} else {
-			discoveredID, discoverErr = discoverRunIDByWorkflowNameInRepo(gate.AwaitID, repo)
+			discoveredID, discoverErr = discoverRunIDByWorkflowNameInRepoWithRunner(gate.AwaitID, repo, runGH)
 		}
 		if discoverErr != nil {
 			return false, false, fmt.Sprintf("workflow hint '%s': %v", gate.AwaitID, discoverErr), nil
