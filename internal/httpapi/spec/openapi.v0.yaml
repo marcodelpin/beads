@@ -105,6 +105,53 @@ info:
     two-way JSON-tag bijection test, covering all seven, fails CI otherwise. A
     breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
 
+
+    A member that is absent is not set. When reading a RESPONSE, clients MUST
+    treat an explicit `null` member identically to an absent member. Producers
+    on this surface omit absent members; a profile MAY instead emit `null` for
+    members it declares always-present. Explicit `null` in a REQUEST body is
+    NOT covered by this rule; its meaning is defined per operation.
+
+
+    ## Profiles
+
+
+    A PROFILE is a separate document that re-publishes part of this contract as
+    its own surface. Conformance to this core is a checkable relation over
+    wire-observable JSON — the profile's value model is subsumed by this one,
+    plus the deviations the profile DECLARES — not a claim of shared
+    vocabulary. Four rules make it checkable.
+
+
+    * **Verbatim or absent.** A property emitted under a core name carries the
+      core type, format and semantics, and its value is the canonical value
+      verbatim or is wholly absent. Nothing is transformed in place: a
+      re-spelling, a coercion to another JSON type, or a truncation, published
+      under a core name, is non-conformant — and omitting the member is always
+      the conformant alternative.
+
+    * **Tightening is bounds-only.** A profile MAY omit optional properties, and
+      MAY tighten `maxLength`, `maxItems` and `maxProperties` or close an open
+      vocabulary, provided every instance it emits is still valid against this
+      document once explicit `null` is read as absence. Widening a bound,
+      re-typing a member, or extending a vocabulary this document closes is not
+      tightening.
+
+    * **Required members are retained.** A profile keeps the required members of
+      every top-level resource. Dropping a required member of an EMBEDDED
+      relation — a nested edge or summary carried inside another resource — is
+      legal only where the profile DECLARES that omission and its reason. A
+      silent omission never is.
+
+    * **Extensions are declared, and their names ratchet.** A profile MAY add
+      members of its own, provided each is marked as an extension in the
+      profile's own document and its name is not one this document already
+      defines. Because `/v0` grows by ADDING optional members, a later revision
+      of this document may define a name a profile is already using: that
+      collision is reconciled — the core member adopted, or the extension
+      renamed — as part of adopting the revision, never left to resolve by
+      itself.
+
 paths:
 
   /healthz:
