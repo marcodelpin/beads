@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -402,6 +403,51 @@ func substituteVariables(text string, vars map[string]string) string {
 	})
 }
 
+// substituteMetadataRepo substitutes {{variable}} placeholders in an issue's
+// metadata.repo value (SF2 follow-up). A formula gate step's `repo` selector
+// (e.g. repo = "{{gate_repo}}") is stored literally on the persisted proto's
+// metadata by createGateIssue/persistCookFormula - `bd cook --persist` keeps
+// the proto reusable across pours rather than substituting at compile time.
+// Substitution instead needs to happen at the same point as every other
+// var-bearing issue field (Title, Description, AwaitID, ...): here, in
+// cloneSubgraphInto, when a proto is poured/spawned into real issues.
+//
+// Metadata is arbitrary JSON on any issue, so this only touches a top-level
+// string-valued "repo" key; anything else (missing key, non-object, non-
+// string value) is left untouched for githubRepoFromIssue to validate at
+// check time.
+func substituteMetadataRepo(metadata json.RawMessage, vars map[string]string) json.RawMessage {
+	if len(metadata) == 0 {
+		return metadata
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(metadata, &raw); err != nil {
+		return metadata
+	}
+
+	repoValue, hasRepo := raw["repo"]
+	if !hasRepo {
+		return metadata
+	}
+	repoStr, ok := repoValue.(string)
+	if !ok {
+		return metadata
+	}
+
+	substituted := substituteVariables(repoStr, vars)
+	if substituted == repoStr {
+		return metadata
+	}
+
+	raw["repo"] = substituted
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return metadata
+	}
+	return out
+}
+
 // generateBondedID creates a custom ID for dynamically bonded molecules.
 // When bonding a proto to a parent molecule, this generates IDs like:
 //   - Root: parent.childref (e.g., "patrol-x7k.arm-ace")
@@ -609,7 +655,7 @@ func cloneSubgraphInto(ctx context.Context, w molWriter, subgraph *TemplateSubgr
 			AwaitID:   substituteVariables(oldIssue.AwaitID, opts.Vars),
 			Timeout:   oldIssue.Timeout,
 			Labels:    oldIssue.Labels,
-			Metadata:  oldIssue.Metadata,
+			Metadata:  substituteMetadataRepo(oldIssue.Metadata, opts.Vars),
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
