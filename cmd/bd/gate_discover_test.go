@@ -138,6 +138,60 @@ func TestMatchGatesToRuns_CachesQueryErrorPerRepo(t *testing.T) {
 	}
 }
 
+// TestGateDiscoveryQueryFailures_DetectsFailedQueries covers the SF-fix
+// exit-code regression: before per-repo scoping, any GitHub query error was
+// fatal (HandleError, exit 1). After scoping queries per gate repo, a failed
+// query became just another per-gate stderr line and the command exited 0
+// with "Updated 0 gate(s)". gateDiscoveryQueryFailures is what
+// runGateDiscover uses to detect that at least one repo's query failed so it
+// can still return HandleError - a wholly-failed discovery must not exit 0.
+func TestGateDiscoveryQueryFailures_DetectsFailedQueries(t *testing.T) {
+	gateA := &types.Issue{ID: "bd-a", AwaitType: "gh:run", AwaitID: "release.yml", CreatedAt: time.Now()}
+	gateB := &types.Issue{ID: "bd-b", AwaitType: "gh:run", AwaitID: "release.yml", CreatedAt: time.Now(),
+		Metadata: json.RawMessage(`{"repo":"other-owner/other-repo"}`)}
+
+	wantErrA := errors.New("gh CLI not found")
+	wantErrB := errors.New("rate limited")
+	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+		if repo == "other-owner/other-repo" {
+			return nil, wantErrB
+		}
+		return nil, wantErrA
+	}
+
+	matches := matchGatesToRuns([]*types.Issue{gateA, gateB}, 30*time.Minute, queryRuns)
+
+	failures := gateDiscoveryQueryFailures(matches)
+	if len(failures) != 2 {
+		t.Fatalf("gateDiscoveryQueryFailures returned %d failures, want 2: %+v", len(failures), failures)
+	}
+	if !errors.Is(failures[""], wantErrA) {
+		t.Errorf("failures[\"\"] = %v, want %v", failures[""], wantErrA)
+	}
+	if !errors.Is(failures["other-owner/other-repo"], wantErrB) {
+		t.Errorf("failures[\"other-owner/other-repo\"] = %v, want %v", failures["other-owner/other-repo"], wantErrB)
+	}
+}
+
+// TestGateDiscoveryQueryFailures_IgnoresMetadataErrors verifies that invalid
+// repo metadata (a per-gate data problem, not a failure to reach GitHub at
+// all) is not treated as a query failure - it must not, by itself, make
+// runGateDiscover exit non-zero.
+func TestGateDiscoveryQueryFailures_IgnoresMetadataErrors(t *testing.T) {
+	gate := &types.Issue{ID: "bd-bad-repo", AwaitType: "gh:run", AwaitID: "release.yml", CreatedAt: time.Now(),
+		Metadata: json.RawMessage(`{"repo":null}`)}
+
+	queryRuns := func(repo string) ([]GHWorkflowRun, error) {
+		t.Fatal("expected no GitHub query for a gate with malformed repo metadata")
+		return nil, nil
+	}
+
+	matches := matchGatesToRuns([]*types.Issue{gate}, 30*time.Minute, queryRuns)
+	if failures := gateDiscoveryQueryFailures(matches); len(failures) != 0 {
+		t.Errorf("gateDiscoveryQueryFailures = %+v, want none (metadata errors are not query failures)", failures)
+	}
+}
+
 func TestQueryGitHubRunsInRepoWithRunner(t *testing.T) {
 	runs, err := queryGitHubRunsInRepoWithRunner(
 		"main",

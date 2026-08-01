@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -156,6 +158,29 @@ func runGateDiscover(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("Updated %d gate(s) with discovered run IDs.\n", matchCount)
 	}
+
+	// A GitHub query failure (gh missing, unauthenticated, rate limited, ...)
+	// is fatal, matching pre-multi-repo behavior: before per-repo scoping,
+	// any query error returned HandleError immediately. Per-gate detail was
+	// already reported above; report a summary here and exit non-zero so a
+	// wholly-failed discovery is never mistaken for "0 gates matched".
+	if failures := gateDiscoveryQueryFailures(matches); len(failures) > 0 {
+		repos := make([]string, 0, len(failures))
+		for repo := range failures {
+			repos = append(repos, repo)
+		}
+		sort.Strings(repos)
+		details := make([]string, 0, len(repos))
+		for _, repo := range repos {
+			label := repo
+			if label == "" {
+				label = "current repo"
+			}
+			details = append(details, fmt.Sprintf("%s: %v", label, failures[repo]))
+		}
+		return HandleError("querying GitHub runs failed for %d repo(s): %s", len(failures), strings.Join(details, "; "))
+	}
+
 	return nil
 }
 
@@ -166,6 +191,34 @@ type gateDiscoveryMatch struct {
 	gate *types.Issue
 	run  *GHWorkflowRun
 	err  error
+}
+
+// gateQueryError wraps a failed GitHub query for a specific repo. It is
+// distinguished from other gateDiscoveryMatch errors (e.g. invalid repo
+// metadata) so runGateDiscover can tell "we couldn't even ask GitHub"
+// (gh missing, unauthenticated, rate limited, ...) apart from a per-gate
+// data problem: a wholly-failed discovery must exit non-zero, matching the
+// pre-multi-repo behavior where a query failure was fatal.
+type gateQueryError struct {
+	repo string
+	err  error
+}
+
+func (e *gateQueryError) Error() string { return e.err.Error() }
+func (e *gateQueryError) Unwrap() error { return e.err }
+
+// gateDiscoveryQueryFailures returns the distinct repos whose GitHub query
+// failed among matches, keyed by repo ("" meaning the current repository)
+// with the query error that repo produced.
+func gateDiscoveryQueryFailures(matches []gateDiscoveryMatch) map[string]error {
+	failures := make(map[string]error)
+	for _, m := range matches {
+		var qe *gateQueryError
+		if errors.As(m.err, &qe) {
+			failures[qe.repo] = qe.err
+		}
+	}
+	return failures
 }
 
 // matchGatesToRuns scopes run discovery per gate's own repo selector (SF1).
@@ -190,13 +243,13 @@ func matchGatesToRuns(gates []*types.Issue, maxAge time.Duration, queryRuns func
 		runs, cached := runsByRepo[repo]
 		if !cached {
 			if qErr, queried := queryErrByRepo[repo]; queried {
-				results = append(results, gateDiscoveryMatch{gate: gate, err: qErr})
+				results = append(results, gateDiscoveryMatch{gate: gate, err: &gateQueryError{repo: repo, err: qErr}})
 				continue
 			}
 			queried, err := queryRuns(repo)
 			if err != nil {
 				queryErrByRepo[repo] = err
-				results = append(results, gateDiscoveryMatch{gate: gate, err: err})
+				results = append(results, gateDiscoveryMatch{gate: gate, err: &gateQueryError{repo: repo, err: err}})
 				continue
 			}
 			runsByRepo[repo] = queried
