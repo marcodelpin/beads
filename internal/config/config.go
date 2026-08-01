@@ -81,17 +81,27 @@ func Initialize() error {
 	if beadsDirEnv != "" {
 		beadsEnvConfigPath = filepath.Clean(filepath.Join(beadsDirEnv, "config.yaml"))
 	}
+	// A beads checkout usually has its own `.beads/config.yaml` (untracked developer
+	// state) that sets non-default values. In `go test` — especially for `cmd/bd` —
+	// we want to avoid unintentionally picking up that repo-local config, while still
+	// allowing tests to load config.yaml from temp repos.
+	//
+	// If BEADS_TEST_IGNORE_REPO_CONFIG is set, we ignore the config at
+	// <module-root>/.beads/config.yaml (where module-root is the nearest parent
+	// containing go.mod) and at the worktree fallback location.
+	//
+	// The ignore set applies to every source that can name those paths, including
+	// BEADS_DIR below. BEADS_DIR used to bypass the flag, and because in-process CLI
+	// dispatch sets BEADS_DIR at the checkout's own .beads via a raw os.Setenv with no
+	// restore, that bypass re-imported the repo config into every later Initialize in
+	// the same test binary (ga-e6h6i). A test that genuinely wants the repo config
+	// unsets the flag.
+	ignoreRepoConfig := os.Getenv("BEADS_TEST_IGNORE_REPO_CONFIG") != ""
+	ignoredRepoConfigPaths := map[string]bool{}
+
 	cwd, err := os.Getwd()
 	if err == nil {
-		// In the beads repo, `.beads/config.yaml` is tracked and may set non-default config values.
-		// In `go test` (especially for `cmd/bd`), we want to avoid unintentionally picking up
-		// the repo-local config, while still allowing tests to load config.yaml from temp repos.
-		//
-		// If BEADS_TEST_IGNORE_REPO_CONFIG is set, we will ignore the config at
-		// <module-root>/.beads/config.yaml (where module-root is the nearest parent containing go.mod).
-		ignoreRepoConfig := os.Getenv("BEADS_TEST_IGNORE_REPO_CONFIG") != ""
 		var moduleRoot string
-		ignoredRepoConfigPaths := map[string]bool{}
 		if ignoreRepoConfig {
 			// Find module root by walking up to go.mod.
 			for dir := cwd; dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
@@ -157,7 +167,13 @@ func Initialize() error {
 	// 0. BEADS_DIR: highest priority
 	if beadsDir := os.Getenv("BEADS_DIR"); beadsDir != "" {
 		p := filepath.Join(beadsDir, "config.yaml")
-		if _, err := os.Stat(p); err == nil {
+		// Honor the test ignore set here too, and skip primaryConfigPath along with
+		// the merge so ConfigFileUsed does not name the ignored repo config. This
+		// fences the read and merge path only: SaveConfigValue falls back to the
+		// caller-supplied beadsDir when ConfigFileUsed is empty, so where a write
+		// lands is still the caller's choice, not this flag's.
+		ignored := ignoreRepoConfig && ignoredRepoConfigPaths[filepath.Clean(p)]
+		if _, err := os.Stat(p); err == nil && !ignored {
 			// Avoid duplicate if BEADS_DIR points to same config as CWD walk
 			if primaryConfigPath == "" || filepath.Clean(p) != filepath.Clean(primaryConfigPath) {
 				configPaths = append(configPaths, p)

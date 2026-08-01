@@ -1855,3 +1855,147 @@ func TestViperIssuePrefixKeysAreDistinct(t *testing.T) {
 		t.Fatalf("GetString(issue_prefix) = %q, want %q", got, "legacy_underscore")
 	}
 }
+
+// newIgnoredRepoConfigFixture builds a fake module root (go.mod + .beads/config.yaml)
+// with HOME/XDG redirected into the same temp tree, so Initialize sees exactly one
+// candidate project config. It returns the .beads directory.
+//
+// The fixture must be self-contained: the real beads checkout carries an untracked
+// .beads/config.yaml with `issue-prefix: bd`, and a test that depended on it would
+// pass or fail based on the developer's machine.
+func newIgnoredRepoConfigFixture(t *testing.T, body string) string {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	homeDir := filepath.Join(tmpDir, "home")
+	configDir := filepath.Join(tmpDir, "xdg-config")
+	repoDir := filepath.Join(tmpDir, "repo")
+	beadsDir := filepath.Join(repoDir, ".beads")
+
+	for _, dir := range []string{homeDir, configDir, beadsDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("failed to create %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/test\n\ngo 1.24.0\n"), 0o644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("failed to write config.yaml: %v", err)
+	}
+
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Chdir(repoDir)
+
+	return beadsDir
+}
+
+// BEADS_DIR is the highest-priority config source, and it used to bypass
+// BEADS_TEST_IGNORE_REPO_CONFIG entirely. That was the leak behind ga-e6h6i:
+// in-process CLI dispatch raw-os.Setenv's BEADS_DIR at the checkout's own .beads
+// and never restores it, so every later Initialize re-imported the repo config —
+// including `issue-prefix: bd`, which broke unrelated --id tests.
+func TestInitialize_IgnoreRepoConfigAppliesToBeadsDirEnv(t *testing.T) {
+	restore := envSnapshot(t)
+	defer restore()
+
+	beadsDir := newIgnoredRepoConfigFixture(t, "json: true\nactor: repo-user\nissue-prefix: zzleak\n")
+
+	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
+	t.Setenv("BEADS_DIR", beadsDir)
+
+	ResetForTesting()
+	defer ResetForTesting()
+
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	if got := GetBool("json"); got {
+		t.Errorf("GetBool(json) = %v, want false when repo config is ignored via BEADS_DIR", got)
+	}
+	if got := GetString("actor"); got != "" {
+		t.Errorf("GetString(actor) = %q, want empty when repo config is ignored via BEADS_DIR", got)
+	}
+	if got := GetString("issue-prefix"); got != "" {
+		t.Errorf("GetString(issue-prefix) = %q, want empty when repo config is ignored via BEADS_DIR", got)
+	}
+	// primaryConfigPath must be suppressed too: otherwise SaveConfigValue would
+	// still write into the repo config the flag exists to protect.
+	if got := ConfigFileUsed(); got != "" {
+		t.Errorf("ConfigFileUsed() = %q, want empty when repo config is ignored via BEADS_DIR", got)
+	}
+}
+
+// Guard against over-ignoring: without the flag, BEADS_DIR must still load the
+// module-root config exactly as before.
+func TestInitialize_BeadsDirEnvLoadsRepoConfigWithoutFlag(t *testing.T) {
+	restore := envSnapshot(t)
+	defer restore()
+
+	beadsDir := newIgnoredRepoConfigFixture(t, "json: true\nactor: repo-user\nissue-prefix: zzleak\n")
+
+	t.Setenv("BEADS_DIR", beadsDir)
+
+	ResetForTesting()
+	defer ResetForTesting()
+
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	if got := GetBool("json"); !got {
+		t.Errorf("GetBool(json) = %v, want true when the flag is unset", got)
+	}
+	if got := GetString("actor"); got != "repo-user" {
+		t.Errorf("GetString(actor) = %q, want %q when the flag is unset", got, "repo-user")
+	}
+	if got := GetString("issue-prefix"); got != "zzleak" {
+		t.Errorf("GetString(issue-prefix) = %q, want %q when the flag is unset", got, "zzleak")
+	}
+}
+
+// The ignore set is scoped to the repo under test. Tests that point BEADS_DIR at
+// their own temp workspace (setupServerDriftTest, config-apply, backup-status,
+// auto-export) must keep loading it even with the flag set.
+func TestInitialize_IgnoreRepoConfigStillHonorsTempBeadsDir(t *testing.T) {
+	restore := envSnapshot(t)
+	defer restore()
+
+	// Establish the ignored module root, then point BEADS_DIR somewhere else.
+	newIgnoredRepoConfigFixture(t, "json: true\nactor: repo-user\n")
+
+	workspace := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
+	workspaceConfig := filepath.Join(workspace, "config.yaml")
+	if err := os.WriteFile(workspaceConfig, []byte("actor: workspace-user\nissue-prefix: wksp\n"), 0o644); err != nil {
+		t.Fatalf("failed to write workspace config.yaml: %v", err)
+	}
+
+	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
+	t.Setenv("BEADS_DIR", workspace)
+
+	ResetForTesting()
+	defer ResetForTesting()
+
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	if got := GetString("actor"); got != "workspace-user" {
+		t.Errorf("GetString(actor) = %q, want %q from the temp BEADS_DIR workspace", got, "workspace-user")
+	}
+	if got := GetString("issue-prefix"); got != "wksp" {
+		t.Errorf("GetString(issue-prefix) = %q, want %q from the temp BEADS_DIR workspace", got, "wksp")
+	}
+	if got := ConfigFileUsed(); filepath.Clean(got) != filepath.Clean(workspaceConfig) {
+		t.Errorf("ConfigFileUsed() = %q, want %q", got, workspaceConfig)
+	}
+	// The ignored repo config must not have merged underneath.
+	if got := GetBool("json"); got {
+		t.Errorf("GetBool(json) = %v, want false — the ignored repo config leaked underneath", got)
+	}
+}
