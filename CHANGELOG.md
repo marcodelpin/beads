@@ -100,6 +100,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tracker sync-pull always forces (remote state is authoritative).
   `bd batch close` remains unchecked, as before.
 
+- **Public `beads.Storage` interface gained a required `IssueReader()` method**
+  (bd-serve reader role). `IssueReader() (issueops.Reader, error)` is the read
+  counterpart of `IssueLifecycle()`: one accessor returning a role that answers
+  `Ready`, `List` and `Get` with filter construction, workspace-config loading,
+  default limits and the wisp fallback all performed *inside* it, so a caller
+  cannot half-perform that construction and answer the same question a different
+  way. All three of `bd serve`'s issue reads and `bd show --json`'s detail view
+  are on the role; `bd list` and `bd ready` are not yet, and share the
+  `internal/workapi` builders instead — see `issueops.Reader`'s doc comment for
+  exactly what that does and does not cover. It is a role of
+  its own rather than three more methods on `issueops.Lifecycle` — a capability
+  that role does not cover gets its own accessor. Consumers that only *call* the
+  interface are unaffected; any external type that *implements* it (a custom
+  store, mock, or proxy) must add the method to compile. A decorator must
+  implement it by recursing into the store it wraps and layering its own
+  behavior onto the result, the way `IssueLifecycle()` does, rather than
+  delegating blindly — a blind delegation compiles and still satisfies the
+  interface while silently dropping that decorator's layer for every read.
+
 - **`beads.BulkIssueStore.ReclaimExpiredLeases` gained a `types.ReclaimFilter`
   parameter** (wy-jpd3.3), threaded through the domain use-case/repository
   interfaces and every backend. Callers that reclaim globally pass the zero
