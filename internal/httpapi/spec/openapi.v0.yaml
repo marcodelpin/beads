@@ -1465,9 +1465,20 @@ components:
       type: object
       description: >-
         RFC 9457 problem detail. This is the only error shape on this surface.
-        `type` is omitted throughout, so `about:blank` is implied.
-      required: [status, title, code]
+        The core declares `type`; this server never emits it, so `about:blank`
+        is implied throughout.
+      required: [status, title, code, request_id]
       properties:
+        type:
+          type: string
+          format: uri
+          description: >-
+            RFC 9457 problem type. This server never emits it, so `about:blank`
+            is implied. A deployment that hosts problem documentation MAY supply
+            it: one stable URI per status+code pair, dereferencing to
+            documentation for that pair. It restates identity that `code`
+            already carries, so a client MUST NOT dispatch on it and a server
+            MUST NOT use it to subdivide a code.
         status:
           type: integer
           description: The HTTP status code, repeated in the body.
@@ -1524,9 +1535,8 @@ components:
         request_id:
           type: string
           description: >-
-            Correlation id for this request, echoed in the server's request log
-            line. Present on every problem response from every route, including
-            the ones the middleware answers before a handler runs. Opaque and
-            per-process: it identifies a log line, nothing else, so it is never
-            a retry key and never survives a restart. Quote it in a bug report
-            and the operator can find the one line that explains the failure.
+            Opaque correlation id for this request, echoed in the server's
+            request log line. Never a dispatch key and never a retry key.
+            (This server mints per-process ids that do not survive a restart;
+            a deployment may substitute any identifier with the same
+            log-correlation property, such as an edge trace id.)
