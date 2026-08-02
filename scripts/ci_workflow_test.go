@@ -87,7 +87,7 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 	})
 	assertGoCacheInventory(t, workflows["main.yml"].job(t, "test"), []goCacheStep{
 		mainRestoreModuleCache(), mainRestoreBuildCacheIf("non-race", macOSMatrixCondition), mainRestoreBuildCache("race"),
-		saveModuleCacheIf(macOSMatrixCondition), saveBuildCacheIf("non-race", macOSMatrixCondition), saveBuildCacheIf("race", macOSMatrixCondition),
+		saveModuleCacheAfterFailureOnMacOS(), saveBuildCacheAfterFailureOnMacOS("non-race"), saveBuildCacheAfterFailureOnMacOS("race"),
 	})
 	assertGoCacheInventory(t, workflows["main.yml"].job(t, "test-windows"), []goCacheStep{
 		mainRestoreModuleCache(), mainRestoreBuildCache("non-race"), saveModuleCache(), saveBuildCache("non-race"),
@@ -200,9 +200,9 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 	assertGoCacheWriter(t, workflows["main.yml"], "build-artifacts", "ubuntu-latest", "Save Go module cache", cacheMissCondition(goModuleCacheRestoreID))
 	assertGoCacheWriter(t, workflows["main.yml"], "build-artifacts", "ubuntu-latest", "Save non-race Go build cache", cacheMissCondition(goBuildCacheRestoreID("non-race")))
 	assertGoCacheWriter(t, workflows["main.yml"], "build-embedded", "ubuntu-latest", "Save race Go build cache", cacheMissCondition(goBuildCacheRestoreID("race")))
-	assertGoCacheWriter(t, workflows["main.yml"], "test", "${{ matrix.os }}", "Save Go module cache", combineConditions(macOSMatrixCondition, cacheMissCondition(goModuleCacheRestoreID)))
-	assertGoCacheWriter(t, workflows["main.yml"], "test", "${{ matrix.os }}", "Save non-race Go build cache", combineConditions(macOSMatrixCondition, cacheMissCondition(goBuildCacheRestoreID("non-race"))))
-	assertGoCacheWriter(t, workflows["main.yml"], "test", "${{ matrix.os }}", "Save race Go build cache", combineConditions(macOSMatrixCondition, cacheMissCondition(goBuildCacheRestoreID("race"))))
+	assertGoCacheWriter(t, workflows["main.yml"], "test", "${{ matrix.os }}", "Save Go module cache", failureSurvivingCacheSaveCondition(macOSMatrixCondition, cacheMissCondition(goModuleCacheRestoreID)))
+	assertGoCacheWriter(t, workflows["main.yml"], "test", "${{ matrix.os }}", "Save non-race Go build cache", failureSurvivingCacheSaveCondition(macOSMatrixCondition, cacheMissCondition(goBuildCacheRestoreID("non-race"))))
+	assertGoCacheWriter(t, workflows["main.yml"], "test", "${{ matrix.os }}", "Save race Go build cache", failureSurvivingCacheSaveCondition(macOSMatrixCondition, cacheMissCondition(goBuildCacheRestoreID("race"))))
 	assertGoCacheWriter(t, workflows["main.yml"], "test-windows", "windows-latest", "Save Go module cache", cacheMissCondition(goModuleCacheRestoreID))
 	assertGoCacheWriter(t, workflows["main.yml"], "test-windows", "windows-latest", "Save non-race Go build cache", cacheMissCondition(goBuildCacheRestoreID("non-race")))
 	for _, target := range []struct{ workflow, job string }{
@@ -307,6 +307,10 @@ func combineConditions(conditions ...string) string {
 	return strings.Join(nonEmpty, " && ")
 }
 
+func failureSurvivingCacheSaveCondition(conditions ...string) string {
+	return "${{ !cancelled() && " + combineConditions(conditions...) + " }}"
+}
+
 func restoreModuleCache() goCacheStep {
 	return goCacheStep{name: "Restore Go module cache", family: cacheRestoreActionFamily, key: goModuleCacheKey(), restoreKeys: goModuleCacheRestoreKeys(), path: goModuleCachePath}
 }
@@ -321,6 +325,12 @@ func saveModuleCache() goCacheStep { return saveModuleCacheIf("") }
 
 func saveModuleCacheIf(condition string) goCacheStep {
 	return goCacheStep{name: "Save Go module cache", family: cacheSaveActionFamily, key: goModuleCacheKey(), path: goModuleCachePath, ifCondition: combineConditions(condition, cacheMissCondition(goModuleCacheRestoreID))}
+}
+
+func saveModuleCacheAfterFailureOnMacOS() goCacheStep {
+	step := saveModuleCache()
+	step.ifCondition = failureSurvivingCacheSaveCondition(macOSMatrixCondition, cacheMissCondition(goModuleCacheRestoreID))
+	return step
 }
 
 func restoreBuildCache(profile string) goCacheStep {
@@ -345,6 +355,12 @@ func saveBuildCache(profile string) goCacheStep { return saveBuildCacheIf(profil
 
 func saveBuildCacheIf(profile, condition string) goCacheStep {
 	return goCacheStep{name: "Save " + profile + " Go build cache", family: cacheSaveActionFamily, key: goBuildCacheKey(profile), path: goBuildCachePath(profile), ifCondition: combineConditions(condition, cacheMissCondition(goBuildCacheRestoreID(profile)))}
+}
+
+func saveBuildCacheAfterFailureOnMacOS(profile string) goCacheStep {
+	step := saveBuildCache(profile)
+	step.ifCondition = failureSurvivingCacheSaveCondition(macOSMatrixCondition, cacheMissCondition(goBuildCacheRestoreID(profile)))
+	return step
 }
 
 func assertGoCacheInventory(t *testing.T, job ciWorkflowJob, want []goCacheStep) {
@@ -381,23 +397,16 @@ func assertConditionalCacheWritersHaveMatrixMember(t *testing.T, job ciWorkflowJ
 	}
 
 	conditionalWriters := 0
+	wantCondition := "matrix.os == '" + wantMember + "'"
 	for _, step := range job.Steps {
 		if actionFamily(step.Uses) != cacheSaveActionFamily {
 			continue
 		}
-		remainder, found := strings.CutPrefix(step.If, "matrix.os == '")
-		if !found {
-			continue
-		}
-		member, _, found := strings.Cut(remainder, "'")
-		if !found {
-			t.Errorf("cache writer %q has malformed matrix.os condition %q", step.Name, step.If)
+		if !strings.Contains(step.If, wantCondition) {
+			t.Errorf("cache writer %q condition %q does not target matrix member %q", step.Name, step.If, wantMember)
 			continue
 		}
 		conditionalWriters++
-		if member != wantMember {
-			t.Errorf("cache writer %q targets matrix member %q, want %q", step.Name, member, wantMember)
-		}
 	}
 	if conditionalWriters == 0 {
 		t.Fatal("job has no conditional matrix cache writers")
