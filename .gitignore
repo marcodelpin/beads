@@ -258,3 +258,7 @@ tmp/build/cli-docs/where.md
 tmp/build/cli-docs/worktree.md
 tmp/docs/CLI_REFERENCE.md
 *.gate.lock*
+
+# bd pointer: must survive a clone (sys-9b1x4l)
+!.beads/metadata.json
+!.beads/dolt-server.port
