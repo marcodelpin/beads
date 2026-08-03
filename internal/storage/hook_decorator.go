@@ -305,15 +305,17 @@ func (h *HookFiringStore) CompleteIssueOperationCreate(ctx context.Context, issu
 }
 
 // CompleteIssueOperationUpdate fires the update hook for a committed guarded
-// operation.
+// operation. The issue is cloned because the hook runner marshals it on its
+// own goroutine while callers (cmd/bd close/update/reopen) go on to mutate
+// the result they handed in.
 func (h *HookFiringStore) CompleteIssueOperationUpdate(issue *types.Issue) {
-	h.fireHook(hooks.EventUpdate, issue)
+	h.fireHook(hooks.EventUpdate, cloneIssueForHook(issue))
 }
 
 // CompleteIssueOperationClose fires the close hook for a committed guarded
-// close.
+// close. Cloned for the same reason as CompleteIssueOperationUpdate.
 func (h *HookFiringStore) CompleteIssueOperationClose(issue *types.Issue) {
-	h.fireHook(hooks.EventClose, issue)
+	h.fireHook(hooks.EventClose, cloneIssueForHook(issue))
 }
 
 func (h *HookFiringStore) fireHookByID(ctx context.Context, event, id string) {

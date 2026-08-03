@@ -115,6 +115,36 @@ func TestHookFiringStoreCompleteIssueOperationsFireOncePerCall(t *testing.T) {
 	}
 }
 
+// TestHookFiringStoreCompleteIssueOperationsSnapshotIssue pins the clone at the
+// completion entry points: the real hook runner marshals the issue on its own
+// goroutine, and the CLI mutates the result object it handed in right after
+// completing (cmd/bd close/update/reopen nil out .Dependencies), so handing
+// the runner the caller's pointer is a data race with a nondeterministic
+// payload (bd-9wgv3).
+func TestHookFiringStoreCompleteIssueOperationsSnapshotIssue(t *testing.T) {
+	runner := &recordingHookRunner{}
+	store := &HookFiringStore{runner: runner}
+	issue := &types.Issue{ID: "hook-issue", Dependencies: []*types.Dependency{
+		{IssueID: "hook-issue", DependsOnID: "dep", Type: types.DepBlocks},
+	}}
+
+	store.CompleteIssueOperationUpdate(issue)
+	store.CompleteIssueOperationClose(issue)
+	issue.Dependencies = nil
+
+	if len(runner.issues) != 2 {
+		t.Fatalf("recorded issues = %d, want 2", len(runner.issues))
+	}
+	for i, got := range runner.issues {
+		if got == issue {
+			t.Fatalf("event %d received the caller's issue pointer; completion must hand the runner a clone", i)
+		}
+		if len(got.Dependencies) != 1 || got.Dependencies[0].DependsOnID != "dep" {
+			t.Fatalf("event %d dependencies = %#v, want the snapshot taken before the caller mutated the issue", i, got.Dependencies)
+		}
+	}
+}
+
 func TestHookFiringStoreCompleteIssueOperationCreateFiresReverseDependencyUpdate(t *testing.T) {
 	runner := &recordingHookRunner{}
 	reverse := &types.Dependency{IssueID: "existing-source", DependsOnID: "created", Type: types.DepRelatesTo, Metadata: `{"key":"value"}`, ThreadID: "thread"}
