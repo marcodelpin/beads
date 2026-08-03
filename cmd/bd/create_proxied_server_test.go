@@ -58,11 +58,17 @@ func TestBuildCreateIssueFromInput_PopulatesAllFields(t *testing.T) {
 	if got.Title != "Title" {
 		t.Errorf("Title = %q", got.Title)
 	}
+	if got.Description != "Desc" || got.Design != "Design" || got.AcceptanceCriteria != "Accept" || got.Notes != "Notes" || got.SpecID != "spec-1" {
+		t.Errorf("content fields = %+v", got)
+	}
 	if got.IssueType != types.TypeFeature {
 		t.Errorf("IssueType = %q, want feature (normalized from feat)", got.IssueType)
 	}
 	if got.Priority != 1 {
 		t.Errorf("Priority = %d", got.Priority)
+	}
+	if got.Assignee != "alice" {
+		t.Errorf("Assignee = %q, want alice", got.Assignee)
 	}
 	if got.Status != types.StatusDeferred {
 		t.Errorf("Status = %q, want %q", got.Status, types.StatusDeferred)
@@ -73,8 +79,8 @@ func TestBuildCreateIssueFromInput_PopulatesAllFields(t *testing.T) {
 	if got.EstimatedMinutes == nil || *got.EstimatedMinutes != 90 {
 		t.Errorf("EstimatedMinutes = %v, want 90", got.EstimatedMinutes)
 	}
-	if !got.Ephemeral {
-		t.Errorf("Ephemeral = false, want true")
+	if !got.Ephemeral || got.NoHistory {
+		t.Errorf("storage flags = ephemeral:%t no_history:%t, want true:false", got.Ephemeral, got.NoHistory)
 	}
 	if got.CreatedBy != "tester" || got.Owner != "tester@example.com" {
 		t.Errorf("identity fields wrong: %q / %q", got.CreatedBy, got.Owner)
