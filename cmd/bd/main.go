@@ -881,11 +881,11 @@ var rootCmd = &cobra.Command{
 		// per-command context and losing Ctrl-C entirely.
 		setRootContext(setupGracefulShutdown())
 
-		// Initialize OTel (no-op unless BD_OTEL_METRICS_URL or BD_OTEL_STDOUT=true).
-		// Must run before any DB access so SQL spans nest under command spans.
-		if err := telemetry.Init(rootCtx, "bd", Version); err != nil {
-			debug.Logf("warning: telemetry init failed: %v", err)
-		}
+		// Initialize OTel. Telemetry is opt-in — initTelemetry is a noop
+		// unless BD_OTEL_ENABLED=true or a legacy BD_OTEL_* selector is set.
+		// Must run before any DB access so SQL spans nest under the command
+		// span.
+		initTelemetry(rootCtx, Version)
 
 		// Materialize the user-level metrics config only when metrics are
 		// actually enabled. When metrics are disabled (BD_DISABLE_METRICS or a
@@ -911,13 +911,7 @@ var rootCmd = &cobra.Command{
 
 		// Start root span for this command. rootCtx now carries the span, so
 		// all downstream DB and AI calls become child spans automatically.
-		rootCtx, commandSpan = telemetry.Tracer("bd").Start(rootCtx, "bd.command."+cmd.Name(),
-			oteltrace.WithAttributes(
-				attribute.String("bd.command", cmd.Name()),
-				attribute.String("bd.version", Version),
-				attribute.String("bd.args", scrubArgsForTelemetry(os.Args[1:], secretFlagTokens(cmd))),
-			),
-		)
+		rootCtx, commandSpan = startCommandSpan(rootCtx, cmd.Name(), Version, os.Args[1:], secretFlagTokens(cmd))
 
 		// Apply verbosity flags early (before any output)
 		debug.SetVerbose(verboseFlag)
