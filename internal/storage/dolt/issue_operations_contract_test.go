@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/steveyegge/beads/internal/storage/conformance"
+	"github.com/steveyegge/beads/backend/conformance"
 )
 
 func TestIssueOperationsCreateRoutesInfraTypesToWisps(t *testing.T) {

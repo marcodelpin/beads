@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/steveyegge/beads/internal/storage/conformance"
+	"github.com/steveyegge/beads/backend/conformance"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )

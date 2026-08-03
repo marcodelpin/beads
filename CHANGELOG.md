@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Public surface for out-of-tree storage backends** (bd-h3dib.2). The
+  storage backend contract and its conformance suite are now importable by
+  external Go modules — the conformance-gated external-backend path promised
+  on [#4415](https://github.com/gastownhall/beads/pull/4415). The new
+  `github.com/steveyegge/beads/backend` package exports, by type alias, the
+  engine interface (`backend.DoltStorage`) and every type its 164 method
+  signatures reach, the sentinel errors the contract requires by identity,
+  and thin wrappers over the backend registry (`backend.Register`); the
+  suite moved from `internal/storage/conformance` to
+  `github.com/steveyegge/beads/backend/conformance` unchanged, so an
+  external backend proves itself with the same `conformance.RunAll` the
+  embedded-Dolt reference runs in CI. Aliases mean identical types: a store
+  compiled against the public names satisfies the internal interface, and
+  `errors.Is` matches across the module boundary. A reflection-based drift
+  guard (`backend.TestPublicSurfaceComplete`) fails in-tree if a contract
+  change ever reaches an internal type with no public alias. **Stability:
+  EXPERIMENTAL** — the contract still evolves; pin an exact version and
+  re-run the conformance suite on every bump.
+
 - **`bd serve` — the beads work surface over HTTP** (bd-serve v0). Automation
   clients and orchestrators that fork a `bd` subprocess per call can now hold
   one connection instead. `bd serve` binds loopback and answers six

@@ -5,6 +5,11 @@
 // Go-based extensions that want to use bd's storage layer programmatically.
 //
 // For a working extension example, see examples/bd-example-extension-go.
+//
+// This is the CONSUMER surface: it opens and uses bd's own storage. To
+// IMPLEMENT a storage backend out of tree — and prove it with the
+// conformance suite — use github.com/steveyegge/beads/backend and
+// github.com/steveyegge/beads/backend/conformance instead.
 package beads
 
 import (

@@ -1,4 +1,6 @@
-// Package conformance provides backend-agnostic tests for Storage implementations.
+// Package conformance provides backend-agnostic tests for Storage
+// implementations: the suite every storage backend — in-tree or out-of-tree —
+// runs to prove it behaves like the embedded-Dolt reference.
 //
 // Usage from a backend test file:
 //
@@ -7,6 +9,19 @@
 //	        return newTestStore(t)
 //	    })
 //	}
+//
+// An EXTERNAL module writes the same test naming the engine interface through
+// its public alias, github.com/steveyegge/beads/backend.DoltStorage — the
+// identical type, so the factory literal satisfies Factory as-is. The whole
+// public contract an external backend implements (interface, signature types,
+// registry, sentinels) lives in that backend package; this package is its
+// proof obligation.
+//
+// # Stability
+//
+// EXPERIMENTAL, same terms as the backend package: the suite tracks the
+// evolving storage contract, and new assertions or entry points may appear in
+// any release. Pin an exact beads version and re-run the suite on every bump.
 package conformance
 
 import (
