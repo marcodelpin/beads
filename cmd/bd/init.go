@@ -949,14 +949,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				fmt.Fprintf(os.Stderr, "Warning: failed to set FS_NOCOW_FL on %s: %v\n", beadsDir, err)
 			}
 
-			// Create/update .gitignore in .beads directory (only if missing or outdated)
-			gitignorePath := filepath.Join(beadsDir, ".gitignore")
-			check := doctor.CheckGitignore(cwd)
-			if check.Status != "ok" {
-				if err := os.WriteFile(gitignorePath, []byte(doctor.GitignoreTemplate), 0600); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to create/update .gitignore: %v\n", err)
-					// Non-fatal - continue anyway
-				}
+			// Create/update .gitignore in .beads directory: full template when
+			// missing, append-only for missing required patterns otherwise —
+			// never a wholesale rewrite, which destroyed local rules (bd-kaaz3)
+			if err := doctor.EnsureGitignoreForBeadsDir(beadsDir); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to create/update .gitignore: %v\n", err)
+				// Non-fatal - continue anyway
 			}
 
 			// Add .dolt/ and *.db to project-root .gitignore (GH#2034)
