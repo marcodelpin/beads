@@ -36,6 +36,66 @@ func defaultStderr() io.Writer {
 	return io.Discard
 }
 
+// nonTTYProgressDelay is how long a migration pass may run silently on a
+// non-terminal stderr before its progress lines start being emitted anyway.
+//
+// The discard-when-not-a-terminal default above is right for the common case
+// and wrong for exactly one: a pass slow enough that the operator concludes
+// the process is wedged. sys-fzjf03 is that case. A Dolt sql-server holding
+// ~160 databases answers every INFORMATION_SCHEMA.COLUMNS query in ~8.5s
+// regardless of its WHERE clause (Dolt materialises the whole table across
+// all databases; a TABLE_SCHEMA/TABLE_NAME filter does not push down), and
+// the migration series guards its DDL with ~200 such lookups. A correct
+// `bd init --server` against that server therefore runs ~9 minutes with no
+// output at all, and was killed as a hang in four separate sessions before
+// anyone waited it out.
+//
+// Gating on elapsed time rather than flipping the default keeps every fast
+// pass byte-identical for machine-parsed callers: tests, CI and ordinary
+// local migrations finish well inside the delay and stay silent. Only a pass
+// that has already earned the operator's suspicion becomes audible.
+const nonTTYProgressDelay = 20 * time.Second
+
+// delayedWriter discards everything written before its deadline and writes
+// through afterwards, announcing itself once when it opens. The announcement
+// matters: the first line to survive the gate is usually a step's trailing
+// "  done (Ns)" whose "Applying …" partner was discarded, which on its own
+// reads like corrupted output rather than a late-arriving progress stream.
+type delayedWriter struct {
+	w      io.Writer
+	after  time.Time
+	header string
+	open   bool
+}
+
+func (d *delayedWriter) Write(p []byte) (int, error) {
+	if !d.open {
+		if time.Now().Before(d.after) {
+			return len(p), nil
+		}
+		d.open = true
+		if d.header != "" {
+			fmt.Fprint(d.w, d.header)
+		}
+	}
+	return d.w.Write(p)
+}
+
+// passProgressWriter returns the writer one migration pass should send its
+// progress lines to, given when the pass started. A terminal (or a test's
+// injected buffer) is used as-is; only the discard default is upgraded to the
+// time-gated writer described on nonTTYProgressDelay.
+func passProgressWriter(start time.Time) io.Writer {
+	if stderr != io.Discard {
+		return stderr
+	}
+	return &delayedWriter{
+		w:      os.Stderr,
+		after:  start.Add(nonTTYProgressDelay),
+		header: "bd: schema migration still running; progress follows (do not interrupt).\n",
+	}
+}
+
 const largeRigThreshold = 10000
 
 // issueRowCounter returns the current issues-table row count, or an error if
@@ -1377,6 +1437,12 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 		upTo = src.latest()
 	}
 
+	// progress is `stderr` on a terminal and, off one, the time-gated writer
+	// that starts reporting once this pass has run long enough to look hung
+	// (see nonTTYProgressDelay). The clock starts here so it measures the
+	// pass, not the process.
+	progress := passProgressWriter(time.Now())
+
 	// One-shot large-rig notice, ahead of the migration loop below — gated to
 	// the main-source pass only. MigrateUp calls runMigrations once for
 	// mainSource and once for ignoredSource in the same pass; without this
@@ -1390,7 +1456,7 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 	// instead of a second progressOut.
 	if src.cursorTable == mainSource.cursorTable {
 		rowCount, rowCountErr := issueRowCounter(ctx, db)
-		emitLargeRigNotice(stderr, rowCount, rowCountErr)
+		emitLargeRigNotice(progress, rowCount, rowCountErr)
 	}
 
 	count := 0
@@ -1429,7 +1495,7 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 			return count, fmt.Errorf("pre-repair for migration %s: %w", mf.name, err)
 		}
 
-		fmt.Fprintf(stderr, "Applying migration %04d: %s…\n", mf.version, humanMigrationName(mf.name))
+		fmt.Fprintf(progress, "Applying migration %04d: %s…\n", mf.version, humanMigrationName(mf.name))
 		start := time.Now()
 		if err := execMigrationBody(ctx, db, string(data)); err != nil {
 			return count, fmt.Errorf("migration %s: %w", mf.name, err)
@@ -1453,7 +1519,7 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 				return count, fmt.Errorf("committing migration %s: %w", mf.name, err)
 			}
 		}
-		fmt.Fprintf(stderr, "  done (%.1fs)\n", time.Since(start).Seconds())
+		fmt.Fprintf(progress, "  done (%.1fs)\n", time.Since(start).Seconds())
 
 		if migrateStepFaultHook != nil {
 			if err := migrateStepFaultHook(ctx, db, mf.version); err != nil {
