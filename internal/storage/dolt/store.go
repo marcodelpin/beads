@@ -601,6 +601,19 @@ func isRetryableError(err error) bool {
 	if schema.IsMigrationLockError(err) {
 		return true
 	}
+	// A decoded 1105 is a definite server response. Preserve the two explicit
+	// server-startup recoveries below, but do not let any other 1105 enter the
+	// general retry or circuit-breaker path just because its message happens to
+	// contain connection-like wording.
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1105 {
+		message := strings.ToLower(mysqlErr.Message)
+		if strings.Contains(message, "no root value found") ||
+			strings.Contains(message, "database is read only") {
+			return true
+		}
+		return false
+	}
 	errStr := strings.ToLower(err.Error())
 	// MySQL driver transient errors
 	if strings.Contains(errStr, "driver: bad connection") {
@@ -1003,6 +1016,14 @@ func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 		if err == nil {
 			return nil
 		}
+		// Dolt's exact 1105 autocommit rollback proves the transaction did not
+		// land. This is the only 1105 replayed, and withRetryTx is the boundary
+		// that recreates the complete SQL transaction on every attempt.
+		if isDoltAutocommitRollbackError(err) {
+			doltMetrics.serializationErrors.Add(ctx, 1)
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "serialization")))
+			return err
+		}
 		// Serialization failures (1213/1205) guarantee a server-side rollback,
 		// so the write never landed — safe to replay at any phase.
 		if isSerializationError(err) {
@@ -1037,6 +1058,13 @@ func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 		return errors.Join(err, tx.Rollback())
 	}
 	if err := tx.Commit(); err != nil {
+		// A decoded MySQL error is a definite server response. In particular,
+		// Dolt's rollback-guaranteed 1105 must remain eligible for full-tx
+		// replay, while unrelated typed responses must return as definite errors.
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) {
+			return fmt.Errorf("commit write tx: %w", err)
+		}
 		// Tag commit-phase failures so withRetryTx can tell an ambiguous commit
 		// loss apart from a safe-to-replay pre-commit failure.
 		return fmt.Errorf("commit write tx: %w (%w)", err, errCommitPhase)

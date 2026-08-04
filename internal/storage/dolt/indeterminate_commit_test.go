@@ -6,16 +6,21 @@ import (
 	"database/sql/driver"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 // failureDriver provides deterministic pre-commit and commit-phase connection
 // failures for the L6.4 retry-boundary tests.
 type failureDriver struct {
 	begins     atomic.Int32
+	prepares   atomic.Int32
 	failBegin  atomic.Int32
-	failCommit bool
+	commitMu   sync.Mutex
+	commitErrs []error
 }
 
 var testConnectionLoss = errors.New("invalid connection")
@@ -29,6 +34,7 @@ func (d *failureDriver) Driver() driver.Driver { return d }
 type failureConn struct{ driver *failureDriver }
 
 func (c *failureConn) Prepare(string) (driver.Stmt, error) {
+	c.driver.prepares.Add(1)
 	return nil, errors.New("failure driver does not prepare statements")
 }
 func (c *failureConn) Close() error { return nil }
@@ -44,12 +50,20 @@ func (c *failureConn) Begin() (driver.Tx, error) {
 type failureTx struct{ driver *failureDriver }
 
 func (t *failureTx) Commit() error {
-	if t.driver.failCommit {
-		return testConnectionLoss
-	}
-	return nil
+	return t.driver.nextCommitError()
 }
 func (t *failureTx) Rollback() error { return nil }
+
+func (d *failureDriver) nextCommitError() error {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+	if len(d.commitErrs) == 0 {
+		return nil
+	}
+	err := d.commitErrs[0]
+	d.commitErrs = d.commitErrs[1:]
+	return err
+}
 
 var _ driver.Connector = (*failureDriver)(nil)
 
@@ -60,7 +74,7 @@ func newFailureStore(d *failureDriver) *DoltStore {
 // TestIndeterminateCommitIsSurfacedNotRetried pins L6.4: a connection loss
 // during COMMIT is surfaced as indeterminate and the write is attempted once.
 func TestIndeterminateCommitIsSurfacedNotRetried(t *testing.T) {
-	driver := &failureDriver{failCommit: true}
+	driver := &failureDriver{commitErrs: []error{testConnectionLoss}}
 	store := newFailureStore(driver)
 	defer func() { _ = store.db.Close() }()
 
@@ -76,6 +90,55 @@ func TestIndeterminateCommitIsSurfacedNotRetried(t *testing.T) {
 	}
 	if got := driver.begins.Load(); got != 1 {
 		t.Errorf("write attempts after lost commit = %d, want 1", got)
+	}
+}
+
+func TestDoltAutocommitRollbackCommitIsRetried(t *testing.T) {
+	rollback := &mysql.MySQLError{
+		Number:  1105,
+		Message: "Merge conflict detected, @autocommit transaction rolled back",
+	}
+	driver := &failureDriver{commitErrs: []error{rollback}}
+	store := newFailureStore(driver)
+	defer func() { _ = store.db.Close() }()
+
+	var callbacks atomic.Int32
+	if err := store.withRetryTx(context.Background(), func(*sql.Tx) error {
+		callbacks.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatalf("withRetryTx() error = %v, want nil", err)
+	}
+	if got := driver.begins.Load(); got != 2 {
+		t.Errorf("Begin calls = %d, want 2", got)
+	}
+	if got := callbacks.Load(); got != 2 {
+		t.Errorf("callback invocations = %d, want 2", got)
+	}
+}
+
+func TestTyped1105CommitErrorIsDefiniteAndNotRetried(t *testing.T) {
+	cause := &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"}
+	driver := &failureDriver{commitErrs: []error{cause}}
+	store := newFailureStore(driver)
+	defer func() { _ = store.db.Close() }()
+
+	var callbacks atomic.Int32
+	err := store.withRetryTx(context.Background(), func(*sql.Tx) error {
+		callbacks.Add(1)
+		return nil
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("withRetryTx() error = %v, want %v", err, cause)
+	}
+	if errors.Is(err, errCommitPhase) {
+		t.Fatalf("withRetryTx() error = %v must not be marked commit-indeterminate", err)
+	}
+	if got := driver.begins.Load(); got != 1 {
+		t.Errorf("Begin calls = %d, want 1", got)
+	}
+	if got := callbacks.Load(); got != 1 {
+		t.Errorf("callback invocations = %d, want 1", got)
 	}
 }
 

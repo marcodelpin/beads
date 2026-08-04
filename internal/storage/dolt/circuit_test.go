@@ -1,6 +1,7 @@
 package dolt
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 func TestCircuitBreaker_InitiallyAllows(t *testing.T) {
@@ -555,6 +558,7 @@ func TestIsConnectionError(t *testing.T) {
 		{"table not found (not connection)", errors.New("Error 1146: Table doesn't exist"), false},
 		{"unknown database (not connection)", errors.New("Unknown database 'test'"), false},
 		{"read only (not connection)", errors.New("database is read only"), false},
+		{"typed 1105 with connection-like wording", &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"}, false},
 	}
 
 	for _, tt := range tests {
@@ -564,6 +568,31 @@ func TestIsConnectionError(t *testing.T) {
 				t.Errorf("isConnectionError(%v) = %v, want %v", tt.err, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestWithRetryTyped1105DoesNotRetryOrTripCircuit(t *testing.T) {
+	t.Setenv("BEADS_TEST_MODE", "")
+	breaker := newTestCircuitBreaker(t)
+	for range circuitFailureThreshold - 1 {
+		breaker.RecordFailure()
+	}
+	store := &DoltStore{breaker: breaker}
+	err := &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"}
+
+	calls := 0
+	got := store.withRetry(context.Background(), func() error {
+		calls++
+		return err
+	})
+	if !errors.Is(got, err) {
+		t.Fatalf("withRetry() error = %v, want %v", got, err)
+	}
+	if calls != 1 {
+		t.Fatalf("withRetry() calls = %d, want 1", calls)
+	}
+	if state := breaker.State(); state != circuitClosed {
+		t.Fatalf("circuit state = %q, want %q", state, circuitClosed)
 	}
 }
 

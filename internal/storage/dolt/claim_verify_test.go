@@ -1,10 +1,14 @@
 package dolt
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -42,6 +46,56 @@ func rawClaim(t *testing.T, s *DoltStore, id, actor string) error {
 		_, err := issueops.ClaimIssueInTx(ctx, tx, id, actor)
 		return err
 	})
+}
+
+func TestVerifiedClaimWriteDoesNotReplayDefiniteMySQLError(t *testing.T) {
+	cause := &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"}
+	driver := &failureDriver{commitErrs: []error{cause}}
+	store := newFailureStore(driver)
+	store.serverMode = true
+	defer func() { _ = store.db.Close() }()
+
+	calls := 0
+	err := store.verifiedClaimWrite(context.Background(), "claim-target", claimedBy("alice"), func() error {
+		calls++
+		return store.withRetryTx(context.Background(), func(*sql.Tx) error { return nil })
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("verifiedClaimWrite() error = %v, want %v", err, cause)
+	}
+	if calls != 1 {
+		t.Fatalf("definite MySQL response entered claim replay: calls = %d, want 1", calls)
+	}
+	if got := driver.prepares.Load(); got != 1 {
+		t.Fatalf("definite MySQL response entered claim verification: prepares = %d, want only the initial wisp lookup", got)
+	}
+}
+
+func TestVerifiedReadyClaimDoesNotReplayDefiniteMySQLError(t *testing.T) {
+	cause := &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"}
+	driver := &failureDriver{commitErrs: []error{cause}}
+	store := newFailureStore(driver)
+	store.serverMode = true
+	defer func() { _ = store.db.Close() }()
+
+	calls := 0
+	claimed, err := store.verifiedReadyClaim(context.Background(), "alice", func() (*types.Issue, error) {
+		calls++
+		err := store.withRetryTx(context.Background(), func(*sql.Tx) error { return nil })
+		return &types.Issue{ID: "ready-target"}, err
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("verifiedReadyClaim() error = %v, want %v", err, cause)
+	}
+	if claimed != nil {
+		t.Fatalf("verifiedReadyClaim() issue = %+v, want nil on definite error", claimed)
+	}
+	if calls != 1 {
+		t.Fatalf("definite MySQL response entered ready-claim replay: calls = %d, want 1", calls)
+	}
+	if got := driver.prepares.Load(); got != 0 {
+		t.Fatalf("definite MySQL response entered ready-claim verification: prepares = %d, want 0", got)
+	}
 }
 
 // TestVerifiedClaimWriteConvertsAppliedIndeterminate: the wy-x543k direction —

@@ -81,6 +81,18 @@ func isSerializationError(err error) bool {
 	return mysqlErr.Number == 1213 || mysqlErr.Number == 1205
 }
 
+// isDoltAutocommitRollbackError reports Dolt's explicit, rollback-guaranteed
+// commit conflict. A MySQL error is retried only when its decoded code and
+// server-provided semantic message identify this condition; newer Dolt builds
+// append recovery guidance after the same sentence.
+func isDoltAutocommitRollbackError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) &&
+		mysqlErr.Number == 1105 &&
+		(mysqlErr.Message == "Merge conflict detected, @autocommit transaction rolled back" ||
+			strings.HasPrefix(mysqlErr.Message, "Merge conflict detected, @autocommit transaction rolled back."))
+}
+
 // wrapDBError wraps a database error with operation context.
 // If err is sql.ErrNoRows, it is converted to storage.ErrNotFound.
 // If err is nil, nil is returned.

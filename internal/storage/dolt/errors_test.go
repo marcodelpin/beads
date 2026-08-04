@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	mysql "github.com/go-sql-driver/mysql"
+
 	"github.com/steveyegge/beads/internal/storage"
 )
 
@@ -271,4 +273,30 @@ func TestIsBranchTrackingError(t *testing.T) {
 			t.Error("expected false for nil error")
 		}
 	})
+}
+
+func TestIsDoltAutocommitRollbackError(t *testing.T) {
+	exact := &mysql.MySQLError{
+		Number:  1105,
+		Message: "Merge conflict detected, @autocommit transaction rolled back",
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "exact typed Dolt rollback", err: fmt.Errorf("dolt commit: %w", exact), want: true},
+		{name: "typed Dolt rollback with recovery guidance", err: &mysql.MySQLError{Number: 1105, Message: exact.Message + ". @autocommit must be disabled"}, want: true},
+		{name: "untyped matching text", err: errors.New(exact.Error()), want: false},
+		{name: "other typed 1105", err: &mysql.MySQLError{Number: 1105, Message: "Merge conflict detected"}, want: false},
+		{name: "typed connection-like 1105", err: &mysql.MySQLError{Number: 1105, Message: "connection lost while validating commit"}, want: false},
+		{name: "same text wrong code", err: &mysql.MySQLError{Number: 1213, Message: exact.Message}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDoltAutocommitRollbackError(tc.err); got != tc.want {
+				t.Errorf("isDoltAutocommitRollbackError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
 }
