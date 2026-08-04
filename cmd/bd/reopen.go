@@ -77,6 +77,10 @@ This is more explicit than 'bd update --status open' and emits a Reopened event.
 				Actor:   actor,
 				IssueID: fullID,
 				Reason:  reason,
+				// Names the issue for the reason `bd close`'s does, and keeps
+				// the entry identical across backends: the proxied route
+				// already writes "bd: reopen <ids>".
+				Provenance: "bd: reopen " + fullID,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error reopening %s: %v\n", fullID, err)

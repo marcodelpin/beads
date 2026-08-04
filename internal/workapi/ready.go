@@ -83,7 +83,15 @@ func BuildReadyFilter(in issueops.ReadyRequest) (types.WorkFilter, error) {
 	}
 
 	if !filter.SortPolicy.IsValid() {
-		return filter, fmt.Errorf("invalid sort policy '%s'. Valid values: hybrid, priority, oldest", in.Sort)
+		// A deterministic request-validation failure, so it matches
+		// ErrValidation: every role whose filter vocabulary this builds —
+		// Reader.Ready, ReadyClaimer.ClaimNext and BatchCloser's ClaimNext —
+		// promises a caller can classify one with errors.Is rather than by
+		// reading prose. The wrap is %.0w rather than a "%w: " prefix because
+		// this text is what `bd ready --sort bogus` prints verbatim behind
+		// "Error: "; prefixing it would change user-visible copy to say
+		// something the reader already knows.
+		return filter, fmt.Errorf("invalid sort policy '%s'. Valid values: hybrid, priority, oldest%.0w", in.Sort, issueops.ErrValidation)
 	}
 	return filter, nil
 }

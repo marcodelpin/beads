@@ -639,6 +639,21 @@ func (s *configStore) IssueReader() (issueops.Reader, error) {
 func (s *configStore) IssueClaimer() (issueops.Claimer, error) {
 	return nil, &storage.ErrUnsupported{Op: "IssueClaimer", Backend: "jira-config-stub"}
 }
+func (s *configStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
+	return nil, &storage.ErrUnsupported{Op: "ReadyClaimer", Backend: "jira-config-stub"}
+}
+func (s *configStore) BatchCloser() (issueops.BatchCloser, error) {
+	return nil, &storage.ErrUnsupported{Op: "BatchCloser", Backend: "jira-config-stub"}
+}
+func (s *configStore) DependencyEditor() (issueops.DependencyEditor, error) {
+	return nil, &storage.ErrUnsupported{Op: "DependencyEditor", Backend: "jira-config-stub"}
+}
+func (s *configStore) Commenter() (issueops.Commenter, error) {
+	return nil, &storage.ErrUnsupported{Op: "Commenter", Backend: "jira-config-stub"}
+}
+func (s *configStore) IssueRelations() (issueops.Relations, error) {
+	return nil, &storage.ErrUnsupported{Op: "IssueRelations", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {

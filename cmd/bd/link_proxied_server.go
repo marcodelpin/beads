@@ -23,7 +23,7 @@ func runLinkProxiedServer(cmd *cobra.Command, ctx context.Context, args []string
 	}
 
 	if !dt.IsValid() {
-		return HandleErrorRespectJSON("invalid dependency type %q: must be non-empty and at most 50 characters", depType)
+		return HandleErrorRespectJSON("invalid dependency type %q: must be non-empty and at most %d characters", depType, types.MaxDependencyTypeLen)
 	}
 
 	if uowProvider == nil {
@@ -32,6 +32,9 @@ func runLinkProxiedServer(cmd *cobra.Command, ctx context.Context, args []string
 
 	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (depAddResult, string, error) {
 		dep := &types.Dependency{IssueID: id1, DependsOnID: id2, Type: dt}
+		// Source-routed, like the direct twin's store.AddDependencyWithOptions:
+		// `bd link` takes whatever id the caller names, and a wisp source has no
+		// row in the issues plane for the edge to hang off.
 		if _, err := uw.DependencyUseCase().AddDependencies(ctx, []*types.Dependency{dep}, actor, domain.BulkAddDepsOpts{}); err != nil {
 			return depAddResult{}, "", err
 		}

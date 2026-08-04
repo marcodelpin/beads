@@ -36,8 +36,13 @@ import (
 //   - any other error         -> honest failure (CAS lost, not-claimable, or
 //     pre-commit errors withRetryTx already retried); no verify needed
 //
-// Wisps are exempt: they are ephemeral, never leased, and not reclaimable
-// coordination state.
+// A claim the caller NAMES by id is exempt when the id is a wisp: wisps are
+// ephemeral, never leased, and not reclaimable coordination state, so the
+// verify round trip buys nothing. A READY claim is different — it does not know
+// what it won until the write has run, and what it won may be a wisp, because
+// the ready set follows the request's filter and IncludeEphemeral admits the
+// wisp plane. That one verifies whatever it claimed, in the plane it wrote
+// (see readReadyClaimState).
 
 // claimPostcondition describes the row state a claim-family write must leave
 // behind to count as applied, plus the words to use when it didn't.
@@ -128,11 +133,37 @@ func guardedUpdatePostcondition(opts storage.UpdateIssueOptions, updates map[str
 // transaction. withReadTx retries transient connection errors itself, so a
 // failure here means the server is genuinely unreachable, not a blip.
 func (s *DoltStore) readClaimState(ctx context.Context, id string) (string, types.Status, error) {
+	return s.readClaimStateIn(ctx, "issues", id)
+}
+
+// readReadyClaimState re-reads a ready claim's winner in the plane the claim
+// actually wrote. A ready claim can win an ephemeral row — the ready set is
+// whatever the request's filter admits, and IncludeEphemeral admits the wisp
+// plane — and issueops.ClaimIssueInTx routes the compare-and-set by plane
+// (IsActiveWispInTx then WispTableRouting), so the compare-and-set lands on
+// wisps. Verifying that against `issues` finds no row and reports a write that
+// demonstrably succeeded as unverifiable (bd-yby99.4).
+//
+// A failed plane probe degrades to the issues plane, which is where a durable
+// claim — the overwhelmingly common case — belongs anyway.
+func (s *DoltStore) readReadyClaimState(ctx context.Context, id string) (string, types.Status, error) {
+	if s.isActiveWisp(ctx, id) {
+		return s.readClaimStateIn(ctx, "wisps", id)
+	}
+	return s.readClaimStateIn(ctx, "issues", id)
+}
+
+// readClaimStateIn is readClaimState against a named plane. Both planes carry
+// the same two coordination columns, so the postcondition is the same either
+// way; only the table differs.
+//
+//nolint:gosec // G201: table is one of the two plane names this file passes.
+func (s *DoltStore) readClaimStateIn(ctx context.Context, table, id string) (string, types.Status, error) {
 	var assignee sql.NullString
 	var status types.Status
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx,
-			`SELECT assignee, status FROM issues WHERE id = ?`, id,
+			`SELECT assignee, status FROM `+table+` WHERE id = ?`, id,
 		).Scan(&assignee, &status)
 	})
 	if err != nil {

@@ -14,11 +14,36 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
-	"github.com/steveyegge/beads/internal/storage/domain"
-	"github.com/steveyegge/beads/internal/storage/issueops"
+	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/issueops"
 )
+
+// addDependencyEdgesDirect asserts edges through the DependencyEditor role on
+// st — the store that owns the source issue.
+//
+// It is addDependencyEdgesProxied's twin, and reaches the role the same way:
+// through the ACCESSOR, never a constructor, because the accessor is where each
+// storage decorator adds its layer. Built per write site rather than once per
+// command, for the reason writeOps gives — a routed source hands back an editor
+// carrying its own stack.
+//
+// skipPerEdgeCycleCheck is a separate argument from the --no-cycle-check flag
+// for the reason the proxied twin states: only the bulk path trades the
+// per-edge probe away.
+func addDependencyEdgesDirect(ctx context.Context, st storage.DoltStorage, edges []issueops.DependencyEdge, skipPerEdgeCycleCheck bool) error {
+	editor, err := st.DependencyEditor()
+	if err != nil {
+		return err
+	}
+	_, err = editor.AddDependencies(ctx, issueops.AddDependenciesRequest{
+		Actor:                 actor,
+		Edges:                 edges,
+		SkipPerEdgeCycleCheck: skipPerEdgeCycleCheck,
+	})
+	return err
+}
 
 // exactDependencyTarget returns the depends_on_id of a raw dependency edge on
 // issueID that equals rawTarget exactly. Used by `bd dep remove` so a bare
@@ -218,13 +243,12 @@ Examples:
 				return HandleErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
 			}
 
-			dep := &types.Dependency{
-				IssueID:     fromID,
-				DependsOnID: toID,
-				Type:        types.DependencyType(depType),
+			opsCtx, err := issueOpsContext(ctx)
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
-
-			if err := fromStore.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{EmitEvent: true}); err != nil {
+			edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: types.DependencyType(depType)}
+			if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
 
@@ -407,13 +431,12 @@ Examples:
 			return HandleErrorRespectJSON("%v", err)
 		}
 
-		dep := &types.Dependency{
-			IssueID:     fromID,
-			DependsOnID: toID,
-			Type:        dt,
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
-
-		if err := fromStore.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{EmitEvent: true}); err != nil {
+		edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
+		if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
@@ -450,28 +473,6 @@ type bulkDepInput struct {
 	Type        string `json:"type"`
 	IssueID     string `json:"issue_id"`
 	DependsOnID string `json:"depends_on_id"`
-}
-
-// newCycleThroughEdges runs a whole-graph cycle check inside the bulk-add
-// transaction and returns a rendered scheduling-cycle path when a cycle actually
-// traverses one of the edges being added, or "" when none does. Endpoint
-// membership is not enough: an issue sitting in a pre-existing committed
-// cycle must not block unrelated bulk wiring that merely touches it
-// (bd-578h9.9). Only blocks, conditional-blocks, and parent-child edges
-// participate. A failed check returns an error — the bulk add must roll back
-// rather than commit unverified edges (bd-6dnrw.8).
-func newCycleThroughEdges(ctx context.Context, tx storage.Transaction, edges []bulkDepEdge) (string, error) {
-	pairs := make([][2]string, 0, len(edges))
-	for _, edge := range edges {
-		if edge.Type != types.DepBlocks && edge.Type != types.DepConditionalBlocks && edge.Type != types.DepParentChild {
-			continue
-		}
-		pairs = append(pairs, [2]string{edge.IssueID, edge.DependsOnID})
-	}
-	if len(pairs) == 0 {
-		return "", nil
-	}
-	return tx.CycleThroughEdges(ctx, pairs)
 }
 
 type bulkDepEdge struct {
@@ -514,10 +515,27 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	}
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
-	commitMsg := fmt.Sprintf("dependency: add %d edges", len(resolved))
-	if err := transact(rootCtx, targetStore, commitMsg, func(tx storage.Transaction) error {
-		return addBulkDependenciesInTx(rootCtx, tx, resolved, noCycleCheck, actor)
-	}); err != nil {
+	depEdges := make([]issueops.DependencyEdge, 0, len(resolved))
+	for _, edge := range resolved {
+		depEdges = append(depEdges, issueops.DependencyEdge{
+			IssueID:     edge.IssueID,
+			DependsOnID: edge.DependsOnID,
+			Type:        edge.Type,
+		})
+	}
+
+	// One request, one transaction, one history entry. The role's
+	// all-or-nothing contract is what the hand-rolled bulk transaction used to
+	// spell out here, down to the parent-child-first ordering and the
+	// whole-graph gate that runs even when the per-edge probe is off — so the
+	// request replaces it rather than wrapping it. The version commit comes
+	// with the role, which is why there is no transact() and no
+	// commitPendingIfEmbedded around this call.
+	opsCtx, err := issueOpsContext(rootCtx)
+	if err != nil {
+		return err
+	}
+	if err := addDependencyEdgesDirect(opsCtx, targetStore, depEdges, noCycleCheck); err != nil {
 		return err
 	}
 
@@ -542,37 +560,6 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	}
 
 	fmt.Printf("%s Added %d dependencies\n", ui.RenderPass("✓"), len(resolved))
-	return nil
-}
-
-func addBulkDependenciesInTx(ctx context.Context, tx storage.Transaction, edges []bulkDepEdge, noCycleCheck bool, actor string) error {
-	// Make the complete planned hierarchy visible before validating any
-	// blocking edge, independent of input-file order.
-	for phase := 0; phase < 2; phase++ {
-		parentPhase := phase == 0
-		for _, edge := range edges {
-			if (edge.Type == types.DepParentChild) != parentPhase {
-				continue
-			}
-			dep := &types.Dependency{IssueID: edge.IssueID, DependsOnID: edge.DependsOnID, Type: edge.Type}
-			if err := tx.AddDependencyWithOptions(ctx, dep, actor, storage.DependencyAddOptions{SkipCycleCheck: noCycleCheck, EmitEvent: true}); err != nil {
-				return fmt.Errorf("line %d: %w", edge.Line, err)
-			}
-		}
-	}
-	// Always merge both transaction snapshots before commit. Per-edge checks
-	// cannot see uncommitted paths split across regular and wisp storage.
-	cyclePath, cycleErr := newCycleThroughEdges(ctx, tx, edges)
-	if cycleErr != nil {
-		return fmt.Errorf("final cycle check failed (no edges added): %w", cycleErr)
-	}
-	if cyclePath != "" {
-		// Type this rejection so callers can errors.Is(err, domain.ErrDependencyCycle),
-		// matching the proxied/domain bulk final gate. NewCycleError renders the
-		// message verbatim (no sentinel text appended), so the user-facing string
-		// is unchanged.
-		return domain.NewCycleError("dependency cycle would be created: %s (no edges added; run 'bd dep cycles' for analysis)", cyclePath)
-	}
 	return nil
 }
 
@@ -822,6 +809,12 @@ Examples:
 			}
 		}()
 
+		// The multi-id edge listing is a different question with a different
+		// answer shape — raw edge records keyed by source, printed per source —
+		// and no role describes it: Relations is anchored on ONE issue and
+		// answers with the issues on the far end of its edges, not with the
+		// edges themselves. It keeps the batched records read, exactly as the
+		// proxied route keeps its own unit of work for the same question.
 		if len(resolved) > 1 && direction == "down" {
 			allSameStore := true
 			firstStore := resolved[0].store
@@ -872,33 +865,36 @@ Examples:
 			}
 		}
 
-		var allIssues []*types.IssueWithDependencyMetadata
+		// The neighbor query is on the Relations role: one call per anchor, each
+		// with an explicit direction, because the role refuses to guess one. The
+		// accessor is taken per resolved anchor rather than once for the command
+		// — a routed anchor answers from its own store, carrying its own
+		// decorator stack.
+		request := issueops.RelatedRequest{Direction: issueops.RelationOut}
+		if direction == "up" {
+			request.Direction = issueops.RelationIn
+		}
+		if typeFilter != "" {
+			request.Types = []types.DependencyType{types.DependencyType(typeFilter)}
+		}
+
+		var allIssues []*issueops.RelatedIssue
 		for _, r := range resolved {
-			var issues []*types.IssueWithDependencyMetadata
-			var err error
-			if direction == "up" {
-				issues, err = r.store.GetDependentsWithMetadata(ctx, r.fullID)
-			} else {
-				issues, err = r.store.GetDependenciesWithMetadata(ctx, r.fullID)
-			}
+			rel, err := r.store.IssueRelations()
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
-			if typeFilter != "" {
-				var filtered []*types.IssueWithDependencyMetadata
-				for _, iss := range issues {
-					if string(iss.DependencyType) == typeFilter {
-						filtered = append(filtered, iss)
-					}
-				}
-				issues = filtered
+			request.ID = r.fullID
+			issues, err := rel.Related(ctx, request)
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
 			allIssues = append(allIssues, issues...)
 		}
 
 		if jsonOutput {
 			if allIssues == nil {
-				allIssues = []*types.IssueWithDependencyMetadata{}
+				allIssues = []*issueops.RelatedIssue{}
 			}
 			return outputJSON(allIssues)
 		}
@@ -1004,9 +1000,27 @@ var depRemoveCmd = &cobra.Command{
 		fullFromID := fromID
 		fullToID := toID
 
-		// Explicit dep verb: record a dependency_removed history event (parity
-		// with bd dep add's EmitEvent and the proxied bd dep remove path).
-		if err := fromStore.RemoveDependencyWithOptions(ctx, fullFromID, fullToID, actor, storage.DependencyRemoveOptions{EmitEvent: true}); err != nil {
+		// Explicit dep verb: the role records a dependency_removed history entry
+		// for a genuine removal, matching bd dep add's edge event and the
+		// proxied bd dep remove path.
+		//
+		// The role's Removed verdict is not printed, for the reason the proxied
+		// route gives: `bd dep remove` has always confirmed the same way whether
+		// or not an edge was there, and reporting the difference now would
+		// change what every existing script reads.
+		editor, err := fromStore.DependencyEditor()
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		if _, err := editor.RemoveDependency(opsCtx, issueops.RemoveDependencyRequest{
+			Actor:       actor,
+			IssueID:     fullFromID,
+			DependsOnID: fullToID,
+		}); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
@@ -1134,7 +1148,7 @@ node count is checked afterward (post-hoc), not during the walk.`,
 			return err
 		}
 		if treeMaxRows > 0 && len(tree) > treeMaxRows {
-			if capErr := handleMaxRowsError(&issueops.ErrTooManyRows{
+			if capErr := handleMaxRowsError(&storageissueops.ErrTooManyRows{
 				Found:  len(tree),
 				Cap:    treeMaxRows,
 				Source: treeMaxRowsSource,

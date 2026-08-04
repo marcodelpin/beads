@@ -42,8 +42,15 @@ func pickDepTable(useWisps bool) string {
 	return "dependencies"
 }
 
-func (r *dependencySQLRepositoryImpl) pickDepTargetColumn(ctx context.Context, dependsOnID string) (string, error) {
-	if strings.HasPrefix(dependsOnID, "external:") {
+// pickDepTargetColumn classifies an edge's target the same way the in-tx store
+// bodies do, through issueops.IsExternalDepTarget: a target this database
+// cannot hold — an "external:" reference or an issue belonging to another
+// repository — goes to depends_on_external, which carries no foreign key.
+// Only a target that could plausibly be local is probed against wisps and
+// otherwise treated as a local issue, where fk_dep_issue_target still refuses
+// an id that is genuinely missing.
+func (r *dependencySQLRepositoryImpl) pickDepTargetColumn(ctx context.Context, issueID, dependsOnID string) (string, error) {
+	if issueops.IsExternalDepTarget(issueID, dependsOnID) {
 		return "depends_on_external", nil
 	}
 	var probe int
@@ -127,7 +134,7 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		return fmt.Errorf("db: DependencySQLRepository.Insert: check existing: %w", err)
 	}
 
-	targetCol, err := r.pickDepTargetColumn(ctx, dep.DependsOnID)
+	targetCol, err := r.pickDepTargetColumn(ctx, dep.IssueID, dep.DependsOnID)
 	if err != nil {
 		return fmt.Errorf("db: DependencySQLRepository.Insert: %w", err)
 	}
@@ -214,8 +221,7 @@ func (r *dependencySQLRepositoryImpl) ValidateBlockingHierarchy(ctx context.Cont
 	if dep == nil {
 		return errors.New("db: DependencySQLRepository.ValidateBlockingHierarchy: dep must not be nil")
 	}
-	if strings.HasPrefix(dep.DependsOnID, "external:") ||
-		types.ExtractPrefix(dep.IssueID) != types.ExtractPrefix(dep.DependsOnID) {
+	if issueops.IsExternalDepTarget(dep.IssueID, dep.DependsOnID) {
 		return nil
 	}
 	return issueops.CheckBlockingHierarchyInTx(ctx, r.runner, dep, nil)
@@ -839,6 +845,18 @@ func (r *dependencySQLRepositoryImpl) CycleThroughEdges(ctx context.Context, edg
 		return "", fmt.Errorf("db: DependencySQLRepository.CycleThroughEdges (wisps): %w", err)
 	}
 	return issueops.CycleThroughEdgesInGraph(graph, edges), nil
+}
+
+// WispSourceIDs classifies a batch of ids by plane in one scoped query. It is
+// the proxied twin of the in-tx probe the store-backed dependency editor runs,
+// and shares its implementation so the two answer the same question — down to
+// treating a missing wisps table as "no wisps" rather than an error.
+func (r *dependencySQLRepositoryImpl) WispSourceIDs(ctx context.Context, ids []string) (map[string]struct{}, error) {
+	set, err := issueops.WispIDSetInTx(ctx, r.runner, ids)
+	if err != nil {
+		return nil, fmt.Errorf("db: DependencySQLRepository.WispSourceIDs: %w", err)
+	}
+	return set, nil
 }
 
 func (r *dependencySQLRepositoryImpl) GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error) {

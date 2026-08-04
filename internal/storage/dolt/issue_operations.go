@@ -52,7 +52,7 @@ func (o *issueOperations) Update(ctx context.Context, request issueops.UpdateReq
 		// The message names the issue because that is the one `bd dolt log`
 		// affordance callers actually grep, and it is what the CLI's own
 		// per-command commit wrote before updates moved onto this path.
-		return o.store.runIssueOperationTx(ctx, updateCommitMessage(snapshot.IssueID), func(tx *sql.Tx) (storageissueops.ChangedTables, error) {
+		return o.store.runIssueOperationTx(ctx, storageissueops.HistoryEntry(snapshot.Provenance, updateCommitMessage(snapshot.IssueID)), func(tx *sql.Tx) (storageissueops.ChangedTables, error) {
 			var err error
 			var tables storageissueops.ChangedTables
 			result, tables, err = storageissueops.ExecuteUpdate(ctx, tx, snapshot)
@@ -131,7 +131,7 @@ func (o *issueOperations) Close(ctx context.Context, request issueops.CloseReque
 func (o *issueOperations) Reopen(ctx context.Context, request issueops.ReopenRequest) (issueops.ReopenResult, error) {
 	snapshot := storageissueops.CloneReopenRequest(request)
 	var result issueops.ReopenResult
-	err := o.store.runIssueOperationTx(ctx, "bd: reopen issue", func(tx *sql.Tx) (storageissueops.ChangedTables, error) {
+	err := o.store.runIssueOperationTx(ctx, storageissueops.HistoryEntry(snapshot.Provenance, "bd: reopen issue"), func(tx *sql.Tx) (storageissueops.ChangedTables, error) {
 		var err error
 		var tables storageissueops.ChangedTables
 		result, tables, err = storageissueops.ExecuteReopen(ctx, tx, snapshot)

@@ -87,18 +87,39 @@ type ReadyRequest struct {
 	// stay distinguishable, which is what lets one constant serve both
 	// surfaces.
 	Limit *int
-	// Offset skips the first N matching rows, where the backend supports it.
+	// Offset skips the first N matching rows. It is honored by the
+	// unit-of-work implementation, which renders OFFSET; the store-backed one
+	// cannot, and REFUSES a non-zero Offset with a typed *ErrUnsupported
+	// naming the operation and the backend. What it never does is silently
+	// return an unpaged answer, so a caller that sets it either gets the page
+	// it asked for or an error it can classify with errors.As.
+	//
+	// A ready request carries no keyset position, so there is no portable way
+	// to page ready work. A caller that must page across backends pages a
+	// ListRequest instead — see ListRequest.Offset.
 	Offset int
 }
 
 // ListRequest describes one issue-list query.
 //
-// Like ReadyRequest it is high-level: the default status/template/gate/infra
-// exclusions, type validation, status parsing and limit defaulting are all
-// applied inside.
+// Like ReadyRequest it is high-level: the default
+// status/pinned/template/gate/infra exclusions, type validation, status
+// parsing and limit defaulting are all applied inside.
+//
+// PINNED is TWO exclusions rather than one, because a row can be pinned two
+// unrelated ways and each is hidden by its own predicate. The `pinned` STATUS
+// is one of the statuses the default status exclusion covers, alongside
+// `closed`; the separate Pinned FLAG — a marker on a row of any status — is
+// hidden by a predicate of its own. A row carrying either is absent from a
+// default listing, and the knob that takes each back off is a different one:
+// see Status for the first and PinnedFlag for the second.
 type ListRequest struct {
 	// Status selects statuses; one name, or a comma-separated OR set. Setting
 	// it REPLACES the default exclusions rather than fighting them.
+	//
+	// It replaces the STATUS ones only. The pinned-flag predicate survives it,
+	// so `pinned` and `hooked` are the two spellings that also drop that
+	// predicate — every other status narrows to unflagged rows.
 	Status string
 	// IssueType is validated against the workspace vocabulary — unlike
 	// ReadyRequest.IssueType, which matches nothing rather than failing.
@@ -143,6 +164,21 @@ type ListRequest struct {
 	PriorityMin *int
 	PriorityMax *int
 
+	// PinnedFlag and NoPinnedFlag select on the Pinned FLAG, which is not the
+	// `pinned` status — see this type's own doc for why there are two of them.
+	//
+	// PinnedFlag answers with the FLAGGED rows and only them, at any status: it
+	// drops the default status exclusions on the way, so a closed pinned row —
+	// which a default listing hides twice over — is in that answer.
+	//
+	// NoPinnedFlag asks for the UNFLAGGED rows, which a default listing already
+	// answers with. Its work is holding that predicate in place where AllFlag
+	// or a pinned/hooked Status would otherwise have dropped it, so on a
+	// default listing it changes nothing and on those it narrows.
+	//
+	// On the ReadyFlag arm neither applies: that set decides pinned for itself,
+	// which is why PinnedFlag is refused there and NoPinnedFlag merely accepted
+	// (see AllFlag).
 	PinnedFlag       bool
 	NoPinnedFlag     bool
 	IncludeTemplates bool
@@ -165,8 +201,38 @@ type ListRequest struct {
 	MetadataFields map[string]string
 	HasMetadataKey string
 
-	// AllFlag drops the default status exclusions; ReadyFlag switches the
-	// query to blocker-aware ready work under the list vocabulary.
+	// AllFlag drops the default status exclusions.
+	//
+	// ReadyFlag switches the query to the blocker-aware ready set. It does NOT
+	// simply add a blocker predicate to this listing: that query reads a
+	// narrower filter vocabulary than this request can describe, and only part
+	// of the request reaches it.
+	//
+	// WHAT IT CARRIES: IssueType, all five label forms, Assignee, NoAssignee,
+	// the exact Priority, ParentID, MolType, WispType, MetadataFields,
+	// HasMetadataKey, the type exclusions (ExcludeTypes, and with them
+	// IncludeGates and IncludeInfra), Limit and Offset. SortBy and Reverse
+	// still apply, because the display order is applied to the page after the
+	// query rather than inside it. Status and AllFlag are resolved to "open"
+	// and have no further effect: ready work is open work.
+	//
+	// WHAT IT REFUSES: every other filter here is one the ready query cannot
+	// carry, so combining it with ReadyFlag returns ErrValidation naming the
+	// fields rather than answering a wider question than was asked. That is
+	// IDFilter, TitleSearch, SpecPrefix, the four *Contains fields,
+	// ExternalRef, every Created/Updated/Closed/Defer/Due bound, DeferredFlag,
+	// OverdueFlag, EmptyDesc, NoLabels, NoParent, PinnedFlag, PriorityMin,
+	// PriorityMax, and the keyset position. There is no fallback: no
+	// combination of the two silently widens the answer.
+	//
+	// TWO THINGS THE READY SET DECIDES FOR ITSELF, which no field here
+	// overrides. It never returns pinned issues, which is why NoPinnedFlag is
+	// accepted and PinnedFlag refused. And it applies no template predicate at
+	// all, so this request's default template exclusion does not reach it and
+	// IncludeTemplates changes nothing here: a template is left out of a
+	// ReadyFlag listing only when its issue type is one the ready query
+	// already excludes. SkipLabels is likewise not carried — labels are
+	// hydrated either way, which costs time and not correctness.
 	AllFlag   bool
 	ReadyFlag bool
 
@@ -182,7 +248,17 @@ type ListRequest struct {
 	// is derived from it inside the implementation, together with the
 	// over-fetch that detects truncation.
 	Limit *int
-	// Offset skips the first N matching rows, where the backend supports it.
+	// Offset skips the first N matching rows. It is honored by the
+	// unit-of-work implementation, which renders OFFSET; the store-backed one
+	// cannot, and REFUSES a non-zero Offset with a typed *ErrUnsupported
+	// naming the operation and the backend. What it never does is silently
+	// return an unpaged answer, so a caller that sets it either gets the page
+	// it asked for or an error it can classify with errors.As.
+	//
+	// THE PORTABLE WAY TO PAGE IS THE KEYSET POSITION below,
+	// AfterCreatedAt/AfterID: every implementation honors it, and it does not
+	// skip or repeat rows when the result set changes underneath a walk.
+	// Offset is here for the surfaces that already published it.
 	Offset int
 
 	// AfterCreatedAt and AfterID carry a decoded keyset position in the
@@ -198,6 +274,45 @@ type GetRequest struct {
 	// resolution here: an interactive affordance that can resolve to a
 	// different issue than the caller named has no place on a contract two
 	// front doors share. The issue-to-wisp fallback DOES happen inside.
+	//
+	// THAT FALLBACK NEEDS NO PLANE ORDER, and this contract deliberately
+	// states none: no LOCAL WRITE PATH can make an id resident in both planes,
+	// so the state an order would arbitrate is not reachable by writing
+	// through this library. Every local write path closes it. A guarded create
+	// probes BOTH tables before inserting
+	// and answers ErrAlreadyExists for an id either one already holds. Every
+	// batch create — import, a graph apply, a cooked formula, a markdown
+	// import — refuses on top of that an id already resident in the SIBLING
+	// table, skipping the row rather than hard-failing only on the
+	// auto-import recovery path, which leaves the resident row alone.
+	// Promotion and demotion insert into the target plane and delete from the
+	// source inside ONE transaction, so their dual-presence window never
+	// commits. This is why the implementations are free to probe the planes in
+	// either order, and why they in fact differ — a documented non-issue
+	// rather than a latent divergence (bd-yby99.22).
+	//
+	// TWO CAVEATS ARE WORTH CARRYING, and the second is the load-bearing one.
+	//
+	// First: the graph-apply path served by a unit-of-work provider gets its
+	// refusal from a preflight ABOVE storage rather than from the create
+	// guard, so a future caller that reached the graph-apply use case directly
+	// would be the thing that made this reachable.
+	//
+	// Second, and NOT closed by anything here: REPLICATION. The durable plane
+	// merges from a remote on pull, the ephemeral tables are dolt-ignored and
+	// local-only, and no post-merge check reconciles the two — the collision
+	// guard is reachable only from the create path. So a clone holding a wisp
+	// whose id another clone promoted to durable receives that id into the
+	// issues plane while its own wisp row survives. That needs a deterministic
+	// id to collide at all, which explicit-id creates and the identically
+	// minted infra wisps supply. It is a REAL residual path, it is outside
+	// this library's reach, and the resulting state is worse than an
+	// unspecified plane order: the merge-based lookups behind ready and search
+	// hard-error for the whole store. A plane order here would not rescue it.
+	//
+	// So the honest statement is the scoped one — no local write path reaches
+	// dual residency, replication can, and a caller that hits it has a
+	// corrupt store rather than an ordering question (bd-yby99.22).
 	ID string
 	// IncludeDependents and IncludeComments populate the two expensive row
 	// lists. Both default off: the detail view carries counts, and a caller

@@ -45,7 +45,7 @@ import (
 // commands' JSON paths through the role would be worse.
 func New(store storage.DoltStorage) (issueops.Reader, error) {
 	if store == nil {
-		return nil, &storage.ErrUnsupported{Op: "storereader.New", Backend: "nil"}
+		return nil, &issueops.ErrUnsupported{Op: "storereader.New", Backend: "nil"}
 	}
 	return &storeReader{store: store}, nil
 }
@@ -54,7 +54,28 @@ type storeReader struct{ store storage.DoltStorage }
 
 var _ issueops.Reader = (*storeReader)(nil)
 
+// offsetBackend names the backend an Offset refusal comes from. One name for
+// both engines on purpose: the server-backed and embedded stores hand back
+// THIS body, and it is the body — not the engine underneath it — that cannot
+// page by offset.
+const offsetBackend = "dolt-store"
+
+// refuseOffset is the shared refusal. The store seam renders LIMIT without
+// OFFSET (internal/storage/issueops/ready_work.go, search_counts.go), so a
+// request carrying one used to come back as the unpaged first page with no
+// error on it — a caller paging with Offset saw the same rows forever. The
+// field is not dead: `bd ready/list/query --offset` are real flags, and their
+// direct routes already reject a non-zero offset before reaching any of this
+// (cmd/bd/ready.go, list.go, query.go). This is the same refusal one layer
+// down, for the callers that are not the CLI.
+func refuseOffset(op string) error {
+	return &issueops.ErrUnsupported{Op: op, Backend: offsetBackend}
+}
+
 func (r *storeReader) Ready(ctx context.Context, req issueops.ReadyRequest) (issueops.IssuePage, error) {
+	if req.Offset != 0 {
+		return issueops.IssuePage{}, refuseOffset("Reader.Ready(Offset)")
+	}
 	filter, err := workapi.BuildReadyFilter(req)
 	if err != nil {
 		return issueops.IssuePage{}, err
@@ -78,6 +99,9 @@ func (r *storeReader) Ready(ctx context.Context, req issueops.ReadyRequest) (iss
 }
 
 func (r *storeReader) List(ctx context.Context, req issueops.ListRequest) (issueops.IssuePage, error) {
+	if req.Offset != 0 {
+		return issueops.IssuePage{}, refuseOffset("Reader.List(Offset)")
+	}
 	cfg, err := workapi.LoadStoreListConfig(ctx, r.store)
 	if err != nil {
 		return issueops.IssuePage{}, err

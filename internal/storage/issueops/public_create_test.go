@@ -152,6 +152,51 @@ func TestValidatePublicCreateRequestAllowsEmptyWaitsForGate(t *testing.T) {
 	}
 }
 
+// TestValidatePublicCreateRequestRejectsUnknownWaitsForGate is the other half
+// of the clause above: the leaf says an empty Gate defaults to
+// WaitsForAllChildren and that "otherwise only the exported waits-for gate
+// constants are valid" (issueops/issueops.go:149-152). Only the permissive
+// half was pinned, so an unknown gate could have started defaulting silently —
+// which is a readiness primitive quietly answering the wrong question rather
+// than refusing.
+//
+// This lives at the shared validator rather than in the conformance contract
+// because all three Lifecycle backends reach it: the two stores through
+// ExecuteCreate and the unit-of-work one through its own Create
+// (internal/storage/uow/issue_operations.go:64).
+func TestValidatePublicCreateRequestRejectsUnknownWaitsForGate(t *testing.T) {
+	for _, gate := range []string{"bogus", "ALL_CHILDREN", " all_children"} {
+		t.Run(gate, func(t *testing.T) {
+			err := ValidatePublicCreateRequest(publicops.CreateRequest{
+				Actor:    "a",
+				Issue:    &publicops.Issue{Title: "x"},
+				WaitsFor: &publicops.WaitsFor{SpawnerID: "bd-spawner", Gate: gate},
+			})
+			if !errors.Is(err, storage.ErrValidation) {
+				t.Fatalf("ValidatePublicCreateRequest() with gate %q error = %v, want ErrValidation", gate, err)
+			}
+		})
+	}
+}
+
+// TestValidatePublicCreateRequestAcceptsTheExportedWaitsForGates keeps the
+// refusal above honest: the two exported constants must still pass, so the
+// check cannot be tightened into rejecting everything.
+func TestValidatePublicCreateRequestAcceptsTheExportedWaitsForGates(t *testing.T) {
+	for _, gate := range []string{string(publicops.WaitsForAllChildren), string(publicops.WaitsForAnyChildren)} {
+		t.Run(gate, func(t *testing.T) {
+			err := ValidatePublicCreateRequest(publicops.CreateRequest{
+				Actor:    "a",
+				Issue:    &publicops.Issue{Title: "x"},
+				WaitsFor: &publicops.WaitsFor{SpawnerID: "bd-spawner", Gate: gate},
+			})
+			if err != nil {
+				t.Fatalf("ValidatePublicCreateRequest() with gate %q error = %v, want nil", gate, err)
+			}
+		})
+	}
+}
+
 func TestValidatePublicCreateRequestRejectsInvalidImportedRelations(t *testing.T) {
 	checks := []struct {
 		name    string

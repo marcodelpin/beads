@@ -130,20 +130,30 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		}
 
 		if claimReady {
-			claimed, err := activeStore.ClaimReadyIssue(ctx, filter, actor)
+			// The claim is on the ReadyClaimer role, through the store's own
+			// accessor, so selection, the compare-and-set and the hydration
+			// that feeds --json all share one transaction. The listing below
+			// is not on a role and still builds the filter, for the reasons
+			// issueops.Reader's doc comment gives.
+			claimer, err := activeStore.ReadyClaimer()
 			if err != nil {
-				if capErr := handleMaxRowsError(err); capErr != nil {
-					return capErr
-				}
 				return HandleErrorRespectJSON("%v", err)
 			}
-			if claimed == nil {
+			res, err := claimer.ClaimNext(ctx, claimNextRequest(in))
+			if err != nil {
+				// No handleMaxRowsError here, unlike the listing below: the
+				// request carries no cap, so ErrTooManyRows cannot come back.
+				// See claimNextRequest for why the cap never applied.
+				return HandleErrorRespectJSON("%v", err)
+			}
+			if res.Claimed == nil {
 				if jsonOutput {
 					return outputJSON([]*types.IssueWithCounts{})
 				}
 				fmt.Printf("\n%s No ready work to claim\n\n", ui.RenderWarn("○"))
 				return nil
 			}
+			claimed := res.Claimed
 			if err := commitPendingIfEmbedded(ctx, activeStore, actor, doltAutoCommitParams{
 				Command:  "ready",
 				IssueIDs: []string{claimed.ID},
@@ -152,7 +162,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			}
 			SetLastTouchedID(claimed.ID)
 			if jsonOutput {
-				return outputJSON(buildReadyIssueOutput(ctx, activeStore, []*types.Issue{claimed}))
+				return outputJSON([]*types.IssueWithCounts{claimed})
 			}
 			fmt.Printf("%s Claimed issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(claimed.ID, claimed.Title))
 			return nil
@@ -400,47 +410,6 @@ func displayReadyList(issues []*types.Issue, parentEpicMap map[string]string) {
 	fmt.Printf("Ready: %d issues with no active blockers\n", len(issues))
 	fmt.Println()
 	fmt.Println("Status: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred")
-}
-
-func buildReadyIssueOutput(ctx context.Context, s storage.DoltStorage, issues []*types.Issue) []*types.IssueWithCounts {
-	if issues == nil {
-		issues = []*types.Issue{}
-	}
-	issueIDs := make([]string, len(issues))
-	for i, issue := range issues {
-		issueIDs[i] = issue.ID
-	}
-
-	depCounts, _ := s.GetDependencyCounts(ctx, issueIDs)
-	allDeps, _ := s.GetDependencyRecordsForIssues(ctx, issueIDs)
-	commentCounts, _ := s.GetCommentCounts(ctx, issueIDs)
-
-	for _, issue := range issues {
-		issue.Dependencies = allDeps[issue.ID]
-	}
-
-	issuesWithCounts := make([]*types.IssueWithCounts, len(issues))
-	for i, issue := range issues {
-		counts := depCounts[issue.ID]
-		if counts == nil {
-			counts = &types.DependencyCounts{DependencyCount: 0, DependentCount: 0}
-		}
-		var parent *string
-		for _, dep := range allDeps[issue.ID] {
-			if dep.Type == types.DepParentChild {
-				parent = &dep.DependsOnID
-				break
-			}
-		}
-		issuesWithCounts[i] = &types.IssueWithCounts{
-			Issue:           issue,
-			DependencyCount: counts.DependencyCount,
-			DependentCount:  counts.DependentCount,
-			CommentCount:    commentCounts[issue.ID],
-			Parent:          parent,
-		}
-	}
-	return issuesWithCounts
 }
 
 // readyExplainFilter is the filter both --explain routes run, derived from the

@@ -96,7 +96,7 @@ Examples:
 			return HandleErrorRespectJSON("%s", err)
 		}
 
-		comment, err := issueStore.AddIssueComment(ctx, result.ResolvedID, author, commentText)
+		comment, err := addCommentDirect(ctx, issueStore, result.ResolvedID, author, commentText)
 		if err != nil {
 			return HandleErrorRespectJSON("adding comment: %v", err)
 		}

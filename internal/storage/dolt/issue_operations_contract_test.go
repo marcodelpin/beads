@@ -43,6 +43,72 @@ func TestIssueOperationsUpdateClosedFieldsMatchClose(t *testing.T) {
 	conformance.RunIssueOperationsUpdateClosedFieldsMatchClose(t, ctx, fixture)
 }
 
+func TestIssueOperationsUpdateClaimConflictCarriesTheLosingState(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateClaimConflictCarriesTheLosingState(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateClaimHonorsConfiguredActiveStatuses(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateClaimHonorsConfiguredActiveStatuses(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateIssuePlaneOnlyRefusesWisps(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateIssuePlaneOnlyRefusesWisps(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateLabelPatchOrdering(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateLabelPatchOrdering(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateLabelPatchValueRules(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateLabelPatchValueRules(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateParentIDReplacesTheParentEdge(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateParentIDReplacesTheParentEdge(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateParentIDReplacesEveryParent(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateParentIDReplacesEveryParent(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateMetadataReplaceClearsAndValidates(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateMetadataReplaceClearsAndValidates(t, ctx, fixture)
+}
+
+func TestIssueOperationsRequestValuesAreNotMutated(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsRequestValuesAreNotMutated(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateProvenanceLabelsHistory(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateProvenanceLabelsHistory(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdatePersistentPreservesUnversionedClass(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdatePersistentPreservesUnversionedClass(t, ctx, fixture)
+}
+
 func newDoltIssueOperationsFixture(t *testing.T) (conformance.IssueOperationsStagingFixture, context.Context, func()) {
 	t.Helper()
 	store, storeCleanup := setupTestStore(t)

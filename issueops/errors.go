@@ -41,6 +41,28 @@ func (e *ClaimConflictError) Error() string { return e.Err.Error() }
 // Unwrap makes ClaimConflictError match the refusal it carries.
 func (e *ClaimConflictError) Unwrap() error { return e.Err }
 
+// ErrUnsupported reports something the caller asked for that this backend
+// cannot serve — a capability accessor it does not implement, or a request
+// field it will not honor. It is a TYPE rather than a sentinel because the
+// two facts a caller needs are which operation refused and which backend
+// refused it, and neither survives a formatted string.
+//
+// A backend returns it instead of quietly doing something narrower. The case
+// that made that rule explicit is Reader's Offset: the store-backed body
+// rendered LIMIT without OFFSET, so a caller that paged with it received the
+// first page over and over with no error to notice.
+//
+// It lives here so a caller holding only a role interface can classify the
+// refusal with errors.As without importing internal/storage.
+type ErrUnsupported struct {
+	Op      string // method name, e.g. "AddLabel" or "Transaction.CreateIssues"
+	Backend string // e.g. "dolt-server"
+}
+
+func (e *ErrUnsupported) Error() string {
+	return fmt.Sprintf("operation %q not supported by the %s backend", e.Op, e.Backend)
+}
+
 // ErrAssigneeMismatch is returned by UnclaimIssueIfAssignee when the issue's
 // current assignee does not match the expected assignee (including when the
 // issue is no longer assigned at all). The caller's view of the claim was
@@ -108,10 +130,10 @@ var ErrSelfDependency = errors.New("cannot add self-dependency")
 
 // ErrDependencyCycle is returned when adding a dependency edge would introduce a
 // scheduling cycle. It is scoped to the dependency-add family — the single and
-// bulk add paths (add/addBulk) and the dolt cross-tier check — so callers can
-// errors.Is any dependency-add cycle rejection. The whole-graph construction
-// paths (ApplyIssueGraph/ApplyWispGraph) are a separate family and deliberately
-// do not carry this sentinel yet.
+// bulk add paths (add/AddDependencies) and the dolt cross-tier check — so
+// callers can errors.Is any dependency-add cycle rejection. The whole-graph
+// construction paths (ApplyIssueGraph/ApplyWispGraph) are a separate family and
+// deliberately do not carry this sentinel yet.
 var ErrDependencyCycle = errors.New("adding dependency would create a cycle")
 
 // DependencyTypeConflictError is returned when an edge already exists between

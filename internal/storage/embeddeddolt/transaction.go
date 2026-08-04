@@ -28,10 +28,22 @@ func (s *EmbeddedDoltStore) RunInIssueLifecycleTransaction(ctx context.Context, 
 }
 
 func (s *EmbeddedDoltStore) runTransaction(ctx context.Context, commitMsg string, fn func(tx *embeddedTransaction) error) error {
+	return s.runTransactionWithMessage(ctx, func(tx *embeddedTransaction) (string, error) {
+		return commitMsg, fn(tx)
+	})
+}
+
+// runTransactionWithMessage is runTransaction for work whose commit message is
+// only known once the body has run. A ready claim names the id it won, and
+// nothing outside the transaction can predict which one that is.
+func (s *EmbeddedDoltStore) runTransactionWithMessage(ctx context.Context, fn func(tx *embeddedTransaction) (string, error)) error {
 	var tracker versioncontrolops.DirtyTableTracker
+	var commitMsg string
 
 	if err := s.withConn(ctx, true, func(tx *sql.Tx) error {
-		return fn(&embeddedTransaction{tx: tx, dirty: &tracker})
+		var err error
+		commitMsg, err = fn(&embeddedTransaction{tx: tx, dirty: &tracker})
+		return err
 	}); err != nil {
 		return err
 	}

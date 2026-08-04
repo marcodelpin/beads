@@ -11,6 +11,22 @@ import (
 	publicops "github.com/steveyegge/beads/issueops"
 )
 
+// HistoryEntry names the version-control entry a guarded mutation records: the
+// caller's own provenance label when it supplied one, otherwise the
+// implementation's default. It decides how the entry READS, never whether one
+// is recorded — that stays a question about what the mutation wrote.
+//
+// Every guarded mutation whose request carries a label calls this. Create is
+// the one that does not: no surface has ever named the created issue in its
+// commit message, so CreateRequest carries no label to spell and adding one
+// would be a field with no caller.
+func HistoryEntry(provenance, fallback string) string {
+	if provenance != "" {
+		return provenance
+	}
+	return fallback
+}
+
 // ExecuteCreate applies a guarded create in tx and reports durable tables changed.
 func ExecuteCreate(ctx context.Context, tx *sql.Tx, request publicops.CreateRequest) (publicops.CreateResult, ChangedTables, error) {
 	attempt := CloneCreateRequest(request)
@@ -110,6 +126,12 @@ func ExecuteUpdate(ctx context.Context, tx *sql.Tx, request publicops.UpdateRequ
 	}
 	if err := ValidateMetadataPatch(attempt.Patch.Metadata); err != nil {
 		return publicops.UpdateResult{}, nil, err
+	}
+	// The plane restriction is resolved HERE, inside the update's own
+	// transaction, so a caller that serves durable issues only cannot be handed
+	// a wisp by a resolve that ran earlier.
+	if attempt.IssuePlaneOnly && IsActiveWispInTx(ctx, tx, attempt.IssueID) {
+		return publicops.UpdateResult{}, nil, fmt.Errorf("%w: issue %s", storage.ErrNotFound, attempt.IssueID)
 	}
 	tables := ChangedTables{}
 	before, err := GetIssueInTx(ctx, tx, attempt.IssueID)

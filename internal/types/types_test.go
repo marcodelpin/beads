@@ -679,7 +679,11 @@ func TestIssueCompoundHelpers(t *testing.T) {
 }
 
 func TestDependencyTypeIsValid(t *testing.T) {
-	// IsValid now accepts any non-empty string up to 50 chars (Decision 004)
+	// IsValid accepts any non-empty string the type column can hold (Decision
+	// 004 for the open vocabulary; MaxDependencyTypeLen for the bound). The
+	// boundary cases below are the load-bearing ones: at the limit the type is
+	// storable and must be accepted, one past it no edge could carry it and a
+	// filter built from it would match nothing, so it is refused up front.
 	tests := []struct {
 		depType DependencyType
 		valid   bool
@@ -698,6 +702,8 @@ func TestDependencyTypeIsValid(t *testing.T) {
 		{DependencyType("custom-type"), true}, // Custom types are now valid
 		{DependencyType("any-string"), true},  // Any non-empty string is valid
 		{DependencyType(""), false},           // Empty is still invalid
+		{DependencyType(strings.Repeat("x", MaxDependencyTypeLen)), true},                            // Exactly the column width
+		{DependencyType(strings.Repeat("x", MaxDependencyTypeLen+1)), false},                         // One past it: unstorable
 		{DependencyType("this-is-a-very-long-dependency-type-that-exceeds-fifty-characters"), false}, // Too long
 	}
 

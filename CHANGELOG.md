@@ -168,7 +168,196 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `scoped` boolean so a reclaim log distinguishes a scoped sweep from a global
   one.
 
+- **A shared semantic contract for every issue role** (bd-yby99). Seven of the
+  eight role interfaces in `issueops` now have a backend-independent
+  conformance suite in `backend/conformance`, run against the Dolt server store,
+  the embedded Dolt store, and the unit-of-work provider. One hundred and
+  twenty-nine cases cover `Reader`, `Relations`, `Commenter`,
+  `DependencyEditor`, `ReadyClaimer`, `BatchCloser` and `Lifecycle` — the last
+  spanning Create, Update, Close and Reopen. The unit-of-work leg runs 127 of
+  them: the two staging cases assert which concrete Dolt tables a commit
+  staged, which that provider has no way to observe. Each case is written
+  against the promise
+  stated in the role's doc comment, cited by file and line, rather than against
+  any implementation's current behaviour, so the doc comment is the artefact
+  under test as much as the code is.
+
+  Read the three legs for what they are. The Dolt and embedded-Dolt stores
+  share one validate/execute body for six of the roles and the entire
+  implementation for `Reader`, so a green run on all three is **two readings of
+  the contract plus a wrapper-and-engine check**, not three independent votes.
+  The unit-of-work provider is the only separately written body, and every
+  divergence found so far where one backend disagreed with another rather than
+  all three with the doc has surfaced there.
+
+  Where an implementation contradicts its own doc comment the case still
+  asserts what the doc says, and the disagreeing backend is parked at its
+  wiring site with a greppable `KNOWN DIVERGENCE <bead>` skip, so the agreeing
+  backends stay pinned. Thirty-one findings have come out of that, all
+  children of `bd-yby99`: seven divergences, where the implementations
+  disagreed, and twenty-four spec gaps, where the doc was silent rather than
+  wrong and the case carried an in-file `SPEC-GAP <bead>` marker instead of an
+  invented assertion.
+
+  **Every parked case now runs.** The three findings that had a backend parked
+  are adjudicated and fixed, so the five `KNOWN DIVERGENCE` skips are gone and
+  all three legs run their full set with zero skips: an invalid `ClaimNext`
+  sort policy now matches `ErrValidation` (`bd-yby99.18`), a reparent on the
+  unit-of-work provider now replaces *every* parent edge (`bd-yby99.26`), and a
+  dependency removal on that provider now reaches the ephemeral plane
+  (`bd-yby99.17`). Each has its own entry below; none was resolved by weakening
+  a case.
+
+  Twenty-two of the spec gaps are adjudicated as well. In each the leaf doc
+  gained the promise it had been missing and the contract case was tightened to
+  assert it, in that order, because the doc is the spec and a case may never
+  assert more than the doc promises. Ten of the adjudications moved production
+  code rather than only the doc — `bd-ocrn7`, `.3`, `.4`, `.7`, `.8`, `.17`,
+  `.18`, `.19`, `.20` and `.26` — and each is a user-visible change with its own
+  entry below, not a quiet edit made to turn a case green.
+
+  Three findings remain open, and none is parked — no case skips anywhere.
+  `bd-yby99.9` is the doc's own admitted silence, named in the leaf text so a
+  caller does not read the silence as a promise: the dependency-existence
+  refusals still carry no error identity. `bd-yby99.1` is with `bd-soezd` for
+  measurement rather than adjudication. `bd-yby99.30` records a CLI
+  retry-safety property the `bd-yby99.19` decision traded away (see below).
+  The empty-string label question (`bd-yby99.28`, `bd-yby99.29`) is closed, not
+  open: the entry is now dropped on every backend and `LabelPatch` says so.
+  Five duplicated per-backend test files
+  were deleted outright and a sixth trimmed, their scenarios folded into the
+  shared cases; the Dolt-only facts they also pinned — history-entry message
+  spellings, working-set cleanliness, the GH#2455 no-op removal sweep — stay
+  Dolt-only in persistence tests.
+
 ### Changed
+
+- **An empty-string label is dropped rather than stored** (bd-yby99.29). Adding
+  or replacing labels with an empty value wrote a `labels` row keyed on `''` on
+  the Dolt-backed stores and dropped it on the unit-of-work one, so the same
+  edit left different rows depending on which route served it. Dropping wins on
+  both routes now: an edit carrying only an empty value changes nothing and
+  reports no change, and an empty value alongside real ones drops only itself
+  rather than failing the edit. A row that renders as nothing and matches
+  nothing was never worth storing, and refusing the whole update would have let
+  one stray value sink an otherwise-good multi-label edit. An empty row already
+  stored is left alone by add and remove, and cleared by a replace that omits
+  it — ordinary set behaviour, not a migration, so nothing sweeps existing data.
+
+- **An invalid sort policy is now a typed validation refusal** (bd-yby99.18).
+  Asking for a sort the ready query does not have — `--sort newest`, or a
+  `ClaimNext` sort on a batch close — was refused with a bare error carrying no
+  sentinel, on all three backends. A caller doing `errors.Is(err,
+  issueops.ErrValidation)` to separate "you asked for something impossible"
+  from "the database is unwell" classified it as a backend failure, which is
+  the wrong half of the role's own error trichotomy. It now wraps
+  `ErrValidation`. **The message text is byte-identical** — the wrap uses
+  `%.0w` deliberately — so the HTTP surface that prefix-matches it to render a
+  400 rather than a 500, and every script reading the printed line, are
+  unaffected.
+
+- **A batch close that changed nothing no longer claims work or records
+  history** (bd-yby99.19). `BatchCloser` couples `ClaimNext` to "at least one
+  item closed", and "closed" was being read as "the item returned no error" —
+  which an already-closed item does. A batch whose items were *all* already
+  closed therefore mutated nothing and still handed out a claim and wrote a
+  history entry. Landing now means **changed**: an all-idempotent batch earns
+  no claim and records no entry. A batch that closed even one item is
+  unaffected.
+
+  This has a cost worth stating plainly, tracked as `bd-yby99.30`. An agent
+  that closed an issue, crashed before receiving its next work item, and
+  retried `bd close <id> --claim-next` used to get work from the retry; it now
+  gets nothing, because the retry closes nothing. That retry-safety property
+  was deliberate, and the way to get it back without re-coupling a claim to a
+  no-op is for `cmd/bd` to call `ReadyClaimer.ClaimNext` itself when the batch
+  reports no change. That is a design call above the role seam and has not been
+  made.
+
+- **A batch's Dolt commit message no longer names wisp ids** (bd-yby99.20). A
+  batch may close ephemeral and durable items together, and the durable commit
+  message named every item that landed. Wisp tables are dolt-ignored, so that
+  message shipped a reference to work no other machine can resolve — the same
+  federation leak `Commenter` already guards against. The message is now
+  composed from durable landings alone and reports ephemeral ones as a count.
+  Closing a wisp still counts as work landing: a wisp-only batch still succeeds
+  and still earns its claim.
+
+- **Breaking: `bd list --ready` now refuses a filter it cannot honor instead
+  of silently ignoring it** (bd-yby99.8). The `--ready` arm reaches the
+  blocker-aware query through a narrower filter than the rest of `bd list`
+  uses, and everything that filter could not carry was dropped without a word:
+  `bd list --ready --id tst-d68` answered with every ready issue in the
+  workspace, not the one named. It now fails with a validation error naming the
+  fields it could not honor.
+
+  The refused combinations are `--ready` together with any of `--id`,
+  `--title`, `--spec`, `--title-contains`, `--desc-contains`,
+  `--notes-contains`, `--external-contains`, `--external-ref`, any
+  `--created/--updated/--closed/--defer/--due` bound, `--deferred`,
+  `--overdue`, `--empty-description`, `--no-labels`, `--no-parent`,
+  `--pinned`, `--priority-min`, `--priority-max`, or an HTTP list cursor. A
+  script that passed one of these was already getting the wrong answer; it now
+  gets an error instead of silently wrong rows. Everything `--ready` does carry
+  is unchanged — `--type`, all the label flags, `--assignee`, `--no-assignee`,
+  `--priority`, `--parent`, `--mol-type`, `--wisp-type`, `--metadata-field`,
+  `--has-metadata-key`, `--exclude-type`, `--include-gates`, `--include-infra`,
+  `--limit`, `--offset`, `--max-rows`, `--sort` and `--reverse` — as is
+  `--no-pinned`, which the ready query already satisfies by construction.
+
+  What `--ready` carries, what it refuses, and the two things the ready set
+  decides for itself (it never returns pinned issues, and it applies no template
+  predicate of its own) are now stated on `issueops.ListRequest.ReadyFlag` and
+  pinned by the Reader conformance contract at all three backends.
+
+- **`issueops.Reader` now refuses an `Offset` it cannot honor instead of
+  silently ignoring it** (bd-yby99.7). The store-backed reader — one body,
+  handed back by both the Dolt server store and the embedded store — renders
+  `LIMIT` without `OFFSET`, so a caller that paged with `Offset` got the
+  unpaged first page again and again with no error to notice: three matching
+  rows came back 3/3/3 at `Offset` 0/1/2. `Ready` and `List` now return a typed
+  `*issueops.ErrUnsupported` naming the operation and the backend. The
+  unit-of-work reader, which does render `OFFSET`, keeps honoring it, and both
+  behaviours are now pinned by one conformance case: an `Offset` is honored or
+  refused, never ignored.
+
+  **No CLI behaviour changes.** `bd ready --offset`, `bd list --offset` and
+  `bd query --offset` already rejected a non-zero offset on the direct route
+  and already reached the unit-of-work path under `--proxied-server`, where
+  offset paging works and is unaffected. This closes the same hole one layer
+  down, for callers built on the library rather than on the CLI.
+
+  `ErrUnsupported` moved into the public `issueops` package and is aliased back
+  from `internal/storage`, so a consumer holding only a role interface can
+  classify the refusal with `errors.As` without importing an internal package.
+  It is the same type throughout: `beads.ErrUnsupported` and
+  `storage.ErrUnsupported` are unchanged aliases and every existing `errors.As`
+  site keeps matching. The portable way to page a listing across backends is
+  the keyset position (`ListRequest.AfterCreatedAt`/`AfterID`), which every
+  implementation honors and which is stable under concurrent writes; ready work
+  carries no keyset and therefore has no portable paging.
+
+- **Breaking: a dependency type is now bounded at 32 characters, not 50**
+  (bd-yby99.3). The `type` column on both `dependencies` and
+  `wisp_dependencies` is `VARCHAR(32)` and no migration widens either, so the
+  validator's old 50-character bound accepted a range of types — 33 to 50
+  characters — that no row could ever carry. Depending on the caller, such a
+  type either failed at the database with a raw truncation error or was
+  silently cut short. `types.DependencyType.IsValid` now bounds at the new
+  exported `types.MaxDependencyTypeLen`, so the refusal arrives from one place,
+  ahead of every backend, with a typed validation error.
+
+  This narrows what bd accepts on twelve paths, among them `bd create --deps`,
+  `bd dep add --type`, `bd link --type`, `bd batch`, `bd graph apply` and
+  markdown import. In practice nothing in the wild should notice: every
+  well-known type is far shorter (the longest, `conditional-blocks`, is 18
+  characters), and `bd create --deps` accepts only well-known types anyway. The
+  user-visible error text changed too — messages that read `max 50 chars` or
+  `at most 50 characters` now name 32 — so a script matching on that literal
+  string needs updating. One rough edge is unchanged and worth knowing about:
+  `bd create`'s interactive form warns and drops an invalid dependency rather
+  than failing, so a 33-to-50-character type there now silently loses the edge
+  instead of creating an unstorable one.
 
 - **Breaking: `bd update --status <done-status>` now enforces close policy.**
   Moving an issue into `closed` (or any configured done-category status) via
@@ -205,6 +394,197 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels, dependency records or comments, unlike `UpdateResult` — because that
   is what the already-published v0 claim response and `bd update --claim --json`
   both report today.
+
+- **`issueops.ReopenRequest` gained a `Provenance` field, and `bd reopen` now
+  names the issue in its Dolt commit message on the direct path.** `Provenance`
+  is the same optional label `UpdateRequest` already carries: it names the
+  surface a mutation came from, it never changes *whether* a history entry is
+  recorded, and empty still selects the implementation's default. It exists on
+  this request because the defaults do not agree — the store-backed backends
+  write `bd: reopen issue` and the unit-of-work backend writes `reopen issue`,
+  neither naming the issue. A caller that spells a label now gets one entry
+  whichever backend served it. The visible change is in `bd dolt log` only: a
+  direct `bd reopen bd-1` reads `bd: reopen bd-1` where it read
+  `bd: reopen issue`, or `reopen issue` on the unit-of-work backend.
+
+  `UpdateRequest` and `ReopenRequest` are the only two requests that carry the
+  label, and deliberately so. `CreateRequest` gains nothing — no surface has
+  ever named the created issue, so the field would have no caller. Neither do
+  `CloseRequest`, `CloseBatchRequest`, `ClaimNextRequest`, `AddCommentRequest`,
+  `AddDependenciesRequest` or `RemoveDependencyRequest`: each of those roles
+  composes its entry from what the call actually did, so a caller-supplied
+  label could only restate it or contradict it. For the batch close and the
+  claim one is not even expressible — those messages name what LANDED and which
+  id the claim WON, neither of which is knowable before the call. For the
+  dependency verbs the entry follows the edges: one edge names both endpoints,
+  several name only their count, and — see the source-routing note below — a
+  request made entirely of wisp-sourced edges records no entry at all, leaving
+  a label nothing to name.
+
+- **Public `beads.Storage` interface gained required `DependencyEditor()`,
+  `Commenter()` and `IssueRelations()` methods.** Three more roles alongside
+  `IssueLifecycle()`, `IssueReader()`, `ReadyClaimer()` and `BatchCloser()`,
+  reached the same way and layered by each decorator in its own accessor.
+  Consumers that only *call* the interface are unaffected; any external type
+  that *implements* it (a custom store, mock, or proxy) must add all three to
+  compile, and a decorator must implement the two write roles by recursing into
+  the store it wraps rather than delegating blindly.
+
+  `DependencyEditor() (issueops.DependencyEditor, error)` edits the dependency
+  graph. `AddDependencies` asserts a set of edges as ONE durable act — one
+  transaction, at most one history entry — and is ALL-OR-NOTHING: any refused
+  edge (self-dependency, cycle, type conflict, hierarchy conflict, unknown
+  endpoint) refuses the whole request and writes nothing. Edges asserted
+  together describe a graph, and half a graph is a graph nobody asked for.
+  `RemoveDependency` is idempotent: a missing edge is `Removed: false` with a
+  nil error and no history entry, not `ErrNotFound`.
+
+  The dependency-type constants `issueops.DepBlocks`, `DepParentChild`,
+  `DepRelated`, `DepDiscoveredFrom`, `DepRepliesTo` and `DepWaitsFor` ship with
+  it. They are **documented common values of an OPEN, workspace-configurable
+  set** — not a closed enum, not exhaustive, and not validated against: nothing
+  refuses a type merely because it is absent from the list, and a workspace's
+  own type is a first-class value everywhere a `DependencyType` is accepted.
+  They exist because `internal/types` is unimportable outside the module, so
+  without them an external embedder can hold a `DependencyType` but has no
+  spell-checked way to name one — the same reason the error sentinels are
+  re-exported.
+
+  `Commenter() (issueops.Commenter, error)` appends one comment as one atomic
+  mutation. A blank `Text` is `ErrValidation`, as is an empty `IssueID`; the
+  issue-then-wisp fallback happens inside, as it does for `Reader.Get`; a
+  non-empty id naming neither plane is `ErrNotFound` — an unaddressed request
+  is invalid, not a thread that went missing, so the two are worth telling
+  apart. `issueops.Comment` (an alias for the canonical comment model)
+  is the result type. A comment on an ephemeral row records **no** durable
+  history entry — the wisp tables are dolt-ignored so ephemeral work never
+  ships, and an entry naming a wisp thread is exactly the artifact that
+  ignoring them prevents; the comment still lands on the ephemeral thread and
+  reads back from it.
+
+  `IssueRelations() (issueops.Relations, error)` reads an issue's neighbors.
+  `Related` requires an explicit `RelationOut` or `RelationIn` — **the zero
+  direction is `ErrValidation`, with no implicit "both"**, because a silent
+  default hands a caller the inverse graph with nothing to notice. An unusable
+  `Types` entry is `ErrValidation` rather than a filter that matches nothing,
+  and an anchor missing from both planes is `ErrNotFound` rather than an empty
+  list. The result order is pinned: ascending by the neighbor's id, with the
+  edge type breaking a tie.
+
+  `bd dep add`, `bd dep remove`, `bd dep list`, `bd comment` and
+  `bd comments add` are on these roles on BOTH routes — the direct one reaches
+  them through the store's own accessor exactly as the proxied one reaches them
+  through the provider's. Four behaviors changed on the
+  proxied route: `bd dep list` now answers in the pinned order rather than in
+  the order the two dependency tables happened to be read; a `bd dep list`
+  naming an issue that does not exist now reports that instead of printing an
+  empty neighbor list, matching what the direct route has always done; a
+  `bd dep remove` that finds no edge now records no Dolt commit at all, where
+  it used to name one; and a single-line `bd dep add --file` writes
+  `bd: dep add <a> <b>` rather than `dependency: add 1 edges`.
+
+  Four more changed on the direct route as it joined them. `bd dep list` there
+  now answers in the same pinned order. Dolt commit messages for the explicit
+  dep verbs are now the role's — `bd: dep add <a> <b>` and
+  `bd: dep remove <a> <b>` — where the direct path used to write
+  `dependency: add <type> <a> -> <b>` / `dependency: remove <a> -> <b>` in
+  server mode and a generic `bd: dep add (auto-commit) by <actor> [...]` in
+  embedded mode. A `bd dep add --file` edge refused by storage no longer
+  carries a `line N:` prefix, because the role's request is all-or-nothing and
+  names no edge index — parse and id-resolution errors still name their line.
+  And a `bd dep add --file` in embedded `batch`/`off` auto-commit mode now
+  defers its version commit to the next explicit commit point instead of always
+  writing one, which is what every other write verb already did.
+
+  `bd comment`'s direct route changed one thing with it, on the embedded
+  backend only: a comment's Dolt commit is now the role's `bd: comment <id>`
+  authored by `beads`, where the CLI auto-commit wrote
+  `bd: comment (auto-commit) by <actor> [<id>]` authored by `root`. That is
+  the spelling the Dolt server backend already wrote, and it is one commit per
+  comment either way. Comment LISTING (`bd comments <id>`) is on neither role
+  and unchanged on both routes: reading a thread is a paging question with a
+  cursor of its own, which `issueops.Commenter` deliberately excludes.
+
+  `DependencyEditor.AddDependencies` routes each edge by its SOURCE, the rule
+  the stores' own dependency verb has always applied and the one `bd dep
+  remove` and `bd dep list` already read: a wisp-sourced edge goes to
+  `wisp_dependencies` with its event in `wisp_events`, an issue-sourced one to
+  `dependencies` and `events`. Routing by source rather than pinning it to the
+  issues plane is what keeps `bd dep add <wisp-id> <target>` working: a wisp
+  has no row in the issues plane, so a pinned source has nothing to hang an
+  edge off, and the two routes would not even have failed alike — the direct
+  one on its source-existence check, the proxied one on an `fk_dep_issue`
+  foreign key violation. ONE REQUEST MAY MIX THE TWO: it is still one
+  transaction, the parent-child-first ordering and the whole-graph cycle gate
+  both span the two tables (a cross-plane cycle is still refused), and a
+  refusal rolls back both planes. Only the durable half is versioned, so a
+  request made entirely of wisp-sourced edges records no history entry and
+  leaves the working set clean — asserted end to end against a real embedded
+  store by `TestEmbeddedDepAddWispSource`, which runs `bd dep add <wisp-id>
+  <target>` at the front door. `bd link` on the proxied server routes the same
+  way, matching its direct twin. Behind the role there is no plane-pinned bulk
+  variant left to reach for by mistake: the internal domain layer's three bulk
+  add verbs are now the one source-routed `AddDependencies`, so every bulk
+  caller — role, `bd link`, unit of work — gets this rule and cannot opt out
+  of it.
+
+- **Public `beads.Storage` interface gained required `ReadyClaimer()` and
+  `BatchCloser()` methods.** Two more roles alongside `IssueLifecycle()` and
+  `IssueReader()`, reached the same way and layered by each decorator in its
+  own accessor. Consumers that only *call* the interface are unaffected; any
+  external type that *implements* it (a custom store, mock, or proxy) must add
+  both methods to compile, and a decorator must implement them by recursing
+  into the store it wraps rather than delegating blindly.
+
+  `ReadyClaimer() (issueops.ReadyClaimer, error)` takes ready work atomically:
+  `ClaimNext` selects, wins the compare-and-set and hydrates the row it won,
+  all in one transaction. Its filter is `issueops.ReadyRequest` — the same type
+  `Reader.Ready` takes — so the claim's predicate cannot drift from the set
+  `bd ready` shows; `Limit` and `Offset` on it are `ErrValidation`, because the
+  claim scan clears them and accepting a field only to drop it is worse than
+  refusing it. An empty ready front is a nil result with a nil error, not an
+  error class to classify.
+
+  `BatchCloser() (issueops.BatchCloser, error)` closes many issues as one
+  durable act: `CloseBatch` commits every item that lands in ONE transaction
+  with at most one history entry. The request is the transaction boundary —
+  nothing on the contract exposes begin or commit. It is deliberately not
+  all-or-nothing: a refused id is skipped and the survivors commit together, so
+  `CloseBatchResult.Outcomes` carries one entry per requested item in request
+  order, each with a typed `errors.Is`-able refusal that never aborts the rest.
+  An optional `ClaimNext` runs after the closes, in the same transaction, only
+  when at least one item closed.
+
+  `bd ready --claim` and `bd close` are on these roles on BOTH routes. Three
+  behaviors changed on the proxied route: the proxied claim's Dolt commit
+  message is now `bd: claim ready <id>`, the
+  spelling the other two backends already wrote (it was
+  `bd: ready --claim <id>`); molecule auto-close, `--suggest-next` and
+  `--continue` now run after the close transaction rather than inside it, which
+  is where the direct route has always run them — a plain `bd close a b c` is
+  still exactly one Dolt commit, while a close that actually auto-closes a
+  molecule or advances a step now produces two; and `bd close --claim-next`
+  walks the ready order and takes the first row it can win, where it used to
+  read the single top ready row and warn if that row had already been taken —
+  a race with another agent now claims the next candidate instead of claiming
+  nothing.
+
+  `bd close`'s direct route closed N ids as N transactions with N Dolt commits
+  until it joined them, so five things changed as it did. `bd close a b c` now
+  writes ONE commit named `bd: close a, b, c` instead of three named
+  `bd: close issue` — one request per STORE, since a transaction cannot span
+  the second repo a prefix-routed id reaches. `--claim-next` runs inside the
+  closes' transaction and only when something landed, walks the ready order the
+  way the proxied route already did, and its `--json` `claimed` value is now the
+  post-claim row (in_progress, assigned) rather than the pre-claim row the old
+  two-step read. Molecule auto-close runs after ALL the closes land rather than
+  between them — the root still closes exactly once; only which id's slot prints
+  the `Auto-closed completed molecule` line can move. The open-children refusal
+  moved from a cmd/bd pre-flight read into the close's own transaction, closing
+  a read-then-write window that made `bd close <child> <parent>` depend on
+  argument order; its message is unchanged. And an unsatisfied gate on an issue
+  that ALSO has open children now reports the gate rather than the children,
+  because the gate check stayed in the pre-flight — both were already refusals.
 
 - **Public `beads.Storage` interface gained a required `IssueReader()` method**
   (bd-serve reader role). `IssueReader() (issueops.Reader, error)` is the read
@@ -279,6 +659,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#4675](https://github.com/gastownhall/beads/pull/4675).)
 
 ### Fixed
+
+- **`bd update --parent` on a proxied server no longer leaves a stale parent**
+  (bd-yby99.26). A parent id is a *set* assignment: setting it replaces every
+  parent edge the child has, and clearing it removes them all. The unit-of-work
+  route stopped after the first edge it found. A child with two parents
+  reparented to a third kept one of the originals, and clearing the parent left
+  the rest in place — in both cases reported as a success. Two parents on one
+  child is not the common shape, but the failure was silent and the resulting
+  graph is wrong for every reader that walks parent edges. The Dolt backends
+  already applied the set rule; this brings the third route into line.
+
+- **`bd dep remove` on a wisp-sourced edge now removes it** (bd-yby99.17). On
+  the proxied server the removal was pinned to the durable plane: an edge whose
+  *source* is a wisp was looked for in `dependencies`, not found, and reported
+  as `Removed: false` with a nil error while the row stayed in
+  `wisp_dependencies`. The command exited zero having changed nothing. A
+  removal cannot put an edge anywhere, so it now reads the source's plane and
+  deletes from there, and the delete's own result is the found/not-found
+  verdict. Removing an edge that genuinely does not exist is still a nil-error
+  no-op, as before.
+
+- **A dependency on an issue in another repository no longer fails with a raw
+  foreign-key error** (bd-ocrn7). beads addresses a foreign repo's work by
+  prefix — `otherrig-9001` from a rig whose own prefix is `bd-` — and the
+  database holds such a target in `depends_on_external`, a column with no
+  foreign key, precisely because the row cannot exist locally. The domain
+  route classified the target by looking only for the literal `external:`
+  prefix, decided `otherrig-9001` was local, wrote it to
+  `depends_on_issue_id`, and the foreign key rejected the insert with
+  `Error 1452`. No edge was written and the error named a constraint rather
+  than the problem.
+
+  Both routes now classify through one named rule,
+  `issueops.IsExternalDepTarget`: a target is external if it is spelled
+  `external:...` **or** its prefix differs from the source's. That is what the
+  Dolt backends have always done, so this brings the third route into line
+  rather than inventing a policy. The foreign key itself is untouched, and a
+  genuinely local, genuinely missing target is still refused as before. One
+  consequence beyond the failing case: a cross-prefix target that *does*
+  happen to exist in the local issues table now also lands in the external
+  column on this route, which means derived blocking no longer reads that edge
+  — again matching what the Dolt backends already produced.
+
+- **A ready claim that wins an ephemeral row no longer reports a spurious
+  "could not be verified" error** (bd-yby99.4). In server mode, `bd` re-reads a
+  claim it just made to confirm the write landed, because an exit code is not
+  truth against a degraded server. That re-read always looked in the `issues`
+  table. But a ready claim can win a wisp when the request's filter admits
+  ephemeral rows (`bd ready --claim --include-ephemeral`), and the claim is
+  written to the `wisps` table by design — so the verify hunted for the row in
+  a table that never held it and turned a perfectly good claim into
+  `reported success but could not be verified (server degraded?)`. The
+  verification is now plane-aware rather than skipped: a wisp claim is checked
+  against the `wisps` row, so no check was traded away for the fix.
+
+  The `ClaimNext` contract is now explicit that the ready set is whatever the
+  filter admits — an ephemeral row the filter pulls in is genuinely claimable,
+  and claiming it moves that row rather than promoting it to a durable issue.
+  Two properties follow that callers should plan around: such a claim records
+  **no** durable history entry, because ephemeral rows are not versioned, so
+  reconstructing who took what from history alone will not show it; and it
+  takes no lease, so `bd heartbeat` refuses it and `bd reclaim` will not
+  recover it if the agent holding it dies.
 
 - **`bd dolt push` and `bd sync` no longer adopt a Dolt remote derived from
   git origin without consent** (#5068). On a rig with no Dolt remote

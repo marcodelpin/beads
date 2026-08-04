@@ -404,6 +404,10 @@ func (s *DoltStore) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter
 // front and may legitimately claim a different issue. Split from
 // ClaimReadyIssue so injection tests can drive the write seam directly, the
 // same way the verifiedClaimWrite tests do.
+//
+// The re-read is per-attempt and plane-aware (readReadyClaimState): the winner
+// may be an ephemeral row, and a replay may win a row in the other plane than
+// the first attempt selected.
 func (s *DoltStore) verifiedReadyClaim(ctx context.Context, actor string, write func() (*types.Issue, error)) (*types.Issue, error) {
 	claimed, err := write()
 	if err != nil && !(errors.Is(err, errCommitPhase) && claimed != nil && s.serverMode) {
@@ -413,7 +417,7 @@ func (s *DoltStore) verifiedReadyClaim(ctx context.Context, actor string, write 
 		return claimed, err
 	}
 	for attempt := 0; ; attempt++ {
-		assignee, status, verr := s.readClaimState(ctx, claimed.ID)
+		assignee, status, verr := s.readReadyClaimState(ctx, claimed.ID)
 		if verr != nil {
 			if err != nil {
 				return nil, err // the honest indeterminate error from withRetryTx

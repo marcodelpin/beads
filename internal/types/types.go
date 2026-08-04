@@ -1176,11 +1176,20 @@ var AllDependencyTypes = []DependencyType{
 	DepDelegatedFrom,
 }
 
+// MaxDependencyTypeLen is the widest dependency type either dependency plane
+// can store: dependencies.type and wisp_dependencies.type are both VARCHAR(32)
+// (migrations 0002_create_dependencies and 0021_create_wisp_auxiliary), and no
+// later migration widens either. Validators bound the type here rather than at
+// some looser number of their own, so a type that passes validation is a type
+// an edge can actually carry — a longer one is refused up front instead of
+// becoming a filter that silently matches nothing.
+const MaxDependencyTypeLen = 32
+
 // IsValid checks if the dependency type value is valid.
-// Accepts any non-empty string up to 50 characters.
+// Accepts any non-empty string that fits the type column (MaxDependencyTypeLen).
 // Use IsWellKnown() to check if it's a built-in type.
 func (d DependencyType) IsValid() bool {
-	return len(d) > 0 && len(d) <= 50
+	return len(d) > 0 && len(d) <= MaxDependencyTypeLen
 }
 
 // WellKnownDependencyTypes returns the built-in dependency types accepted by

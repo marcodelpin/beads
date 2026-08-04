@@ -45,13 +45,27 @@ type CloseOpenChildrenError = issueops.CloseOpenChildrenError
 var ErrNotOwner = errors.New("issue claimed by a different actor")
 
 // ClaimedByFragment and NotClaimableStatusFragment are the exact message
-// fragments the claim path (issueops/claim.go) appends after the sentinel to
-// carry the conflicting assignee/status: ErrAlreadyClaimed is wrapped as
-// "<sentinel> by <assignee>" and ErrNotClaimable as "<sentinel>: status
-// <status>". They are the single source of truth for that format so producer
-// (claim.go) and consumer (beads.ParseClaimConflict) cannot drift: the consumer
-// reconstructs its marker as ErrAlreadyClaimed.Error()+ClaimedByFragment rather
-// than hardcoding the literal.
+// fragments a claim refusal puts after the sentinel to carry the conflicting
+// assignee/status: ErrAlreadyClaimed reads "<sentinel> by <assignee>" and
+// ErrNotClaimable reads "<sentinel>: status <status>". They are the single
+// source of truth for that format so producer and consumer
+// (beads.ParseClaimConflict) cannot drift: the consumer reconstructs its marker
+// as ErrAlreadyClaimed.Error()+ClaimedByFragment rather than hardcoding the
+// literal.
+//
+// The producers are the two claim bodies —
+// internal/storage/issueops.ClaimIssueInTx and
+// internal/storage/domain.issueUseCaseImpl.claim — which compose the message
+// before wrapping it in an issueops.ClaimConflictError. That type's Error() is
+// a PASSTHROUGH, so the fragments must be in the wrapped error; a caller
+// reading the type's FIELDS needs none of this. These stay for the parser, and
+// TestClaimConflictFormatRoundTrip (internal/storage/dolt) plus the
+// root-package ParseClaimConflict tests are the tripwires that producer and
+// consumer still agree character for character.
+//
+// One refusal deliberately omits the " by <assignee>" tail: an OPEN issue held
+// by someone else answers with holder-steering copy instead (wy-yuclk), so its
+// assignee is recovered from the typed field rather than the prose.
 const (
 	ClaimedByFragment          = " by "
 	NotClaimableStatusFragment = ": status "
@@ -106,6 +120,41 @@ type Storage interface {
 	// a store's chain answers for itself and layers its own behavior onto the
 	// inner result.
 	IssueClaimer() (issueops.Claimer, error)
+
+	// ReadyClaimer returns the guarded take-ready-work surface for this store.
+	// It is its own role rather than a fifth verb on IssueLifecycle because
+	// the caller names a question and the implementation picks the answer, so
+	// selection is part of the operation and not a patch. Like the other
+	// accessors, every decorator in a store's chain answers for itself.
+	ReadyClaimer() (issueops.ReadyClaimer, error)
+
+	// BatchCloser returns the guarded close-many surface for this store: the
+	// role whose REQUEST is the transaction boundary, so N closes land as one
+	// durable act instead of N. It is its own role rather than a Close
+	// overload because a batch reports per-item outcomes that a single close
+	// has nowhere to put.
+	BatchCloser() (issueops.BatchCloser, error)
+
+	// DependencyEditor returns the guarded dependency-edge surface for this
+	// store. It is its own role rather than more IssueLifecycle verbs because
+	// an edge has two endpoints and every refusal it raises is a statement
+	// about the graph they sit in, which a patch has nowhere to put.
+	DependencyEditor() (issueops.DependencyEditor, error)
+
+	// Commenter returns the guarded add-comment surface for this store. It is
+	// its own role because a comment appends to a thread the issue owns and
+	// changes no field of the issue, so an IssuePatch has nothing to carry.
+	Commenter() (issueops.Commenter, error)
+
+	// IssueRelations returns the guarded neighbor-query surface for this
+	// store: the read counterpart of DependencyEditor. It is its own role
+	// rather than a fourth IssueReader method because it answers a question
+	// about EDGES — anchored on one issue, directed, and carrying the edge
+	// type — where the reader answers with pages of issues.
+	//
+	// Reads fire no hooks, so the hook decorator's answer is its inner store's
+	// unchanged, as it is for IssueReader.
+	IssueRelations() (issueops.Relations, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

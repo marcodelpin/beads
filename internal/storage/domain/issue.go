@@ -10,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
+	publicops "github.com/steveyegge/beads/issueops"
 )
 
 type InsertIssueOpts struct {
@@ -552,23 +553,47 @@ func (u *issueUseCaseImpl) claim(ctx context.Context, id, actor string, useWisp 
 	if row.CurrentAssignee == actor && row.CurrentStatus == types.StatusInProgress {
 		return ClaimResult{AlreadyClaimed: true, PriorAssignee: actor}, nil
 	}
+	// The refusal carries the assignee and status the repository read back in
+	// THIS transaction, so a caller reports who won without parsing the
+	// message. The copy lives on the typed error, shared with the twin
+	// (issueops.ClaimIssueInTx) that used to restate it — that is what bd-at6rc
+	// asked for. The sentinel stays matchable through Unwrap, which the proxied
+	// batch exit code keys on.
+	//
+	// A pool-assigned issue only loses the CAS for a non-assignee reason
+	// (status changed underneath us), so it refuses on the status rather than
+	// with a misleading held-by refusal.
+	// Composed here rather than on the typed error, for the reason
+	// issueops.ClaimIssueInTx gives: ClaimConflictError passes its wrapped
+	// refusal through unchanged, so the fragments have to be in the wrapped
+	// error or beads.ParseClaimConflict recovers nothing. This is the
+	// domain-stack twin of that producer and must answer the same three ways
+	// (bd-at6rc).
+	refusal := fmt.Errorf("%w%s%s", storage.ErrNotClaimable, storage.NotClaimableStatusFragment, row.CurrentStatus)
 	if row.CurrentAssignee != "" && row.CurrentAssignee != actor {
-		// A pool-assigned issue only loses the CAS for a non-assignee
-		// reason (status changed underneath us): report the status, not a
-		// misleading held-by refusal (mirrors issueops.ClaimIssueInTx).
-		if row.CurrentAssigneeIsPool {
-			return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
+		switch {
+		// Pool aliases refuse on the STATUS, checked first so a pool never
+		// reaches the holder-steering copy below.
+		case row.CurrentAssigneeIsPool:
+			// refusal already names the status.
+		case row.CurrentStatus == types.StatusOpen:
+			// Never name a release command here (wy-yuclk): copy that names
+			// one gets pattern-matched by batch agents into an unclaim+claim
+			// steamroller of live claims. bd reclaim is safe to name because
+			// it only recovers claims whose lease has already expired. The
+			// parseable " by <assignee>" tail is deliberately absent, so the
+			// holder is recovered from the typed field instead.
+			refusal = fmt.Errorf("%w: already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", storage.ErrAlreadyClaimed, row.CurrentAssignee)
+		default:
+			refusal = fmt.Errorf("%w%s%s", storage.ErrAlreadyClaimed, storage.ClaimedByFragment, row.CurrentAssignee)
 		}
-		if row.CurrentStatus == types.StatusOpen {
-			// Same guidance as issueops.ClaimIssueInTx's open-but-assigned
-			// refusal (bd-at6rc): steer toward the holder, never name an
-			// eviction command. Keep the %w wrap — the proxied batch exit
-			// code keys on errors.Is(err, ErrAlreadyClaimed).
-			return ClaimResult{}, fmt.Errorf("%w: already assigned to %q — coordinate with the holder; if their claim is abandoned (crashed agent), lease expiry will surface it for bd reclaim", storage.ErrAlreadyClaimed, row.CurrentAssignee)
-		}
-		return ClaimResult{}, fmt.Errorf("%w by %s", storage.ErrAlreadyClaimed, row.CurrentAssignee)
 	}
-	return ClaimResult{}, fmt.Errorf("%w: status %s", storage.ErrNotClaimable, row.CurrentStatus)
+	return ClaimResult{}, &publicops.ClaimConflictError{
+		IssueID:  id,
+		Assignee: row.CurrentAssignee,
+		Status:   row.CurrentStatus,
+		Err:      refusal,
+	}
 }
 
 func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error) {

@@ -200,3 +200,36 @@ func gatherReadyInput(cmd *cobra.Command, resolveCap func(*cobra.Command) (int, 
 
 	return in, nil
 }
+
+// claimNextRequest is `bd ready --claim`'s request to the ReadyClaimer role.
+// Both routes build it here, so the claim asks one question no matter which
+// door it came through — and it is the SAME issueops.ReadyRequest the listing
+// builds its filter from, so the claim's predicate cannot drift from the set
+// `bd ready` shows.
+//
+// The two things the filter carries that the request does not:
+//
+//   - The --max-rows cap. It never applied to a claim in the first place:
+//     ClaimReadyIssueInTx clears MaxRows, MaxRowsSource and Limit before it
+//     scans, because a cap sized for bulk reads must not make a single-row
+//     claim report an empty front. Dropping it here is visible only in that
+//     the role has no field to ignore.
+//   - The directory-label default. The listing puts it on the built filter
+//     verbatim; here it goes on the request, where it is normalized along with
+//     every other label. That differs only for a directory.labels value
+//     carrying stray whitespace. The emptiness test is unchanged — read off
+//     the already-normalized filter, so `--label "  "` is no label at all and
+//     still does not suppress the default.
+func claimNextRequest(in readyInput) issueops.ClaimNextRequest {
+	req := in.ReadyRequest
+	// Limit and Offset are ErrValidation on a claim. Neither was ever live
+	// here: --offset with --claim is already a usage error above, and the
+	// claim scan zeroes the limit itself.
+	req.Limit, req.Offset = nil, 0
+	if len(in.filter.Labels) == 0 && len(in.filter.LabelsAny) == 0 {
+		if dirLabels := config.GetDirectoryLabels(); len(dirLabels) > 0 {
+			req.LabelsAny = dirLabels
+		}
+	}
+	return issueops.ClaimNextRequest{Actor: actor, Filter: req}
+}

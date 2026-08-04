@@ -348,6 +348,22 @@ func (h *HookFiringStore) CompleteIssueOperationClose(issue *types.Issue) {
 	h.fireHook(hooks.EventClose, cloneIssueForHook(issue))
 }
 
+// CompleteIssueOperationDependency fires the update hook for an issue whose
+// edges a committed guarded edit changed. It re-reads the issue with its
+// dependency records, exactly as AddDependency and RemoveDependency do, so a
+// hook script sees the graph the edit produced rather than the row alone.
+func (h *HookFiringStore) CompleteIssueOperationDependency(ctx context.Context, issueID string) {
+	h.fireDependencyHookByID(ctx, issueID)
+}
+
+// CompleteIssueOperationComment fires the update hook for a committed guarded
+// comment, which is the event AddIssueComment fires: there is no on_comment
+// event, and a comment is a change to the issue as far as a script is
+// concerned.
+func (h *HookFiringStore) CompleteIssueOperationComment(ctx context.Context, issueID string) {
+	h.fireHookByID(ctx, hooks.EventUpdate, issueID)
+}
+
 func (h *HookFiringStore) fireHookByID(ctx context.Context, event, id string) {
 	if h.runner == nil {
 		return

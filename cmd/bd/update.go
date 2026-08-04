@@ -23,15 +23,16 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// directIssueUpdater is the lifecycle capability the direct update command
-// needs. issueops.Lifecycle satisfies it without an adapter.
-type directIssueUpdater interface {
+// commandIssueUpdater is the lifecycle capability the update command needs.
+// issueops.Lifecycle satisfies it without an adapter.
+type commandIssueUpdater interface {
 	Update(context.Context, issueops.UpdateRequest) (issueops.UpdateResult, error)
 }
 
-// directUpdateMutation contains the command-derived values for one direct
-// lifecycle update.
-type directUpdateMutation struct {
+// commandUpdateMutation contains the command-derived values for one lifecycle
+// update. Both routes of `bd update` fill it in: the direct one below, and the
+// proxied-server claim path in update_proxied_server.go.
+type commandUpdateMutation struct {
 	actor            string
 	issueID          string
 	patch            issueops.IssuePatch
@@ -39,11 +40,17 @@ type directUpdateMutation struct {
 	force            bool
 	expectedAssignee *string
 	expectedStatus   *issueops.Status
+	// provenance names the history entry the write records. Empty takes the
+	// backend's default, which is what the direct route wants; the proxied
+	// route spells the message it has always written.
+	provenance string
 }
 
-// runDirectUpdateMutation maps a direct command update into its lifecycle
-// request and returns the lifecycle result unchanged.
-func runDirectUpdateMutation(ctx context.Context, updater directIssueUpdater, mutation directUpdateMutation) (issueops.UpdateResult, error) {
+// runCommandUpdateMutation maps a command update into its lifecycle request and
+// returns the lifecycle result unchanged. It is the ONE place the command's
+// flag semantics become a request — in particular the one --force that means
+// two overrides, whose assignee half only applies to an assignee edit.
+func runCommandUpdateMutation(ctx context.Context, updater commandIssueUpdater, mutation commandUpdateMutation) (issueops.UpdateResult, error) {
 	return updater.Update(ctx, issueops.UpdateRequest{
 		Actor:                 mutation.actor,
 		IssueID:               mutation.issueID,
@@ -53,6 +60,7 @@ func runDirectUpdateMutation(ctx context.Context, updater directIssueUpdater, mu
 		ForceClosePolicy:      mutation.force,
 		ExpectedAssignee:      mutation.expectedAssignee,
 		ExpectedStatus:        mutation.expectedStatus,
+		Provenance:            mutation.provenance,
 	})
 }
 
@@ -506,7 +514,7 @@ pointless).`,
 			// which is why it is conditioned here rather than passed straight
 			// through: `--force -s closed` is now a legitimate way to ask for
 			// the close-policy half alone.
-			updateResult, updateErr := runDirectUpdateMutation(opsCtx, ops, directUpdateMutation{
+			updateResult, updateErr := runCommandUpdateMutation(opsCtx, ops, commandUpdateMutation{
 				actor:            actor,
 				issueID:          result.ResolvedID,
 				patch:            patch,
