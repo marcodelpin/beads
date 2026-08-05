@@ -22,6 +22,16 @@ func TestIssueOperationsCreateRejectsMissingDependencyTargets(t *testing.T) {
 	conformance.RunIssueOperationsCreateRejectsMissingDependencyTargets(t, ctx, newUOWIssueOperationsFixture(t, ctx))
 }
 
+func TestIssueOperationsCreateRefusesAnOccupiedID(t *testing.T) {
+	ctx := context.Background()
+	conformance.RunIssueOperationsCreateRefusesAnOccupiedID(t, ctx, newUOWIssueOperationsFixture(t, ctx))
+}
+
+func TestIssueOperationsCreateInheritsParentLabels(t *testing.T) {
+	ctx := context.Background()
+	conformance.RunIssueOperationsCreateInheritsParentLabels(t, ctx, newUOWIssueOperationsFixture(t, ctx))
+}
+
 func TestIssueOperationsUpdateFoldsMetadataIntoOneEvent(t *testing.T) {
 	ctx := context.Background()
 	conformance.RunIssueOperationsUpdateFoldsMetadataIntoOneEvent(t, ctx, newUOWIssueOperationsFixture(t, ctx))

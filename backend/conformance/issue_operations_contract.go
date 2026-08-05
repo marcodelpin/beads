@@ -156,6 +156,183 @@ func RunIssueOperationsCreateRejectsMissingDependencyTargets(t *testing.T, ctx c
 	}
 }
 
+// RunIssueOperationsCreateRefusesAnOccupiedID pins the create-only half of the
+// Lifecycle.Create clause: "It is create-only across issues and wisps: an
+// occupied ID returns ErrAlreadyExists and leaves persistent state unchanged"
+// (issueops/issueops.go, Lifecycle.Create). ErrAlreadyExists says the same
+// thing from the other side — "The issue and wisp tables share one ID space"
+// (issueops/errors.go) — so ACROSS is asserted in both directions here, not
+// only for the plane the create happens to target.
+//
+// This is not a hypothetical. The proxied-server `bd create` route asked its
+// use case for a plain create with no create-only guard, so `bd create --id
+// <occupied>` silently UPSERTED the stored row and reported success while the
+// direct route refused. A front door moving onto the role inherits whatever
+// the role's implementations do, so every one of them has to refuse.
+func RunIssueOperationsCreateRefusesAnOccupiedID(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	// seedIssueOperationsLabeledIssue titles the issue after its own ID, which
+	// is what the refusal must leave in place.
+	occupied := fixture.IssuePrefix + "-occupied-issue"
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, occupied, "seeded")
+
+	_, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		Issue: &types.Issue{
+			ID: occupied, Title: "overwriting title", Status: types.StatusOpen,
+			Priority: 1, IssueType: types.TypeBug, Labels: []string{"overwriting"},
+		},
+	})
+	assertIssueOperationsAlreadyExists(t, err, "durable create over an occupied durable ID", occupied)
+	assertIssueOperationsRowCount(t, ctx, fixture, "issues", occupied, 1)
+	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", occupied, 0)
+	// "leaves persistent state unchanged" is the load-bearing half: an upsert
+	// reported as a refusal would still have rewritten every column.
+	assertIssueOperationsScalarValue(t, ctx, fixture, "occupied issue title", occupied,
+		"SELECT title FROM issues WHERE id = ?", []any{occupied})
+	assertIssueOperationsScalarValue(t, ctx, fixture, "occupied issue type", string(types.TypeTask),
+		"SELECT issue_type FROM issues WHERE id = ?", []any{occupied})
+	assertIssueOperationsLabels(t, ctx, fixture, occupied, "after refused durable create", "seeded")
+
+	// An ID occupied by a WISP refuses a durable create.
+	wispID := fixture.IssuePrefix + "-occupied-wisp"
+	if _, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		Issue: &types.Issue{
+			ID: wispID, Title: "resident wisp", Status: types.StatusOpen,
+			Priority: 2, IssueType: types.TypeTask, Ephemeral: true,
+		},
+	}); err != nil {
+		t.Fatalf("seed resident wisp: %v", err)
+	}
+	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", wispID, 1)
+
+	_, err = fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		Issue: &types.Issue{
+			ID: wispID, Title: "durable squatter", Status: types.StatusOpen,
+			Priority: 2, IssueType: types.TypeTask,
+		},
+	})
+	assertIssueOperationsAlreadyExists(t, err, "durable create over an occupied wisp ID", wispID)
+	assertIssueOperationsRowCount(t, ctx, fixture, "issues", wispID, 0)
+	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", wispID, 1)
+	assertIssueOperationsScalarValue(t, ctx, fixture, "resident wisp title", "resident wisp",
+		"SELECT title FROM wisps WHERE id = ?", []any{wispID})
+
+	// And the other direction: an ID occupied by a durable issue refuses an
+	// ephemeral create.
+	_, err = fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		Issue: &types.Issue{
+			ID: occupied, Title: "wisp squatter", Status: types.StatusOpen,
+			Priority: 2, IssueType: types.TypeTask, Ephemeral: true,
+		},
+	})
+	assertIssueOperationsAlreadyExists(t, err, "ephemeral create over an occupied durable ID", occupied)
+	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", occupied, 0)
+	assertIssueOperationsScalarValue(t, ctx, fixture, "occupied issue title after wisp squat", occupied,
+		"SELECT title FROM issues WHERE id = ?", []any{occupied})
+}
+
+// assertIssueOperationsAlreadyExists checks the refusal an occupied ID gets.
+// The message must name the ID: a caller that asked for one ID and was refused
+// cannot act on "issue already exists".
+func assertIssueOperationsAlreadyExists(t *testing.T, err error, label, id string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: Create returned nil error, want ErrAlreadyExists", label)
+	}
+	if !errors.Is(err, publicops.ErrAlreadyExists) {
+		t.Errorf("%s: Create error = %v, want ErrAlreadyExists", label, err)
+	}
+	if !strings.Contains(err.Error(), id) {
+		t.Errorf("%s: Create error = %v, want it to name the occupied ID %q", label, err, id)
+	}
+}
+
+// RunIssueOperationsCreateInheritsParentLabels pins
+// CreateRequest.InheritLabelsFromParent — "copies the parent's labels at
+// creation" — against CreateRequest.Issue's own "Labels are authoritative"
+// (both issueops/issueops.go, CreateRequest). The two clauses meet on one
+// create, and the created issue must satisfy both: the request's labels are
+// there because they are authoritative, and the parent's are there because
+// inheritance was asked for.
+//
+// Both `bd create --parent` front doors depend on exactly this. They spell it
+// differently — the direct route merges the parent's labels itself so its
+// --dry-run preview can show them and leaves the flag off, the proxied route
+// sets the flag — so the merge has to be the same set either way.
+func RunIssueOperationsCreateInheritsParentLabels(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	parent := fixture.IssuePrefix + "-inherit-parent"
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, parent, "shared", "from-parent")
+
+	inherited, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:                   "writer",
+		ForceIDPrefix:           true,
+		ParentID:                parent,
+		InheritLabelsFromParent: true,
+		Issue: &types.Issue{
+			Title: "inheriting child", Status: types.StatusOpen, Priority: 2,
+			IssueType: types.TypeTask, Labels: []string{"own", "shared"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create inheriting child: %v", err)
+	}
+	// A label the child and the parent both carry is one label, not two: the
+	// stored set is a set. The count assertion inside this helper is what says
+	// so.
+	assertIssueOperationsLabels(t, ctx, fixture, inherited.Issue.ID, "inheriting child", "own", "shared", "from-parent")
+	// CreateResult.Issue is "a detached snapshot with labels", so the same set
+	// has to come back on the result rather than only being readable from the
+	// row.
+	assertIssueOperationsStringSet(t, "inheriting child result labels", inherited.Issue.Labels, "own", "shared", "from-parent")
+
+	// With inheritance off, the request's own labels are the whole set — the
+	// authoritative clause standing alone.
+	own, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		ParentID:      parent,
+		Issue: &types.Issue{
+			Title: "own labels only", Status: types.StatusOpen, Priority: 2,
+			IssueType: types.TypeTask, Labels: []string{"own"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create child without inheritance: %v", err)
+	}
+	assertIssueOperationsLabels(t, ctx, fixture, own.Issue.ID, "child without inheritance", "own")
+	assertIssueOperationsStringSet(t, "child without inheritance result labels", own.Issue.Labels, "own")
+
+	// Inheriting from a label-less parent adds nothing rather than failing.
+	bare := fixture.IssuePrefix + "-inherit-bare-parent"
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, bare)
+	none, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:                   "writer",
+		ForceIDPrefix:           true,
+		ParentID:                bare,
+		InheritLabelsFromParent: true,
+		Issue: &types.Issue{
+			Title: "nothing to inherit", Status: types.StatusOpen, Priority: 2,
+			IssueType: types.TypeTask,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create child of label-less parent: %v", err)
+	}
+	assertIssueOperationsLabels(t, ctx, fixture, none.Issue.ID, "child of label-less parent")
+	assertIssueOperationsStringSet(t, "child of label-less parent result labels", none.Issue.Labels)
+}
+
 // RunIssueOperationsUpdateFoldsMetadataIntoOneEvent pins a compound update to a
 // single event. A guarded update is one atomic mutation, so its history must
 // read as one entry; a metadata patch riding along with field edits must not
