@@ -108,8 +108,33 @@ func TestSweepDefaultsTheOptionalMembers(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("%d sweeps, want 1", len(reqs))
 	}
-	if want := (issueops.SweepRequest{Tier: issueops.SweepEphemeral}); reqs[0] != want {
+	// protect_referenced ABSENT means TRUE on this surface, which is the one
+	// default here that deliberately differs from the role's zero value. The
+	// endpoint is unauthenticated and destructive, so an omitted member must
+	// not buy weaker protection than `bd prune` gives by default.
+	want := issueops.SweepRequest{Tier: issueops.SweepEphemeral, ProtectReferenced: true}
+	if reqs[0] != want {
 		t.Errorf("request = %+v, want %+v", reqs[0], want)
+	}
+}
+
+// TestSweepHonorsAnExplicitProtectReferencedFalse is the other half of the
+// default: opting OUT still works, and it has to be spelled. Without this the
+// defaults test alone could be satisfied by a handler that ignored the member
+// entirely and hard-coded protection on.
+func TestSweepHonorsAnExplicitProtectReferencedFalse(t *testing.T) {
+	sweeper := &roleSweeper{}
+	ts := newTestServer(t, rolesConfig(Config{Sweeper: sweeper}))
+
+	if resp := ts.sweep(t, `{"tier":"ephemeral","protect_referenced":false}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+	}
+	reqs := sweeper.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d sweeps, want 1", len(reqs))
+	}
+	if reqs[0].ProtectReferenced {
+		t.Errorf("explicit protect_referenced:false did not reach the role: %+v", reqs[0])
 	}
 }
 

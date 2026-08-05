@@ -2419,15 +2419,27 @@ components:
             glob is a `400`, never a pattern that matches nothing.
         protect_referenced:
           type: boolean
-          default: false
+          default: true
           description: >-
             Skip candidates whose id is CITED — as a literal, at word
             boundaries — in the description, notes or comments of any bead that
             is not done, so a decision trail a live bead still points at is not
-            deleted out from under it. It costs a full scan of the not-done set
-            and its comments, which is why it is asked for rather than always
-            on. `bd prune` asks unless `--ignore-references`; `bd purge` never
-            does.
+            deleted out from under it.
+
+
+            It DEFAULTS ON here, unlike the library default, and that is
+            deliberate. This surface has no authentication and this is its only
+            destructive operation, so a caller that omits the member must not
+            get weaker protection than the operator typing `bd prune`, which
+            protects unless `--ignore-references`. The inverse — opt OUT
+            locally, opt IN remotely — is the shape that lets a stray request
+            delete a decision trail nothing brings back.
+
+
+            It costs a full scan of the not-done set and its comments. Sending
+            `protect_referenced: false` buys the cheaper sweep, and asking for
+            it explicitly is the point: that is the request that should be the
+            deliberate one.
         dry_run:
           type: boolean
           default: false

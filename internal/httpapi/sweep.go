@@ -115,6 +115,21 @@ func (s *Server) sweepRequest(w http.ResponseWriter, r *http.Request) (issueops.
 	}
 
 	var request issueops.SweepRequest
+	// protect_referenced DEFAULTS ON over HTTP, and the default is set here
+	// rather than left to the zero value on purpose.
+	//
+	// This surface has no authentication, and this is the only destructive
+	// operation on it. A remote caller that omits the member must not get
+	// weaker protection than the operator typing `bd prune`, which protects
+	// unless --ignore-references is passed. Leaving the zero value would have
+	// inverted exactly that: locally you opt OUT of protection, remotely you
+	// had to opt IN.
+	//
+	// The cost the default now accepts is a full scan of the not-done set and
+	// its comments. A caller that wants the cheaper sweep asks for it by
+	// sending `protect_referenced: false`, which is the request that should be
+	// the deliberate one.
+	request.ProtectReferenced = true
 
 	raw, ok := members[sweepTierMember]
 	if !ok {
