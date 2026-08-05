@@ -124,13 +124,16 @@ type Config struct {
 	// from, for a backend whose facade is a STORE rather than a unit-of-work
 	// provider. sourceRoles is the authoritative list.
 	// Reader, Claimer and EdgeReader are the issue roles this server answers
+	// Reader, Claimer and ReadyCounter are the issue roles this server answers
 	// from, for a backend whose facade is a STORE rather than a unit-of-work
 	// provider.
 	//
 	// Set them together, and only when Provider is nil: they are the other
 	// Set them all together, and only when Provider is nil: they are the other
+	// Set all three together, and only when Provider is nil: they are the other
 	// complete database source, not an override of one. Listen refuses every
 	// other combination, including a PARTIAL set — a reader without a claimer
+	// other combination, including a partial set — a reader without a claimer
 	// would bind, answer every read, and fail the one write on this surface with
 	// a nil dereference inside a handler, and the same is true of every
 	// operation whose role is missing.
@@ -144,6 +147,8 @@ type Config struct {
 	// dereference inside a handler on a live server. The set grows by one each
 	// time an operation reaches a role this source does not yet carry, and it
 	// grows in the same change as the operation for exactly that reason.
+	// a nil dereference inside a handler, and a pair without a ready counter
+	// would do the same on the one read that is not the reader's.
 	//
 	// A caller with a store takes them off the store's own accessors, and WHICH
 	// store value it takes them off is the whole question. Every decorator a
@@ -165,6 +170,8 @@ type Config struct {
 	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Settings: wc, Stats: st, ...})
 	//	ed, err := src.EdgeReader()
 	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, EdgeReader: ed, ...})
+	//	rc, err := src.ReadyCounter()
+	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, ReadyCounter: rc, ...})
 	//
 	// Listen refuses a hook-firing role rather than trusting the paragraph
 	// above — see checkDatabaseSource.
@@ -196,6 +203,7 @@ type Config struct {
 	Stats         issueops.StatsReporter
 	CycleDetector issueops.CycleDetector
 	EdgeReader    issueops.EdgeReader
+	ReadyCounter  issueops.ReadyCounter
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -231,12 +239,13 @@ type Server struct {
 	// exactly when provider is nil. They are what reader(), claimer() and
 	// edgeReader() hand back on the store-shaped source; the names differ from
 	// those methods because a struct cannot carry both.
-	issueReader  issueops.Reader
-	issueClaimer issueops.Claimer
-	settings     issueops.WorkspaceConfig
-	issueStats   issueops.StatsReporter
-	issueCycles  issueops.CycleDetector
-	issueEdges   issueops.EdgeReader
+	issueReader       issueops.Reader
+	issueClaimer      issueops.Claimer
+	settings          issueops.WorkspaceConfig
+	issueStats        issueops.StatsReporter
+	issueCycles       issueops.CycleDetector
+	issueEdges        issueops.EdgeReader
+	issueReadyCounter issueops.ReadyCounter
 
 	listener net.Listener
 	http     *http.Server
@@ -331,14 +340,15 @@ func Listen(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:          cfg,
-		provider:     cfg.Provider,
-		issueReader:  cfg.Reader,
-		issueClaimer: cfg.Claimer,
-		settings:     cfg.Settings,
-		issueStats:   cfg.Stats,
-		issueCycles:  cfg.CycleDetector,
-		issueEdges:   cfg.EdgeReader,
+		cfg:               cfg,
+		provider:          cfg.Provider,
+		issueReader:       cfg.Reader,
+		issueClaimer:      cfg.Claimer,
+		settings:          cfg.Settings,
+		issueStats:        cfg.Stats,
+		issueCycles:       cfg.CycleDetector,
+		issueEdges:        cfg.EdgeReader,
+		issueReadyCounter: cfg.ReadyCounter,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -405,6 +415,17 @@ func Listen(cfg Config) (*Server, error) {
 // it would otherwise produce is the worst shape available — a config missing
 // one role binds, answers every other route, and fails that one with a nil
 // dereference in a handler on a live server.
+// provider, or the issue roles. A PARTIAL set of roles is refused with the same
+// message as none at all, because it is the same mistake and the failure it
+// would otherwise produce is the worst shape available — a reader without a
+// claimer binds, answers every read, and fails the one write on this surface
+// with a nil dereference in a handler on a live server.
+//
+// The set GROWS as this surface grows, and that is deliberate rather than
+// unfortunate: every operation added here is an operation a roles-backed
+// deployment must be able to answer, so a role added to the set turns "this
+// build serves an operation your Config cannot answer" into a startup error
+// instead of a 500 on the first client that finds it.
 //
 // Both together is refused rather than resolved by precedence: a caller that
 // set both holds two different opinions about where this server reads from, and
@@ -431,12 +452,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector and EdgeReader"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader and ReadyCounter"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -655,6 +676,26 @@ func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
 	}
 	var src uow.EdgeReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.EdgeReader()
+}
+
+// readyCounter returns the ready-count surface for one request.
+//
+// It is the third role this server hands a handler, and the read-side twin of
+// the two above in every respect: the configured role on the roles source, one
+// built per request on the provider source so the unit of work the count opens
+// lands in THIS request's uow_ms, and held by INTERFACE so
+// uow.ReadyCounterSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED, and that is the difference worth stating. checkedReader
+// and checkedClaimer exist because their handlers dereference a POINTER a role
+// returned; CountReady answers with a value, so there is no dereference to make
+// safe and a wrapper would be ceremony that reads like a guarantee.
+func (s *Server) readyCounter(r *http.Request) (issueops.ReadyCounter, error) {
+	if s.provider == nil {
+		return s.issueReadyCounter, nil
+	}
+	var src uow.ReadyCounterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.ReadyCounter()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

@@ -360,6 +360,9 @@ var (
 	_ uow.IssueReaderSource     = timedProvider{}
 	_ uow.IssueClaimerSource    = timedProvider{}
 	_ uow.EdgeReaderSource      = timedProvider{}
+	_ uow.IssueReaderSource     = timedProvider{}
+	_ uow.IssueClaimerSource    = timedProvider{}
+	_ uow.ReadyCounterSource    = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -423,6 +426,13 @@ func (p timedProvider) CycleDetector() (issueops.CycleDetector, error) {
 // reports uow_ms=0.000.
 func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 	return uow.NewEdgeReader(p)
+}
+
+// ReadyCounter builds the ready counter OVER THIS WRAPPER, for the same reason
+// as the two above: the count opens a unit of work of its own, and it must land
+// in this request's uow_ms rather than in nobody's.
+func (p timedProvider) ReadyCounter() (issueops.ReadyCounter, error) {
+	return uow.NewReadyCounter(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

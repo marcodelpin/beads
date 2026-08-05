@@ -328,3 +328,34 @@ func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 		t.Fatalf("Counter() error = %v, want *beads.ErrUnsupported", err)
 	}
 }
+
+// TestReadyCounterKeepsTelemetryOutermost is the ready-count role's version of
+// the same pin, and it is the READ answer again: sizing the ready set fires no
+// completion hooks, so the hook decorator adds no layer and the outermost
+// surface a caller gets is the instrumented one.
+func TestReadyCounterKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	counter, err := storage.NewHookFiringStore(instrumented, nil).ReadyCounter()
+	if err != nil {
+		t.Fatalf("ReadyCounter() error = %v", err)
+	}
+	if got := reflect.TypeOf(counter).String(); got != "*telemetry.instrumentedReadyCounter" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestReadyCounterExposesTypedUnsupportedError(t *testing.T) {
+	counter, err := (*dolt.DoltStore)(nil).ReadyCounter()
+	if counter != nil {
+		t.Fatalf("ReadyCounter() counter = %T, want nil", counter)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("ReadyCounter() error = %v, want *beads.ErrUnsupported", err)
+	}
+}

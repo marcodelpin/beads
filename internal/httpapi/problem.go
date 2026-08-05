@@ -37,6 +37,7 @@ import (
 // status+code pair breaks the wire. Adding one does not, which is why clients
 // are told to default-branch on unknown codes within a status class. Keep it
 // at what the seven v0 operations actually need.
+// at what the v0 operations actually need.
 type Code string
 
 // The v0 code vocabulary. Every value here is documented in the spec, and
@@ -158,6 +159,7 @@ const (
 	// member because it answers per named issue, reports the ids that named
 	// nothing, and returns edges whose target this database holds no row for.
 	OpListDependencies = "listDependencies"
+	OpCountReadyWork   = "countReadyWork"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -173,6 +175,8 @@ const (
 // documents them once at the document level rather than repeating them on all
 // nine operations; these rows carry what an operation produces beyond them.
 // seven operations; these rows carry what an operation produces beyond them.
+// documents them once at the document level rather than repeating them on
+// every operation; these rows carry what an operation produces beyond them.
 // Keep the two documents in step: a row here and the document-level prose are
 // the only two places that carve-out exists.
 var operationCodes = map[string][]Code{
@@ -205,6 +209,11 @@ var operationCodes = map[string][]Code{
 	// the response's `missing` member, so a batch keeps the answers for the ids
 	// that were found. A 404 would discard them.
 	OpListDependencies: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The same vocabulary as the listing it sizes: it takes the same filters
+	// and can refuse them the same way. limit=0's mode-dependent refusal has no
+	// analog here because there is no limit to pass — but that was a
+	// CodeInvalidArgument too, so this row would not change if there were.
+	OpCountReadyWork: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

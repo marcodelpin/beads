@@ -66,6 +66,7 @@ info:
     Both are uniform rules, reachable on EVERY route including `GET /healthz`,
     and are stated here instead of being repeated on all nine operations. The
     and are stated here instead of being repeated on all seven operations. The
+    and are stated here instead of being repeated on every operation. The
     per-operation `responses` below therefore list what an operation produces
     BEYOND these two: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses
@@ -549,6 +550,155 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CyclesPage'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/ready:count:
+    get:
+      operationId: countReadyWork
+      summary: Count ready work
+      description: >-
+        How many items `GET /v0/beads/ready` would return for the same filters
+        with `limit=0`. That is an identity, not an estimate: the two
+        operations answer from one role over one predicate
+        (`issueops.ReadyCounter`), so a client may page the listing and print
+        this number beside it — which is exactly what `bd ready` does when it
+        reports "showing 100 of 412".
+
+
+        THERE IS NO `limit` AND NO `sort` PARAMETER, and both absences are
+        deliberate. A cardinality has no page: a limit here would answer "how
+        many of the first N", which breaks the identity above, so the role
+        refuses one rather than accepting it and dropping it. A cardinality has
+        no order either — this operation counts the same set the listing
+        returns under ANY sort policy — so there is nothing for a `sort`
+        parameter to change and it is not published. Every other parameter of
+        the listing is here and means exactly what it means there, including
+        the default type exclusions and the way `type` drops them.
+
+
+        It costs a query of its own. A client that only needs to know whether
+        MORE work exists should read `has_more` on the listing instead; this
+        operation is for the client that needs the number.
+      parameters:
+        - name: assignee
+          in: query
+          description: Only issues assigned to this actor.
+          schema:
+            type: string
+        - name: unassigned
+          in: query
+          description: Only issues with no assignee.
+          schema:
+            type: boolean
+        - name: type
+          in: query
+          description: >-
+            Issue type, with the shorthand alias expansion and the
+            match-nothing-rather-than-fail treatment `GET /v0/beads/ready`
+            documents. Setting it drops the default type exclusions and makes
+            `exclude_type` ignored, there and here alike.
+          schema:
+            type: string
+        - name: exclude_type
+          in: query
+          description: >-
+            Issue types to exclude. Repeat the parameter, or pass a
+            comma-separated list. Ignored when `type` is set.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: label
+          in: query
+          description: Labels that must ALL be present (AND).
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: label_any
+          in: query
+          description: Labels of which at least one must be present (OR).
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: exclude_label
+          in: query
+          description: Labels that must not be present.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: label_pattern
+          in: query
+          description: Glob matched against labels.
+          schema:
+            type: string
+        - name: label_regex
+          in: query
+          description: Regular expression matched against labels.
+          schema:
+            type: string
+        - name: priority
+          in: query
+          description: Exact priority (0 is a real value, not "unset").
+          schema:
+            type: integer
+        - name: parent
+          in: query
+          description: Restrict to recursive descendants of this issue.
+          schema:
+            type: string
+        - name: metadata_field
+          in: query
+          description: >-
+            Top-level metadata equality filter as `key=value`, split on the
+            first `=`. Repeatable. An invalid key is a 400.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: has_metadata_key
+          in: query
+          description: Only issues carrying this top-level metadata key.
+          schema:
+            type: string
+        - name: include_ephemeral
+          in: query
+          description: >-
+            Include ephemeral (non-synced) rows, which the count merges exactly
+            as the listing lists them.
+          schema:
+            type: boolean
+            default: false
+        - name: include_deferred
+          in: query
+          description: Include issues whose `defer_until` is still in the future.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: The size of the ready set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyCount'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1908,14 +2058,41 @@ components:
           type: array
           description: >-
             The operations this server actually implements, derived from its
-            route table. v0's vocabulary is `ready.list`, `issues.list`,
-            `issues.get`, `issues.claim`, `stats.get`, `config.list`,
-            `config.get`, `dependencies.cycles`, `dependencies.list`; it grows
-            additively, and an operation never appears here unless it is fully
-            implemented. This is how a client checks for an operation — never
-            the version string.
+            route table. v0's vocabulary is `ready.list`, `ready.count`,
+            `issues.list`, `issues.get`, `issues.claim`, `stats.get`,
+            `config.list`, `config.get`, `dependencies.cycles`,
+            `dependencies.list`; it grows additively, and an operation never
+            appears here unless it is fully implemented. This is how a client
+            checks for an operation — never the version string.
           items:
             type: string
+
+    ReadyCount:
+      type: object
+      required: [total]
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: >-
+            How many items `GET /v0/beads/ready` would return for these filters
+            with `limit=0`. Never negative; 0 when nothing is ready, which is a
+            200 rather than a 404 — a question about a set has an answer even
+            when the set is empty.
+      description: >-
+        The size of a ready set. It carries no items, no `has_more` and no
+        cursor: this is a number about a set, and the operation that returns
+        rows is `GET /v0/beads/ready`.
+
+
+        It is NOT `x-go-type`-pinned, unlike the seven schemas above, and that
+        is a decision rather than an omission: those seven are pinned because a
+        canonical Go struct's JSON encoding IS the contract and a second wire
+        struct would let the CLI's `--json` drift from these bodies. There is
+        no canonical struct here — the CLI publishes this number inside its own
+        stdout envelope's `pagination` member, which is not a wire type — so
+        pinning would weld this body to a CLI presentation type instead of
+        preventing a drift.
 
     ReadyPage:
       type: object

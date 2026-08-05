@@ -96,6 +96,18 @@ var routeTable = []route{
 		handler:     (*Server).handleDependencyCycles,
 	},
 	{
+		op:     OpCountReadyWork,
+		method: http.MethodGet,
+		// A collection-level custom method, spelled the way the claim route's
+		// is. Unlike that one it needs no specPath declaration: the segment is
+		// a LITERAL, and only a wildcard segment is inexpressible as a ServeMux
+		// pattern, so the router registers the documented path itself.
+		pattern:     "/v0/beads/ready:count",
+		capability:  "ready.count",
+		implemented: true,
+		handler:     (*Server).handleCountReady,
+	},
+	{
 		op:          OpListIssues,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/issues",

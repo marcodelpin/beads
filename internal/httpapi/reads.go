@@ -50,38 +50,17 @@ import (
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	q := newQuery(r.URL.Query())
 
-	req := issueops.ReadyRequest{
-		Assignee:     q.str("assignee"),
-		Unassigned:   q.boolean("unassigned"),
-		IssueType:    q.str("type"),
-		ExcludeTypes: q.list("exclude_type"),
+	req := readyFilters(q)
 
-		Labels:        q.list("label"),
-		LabelsAny:     q.list("label_any"),
-		ExcludeLabels: q.list("exclude_label"),
-		LabelPattern:  q.str("label_pattern"),
-		LabelRegex:    q.str("label_regex"),
-
-		Priority: q.integer("priority"),
-		ParentID: q.str("parent"),
-
-		MetadataFields: q.metadataFields("metadata_field"),
-		HasMetadataKey: q.str("has_metadata_key"),
-
-		IncludeEphemeral: q.boolean("include_ephemeral"),
-		IncludeDeferred:  q.boolean("include_deferred"),
-
-		// EXPLICIT, always. The storage layer maps an EMPTY sort policy to
-		// hybrid, and forwarding an absent `sort` as "" would silently adopt
-		// that fallback while the document still read `default: priority`.
-		// It is not a cosmetic difference: hybrid demotes older high-priority
-		// work, so the item SET changes as soon as `limit` truncates — and
-		// only for the clients this API exists to migrate off `bd ready`,
-		// whose flag registers a concrete default and never sends empty.
-		Sort: q.oneOf("sort", readySortDefault, "hybrid", "priority", "oldest"),
-
-		Limit: q.limit(),
-	}
+	// EXPLICIT, always. The storage layer maps an EMPTY sort policy to hybrid,
+	// and forwarding an absent `sort` as "" would silently adopt that fallback
+	// while the document still read `default: priority`. It is not a cosmetic
+	// difference: hybrid demotes older high-priority work, so the item SET
+	// changes as soon as `limit` truncates — and only for the clients this API
+	// exists to migrate off `bd ready`, whose flag registers a concrete default
+	// and never sends empty.
+	req.Sort = q.oneOf("sort", readySortDefault, "hybrid", "priority", "oldest")
+	req.Limit = q.limit()
 
 	if !s.acceptQuery(w, r, q) {
 		return
@@ -104,6 +83,78 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		Items:   wireItems(page.Items),
 		HasMore: page.HasMore,
 	})
+}
+
+// readyFilters decodes the ready-work filter vocabulary the two ready
+// operations share — everything except the PAGE, which only the listing has,
+// and the ORDER, which only the listing needs.
+//
+// It is one function because the two operations must admit exactly the same
+// filters: countReadyWork answers with the size of the set listReadyWork
+// returns, and a parameter one of them decoded and the other did not would
+// make that identity false for any client that sent it. Each parameter this
+// reads is also, by construction, one the operation accepts — the unknown-
+// parameter allowlist IS the set of names the handler asked for — so the two
+// parameter tables cannot drift apart either.
+func readyFilters(q *query) issueops.ReadyRequest {
+	return issueops.ReadyRequest{
+		Assignee:     q.str("assignee"),
+		Unassigned:   q.boolean("unassigned"),
+		IssueType:    q.str("type"),
+		ExcludeTypes: q.list("exclude_type"),
+
+		Labels:        q.list("label"),
+		LabelsAny:     q.list("label_any"),
+		ExcludeLabels: q.list("exclude_label"),
+		LabelPattern:  q.str("label_pattern"),
+		LabelRegex:    q.str("label_regex"),
+
+		Priority: q.integer("priority"),
+		ParentID: q.str("parent"),
+
+		MetadataFields: q.metadataFields("metadata_field"),
+		HasMetadataKey: q.str("has_metadata_key"),
+
+		IncludeEphemeral: q.boolean("include_ephemeral"),
+		IncludeDeferred:  q.boolean("include_deferred"),
+	}
+}
+
+// handleCountReady answers GET /v0/beads/ready:count.
+//
+// THE REQUEST IS THE LISTING'S REQUEST with the page taken off, which is what
+// makes the answer the size of the page the listing would return. It is not
+// assembled here beyond that: the role refuses a Limit and an Offset itself
+// (issueops.ReadyCounter.CountReady), so this handler could not smuggle a
+// bounded count past it even if a parameter for one existed.
+//
+// THE SORT IS SENT ANYWAY, and the operation publishes no parameter for it. A
+// count has no order, so there is nothing for a client to choose; but the
+// request still has to be a request the builder accepts, and sending the
+// listing's own default is how this stays the listing's question rather than a
+// second one that merely resembles it. Sending "" would adopt the storage
+// layer's hybrid fallback, which the document says no front door relies on.
+func (s *Server) handleCountReady(w http.ResponseWriter, r *http.Request) {
+	q := newQuery(r.URL.Query())
+
+	req := readyFilters(q)
+	req.Sort = readySortDefault
+
+	if !s.acceptQuery(w, r, q) {
+		return
+	}
+
+	counter, err := s.readyCounter(r)
+	if err != nil {
+		s.failErr(w, r, err)
+		return
+	}
+	result, err := counter.CountReady(r.Context(), req)
+	if err != nil {
+		s.failReadErr(w, r, err)
+		return
+	}
+	writeJSON(w, apigen.ReadyCount{Total: result.Total})
 }
 
 // readySortDefault is the ordering this operation applies when `sort` is

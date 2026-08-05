@@ -165,6 +165,8 @@ linters:
               desc: "a command reaches the workspace-settings role through store.WorkspaceConfig(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storeworkspaceconfig/workspaceconfig.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storestats
               desc: "a command reaches the summary role through store.StatsReporter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storestats/reporter.go"
+            - pkg: github.com/steveyegge/beads/internal/workapi/storereadycounter
+              desc: "a command reaches the ready-count role through store.ReadyCounter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storereadycounter/counter.go"
     # The CONSTRUCTION half of that same boundary, and the half that actually
     # matches the failure. The depguard rule above denies a handler IMPORTING
     # the builders; it does not deny a handler naming the filter types, which
@@ -273,9 +275,12 @@ linters:
       # than inlining a third copy of the default - bd-3fs.3. The blocked-issue
       # views in these files name the type directly for an empty filter or one
       # carrying only a --parent id, which is the absence of a filter rather
-      # than one this command built. `bd ready` is on the shared BUILDER and,
-      # on the proxied route, the shared EPILOGUE; it is not on the role, and
-      # this rule does not pretend otherwise.
+      # than one this command built. `bd ready`'s LISTING is on the shared
+      # BUILDER and, on the proxied route, the shared EPILOGUE; it is not on a
+      # role, and this rule does not pretend otherwise. Its other two questions
+      # are: --claim goes to ReadyClaimer and the published total to
+      # ReadyCounter, both over the request rather than the filter, on both
+      # routes - which is why this hole keeps shrinking rather than growing.
       - path: '^cmd/bd/ready(_input|_proxied_server)?\.go$'
         linters:
           - forbidigo

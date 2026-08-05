@@ -34,6 +34,11 @@ import (
 // uow.UnitOfWorkProvider, because "a backend that cannot produce a unit of work
 // is still servable" is the property this whole seam exists for. If any of them
 // ever grows a NewUOW method these tests stop proving it.
+// The fakes below implement one issueops role each and NOTHING else —
+// deliberately not uow.UnitOfWorkProvider, because "a backend that cannot
+// produce a unit of work is still servable" is the property this whole seam
+// exists for. If any of them ever grows a NewUOW method these tests stop
+// proving it.
 
 type roleReader struct {
 	page    issueops.IssuePage
@@ -110,6 +115,35 @@ func (e *roleEdgeReader) edgeRequests() []issueops.EdgeReadRequest {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]issueops.EdgeReadRequest(nil), e.reads...)
+}
+
+// roleReadyCounter is the third role a store-shaped source must supply. It is
+// its own fake rather than a method on roleReader for the reason the roles are
+// separate interfaces: a backend hands out one surface per question, and a test
+// double that answered two of them would be the shape this seam exists to rule
+// out.
+type roleReadyCounter struct {
+	total int64
+	err   error
+
+	mu     sync.Mutex
+	counts []issueops.ReadyRequest
+}
+
+func (c *roleReadyCounter) CountReady(_ context.Context, req issueops.ReadyRequest) (issueops.ReadyCountResult, error) {
+	c.mu.Lock()
+	c.counts = append(c.counts, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.ReadyCountResult{}, c.err
+	}
+	return issueops.ReadyCountResult{Total: c.total}, nil
+}
+
+func (c *roleReadyCounter) countRequests() []issueops.ReadyRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.ReadyRequest(nil), c.counts...)
 }
 
 type roleClaimer struct {
@@ -245,6 +279,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.EdgeReader == nil {
 		cfg.EdgeReader = &roleEdgeReader{}
 	}
+	if cfg.ReadyCounter == nil {
+		cfg.ReadyCounter = &roleReadyCounter{}
+	}
 	return cfg
 }
 
@@ -299,6 +336,11 @@ func countedPage() []*types.IssueWithCounts {
 // no claimer would bind, answer every read, and fail the one write on this
 // surface with a nil dereference — at claim time, in a handler, on a live
 // server. Each role an operation reaches has a row here for the same reason.
+// PARTIAL set is the dangerous one: a Config carrying a reader and no claimer
+// would bind, answer every read, and fail the one write on this surface with a
+// nil dereference — at claim time, in a handler, on a live server. The set
+// grows with the surface, so the case that matters most is the newest role
+// missing: that is what a caller written against the previous release passes.
 func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -355,9 +397,33 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
+			name:    "no ready counter",
+			cfg:     rolesConfigWithout(func(c *Config) { c.ReadyCounter = nil }),
+			wantErr: "no database source",
+		},
+		{
 			name:    "a cycle detector alone",
 			cfg:     Config{CycleDetector: &roleCycleDetector{}},
 			wantErr: "no database source",
+		},
+		{
+			// The newest role, and the one a caller written against the
+			// previous release would leave out: the pair alone used to be a
+			// complete source, and a Config that stayed that way would bind and
+			// then nil-dereference on the first ready:count request.
+			name:    "a reader and a claimer without a ready counter",
+			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a ready counter alone",
+			cfg:     Config{ReadyCounter: &roleReadyCounter{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a provider and a ready counter",
+			cfg:     Config{Provider: &fakeProvider{}, ReadyCounter: &roleReadyCounter{}},
+			wantErr: "exactly one database source",
 		},
 		{
 			name:    "a provider and a reader",
@@ -445,6 +511,9 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 // database-touching operations against a store-shaped source, which is the
 // whole point: none of them can reach a unit of work here, because there is no
 // provider to open one.
+// TestConfiguredRolesAnswerEveryDatabaseRoute drives every database-touching
+// operation against a store-shaped source, which is the whole point: none of
+// them can reach a unit of work here, because there is no provider to open one.
 func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	details := &issueops.IssueDetails{Issue: *seededIssue("bd-1", "alice", types.StatusOpen)}
 	reader := &roleReader{page: issueops.IssuePage{Items: countedPage(), HasMore: true}, details: details}
@@ -462,8 +531,10 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 		{ID: "bd-1", Edges: []*types.Dependency{{IssueID: "bd-1", DependsOnID: "bd-2", Type: types.DepBlocks}}},
 		{ID: "bd-9", Missing: true},
 	}}}
+	counter := &roleReadyCounter{total: 41}
 	ts := newTestServer(t, rolesConfig(Config{
-		Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter, EdgeReader: edges,
+		Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter,
+		EdgeReader: edges, ReadyCounter: counter,
 	}))
 
 	t.Run("ready", func(t *testing.T) {
@@ -482,6 +553,29 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 		reqs := reader.readyRequests()
 		if len(reqs) != 1 || reqs[0].Sort != "oldest" {
 			t.Errorf("ready requests = %+v, want one carrying sort=oldest", reqs)
+		}
+	})
+
+	t.Run("count ready", func(t *testing.T) {
+		resp := ts.get(t, "/v0/beads/ready:count?label=api")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+		}
+		if body := decodeBody(t, resp); body["total"] != float64(41) {
+			t.Errorf("total = %v, want the 41 the role reported", body["total"])
+		}
+		// The role is handed the listing's request with the page taken off:
+		// the filter the wire named, no Limit, no Offset, and the sort this
+		// server sends on both ready operations.
+		reqs := counter.countRequests()
+		if len(reqs) != 1 {
+			t.Fatalf("count requests = %+v, want exactly one", reqs)
+		}
+		if got := reqs[0]; got.Limit != nil || got.Offset != 0 {
+			t.Errorf("count request carries a page (limit=%v offset=%d); the role refuses one", got.Limit, got.Offset)
+		}
+		if got := reqs[0]; len(got.Labels) != 1 || got.Labels[0] != "api" || got.Sort != readySortDefault {
+			t.Errorf("count request = %+v, want the wire filter under sort %q", got, readySortDefault)
 		}
 	})
 
@@ -657,6 +751,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
+			ReadyCounter:  &roleReadyCounter{},
 		})
 		resp := ts.get(t, "/v0/beads/issues/bd-404")
 		if resp.StatusCode != http.StatusNotFound {
@@ -678,6 +773,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
+			ReadyCounter:  &roleReadyCounter{},
 		})
 		resp := ts.get(t, "/v0/beads/issues?status=bogus")
 		if resp.StatusCode != http.StatusBadRequest {
@@ -701,7 +797,8 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 				Status:   types.StatusInProgress,
 				Err:      fmt.Errorf("claim bd-1: %w", storage.ErrAlreadyClaimed),
 			}},
-			Settings: &roleSettings{},
+			Settings:     &roleSettings{},
+			ReadyCounter: &roleReadyCounter{},
 		})
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
 		if resp.StatusCode != http.StatusConflict {
@@ -724,6 +821,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
+			ReadyCounter:  &roleReadyCounter{},
 		})
 		resp := ts.get(t, "/v0/beads/ready")
 		if resp.StatusCode != http.StatusInternalServerError {
@@ -828,6 +926,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
+			ReadyCounter:  &roleReadyCounter{},
 		})
 
 		got := silent.get(t, "/v0/beads/issues/bd-1")
@@ -858,6 +957,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
+			ReadyCounter:  &roleReadyCounter{},
 		})
 
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)

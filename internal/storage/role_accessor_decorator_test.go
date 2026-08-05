@@ -24,6 +24,7 @@ var roleAccessorNames = []string{
 	"WorkspaceConfig",
 	"StatsReporter",
 	"CycleDetector",
+	"ReadyCounter",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -70,36 +71,38 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 // a decorated surface from a passed-through one.
 type roleAccessorStore struct {
 	DoltStorage
-	lifecycle issueops.Lifecycle
-	reader    issueops.Reader
-	relations issueops.Relations
-	edges     issueops.EdgeReader
-	counter   issueops.Counter
-	settings  issueops.WorkspaceConfig
-	stats     issueops.StatsReporter
-	cycles    issueops.CycleDetector
-	commenter issueops.Commenter
-	claimer   issueops.ReadyClaimer
-	closer    issueops.BatchCloser
-	editor    issueops.DependencyEditor
-	err       error
+	lifecycle    issueops.Lifecycle
+	reader       issueops.Reader
+	relations    issueops.Relations
+	edges        issueops.EdgeReader
+	counter      issueops.Counter
+	settings     issueops.WorkspaceConfig
+	stats        issueops.StatsReporter
+	cycles       issueops.CycleDetector
+	commenter    issueops.Commenter
+	claimer      issueops.ReadyClaimer
+	closer       issueops.BatchCloser
+	editor       issueops.DependencyEditor
+	readyCounter issueops.ReadyCounter
+	err          error
 }
 
 func newRoleAccessorStore() *roleAccessorStore {
 	sentinel := &roleAccessorSentinel{}
 	return &roleAccessorStore{
-		lifecycle: sentinel,
-		reader:    sentinel,
-		relations: sentinel,
-		edges:     sentinel,
-		counter:   sentinel,
-		settings:  sentinel,
-		stats:     sentinel,
-		cycles:    sentinel,
-		commenter: sentinel,
-		claimer:   sentinel,
-		closer:    sentinel,
-		editor:    sentinel,
+		lifecycle:    sentinel,
+		reader:       sentinel,
+		relations:    sentinel,
+		edges:        sentinel,
+		counter:      sentinel,
+		settings:     sentinel,
+		stats:        sentinel,
+		cycles:       sentinel,
+		commenter:    sentinel,
+		claimer:      sentinel,
+		closer:       sentinel,
+		editor:       sentinel,
+		readyCounter: sentinel,
 	}
 }
 
@@ -119,6 +122,9 @@ func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 }
 func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.edges, s.err }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s.commenter, s.err }
+func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
+	return s.readyCounter, s.err
+}
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
@@ -186,6 +192,10 @@ func (*roleAccessorSentinel) AssigneeStats(context.Context, issueops.AssigneeSta
 func (*roleAccessorSentinel) DetectCycles(context.Context, issueops.DetectCyclesRequest) (issueops.CycleReport, error) {
 	return issueops.CycleReport{}, nil
 }
+
+func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) (issueops.ReadyCountResult, error) {
+	return issueops.ReadyCountResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -229,6 +239,12 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // hook_relations.go, hook_edgereader.go, hook_counter.go); this test pins that
 // as a decision rather than leaving it indistinguishable from the regression
 // above.
+// The four read roles are asserted the OTHER way round on purpose. Reads fire
+// no completion hooks, so IssueReader, IssueRelations, Counter and ReadyCounter
+// deliberately return the inner surface unwrapped (hook_issue_reader.go,
+// hook_relations.go, hook_counter.go, hook_ready_counter.go); this test pins
+// that as a decision rather than leaving it indistinguishable from the
+// regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -251,6 +267,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }, inner.stats, false},
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
+		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }, inner.readyCounter, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -293,6 +310,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }},
+		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

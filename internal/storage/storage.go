@@ -192,6 +192,15 @@ type Storage interface {
 	// refuses a missing anchor outright. Reads fire no hooks, as for
 	// IssueReader.
 	EdgeReader() (issueops.EdgeReader, error)
+	// ReadyCounter returns the guarded ready-count surface for this store: the
+	// size of the ready set, which is the number `bd ready`'s pagination
+	// publishes and which no other role answers. IssueReader.Ready reports
+	// only whether the limit hid anything, and Counter's predicate is a filter
+	// over one table where the ready predicate is blocker-aware.
+	//
+	// Reads fire no hooks, so the hook decorator's answer is its inner store's
+	// unchanged, as it is for IssueReader.
+	ReadyCounter() (issueops.ReadyCounter, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error
@@ -623,10 +632,15 @@ type BackupStore interface {
 // ReadyWorkCounter sizes the total ready-work count for a filter without
 // materializing the counts mega-query. It is identical to
 // len(GetReadyWorkWithCounts(filter with Limit=0)) but computed with cheap
-// indexed COUNT(*)s over the ready predicate. `bd ready --json` type-asserts to
-// this (via UnwrapStore) to render the "Showing X of N" total when a page is
-// capped, and falls back to the unbounded GetReadyWorkWithCounts when a store
-// does not implement it.
+// indexed COUNT(*)s over the ready predicate.
+//
+// THAT IDENTITY IS THIS INTERFACE'S WHOLE CONTRACT, and it is now also a public
+// promise: issueops.ReadyCounter states it for every backend, and the
+// store-backed body behind ReadyCounter() (internal/workapi/storereadycounter)
+// is this method plus the shared filter builder. `bd ready`'s "Showing X of N"
+// reaches it that way on both routes; it no longer type-asserts for the
+// capability itself, because a store that cannot answer now fails to compile
+// rather than falling back to an unbounded query at runtime.
 type ReadyWorkCounter interface {
 	CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error)
 }

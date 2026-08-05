@@ -374,7 +374,10 @@ type IssuePage struct {
 //     cap, --claim, --gated, --explain, --mol, --watch, the hierarchical
 //     --parent tree, and the text renderings that want []*types.Issue rather
 //     than a counted page. Routing only their JSON paths through the role
-//     would fork each command in two, which is more drift, not less.
+//     would fork each command in two, which is more drift, not less. Two of
+//     `bd ready`'s questions HAVE left the filter behind, each for the role
+//     that owns it: --claim is ReadyClaimer's, and the published total is
+//     ReadyCounter's, on both routes.
 //
 // WHAT THOSE TWO DO SHARE, stated exactly, because "not on the role" is not
 // the same as "unprotected":
@@ -392,10 +395,13 @@ type IssuePage struct {
 //     --max-rows cap.
 //   - EXECUTION, for `bd ready`, on the PROXIED route only. The direct route
 //     keeps an epilogue of its own and cannot give it up: it answers the
-//     strictly larger question "how many rows did the limit hide" with a
-//     second counting query and publishes the total in its pagination meta,
-//     where this role answers only "were any hidden". Collapsing them would
-//     change one surface's published output.
+//     strictly larger question "how many rows did the limit hide" and
+//     publishes the total in its pagination meta, where this role answers only
+//     "were any hidden". Collapsing them would change one surface's published
+//     output. That second question is not off-role, though — it is
+//     ReadyCounter's, which both routes now ask through their own accessor,
+//     over this same ReadyRequest; what stays outside this role is the PAGE's
+//     epilogue, not the count beside it.
 //
 // THE CLAIM, stated once and in full so it can be checked sentence by
 // sentence. SHARED: all three issue reads on the HTTP surface go through this

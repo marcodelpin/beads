@@ -81,7 +81,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.get`, `issues.claim`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -199,6 +199,14 @@ type Problem struct {
 
 	// Type RFC 9457 problem type. This server never emits it, so `about:blank` is implied. A deployment that hosts problem documentation MAY supply it: one stable URI per status+code pair, dereferencing to documentation for that pair. It restates identity that `code` already carries, so a client MUST NOT dispatch on it and a server MUST NOT use it to subdivide a code.
 	Type *string `json:"type,omitempty"`
+}
+
+// ReadyCount The size of a ready set. It carries no items, no `has_more` and no cursor: this is a number about a set, and the operation that returns rows is `GET /v0/beads/ready`.
+//
+// It is NOT `x-go-type`-pinned, unlike the seven schemas above, and that is a decision rather than an omission: those seven are pinned because a canonical Go struct's JSON encoding IS the contract and a second wire struct would let the CLI's `--json` drift from these bodies. There is no canonical struct here — the CLI publishes this number inside its own stdout envelope's `pagination` member, which is not a wire type — so pinning would weld this body to a CLI presentation type instead of preventing a drift.
+type ReadyCount struct {
+	// Total How many items `GET /v0/beads/ready` would return for these filters with `limit=0`. Never negative; 0 when nothing is ready, which is a 200 rather than a 404 — a question about a set has an answer even when the set is empty.
+	Total int64 `json:"total"`
 }
 
 // ReadyPage defines model for ReadyPage.
@@ -425,6 +433,54 @@ type ListReadyWorkParams struct {
 
 // ListReadyWorkParamsSort defines parameters for ListReadyWork.
 type ListReadyWorkParamsSort string
+
+// CountReadyWorkParams defines parameters for CountReadyWork.
+type CountReadyWorkParams struct {
+	// Assignee Only issues assigned to this actor.
+	Assignee *string `form:"assignee,omitempty" json:"assignee,omitempty"`
+
+	// Unassigned Only issues with no assignee.
+	Unassigned *bool `form:"unassigned,omitempty" json:"unassigned,omitempty"`
+
+	// Type Issue type, with the shorthand alias expansion and the match-nothing-rather-than-fail treatment `GET /v0/beads/ready` documents. Setting it drops the default type exclusions and makes `exclude_type` ignored, there and here alike.
+	Type *string `form:"type,omitempty" json:"type,omitempty"`
+
+	// ExcludeType Issue types to exclude. Repeat the parameter, or pass a comma-separated list. Ignored when `type` is set.
+	ExcludeType *[]string `form:"exclude_type,omitempty" json:"exclude_type,omitempty"`
+
+	// Label Labels that must ALL be present (AND).
+	Label *[]string `form:"label,omitempty" json:"label,omitempty"`
+
+	// LabelAny Labels of which at least one must be present (OR).
+	LabelAny *[]string `form:"label_any,omitempty" json:"label_any,omitempty"`
+
+	// ExcludeLabel Labels that must not be present.
+	ExcludeLabel *[]string `form:"exclude_label,omitempty" json:"exclude_label,omitempty"`
+
+	// LabelPattern Glob matched against labels.
+	LabelPattern *string `form:"label_pattern,omitempty" json:"label_pattern,omitempty"`
+
+	// LabelRegex Regular expression matched against labels.
+	LabelRegex *string `form:"label_regex,omitempty" json:"label_regex,omitempty"`
+
+	// Priority Exact priority (0 is a real value, not "unset").
+	Priority *int `form:"priority,omitempty" json:"priority,omitempty"`
+
+	// Parent Restrict to recursive descendants of this issue.
+	Parent *string `form:"parent,omitempty" json:"parent,omitempty"`
+
+	// MetadataField Top-level metadata equality filter as `key=value`, split on the first `=`. Repeatable. An invalid key is a 400.
+	MetadataField *[]string `form:"metadata_field,omitempty" json:"metadata_field,omitempty"`
+
+	// HasMetadataKey Only issues carrying this top-level metadata key.
+	HasMetadataKey *string `form:"has_metadata_key,omitempty" json:"has_metadata_key,omitempty"`
+
+	// IncludeEphemeral Include ephemeral (non-synced) rows, which the count merges exactly as the listing lists them.
+	IncludeEphemeral *bool `form:"include_ephemeral,omitempty" json:"include_ephemeral,omitempty"`
+
+	// IncludeDeferred Include issues whose `defer_until` is still in the future.
+	IncludeDeferred *bool `form:"include_deferred,omitempty" json:"include_deferred,omitempty"`
+}
 
 // GetStatsParams defines parameters for GetStats.
 type GetStatsParams struct {

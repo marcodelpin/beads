@@ -31,7 +31,8 @@ APPENDING later, not being born whole.
 
 ## The checklist
 
-Twelve steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way in.
+Thirteen steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way
+in; 13 is the HTTP surface, which lands with the command rather than after it.
 
 1. **The leaf contract.** `issueops/<role>.go`. Request and result types plus
    the interface, with the doc comment written as a SPECIFICATION — every
@@ -153,6 +154,23 @@ Twelve steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way in.
     comment above it, and in `issueops/reader.go`'s claim, which both state the
     number). Removing an entry there is how a role commit proves its front door
     actually reached the role.
+
+13. **The HTTP half, when the role has one.** The spec is written FIRST —
+    `internal/httpapi/spec/openapi.v0.yaml`, then `make api-gen` — and the
+    handler is written against the generated types, never the other way round.
+    An operation costs four more edits beside the handler: the `Op*` id and the
+    `operationCodes` row in `problem.go`, the `routeTable` row and its
+    `capability` token in `routes.go`, and that token in the document's
+    `capabilities` vocabulary. `make api-check` is the gate.
+
+    **The ROLES database source is the part that surprises.** `httpapi.Config`
+    carries either a unit-of-work provider or the roles, and the roles are
+    required TOGETHER: a new operation served from a new role adds a required
+    field, so `checkDatabaseSource` grows a term and every caller and test that
+    built a Config grows a line. That is deliberate — a Config missing the new
+    role would otherwise bind and nil-dereference on the first request that
+    reached the new handler — but budget it, because it is the one edit in this
+    list that touches code the role commit did not write.
 
 ## What the whole thing costs
 

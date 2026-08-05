@@ -671,6 +671,10 @@ func (s *configStore) CycleDetector() (issueops.CycleDetector, error) {
 func (s *configStore) EdgeReader() (issueops.EdgeReader, error) {
 	return nil, &storage.ErrUnsupported{Op: "EdgeReader", Backend: "jira-config-stub"}
 }
+
+func (s *configStore) ReadyCounter() (issueops.ReadyCounter, error) {
+	return nil, &storage.ErrUnsupported{Op: "ReadyCounter", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {
