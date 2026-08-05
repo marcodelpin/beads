@@ -424,6 +424,15 @@ func outputMemoriesOnlyContext(w io.Writer) error {
 // formatMemoriesForPrime queries memories from the k/v store and formats them for injection.
 // Returns empty string if no memories or if store is unavailable.
 func formatMemoriesForPrime(compact bool) string {
+	// bd-mm8wf: in a proxied-server workspace the memory read must ride the
+	// proxied plane (UOW provider), never ensureStoreActiveForPrime — the
+	// lazy direct-store open is the same seam class bd-m7zzd closed in
+	// relate.go and human.go, here in a read-only limb. The proxied dual
+	// preserves prime's silent-skip and timeout-banner contracts.
+	if usesProxiedServer() {
+		return formatMemoriesForPrimeProxied(compact)
+	}
+
 	// Try to initialize store if not already active (prime may run before other commands)
 	if store == nil {
 		timeout := primeStoreTimeout()
@@ -448,14 +457,15 @@ func formatMemoriesForPrime(compact bool) string {
 	if err != nil {
 		return ""
 	}
+	return renderPrimeMemoriesFromAllConfig(allConfig, compact)
+}
 
-	fullPrefix := kvPrefix + memoryPrefix
-	memories := make(map[string]string)
-	for k, v := range allConfig {
-		if strings.HasPrefix(k, fullPrefix) {
-			memories[strings.TrimPrefix(k, fullPrefix)] = v
-		}
-	}
+// renderPrimeMemoriesFromAllConfig extracts the kv.memory.* entries from a
+// full config-table read and renders them for injection — the shared tail of
+// the classic and proxied (bd-mm8wf) memory-read paths, so the two cannot
+// drift in what a memory looks like once fetched.
+func renderPrimeMemoriesFromAllConfig(allConfig map[string]string, compact bool) string {
+	memories := memoriesFromConfig(allConfig, "")
 	if len(memories) == 0 {
 		return ""
 	}

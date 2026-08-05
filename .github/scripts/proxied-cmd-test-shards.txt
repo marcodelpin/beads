@@ -62,6 +62,7 @@
 15 6 TestProxiedServerCleanDatabases
 15 6 TestProxiedServerEdit
 15 6 TestProxiedServerLink
+15 6 TestProxiedServerPrime
 15 6 TestProxiedServerReady2
 15 6 TestProxiedServerReadyConcurrent
 15 6 TestProxiedServerState
