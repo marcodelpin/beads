@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the nine-strong capability surface every storage
+// roleAccessorNames is the thirteen-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -56,7 +56,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the nine role
+// roleAccessorStore is a DoltStorage whose only real methods are the thirteen role
 // accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -92,7 +92,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all nine roles at once. Nothing calls its
+// roleAccessorSentinel implements all thirteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -177,9 +177,9 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // DoltStorage, and silently drops every span and timing on that role.
 //
 // Unlike the hook decorator, this one has no read-role exemption: telemetry
-// spans reads as well as writes, so ALL NINE must come back wrapped. Only
+// spans reads as well as writes, so ALL THIRTEEN must come back wrapped. Only
 // IssueLifecycle and IssueReader had a recursion pin of their own before this
-// test; the other six wrappers had no test at all.
+// test; the rest had no test at all.
 func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	sentinel := &roleAccessorSentinel{}

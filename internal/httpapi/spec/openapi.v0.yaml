@@ -55,18 +55,14 @@ info:
       outside its own parameter table with `400` / `code: invalid_argument` /
       `reason: "unknown_parameter"` and `param` naming the offending key.
       Operations with no parameters at all (`GET /healthz`,
-      `GET /v0/beads/context`, `GET /v0/beads/issues/{id}`,
-      `POST /v0/beads/issues/{id}:claim`, `GET /v0/beads/config`,
-      `GET /v0/beads/config/{key}`) reject every query key the same way.
       `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
-      `GET /v0/beads/issues/{id}`, `POST /v0/beads/issues/{id}:claim`) reject
-      every query key the same way.
+      `GET /v0/beads/issues/{id}`, `POST /v0/beads/issues/{id}:claim`,
+      `GET /v0/beads/config`, `GET /v0/beads/config/{key}`) reject every query
+      key the same way.
 
 
     Both are uniform rules, reachable on EVERY route including `GET /healthz`,
-    and are stated here instead of being repeated on all nine operations. The
-    and are stated here instead of being repeated on all seven operations. The
-    and are stated here instead of being repeated on every operation. The
+    and are stated here instead of being repeated on all twelve operations. The
     per-operation `responses` below therefore list what an operation produces
     BEYOND these two: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses

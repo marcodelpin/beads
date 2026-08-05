@@ -11,11 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`GET /v0/beads/config` and `GET /v0/beads/config/{key}` — the workspace's
   stored settings over HTTP** (bd-kzepq). `bd serve` now answers for the
-  settings plane `bd config list` and `bd config get` read, taking the v0
-  surface from six operations to eight and the `capabilities` vocabulary to
-  `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `config.list`,
-  `config.get`. Both operations run on the new `issueops.WorkspaceConfig` role
-  the CLI reaches through the same accessor.
+  settings plane `bd config list` and `bd config get` read. Both operations run
+  on the new `issueops.WorkspaceConfig` role the CLI reaches through the same
+  accessor, and `capabilities` gains `config.list` and `config.get`.
 
   **A setting whose KEY marks it as credential-bearing** — the name contains
   `token`, `secret`, `password` or an API-key spelling, which
@@ -256,6 +254,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Proxied `bd ready --json --limit N` publishes `pagination.total`**
+  (bd-s10oa). Under `BD_JSON_ENVELOPE=1` the direct route has always carried
+  the size of the ready front beside a truncated page; the proxied route
+  emitted no `total` key at all, so the same script read a number against a
+  local workspace and nothing against a team server. Both routes now answer
+  from the new `issueops.ReadyCounter` role. The count is only asked for when
+  the page came back full, so an untruncated listing costs nothing extra.
+
+- **Proxied `bd dep list a b c` reports ids that name nothing** (bd-nhsno). The
+  route handed its raw arguments to the batch read, whose answer simply has no
+  entry for an id nothing matched, so a typo printed `<id> has no dependencies`
+  — a clean graph — instead of a warning. It now prints
+  `warning: no issue found: <id> (skipped)` on stderr, the line the direct
+  route has always printed, and omits the anchor from stdout. Emitted in
+  `--json` mode too, on stderr, so the document stays a flat array.
+
+  Two smaller shape changes ride along, on both routes: a repeated anchor is
+  answered ONCE, at its first mention, rather than twice; and
+  `bd dep list --type X a b` prints `<id> has no dependencies` instead of a
+  section header with no rows under it for an anchor whose every edge the
+  filter rejected.
+
+- **`bd status --assigned` reports why it failed** (bd-4ze25). The direct route
+  swallowed every underlying error and printed the causeless
+  `failed to get assigned statistics`. Both routes now report the same
+  underlying error. Relatedly, the proxied `--no-blocked` warning is derived
+  from the ANSWER rather than printed unconditionally before the query, so it
+  is correct for any backend and disappears by itself when a backend gains a
+  fast path.
+
 - **`bd dep cycles` output is deterministic, and no longer shortens a cycle it
   cannot fully describe** (bd-wfkbv). Two changes, both visible in bytes.
 
@@ -283,6 +311,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The post-add cycle warning that `bd dep add`, `bd dep --blocks` and
   `bd link` print is the same sweep and gains the same two properties, on both
   the direct and the proxied route.
+
+- **The v0 HTTP surface reaches twelve operations** (facade wave 2). This
+  release adds five: `GET /v0/beads/stats` (bd-4ze25),
+  `GET /v0/beads/dependencies/cycles` (bd-wfkbv), `GET /v0/beads/dependencies`
+  (bd-nhsno), `GET /v0/beads/ready:count` (bd-s10oa) and the two config reads
+  (bd-kzepq). Every one answers from the SAME `issueops` role its `bd` command
+  reaches, so the two surfaces cannot drift: the operation is written into
+  `internal/httpapi/spec/openapi.v0.yaml` first and the wire types are
+  generated from it. `capabilities` now carries `ready.list`, `ready.count`,
+  `issues.list`, `issues.get`, `issues.claim`, `stats.get`, `config.list`,
+  `config.get`, `dependencies.cycles`, `dependencies.list`.
+
+- **`GET /v0/beads/stats` — the workspace summary over HTTP** (bd-4ze25). The
+  same envelope `bd status --json` prints, minus `recent_activity`, which no
+  shipped code path populates. `skip_blocked` is a HINT: a backend with no
+  cheaper path answers with the full numbers and says so through
+  `blocked_count_skipped`, which is derived from the answer rather than echoed
+  from the request. `assignee` scopes the summary to one actor and is refused
+  when empty rather than answering with the unassigned rows.
+
+- **`GET /v0/beads/dependencies` — stored edge rows for several issues at
+  once** (bd-nhsno). The shape `bd dep list a b c --json` emits. An id that
+  names nothing is reported in the response's `missing` member rather than
+  turning the whole call into a 404, so a batch keeps the answers for the ids
+  that WERE found; an edge whose target this database holds no row for is still
+  an edge and is returned as stored.
+
+- **`GET /v0/beads/ready:count` — the size of the ready front** (bd-s10oa).
+  Takes the same filter vocabulary as `GET /v0/beads/ready`, decoded once by
+  the same code so the two cannot admit different parameters, and takes no
+  `limit` and no `sort`: a cardinality has no page and no order.
 
 - **`bd serve` publishes `GET /v0/beads/dependencies/cycles`** (bd-wfkbv). The
   cycle sweep is now an HTTP operation as well as a command, answering from the
@@ -771,6 +830,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#4675](https://github.com/gastownhall/beads/pull/4675).)
 
 ### Fixed
+
+- **Multi-id `bd dep list` no longer changes its JSON shape on failure**
+  (bd-nhsno). The direct route used the batched edge read only `if err == nil`
+  and otherwise fell through to the neighbour path, which emits a different
+  document — issues, not edge rows — with no error and no warning. Worse, the
+  batched read was only ATTEMPTED when every resolved anchor shared one store,
+  so a cross-workspace batch emitted the wrong document every time rather than
+  only on failure. The read now goes through the new `issueops.EdgeReader`
+  role, taken per store, with the answers merged back into argument order, and
+  a failure is reported as a failure.
+
+- **`bd ready --claim` honours the directory-label scope** (bd-s10oa). The
+  branch that applies a directory's configured `directory.labels` default
+  tested the filter it had already written that default into, so it could never
+  fire. In a directory with `directory.labels` configured, `bd ready --claim`
+  therefore claimed from the WHOLE ready front while `bd ready` beside it
+  listed only the configured scope — handing an agent work the listing never
+  offered it. Both routes affected.
 
 - **Proxied `bd config set status.custom` and `types.custom` take effect
   immediately** (bd-kzepq). Reads of the custom status and type vocabularies
