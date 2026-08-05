@@ -77,6 +77,17 @@ var routeTable = []route{
 		handler:     (*Server).handleReady,
 	},
 	{
+		op:     OpGetStats,
+		method: http.MethodGet,
+		// `stats`, not `status`: on an HTTP surface `status` reads as the
+		// server's own condition, which is /healthz. This one answers about the
+		// workspace and takes a database slot to do it.
+		pattern:     "/v0/beads/stats",
+		capability:  "stats.get",
+		implemented: true,
+		handler:     (*Server).handleStats,
+	},
+	{
 		op:          OpListIssues,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/issues",

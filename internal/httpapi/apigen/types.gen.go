@@ -209,6 +209,22 @@ type SettingsPage struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
+// Statistics Workspace summary counts. Two of them are DEPENDENCY-AWARE and two are structurally always zero; both facts are stated on the properties themselves, because every number here is the same JSON type and nothing else on the wire distinguishes them.
+//
+// This is the struct `bd status --json` marshals under `summary`, pinned so the two surfaces are one compatibility domain.
+type Statistics = types.Statistics
+
+// StatsResponse The same envelope `bd status --json` prints, minus one member: the CLI also carries `recent_activity`, which every shipped code path leaves absent, so it is not published here.
+type StatsResponse struct {
+	// BlockedCountSkipped True when the summary came back without the blocked-set scan, which is exactly `summary.blocked_issues == null`. It is DERIVED from the answer rather than echoed from the request: `skip_blocked` is a hint, and a backend with no cheaper path answers with the full numbers and this flag false.
+	BlockedCountSkipped bool `json:"blocked_count_skipped"`
+
+	// Summary Workspace summary counts. Two of them are DEPENDENCY-AWARE and two are structurally always zero; both facts are stated on the properties themselves, because every number here is the same JSON type and nothing else on the wire distinguishes them.
+	//
+	// This is the struct `bd status --json` marshals under `summary`, pinned so the two surfaces are one compatibility domain.
+	Summary Statistics `json:"summary"`
+}
+
 // IssueID defines model for IssueID.
 type IssueID = string
 
@@ -357,6 +373,21 @@ type ListReadyWorkParams struct {
 
 // ListReadyWorkParamsSort defines parameters for ListReadyWork.
 type ListReadyWorkParamsSort string
+
+// GetStatsParams defines parameters for GetStats.
+type GetStatsParams struct {
+	// Assignee Answer for ONE ACTOR instead of the workspace. Used as written: no trimming, no case folding, no alias expansion. An empty value is a 400 — the workspace-wide question is asked by OMITTING the parameter, and an empty assignee would otherwise select the rows with no assignee and report them as one actor's workload.
+	//
+	// IT CHANGES FOUR DEFINITIONS AT ONCE, and they are named on the `Statistics` properties rather than here: the set widens to include the ephemeral tier, `blocked_issues` counts the `blocked` STATUS instead of the dependency flag, `ready_issues` becomes the real ready-work count instead of a subtraction, and `pinned_issues` is always 0. An actor with no rows is a summary of zeros, not a 404.
+	Assignee *string `form:"assignee,omitempty" json:"assignee,omitempty"`
+
+	// SkipBlocked Ask for the answer WITHOUT the blocked-set scan, which is the expensive half of this query on a large workspace — the same request `bd status --no-blocked` makes.
+	//
+	// IT IS A HINT. When it is honored, `blocked_issues` and `ready_issues` are both null and `blocked_count_skipped` is true; when the backend has no cheaper path the full numbers come back and the flag is false. Nothing else in the summary changes either way, so a client that reads neither pointer cannot tell the difference.
+	//
+	// IGNORED when `assignee` is set: that answer computes both numbers by a route with no fast path, and it is not an error to ask.
+	SkipBlocked *bool `form:"skip_blocked,omitempty" json:"skip_blocked,omitempty"`
+}
 
 // ClaimIssueJSONRequestBody defines body for ClaimIssue for application/json ContentType.
 type ClaimIssueJSONRequestBody = ClaimRequest

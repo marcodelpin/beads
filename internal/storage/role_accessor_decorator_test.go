@@ -21,6 +21,7 @@ var roleAccessorNames = []string{
 	"IssueRelations",
 	"Counter",
 	"WorkspaceConfig",
+	"StatsReporter",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -72,6 +73,7 @@ type roleAccessorStore struct {
 	relations issueops.Relations
 	counter   issueops.Counter
 	settings  issueops.WorkspaceConfig
+	stats     issueops.StatsReporter
 	commenter issueops.Commenter
 	claimer   issueops.ReadyClaimer
 	closer    issueops.BatchCloser
@@ -87,6 +89,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		relations: sentinel,
 		counter:   sentinel,
 		settings:  sentinel,
+		stats:     sentinel,
 		commenter: sentinel,
 		claimer:   sentinel,
 		closer:    sentinel,
@@ -100,6 +103,9 @@ func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { retur
 func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.counter, s.err }
 func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	return s.settings, s.err
+}
+func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
+	return s.stats, s.err
 }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.commenter, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
@@ -156,6 +162,12 @@ func (*roleAccessorSentinel) SetSetting(context.Context, issueops.SetSettingRequ
 func (*roleAccessorSentinel) UnsetSetting(context.Context, issueops.UnsetSettingRequest) (issueops.UnsetSettingResult, error) {
 	return issueops.UnsetSettingResult{}, nil
 }
+func (*roleAccessorSentinel) Stats(context.Context, issueops.StatsRequest) (issueops.StatsResult, error) {
+	return issueops.StatsResult{}, nil
+}
+func (*roleAccessorSentinel) AssigneeStats(context.Context, issueops.AssigneeStatsRequest) (issueops.StatsResult, error) {
+	return issueops.StatsResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -178,14 +190,15 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // satisfying DoltStorage, and silently stops every completion hook on that
 // role.
 //
-// Four roles are asserted the OTHER way round on purpose. Reads fire no
-// completion hooks, so IssueReader, IssueRelations and Counter deliberately
-// return the inner surface unwrapped (hook_issue_reader.go, hook_relations.go,
-// hook_counter.go); WorkspaceConfig does too, and it is the one that is NOT a
-// read — a settings write changes the workspace rather than a bead, so this
-// decorator's issue-shaped hook vocabulary has nothing to hand a hook script
-// (hook_workspace_config.go). This test pins all four as decisions rather than
-// leaving them indistinguishable from the regression above.
+// Five roles are asserted the OTHER way round on purpose. Reads fire no
+// completion hooks, so IssueReader, IssueRelations, Counter and StatsReporter
+// deliberately return the inner surface unwrapped (hook_issue_reader.go,
+// hook_relations.go, hook_counter.go, hook_stats_reporter.go); WorkspaceConfig
+// does too, and it is the one that is NOT a read — a settings write changes the
+// workspace rather than a bead, so this decorator's issue-shaped hook
+// vocabulary has nothing to hand a hook script (hook_workspace_config.go).
+// This test pins all five as decisions rather than leaving them
+// indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -205,6 +218,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
+		{"StatsReporter", func() (any, error) { return store.StatsReporter() }, inner.stats, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -244,6 +258,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
 		{"Counter", func() (any, error) { return store.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
+		{"StatsReporter", func() (any, error) { return store.StatsReporter() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

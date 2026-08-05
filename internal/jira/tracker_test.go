@@ -660,6 +660,9 @@ func (s *configStore) Counter() (issueops.Counter, error) {
 func (s *configStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	return nil, &storage.ErrUnsupported{Op: "WorkspaceConfig", Backend: "jira-config-stub"}
 }
+func (s *configStore) StatsReporter() (issueops.StatsReporter, error) {
+	return nil, &storage.ErrUnsupported{Op: "StatsReporter", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {

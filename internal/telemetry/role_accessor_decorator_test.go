@@ -22,6 +22,7 @@ var roleAccessorNames = []string{
 	"IssueRelations",
 	"Counter",
 	"WorkspaceConfig",
+	"StatsReporter",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -66,6 +67,9 @@ func (s *roleAccessorStore) IssueReader() (issueops.Reader, error)       { retur
 func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { return s.surface, s.err }
 func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.surface, s.err }
 func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return s.surface, s.err
+}
+func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.surface, s.err }
@@ -123,6 +127,12 @@ func (*roleAccessorSentinel) SetSetting(context.Context, issueops.SetSettingRequ
 func (*roleAccessorSentinel) UnsetSetting(context.Context, issueops.UnsetSettingRequest) (issueops.UnsetSettingResult, error) {
 	return issueops.UnsetSettingResult{}, nil
 }
+func (*roleAccessorSentinel) Stats(context.Context, issueops.StatsRequest) (issueops.StatsResult, error) {
+	return issueops.StatsResult{}, nil
+}
+func (*roleAccessorSentinel) AssigneeStats(context.Context, issueops.AssigneeStatsRequest) (issueops.StatsResult, error) {
+	return issueops.StatsResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -166,6 +176,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
+		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
@@ -203,6 +214,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
+		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},

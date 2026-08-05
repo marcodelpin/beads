@@ -29,10 +29,12 @@ var (
 	_ apigen.Dependency                  = types.Dependency{}
 	_ apigen.Comment                     = types.Comment{}
 	_ apigen.BondRef                     = types.BondRef{}
+	_ apigen.Statistics                  = types.Statistics{}
 
 	// The envelopes carry the canonical types too — pinning the schema is not
 	// enough if a page's items resolve to something else.
 	_ []types.IssueWithCounts = apigen.ReadyPage{}.Items
 	_ []types.IssueWithCounts = apigen.IssuesPage{}.Items
 	_ types.Issue             = apigen.ClaimResponse{}.Issue
+	_ types.Statistics        = apigen.StatsResponse{}.Summary
 )

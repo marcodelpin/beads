@@ -36,7 +36,7 @@ import (
 // The vocabulary is a one-way door: renaming or removing a documented
 // status+code pair breaks the wire. Adding one does not, which is why clients
 // are told to default-branch on unknown codes within a status class. Keep it
-// at what the six v0 operations actually need.
+// at what the seven v0 operations actually need.
 type Code string
 
 // The v0 code vocabulary. Every value here is documented in the spec, and
@@ -146,6 +146,7 @@ const (
 	OpHealth        = "health"
 	OpGetContext    = "getContext"
 	OpListReadyWork = "listReadyWork"
+	OpGetStats      = "getStats"
 	OpListIssues    = "listIssues"
 	OpGetIssue      = "getIssue"
 	OpClaimIssue    = "claimIssue"
@@ -164,7 +165,7 @@ const (
 // refusal every decoder performs — and both are deliberately absent from every
 // row here. They are uniform rules, not per-operation behavior, and the spec
 // documents them once at the document level rather than repeating them on all
-// eight operations; these rows carry what an operation produces beyond them.
+// nine operations; these rows carry what an operation produces beyond them.
 // Keep the two documents in step: a row here and the document-level prose are
 // the only two places that carve-out exists.
 var operationCodes = map[string][]Code{
@@ -185,6 +186,11 @@ var operationCodes = map[string][]Code{
 	// a key stored as the empty string are one answer on this surface, so the
 	// only refusal a key can earn is the 400 that says it was not a key.
 	OpGetSetting: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The 400 here is this operation's own, not the document-level
+	// unknown-parameter rule: a malformed `skip_blocked`, and the EMPTY
+	// `assignee` the document refuses rather than answering with the rows that
+	// have no assignee.
+	OpGetStats: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

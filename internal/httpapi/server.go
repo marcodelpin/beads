@@ -120,14 +120,21 @@ type Config struct {
 	// Provider is where every database-touching handler opens its one unit of
 	// work per request.
 	Provider uow.UnitOfWorkProvider
-	// Reader and Claimer are the issue roles this server answers from, for a
-	// backend whose facade is a STORE rather than a unit-of-work provider.
+	// Reader, Claimer, Settings and Stats are the roles this server answers
+	// from, for a backend whose facade is a STORE rather than a unit-of-work
+	// provider. sourceRoles is the authoritative list.
 	//
-	// Set all three together, and only when Provider is nil: they are the
-	// other complete database source, not an override of one. Listen refuses
-	// every other combination, including a half-set set — a reader without a
-	// claimer would bind, answer every read, and fail the one issue write on
-	// this surface with a nil dereference inside a handler.
+	// Set them together, and only when Provider is nil: they are the other
+	// complete database source, not an override of one. Listen refuses every
+	// other combination, including a PARTIAL set — a reader without a claimer
+	// would bind, answer every read, and fail the one write on this surface with
+	// a nil dereference inside a handler, and the same is true of every
+	// operation whose role is missing.
+	//
+	// The set grows as operations do: each role a new operation reaches becomes
+	// another field here and another one this source must carry, because a
+	// database source that answers some operations and faults on others is not
+	// a source.
 	//
 	// A caller with a store takes them off the store's own accessors, and WHICH
 	// store value it takes them off is the whole question. Every decorator a
@@ -145,7 +152,8 @@ type Config struct {
 	//	rd, err := src.IssueReader()
 	//	cl, err := src.IssueClaimer()
 	//	wc, err := src.WorkspaceConfig()
-	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Settings: wc, ...})
+	//	st, err := src.StatsReporter()
+	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Settings: wc, Stats: st, ...})
 	//
 	// Listen refuses a hook-firing role rather than trusting the paragraph
 	// above — see checkDatabaseSource.
@@ -165,14 +173,15 @@ type Config struct {
 	// (see Server.reader) — and a role reached this way opens none through this
 	// server, so a rebuild would buy nothing.
 	//
-	// Settings joins them for the same reason Claimer does, and the "set them
-	// together" rule covers all three: this surface publishes two settings
-	// operations, so a Reader and a Claimer without a Settings would bind,
-	// answer every issue route, and fail both config routes with a nil
-	// dereference inside a handler.
+	// Settings and Stats join them for the same reason Claimer does, and the
+	// "set them together" rule covers all of them: this surface publishes two
+	// settings operations and a summary operation, so a Reader and a Claimer
+	// without them would bind, answer every issue route, and fail those routes
+	// with a nil dereference inside a handler.
 	Reader   issueops.Reader
 	Claimer  issueops.Claimer
 	Settings issueops.WorkspaceConfig
+	Stats    issueops.StatsReporter
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -196,13 +205,14 @@ type Server struct {
 	cfg      Config
 	provider uow.UnitOfWorkProvider
 
-	// issueReader and issueClaimer are the configured roles, set exactly when
-	// provider is nil. They are what reader() and claimer() hand back on the
-	// store-shaped source; the names differ from those methods because a struct
-	// cannot carry both.
+	// These are the configured roles, set exactly when provider is nil. They
+	// are what reader(), claimer(), workspaceConfig() and statsReporter() hand
+	// back on the store-shaped source; some names differ from those methods
+	// because a struct cannot carry both.
 	issueReader  issueops.Reader
 	issueClaimer issueops.Claimer
 	settings     issueops.WorkspaceConfig
+	issueStats   issueops.StatsReporter
 
 	listener net.Listener
 	http     *http.Server
@@ -302,6 +312,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueReader:  cfg.Reader,
 		issueClaimer: cfg.Claimer,
 		settings:     cfg.Settings,
+		issueStats:   cfg.Stats,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -355,11 +366,14 @@ func Listen(cfg Config) (*Server, error) {
 // checkDatabaseSource enforces exactly one complete database source.
 //
 // There are two, and a Config carries one or the other: a unit-of-work
-// provider, or the three roles this surface answers from. A HALF-SET set is
-// refused with the same message as none at all, because it is the same mistake
-// and the failure it would otherwise produce is the worst shape available — a
-// reader without a claimer binds, answers every read, and fails the one issue
-// write on this surface with a nil dereference in a handler on a live server.
+// provider, or the roles this surface answers from (sourceRoles). A PARTIAL
+// set is refused with the same message as none at all, because it is the same
+// mistake and the failure it would otherwise produce is the worst shape
+// available — a reader without a claimer binds, answers every read, and fails
+// the one issue write on this surface with a nil dereference in a handler on a
+// live server. A missing settings or summary role is the same failure on a
+// different route, which is why the set is all-or-nothing rather than a
+// required pair plus optional extras.
 //
 // Both together is refused rather than resolved by precedence: a caller that
 // set both holds two different opinions about where this server reads from, and
@@ -375,13 +389,43 @@ func Listen(cfg Config) (*Server, error) {
 // at Listen is the difference between a startup error naming the store to take
 // roles from and a server that has been quietly running a user's subprocess per
 // claim since it booted.
+// sourceRoles is the store-shaped source's roles in ONE place, so the three
+// questions checkDatabaseSource asks — is any set, is any missing, does any
+// fire hooks — cannot drift apart from each other as the set grows. An
+// operation that reaches a role this source does not yet carry adds a line
+// here and a line to roleSourceNames, and nothing else in this file.
+//
+// A role is compared against nil as an INTERFACE, which is what the caller
+// actually sets; a typed nil stored in one of these fields is a value as far
+// as this check is concerned, exactly as it was when the check was a hand-
+// written boolean per role.
+func sourceRoles(cfg Config) []any {
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats}
+}
+
+// roleSourceNames spells sourceRoles for the refusal message, in the same
+// order, so a caller reading the error learns the whole set it must pass.
+const roleSourceNames = "Reader, Claimer, Settings and Stats"
+
+func anyRoleSet(cfg Config) bool {
+	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
+}
+
+func everyRoleSet(cfg Config) bool {
+	return !slices.Contains(sourceRoles(cfg), nil)
+}
+
+func anyRoleFiresHooks(cfg Config) bool {
+	return slices.ContainsFunc(sourceRoles(cfg), storage.RoleFiresHooks)
+}
+
 func checkDatabaseSource(cfg Config) error {
 	switch {
-	case cfg.Provider != nil && (cfg.Reader != nil || cfg.Claimer != nil || cfg.Settings != nil):
+	case cfg.Provider != nil && anyRoleSet(cfg):
 		return errors.New("httpapi: both a unit-of-work provider and issue roles were set; pass exactly one database source")
-	case cfg.Provider == nil && (cfg.Reader == nil || cfg.Claimer == nil || cfg.Settings == nil):
-		return errors.New("httpapi: no database source: set Provider, or Reader, Claimer and Settings together")
-	case storage.RoleFiresHooks(cfg.Reader) || storage.RoleFiresHooks(cfg.Claimer) || storage.RoleFiresHooks(cfg.Settings):
+	case cfg.Provider == nil && !everyRoleSet(cfg):
+		return errors.New("httpapi: no database source: set Provider, or " + roleSourceNames + " together")
+	case anyRoleFiresHooks(cfg):
 		return errors.New("httpapi: a configured role fires this workspace's hooks; " +
 			"this server does not run hooks, so take the roles from the store beneath the hook decorator " +
 			"((*storage.HookFiringStore).Unwrap)")
@@ -486,6 +530,26 @@ func (s *Server) reader(r *http.Request) (issueops.Reader, error) {
 		return nil, err
 	}
 	return checkedReader{inner: rd}, nil
+}
+
+// statsReporter returns the guarded summary-statistics surface for one request.
+//
+// It is the third of the same shape reader() and claimer() have, for the same
+// reasons: the configured role on the roles source, one built per request on the
+// provider source so its units of work land in THIS request's uow_ms, and the
+// source held by INTERFACE so uow.StatsReporterSource is load-bearing rather
+// than decorative.
+//
+// There is no checked wrapper around it, and that is a property of the role
+// rather than an omission: issueops.StatsResult carries a VALUE, so there is no
+// nil-with-nil-error answer for a handler to dereference. checkedReader exists
+// because Reader.Get hands back a pointer.
+func (s *Server) statsReporter(r *http.Request) (issueops.StatsReporter, error) {
+	if s.provider == nil {
+		return s.issueStats, nil
+	}
+	var src uow.StatsReporterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.StatsReporter()
 }
 
 // claimer returns the guarded atomic-claim surface for one request.

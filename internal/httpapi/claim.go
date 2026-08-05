@@ -353,6 +353,7 @@ var (
 	_ uow.IssueReaderSource     = timedProvider{}
 	_ uow.IssueClaimerSource    = timedProvider{}
 	_ uow.WorkspaceConfigSource = timedProvider{}
+	_ uow.StatsReporterSource   = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -392,6 +393,14 @@ func (p timedProvider) IssueClaimer() (issueops.Claimer, error) {
 // reason and with the same hazard as the two above.
 func (p timedProvider) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	return uow.NewWorkspaceConfig(p)
+}
+
+// StatsReporter builds the summary role OVER THIS WRAPPER, for the third time
+// and for the same reason: a reporter bound to the wrapped provider would open
+// its units of work outside this request's measurement and the summary route
+// would log uow_ms=0.000 forever.
+func (p timedProvider) StatsReporter() (issueops.StatsReporter, error) {
+	return uow.NewStatsReporter(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

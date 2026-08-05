@@ -163,6 +163,8 @@ linters:
               desc: "a command reaches the count role through store.Counter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storecounter/counter.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storeworkspaceconfig
               desc: "a command reaches the workspace-settings role through store.WorkspaceConfig(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storeworkspaceconfig/workspaceconfig.go"
+            - pkg: github.com/steveyegge/beads/internal/workapi/storestats
+              desc: "a command reaches the summary role through store.StatsReporter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storestats/reporter.go"
     # The CONSTRUCTION half of that same boundary, and the half that actually
     # matches the failure. The depguard rule above denies a handler IMPORTING
     # the builders; it does not deny a handler naming the filter types, which
@@ -246,7 +248,7 @@ linters:
         linters:
           - forbidigo
       # Inside cmd/bd the rule is deny-by-default, so each entry below is a
-      # HOLE in it and carries the reason that hole exists. 63 of the 382
+      # HOLE in it and carries the reason that hole exists. 61 of the 388
       # non-test files under cmd/bd are on this list; widening it is an edit
       # here and a diff a reviewer sees. internal/httpapi has no entry and is
       # meant not to.
@@ -284,8 +286,15 @@ linters:
       # still named, and a new file in a family is still an edit here.
       #
       # Commands with a direct route and a proxied twin that build the same
-      # filter on both:
-      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|purge|search|status|todo|wisp)(_proxied_server)?\.go$'
+      # filter on both.
+      #
+      # `status` LEFT this list when the StatsReporter role took the assignee
+      # filter, the ready-work filter and the status fold off both its routes:
+      # cmd/bd/status.go and cmd/bd/status_proxied_server.go now build an
+      # issueops request and name no filter type, so the hole they needed is
+      # closed rather than merely unused. Removing an entry here is how a role
+      # commit proves its front doors reached the role.
+      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|purge|search|todo|wisp)(_proxied_server)?\.go$'
         linters:
           - forbidigo
       # Molecule reporting: each selects the members of one molecule.

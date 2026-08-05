@@ -225,6 +225,37 @@ func TestWorkspaceConfigExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestStatsReporterKeepsTelemetryOutermost is the summary role's version of
+// the same pin, and the READ answer again: reporting fires no completion hooks,
+// so the hook decorator recurses and the outermost surface is the instrumented
+// one.
+func TestStatsReporterKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	reporter, err := storage.NewHookFiringStore(instrumented, nil).StatsReporter()
+	if err != nil {
+		t.Fatalf("StatsReporter() error = %v", err)
+	}
+	if got := reflect.TypeOf(reporter).String(); got != "*telemetry.instrumentedStatsReporter" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestStatsReporterExposesTypedUnsupportedError(t *testing.T) {
+	reporter, err := (*dolt.DoltStore)(nil).StatsReporter()
+	if reporter != nil {
+		t.Fatalf("StatsReporter() reporter = %T, want nil", reporter)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("StatsReporter() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	counter, err := (*dolt.DoltStore)(nil).Counter()
 	if counter != nil {

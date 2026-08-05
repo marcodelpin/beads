@@ -61,7 +61,7 @@ info:
 
 
     Both are uniform rules, reachable on EVERY route including `GET /healthz`,
-    and are stated here instead of being repeated on all eight operations. The
+    and are stated here instead of being repeated on all nine operations. The
     per-operation `responses` below therefore list what an operation produces
     BEYOND these two: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses
@@ -98,12 +98,13 @@ info:
 
 
     `Issue`, `IssueWithCounts`, `IssueDetails`,
-    `IssueWithDependencyMetadata`, `Dependency`, `Comment` and `BondRef` are
-    pinned to the canonical Go structs (`x-go-type`), so the CLI's `--json`
-    output and these response bodies are one compatibility domain and cannot
-    drift apart. Changes to them are limited to NEW optional fields, and each
-    addition must land with its entry in this document in the same change — a
-    two-way JSON-tag bijection test, covering all seven, fails CI otherwise. A
+    `IssueWithDependencyMetadata`, `Dependency`, `Comment`, `BondRef` and
+    `Statistics` are pinned to the canonical Go structs (`x-go-type`), so the
+    CLI's `--json` output and these response bodies are one compatibility
+    domain and cannot drift apart. Changes to them are limited to NEW optional
+    fields, and each addition must land with its entry in this document in the
+    same change — a two-way JSON-tag bijection test, covering all eight, fails
+    CI otherwise. A
     breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
 
 
@@ -410,6 +411,85 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadyPage'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/stats:
+    get:
+      operationId: getStats
+      summary: Workspace summary statistics
+      description: >-
+        The counts `bd status` prints and its `bd stats` alias reprints: rows by
+        status across the durable plane, plus the two DEPENDENCY-AWARE numbers —
+        the blocked count and the readiness derived from it — that make this a
+        different question from a filtered count.
+
+
+        It is `stats` rather than `status` in the path deliberately. `status`
+        on an HTTP surface reads as the SERVER's condition, which is `/healthz`;
+        this operation answers about the WORKSPACE and touches the database to
+        do it.
+
+
+        THE WISP TIER IS NOT INCLUDED in the workspace-wide answer, so a
+        workspace whose work lives in ephemeral rows reports zeros here.
+        Supplying `assignee` changes that, along with three other definitions —
+        see the parameter.
+
+
+        THERE IS NO PREDICATE and there will not be one. A count of a set the
+        caller describes is a different question with a different answer shape;
+        this operation is the summary or it is nothing.
+      parameters:
+        - name: assignee
+          in: query
+          description: >-
+            Answer for ONE ACTOR instead of the workspace. Used as written: no
+            trimming, no case folding, no alias expansion. An empty value is a
+            400 — the workspace-wide question is asked by OMITTING the
+            parameter, and an empty assignee would otherwise select the rows
+            with no assignee and report them as one actor's workload.
+
+
+            IT CHANGES FOUR DEFINITIONS AT ONCE, and they are named on the
+            `Statistics` properties rather than here: the set widens to include
+            the ephemeral tier, `blocked_issues` counts the `blocked` STATUS
+            instead of the dependency flag, `ready_issues` becomes the real
+            ready-work count instead of a subtraction, and `pinned_issues` is
+            always 0. An actor with no rows is a summary of zeros, not a 404.
+          schema:
+            type: string
+        - name: skip_blocked
+          in: query
+          description: >-
+            Ask for the answer WITHOUT the blocked-set scan, which is the
+            expensive half of this query on a large workspace — the same request
+            `bd status --no-blocked` makes.
+
+
+            IT IS A HINT. When it is honored, `blocked_issues` and
+            `ready_issues` are both null and `blocked_count_skipped` is true;
+            when the backend has no cheaper path the full numbers come back and
+            the flag is false. Nothing else in the summary changes either way,
+            so a client that reads neither pointer cannot tell the difference.
+
+
+            IGNORED when `assignee` is set: that answer computes both numbers by
+            a route with no fast path, and it is not an error to ask.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: The workspace summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
         '400':
           $ref: '#/components/responses/InvalidArgument'
         '500':
@@ -892,7 +972,7 @@ components:
     # ---------------------------------------------------------------------
     # Pinned schemas.
     #
-    # Each of the seven below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the eight below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.
@@ -1435,6 +1515,96 @@ components:
         bond_type: { type: string }
         bond_point: { type: string }
 
+    Statistics:
+      type: object
+      description: >-
+        Workspace summary counts. Two of them are DEPENDENCY-AWARE and two are
+        structurally always zero; both facts are stated on the properties
+        themselves, because every number here is the same JSON type and nothing
+        else on the wire distinguishes them.
+
+
+        This is the struct `bd status --json` marshals under `summary`, pinned
+        so the two surfaces are one compatibility domain.
+      x-go-type: types.Statistics
+      x-go-type-import:
+        name: types
+        path: github.com/steveyegge/beads/internal/types
+      required:
+        - total_issues
+        - open_issues
+        - in_progress_issues
+        - closed_issues
+        - blocked_issues
+        - deferred_issues
+        - ready_issues
+        - pinned_issues
+        - epics_eligible_for_closure
+        - average_lead_time_hours
+      properties:
+        total_issues:
+          type: integer
+          description: >-
+            Every row in the workspace-wide answer's scan, INCLUDING closed and
+            pinned ones. The status counts below do not sum to it: a row whose
+            status is none of the four falls into no bucket, and `pinned_issues`
+            counts a flag that overlaps all of them.
+        open_issues:
+          type: integer
+        in_progress_issues:
+          type: integer
+        closed_issues:
+          type: integer
+        deferred_issues:
+          type: integer
+        blocked_issues:
+          type: integer
+          nullable: true
+          description: >-
+            Rows the dependency graph blocks — the transitive is_blocked flag,
+            NOT the count of rows whose status is `blocked`. An open row with an
+            unfinished blocker is counted here and its status is still `open`.
+
+
+            NULL when `skip_blocked` was honored, always together with
+            `ready_issues`. The two are nil together or populated together;
+            there is no state in which one is knowable and the other is not.
+
+
+            When `assignee` is set this is a different number: the count of that
+            actor's rows whose STATUS is `blocked`, and never null.
+        ready_issues:
+          type: integer
+          nullable: true
+          description: >-
+            ARITHMETIC, not a query: `open_issues` minus `blocked_issues`,
+            clamped at zero. It is NOT the cardinality of `GET /v0/beads/ready`,
+            which applies type exclusions, the deferral window and a limit that
+            none of this touches.
+
+
+            NULL under the same conditions as `blocked_issues`.
+
+
+            When `assignee` is set this is the real ready-work count for that
+            actor, and never null.
+        pinned_issues:
+          type: integer
+          description: >-
+            Rows carrying the pinned flag, overlapping every status bucket.
+            Always 0 when `assignee` is set: that answer tallies the five
+            statuses and nothing else.
+        epics_eligible_for_closure:
+          type: integer
+          description: >-
+            ALWAYS 0. No implementation computes it, on any backend or either
+            surface. It is documented rather than dropped because this schema is
+            pinned to the struct both surfaces marshal, and a caller reading a 0
+            here is reading an absent computation rather than an answer.
+        average_lead_time_hours:
+          type: number
+          description: ALWAYS 0, for the reason above.
+
     # ---------------------------------------------------------------------
     # Envelope schemas. These have no canonical Go type behind them: they are
     # new wire surface, generated normally, and the generated type is the only
@@ -1623,6 +1793,24 @@ components:
           type: string
           description: >-
             Present if and only if `has_more` is true, which is never in v0.
+    StatsResponse:
+      type: object
+      required: [summary, blocked_count_skipped]
+      description: >-
+        The same envelope `bd status --json` prints, minus one member: the CLI
+        also carries `recent_activity`, which every shipped code path leaves
+        absent, so it is not published here.
+      properties:
+        summary:
+          $ref: '#/components/schemas/Statistics'
+        blocked_count_skipped:
+          type: boolean
+          description: >-
+            True when the summary came back without the blocked-set scan, which
+            is exactly `summary.blocked_issues == null`. It is DERIVED from the
+            answer rather than echoed from the request: `skip_blocked` is a
+            hint, and a backend with no cheaper path answers with the full
+            numbers and this flag false.
 
     ClaimRequest:
       type: object

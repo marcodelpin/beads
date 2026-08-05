@@ -33,6 +33,7 @@ var pinnedSchemas = []struct {
 	{"Dependency", "types.Dependency", types.Dependency{}},
 	{"Comment", "types.Comment", types.Comment{}},
 	{"BondRef", "types.BondRef", types.BondRef{}},
+	{"Statistics", "types.Statistics", types.Statistics{}},
 }
 
 // omittedProperties lists JSON field names a pinned schema deliberately does

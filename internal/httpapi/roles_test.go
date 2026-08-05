@@ -21,11 +21,12 @@ import (
 // store rather than a unit-of-work provider, served by handing Listen the roles
 // directly.
 //
-// The fakes below implement issueops.Reader, issueops.Claimer and
-// issueops.WorkspaceConfig and NOTHING else — deliberately not
-// uow.UnitOfWorkProvider, because "a backend that cannot produce a unit of work
-// is still servable" is the property this whole seam exists for. If any of them
-// ever grows a NewUOW method these tests stop proving it.
+// The fakes below implement issueops.Reader, issueops.Claimer,
+// issueops.WorkspaceConfig and issueops.StatsReporter and NOTHING else —
+// deliberately not uow.UnitOfWorkProvider, because "a backend that cannot
+// produce a unit of work is still servable" is the property this whole seam
+// exists for. If any of them ever grows a NewUOW method these tests stop
+// proving it.
 
 type roleReader struct {
 	page    issueops.IssuePage
@@ -144,6 +145,72 @@ func (c *roleSettings) getRequests() []issueops.GetSettingRequest {
 	return append([]issueops.GetSettingRequest(nil), c.gets...)
 }
 
+type roleStats struct {
+	summary types.Statistics
+	err     error
+
+	mu        sync.Mutex
+	stats     []issueops.StatsRequest
+	assignees []issueops.AssigneeStatsRequest
+}
+
+func (s *roleStats) Stats(_ context.Context, req issueops.StatsRequest) (issueops.StatsResult, error) {
+	s.mu.Lock()
+	s.stats = append(s.stats, req)
+	s.mu.Unlock()
+	if s.err != nil {
+		return issueops.StatsResult{}, s.err
+	}
+	return issueops.StatsResult{Summary: s.summary}, nil
+}
+
+func (s *roleStats) AssigneeStats(_ context.Context, req issueops.AssigneeStatsRequest) (issueops.StatsResult, error) {
+	s.mu.Lock()
+	s.assignees = append(s.assignees, req)
+	s.mu.Unlock()
+	if s.err != nil {
+		return issueops.StatsResult{}, s.err
+	}
+	return issueops.StatsResult{Summary: s.summary}, nil
+}
+
+func (s *roleStats) statsRequests() []issueops.StatsRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]issueops.StatsRequest(nil), s.stats...)
+}
+
+func (s *roleStats) assigneeRequests() []issueops.AssigneeStatsRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]issueops.AssigneeStatsRequest(nil), s.assignees...)
+}
+
+// rolesConfig completes a store-shaped database source.
+//
+// Listen requires the WHOLE role set together (checkDatabaseSource), so a test
+// that exercises one operation still has to hand over the roles the other
+// operations reach. This fills the ones the caller left nil with inert fakes
+// and keeps the ones it set, so a test names only the role it is about.
+//
+// Not for TestListenRequiresExactlyOneDatabaseSource: that test's whole subject
+// is the PARTIAL set, so it builds its Configs by hand.
+func rolesConfig(cfg Config) Config {
+	if cfg.Reader == nil {
+		cfg.Reader = &roleReader{}
+	}
+	if cfg.Claimer == nil {
+		cfg.Claimer = &roleClaimer{}
+	}
+	if cfg.Settings == nil {
+		cfg.Settings = &roleSettings{}
+	}
+	if cfg.Stats == nil {
+		cfg.Stats = &roleStats{}
+	}
+	return cfg
+}
+
 // countedPage is the fixture both database sources answer with, so a body
 // difference between them can only come from the construction.
 func countedPage() []*types.IssueWithCounts {
@@ -176,22 +243,30 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			cfg:  Config{Provider: &fakeProvider{}},
 		},
 		{
-			name: "both roles together are a complete source",
-			cfg:  Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}},
+			name: "every role together is a complete source",
+			cfg:  Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}, Stats: &roleStats{}},
 		},
 		{
 			name:    "a reader without a claimer",
-			cfg:     Config{Reader: &roleReader{}, Settings: &roleSettings{}},
+			cfg:     Config{Reader: &roleReader{}, Settings: &roleSettings{}, Stats: &roleStats{}},
 			wantErr: "no database source",
 		},
 		{
 			name:    "a claimer without a reader",
-			cfg:     Config{Claimer: &roleClaimer{}, Settings: &roleSettings{}},
+			cfg:     Config{Claimer: &roleClaimer{}, Settings: &roleSettings{}, Stats: &roleStats{}},
 			wantErr: "no database source",
 		},
 		{
 			name:    "the issue roles without the settings role",
-			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}},
+			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Stats: &roleStats{}},
+			wantErr: "no database source",
+		},
+		{
+			// The role set is all-or-nothing rather than a required pair plus
+			// optional extras: a config missing the summary role binds and then
+			// faults on one route, which is the same mistake in a new place.
+			name:    "the read and write roles without the summary role",
+			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}},
 			wantErr: "no database source",
 		},
 		{
@@ -206,7 +281,7 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 		},
 		{
 			name:    "a provider and every role",
-			cfg:     Config{Provider: &fakeProvider{}, Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}},
+			cfg:     Config{Provider: &fakeProvider{}, Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}, Stats: &roleStats{}},
 			wantErr: "exactly one database source",
 		},
 	} {
@@ -249,6 +324,7 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 		Reader:   &roleReader{page: issueops.IssuePage{Items: items}},
 		Claimer:  &roleClaimer{},
 		Settings: &roleSettings{},
+		Stats:    &roleStats{},
 	})
 
 	for _, path := range []string{"/v0/beads/ready", "/v0/beads/issues"} {
@@ -269,6 +345,7 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 }
 
 // TestConfiguredRolesAnswerEveryDatabaseRoute drives all six
+// TestConfiguredRolesAnswerEveryDatabaseRoute drives all five
 // database-touching operations against a store-shaped source, which is the
 // whole point: none of them can reach a unit of work here, because there is no
 // provider to open one.
@@ -283,7 +360,9 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 		value:    "awaiting_review:active",
 		settings: map[string]string{"status.custom": "awaiting_review:active", "notion.token": "secret-value"},
 	}
-	ts := newTestServer(t, Config{Reader: reader, Claimer: claimer, Settings: settings})
+	blocked := 2
+	reporter := &roleStats{summary: types.Statistics{TotalIssues: 7, OpenIssues: 5, BlockedIssues: &blocked}}
+	ts := newTestServer(t, Config{Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter})
 
 	t.Run("ready", func(t *testing.T) {
 		resp := ts.get(t, "/v0/beads/ready?sort=oldest")
@@ -396,6 +475,43 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 			t.Errorf("get requests = %+v, want one for status.custom", reqs)
 		}
 	})
+
+	t.Run("stats", func(t *testing.T) {
+		resp := ts.get(t, "/v0/beads/stats?skip_blocked=true")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+		}
+		body := decodeBody(t, resp)
+		summary, _ := body["summary"].(map[string]any)
+		if summary["total_issues"] != float64(7) {
+			t.Errorf("summary = %v, want the counts the role reported", summary)
+		}
+		// The role answered with a populated blocked count, so the hint was not
+		// taken and the flag says so — derived from the answer, not echoed from
+		// the request that asked for the fast path.
+		if body["blocked_count_skipped"] != false {
+			t.Errorf("blocked_count_skipped = %v, want false beside a populated blocked_issues", body["blocked_count_skipped"])
+		}
+		if reqs := reporter.statsRequests(); len(reqs) != 1 || !reqs[0].SkipBlocked {
+			t.Errorf("stats requests = %+v, want one carrying SkipBlocked", reqs)
+		}
+	})
+
+	t.Run("stats for one assignee", func(t *testing.T) {
+		resp := ts.get(t, "/v0/beads/stats?assignee=alice&skip_blocked=true")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+		}
+		// The assignee-scoped method, with the hint dropped rather than
+		// forwarded: that request type has no such field.
+		reqs := reporter.assigneeRequests()
+		if len(reqs) != 1 || reqs[0].Assignee != "alice" {
+			t.Errorf("assignee requests = %+v, want one for alice", reqs)
+		}
+		if got := reporter.statsRequests(); len(got) != 1 {
+			t.Errorf("the workspace-wide method was called %d times, want the 1 from the subtest above: an assignee asks the other question", len(got))
+		}
+	})
 }
 
 // TestConfiguredRolesKeepTheDocumentedRefusals: the error vocabulary belongs to
@@ -408,6 +524,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Reader:   &roleReader{err: fmt.Errorf("get bd-404: %w", storage.ErrNotFound)},
 			Claimer:  &roleClaimer{},
 			Settings: &roleSettings{},
+			Stats:    &roleStats{},
 		})
 		resp := ts.get(t, "/v0/beads/issues/bd-404")
 		if resp.StatusCode != http.StatusNotFound {
@@ -426,6 +543,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Reader:   &roleReader{err: errors.New("invalid status bogus")},
 			Claimer:  &roleClaimer{},
 			Settings: &roleSettings{},
+			Stats:    &roleStats{},
 		})
 		resp := ts.get(t, "/v0/beads/issues?status=bogus")
 		if resp.StatusCode != http.StatusBadRequest {
@@ -440,6 +558,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 	t.Run("a foreign holder is 409 with its state", func(t *testing.T) {
 		ts := newTestServer(t, Config{
 			Reader: &roleReader{},
+			Stats:  &roleStats{},
 			Claimer: &roleClaimer{err: &issueops.ClaimConflictError{
 				IssueID:  "bd-1",
 				Assignee: "bob",
@@ -466,6 +585,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Reader:   &roleReader{err: errors.New("backend is unreachable")},
 			Claimer:  &roleClaimer{},
 			Settings: &roleSettings{},
+			Stats:    &roleStats{},
 		})
 		resp := ts.get(t, "/v0/beads/ready")
 		if resp.StatusCode != http.StatusInternalServerError {
@@ -495,7 +615,7 @@ func TestStartupNamesTheDatabaseSource(t *testing.T) {
 	})
 
 	t.Run("roles", func(t *testing.T) {
-		ts := newTestServer(t, Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}})
+		ts := newTestServer(t, rolesConfig(Config{}))
 		startup := findLogLine(t, ts.stderr.String(), "event=startup")
 		if !strings.Contains(startup, "db=roles") {
 			t.Errorf("startup line does not name the database source:\n%s", startup)
@@ -516,7 +636,7 @@ func TestStartupNamesTheDatabaseSource(t *testing.T) {
 // number really is zero, and it is zero because nothing on this path opens a
 // unit of work — not because the timing wrapper was dropped.
 func TestARolesRequestReportsNoUnitOfWorkTime(t *testing.T) {
-	ts := newTestServer(t, Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}})
+	ts := newTestServer(t, rolesConfig(Config{}))
 
 	if resp := ts.get(t, "/v0/beads/ready"); resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -531,7 +651,7 @@ func TestARolesRequestReportsNoUnitOfWorkTime(t *testing.T) {
 // of work, and a roles-backed server has nothing to open one from. An error is
 // the answer; a nil dereference inside a handler is not.
 func TestWithUOWRefusesWithoutAProvider(t *testing.T) {
-	ts := newTestServer(t, Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}})
+	ts := newTestServer(t, rolesConfig(Config{}))
 
 	ran := false
 	err := ts.WithUOW(context.Background(), &reqInfo{}, func(uow.UnitOfWork) error {
@@ -562,11 +682,12 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 	// document states one not-found body, and a client must not be able to
 	// tell a broken role from an absent issue.
 	t.Run("a reader with no detail view is the documented miss", func(t *testing.T) {
-		silent := newTestServer(t, Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}})
+		silent := newTestServer(t, rolesConfig(Config{}))
 		missed := newTestServer(t, Config{
 			Reader:   &roleReader{err: fmt.Errorf("get bd-1: %w", storage.ErrNotFound)},
 			Claimer:  &roleClaimer{},
 			Settings: &roleSettings{},
+			Stats:    &roleStats{},
 		})
 
 		got := silent.get(t, "/v0/beads/issues/bd-1")
@@ -594,6 +715,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			Reader:   &roleReader{},
 			Claimer:  &roleClaimer{result: issueops.ClaimResult{Changed: true}},
 			Settings: &roleSettings{},
+			Stats:    &roleStats{},
 		})
 
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
@@ -667,6 +789,7 @@ func TestListenRefusesARoleThatFiresTheWorkspaceHooks(t *testing.T) {
 			Reader:   &roleReader{},
 			Claimer:  cl,
 			Settings: &roleSettings{},
+			Stats:    &roleStats{},
 		})
 	}
 

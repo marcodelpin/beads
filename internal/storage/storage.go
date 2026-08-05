@@ -157,6 +157,11 @@ type Storage interface {
 	// unchanged, as it is for IssueReader.
 	Counter() (issueops.Counter, error)
 
+	// StatsReporter returns the guarded summary-statistics surface for this
+	// store — `bd status` and its `bd stats` alias. Its own role rather than a
+	// sixth Counter dimension because its numbers are dependency-aware.
+	StatsReporter() (issueops.StatsReporter, error)
+
 	// IssueRelations returns the guarded neighbor-query surface for this
 	// store: the read counterpart of DependencyEditor. It is its own role
 	// rather than a fourth IssueReader method because it answers a question
