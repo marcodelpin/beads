@@ -59,6 +59,13 @@ func TestEmbeddedIssueOperationsUpdateAssigneeTransferFence(t *testing.T) {
 	conformance.RunIssueOperationsUpdateAssigneeTransferFence(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "xferfence"))
 }
 
+func TestEmbeddedIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "guardgate")
+	ctx := t.Context()
+	conformance.RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "guardgate"))
+}
+
 func TestEmbeddedIssueOperationsUpdateClosedFieldsMatchClose(t *testing.T) {
 	skipUnlessEmbeddedDolt(t)
 	te := newTestEnv(t, "closedfields")

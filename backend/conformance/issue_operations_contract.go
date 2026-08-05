@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1707,6 +1708,110 @@ func RunIssueOperationsUpdatePersistentPreservesUnversionedClass(t *testing.T, c
 		"SELECT COALESCE(storage_class, '') FROM issues WHERE id = ?", []any{id})
 	assertIssueOperationsRowCount(t, ctx, fixture, "issues", id, 1)
 	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", id, 0)
+}
+
+// RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits pins the two
+// compare-and-set preconditions as PRECONDITIONS ON A PLAIN EDIT, which is not
+// the same question the assignee-transfer case above asks of them. There they
+// appear beside a fenced transfer, to pin the ORDER the two guards resolve in;
+// here they gate an ordinary field update that no fence would touch, which is
+// how `bd update --if-status`/`--if-assignee` actually reach the contract.
+//
+// The clauses: ExpectedAssignee "requires the current assignee to match" and
+// ExpectedStatus "requires the current status to match"
+// (issueops/issueops.go:250-256), under Lifecycle's standing promise that a
+// "refusal or validation error leaves persistent state unchanged"
+// (issueops/issueops.go:406-408). The SENTINELS the two refusals wear are not
+// named by those clauses; they are named by the contract, which already pins
+// ErrVersionMismatch/ErrStatusMismatch for the same fields on a fenced request
+// (this file, RunIssueOperationsUpdateAssigneeTransferFence), so asserting them
+// here extends an established promise rather than inventing one.
+//
+// Both routes of `bd update` now send these guards to this contract instead of
+// applying them beside their own read: the direct one always did, and the
+// proxied one joined it when its hand-rolled read-merge-write was deleted
+// (bd-xt6de). A refusal that leaked a partial write would exit 13 — "another
+// actor won the race, nothing was written, do not retry" — while having
+// written.
+func RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	id := fixture.IssuePrefix + "-guardgate"
+	seedClosePolicyIssue(t, ctx, fixture, id, publicops.CreateRequest{})
+	events := newIssueOperationsEventCounter(t, ctx, fixture, id)
+
+	priorityEdit := func(priority int) publicops.UpdateRequest {
+		return publicops.UpdateRequest{Actor: "writer", IssueID: id, Patch: publicops.IssuePatch{
+			Priority: publicops.Field[int]{Set: true, Value: priority},
+		}}
+	}
+	assertPriority := func(label string, want int) {
+		t.Helper()
+		assertIssueOperationsScalarValue(t, ctx, fixture, label, strconv.Itoa(want),
+			"SELECT priority FROM issues WHERE id = ?", []any{id})
+	}
+
+	// The seeded row is open and unassigned, so the empty string is a real
+	// "expected unassigned" guard rather than the absence of one — the
+	// distinction `--if-assignee ''` depends on.
+	unassigned := ""
+	matching := priorityEdit(1)
+	matching.ExpectedAssignee = &unassigned
+	openStatus := types.StatusOpen
+	matching.ExpectedStatus = &openStatus
+	if result, err := fixture.Operations.Update(ctx, matching); err != nil || !result.Changed {
+		t.Fatalf("guarded edit with both preconditions holding = %#v, %v; want the edit applied", result, err)
+	}
+	assertPriority("priority after a satisfied guard", 1)
+	events.assert(t, "satisfied guard", 1, nil)
+
+	// A stale status refuses, and the refusal writes nothing — not the field
+	// the request carried, not an event.
+	staleStatus := types.StatusInProgress
+	staleStatusEdit := priorityEdit(0)
+	staleStatusEdit.ExpectedStatus = &staleStatus
+	if _, err := fixture.Operations.Update(ctx, staleStatusEdit); !errors.Is(err, publicops.ErrStatusMismatch) {
+		t.Fatalf("edit guarded on a stale status: err = %v, want ErrStatusMismatch", err)
+	}
+	assertPriority("priority after a stale status guard", 1)
+	events.assert(t, "stale status guard", 0, nil)
+
+	// A stale assignee refuses the same way, including when the status guard
+	// beside it still holds: both preconditions must hold, not either.
+	staleAssignee := "nobody"
+	staleAssigneeEdit := priorityEdit(0)
+	staleAssigneeEdit.ExpectedAssignee = &staleAssignee
+	staleAssigneeEdit.ExpectedStatus = &openStatus
+	if _, err := fixture.Operations.Update(ctx, staleAssigneeEdit); !errors.Is(err, publicops.ErrAssigneeMismatch) {
+		t.Fatalf("edit guarded on a stale assignee: err = %v, want ErrAssigneeMismatch", err)
+	}
+	assertPriority("priority after a stale assignee guard", 1)
+	events.assert(t, "stale assignee guard", 0, nil)
+
+	// The guard tracks the row rather than the request that set it: once an
+	// assignee lands, the empty-string guard that just held is the stale one.
+	assign := publicops.UpdateRequest{Actor: "writer", IssueID: id, Patch: publicops.IssuePatch{
+		Assignee: publicops.Field[string]{Set: true, Value: "holder"},
+	}}
+	if _, err := fixture.Operations.Update(ctx, assign); err != nil {
+		t.Fatalf("assign %s: %v", id, err)
+	}
+	events.assert(t, "assign", 1, nil)
+	nowStale := priorityEdit(0)
+	nowStale.ExpectedAssignee = &unassigned
+	if _, err := fixture.Operations.Update(ctx, nowStale); !errors.Is(err, publicops.ErrAssigneeMismatch) {
+		t.Fatalf("edit guarded on unassigned after an assignment: err = %v, want ErrAssigneeMismatch", err)
+	}
+	assertPriority("priority after the once-current guard went stale", 1)
+	events.assert(t, "once-current guard", 0, nil)
+
+	holder := "holder"
+	nowCurrent := priorityEdit(0)
+	nowCurrent.ExpectedAssignee = &holder
+	if result, err := fixture.Operations.Update(ctx, nowCurrent); err != nil || !result.Changed {
+		t.Fatalf("edit guarded on the current holder = %#v, %v; want the edit applied", result, err)
+	}
+	assertPriority("priority after a guard naming the current holder", 0)
 }
 
 // seedIssueOperationsLabeledIssue creates one open task at an explicit ID

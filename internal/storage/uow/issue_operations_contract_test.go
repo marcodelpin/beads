@@ -47,6 +47,11 @@ func TestIssueOperationsUpdateAssigneeTransferFence(t *testing.T) {
 	conformance.RunIssueOperationsUpdateAssigneeTransferFence(t, ctx, newUOWIssueOperationsFixture(t, ctx))
 }
 
+func TestIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T) {
+	ctx := context.Background()
+	conformance.RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t, ctx, newUOWIssueOperationsFixture(t, ctx))
+}
+
 func TestIssueOperationsUpdateClosedFieldsMatchClose(t *testing.T) {
 	ctx := context.Background()
 	conformance.RunIssueOperationsUpdateClosedFieldsMatchClose(t, ctx, newUOWIssueOperationsFixture(t, ctx))

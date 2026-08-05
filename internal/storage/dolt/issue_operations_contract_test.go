@@ -49,6 +49,12 @@ func TestIssueOperationsUpdateAssigneeTransferFence(t *testing.T) {
 	conformance.RunIssueOperationsUpdateAssigneeTransferFence(t, ctx, fixture)
 }
 
+func TestIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t, ctx, fixture)
+}
+
 func TestIssueOperationsUpdateClosedFieldsMatchClose(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
