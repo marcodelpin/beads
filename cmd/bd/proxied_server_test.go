@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -103,9 +104,14 @@ func TestEnsureProxiedServerConfig_NeverForksDolt(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	sentinel := filepath.Join(binDir, "invoked")
-	stub := "#!/bin/sh\necho \"$@\" >> " + sentinel + "\nexit 0\n"
+	quotedSentinel := "'" + strings.ReplaceAll(sentinel, "'", `'\''`) + "'"
+	stub := "#!/bin/sh\necho \"$@\" >> " + quotedSentinel + "\nexit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "dolt"), []byte(stub), 0o700))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	require.NoError(t, exec.Command("dolt", "version").Run(), "stub dolt must be reachable and runnable")
+	require.FileExists(t, sentinel, "stub dolt must record its invocations, else this test cannot fail")
+	require.NoError(t, os.Remove(sentinel))
 
 	beadsDir := t.TempDir()
 	_, err := ensureProxiedServerConfig(beadsDir) // fresh bootstrap
