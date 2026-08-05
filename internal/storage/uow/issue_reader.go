@@ -70,7 +70,26 @@ func (r *issueReader) Ready(ctx context.Context, req publicops.ReadyRequest) (pu
 	})
 }
 
+// listBackend names the backend a List refusal comes from. It is the provider
+// seam rather than the engine underneath it: what cannot honor MaxRows is this
+// query path (internal/storage/domain/db), which threads no cap, and every
+// provider reaches the queries through it.
+const listBackend = "uow-provider"
+
 func (r *issueReader) List(ctx context.Context, req publicops.ListRequest) (publicops.IssuePage, error) {
+	// The MIRROR IMAGE of the store body's Offset refusal, one field over. The
+	// domain/db query path reads no MaxRows, so a request carrying a cap would
+	// come back as the FULL uncapped answer with no error on it — a caller who
+	// asked for a circuit breaker getting exactly the runaway query it was
+	// guarding against. Refusing is checked before the unit of work opens: a
+	// request that cannot be answered should not cost a transaction.
+	//
+	// `bd list --max-rows --proxied-server` already refuses one layer up
+	// (cmd/bd/max_rows.go, rejectMaxRowsUnderProxiedServer) for exactly this
+	// reason. This is the same refusal for the callers that are not the CLI.
+	if req.MaxRows != 0 {
+		return publicops.IssuePage{}, &publicops.ErrUnsupported{Op: "Reader.List(MaxRows)", Backend: listBackend}
+	}
 	return RunTxRead(ctx, r.provider, func(ctx context.Context, uw UnitOfWork) (publicops.IssuePage, error) {
 		// The config source comes from the unit of work this call already
 		// holds, so a caller reaching this method through the role has nothing

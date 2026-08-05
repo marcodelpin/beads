@@ -157,6 +157,22 @@ type ListRequest struct {
 	NoAssignee bool
 	NoLabels   bool
 	SkipLabels bool
+	// SkipCounts suppresses the CARDINALITY hydration exactly as SkipLabels
+	// suppresses the label one: DependencyCount, DependentCount and
+	// CommentCount come back ZERO, and a caller must read a zero as UNKNOWN
+	// rather than as none. Nothing else about the page moves — the rows, their
+	// order, Parent and the has-more verdict are what they would have been —
+	// because this chooses what is HYDRATED, never which rows match.
+	//
+	// It is here for the renderings that print a page without those three
+	// numbers. Each is its own aggregate join, and the reverse-blocker one is
+	// the expensive member: it joins on an expression the embedded engine's
+	// planner cannot index, which is the per-call cost that makes a counted
+	// page the wrong shape for a listing that shows no counts.
+	//
+	// Like SkipLabels it is NOT carried onto the ReadyFlag arm; the counts are
+	// hydrated there either way, which costs time and not correctness.
+	SkipCounts bool
 
 	// Priority is exact; PriorityMin and PriorityMax bound a range. All three
 	// are pointers for the same reason ReadyRequest.Priority is.
@@ -211,7 +227,8 @@ type ListRequest struct {
 	// WHAT IT CARRIES: IssueType, all five label forms, Assignee, NoAssignee,
 	// the exact Priority, ParentID, MolType, WispType, MetadataFields,
 	// HasMetadataKey, the type exclusions (ExcludeTypes, and with them
-	// IncludeGates and IncludeInfra), Limit and Offset. SortBy and Reverse
+	// IncludeGates and IncludeInfra), Limit, Offset and the MaxRows cap with
+	// its attribution. SortBy and Reverse
 	// still apply, because the display order is applied to the page after the
 	// query rather than inside it. Status and AllFlag are resolved to "open"
 	// and have no further effect: ready work is open work.
@@ -231,8 +248,9 @@ type ListRequest struct {
 	// all, so this request's default template exclusion does not reach it and
 	// IncludeTemplates changes nothing here: a template is left out of a
 	// ReadyFlag listing only when its issue type is one the ready query
-	// already excludes. SkipLabels is likewise not carried — labels are
-	// hydrated either way, which costs time and not correctness.
+	// already excludes. SkipLabels and SkipCounts are likewise not carried —
+	// labels and cardinalities are hydrated either way, which costs time and
+	// not correctness.
 	AllFlag   bool
 	ReadyFlag bool
 
@@ -266,6 +284,36 @@ type ListRequest struct {
 	// transport concern and never reaches this contract.
 	AfterCreatedAt *time.Time
 	AfterID        string
+
+	// MaxRows is a DEFENSIVE CAP rather than a page. It bounds how many rows
+	// the query may match before the whole answer is refused; 0 disables it.
+	// A request whose result set exceeds it comes back as
+	// *internal/storage/issueops.ErrTooManyRows — carrying the count observed,
+	// the cap, and MaxRowsSource's attribution — and NO PAGE. That is the
+	// difference from Limit, whose overflow is an ordinary truncated page with
+	// HasMore set. It is a circuit breaker for a caller that would rather fail
+	// than wait. The type is named here rather than left as "an error" so a
+	// caller can tell the cap firing from any other failure with errors.As;
+	// this leaf does not import it, and no answer depends on that.
+	//
+	// It is HONORED by the store-backed implementation and REFUSED by the
+	// unit-of-work one, with a typed *ErrUnsupported naming the operation and
+	// the backend. That is the exact INVERSE of Offset above, and for the same
+	// kind of reason: the unit-of-work query path threads no cap, so a body
+	// that accepted the field would answer an uncapped query to a caller who
+	// asked for a circuit breaker. What no implementation does is silently
+	// ignore it, so a caller either gets the cap it asked for or an error it
+	// can classify with errors.As. `bd list --max-rows --proxied-server`
+	// already refuses one layer up, in the CLI; this is the same refusal for
+	// the callers that are not the CLI.
+	//
+	// Unlike SkipCounts and SkipLabels it IS carried onto the ReadyFlag arm.
+	MaxRows int
+	// MaxRowsSource attributes the cap to whatever knob set it — "--max-rows",
+	// "BEADS_MAX_ROWS", or empty for a library caller — and that attribution is
+	// what the refusal text reads back. It decides no answer: a request is
+	// refused on MaxRows alone, and this only decides how the refusal reads.
+	MaxRowsSource string
 }
 
 // GetRequest describes one issue-detail lookup.
@@ -370,11 +418,14 @@ type IssuePage struct {
 //
 //   - `bd ready` and `bd list` are NOT, on either route, and they will not be
 //     until there are more roles to route them through. They consume the
-//     FILTER itself for things this role does not express — the --max-rows
-//     cap, --claim, --gated, --explain, --mol, --watch, the hierarchical
-//     --parent tree, and the text renderings that want []*types.Issue rather
-//     than a counted page. Routing only their JSON paths through the role
-//     would fork each command in two, which is more drift, not less. Two of
+//     FILTER itself for things this role does not express — --claim, --gated,
+//     --explain, --mol, --watch, the hierarchical --parent tree, and the text
+//     renderings that want []*types.Issue rather than a counted page. Routing
+//     only their JSON paths through the role would fork each command in two,
+//     which is more drift, not less. The --max-rows cap USED to be on that
+//     list and no longer is: it is MaxRows below, so `bd list` resolves it
+//     onto the request and the builder is the only thing that writes it onto a
+//     filter. Two of
 //     `bd ready`'s questions HAVE left the filter behind, each for the role
 //     that owns it: --claim is ReadyClaimer's, and the published total is
 //     ReadyCounter's, on both routes.
@@ -392,7 +443,9 @@ type IssuePage struct {
 //     output, which renders the recursive walk's own result and reaches no
 //     epilogue on either route. Where the epilogue does run, what is left
 //     differing between a CLI listing and an HTTP one is presentation and the
-//     --max-rows cap.
+//     --max-rows cap — and the cap is now a difference in what each surface
+//     SENDS rather than one in what they can say, since MaxRows is a field of
+//     the request both build.
 //   - EXECUTION, for `bd ready`, on the PROXIED route only. The direct route
 //     keeps an epilogue of its own and cannot give it up: it answers the
 //     strictly larger question "how many rows did the limit hide" and

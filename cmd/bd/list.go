@@ -191,7 +191,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	}
 
 	if usesProxiedServer() {
-		if err := rejectMaxRowsUnderProxiedServer(cmd); err != nil {
+		if err := rejectResolvedMaxRowsUnderProxiedServer(in.MaxRows); err != nil {
 			return err
 		}
 		if err := runListProxiedServer(cmd, rootCtx, in); err != nil {
@@ -205,11 +205,15 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	}
 
 	// `bd list` builds the filter rather than calling IssueReader(), because
-	// this filter feeds --watch, the hierarchical --parent tree, the text
-	// renderings that want []*types.Issue rather than a counted page, and the
-	// --max-rows cap stamped on below — none of which the Reader role
-	// expresses, and routing only the JSON path through it would fork the
-	// command in two.
+	// this filter feeds --watch, the hierarchical --parent tree and the text
+	// renderings that want []*types.Issue rather than a counted page — none of
+	// which the Reader role expresses, and routing only the JSON path through
+	// it would fork the command in two.
+	//
+	// The --max-rows cap is no longer on that list. It used to be stamped onto
+	// the filter after this builder returned; it now rides on the request, so
+	// the builder is the only writer of the filter's two cap fields and the
+	// role expresses the cap too (issueops.ListRequest.MaxRows).
 	//
 	// It shares CONSTRUCTION with the role unconditionally: the same
 	// issueops.ListRequest through the same builder, pinned by the builder's
@@ -230,12 +234,6 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return HandleError("%v", err)
 	}
-	maxRows, maxRowsSource, err := resolveMaxRows(cmd)
-	if err != nil {
-		return err
-	}
-	filter.MaxRows = maxRows
-	filter.MaxRowsSource = maxRowsSource
 
 	ctx := rootCtx
 

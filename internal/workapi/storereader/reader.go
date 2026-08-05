@@ -35,8 +35,8 @@ import (
 // today the store-backed role answers `bd show --json` on the direct route,
 // and the HTTP surface and the proxied `bd show --json` reach the uow-backed
 // one. `bd ready` and `bd list` still call the workapi builders directly —
-// they consume the FILTER for the max-rows cap, --claim, --watch, the
-// hierarchical --parent tree and the text renderings — so Ready and List below
+// they consume the FILTER for --claim, --watch, the hierarchical --parent tree
+// and the text renderings — so Ready and List below
 // are reached only by tests until a front door moves. They are covered by
 // reader_test.go for exactly that reason, and their page epilogue is
 // workapi.FinishPage, which `bd list` DOES run in every mode but the
@@ -98,6 +98,15 @@ func (r *storeReader) Ready(ctx context.Context, req issueops.ReadyRequest) (iss
 	return issueops.IssuePage{Items: items, HasMore: hasMore}, nil
 }
 
+// List answers one issue listing.
+//
+// The two knobs this body and its unit-of-work sibling answer differently sit
+// side by side here and point opposite ways. Offset is refused below because
+// this seam renders LIMIT without OFFSET. MaxRows is HONORED, and nothing
+// below mentions it: the cap rides on the filter the shared builder produces,
+// and the search path enforces it after the scan (internal/storage/issueops,
+// EnforceMaxRowsCap), so the answer is *ErrTooManyRows instead of a page. The
+// sibling refuses it, for the reason stated there.
 func (r *storeReader) List(ctx context.Context, req issueops.ListRequest) (issueops.IssuePage, error) {
 	if req.Offset != 0 {
 		return issueops.IssuePage{}, refuseOffset("Reader.List(Offset)")
