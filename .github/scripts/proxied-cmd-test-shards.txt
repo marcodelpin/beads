@@ -112,12 +112,14 @@
 15 13 TestProxiedServerConfig
 15 13 TestProxiedServerConfigConcurrent
 15 13 TestProxiedServerGateList
+15 13 TestProxiedServerMemory
 15 13 TestProxiedServerMultiStatementSQL
 15 13 TestProxiedServerReopen
 15 13 TestProxiedServerStatuses
 
 15 14 TestProxiedServerComment
 15 14 TestProxiedServerContext
+15 14 TestProxiedServerKV
 15 14 TestProxiedServerNote
 15 14 TestProxiedServerSearch
 15 14 TestProxiedServerShow
