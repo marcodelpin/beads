@@ -172,6 +172,8 @@ type Config struct {
 	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, EdgeReader: ed, ...})
 	//	rc, err := src.ReadyCounter()
 	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, ReadyCounter: rc, ...})
+	//	qr, err := src.Querier()
+	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Querier: qr, ...})
 	//
 	// Listen refuses a hook-firing role rather than trusting the paragraph
 	// above — see checkDatabaseSource.
@@ -204,6 +206,7 @@ type Config struct {
 	CycleDetector issueops.CycleDetector
 	EdgeReader    issueops.EdgeReader
 	ReadyCounter  issueops.ReadyCounter
+	Querier       issueops.Querier
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -246,6 +249,7 @@ type Server struct {
 	issueCycles       issueops.CycleDetector
 	issueEdges        issueops.EdgeReader
 	issueReadyCounter issueops.ReadyCounter
+	issueQuerier      issueops.Querier
 
 	listener net.Listener
 	http     *http.Server
@@ -349,6 +353,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueCycles:       cfg.CycleDetector,
 		issueEdges:        cfg.EdgeReader,
 		issueReadyCounter: cfg.ReadyCounter,
+		issueQuerier:      cfg.Querier,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -452,12 +457,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter, cfg.Querier}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader and ReadyCounter"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, ReadyCounter and Querier"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -696,6 +701,23 @@ func (s *Server) readyCounter(r *http.Request) (issueops.ReadyCounter, error) {
 	}
 	var src uow.ReadyCounterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.ReadyCounter()
+}
+
+// querier returns the boolean-query surface for one request, on the same terms
+// as every role above: the configured role on the roles source, one built per
+// request on the provider source so the unit of work the query opens lands in
+// THIS request's uow_ms, and held by INTERFACE so uow.QuerierSource is
+// load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED, like the counter and unlike checkedReader: the handler
+// dereferences no pointer this role returned — a page is a value carrying a
+// slice — so there is nothing for a wrapper to make safe.
+func (s *Server) querier(r *http.Request) (issueops.Querier, error) {
+	if s.provider == nil {
+		return s.issueQuerier, nil
+	}
+	var src uow.QuerierSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.Querier()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

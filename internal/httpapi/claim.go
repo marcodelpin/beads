@@ -363,6 +363,7 @@ var (
 	_ uow.IssueReaderSource     = timedProvider{}
 	_ uow.IssueClaimerSource    = timedProvider{}
 	_ uow.ReadyCounterSource    = timedProvider{}
+	_ uow.QuerierSource         = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -433,6 +434,13 @@ func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 // in this request's uow_ms rather than in nobody's.
 func (p timedProvider) ReadyCounter() (issueops.ReadyCounter, error) {
 	return uow.NewReadyCounter(p)
+}
+
+// Querier builds the boolean-query role OVER THIS WRAPPER, for the same reason
+// as every accessor above: the query opens a read-only unit of work of its own,
+// and it must land in this request's uow_ms rather than in nobody's.
+func (p timedProvider) Querier() (issueops.Querier, error) {
+	return uow.NewQuerier(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

@@ -25,21 +25,60 @@ func (e HealthStatus) Valid() bool {
 	}
 }
 
+// Defines values for QueryIssuesParamsSort.
+const (
+	QueryIssuesParamsSortAssignee QueryIssuesParamsSort = "assignee"
+	QueryIssuesParamsSortClosed   QueryIssuesParamsSort = "closed"
+	QueryIssuesParamsSortCreated  QueryIssuesParamsSort = "created"
+	QueryIssuesParamsSortId       QueryIssuesParamsSort = "id"
+	QueryIssuesParamsSortPriority QueryIssuesParamsSort = "priority"
+	QueryIssuesParamsSortStatus   QueryIssuesParamsSort = "status"
+	QueryIssuesParamsSortTitle    QueryIssuesParamsSort = "title"
+	QueryIssuesParamsSortType     QueryIssuesParamsSort = "type"
+	QueryIssuesParamsSortUpdated  QueryIssuesParamsSort = "updated"
+)
+
+// Valid indicates whether the value is a known member of the QueryIssuesParamsSort enum.
+func (e QueryIssuesParamsSort) Valid() bool {
+	switch e {
+	case QueryIssuesParamsSortAssignee:
+		return true
+	case QueryIssuesParamsSortClosed:
+		return true
+	case QueryIssuesParamsSortCreated:
+		return true
+	case QueryIssuesParamsSortId:
+		return true
+	case QueryIssuesParamsSortPriority:
+		return true
+	case QueryIssuesParamsSortStatus:
+		return true
+	case QueryIssuesParamsSortTitle:
+		return true
+	case QueryIssuesParamsSortType:
+		return true
+	case QueryIssuesParamsSortUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListReadyWorkParamsSort.
 const (
-	Hybrid   ListReadyWorkParamsSort = "hybrid"
-	Oldest   ListReadyWorkParamsSort = "oldest"
-	Priority ListReadyWorkParamsSort = "priority"
+	ListReadyWorkParamsSortHybrid   ListReadyWorkParamsSort = "hybrid"
+	ListReadyWorkParamsSortOldest   ListReadyWorkParamsSort = "oldest"
+	ListReadyWorkParamsSortPriority ListReadyWorkParamsSort = "priority"
 )
 
 // Valid indicates whether the value is a known member of the ListReadyWorkParamsSort enum.
 func (e ListReadyWorkParamsSort) Valid() bool {
 	switch e {
-	case Hybrid:
+	case ListReadyWorkParamsSortHybrid:
 		return true
-	case Oldest:
+	case ListReadyWorkParamsSortOldest:
 		return true
-	case Priority:
+	case ListReadyWorkParamsSortPriority:
 		return true
 	default:
 		return false
@@ -81,7 +120,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.get`, `issues.claim`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -199,6 +238,15 @@ type Problem struct {
 
 	// Type RFC 9457 problem type. This server never emits it, so `about:blank` is implied. A deployment that hosts problem documentation MAY supply it: one stable URI per status+code pair, dereferencing to documentation for that pair. It restates identity that `code` already carries, so a client MUST NOT dispatch on it and a server MUST NOT use it to subdivide a code.
 	Type *string `json:"type,omitempty"`
+}
+
+// QueryPage A page of query results. It is `ReadyPage`'s shape rather than `IssuesPage`'s, and the missing member is the point: a page of this operation carries no `next_cursor`, because a cursor is a keyset position in a database order and a predicate query's matching set is assembled outside the database.
+type QueryPage struct {
+	// HasMore True when `limit` truncated the result. It is exact for every expression, including the ones evaluated outside the database: those are matched against every candidate row, so the count of matches is known before the page is cut. There is no cursor — raise `limit` or narrow the expression.
+	HasMore bool `json:"has_more"`
+
+	// Items Empty array (never null) when the expression matched nothing.
+	Items []IssueWithCounts `json:"items"`
 }
 
 // ReadyCount The size of a ready set. It carries no items, no `has_more` and no cursor: this is a number about a set, and the operation that returns rows is `GET /v0/beads/ready`.
@@ -366,6 +414,33 @@ type ListIssuesParams struct {
 	// One exception, and it is mode-dependent: when the server was started with `--allow-non-loopback`, `limit=0` is refused with 400 `invalid_argument`, `param: "limit"`, `reason: "invalid_value"` and detail "unlimited reads are loopback-only; pass an explicit limit". An unlimited read buffers the whole active set and its JSON encoding inside one shared process, which must not be reachable by arbitrary network peers. The bind mode is deliberately NOT advertised in `ContextResponse` — a client that wants an unlimited read asks for one and, on that 400, re-issues with an explicit limit (and pages with `cursor`); it is a client-side fix, never a retry.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
+
+// QueryIssuesParams defines parameters for QueryIssues.
+type QueryIssuesParams struct {
+	// Q The query expression, e.g. `status=open AND priority>1` or `type=bug OR label=urgent`. Blank, unparseable, or naming a field or operator the language does not have is a 400 `invalid_argument` with `param: "q"` and `reason: "invalid_value"`.
+	//
+	// Relative date terms (`created>7d`) are resolved against the SERVER's clock at the moment the request is served.
+	Q string `form:"q" json:"q"`
+
+	// All Include closed issues. Without it closed issues are excluded — unless the expression itself compares `status`, in which case the expression's own opinion stands and this parameter changes nothing.
+	All *bool `form:"all,omitempty" json:"all,omitempty"`
+
+	// Sort Display order for the page. Absent leaves the rows in the order the query returned them, which is the same thing `bd query` without `--sort` does.
+	//
+	// WHAT IT ORDERS is the rows the query bounded, exactly as on the CLI: for an expression the database answered under `limit`, the page; for a predicate expression, which the database cannot bound, the whole matching set.
+	Sort *QueryIssuesParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
+
+	// Reverse Invert the display order. Ignored when `sort` is absent.
+	Reverse *bool `form:"reverse,omitempty" json:"reverse,omitempty"`
+
+	// Limit Maximum number of items to return. `0` means unlimited, exactly as `bd query --limit 0` does — the two surfaces read the same shared default (`workapi.DefaultQueryLimit`, the value `bd query --limit` registers) and the same zero semantics. A negative value is a 400.
+	//
+	// The same mode-dependent refusal the issue listing carries applies here: under `--allow-non-loopback`, `limit=0` is refused with 400 `invalid_argument`, `param: "limit"`, `reason: "invalid_value"`.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// QueryIssuesParamsSort defines parameters for QueryIssues.
+type QueryIssuesParamsSort string
 
 // ListReadyWorkParams defines parameters for ListReadyWork.
 type ListReadyWorkParams struct {

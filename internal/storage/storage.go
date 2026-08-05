@@ -211,6 +211,12 @@ type Storage interface {
 	// Reads fire no hooks, so the hook decorator's answer is its inner store's
 	// unchanged, as it is for IssueReader.
 	ReadyCounter() (issueops.ReadyCounter, error)
+	// Querier returns the guarded boolean-query surface for this store: `bd
+	// query`'s expression language, which has OR, NOT and parentheses. Its own
+	// role rather than a mode of IssueReader because a ListRequest is a
+	// CONJUNCTION — every field narrows — and no arrangement of its fields
+	// expresses a disjunction. Reads fire no hooks, as for IssueReader.
+	Querier() (issueops.Querier, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

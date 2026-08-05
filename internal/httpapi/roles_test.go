@@ -146,6 +146,34 @@ func (c *roleReadyCounter) countRequests() []issueops.ReadyRequest {
 	return append([]issueops.ReadyRequest(nil), c.counts...)
 }
 
+// roleQuerier is the boolean-query role's double. It records the whole request
+// because the property this surface owes is that the EXPRESSION reaches the
+// role untouched: a handler that parsed it here would be the drift the role
+// exists to remove, and only the recorded sentence can show it did not.
+type roleQuerier struct {
+	page issueops.IssuePage
+	err  error
+
+	mu      sync.Mutex
+	queries []issueops.QueryRequest
+}
+
+func (q *roleQuerier) Query(_ context.Context, req issueops.QueryRequest) (issueops.IssuePage, error) {
+	q.mu.Lock()
+	q.queries = append(q.queries, req)
+	q.mu.Unlock()
+	if q.err != nil {
+		return issueops.IssuePage{}, q.err
+	}
+	return q.page, nil
+}
+
+func (q *roleQuerier) queryRequests() []issueops.QueryRequest {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]issueops.QueryRequest(nil), q.queries...)
+}
+
 type roleClaimer struct {
 	result issueops.ClaimResult
 	err    error
@@ -282,6 +310,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.ReadyCounter == nil {
 		cfg.ReadyCounter = &roleReadyCounter{}
 	}
+	if cfg.Querier == nil {
+		cfg.Querier = &roleQuerier{}
+	}
 	return cfg
 }
 
@@ -402,9 +433,28 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
+			// The newest role, and the one a caller written against the
+			// PREVIOUS release leaves out: every set that was complete before
+			// this commit is incomplete now, and the failure a bind would defer
+			// is a nil dereference on the first issues:query request.
+			name:    "no querier",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Querier = nil }),
+			wantErr: "no database source",
+		},
+		{
 			name:    "a cycle detector alone",
 			cfg:     Config{CycleDetector: &roleCycleDetector{}},
 			wantErr: "no database source",
+		},
+		{
+			name:    "a querier alone",
+			cfg:     Config{Querier: &roleQuerier{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a provider and a querier",
+			cfg:     Config{Provider: &fakeProvider{}, Querier: &roleQuerier{}},
+			wantErr: "exactly one database source",
 		},
 		{
 			// The newest role, and the one a caller written against the
@@ -532,9 +582,10 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 		{ID: "bd-9", Missing: true},
 	}}}
 	counter := &roleReadyCounter{total: 41}
+	querier := &roleQuerier{page: issueops.IssuePage{Items: countedPage()}}
 	ts := newTestServer(t, rolesConfig(Config{
 		Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter,
-		EdgeReader: edges, ReadyCounter: counter,
+		EdgeReader: edges, ReadyCounter: counter, Querier: querier,
 	}))
 
 	t.Run("ready", func(t *testing.T) {
@@ -576,6 +627,33 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 		}
 		if got := reqs[0]; len(got.Labels) != 1 || got.Labels[0] != "api" || got.Sort != readySortDefault {
 			t.Errorf("count request = %+v, want the wire filter under sort %q", got, readySortDefault)
+		}
+	})
+
+	t.Run("query", func(t *testing.T) {
+		resp := ts.get(t, "/v0/beads/issues:query?q=type%3Dbug+OR+label%3Durgent&sort=priority")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+		}
+		body := decodeBody(t, resp)
+		if got, ok := body["items"].([]any); !ok || len(got) != 2 {
+			t.Errorf("items = %v, want the role's two rows", body["items"])
+		}
+		if _, present := body["next_cursor"]; present {
+			t.Errorf("query page carries a next_cursor: %v", body)
+		}
+		// The EXPRESSION reaches the role verbatim. A handler that parsed,
+		// normalised or re-quoted it would be the second implementation of the
+		// query language this role exists to prevent.
+		reqs := querier.queryRequests()
+		if len(reqs) != 1 {
+			t.Fatalf("query requests = %+v, want exactly one", reqs)
+		}
+		if got := reqs[0].Expression; got != "type=bug OR label=urgent" {
+			t.Errorf("expression = %q, want the sentence the wire named", got)
+		}
+		if got := reqs[0]; got.SortBy != "priority" || got.Offset != 0 {
+			t.Errorf("query request = %+v, want sort=priority and no offset", got)
 		}
 	})
 
@@ -752,6 +830,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
 			ReadyCounter:  &roleReadyCounter{},
+			Querier:       &roleQuerier{},
 		})
 		resp := ts.get(t, "/v0/beads/issues/bd-404")
 		if resp.StatusCode != http.StatusNotFound {
@@ -774,6 +853,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
 			ReadyCounter:  &roleReadyCounter{},
+			Querier:       &roleQuerier{},
 		})
 		resp := ts.get(t, "/v0/beads/issues?status=bogus")
 		if resp.StatusCode != http.StatusBadRequest {
@@ -799,6 +879,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			}},
 			Settings:     &roleSettings{},
 			ReadyCounter: &roleReadyCounter{},
+			Querier:      &roleQuerier{},
 		})
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
 		if resp.StatusCode != http.StatusConflict {
@@ -822,6 +903,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
 			ReadyCounter:  &roleReadyCounter{},
+			Querier:       &roleQuerier{},
 		})
 		resp := ts.get(t, "/v0/beads/ready")
 		if resp.StatusCode != http.StatusInternalServerError {
@@ -927,6 +1009,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
 			ReadyCounter:  &roleReadyCounter{},
+			Querier:       &roleQuerier{},
 		})
 
 		got := silent.get(t, "/v0/beads/issues/bd-1")
@@ -958,6 +1041,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			CycleDetector: &roleCycleDetector{},
 			EdgeReader:    &roleEdgeReader{},
 			ReadyCounter:  &roleReadyCounter{},
+			Querier:       &roleQuerier{},
 		})
 
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)

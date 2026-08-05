@@ -160,6 +160,7 @@ const (
 	// nothing, and returns edges whose target this database holds no row for.
 	OpListDependencies = "listDependencies"
 	OpCountReadyWork   = "countReadyWork"
+	OpQueryIssues      = "queryIssues"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -213,6 +214,12 @@ var operationCodes = map[string][]Code{
 	// analog here because there is no limit to pass — but that was a
 	// CodeInvalidArgument too, so this row would not change if there were.
 	OpCountReadyWork: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The listing's vocabulary minus the cursor: this operation has none, so
+	// invalid_cursor cannot arise. An unparseable EXPRESSION is an
+	// invalid_argument on `q` rather than a code of its own — a client's
+	// recovery is the same as for any other malformed parameter value, and a
+	// code it cannot act on differently is a code it should not have to know.
+	OpQueryIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

@@ -42,6 +42,7 @@ var (
 	// enough if a page's items resolve to something else.
 	_ []types.IssueWithCounts = apigen.ReadyPage{}.Items
 	_ []types.IssueWithCounts = apigen.IssuesPage{}.Items
+	_ []types.IssueWithCounts = apigen.QueryPage{}.Items
 	_ types.Issue             = apigen.ClaimResponse{}.Issue
 	_ types.Statistics        = apigen.StatsResponse{}.Summary
 	_ []issueops.Cycle        = apigen.CyclesPage{}.Items

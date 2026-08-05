@@ -931,6 +931,125 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/issues:query:
+    get:
+      operationId: queryIssues
+      summary: Query issues with a boolean expression
+      description: >-
+        The `bd query` expression language over HTTP: field comparisons
+        combined with `AND`, `OR`, `NOT` and parentheses. It is the one
+        operation on this surface that takes a DISJUNCTION — every filter
+        parameter of `GET /v0/beads/issues` narrows the answer, and no
+        combination of them expresses `type=bug OR label=urgent`.
+
+
+        IT IS NOT A SQL PASSTHROUGH, and the shape of the language is what
+        makes that true rather than a promise about validation: there are no
+        table names, no joins and no way to name a column the vocabulary does
+        not publish. The vocabulary is the one `bd query --help` documents, and
+        an expression outside it is a 400 rather than an empty page.
+
+
+        EVERY MATCH IS IN SCOPE, which has not always been true and is the
+        reason this operation exists in the shape it does. An expression the
+        storage filter cannot express is answered by evaluating the predicate
+        over every candidate row and then cutting the page, so `has_more` means
+        what it says. The CLI used to bound that scan at a few hundred rows and
+        filter what came back, which silently dropped matches from an `OR`
+        query and reported the result as complete. The cost is stated rather
+        than hidden: a broad expression over a large workspace is a large read,
+        and `limit` bounds the RESPONSE rather than the scan.
+
+
+        THERE IS NO CURSOR AND NO `offset`. A cursor is a keyset position in a
+        database order, and the matching set of a predicate query is assembled
+        outside the database, so there is no position to encode; `offset` is
+        absent because the two database sources this server can be built on
+        disagree about whether they can honor one, and a parameter that works
+        under one deployment topology and refuses under another is worse on a
+        wire than an absent one. Raise `limit`, or narrow the expression.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: >-
+            The query expression, e.g. `status=open AND priority>1` or
+            `type=bug OR label=urgent`. Blank, unparseable, or naming a field
+            or operator the language does not have is a 400 `invalid_argument`
+            with `param: "q"` and `reason: "invalid_value"`.
+
+
+            Relative date terms (`created>7d`) are resolved against the
+            SERVER's clock at the moment the request is served.
+          schema:
+            type: string
+        - name: all
+          in: query
+          description: >-
+            Include closed issues. Without it closed issues are excluded —
+            unless the expression itself compares `status`, in which case the
+            expression's own opinion stands and this parameter changes nothing.
+          schema:
+            type: boolean
+            default: false
+        - name: sort
+          in: query
+          description: >-
+            Display order for the page. Absent leaves the rows in the order the
+            query returned them, which is the same thing `bd query` without
+            `--sort` does.
+
+
+            WHAT IT ORDERS is the rows the query bounded, exactly as on the
+            CLI: for an expression the database answered under `limit`, the
+            page; for a predicate expression, which the database cannot bound,
+            the whole matching set.
+          schema:
+            type: string
+            enum: [priority, created, updated, closed, status, id, title, type, assignee]
+        - name: reverse
+          in: query
+          description: Invert the display order. Ignored when `sort` is absent.
+          schema:
+            type: boolean
+            default: false
+        - name: limit
+          in: query
+          description: >-
+            Maximum number of items to return. `0` means unlimited, exactly as
+            `bd query --limit 0` does — the two surfaces read the same shared
+            default (`workapi.DefaultQueryLimit`, the value `bd query --limit`
+            registers) and the same zero semantics. A negative value is a 400.
+
+
+            The same mode-dependent refusal the issue listing carries applies
+            here: under `--allow-non-loopback`, `limit=0` is refused with 400
+            `invalid_argument`, `param: "limit"`, `reason: "invalid_value"`.
+          schema:
+            type: integer
+            minimum: 0
+            default: 50
+      responses:
+        '200':
+          description: A page of the issues the expression matched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryPage'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, a malformed parameter
+            value, or an expression this server cannot parse or evaluate.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/issues/{id}:
     get:
       operationId: getIssue
@@ -2055,8 +2174,8 @@ components:
           description: >-
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
-            `issues.list`, `issues.get`, `issues.claim`, `stats.get`,
-            `config.list`, `config.get`, `dependencies.cycles`,
+            `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
+            `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`; it grows additively, and an operation never
             appears here unless it is fully implemented. This is how a client
             checks for an operation — never the version string.
@@ -2140,6 +2259,30 @@ components:
           description: >-
             Present if and only if `has_more` is true. Pass it back verbatim as
             `cursor` to fetch the next page. Opaque and server-private.
+
+    QueryPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          description: Empty array (never null) when the expression matched nothing.
+          items:
+            $ref: '#/components/schemas/IssueWithCounts'
+        has_more:
+          type: boolean
+          description: >-
+            True when `limit` truncated the result. It is exact for every
+            expression, including the ones evaluated outside the database:
+            those are matched against every candidate row, so the count of
+            matches is known before the page is cut. There is no cursor —
+            raise `limit` or narrow the expression.
+      description: >-
+        A page of query results. It is `ReadyPage`'s shape rather than
+        `IssuesPage`'s, and the missing member is the point: a page of this
+        operation carries no `next_cursor`, because a cursor is a keyset
+        position in a database order and a predicate query's matching set is
+        assembled outside the database.
 
     Setting:
       type: object

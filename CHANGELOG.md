@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bd query` no longer drops matches from an `OR` or `NOT` query** (bd-pohmh).
+  **Your results will change, and they change by getting bigger.** To answer an
+  expression the storage filter cannot express, both routes fetched
+  `max(3 × --limit, 100)` rows and applied the expression to those in memory. A
+  match past that window was absent from the page — and the truncation hint said
+  nothing, so the answer looked complete. `bd query "type=bug OR label=urgent"`
+  over a workspace with more than a hundred issues has been returning an
+  arbitrary prefix of its answer.
+
+  The window is gone: the expression is now evaluated against every candidate
+  row, the page is the first `--limit` MATCHES, and the truncation hint is
+  exact. **The cost is real and worth knowing:** a broad `OR`/`NOT` expression
+  over a large workspace now reads every row its plain filters admit, where it
+  used to read at most a few hundred. Narrow the expression — the parts of it
+  that ARE plain filters still bound the read — if that matters to you.
+
+  Two smaller changes ride along. `bd query --offset N` **now works with
+  `OR`/`NOT` expressions**, where it used to be refused outright: the offset
+  skips matches, which is only meaningful now that every match is seen.
+  `--offset` with `--sort` is still refused, with new wording, and so is a
+  malformed expression: both messages now come from one place instead of one per
+  route.
+
 ### Added
+
+- **`GET /v0/beads/issues:query` — the `bd query` expression language over
+  HTTP** (bd-pohmh). `bd serve` now answers boolean expressions —
+  `?q=type%3Dbug+OR+label%3Durgent` — with the same page shape the ready listing
+  returns, under the same completeness guarantee as the CLI, because both call
+  one `issueops.Querier`. It is the only operation on the surface that takes a
+  disjunction; every filter parameter of `GET /v0/beads/issues` narrows. There
+  is no cursor and no `offset`: a predicate query's matching set is assembled
+  outside the database, so there is no keyset position to encode. `capabilities`
+  gains `issues.query`.
 
 - **`GET /v0/beads/config` and `GET /v0/beads/config/{key}` — the workspace's
   stored settings over HTTP** (bd-kzepq). `bd serve` now answers for the

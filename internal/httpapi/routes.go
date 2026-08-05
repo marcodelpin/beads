@@ -116,6 +116,17 @@ var routeTable = []route{
 		handler:     (*Server).handleListIssues,
 	},
 	{
+		op:     OpQueryIssues,
+		method: http.MethodGet,
+		// A collection-level custom method, spelled as ready:count is: the
+		// segment is a LITERAL, so the router registers the documented path
+		// itself and no specPath declaration is needed.
+		pattern:     "/v0/beads/issues:query",
+		capability:  "issues.query",
+		implemented: true,
+		handler:     (*Server).handleQueryIssues,
+	},
+	{
 		op:          OpGetIssue,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/issues/{id}",

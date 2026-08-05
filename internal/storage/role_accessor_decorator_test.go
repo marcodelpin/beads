@@ -26,6 +26,7 @@ var roleAccessorNames = []string{
 	"StatsReporter",
 	"CycleDetector",
 	"ReadyCounter",
+	"Querier",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -86,6 +87,7 @@ type roleAccessorStore struct {
 	closer       issueops.BatchCloser
 	editor       issueops.DependencyEditor
 	readyCounter issueops.ReadyCounter
+	querier      issueops.Querier
 	err          error
 }
 
@@ -106,6 +108,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		closer:       sentinel,
 		editor:       sentinel,
 		readyCounter: sentinel,
+		querier:      sentinel,
 	}
 }
 
@@ -131,6 +134,7 @@ func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s
 func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return s.readyCounter, s.err
 }
+func (s *roleAccessorStore) Querier() (issueops.Querier, error) { return s.querier, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
@@ -208,6 +212,10 @@ func (*roleAccessorSentinel) DetectCycles(context.Context, issueops.DetectCycles
 func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) (issueops.ReadyCountResult, error) {
 	return issueops.ReadyCountResult{}, nil
 }
+
+func (*roleAccessorSentinel) Query(context.Context, issueops.QueryRequest) (issueops.IssuePage, error) {
+	return issueops.IssuePage{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -230,34 +238,19 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // satisfying DoltStorage, and silently stops every completion hook on that
 // role.
 //
-// Six roles are asserted the OTHER way round on purpose. Reads fire no
-// completion hooks, so IssueReader, IssueRelations, Counter and StatsReporter
-// deliberately return the inner surface unwrapped (hook_issue_reader.go,
-// hook_relations.go, hook_counter.go, hook_stats_reporter.go); WorkspaceConfig
-// and VersionReconciler do too, and those two are the ones that are NOT reads —
-// a settings write changes the workspace rather than a bead and a version
-// marker names no bead at all, so this decorator's issue-shaped hook vocabulary
-// has nothing to hand a hook script (hook_workspace_config.go,
-// hook_version_reconciler.go). This test pins all six as decisions rather than
-// leaving them indistinguishable from the regression above.
-// The four read roles are asserted the OTHER way round on purpose. Reads fire
-// no completion hooks, so IssueReader, IssueRelations, Counter and
-// CycleDetector deliberately return the inner surface unwrapped
-// (hook_issue_reader.go, hook_relations.go, hook_counter.go,
-// hook_cycle_detector.go); this test pins that as a decision rather than
-// leaving it indistinguishable from the regression above.
-// The four read roles are asserted the OTHER way round on purpose. Reads fire
-// no completion hooks, so IssueReader, IssueRelations, EdgeReader and Counter
-// deliberately return the inner surface unwrapped (hook_issue_reader.go,
-// hook_relations.go, hook_edgereader.go, hook_counter.go); this test pins that
-// as a decision rather than leaving it indistinguishable from the regression
-// above.
-// The four read roles are asserted the OTHER way round on purpose. Reads fire
-// no completion hooks, so IssueReader, IssueRelations, Counter and ReadyCounter
-// deliberately return the inner surface unwrapped (hook_issue_reader.go,
-// hook_relations.go, hook_counter.go, hook_ready_counter.go); this test pins
-// that as a decision rather than leaving it indistinguishable from the
-// regression above.
+// THE PASS-THROUGH ROLES are asserted the other way round on purpose, and the
+// table below is the list — one paragraph rather than the four near-identical
+// ones four wave-2 slices each appended (bd-8ri3m is the same defect in the
+// spec's own comments). Reads fire no completion hooks, so IssueReader,
+// IssueRelations, Counter, StatsReporter, CycleDetector, EdgeReader,
+// ReadyCounter and Querier deliberately return the inner surface unwrapped,
+// each in its own hook_*.go. WorkspaceConfig and VersionReconciler do too, and
+// those two are the ones that are NOT reads: a settings write changes the
+// workspace rather than a bead and a version marker names no bead at all, so
+// this decorator's issue-shaped hook vocabulary has nothing to hand a hook
+// script (hook_workspace_config.go, hook_version_reconciler.go). This test pins
+// every one of them as a decision rather than leaving it indistinguishable from
+// the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -282,6 +275,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }, inner.stats, false},
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }, inner.readyCounter, false},
+		{"Querier", func() (any, error) { return store.Querier() }, inner.querier, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -326,6 +320,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }},
+		{"Querier", func() (any, error) { return store.Querier() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

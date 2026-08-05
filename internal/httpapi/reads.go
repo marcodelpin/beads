@@ -249,6 +249,58 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, body)
 }
 
+// handleQueryIssues answers GET /v0/beads/issues:query.
+//
+// The EXPRESSION IS NOT PARSED HERE, and that is the whole shape of this
+// handler. `bd query` used to parse it, evaluate it, decide from the result
+// whether a predicate was needed, and — because it knew — bound the scan at
+// max(3*limit, 100) rows, twice, once per route. Every one of those decisions
+// is inside the role, so this handler cannot make the truncating one: it reads
+// five parameters and hands the sentence over.
+func (s *Server) handleQueryIssues(w http.ResponseWriter, r *http.Request) {
+	q := newQuery(r.URL.Query())
+
+	req := issueops.QueryRequest{
+		Expression:    q.str("q"),
+		IncludeClosed: q.boolean("all"),
+		SortBy:        q.oneOf("sort", "", querySorts...),
+		Reverse:       q.boolean("reverse"),
+		Limit:         q.limit(),
+		// No Offset. The document publishes no parameter for one, because the
+		// two database sources this server can be built on disagree about
+		// whether they can honor it — see issueops.QueryRequest.Offset.
+	}
+
+	if !s.acceptQuery(w, r, q) {
+		return
+	}
+	if !s.allowUnlimited(w, r, req.Limit) {
+		return
+	}
+
+	qr, err := s.querier(r)
+	if err != nil {
+		s.failErr(w, r, err)
+		return
+	}
+	page, err := qr.Query(r.Context(), req)
+	if err != nil {
+		s.failReadErr(w, r, err)
+		return
+	}
+	writeJSON(w, apigen.QueryPage{
+		Items:   wireItems(page.Items),
+		HasMore: page.HasMore,
+	})
+}
+
+// querySorts is the display-order vocabulary this operation publishes, in the
+// document's order. It is the set workapi.CompareIssuesBy can order by; a value
+// outside it is refused here rather than accepted and ignored, because a page
+// returned unordered under a sort the caller named is indistinguishable from
+// one whose order the caller does not understand.
+var querySorts = []string{"priority", "created", "updated", "closed", "status", "id", "title", "type", "assignee"}
+
 // handleGetIssue answers GET /v0/beads/issues/{id}.
 func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireNoQuery(w, r) {
@@ -360,6 +412,10 @@ func invalidFilterParam(err error) (string, bool) {
 		return "metadata_field", true
 	case strings.HasPrefix(msg, "invalid metadata key filter"):
 		return "has_metadata_key", true
+	// The query role's refusal. It is the caller's SENTENCE being wrong, which
+	// is a 400 on `q` rather than the 500 an unclassified error would give.
+	case strings.HasPrefix(msg, "invalid query expression"):
+		return "q", true
 	}
 	return "", false
 }

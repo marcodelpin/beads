@@ -27,6 +27,7 @@ var roleAccessorNames = []string{
 	"StatsReporter",
 	"CycleDetector",
 	"ReadyCounter",
+	"Querier",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -88,6 +89,7 @@ func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s
 func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return s.surface, s.err
 }
+func (s *roleAccessorStore) Querier() (issueops.Querier, error) { return s.surface, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.surface, s.err
 }
@@ -165,6 +167,10 @@ func (*roleAccessorSentinel) DetectCycles(context.Context, issueops.DetectCycles
 func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) (issueops.ReadyCountResult, error) {
 	return issueops.ReadyCountResult{}, nil
 }
+
+func (*roleAccessorSentinel) Query(context.Context, issueops.QueryRequest) (issueops.IssuePage, error) {
+	return issueops.IssuePage{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -213,6 +219,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return wrapped.ReadyCounter() }},
+		{"Querier", func() (any, error) { return wrapped.Querier() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
@@ -255,6 +262,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return wrapped.ReadyCounter() }},
+		{"Querier", func() (any, error) { return wrapped.Querier() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},

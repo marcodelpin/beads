@@ -394,3 +394,34 @@ func TestReadyCounterExposesTypedUnsupportedError(t *testing.T) {
 		t.Fatalf("ReadyCounter() error = %v, want *beads.ErrUnsupported", err)
 	}
 }
+
+// TestQuerierKeepsTelemetryOutermost is the boolean-query role's version of the
+// same pin, and it is the READ answer again: a query fires no completion hooks,
+// so the hook decorator adds no layer and the outermost surface a caller gets
+// is the instrumented one.
+func TestQuerierKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	querier, err := storage.NewHookFiringStore(instrumented, nil).Querier()
+	if err != nil {
+		t.Fatalf("Querier() error = %v", err)
+	}
+	if got := reflect.TypeOf(querier).String(); got != "*telemetry.instrumentedQuerier" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestQuerierExposesTypedUnsupportedError(t *testing.T) {
+	querier, err := (*dolt.DoltStore)(nil).Querier()
+	if querier != nil {
+		t.Fatalf("Querier() querier = %T, want nil", querier)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Querier() error = %v, want *beads.ErrUnsupported", err)
+	}
+}

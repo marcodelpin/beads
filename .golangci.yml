@@ -169,6 +169,8 @@ linters:
               desc: "a command reaches the summary role through store.StatsReporter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storestats/reporter.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storereadycounter
               desc: "a command reaches the ready-count role through store.ReadyCounter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storereadycounter/counter.go"
+            - pkg: github.com/steveyegge/beads/internal/workapi/storequerier
+              desc: "a command reaches the boolean-query role through store.Querier(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storequerier/querier.go"
     # The CONSTRUCTION half of that same boundary, and the half that actually
     # matches the failure. The depguard rule above denies a handler IMPORTING
     # the builders; it does not deny a handler naming the filter types, which
