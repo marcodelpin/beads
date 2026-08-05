@@ -105,6 +105,14 @@ type ImportChange struct {
 	Changes string `json:"changes,omitempty"`
 }
 
+// importIssueLookup is the read seam the import pre-filters and dry-run
+// classifiers need. The classic storage.DoltStorage satisfies it, and so does
+// the proxied unit of work's domain.IssueUseCase, so both modes classify
+// incoming rows against local state with the same code.
+type importIssueLookup interface {
+	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
+}
+
 // importIssuesCore imports issues into the Dolt store.
 // This is a bridge function that delegates to the Dolt store's batch creation.
 func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, issues []*types.Issue, opts ImportOptions) (*ImportResult, error) {
@@ -170,6 +178,15 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		return nil, err
 	}
 
+	return assembleImportResult(issues, staleSkippedIDs, changePlan, staleRejectedSet, skippedDependencies), nil
+}
+
+// assembleImportResult folds the batch write's in-transaction outcomes (stale
+// rejections, skipped dependencies) into the pre-filter's classification,
+// producing the report both the classic and the proxied import return. Kept
+// as ONE function so the two modes cannot drift on how a stale-rejected row
+// is attributed.
+func assembleImportResult(issues []*types.Issue, staleSkippedIDs []string, changePlan importChangePlan, staleRejectedSet map[string]struct{}, skippedDependencies []string) *ImportResult {
 	importedIDs := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		if _, rejected := staleRejectedSet[issue.ID]; rejected {
@@ -198,7 +215,7 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		SkippedDependencies: skippedDependencies,
 		UpdatedIssues:       updatedIssues,
 		TieKeptLocalIDs:     changePlan.TieKeptLocal,
-	}, nil
+	}
 }
 
 // importIssuesChunked writes a large import in bounded transactions of
@@ -372,7 +389,7 @@ func writeImportRowChunks(ctx context.Context, store storage.DoltStorage, ordere
 		if err := store.CreateIssuesWithFullOptions(ctx, ordered[start:end], actor, rowOpts); err != nil {
 			return fmt.Errorf("import chunk %d/%d failed, %d issues already committed (committed rows are durable; re-run the import to resume — it converges): %w", chunk, chunks, start, err)
 		}
-		fmt.Fprintf(importProgress, "bd import: %d/%d issues committed\n", end, total)
+		fmt.Fprintf(importProgress, "bd import: %d/%d issues committed\n", end, total) //nolint:gosec // G705: stderr, not a browser context
 	}
 	return nil
 }
@@ -415,7 +432,7 @@ func wireDeferredImportDeps(ctx context.Context, store storage.DoltStorage, defe
 		if err := store.CreateIssuesWithFullOptions(ctx, depRows[start:end], actor, depOpts); err != nil {
 			return fmt.Errorf("import dependency pass chunk %d/%d failed (all %d issue rows are committed; re-run the import to resume — it converges): %w", chunk, depChunks, rowTotal, err)
 		}
-		fmt.Fprintf(importProgress, "bd import: deferred dependencies wired for %d/%d issues\n", end, depTotal)
+		fmt.Fprintf(importProgress, "bd import: deferred dependencies wired for %d/%d issues\n", end, depTotal) //nolint:gosec // G705: stderr, not a browser context
 	}
 	return nil
 }
@@ -655,7 +672,7 @@ type importChangePlan struct {
 	NewCount int
 }
 
-func filterStaleImportIssues(ctx context.Context, store storage.DoltStorage, issues []*types.Issue) ([]*types.Issue, []string, importChangePlan, error) {
+func filterStaleImportIssues(ctx context.Context, store importIssueLookup, issues []*types.Issue) ([]*types.Issue, []string, importChangePlan, error) {
 	var plan importChangePlan
 	ids := make([]string, 0, len(issues))
 	seen := make(map[string]struct{}, len(issues))
@@ -775,7 +792,7 @@ func filterStaleImportIssues(ctx context.Context, store storage.DoltStorage, iss
 // --allow-stale write) imports every row regardless of timestamp ordering,
 // so no row is ever stale-skipped or tie-kept — existence is the only
 // question.
-func classifyImportIssuesExistence(ctx context.Context, store storage.DoltStorage, issues []*types.Issue) (importChangePlan, error) {
+func classifyImportIssuesExistence(ctx context.Context, store importIssueLookup, issues []*types.Issue) (importChangePlan, error) {
 	var plan importChangePlan
 	ids := make([]string, 0, len(issues))
 	seen := make(map[string]struct{}, len(issues))
@@ -831,7 +848,7 @@ func classifyImportIssuesExistence(ctx context.Context, store storage.DoltStorag
 // classifyDryRunImport runs the same id lookup as a real import, without
 // writing anything, so --dry-run can report create/update/skip counts
 // instead of treating every row as a create (GH#4901).
-func classifyDryRunImport(ctx context.Context, store storage.DoltStorage, issues []*types.Issue, allowStale bool) (*ImportResult, error) {
+func classifyDryRunImport(ctx context.Context, store importIssueLookup, issues []*types.Issue, allowStale bool) (*ImportResult, error) {
 	if len(issues) == 0 {
 		return &ImportResult{}, nil
 	}
