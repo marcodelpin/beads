@@ -369,6 +369,7 @@ var (
 	_ uow.ReadyCounterSource    = timedProvider{}
 	_ uow.QuerierSource         = timedProvider{}
 	_ uow.SweeperSource         = timedProvider{}
+	_ uow.BatchCreatorSource    = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -455,6 +456,15 @@ func (p timedProvider) Querier() (issueops.Querier, error) {
 // most wants in the log.
 func (p timedProvider) Sweeper() (issueops.Sweeper, error) {
 	return uow.NewSweeper(p)
+}
+
+// BatchCreator builds the batch creator OVER THIS WRAPPER, for the same reason
+// as the roles above and with more at stake than any of them: this is the one
+// role here that opens a WRITE unit of work per call, so a creator bound to the
+// untimed provider would report uow_ms=0.000 for the slowest request this
+// server serves.
+func (p timedProvider) BatchCreator() (issueops.BatchCreator, error) {
+	return uow.NewBatchCreator(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 func TestBuildCreateIssueFromInput_PopulatesAllFields(t *testing.T) {
@@ -425,28 +425,28 @@ func TestBuildDomainGraphPlanCoversEdgeFields(t *testing.T) {
 	assertCopied(dep, reflect.ValueOf(got.Nodes[0].Deps[0]))
 }
 
-func TestParseMarkdownDepSpecs(t *testing.T) {
+func TestParseMarkdownDependencies(t *testing.T) {
 	tests := []struct {
 		name    string
 		in      []string
-		want    []domain.DependencySpec
+		want    []issueops.CreateDependency
 		wantErr bool
 	}{
 		{"empty", nil, nil, false},
 		{"whitespace skipped", []string{"  ", ""}, nil, false},
 		{"bare id → blocks edge", []string{"bd-1"},
-			[]domain.DependencySpec{{Type: types.DepBlocks, TargetID: "bd-1"}}, false},
+			[]issueops.CreateDependency{{Type: types.DepBlocks, TargetID: "bd-1"}}, false},
 		{"type:id preserved verbatim (no alias)", []string{"depends-on:bd-2"},
-			[]domain.DependencySpec{{Type: types.DependencyType("depends-on"), TargetID: "bd-2"}}, false},
+			[]issueops.CreateDependency{{Type: types.DependencyType("depends-on"), TargetID: "bd-2"}}, false},
 		{"discovered-from preserved", []string{"discovered-from:bd-3"},
-			[]domain.DependencySpec{{Type: types.DepDiscoveredFrom, TargetID: "bd-3"}}, false},
+			[]issueops.CreateDependency{{Type: types.DepDiscoveredFrom, TargetID: "bd-3"}}, false},
 		{"whitespace trimmed", []string{"  blocks : bd-4 "},
-			[]domain.DependencySpec{{Type: types.DepBlocks, TargetID: "bd-4"}}, false},
+			[]issueops.CreateDependency{{Type: types.DepBlocks, TargetID: "bd-4"}}, false},
 		{"empty type rejected", []string{":bd-1"}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMarkdownDepSpecs(tt.in, "Test Title")
+			got, err := parseMarkdownDependencies(tt.in, "Test Title")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %v", got)
@@ -463,12 +463,12 @@ func TestParseMarkdownDepSpecs(t *testing.T) {
 	}
 }
 
-func TestParseMarkdownDepSpecs_DoesNotSwapBlocks(t *testing.T) {
-	got, err := parseMarkdownDepSpecs([]string{"blocks:bd-5"}, "T")
+func TestParseMarkdownDependencies_DoesNotSwapBlocks(t *testing.T) {
+	got, err := parseMarkdownDependencies([]string{"blocks:bd-5"}, "T")
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	want := []domain.DependencySpec{{Type: types.DepBlocks, TargetID: "bd-5"}}
+	want := []issueops.CreateDependency{{Type: types.DepBlocks, TargetID: "bd-5"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v (no swap-direction)", got, want)
 	}

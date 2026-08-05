@@ -43,6 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is no cursor and no `offset`: a predicate query's matching set is assembled
   outside the database, so there is no keyset position to encode. `capabilities`
   gains `issues.query`.
+- **`POST /v0/beads/issues:batchCreate` — creating many issues over HTTP**
+  (bd-lu170). `bd serve` gains the second write on its surface and the first
+  one that creates rows: a request carrying an `actor` and up to 100 items is
+  created as ONE transaction, or none of it is. It runs on the new
+  `issueops.BatchCreator` role that both `bd create --file` routes now call,
+  and `capabilities` gains `issues.batchCreate`.
+
+  **The server assigns every id.** There is no `id` member on an item, so this
+  operation can never adopt or overwrite a stored row; the generated ids come
+  back in `items`, in request order, which is the only place a client can learn
+  them. `bd import` remains the upsert surface and is not published here.
+
+  A dependency target may name an issue the workspace holds, an item created
+  EARLIER in the same request, an `external:` reference, or an id belonging to
+  another repository. Anything else is a `400` and nothing is created. Hooks do
+  not fire and the per-command auto-commit machinery does not run, exactly as
+  for `POST /v0/beads/issues/{id}:claim`.
 
 - **`GET /v0/beads/config` and `GET /v0/beads/config/{key}` — the workspace's
   stored settings over HTTP** (bd-kzepq). `bd serve` now answers for the
@@ -288,6 +305,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dolt-only in persistence tests.
 
 ### Changed
+
+- **`bd create --file` is all or nothing, and its plan-wide flags now mean
+  something** (bd-lu170). Both routes build one `issueops.CreateBatchRequest`
+  and ask for the new `BatchCreator` role, so a markdown plan is created as one
+  act with one history entry on either.
+
+  **A file the workspace refuses now creates NOTHING.** Each template goes
+  through the same validation a single `bd create` goes through — the
+  workspace's configured types and statuses, the field lengths, the
+  create-only guard — and a template that fails takes the whole file down with
+  it. **Re-running a file that used to fail can therefore give a different
+  outcome than it did before**, because the run before it may have landed rows
+  this one refuses to duplicate; check `bd list` before re-running a plan that
+  errored on an older version.
+
+  **A declared dependency on an id that does not exist is now an error rather
+  than a silently dropped edge.** The direct route used to create the issues
+  and leave the edge out, with nothing on stdout or stderr saying so, so a plan
+  file with a typo produced a graph that looked complete and was not. An
+  `external:` reference and an id belonging to another repository are still
+  written, exactly as `bd dep add` accepts them; only a target that shares the
+  workspace's own prefix and names no row is refused.
+
+  **`--ephemeral`, `--no-history`, `--mol-type` and `--validate` are honoured
+  on the direct route.** All four were accepted and silently ignored there
+  while the proxied route acted on them, so `bd create --file plan.md
+  --ephemeral` created durable issues on a local workspace and wisps on a team
+  server. `--validate` (and `validation.on-create`) now lints every template on
+  both routes, which is the policy a single-issue create has always applied.
+  Issues created from a file also carry `created_by` and `owner`, as a
+  single-issue create does.
+
+  **`bd create --file --json` emits the STORED rows on both routes.** Each
+  entry is the post-create snapshot the role reads back — with `owner`,
+  `created_by` and dependency records carrying their own `created_at`,
+  `created_by` and `metadata` — where the direct route used to marshal the
+  structs it had built in memory. Additive: no member was removed, and both
+  routes now emit one shape.
+
+  Proxied `--file` loses its `config.yaml` fallback for `types.custom`, the
+  same convergence onto the direct route's database-only vocabulary that
+  landed for single-issue create (bd-7oyh5).
+
+  `bd create --graph` is untouched: an upsert over a declared shape is a
+  different contract, and it gets its own role when it gets one.
 
 - **Proxied `bd ready --json --limit N` publishes `pagination.total`**
   (bd-s10oa). Under `BD_JSON_ENVELOPE=1` the direct route has always carried

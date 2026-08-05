@@ -11,9 +11,9 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the sixteen-strong capability surface every storage
+// roleAccessorNames is the seventeen-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a seventeenth role to DoltStorage without deciding what each decorator
+// adding an eighteenth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
@@ -31,6 +31,7 @@ var roleAccessorNames = []string{
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
+	"BatchCreator",
 	"DependencyEditor",
 }
 
@@ -69,7 +70,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the sixteen
+// roleAccessorStore is a DoltStorage whose only real methods are the seventeen
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -86,6 +87,7 @@ type roleAccessorStore struct {
 	commenter    issueops.Commenter
 	claimer      issueops.ReadyClaimer
 	closer       issueops.BatchCloser
+	creator      issueops.BatchCreator
 	editor       issueops.DependencyEditor
 	readyCounter issueops.ReadyCounter
 	querier      issueops.Querier
@@ -108,6 +110,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		commenter:    sentinel,
 		claimer:      sentinel,
 		closer:       sentinel,
+		creator:      sentinel,
 		editor:       sentinel,
 		readyCounter: sentinel,
 		querier:      sentinel,
@@ -145,11 +148,14 @@ func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
 func (s *roleAccessorStore) BatchCloser() (issueops.BatchCloser, error) { return s.closer, s.err }
+func (s *roleAccessorStore) BatchCreator() (issueops.BatchCreator, error) {
+	return s.creator, s.err
+}
 func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error) {
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all sixteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all seventeen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -235,6 +241,9 @@ func (*roleAccessorSentinel) ClaimNext(context.Context, issueops.ClaimNextReques
 func (*roleAccessorSentinel) CloseBatch(context.Context, issueops.CloseBatchRequest) (issueops.CloseBatchResult, error) {
 	return issueops.CloseBatchResult{}, nil
 }
+func (*roleAccessorSentinel) CreateBatch(context.Context, issueops.CreateBatchRequest) (issueops.CreateBatchResult, error) {
+	return issueops.CreateBatchResult{}, nil
+}
 func (*roleAccessorSentinel) AddDependencies(context.Context, issueops.AddDependenciesRequest) (issueops.AddDependenciesResult, error) {
 	return issueops.AddDependenciesResult{}, nil
 }
@@ -275,6 +284,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"Commenter", func() (any, error) { return store.Commenter() }, inner.commenter, true},
 		{"ReadyClaimer", func() (any, error) { return store.ReadyClaimer() }, inner.claimer, true},
 		{"BatchCloser", func() (any, error) { return store.BatchCloser() }, inner.closer, true},
+		{"BatchCreator", func() (any, error) { return store.BatchCreator() }, inner.creator, true},
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }, inner.editor, true},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
@@ -325,6 +335,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Commenter", func() (any, error) { return store.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return store.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return store.BatchCloser() }},
+		{"BatchCreator", func() (any, error) { return store.BatchCreator() }},
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},

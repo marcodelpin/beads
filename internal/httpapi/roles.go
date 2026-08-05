@@ -66,6 +66,35 @@ func (c checkedReader) Get(ctx context.Context, req issueops.GetRequest) (*issue
 	return details, err
 }
 
+// checkedBatchCreator is the creator the batch-create handler is handed.
+//
+// The response body carries issue VALUES where the role answers with pointers,
+// so the handler dereferences every entry — checkedClaimer's hazard, once per
+// item. The role promises no nil entry for a successful call precisely because
+// a batch that could not create every item creates none; an entry that is nil
+// anyway is a broken implementation, so it is the generic 500 with the fault in
+// the log, not a 404 (nothing here knows an issue is missing) and not a panic.
+type checkedBatchCreator struct{ inner issueops.BatchCreator }
+
+// CreateBatch refuses a result that reports success without every issue the
+// response body is built from.
+func (c checkedBatchCreator) CreateBatch(ctx context.Context, req issueops.CreateBatchRequest) (issueops.CreateBatchResult, error) {
+	result, err := c.inner.CreateBatch(ctx, req)
+	if err != nil {
+		return result, err
+	}
+	if len(result.Issues) != len(req.Items) {
+		return issueops.CreateBatchResult{}, fmt.Errorf(
+			"create batch: the creator reported success with %d issues for %d items", len(result.Issues), len(req.Items))
+	}
+	for i, issue := range result.Issues {
+		if issue == nil {
+			return issueops.CreateBatchResult{}, fmt.Errorf("create batch: the creator reported success without issue %d", i)
+		}
+	}
+	return result, nil
+}
+
 // checkedClaimer is the claimer the claim handler is handed.
 type checkedClaimer struct{ inner issueops.Claimer }
 

@@ -76,6 +76,35 @@ func TestBatchCloserExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestBatchCreatorLayersHooksOutsideTelemetry is the same pin for the
+// create-many role.
+func TestBatchCreatorLayersHooksOutsideTelemetry(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	creator, err := storage.NewHookFiringStore(instrumented, nil).BatchCreator()
+	if err != nil {
+		t.Fatalf("BatchCreator() error = %v", err)
+	}
+	if got := reflect.TypeOf(creator).String(); got != "*storage.hookBatchCreator" {
+		t.Fatalf("outer layer = %s, want the hook wrapper", got)
+	}
+}
+
+func TestBatchCreatorExposesTypedUnsupportedError(t *testing.T) {
+	creator, err := (*dolt.DoltStore)(nil).BatchCreator()
+	if creator != nil {
+		t.Fatalf("BatchCreator() creator = %T, want nil", creator)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("BatchCreator() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 // TestDependencyEditorLayersHooksOutsideTelemetry is the same decorator-order
 // pin for the edge-write role.
 func TestDependencyEditorLayersHooksOutsideTelemetry(t *testing.T) {

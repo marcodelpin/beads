@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the sixteen-strong capability surface every storage
+// roleAccessorNames is the seventeen-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -32,6 +32,7 @@ var roleAccessorNames = []string{
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
+	"BatchCreator",
 	"DependencyEditor",
 }
 
@@ -59,7 +60,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the sixteen
+// roleAccessorStore is a DoltStorage whose only real methods are the seventeen
 // role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -98,11 +99,14 @@ func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) BatchCloser() (issueops.BatchCloser, error) { return s.surface, s.err }
+func (s *roleAccessorStore) BatchCreator() (issueops.BatchCreator, error) {
+	return s.surface, s.err
+}
 func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error) {
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all sixteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all seventeen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -188,6 +192,9 @@ func (*roleAccessorSentinel) ClaimNext(context.Context, issueops.ClaimNextReques
 func (*roleAccessorSentinel) CloseBatch(context.Context, issueops.CloseBatchRequest) (issueops.CloseBatchResult, error) {
 	return issueops.CloseBatchResult{}, nil
 }
+func (*roleAccessorSentinel) CreateBatch(context.Context, issueops.CreateBatchRequest) (issueops.CreateBatchResult, error) {
+	return issueops.CreateBatchResult{}, nil
+}
 func (*roleAccessorSentinel) AddDependencies(context.Context, issueops.AddDependenciesRequest) (issueops.AddDependenciesResult, error) {
 	return issueops.AddDependenciesResult{}, nil
 }
@@ -232,6 +239,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
+		{"BatchCreator", func() (any, error) { return wrapped.BatchCreator() }},
 		{"DependencyEditor", func() (any, error) { return wrapped.DependencyEditor() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -276,6 +284,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
+		{"BatchCreator", func() (any, error) { return wrapped.BatchCreator() }},
 		{"DependencyEditor", func() (any, error) { return wrapped.DependencyEditor() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {

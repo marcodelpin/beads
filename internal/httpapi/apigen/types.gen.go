@@ -103,6 +103,53 @@ func (e ListReadyWorkParamsSort) Valid() bool {
 	}
 }
 
+// BatchCreateDependency defines model for BatchCreateDependency.
+type BatchCreateDependency struct {
+	// TargetId The far end of the edge: an issue this workspace holds, an item created earlier in the same request, an `external:` reference, or an id whose prefix belongs to another repository. Anything else is a `400` and nothing is created.
+	TargetId string `json:"target_id"`
+
+	// Type The edge type, from the same OPEN vocabulary `Dependency.type` carries. It is spelled `type` because that is the member an edge carries everywhere else on this surface.
+	Type string `json:"type"`
+}
+
+// BatchCreateItem defines model for BatchCreateItem.
+type BatchCreateItem struct {
+	AcceptanceCriteria *string `json:"acceptance_criteria,omitempty"`
+	Assignee           *string `json:"assignee,omitempty"`
+
+	// Dependencies The edges this issue is created carrying. They are written in the same transaction as the issue, so this operation never publishes an issue whose declared relationships are not there yet.
+	Dependencies *[]BatchCreateDependency `json:"dependencies,omitempty"`
+	Description  *string                  `json:"description,omitempty"`
+	Design       *string                  `json:"design,omitempty"`
+
+	// IssueType Issue type. Spelled `issue_type` rather than `type`, matching the member `Issue` carries, and validated against the built-ins plus the workspace's configured custom types — an unknown one is a `400`.
+	IssueType *string   `json:"issue_type,omitempty"`
+	Labels    *[]string `json:"labels,omitempty"`
+
+	// Priority 0 is P0/critical. Absent means the workspace default.
+	Priority *int   `json:"priority,omitempty"`
+	Title    string `json:"title"`
+}
+
+// BatchCreateRequest defines model for BatchCreateRequest.
+type BatchCreateRequest struct {
+	// Actor Who is creating the issues, under `ClaimRequest.actor`'s rules and for the same reasons: the server trims it, refuses an empty result, anything longer than 256 BYTES, and any control character including newline. It is attributed to every item and interpolated into the storage commit message.
+	Actor string `json:"actor"`
+
+	// Items The issues to create, in order. An empty array is a `400` rather than a successful no-op: a write request that writes nothing is a client bug, and answering it with a cheerful empty success is how a client whose own list filtered to nothing silently stops creating anything.
+	//
+	// The 100-item cap is a bound on how long one request may hold a write transaction, not a statement about batch semantics. Split a larger plan; each request is atomic on its own.
+	Items []BatchCreateItem `json:"items"`
+}
+
+// BatchCreateResponse defines model for BatchCreateResponse.
+type BatchCreateResponse struct {
+	// Items One entry per requested item, in REQUEST ORDER, each the stored issue with its generated id and its labels. Never null and never shorter than the request: a partial outcome does not exist on this operation.
+	//
+	// There is no `has_more` and no `next_cursor`. This is not a page — the client already knows how many items it sent — and publishing a paging envelope over a fixed-length answer would invite a client to look for a second page that can never exist.
+	Items []Issue `json:"items"`
+}
+
 // BondRef A constituent of a compound molecule.
 type BondRef = types.BondRef
 
@@ -138,7 +185,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -665,6 +712,9 @@ type GetStatsParams struct {
 
 // ClaimIssueJSONRequestBody defines body for ClaimIssue for application/json ContentType.
 type ClaimIssueJSONRequestBody = ClaimRequest
+
+// BatchCreateIssuesJSONRequestBody defines body for BatchCreateIssues for application/json ContentType.
+type BatchCreateIssuesJSONRequestBody = BatchCreateRequest
 
 // SweepIssuesJSONRequestBody defines body for SweepIssues for application/json ContentType.
 type SweepIssuesJSONRequestBody = SweepRequest

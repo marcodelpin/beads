@@ -135,6 +135,13 @@ type Storage interface {
 	// has nowhere to put.
 	BatchCloser() (issueops.BatchCloser, error)
 
+	// BatchCreator returns the guarded create-many surface for this store: the
+	// other role whose REQUEST is the transaction boundary. It is its own role
+	// rather than a Create overload because a batch is ALL OR NOTHING where a
+	// batch close keeps its survivors, and one method cannot make both
+	// promises.
+	BatchCreator() (issueops.BatchCreator, error)
+
 	// DependencyEditor returns the guarded dependency-edge surface for this
 	// store. It is its own role rather than more IssueLifecycle verbs because
 	// an edge has two endpoints and every refusal it raises is a statement

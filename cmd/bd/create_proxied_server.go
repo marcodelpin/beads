@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -243,6 +242,14 @@ func buildCreateIssueFromInput(in createInput) *types.Issue {
 	})
 }
 
+// runCreateProxiedMarkdown creates every issue in a markdown file as ONE act,
+// through issueops.BatchCreator.
+//
+// It builds the SAME request the direct route builds, from the same shared
+// projection, so the two routes differ only in which accessor answers. The
+// unit of work, the per-item create loop, the custom-type check this handler
+// used to run against a create context it read itself, and the commit are all
+// the contract's.
 func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createInput) error {
 	templates, err := parseMarkdownFile(in.markdownFile)
 	if err != nil {
@@ -251,143 +258,34 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 	if len(templates) == 0 {
 		return HandleError("no issues found in markdown file")
 	}
-
-	if in.validationMode == "error" || in.validationMode == "warn" {
-		for _, t := range templates {
-			lintIssue := &types.Issue{
-				IssueType:          t.IssueType,
-				Description:        t.Description,
-				AcceptanceCriteria: t.AcceptanceCriteria,
-			}
-			if err := validation.LintIssue(lintIssue); err != nil {
-				if in.validationMode == "error" {
-					return HandleError("template %q: %v", t.Title, err)
-				}
-				fmt.Fprintf(os.Stderr, "%s template %q: %v\n", ui.RenderWarn("⚠"), t.Title, err)
-			}
-		}
+	request, err := buildMarkdownBatchRequest(templates, in)
+	if err != nil {
+		return err
 	}
-
-	type templateBuild struct {
-		template *IssueTemplate
-		deps     []domain.DependencySpec
-	}
-
-	builds := make([]templateBuild, 0, len(templates))
-	for _, t := range templates {
-		deps, err := parseMarkdownDepSpecs(t.Dependencies, t.Title)
-		if err != nil {
-			return HandleError("%v", err)
-		}
-		builds = append(builds, templateBuild{template: t, deps: deps})
-	}
-
-	if uowProvider == nil {
-		return HandleError("proxied-server UOW provider not initialized")
-	}
-
-	res, err := uow.RunTxResult(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) ([]*types.Issue, string, error) {
-		cctx, err := uw.ConfigUseCase().LoadCreateContext(ctx)
-		if err != nil {
-			return nil, "", fmt.Errorf("load create context: %w", err)
-		}
-
-		customTypes := resolveProxiedCustomTypes(cctx.CustomTypes)
-		for _, b := range builds {
-			if b.template.IssueType == "" {
-				continue
-			}
-			if !b.template.IssueType.IsValidWithCustom(customTypes) {
-				return nil, "", fmt.Errorf("template %q: invalid type %q", b.template.Title, b.template.IssueType)
-			}
-		}
-
-		paramsList := make([]domain.CreateIssueParams, 0, len(builds))
-		for _, b := range builds {
-			t := b.template
-			paramsList = append(paramsList, domain.CreateIssueParams{
-				Issue: &types.Issue{
-					Title:              t.Title,
-					Description:        t.Description,
-					Design:             t.Design,
-					AcceptanceCriteria: t.AcceptanceCriteria,
-					Status:             types.StatusOpen,
-					Priority:           t.Priority,
-					IssueType:          t.IssueType,
-					Assignee:           t.Assignee,
-					Ephemeral:          in.ephemeral,
-					NoHistory:          in.noHistory,
-					MolType:            in.molType,
-					CreatedBy:          in.createdBy,
-					Owner:              in.owner,
-				},
-				Labels:       t.Labels,
-				Dependencies: b.deps,
-			})
-		}
-
-		var result domain.CreateIssuesResult
-		var createErr error
-		if in.ephemeral || in.noHistory {
-			result, createErr = uw.IssueUseCase().CreateWisps(ctx, paramsList, in.createdBy)
-		} else {
-			result, createErr = uw.IssueUseCase().CreateIssues(ctx, paramsList, in.createdBy)
-		}
-		if createErr != nil {
-			return nil, "", fmt.Errorf("creating issues from markdown: %w", createErr)
-		}
-
-		return result.Issues, fmt.Sprintf("bd: create %d issue(s) from %s", len(result.Issues), in.markdownFile), nil
-	})
+	creator, err := proxiedBatchCreator()
 	if err != nil {
 		return HandleError("%v", err)
 	}
-
-	if in.jsonOutput {
-		if err := outputJSON(res); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		}
-		return nil
+	result, err := creator.CreateBatch(ctx, request)
+	if err != nil {
+		return HandleError("creating issues from markdown: %v", err)
 	}
-
-	fmt.Printf("%s Created %d issues from %s:\n", ui.RenderPass("✓"), len(res), in.markdownFile)
-	for _, issue := range res {
-		fmt.Printf("  %s: %s [P%d, %s]\n", issue.ID, issue.Title, issue.Priority, issue.IssueType)
-	}
-	return nil
+	return reportMarkdownBatch(result.Issues, in)
 }
 
-func parseMarkdownDepSpecs(deps []string, templateTitle string) ([]domain.DependencySpec, error) {
-	var out []domain.DependencySpec
-	for _, raw := range deps {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-
-		var depType types.DependencyType
-		var target string
-		if strings.Contains(raw, ":") {
-			parts := strings.SplitN(raw, ":", 2)
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid dependency format %q for issue %q", raw, templateTitle)
-			}
-			depType = types.DependencyType(strings.TrimSpace(parts[0]))
-			target = strings.TrimSpace(parts[1])
-		} else {
-			depType = types.DepBlocks
-			target = raw
-		}
-
-		if !depType.IsValid() {
-			return nil, fmt.Errorf("invalid dependency type %q for issue %q", depType, templateTitle)
-		}
-		out = append(out, domain.DependencySpec{
-			Type:     depType,
-			TargetID: target,
-		})
+// proxiedBatchCreator reaches the batch-create role through the provider's own
+// capability accessor, the way proxiedIssueLifecycle reaches the lifecycle: the
+// accessor is where each decorator adds its layer, so a constructor call here
+// would get the role stripped of them.
+func proxiedBatchCreator() (issueops.BatchCreator, error) {
+	if uowProvider == nil {
+		return nil, errors.New("proxied-server UOW provider not initialized")
 	}
-	return out, nil
+	src, ok := uowProvider.(uow.BatchCreatorSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the batch-create surface", uowProvider)
+	}
+	return src.BatchCreator()
 }
 
 func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput) error {

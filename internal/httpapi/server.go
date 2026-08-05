@@ -212,7 +212,8 @@ type Config struct {
 	// be a Config that quietly decides whether this build erases beads, which
 	// is a decision that belongs to the operator who chose to run bd serve at
 	// all — not to whether a caller remembered a field.
-	Sweeper issueops.Sweeper
+	Sweeper      issueops.Sweeper
+	BatchCreator issueops.BatchCreator
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -257,6 +258,7 @@ type Server struct {
 	issueReadyCounter issueops.ReadyCounter
 	issueQuerier      issueops.Querier
 	issueSweeper      issueops.Sweeper
+	issueBatchCreator issueops.BatchCreator
 
 	listener net.Listener
 	http     *http.Server
@@ -362,6 +364,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueReadyCounter: cfg.ReadyCounter,
 		issueQuerier:      cfg.Querier,
 		issueSweeper:      cfg.Sweeper,
+		issueBatchCreator: cfg.BatchCreator,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -465,12 +468,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.BatchCreator}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, ReadyCounter, Querier and Sweeper"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, ReadyCounter, Querier, Sweeper and BatchCreator"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -745,6 +748,28 @@ func (s *Server) sweeper(r *http.Request) (issueops.Sweeper, error) {
 	}
 	var src uow.SweeperSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.Sweeper()
+}
+
+// batchCreator returns the batch-create surface for one request, the same two
+// ways every other role is reached: the configured role on the roles source,
+// one built per request on the provider source so the unit of work the batch
+// opens lands in THIS request's uow_ms, and held by INTERFACE so
+// uow.BatchCreatorSource is load-bearing rather than decorative.
+//
+// It goes out CHECKED, unlike the ready counter. CreateBatchResult carries a
+// slice of POINTERS and the response body carries values, so the handler
+// dereferences every one of them — the same hazard checkedClaimer exists for,
+// N times over. See checkedBatchCreator.
+func (s *Server) batchCreator(r *http.Request) (issueops.BatchCreator, error) {
+	if s.provider == nil {
+		return checkedBatchCreator{inner: s.issueBatchCreator}, nil
+	}
+	var src uow.BatchCreatorSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	creator, err := src.BatchCreator()
+	if err != nil {
+		return nil, err
+	}
+	return checkedBatchCreator{inner: creator}, nil
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

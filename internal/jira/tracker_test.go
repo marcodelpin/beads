@@ -645,6 +645,9 @@ func (s *configStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 func (s *configStore) BatchCloser() (issueops.BatchCloser, error) {
 	return nil, &storage.ErrUnsupported{Op: "BatchCloser", Backend: "jira-config-stub"}
 }
+func (s *configStore) BatchCreator() (issueops.BatchCreator, error) {
+	return nil, &storage.ErrUnsupported{Op: "BatchCreator", Backend: "jira-config-stub"}
+}
 func (s *configStore) DependencyEditor() (issueops.DependencyEditor, error) {
 	return nil, &storage.ErrUnsupported{Op: "DependencyEditor", Backend: "jira-config-stub"}
 }

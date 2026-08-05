@@ -265,7 +265,7 @@ func TestServeBuildsOnlyAProviderBackedServer(t *testing.T) {
 				// whose absence would cost most: a roles-backed server over
 				// the embedded store answers a BULK DELETE while its
 				// per-request atomicity claim is false.
-				case "Reader", "Claimer", "EdgeReader", "Sweeper":
+				case "Reader", "Claimer", "EdgeReader", "Sweeper", "BatchCreator":
 					t.Errorf("%s: bd serve sets httpapi.Config.%s. The roles source bypasses the unit-of-work "+
 						"provider serveModeGate vouched for, and internal/httpapi cannot tell an embedded-backed "+
 						"role from any other — read serveModeGate before changing this",

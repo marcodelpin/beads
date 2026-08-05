@@ -1220,6 +1220,65 @@ paths:
             trimming or carries control characters — or an unfiltered
             `durable` sweep, which the library surface refuses as a safety
             invariant.
+  /v0/beads/issues:batchCreate:
+    post:
+      operationId: batchCreateIssues
+      summary: Create many issues as one act
+      description: >-
+        Creates every item in the request, or none of them. There is no partial
+        outcome and no per-item status: the whole request is one transaction, so
+        a client that gets a 4xx knows nothing was written and can fix its
+        payload and resend it unchanged.
+
+
+        That is the OPPOSITE of what a batch close would do, and it is the right
+        default here for one reason: half a created plan cannot be re-sent
+        without duplicating the half that landed, and nothing in the response
+        would say which half that was.
+
+
+        THE SERVER ASSIGNS EVERY ID. There is no `id` member on an item, so this
+        operation can never adopt or overwrite a stored row — `bd import` is the
+        upsert surface and it is not published here. The generated ids come back
+        in `items`, in request order, which is the only place a client can learn
+        them.
+
+
+        A dependency target may name an issue this workspace holds, an item
+        created EARLIER IN THE SAME REQUEST, an `external:` reference, or an id
+        belonging to another repository. A target that is none of those is a
+        `400` and nothing is created — an edge silently dropped from a created
+        issue is a relationship the client has no way to discover is missing.
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only durable
+        effect is the single storage commit the role makes in its own
+        transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchCreateRequest'
+      responses:
+        '200':
+          description: >-
+            Every item was created. `items` carries the stored issues in request
+            order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchCreateResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member at any level, an `actor` that
+            is empty after trimming, longer than 256 bytes or carrying control
+            characters, an empty or over-long `items` array, an item the
+            workspace's own validation refuses, or a dependency target that
+            names nothing this workspace holds. Nothing is created in any of
+            these cases.
           x-bd-codes: [invalid_argument]
           content:
             application/problem+json:
@@ -2260,7 +2319,7 @@ components:
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
-            `issues.sweep`,
+            `issues.sweep`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`; it grows additively, and an operation never
             appears here unless it is fully implemented. This is how a client
@@ -2666,6 +2725,127 @@ components:
             nothing is in neither list.
           items:
             type: string
+
+    BatchCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [actor, items]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+          description: >-
+            Who is creating the issues, under `ClaimRequest.actor`'s rules and
+            for the same reasons: the server trims it, refuses an empty result,
+            anything longer than 256 BYTES, and any control character including
+            newline. It is attributed to every item and interpolated into the
+            storage commit message.
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: >-
+            The issues to create, in order. An empty array is a `400` rather
+            than a successful no-op: a write request that writes nothing is a
+            client bug, and answering it with a cheerful empty success is how a
+            client whose own list filtered to nothing silently stops creating
+            anything.
+
+
+            The 100-item cap is a bound on how long one request may hold a write
+            transaction, not a statement about batch semantics. Split a larger
+            plan; each request is atomic on its own.
+          items:
+            $ref: '#/components/schemas/BatchCreateItem'
+
+    BatchCreateItem:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        design:
+          type: string
+        acceptance_criteria:
+          type: string
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: 0 is P0/critical. Absent means the workspace default.
+        issue_type:
+          type: string
+          description: >-
+            Issue type. Spelled `issue_type` rather than `type`, matching the
+            member `Issue` carries, and validated against the built-ins plus the
+            workspace's configured custom types — an unknown one is a `400`.
+        assignee:
+          type: string
+          maxLength: 255
+        labels:
+          type: array
+          items:
+            type: string
+            maxLength: 255
+        dependencies:
+          type: array
+          maxItems: 100
+          description: >-
+            The edges this issue is created carrying. They are written in the
+            same transaction as the issue, so this operation never publishes an
+            issue whose declared relationships are not there yet.
+          items:
+            $ref: '#/components/schemas/BatchCreateDependency'
+
+    BatchCreateDependency:
+      type: object
+      additionalProperties: false
+      required: [target_id, type]
+      properties:
+        target_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The far end of the edge: an issue this workspace holds, an item
+            created earlier in the same request, an `external:` reference, or an
+            id whose prefix belongs to another repository. Anything else is a
+            `400` and nothing is created.
+        type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge type, from the same OPEN vocabulary `Dependency.type`
+            carries. It is spelled `type` because that is the member an edge
+            carries everywhere else on this surface.
+
+    BatchCreateResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: >-
+            One entry per requested item, in REQUEST ORDER, each the stored
+            issue with its generated id and its labels. Never null and never
+            shorter than the request: a partial outcome does not exist on this
+            operation.
+
+
+            There is no `has_more` and no `next_cursor`. This is not a page —
+            the client already knows how many items it sent — and publishing a
+            paging envelope over a fixed-length answer would invite a client to
+            look for a second page that can never exist.
+          items:
+            $ref: '#/components/schemas/Issue'
 
     ClaimRequest:
       type: object

@@ -71,20 +71,16 @@ var createCmd = &cobra.Command{
 		graphFile, _ := cmd.Flags().GetString("graph")
 
 		if file != "" {
-			if graphFile != "" {
-				return HandleError("cannot specify both --file and --graph")
-			}
-			if len(args) > 0 {
-				return HandleError("cannot specify both title and --file flag")
-			}
-			dryRun, _ := cmd.Flags().GetBool("dry-run")
-			if dryRun {
-				return HandleError("--dry-run is not supported with --file flag")
-			}
-			if err := rejectSingleIssueFlagsForMarkdown(cmd); err != nil {
+			// gatherCreateInput repeats the --file argument checks and applies
+			// the plan-wide flags this route used to accept and ignore
+			// (--ephemeral, --no-history, --mol-type, --validate). It is the
+			// same input the proxied route reads, which is what lets both build
+			// one issueops.CreateBatchRequest.
+			in, err := gatherCreateInput(cmd, args)
+			if err != nil {
 				return err
 			}
-			return createIssuesFromMarkdown(cmd, file)
+			return createIssuesFromMarkdown(rootCtx, in)
 		}
 
 		if graphFile != "" {

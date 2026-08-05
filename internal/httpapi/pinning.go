@@ -46,4 +46,10 @@ var (
 	_ types.Issue             = apigen.ClaimResponse{}.Issue
 	_ types.Statistics        = apigen.StatsResponse{}.Summary
 	_ []issueops.Cycle        = apigen.CyclesPage{}.Items
+
+	// The batch-create response is not a page, but its Items resolve the same
+	// way and are pinned for the same reason: an envelope whose items generated
+	// as a mirror struct would put a second wire shape for an issue on this
+	// surface, and it would do it silently.
+	_ []types.Issue = apigen.BatchCreateResponse{}.Items
 )

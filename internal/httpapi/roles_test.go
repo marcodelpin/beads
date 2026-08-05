@@ -174,6 +174,43 @@ func (q *roleQuerier) queryRequests() []issueops.QueryRequest {
 	return append([]issueops.QueryRequest(nil), q.queries...)
 }
 
+// roleBatchCreator is the store-shaped source's batch-create role. It answers
+// with one issue per requested item by default, which is what the role promises
+// and what the handler's checked wrapper insists on; a case that wants the
+// broken shape sets issues explicitly.
+type roleBatchCreator struct {
+	issues []*types.Issue
+	err    error
+
+	mu       sync.Mutex
+	requests []issueops.CreateBatchRequest
+}
+
+func (c *roleBatchCreator) CreateBatch(_ context.Context, req issueops.CreateBatchRequest) (issueops.CreateBatchResult, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.CreateBatchResult{}, c.err
+	}
+	if c.issues != nil {
+		return issueops.CreateBatchResult{Issues: c.issues}, nil
+	}
+	issues := make([]*types.Issue, len(req.Items))
+	for i, item := range req.Items {
+		created := *item.Issue
+		created.ID = fmt.Sprintf("bd-batch-%d", i)
+		issues[i] = &created
+	}
+	return issueops.CreateBatchResult{Issues: issues}, nil
+}
+
+func (c *roleBatchCreator) createRequests() []issueops.CreateBatchRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.CreateBatchRequest(nil), c.requests...)
+}
+
 type roleClaimer struct {
 	result issueops.ClaimResult
 	err    error
@@ -315,6 +352,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.Sweeper == nil {
 		cfg.Sweeper = &roleSweeper{}
+	}
+	if cfg.BatchCreator == nil {
+		cfg.BatchCreator = &roleBatchCreator{}
 	}
 	return cfg
 }
@@ -521,6 +561,21 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			name:    "a ready counter alone",
 			cfg:     Config{ReadyCounter: &roleReadyCounter{}},
 			wantErr: "no database source",
+		},
+		{
+			name:    "no batch creator",
+			cfg:     rolesConfigWithout(func(c *Config) { c.BatchCreator = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "a batch creator alone",
+			cfg:     Config{BatchCreator: &roleBatchCreator{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a provider and a batch creator",
+			cfg:     Config{Provider: &fakeProvider{}, BatchCreator: &roleBatchCreator{}},
+			wantErr: "exactly one database source",
 		},
 		{
 			name:    "a provider and a ready counter",

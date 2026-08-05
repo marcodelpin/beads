@@ -164,6 +164,8 @@ const (
 	// OpSweepIssues is the one DESTRUCTIVE operation on this surface: bulk
 	// clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
+	// OpBatchCreateIssues creates many issues as one transaction, or none.
+	OpBatchCreateIssues = "batchCreateIssues"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -234,6 +236,16 @@ var operationCodes = map[string][]Code{
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
+	// No not_found, and that is a decision rather than an omission. The role
+	// refuses an edge whose target names nothing, and that refusal is about the
+	// REQUEST BODY the client sent, not about a resource this operation was
+	// asked to address — there is no id in the path to have missed. A 404 here
+	// would tell a client its request went to the wrong place.
+	//
+	// No conflict code either: this operation publishes no `id` member, so no
+	// item can collide with a stored row and the role's ErrAlreadyExists is
+	// unreachable from the wire.
+	OpBatchCreateIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 }
 
 // Result is a problem response ready to be written: the envelope plus the

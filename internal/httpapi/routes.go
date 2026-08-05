@@ -159,6 +159,25 @@ var routeTable = []route{
 		handler:     (*Server).handleListDependencies,
 	},
 	{
+		op:     OpBatchCreateIssues,
+		method: http.MethodPost,
+		// A collection-level custom method, spelled the way ready:count's is
+		// and registered as the literal path for the same reason: the segment
+		// carries no wildcard, so ServeMux can match it exactly.
+		//
+		// It does not collide with the claim row's wide POST wildcard below.
+		// That pattern is /v0/beads/issues/{idop} and requires the separating
+		// slash; this path has none, so the two never match the same request.
+		//
+		// It also leaves POST /v0/beads/issues free. A collection POST is where
+		// a single create belongs when one is published, and squatting on it
+		// with a batch would have made that operation unnameable.
+		pattern:     "/v0/beads/issues:batchCreate",
+		capability:  "issues.batchCreate",
+		implemented: true,
+		handler:     (*Server).handleBatchCreate,
+	},
+	{
 		op:      OpClaimIssue,
 		method:  http.MethodPost,
 		pattern: "/v0/beads/issues/{" + claimPathValue + "}",
