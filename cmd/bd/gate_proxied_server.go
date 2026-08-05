@@ -393,6 +393,7 @@ type gateResolveApply struct {
 	before    *types.Issue
 	after     *types.Issue
 	oldStatus string
+	closed    bool // CloseIssueResult.Closed: false when the gate was already closed
 }
 
 func runGateResolveProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
@@ -437,17 +438,23 @@ func runGateResolveProxiedServer(cmd *cobra.Command, ctx context.Context, args [
 		if issue.Status != "" {
 			out.oldStatus = string(issue.Status)
 		}
+		out.closed = res.Closed
 		return out, fmt.Sprintf("bd: gate resolve %s", gateID), nil
 	})
 	if err != nil {
 		return HandleError("%v", err)
 	}
 
-	if applied.after != nil {
-		audit.LogFieldChange(applied.after.ID, "status", applied.oldStatus, "closed", actor, reason)
-	}
-	if err := fireProxiedCloseHooks(ctx, applied.before, applied.after); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", gateID, err)
+	// Audit + hooks only when this invocation actually closed the gate —
+	// a double-resolve must not re-fire them (same guard as the o.closed
+	// check in close_proxied_server.go).
+	if applied.closed {
+		if applied.after != nil {
+			audit.LogFieldChange(applied.after.ID, "status", applied.oldStatus, "closed", actor, reason)
+		}
+		if err := fireProxiedCloseHooks(ctx, applied.before, applied.after); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", gateID, err)
+		}
 	}
 	commandDidWrite.Store(true)
 

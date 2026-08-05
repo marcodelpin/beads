@@ -161,6 +161,17 @@ func TestProxiedServerGateLifecycle(t *testing.T) {
 		if ids := gateReadyIDs(t, bd, p); !ids[target.ID] {
 			t.Errorf("target %s should be ready again after resolve", target.ID)
 		}
+
+		// Double-resolve is a reported no-op: exit 0, gate stays closed.
+		// (Audit + close hooks are guarded on CloseIssueResult.Closed, so the
+		// second resolve records nothing new.)
+		_, stderr, err = bdProxiedRunBuffers(t, bd, p.dir, "gate", "resolve", gateID, "--reason", "again")
+		if err != nil {
+			t.Fatalf("double gate resolve should be idempotent, failed: %v\nstderr:\n%s", err, stderr)
+		}
+		if got := readStatus(t, db, gateID); got != types.StatusClosed {
+			t.Errorf("gate should stay closed after double resolve, got %q", got)
+		}
 	})
 
 	// The wh-park shape: a bead gate names the awaited bead in --await-id, and
