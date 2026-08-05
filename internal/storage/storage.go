@@ -167,6 +167,14 @@ type Storage interface {
 	// unchanged, as it is for IssueReader.
 	IssueRelations() (issueops.Relations, error)
 
+	// WorkspaceConfig returns the guarded workspace-settings surface for this
+	// store: the durable key-value plane `bd config` reads and writes. It is
+	// its own role rather than more verbs elsewhere because it answers about
+	// the WORKSPACE rather than about an issue, and because a write here can
+	// re-project a value into a normalized lookup table — a side effect no
+	// issue role has anywhere to describe.
+	WorkspaceConfig() (issueops.WorkspaceConfig, error)
+
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error
 	CreateIssues(ctx context.Context, issues []*types.Issue, actor string) error

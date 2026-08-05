@@ -123,11 +123,11 @@ type Config struct {
 	// Reader and Claimer are the issue roles this server answers from, for a
 	// backend whose facade is a STORE rather than a unit-of-work provider.
 	//
-	// Set both together, and only when Provider is nil: they are the other
-	// complete database source, not an override of one. Listen refuses every
-	// other combination, including a half-set pair — a reader without a claimer
-	// would bind, answer every read, and fail the one write on this surface with
-	// a nil dereference inside a handler.
+	// Set all three together, and only when Provider is nil: they are the
+	// other complete database source, not an override of one. Listen refuses
+	// every other combination, including a half-set set — a reader without a
+	// claimer would bind, answer every read, and fail the one issue write on
+	// this surface with a nil dereference inside a handler.
 	//
 	// A caller with a store takes them off the store's own accessors, and WHICH
 	// store value it takes them off is the whole question. Every decorator a
@@ -144,7 +144,8 @@ type Config struct {
 	//	}
 	//	rd, err := src.IssueReader()
 	//	cl, err := src.IssueClaimer()
-	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, ...})
+	//	wc, err := src.WorkspaceConfig()
+	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Settings: wc, ...})
 	//
 	// Listen refuses a hook-firing role rather than trusting the paragraph
 	// above — see checkDatabaseSource.
@@ -163,8 +164,15 @@ type Config struct {
 	// one reason — so the units of work they open land in that request's uow_ms
 	// (see Server.reader) — and a role reached this way opens none through this
 	// server, so a rebuild would buy nothing.
-	Reader  issueops.Reader
-	Claimer issueops.Claimer
+	//
+	// Settings joins them for the same reason Claimer does, and the "set them
+	// together" rule covers all three: this surface publishes two settings
+	// operations, so a Reader and a Claimer without a Settings would bind,
+	// answer every issue route, and fail both config routes with a nil
+	// dereference inside a handler.
+	Reader   issueops.Reader
+	Claimer  issueops.Claimer
+	Settings issueops.WorkspaceConfig
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -194,6 +202,7 @@ type Server struct {
 	// cannot carry both.
 	issueReader  issueops.Reader
 	issueClaimer issueops.Claimer
+	settings     issueops.WorkspaceConfig
 
 	listener net.Listener
 	http     *http.Server
@@ -292,6 +301,7 @@ func Listen(cfg Config) (*Server, error) {
 		provider:     cfg.Provider,
 		issueReader:  cfg.Reader,
 		issueClaimer: cfg.Claimer,
+		settings:     cfg.Settings,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -345,11 +355,11 @@ func Listen(cfg Config) (*Server, error) {
 // checkDatabaseSource enforces exactly one complete database source.
 //
 // There are two, and a Config carries one or the other: a unit-of-work
-// provider, or the two issue roles. A HALF-SET pair is refused with the same
-// message as none at all, because it is the same mistake and the failure it
-// would otherwise produce is the worst shape available — a reader without a
-// claimer binds, answers every read, and fails the one write on this surface
-// with a nil dereference in a handler on a live server.
+// provider, or the three roles this surface answers from. A HALF-SET set is
+// refused with the same message as none at all, because it is the same mistake
+// and the failure it would otherwise produce is the worst shape available — a
+// reader without a claimer binds, answers every read, and fails the one issue
+// write on this surface with a nil dereference in a handler on a live server.
 //
 // Both together is refused rather than resolved by precedence: a caller that
 // set both holds two different opinions about where this server reads from, and
@@ -367,11 +377,11 @@ func Listen(cfg Config) (*Server, error) {
 // claim since it booted.
 func checkDatabaseSource(cfg Config) error {
 	switch {
-	case cfg.Provider != nil && (cfg.Reader != nil || cfg.Claimer != nil):
+	case cfg.Provider != nil && (cfg.Reader != nil || cfg.Claimer != nil || cfg.Settings != nil):
 		return errors.New("httpapi: both a unit-of-work provider and issue roles were set; pass exactly one database source")
-	case cfg.Provider == nil && (cfg.Reader == nil || cfg.Claimer == nil):
-		return errors.New("httpapi: no database source: set Provider, or Reader and Claimer together")
-	case storage.RoleFiresHooks(cfg.Reader) || storage.RoleFiresHooks(cfg.Claimer):
+	case cfg.Provider == nil && (cfg.Reader == nil || cfg.Claimer == nil || cfg.Settings == nil):
+		return errors.New("httpapi: no database source: set Provider, or Reader, Claimer and Settings together")
+	case storage.RoleFiresHooks(cfg.Reader) || storage.RoleFiresHooks(cfg.Claimer) || storage.RoleFiresHooks(cfg.Settings):
 		return errors.New("httpapi: a configured role fires this workspace's hooks; " +
 			"this server does not run hooks, so take the roles from the store beneath the hook decorator " +
 			"((*storage.HookFiringStore).Unwrap)")
@@ -495,6 +505,23 @@ func (s *Server) claimer(r *http.Request) (issueops.Claimer, error) {
 		return nil, err
 	}
 	return checkedClaimer{inner: cl}, nil
+}
+
+// workspaceConfig returns the guarded workspace-settings surface for one
+// request.
+//
+// Same two sources as reader and claimer above, for the same reasons, and held
+// by INTERFACE so uow.WorkspaceConfigSource is load-bearing rather than
+// decorative. It needs no checked wrapper: both settings handlers read VALUES
+// out of the result, so there is no pointer for a caller-supplied role to hand
+// back nil in — which is exactly what checkedReader and checkedClaimer exist
+// to make safe.
+func (s *Server) workspaceConfig(r *http.Request) (issueops.WorkspaceConfig, error) {
+	if s.provider == nil {
+		return s.settings, nil
+	}
+	var src uow.WorkspaceConfigSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.WorkspaceConfig()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

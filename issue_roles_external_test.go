@@ -188,6 +188,43 @@ func TestCounterKeepsTelemetryOutermost(t *testing.T) {
 	}
 }
 
+// TestWorkspaceConfigKeepsTelemetryOutermost is the settings role's version of
+// the pin, and it is the only place in this file where the read answer is given
+// for a role that WRITES.
+//
+// The hook decorator's vocabulary is on_create / on_update / on_close and every
+// one of them hands a hook script an ISSUE. A settings write changes the
+// workspace rather than a bead, so there is nothing to hand one — and the
+// legacy config verbs this decorator inherits fire nothing either. A hook
+// wrapper appearing here would therefore mean a layer landed on a path with
+// nothing to fire, which is exactly what the read-role pins above catch.
+func TestWorkspaceConfigKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	settings, err := storage.NewHookFiringStore(instrumented, nil).WorkspaceConfig()
+	if err != nil {
+		t.Fatalf("WorkspaceConfig() error = %v", err)
+	}
+	if got := reflect.TypeOf(settings).String(); got != "*telemetry.instrumentedWorkspaceConfig" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestWorkspaceConfigExposesTypedUnsupportedError(t *testing.T) {
+	settings, err := (*dolt.DoltStore)(nil).WorkspaceConfig()
+	if settings != nil {
+		t.Fatalf("WorkspaceConfig() settings = %T, want nil", settings)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("WorkspaceConfig() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	counter, err := (*dolt.DoltStore)(nil).Counter()
 	if counter != nil {

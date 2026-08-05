@@ -657,6 +657,9 @@ func (s *configStore) IssueRelations() (issueops.Relations, error) {
 func (s *configStore) Counter() (issueops.Counter, error) {
 	return nil, &storage.ErrUnsupported{Op: "Counter", Backend: "jira-config-stub"}
 }
+func (s *configStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return nil, &storage.ErrUnsupported{Op: "WorkspaceConfig", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {

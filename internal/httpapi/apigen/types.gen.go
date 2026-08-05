@@ -80,7 +80,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -175,8 +175,45 @@ type ReadyPage struct {
 	Items []IssueWithCounts `json:"items"`
 }
 
+// Setting One entry of the workspace's stored settings plane.
+//
+// THIS SCHEMA IS DELIBERATELY NOT `x-go-type`-PINNED, and it is the only response component on this surface that is not. The seven pinned schemas above are pinned because a canonical Go struct already IS the contract — `types.Issue`'s JSON encoding is what `bd show --json` emits. A setting has no such struct: the CLI marshals an ad-hoc `map[string]string` per verb, so there is nothing to pin TO, and minting a type to pin to would mean changing what `bd config get --json` prints in order to satisfy a rule about not changing it.
+//
+// The two surfaces are still one shape where they overlap — `key` and `value` are spelled as the CLI spells them — and they diverge in exactly one deliberate place, `redacted`, which exists because this surface has no authentication and the CLI requires access to the database anyway.
+type Setting struct {
+	// Key The setting's key, echoed verbatim.
+	Key string `json:"key"`
+
+	// Redacted True when `value` is withheld because the KEY marks the setting as credential-bearing — the name contains `token`, `secret`, `password`, or an API-key spelling. It is a decision about the key alone: no value is inspected, so a credential stored under an innocuous name is NOT protected by this and must not be stored in this plane at all.
+	//
+	// Always present, including when false, so a client never has to infer redaction from an absent member.
+	Redacted bool `json:"redacted"`
+
+	// Value The stored value, verbatim.
+	//
+	// ABSENT MEANS ONE OF TWO THINGS, and `redacted` says which. With `redacted: false` the workspace stores nothing for this key OR stores the empty string; those are indistinguishable through this surface and through the CLI. With `redacted: true` a value may well be stored and is withheld.
+	//
+	// It is never emitted as an empty string and never transformed: a value that is not the stored value is omitted rather than masked, so a client can never mistake a placeholder for configuration.
+	Value *string `json:"value,omitempty"`
+}
+
+// SettingsPage defines model for SettingsPage.
+type SettingsPage struct {
+	// HasMore Always false in v0: the whole plane is returned in one page. It is present so that a later revision can page this collection without changing the response shape.
+	HasMore bool `json:"has_more"`
+
+	// Items The stored settings, ordered by key. Empty array (never null) when the workspace stores none.
+	Items []Setting `json:"items"`
+
+	// NextCursor Present if and only if `has_more` is true, which is never in v0.
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
 // IssueID defines model for IssueID.
 type IssueID = string
+
+// SettingKey defines model for SettingKey.
+type SettingKey = string
 
 // InternalError RFC 9457 problem detail. This is the only error shape on this surface. The core declares `type`; this server never emits it, so `about:blank` is implied throughout.
 type InternalError = Problem

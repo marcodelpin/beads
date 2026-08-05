@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /v0/beads/config` and `GET /v0/beads/config/{key}` — the workspace's
+  stored settings over HTTP** (bd-kzepq). `bd serve` now answers for the
+  settings plane `bd config list` and `bd config get` read, taking the v0
+  surface from six operations to eight and the `capabilities` vocabulary to
+  `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `config.list`,
+  `config.get`. Both operations run on the new `issueops.WorkspaceConfig` role
+  the CLI reaches through the same accessor.
+
+  **A setting whose KEY marks it as credential-bearing** — the name contains
+  `token`, `secret`, `password` or an API-key spelling, which
+  `notion.token` does — **is published with `redacted: true` and no `value`.**
+  Withheld values are OMITTED rather than masked, so a client cannot mistake a
+  placeholder for configuration. The CLI is unchanged and still prints stored
+  values in full: its caller already holds the database, and this surface has
+  no authentication.
+
+  There is no HTTP WRITE, deliberately. `bd config set` routes most keys to
+  `config.yaml` or to git config before the database is ever reached, and both
+  live on the client's filesystem, so a server-side write of (say)
+  `export.auto` would return success and land a row nothing reads. The
+  multi-source views — `bd config show`, `drift`, `apply`, `validate` — are
+  off the role and off the wire for the same reason.
+
+
 - **Public surface for out-of-tree storage backends** (bd-h3dib.2). The
   storage backend contract and its conformance suite are now importable by
   external Go modules — the conformance-gated external-backend path promised
@@ -711,6 +735,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#4675](https://github.com/gastownhall/beads/pull/4675).)
 
 ### Fixed
+
+- **Proxied `bd config set status.custom` and `types.custom` take effect
+  immediately** (bd-kzepq). Reads of the custom status and type vocabularies
+  are TABLE-first: they consult the normalized `custom_statuses` and
+  `custom_types` tables and fall back to the config string only when the table
+  is empty. The direct route has always rewritten the table in the same
+  transaction as the row; the proxied route wrote only the string. So on a team
+  server `bd config set types.custom "session"` reported success, `bd config
+  get types.custom` read it back, `bd doctor` re-verified against the string
+  and reported all-OK — and `bd create -t session` answered `invalid issue
+  type: session` for as long as the workspace lived. Both routes now project
+  the value into its table inside the same unit of work as the row, so the
+  setting and its effect land together or neither does.
+
+- **`bd config set-many issue_prefix=<x>` is refused, as `bd config set` has
+  always been** (bd-kzepq). `bd config set` rejects the workspace id prefix in
+  both spellings and points at `bd init --prefix`, `bd bootstrap` and
+  `bd rename-prefix`, each of which does work a config write cannot — seeding a
+  workspace that has none, or rewriting the ids that already exist. `set-many`
+  partitioned its pairs by source and wrote the database ones straight through,
+  so it walked past that guard and re-prefixed the workspace: beads created
+  before the write and beads created after it disagreed about their own
+  namespace, with nothing to reconcile them. Both verbs now refuse it, and so
+  does the substrate, so a future front door cannot miss it either.
+
 
 - **`bd create --id <id>` on a proxied server refuses an occupied id instead
   of overwriting it** (bd-7oyh5). The direct route has always been create-only.

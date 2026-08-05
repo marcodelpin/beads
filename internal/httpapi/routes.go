@@ -93,6 +93,22 @@ var routeTable = []route{
 		handler:     (*Server).handleGetIssue,
 	},
 	{
+		op:          OpListSettings,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/config",
+		capability:  "config.list",
+		implemented: true,
+		handler:     (*Server).handleListSettings,
+	},
+	{
+		op:          OpGetSetting,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/config/{key}",
+		capability:  "config.get",
+		implemented: true,
+		handler:     (*Server).handleGetSetting,
+	},
+	{
 		op:      OpClaimIssue,
 		method:  http.MethodPost,
 		pattern: "/v0/beads/issues/{" + claimPathValue + "}",

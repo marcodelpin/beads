@@ -350,8 +350,9 @@ type timedProvider struct {
 // provider it holds for the role — the same two-step a CLI command performs on
 // a store — instead of reaching past it to a constructor.
 var (
-	_ uow.IssueReaderSource  = timedProvider{}
-	_ uow.IssueClaimerSource = timedProvider{}
+	_ uow.IssueReaderSource     = timedProvider{}
+	_ uow.IssueClaimerSource    = timedProvider{}
+	_ uow.WorkspaceConfigSource = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -385,6 +386,12 @@ func (p timedProvider) IssueReader() (issueops.Reader, error) {
 // instead of the recursion looking correct.
 func (p timedProvider) IssueClaimer() (issueops.Claimer, error) {
 	return uow.NewIssueClaimer(p)
+}
+
+// WorkspaceConfig builds the settings role OVER THIS WRAPPER, for the same
+// reason and with the same hazard as the two above.
+func (p timedProvider) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return uow.NewWorkspaceConfig(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

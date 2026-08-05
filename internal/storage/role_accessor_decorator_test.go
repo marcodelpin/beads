@@ -11,15 +11,16 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the eight-strong capability surface every storage
+// roleAccessorNames is the nine-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a ninth role to DoltStorage without deciding what each decorator
+// adding a tenth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
 	"IssueRelations",
 	"Counter",
+	"WorkspaceConfig",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -61,7 +62,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the eight role
+// roleAccessorStore is a DoltStorage whose only real methods are the nine role
 // accessors, each answering with a distinguishable sentinel so a test can tell
 // a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -70,6 +71,7 @@ type roleAccessorStore struct {
 	reader    issueops.Reader
 	relations issueops.Relations
 	counter   issueops.Counter
+	settings  issueops.WorkspaceConfig
 	commenter issueops.Commenter
 	claimer   issueops.ReadyClaimer
 	closer    issueops.BatchCloser
@@ -84,6 +86,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		reader:    sentinel,
 		relations: sentinel,
 		counter:   sentinel,
+		settings:  sentinel,
 		commenter: sentinel,
 		claimer:   sentinel,
 		closer:    sentinel,
@@ -95,7 +98,10 @@ func (s *roleAccessorStore) IssueLifecycle() (issueops.Lifecycle, error) { retur
 func (s *roleAccessorStore) IssueReader() (issueops.Reader, error)       { return s.reader, s.err }
 func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { return s.relations, s.err }
 func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.counter, s.err }
-func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)      { return s.commenter, s.err }
+func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return s.settings, s.err
+}
+func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.commenter, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
@@ -104,7 +110,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all eight roles at once. Nothing calls its
+// roleAccessorSentinel implements all nine roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -138,6 +144,18 @@ func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issu
 func (*roleAccessorSentinel) CountByGroup(context.Context, issueops.CountByGroupRequest) (issueops.CountByGroupResult, error) {
 	return issueops.CountByGroupResult{}, nil
 }
+func (*roleAccessorSentinel) GetSetting(context.Context, issueops.GetSettingRequest) (issueops.SettingResult, error) {
+	return issueops.SettingResult{}, nil
+}
+func (*roleAccessorSentinel) ListSettings(context.Context, issueops.ListSettingsRequest) (issueops.ListSettingsResult, error) {
+	return issueops.ListSettingsResult{}, nil
+}
+func (*roleAccessorSentinel) SetSetting(context.Context, issueops.SetSettingRequest) (issueops.SetSettingResult, error) {
+	return issueops.SetSettingResult{}, nil
+}
+func (*roleAccessorSentinel) UnsetSetting(context.Context, issueops.UnsetSettingRequest) (issueops.UnsetSettingResult, error) {
+	return issueops.UnsetSettingResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -160,11 +178,14 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // satisfying DoltStorage, and silently stops every completion hook on that
 // role.
 //
-// The three read roles are asserted the OTHER way round on purpose. Reads fire
-// no completion hooks, so IssueReader, IssueRelations and Counter deliberately
+// Four roles are asserted the OTHER way round on purpose. Reads fire no
+// completion hooks, so IssueReader, IssueRelations and Counter deliberately
 // return the inner surface unwrapped (hook_issue_reader.go, hook_relations.go,
-// hook_counter.go); this test pins that as a decision rather than leaving it
-// indistinguishable from the regression above.
+// hook_counter.go); WorkspaceConfig does too, and it is the one that is NOT a
+// read — a settings write changes the workspace rather than a bead, so this
+// decorator's issue-shaped hook vocabulary has nothing to hand a hook script
+// (hook_workspace_config.go). This test pins all four as decisions rather than
+// leaving them indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -183,6 +204,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
+		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -221,6 +243,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
 		{"Counter", func() (any, error) { return store.Counter() }},
+		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

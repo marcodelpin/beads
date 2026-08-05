@@ -105,7 +105,17 @@ Twelve steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way in.
 
 12. **Both front doors, and the lint that keeps them there.** The CLI handler
     and any HTTP handler call the role and nothing else — no filter, no config
-    load, no unit of work opened by hand. Then close the holes behind them in
+    load, no unit of work opened by hand. Since the owner's 2026-08-05 scope
+    decision the HTTP half lands WITH the command: the operation is written into
+    `internal/httpapi/spec/openapi.v0.yaml` FIRST and the types generated from
+    it (`make api-gen`), never the other way round. That costs four more edits
+    the spec tests will name if you miss one — a row in `routeTable`, an
+    `Op<Name>` constant and an `operationCodes` row in `problem.go`, and the
+    capability token in `ContextResponse.capabilities`'s prose. A role served
+    from the store-shaped `Config` source also becomes a required field there,
+    because `checkDatabaseSource` refuses a half-set source rather than letting
+    a handler dereference nil on a live server.
+    Then close the holes behind them in
     `.golangci.yml`: add the step-3 package to the `cmd-bd-role-constructors`
     depguard deny list, and if the command no longer names `types.IssueFilter`,
     REMOVE it from the forbidigo exception list (and decrement the count in the

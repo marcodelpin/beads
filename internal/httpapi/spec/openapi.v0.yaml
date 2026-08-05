@@ -56,11 +56,12 @@ info:
       `reason: "unknown_parameter"` and `param` naming the offending key.
       Operations with no parameters at all (`GET /healthz`,
       `GET /v0/beads/context`, `GET /v0/beads/issues/{id}`,
-      `POST /v0/beads/issues/{id}:claim`) reject every query key the same way.
+      `POST /v0/beads/issues/{id}:claim`, `GET /v0/beads/config`,
+      `GET /v0/beads/config/{key}`) reject every query key the same way.
 
 
     Both are uniform rules, reachable on EVERY route including `GET /healthz`,
-    and are stated here instead of being repeated on all six operations. The
+    and are stated here instead of being repeated on all eight operations. The
     per-operation `responses` below therefore list what an operation produces
     BEYOND these two: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses
@@ -742,9 +743,96 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/config:
+    get:
+      operationId: listSettings
+      summary: List the workspace's stored settings
+      description: >-
+        Every setting stored in the workspace DATABASE, which is the plane
+        `bd config list` reads. It is not the effective configuration: values
+        that reach a running `bd` from `config.yaml`, from environment
+        variables or from git config are absent and cannot be here, because
+        they are files and variables on the CLIENT's machine and this server
+        answers for the database. `bd config show` is the multi-source view and
+        has no HTTP operation for the same reason.
+
+
+        SETTINGS WHOSE KEY MARKS THEM AS CREDENTIAL-BEARING ARE WITHHELD. Their
+        entry is present with `redacted: true` and no `value`, so a client can
+        see that the key is configured without the surface handing a secret to
+        every process that can reach the port — this API has no
+        authentication. See `Setting`.
+
+
+        The envelope is the paginated one and `has_more` is always false today:
+        settings are a keyed namespace a workspace holds tens of, not a
+        collection to scan, so the whole plane is returned in one page. The
+        envelope is used anyway because entries are ordered by key, which makes
+        a keyset cursor expressible later without a breaking change.
+      responses:
+        '200':
+          description: The stored settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsPage'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/config/{key}:
+    get:
+      operationId: getSetting
+      summary: Get one stored setting
+      description: >-
+        The value stored for one key, used verbatim: there is no namespace
+        completion, no case folding and no dash/underscore equivalence.
+
+
+        THERE IS NO 404 ON THIS OPERATION, deliberately. A key nothing stored
+        and a key stored as the empty string are the same answer here — 200
+        with `value` absent — because the storage seam behind it cannot tell
+        them apart and neither can `bd config get`, which prints "(not set)"
+        for both. Answering 404 for one of them would publish a distinction
+        this server would have to invent.
+      parameters:
+        - $ref: '#/components/parameters/SettingKey'
+      responses:
+        '200':
+          description: The setting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Setting'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, or a `key` that is
+            empty after trimming or carries a control character.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
 
   parameters:
+    SettingKey:
+      name: key
+      in: path
+      required: true
+      description: >-
+        Exact setting key, used verbatim. Keys routinely contain dots
+        (`status.custom`); they occupy one path segment and are
+        percent-decoded once.
+      schema:
+        type: string
+        minLength: 1
     IssueID:
       name: id
       in: path
@@ -1419,9 +1507,10 @@ components:
           description: >-
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `issues.list`,
-            `issues.get`, `issues.claim`; it grows additively, and an operation
-            never appears here unless it is fully implemented. This is how a
-            client checks for an operation — never the version string.
+            `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows
+            additively, and an operation never appears here unless it is fully
+            implemented. This is how a client checks for an operation — never
+            the version string.
           items:
             type: string
 
@@ -1456,6 +1545,84 @@ components:
           description: >-
             Present if and only if `has_more` is true. Pass it back verbatim as
             `cursor` to fetch the next page. Opaque and server-private.
+
+    Setting:
+      type: object
+      description: >-
+        One entry of the workspace's stored settings plane.
+
+
+        THIS SCHEMA IS DELIBERATELY NOT `x-go-type`-PINNED, and it is the only
+        response component on this surface that is not. The seven pinned
+        schemas above are pinned because a canonical Go struct already IS the
+        contract — `types.Issue`'s JSON encoding is what `bd show --json`
+        emits. A setting has no such struct: the CLI marshals an ad-hoc
+        `map[string]string` per verb, so there is nothing to pin TO, and
+        minting a type to pin to would mean changing what `bd config get
+        --json` prints in order to satisfy a rule about not changing it.
+
+
+        The two surfaces are still one shape where they overlap — `key` and
+        `value` are spelled as the CLI spells them — and they diverge in
+        exactly one deliberate place, `redacted`, which exists because this
+        surface has no authentication and the CLI requires access to the
+        database anyway.
+      required: [key, redacted]
+      properties:
+        key:
+          type: string
+          description: The setting's key, echoed verbatim.
+        value:
+          type: string
+          description: >-
+            The stored value, verbatim.
+
+
+            ABSENT MEANS ONE OF TWO THINGS, and `redacted` says which. With
+            `redacted: false` the workspace stores nothing for this key OR
+            stores the empty string; those are indistinguishable through this
+            surface and through the CLI. With `redacted: true` a value may well
+            be stored and is withheld.
+
+
+            It is never emitted as an empty string and never transformed: a
+            value that is not the stored value is omitted rather than masked,
+            so a client can never mistake a placeholder for configuration.
+        redacted:
+          type: boolean
+          description: >-
+            True when `value` is withheld because the KEY marks the setting as
+            credential-bearing — the name contains `token`, `secret`,
+            `password`, or an API-key spelling. It is a decision about the key
+            alone: no value is inspected, so a credential stored under an
+            innocuous name is NOT protected by this and must not be stored in
+            this plane at all.
+
+
+            Always present, including when false, so a client never has to
+            infer redaction from an absent member.
+
+    SettingsPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          description: >-
+            The stored settings, ordered by key. Empty array (never null) when
+            the workspace stores none.
+          items:
+            $ref: '#/components/schemas/Setting'
+        has_more:
+          type: boolean
+          description: >-
+            Always false in v0: the whole plane is returned in one page. It is
+            present so that a later revision can page this collection without
+            changing the response shape.
+        next_cursor:
+          type: string
+          description: >-
+            Present if and only if `has_more` is true, which is never in v0.
 
     ClaimRequest:
       type: object
