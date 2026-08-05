@@ -98,6 +98,21 @@ func (r *issueSQLRepositoryImpl) InsertBatch(ctx context.Context, issues []*type
 	return nil
 }
 
+// PromoteFromEphemeral promotes an active wisp into the Dolt-versioned issues
+// plane in place: same id, wisp_type retained, labels/dependencies/events/
+// comments carried across to the permanent tables, inbound wisp-targeted
+// dependency edges retargeted, and blocked state recomputed. It delegates to
+// the exact issueops implementation the classic (direct/embedded) route runs,
+// so the two modes cannot drift. The issueops error is returned unwrapped on
+// purpose: the CLI surfaces it verbatim ("wisp <id> not found"), and that
+// text is part of the classic error contract.
+func (r *issueSQLRepositoryImpl) PromoteFromEphemeral(ctx context.Context, id, actor string) error {
+	if id == "" {
+		return errors.New("db: PromoteFromEphemeral: id must not be empty")
+	}
+	return issueops.PromoteFromEphemeralInTx(ctx, r.runner, id, actor)
+}
+
 func (r *issueSQLRepositoryImpl) MovePersistence(ctx context.Context, id string, mode types.PersistenceMode) (bool, error) {
 	issue, err := issueops.GetIssueInTx(ctx, r.runner, id)
 	if err != nil {

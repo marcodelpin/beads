@@ -2,14 +2,14 @@ package issueops
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 //nolint:gosec // G201: table names are hardcoded constants
-func PromoteFromEphemeralInTx(ctx context.Context, tx *sql.Tx, id string, actor string) error {
+func PromoteFromEphemeralInTx(ctx context.Context, tx DBTX, id string, actor string) error {
 	if !IsActiveWispInTx(ctx, tx, id) {
 		return fmt.Errorf("wisp %s not found", id)
 	}
@@ -24,13 +24,18 @@ func PromoteFromEphemeralInTx(ctx context.Context, tx *sql.Tx, id string, actor 
 
 	issue.Ephemeral = false
 
-	bc, err := NewBatchContext(ctx, tx, storage.BatchCreateOptions{
-		SkipPrefixValidation: true,
-	})
+	// Read the custom-status/type config directly (NewBatchContext needs a
+	// *sql.Tx; promote only uses these two fields of it, and the DBTX forms
+	// let the proxied-server repository share this exact implementation).
+	customStatuses, err := ResolveCustomStatusesDetailedInTx(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("new batch context: %w", err)
+		return fmt.Errorf("failed to get custom statuses: %w", err)
 	}
-	if err := PrepareIssueForInsert(issue, bc.CustomStatuses, bc.CustomTypes); err != nil {
+	customTypes, err := ResolveCustomTypesInTx(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("failed to get custom types: %w", err)
+	}
+	if err := PrepareIssueForInsert(issue, types.CustomStatusNames(customStatuses), customTypes); err != nil {
 		return fmt.Errorf("promote wisp to issues: %w", err)
 	}
 	if _, _, err := InsertIssueIfNew(ctx, tx, "issues", issue, storage.BatchCreateOptions{}); err != nil {

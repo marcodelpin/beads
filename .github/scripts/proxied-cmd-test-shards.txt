@@ -75,6 +75,7 @@
 15 8 TestProxiedServerGC
 15 8 TestProxiedServerGateCheck
 15 8 TestProxiedServerMolLastActivity
+15 8 TestProxiedServerPromote
 15 8 TestProxiedServerQuick
 15 8 TestProxiedServerReopenConcurrent
 15 8 TestProxiedServerServeClaim
