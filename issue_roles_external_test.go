@@ -214,6 +214,41 @@ func TestWorkspaceConfigKeepsTelemetryOutermost(t *testing.T) {
 	}
 }
 
+// TestVersionReconcilerKeepsTelemetryOutermost is the version-marker role's
+// version of the pin, and the second place in this file where the read answer
+// is given for a role that WRITES.
+//
+// The reason is the settings role's, plus one this role has on its own: it runs
+// from PersistentPreRun on every startup, so a hook wrapper here would run a
+// user's script before every command — including the ones that go on to fail on
+// their own arguments — with no bead to hand it.
+func TestVersionReconcilerKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	reconciler, err := storage.NewHookFiringStore(instrumented, nil).VersionReconciler()
+	if err != nil {
+		t.Fatalf("VersionReconciler() error = %v", err)
+	}
+	if got := reflect.TypeOf(reconciler).String(); got != "*telemetry.instrumentedVersionReconciler" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestVersionReconcilerExposesTypedUnsupportedError(t *testing.T) {
+	reconciler, err := (*dolt.DoltStore)(nil).VersionReconciler()
+	if reconciler != nil {
+		t.Fatalf("VersionReconciler() reconciler = %T, want nil", reconciler)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("VersionReconciler() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestWorkspaceConfigExposesTypedUnsupportedError(t *testing.T) {
 	settings, err := (*dolt.DoltStore)(nil).WorkspaceConfig()
 	if settings != nil {

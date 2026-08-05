@@ -11,9 +11,9 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the thirteen-strong capability surface every storage
+// roleAccessorNames is the fourteen-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a fourteenth role to DoltStorage without deciding what each decorator
+// adding a fifteenth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
@@ -22,6 +22,7 @@ var roleAccessorNames = []string{
 	"EdgeReader",
 	"Counter",
 	"WorkspaceConfig",
+	"VersionReconciler",
 	"StatsReporter",
 	"CycleDetector",
 	"ReadyCounter",
@@ -66,7 +67,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the thirteen role
+// roleAccessorStore is a DoltStorage whose only real methods are the fourteen role
 // accessors, each answering with a distinguishable sentinel so a test can tell
 // a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -77,6 +78,7 @@ type roleAccessorStore struct {
 	edges        issueops.EdgeReader
 	counter      issueops.Counter
 	settings     issueops.WorkspaceConfig
+	versions     issueops.VersionReconciler
 	stats        issueops.StatsReporter
 	cycles       issueops.CycleDetector
 	commenter    issueops.Commenter
@@ -96,6 +98,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		edges:        sentinel,
 		counter:      sentinel,
 		settings:     sentinel,
+		versions:     sentinel,
 		stats:        sentinel,
 		cycles:       sentinel,
 		commenter:    sentinel,
@@ -112,6 +115,9 @@ func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { retur
 func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.counter, s.err }
 func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	return s.settings, s.err
+}
+func (s *roleAccessorStore) VersionReconciler() (issueops.VersionReconciler, error) {
+	return s.versions, s.err
 }
 func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
 	return s.stats, s.err
@@ -133,7 +139,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all thirteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all fourteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -182,6 +188,12 @@ func (*roleAccessorSentinel) SetSetting(context.Context, issueops.SetSettingRequ
 func (*roleAccessorSentinel) UnsetSetting(context.Context, issueops.UnsetSettingRequest) (issueops.UnsetSettingResult, error) {
 	return issueops.UnsetSettingResult{}, nil
 }
+func (*roleAccessorSentinel) RecordedVersion(context.Context, issueops.RecordedVersionRequest) (issueops.RecordedVersionResult, error) {
+	return issueops.RecordedVersionResult{}, nil
+}
+func (*roleAccessorSentinel) ReconcileVersion(context.Context, issueops.VersionReconcileRequest) (issueops.VersionReconcileResult, error) {
+	return issueops.VersionReconcileResult{}, nil
+}
 func (*roleAccessorSentinel) Stats(context.Context, issueops.StatsRequest) (issueops.StatsResult, error) {
 	return issueops.StatsResult{}, nil
 }
@@ -218,15 +230,16 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // satisfying DoltStorage, and silently stops every completion hook on that
 // role.
 //
-// Five roles are asserted the OTHER way round on purpose. Reads fire no
+// Six roles are asserted the OTHER way round on purpose. Reads fire no
 // completion hooks, so IssueReader, IssueRelations, Counter and StatsReporter
 // deliberately return the inner surface unwrapped (hook_issue_reader.go,
 // hook_relations.go, hook_counter.go, hook_stats_reporter.go); WorkspaceConfig
-// does too, and it is the one that is NOT a read — a settings write changes the
-// workspace rather than a bead, so this decorator's issue-shaped hook
-// vocabulary has nothing to hand a hook script (hook_workspace_config.go).
-// This test pins all five as decisions rather than leaving them
-// indistinguishable from the regression above.
+// and VersionReconciler do too, and those two are the ones that are NOT reads —
+// a settings write changes the workspace rather than a bead and a version
+// marker names no bead at all, so this decorator's issue-shaped hook vocabulary
+// has nothing to hand a hook script (hook_workspace_config.go,
+// hook_version_reconciler.go). This test pins all six as decisions rather than
+// leaving them indistinguishable from the regression above.
 // The four read roles are asserted the OTHER way round on purpose. Reads fire
 // no completion hooks, so IssueReader, IssueRelations, Counter and
 // CycleDetector deliberately return the inner surface unwrapped
@@ -265,6 +278,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }, inner.edges, false},
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
+		{"VersionReconciler", func() (any, error) { return store.VersionReconciler() }, inner.versions, false},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }, inner.stats, false},
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }, inner.readyCounter, false},
@@ -308,6 +322,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }},
 		{"Counter", func() (any, error) { return store.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
+		{"VersionReconciler", func() (any, error) { return store.VersionReconciler() }},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }},

@@ -130,6 +130,14 @@ in; 13 is the HTTP surface, which lands with the command rather than after it.
     that genuinely disagrees is parked at its WIRING site with
     `skipKnownDivergence`, never by weakening the case.
 
+    A case may need to establish a state the ROLE CANNOT PRODUCE — a recorded
+    version below its own high-water mark is one, and reconciling is the one
+    thing that can never create it. The kit is frozen and reaches the issues
+    and config planes only, so that hook is a short closure built at each
+    wiring site over a seam the backend already publishes, the way
+    `CycleDetectorFixture.Exec` is. It belongs on the fixture, documented as
+    out-of-band, not in the kit.
+
     Do not add role cases to `backend/conformance`'s older `RunAll` suite: its
     `Factory` hands back a bare `storage.DoltStorage`, which a unit-of-work
     provider can never be, so a case placed there silently never runs on the
@@ -162,6 +170,15 @@ in; 13 is the HTTP surface, which lands with the command rather than after it.
     `operationCodes` row in `problem.go`, the `routeTable` row and its
     `capability` token in `routes.go`, and that token in the document's
     `capabilities` vocabulary. `make api-check` is the gate.
+
+    **A role may honestly have none, and `issueops.VersionReconciler` is the
+    one that does.** It answers a startup hook rather than a command: its two
+    markers are clone-local and dolt-ignored, so they describe the machine
+    holding the database and mean nothing to a remote caller, and the one
+    version fact a client can act on is already `ContextResponse.bd_version`.
+    Writing that decision down — in the leaf doc, beside the promises, and in
+    AMBIGUITIES.md for the owner — is the work. Adding an operation because the
+    checklist has a row for one is not.
 
     **The ROLES database source is the part that surprises.** `httpapi.Config`
     carries either a unit-of-work provider or the roles, and the roles are

@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the thirteen-strong capability surface every storage
+// roleAccessorNames is the fourteen-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -23,6 +23,7 @@ var roleAccessorNames = []string{
 	"EdgeReader",
 	"Counter",
 	"WorkspaceConfig",
+	"VersionReconciler",
 	"StatsReporter",
 	"CycleDetector",
 	"ReadyCounter",
@@ -56,7 +57,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the thirteen role
+// roleAccessorStore is a DoltStorage whose only real methods are the fourteen role
 // accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -70,6 +71,9 @@ func (s *roleAccessorStore) IssueReader() (issueops.Reader, error)       { retur
 func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { return s.surface, s.err }
 func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.surface, s.err }
 func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return s.surface, s.err
+}
+func (s *roleAccessorStore) VersionReconciler() (issueops.VersionReconciler, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
@@ -92,7 +96,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all thirteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all fourteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -140,6 +144,12 @@ func (*roleAccessorSentinel) SetSetting(context.Context, issueops.SetSettingRequ
 }
 func (*roleAccessorSentinel) UnsetSetting(context.Context, issueops.UnsetSettingRequest) (issueops.UnsetSettingResult, error) {
 	return issueops.UnsetSettingResult{}, nil
+}
+func (*roleAccessorSentinel) RecordedVersion(context.Context, issueops.RecordedVersionRequest) (issueops.RecordedVersionResult, error) {
+	return issueops.RecordedVersionResult{}, nil
+}
+func (*roleAccessorSentinel) ReconcileVersion(context.Context, issueops.VersionReconcileRequest) (issueops.VersionReconcileResult, error) {
+	return issueops.VersionReconcileResult{}, nil
 }
 func (*roleAccessorSentinel) Stats(context.Context, issueops.StatsRequest) (issueops.StatsResult, error) {
 	return issueops.StatsResult{}, nil
@@ -199,6 +209,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
+		{"VersionReconciler", func() (any, error) { return wrapped.VersionReconciler() }},
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return wrapped.ReadyCounter() }},
@@ -240,6 +251,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
+		{"VersionReconciler", func() (any, error) { return wrapped.VersionReconciler() }},
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
 		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return wrapped.ReadyCounter() }},

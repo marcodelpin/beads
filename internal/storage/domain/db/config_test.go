@@ -41,14 +41,9 @@ func (s *testSuite) TestConfigSQLRepository() {
 		s.Run("EmptyReturnsEmptyMap", s.configGetAllConfigEmpty)
 		s.Run("ReturnsAllRows", s.configGetAllConfigAllRows)
 	})
-	s.Run("ReconcileVersion", func() {
-		s.Run("EmptyCliVersionErrors", s.configReconcileVersionEmptyErrors)
-		s.Run("FreshInstallMigratesAndSetsMax", s.configReconcileVersionFreshInstall)
-		s.Run("AlreadyCurrentIsNoop", s.configReconcileVersionAlreadyCurrent)
-		s.Run("UpgradeAdvancesVersionAndMax", s.configReconcileVersionUpgrade)
-		s.Run("DowngradeBelowCurrentRefused", s.configReconcileVersionDowngradeRefused)
-		s.Run("DowngradeBelowMaxRefused", s.configReconcileVersionDowngradeBelowMaxRefused)
-		s.Run("CatchUpToMaxMigrates", s.configReconcileVersionCatchUpToMax)
+	s.Run("LocalMetadata", func() {
+		s.Run("SetThenGetRoundTrips", s.configLocalMetadataRoundTrip)
+		s.Run("SetOverwrites", s.configLocalMetadataOverwrite)
 	})
 	s.Run("UseCase", func() {
 		s.Run("GetConfigMissingKey", s.configUseCaseGetConfigMissing)
@@ -523,97 +518,35 @@ func (s *testSuite) resetLocalMetadata() {
 	s.Require().NoError(err)
 }
 
-func (s *testSuite) configReconcileVersionEmptyErrors() {
-	_, err := s.configUC().ReconcileVersion(s.Ctx(), "")
-	s.Require().Error(err)
-}
-
-func (s *testSuite) configReconcileVersionFreshInstall() {
+// The clone-local metadata plane is reached through the USE CASE here because
+// issueops.VersionReconciler's unit-of-work body reads and writes its two
+// markers that way, inside one transaction.
+//
+// WHAT USED TO BE HERE was seven subtests of a ReconcileVersion method on this
+// use case: a fresh install, an upgrade, two refused downgrades, a catch-up to
+// the high-water mark. That method held one of the TWO copies of the version
+// decision — cmd/bd/version_tracking.go held the other, and nothing compared
+// them — and both are now workapi.PlanVersionReconcile, whose table is pinned
+// exhaustively and without a database in
+// internal/workapi/versionreconcile_test.go. What only a real backend can
+// show, that the markers persist and that a refusal writes nothing, is
+// asserted at all three backends by TestVersionReconcilerContract.
+func (s *testSuite) configLocalMetadataRoundTrip() {
 	s.resetLocalMetadata()
-	res, err := s.configUC().ReconcileVersion(s.Ctx(), "1.2.0")
+	s.Require().NoError(s.configUC().SetLocalMetadata(s.Ctx(), "bd_version", "1.2.0"))
+
+	got, err := s.configUC().GetLocalMetadata(s.Ctx(), "bd_version")
 	s.Require().NoError(err)
-	s.Equal("", res.Previous)
-	s.Equal("1.2.0", res.Current)
-	s.True(res.Migrated)
-	s.False(res.Downgrade)
+	s.Equal("1.2.0", got)
 	s.Equal("1.2.0", s.localMeta("bd_version"))
-	s.Equal("1.2.0", s.localMeta("bd_version_max"))
 }
 
-func (s *testSuite) configReconcileVersionAlreadyCurrent() {
+func (s *testSuite) configLocalMetadataOverwrite() {
 	s.resetLocalMetadata()
-	r := s.configRepo()
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version", "1.2.0"))
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version_max", "1.2.0"))
+	s.Require().NoError(s.configUC().SetLocalMetadata(s.Ctx(), "bd_version", "1.2.0"))
+	s.Require().NoError(s.configUC().SetLocalMetadata(s.Ctx(), "bd_version", "1.3.0"))
 
-	res, err := s.configUC().ReconcileVersion(s.Ctx(), "1.2.0")
-	s.Require().NoError(err)
-	s.Equal("1.2.0", res.Previous)
-	s.Equal("1.2.0", res.Current)
-	s.False(res.Migrated)
-	s.False(res.Downgrade)
-}
-
-func (s *testSuite) configReconcileVersionUpgrade() {
-	s.resetLocalMetadata()
-	r := s.configRepo()
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version", "1.2.0"))
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version_max", "1.2.0"))
-
-	res, err := s.configUC().ReconcileVersion(s.Ctx(), "1.3.0")
-	s.Require().NoError(err)
-	s.Equal("1.2.0", res.Previous)
-	s.Equal("1.3.0", res.Current)
-	s.True(res.Migrated)
-	s.False(res.Downgrade)
 	s.Equal("1.3.0", s.localMeta("bd_version"))
-	s.Equal("1.3.0", s.localMeta("bd_version_max"))
-}
-
-func (s *testSuite) configReconcileVersionDowngradeRefused() {
-	s.resetLocalMetadata()
-	r := s.configRepo()
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version", "1.3.0"))
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version_max", "1.3.0"))
-
-	res, err := s.configUC().ReconcileVersion(s.Ctx(), "1.2.0")
-	s.Require().NoError(err)
-	s.Equal("1.3.0", res.Previous)
-	s.Equal("1.3.0", res.Current)
-	s.False(res.Migrated)
-	s.True(res.Downgrade)
-	s.Equal("1.3.0", s.localMeta("bd_version"))
-	s.Equal("1.3.0", s.localMeta("bd_version_max"))
-}
-
-func (s *testSuite) configReconcileVersionDowngradeBelowMaxRefused() {
-	s.resetLocalMetadata()
-	r := s.configRepo()
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version", "1.1.0"))
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version_max", "1.3.0"))
-
-	res, err := s.configUC().ReconcileVersion(s.Ctx(), "1.2.0")
-	s.Require().NoError(err)
-	s.False(res.Migrated)
-	s.True(res.Downgrade)
-	s.Equal("1.1.0", s.localMeta("bd_version"))
-	s.Equal("1.3.0", s.localMeta("bd_version_max"))
-}
-
-func (s *testSuite) configReconcileVersionCatchUpToMax() {
-	s.resetLocalMetadata()
-	r := s.configRepo()
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version", "1.1.0"))
-	s.Require().NoError(r.SetLocalMetadata(s.Ctx(), "bd_version_max", "1.3.0"))
-
-	res, err := s.configUC().ReconcileVersion(s.Ctx(), "1.3.0")
-	s.Require().NoError(err)
-	s.Equal("1.1.0", res.Previous)
-	s.Equal("1.3.0", res.Current)
-	s.True(res.Migrated)
-	s.False(res.Downgrade)
-	s.Equal("1.3.0", s.localMeta("bd_version"))
-	s.Equal("1.3.0", s.localMeta("bd_version_max"))
 }
 
 func (s *testSuite) configUseCaseGetConfigMissing() {

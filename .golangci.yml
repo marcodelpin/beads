@@ -163,6 +163,8 @@ linters:
               desc: "a command reaches the count role through store.Counter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storecounter/counter.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storeworkspaceconfig
               desc: "a command reaches the workspace-settings role through store.WorkspaceConfig(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storeworkspaceconfig/workspaceconfig.go"
+            - pkg: github.com/steveyegge/beads/internal/workapi/storeversionreconciler
+              desc: "a command reaches the version-marker role through store.VersionReconciler(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storeversionreconciler/versionreconciler.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storestats
               desc: "a command reaches the summary role through store.StatsReporter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storestats/reporter.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storereadycounter

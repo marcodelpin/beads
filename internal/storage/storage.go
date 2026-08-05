@@ -179,6 +179,16 @@ type Storage interface {
 	// re-project a value into a normalized lookup table — a side effect no
 	// issue role has anywhere to describe.
 	WorkspaceConfig() (issueops.WorkspaceConfig, error)
+
+	// VersionReconciler returns the clone-local version markers for this store:
+	// the dolt-ignored pair recording which bd binary last opened this
+	// workspace and the highest one that ever has. It is its own role rather
+	// than two more keys on WorkspaceConfig because settings are durable and
+	// travel with the database while these two are deliberately per-clone, and
+	// it is the one role here that belongs to no command — it answers a startup
+	// hook, so its failure costs every invocation rather than one.
+	VersionReconciler() (issueops.VersionReconciler, error)
+
 	// CycleDetector returns the guarded cycle-report surface for this store: its
 	// own role because it is asked of the WHOLE graph and answers with paths,
 	// where every Relations request names one anchor and answers with that
