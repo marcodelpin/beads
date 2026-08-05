@@ -95,6 +95,7 @@
 15 10 TestProxiedServerLabel
 15 10 TestProxiedServerList
 15 10 TestProxiedServerSQLDatabaseFlag
+15 10 TestProxiedServerSwarm
 15 10 TestProxiedServerUpdateWisp
 
 15 11 TestProxiedServerCompactHistory
