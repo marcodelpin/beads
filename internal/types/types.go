@@ -112,6 +112,17 @@ type Issue struct {
 	IDPrefix       string `json:"-"` // Override prefix for ID generation (appends to config prefix)
 	PrefixOverride string `json:"-"` // Completely replace config prefix (for cross-rig creation)
 
+	// WispPlaneOverride, when non-nil, pins which storage plane this in-memory
+	// record routes to (true = wisps table, false = issues table), overriding
+	// the Ephemeral/NoHistory flag inference in issueops.IsWisp. Import sets it
+	// from the export stream's explicit "wisp" plane marker so a promoted
+	// no-history wisp — a durable issues-table row that (pre-fix, or in wild
+	// data) still carries no_history=true — is never re-planed into the wisps
+	// table, after which default export would treat it as wisp-plane state
+	// (bd-r9uce). Never serialized, never persisted; nil means "infer from
+	// flags", which is the behavior everywhere outside import.
+	WispPlaneOverride *bool `json:"-"`
+
 	// ===== Relational Data (populated for export/import) =====
 	Labels       []string      `json:"labels,omitempty"`
 	Dependencies []*Dependency `json:"dependencies,omitempty"`

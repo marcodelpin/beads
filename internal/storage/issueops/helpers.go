@@ -26,7 +26,17 @@ import (
 // a naming convention for generated wisp IDs, but promoted wisps keep their
 // ID while moving to the issues table (Ephemeral=false). Routing on the ID
 // would send promoted wisps back to the wisps table on re-insert.
+//
+// WispPlaneOverride, when set, wins over the flags. Import sets it from the
+// export stream's explicit "wisp" plane marker: a record carrying
+// no_history=true but NO marker is a promoted no-history wisp — a durable
+// issues-table row whose stray flag must not re-plane it into the wisps
+// table on re-insert, which is how export→import→export silently dropped
+// such rows' relations (bd-r9uce).
 func IsWisp(issue *types.Issue) bool {
+	if issue.WispPlaneOverride != nil {
+		return *issue.WispPlaneOverride
+	}
 	return issue.Ephemeral || issue.NoHistory
 }
 
