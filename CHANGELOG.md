@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   malformed expression: both messages now come from one place instead of one per
   route.
 
+- **`bd purge --pattern` and `bd prune --pattern` no longer report success on a
+  malformed glob** (bd-pn231). Both routes matched patterns with the error
+  return of `filepath.Match` discarded, so `bd prune --pattern '[' --force`
+  printed "No closed beads to prune" and exited 0 — indistinguishable from a
+  correct pattern over an empty set. A pattern the glob syntax refuses is now an
+  error naming the pattern, on both routes.
+
+- **`bd purge --dry-run` and `bd prune --dry-run` no longer fail on sweeps the
+  real run completes** (bd-pn231). The preview asked for the refuse-if-any-
+  external-dependent path while the confirmed run asked for the force path, so a
+  dry run could report "has dependents not in deletion set" for a sweep
+  `--force` finishes by orphaning them — and the CLI then swallowed the error
+  and printed zeros. The preview and the run now ask the same question.
+
 ### Added
 
 - **`GET /v0/beads/issues:query` — the `bd query` expression language over
@@ -60,6 +74,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another repository. Anything else is a `400` and nothing is created. Hooks do
   not fire and the per-command auto-commit machinery does not run, exactly as
   for `POST /v0/beads/issues/{id}:claim`.
+
+- **`POST /v0/beads/issues:sweep` — bulk clearance of closed beads over HTTP**
+  (bd-pn231). The operation behind `bd purge` (`tier: ephemeral`) and
+  `bd prune` (`tier: durable`), on the new `issueops.Sweeper` role both CLI
+  routes now call. `capabilities` gains `issues.sweep`.
+
+  **This is the first DESTRUCTIVE operation on the surface, and nothing it
+  deletes comes back.** `bd serve` binds loopback and has no authentication, so
+  anyone who can reach the port can now clear closed beads: `--help` gained a
+  DESTRUCTIVE OPERATIONS section and the `--allow-non-loopback` warning says so.
+  A `durable` sweep with neither a cutoff nor a pattern is refused by the role
+  itself rather than by the handler, and `dry_run: true` costs the same request
+  without writing anything.
 
 - **`GET /v0/beads/config` and `GET /v0/beads/config/{key}` — the workspace's
   stored settings over HTTP** (bd-kzepq). `bd serve` now answers for the
@@ -305,6 +332,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dolt-only in persistence tests.
 
 ### Changed
+
+- **`bd purge` and `bd prune` select and delete in ONE transaction** (bd-pn231).
+  The direct route used to search in one transaction and delete in another, so a
+  bead closed between the two could be counted and not deleted, or deleted and
+  not counted. Both routes now run the whole sweep as one act on the new
+  `issueops.Sweeper` role, and the count a sweep reports is the set it deleted.
+
+  **The trade is worth knowing before you run a very large purge on a team
+  server.** One transaction means the Dolt server backend can no longer batch
+  wisp deletions 200 at a time, so a purge big enough to exceed Dolt's write
+  timeout now fails whole instead of deleting part of the workspace and
+  reporting nothing. Sweep in slices (`--pattern`, `--closed-before`) if you are
+  clearing a very large backlog.
+
+  The version-control entry for a sweep is now `bd: sweep <n> <tier> bead(s)` on
+  both routes, where the proxied route wrote `bd: prune <n> bead(s)` and the
+  direct route wrote `bd: delete <n> issue(s)`, naming neither the command nor
+  the tier. Scripts that grep commit messages for the old spellings need
+  updating.
+
+- **`bd list --max-rows` reports its own malformed value first** (bd-b34o7).
+  The row cap now rides the list request rather than being stamped onto the
+  filter after it was built, which moves the flag's validation ahead of the
+  filter's. `bd list --max-rows -1 --status bogus` now reports the `--max-rows`
+  usage error where it used to report the invalid status; the exit code is
+  unchanged and it takes two bad arguments to reach.
 
 - **`bd create --file` is all or nothing, and its plan-wide flags now mean
   something** (bd-lu170). Both routes build one `issueops.CreateBatchRequest`

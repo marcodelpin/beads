@@ -1220,6 +1220,16 @@ paths:
             trimming or carries control characters — or an unfiltered
             `durable` sweep, which the library surface refuses as a safety
             invariant.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/issues:batchCreate:
     post:
       operationId: batchCreateIssues
