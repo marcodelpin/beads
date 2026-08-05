@@ -8,7 +8,7 @@
 // store.IssueReader() from any front door — and one that silently skips the
 // telemetry decorator's reader-level spans, because a decorator adds its layer
 // in its own accessor. Down here the only importers are the two Dolt store
-// packages, and the cmd-bd-reader-constructor depguard rule in .golangci.yml
+// packages, and the cmd-bd-role-constructors depguard rule in .golangci.yml
 // makes a front door importing it a lint failure rather than a review comment.
 //
 // The accessor is the door. This is the thing behind it.

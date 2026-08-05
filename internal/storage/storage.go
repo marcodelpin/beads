@@ -146,6 +146,17 @@ type Storage interface {
 	// changes no field of the issue, so an IssuePatch has nothing to carry.
 	Commenter() (issueops.Commenter, error)
 
+	// Counter returns the guarded issue-count surface for this store. It is
+	// its own role rather than a fourth IssueReader method because a count is
+	// a NUMBER about a set where the reader answers with pages of issues:
+	// there is no order, no page and no cursor in the question, and a request
+	// carrying those would invite a caller to believe a limit bounded the
+	// answer.
+	//
+	// Reads fire no hooks, so the hook decorator's answer is its inner store's
+	// unchanged, as it is for IssueReader.
+	Counter() (issueops.Counter, error)
+
 	// IssueRelations returns the guarded neighbor-query surface for this
 	// store: the read counterpart of DependencyEditor. It is its own role
 	// rather than a fourth IssueReader method because it answers a question

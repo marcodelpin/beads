@@ -165,3 +165,36 @@ func TestIssueRelationsExposesTypedUnsupportedError(t *testing.T) {
 		t.Fatalf("IssueRelations() error = %v, want *beads.ErrUnsupported", err)
 	}
 }
+
+// TestCounterKeepsTelemetryOutermost is the count role's version of
+// TestIssueRelationsKeepsTelemetryOutermost, and it is the READ answer for the
+// same reason: counting fires no completion hooks, so the hook decorator adds
+// no layer and the outermost surface a caller gets is the instrumented one. A
+// hook wrapper appearing here would mean a layer landed on a path with nothing
+// to fire.
+func TestCounterKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	counter, err := storage.NewHookFiringStore(instrumented, nil).Counter()
+	if err != nil {
+		t.Fatalf("Counter() error = %v", err)
+	}
+	if got := reflect.TypeOf(counter).String(); got != "*telemetry.instrumentedCounter" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestCounterExposesTypedUnsupportedError(t *testing.T) {
+	counter, err := (*dolt.DoltStore)(nil).Counter()
+	if counter != nil {
+		t.Fatalf("Counter() counter = %T, want nil", counter)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Counter() error = %v, want *beads.ErrUnsupported", err)
+	}
+}

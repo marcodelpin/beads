@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the seven-strong capability surface every storage
+// roleAccessorNames is the eight-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -20,6 +20,7 @@ var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
 	"IssueRelations",
+	"Counter",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -50,7 +51,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the seven role
+// roleAccessorStore is a DoltStorage whose only real methods are the eight role
 // accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -62,6 +63,7 @@ type roleAccessorStore struct {
 func (s *roleAccessorStore) IssueLifecycle() (issueops.Lifecycle, error) { return s.surface, s.err }
 func (s *roleAccessorStore) IssueReader() (issueops.Reader, error)       { return s.surface, s.err }
 func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { return s.surface, s.err }
+func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.surface, s.err }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)      { return s.surface, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.surface, s.err
@@ -71,7 +73,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all seven roles at once. Nothing calls its
+// roleAccessorSentinel implements all eight roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -99,6 +101,12 @@ func (*roleAccessorSentinel) Get(context.Context, issueops.GetRequest) (*issueop
 func (*roleAccessorSentinel) Related(context.Context, issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
 	return nil, nil
 }
+func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
+	return issueops.CountResult{}, nil
+}
+func (*roleAccessorSentinel) CountByGroup(context.Context, issueops.CountByGroupRequest) (issueops.CountByGroupResult, error) {
+	return issueops.CountByGroupResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -121,9 +129,9 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // DoltStorage, and silently drops every span and timing on that role.
 //
 // Unlike the hook decorator, this one has no read-role exemption: telemetry
-// spans reads as well as writes, so ALL SEVEN must come back wrapped. Only
+// spans reads as well as writes, so ALL EIGHT must come back wrapped. Only
 // IssueLifecycle and IssueReader had a recursion pin of their own before this
-// test; the other five wrappers had no test at all.
+// test; the other six wrappers had no test at all.
 func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	sentinel := &roleAccessorSentinel{}
@@ -140,6 +148,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"IssueLifecycle", func() (any, error) { return wrapped.IssueLifecycle() }},
 		{"IssueReader", func() (any, error) { return wrapped.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
+		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
@@ -175,6 +184,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueLifecycle", func() (any, error) { return wrapped.IssueLifecycle() }},
 		{"IssueReader", func() (any, error) { return wrapped.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
+		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},

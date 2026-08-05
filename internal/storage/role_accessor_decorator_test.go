@@ -11,14 +11,15 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the seven-strong capability surface every storage
+// roleAccessorNames is the eight-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding an eighth role to DoltStorage without deciding what each decorator
+// adding a ninth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
 	"IssueRelations",
+	"Counter",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -60,7 +61,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the seven role
+// roleAccessorStore is a DoltStorage whose only real methods are the eight role
 // accessors, each answering with a distinguishable sentinel so a test can tell
 // a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -68,6 +69,7 @@ type roleAccessorStore struct {
 	lifecycle issueops.Lifecycle
 	reader    issueops.Reader
 	relations issueops.Relations
+	counter   issueops.Counter
 	commenter issueops.Commenter
 	claimer   issueops.ReadyClaimer
 	closer    issueops.BatchCloser
@@ -81,6 +83,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		lifecycle: sentinel,
 		reader:    sentinel,
 		relations: sentinel,
+		counter:   sentinel,
 		commenter: sentinel,
 		claimer:   sentinel,
 		closer:    sentinel,
@@ -91,6 +94,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 func (s *roleAccessorStore) IssueLifecycle() (issueops.Lifecycle, error) { return s.lifecycle, s.err }
 func (s *roleAccessorStore) IssueReader() (issueops.Reader, error)       { return s.reader, s.err }
 func (s *roleAccessorStore) IssueRelations() (issueops.Relations, error) { return s.relations, s.err }
+func (s *roleAccessorStore) Counter() (issueops.Counter, error)          { return s.counter, s.err }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)      { return s.commenter, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
@@ -100,7 +104,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all seven roles at once. Nothing calls its
+// roleAccessorSentinel implements all eight roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -128,6 +132,12 @@ func (*roleAccessorSentinel) Get(context.Context, issueops.GetRequest) (*issueop
 func (*roleAccessorSentinel) Related(context.Context, issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
 	return nil, nil
 }
+func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
+	return issueops.CountResult{}, nil
+}
+func (*roleAccessorSentinel) CountByGroup(context.Context, issueops.CountByGroupRequest) (issueops.CountByGroupResult, error) {
+	return issueops.CountByGroupResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -150,11 +160,11 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // satisfying DoltStorage, and silently stops every completion hook on that
 // role.
 //
-// The two read roles are asserted the OTHER way round on purpose. Reads fire no
-// completion hooks, so IssueReader and IssueRelations deliberately return the
-// inner surface unwrapped (hook_issue_reader.go, hook_relations.go); this test
-// pins that as a decision rather than leaving it indistinguishable from the
-// regression above.
+// The three read roles are asserted the OTHER way round on purpose. Reads fire
+// no completion hooks, so IssueReader, IssueRelations and Counter deliberately
+// return the inner surface unwrapped (hook_issue_reader.go, hook_relations.go,
+// hook_counter.go); this test pins that as a decision rather than leaving it
+// indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -172,6 +182,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }, inner.editor, true},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
+		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -209,6 +220,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
+		{"Counter", func() (any, error) { return store.Counter() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

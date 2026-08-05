@@ -360,7 +360,7 @@ type IssuePage struct {
 //
 //     The shared implementation behind the store accessor
 //     lives in internal/workapi/storereader, which the
-//     cmd-bd-reader-constructor depguard rule keeps out of cmd/bd: the
+//     cmd-bd-role-constructors depguard rule keeps out of cmd/bd: the
 //     accessor is where each storage decorator adds its layer, so a command
 //     that constructed a reader directly would get an unspanned one. `bd show`
 //     keeps its own id RESOLUTION — fuzzy ids, cross-repo routing, --current —
@@ -410,7 +410,7 @@ type IssuePage struct {
 // types.WorkFilter there at all, so no filter is writable there either — both
 // are directory-scoped with no per-file exception, so a file added to that
 // package tomorrow is covered the moment it exists. That same forbidigo rule
-// covers cmd/bd deny-by-default with 64 named exceptions, so the files
+// covers cmd/bd deny-by-default with 63 named exceptions, so the files
 // implementing `bd list` and `bd show` cannot write a filter, and neither can
 // a file they are split or renamed into unless the new name lands on that
 // list. NOT ENFORCED: the rule forbids NAMING those types, not holding a
