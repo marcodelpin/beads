@@ -161,6 +161,9 @@ const (
 	OpListDependencies = "listDependencies"
 	OpCountReadyWork   = "countReadyWork"
 	OpQueryIssues      = "queryIssues"
+	// OpSweepIssues is the one DESTRUCTIVE operation on this surface: bulk
+	// clearance of closed beads from one tier, behind issueops.Sweeper.
+	OpSweepIssues = "sweepIssues"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -220,6 +223,13 @@ var operationCodes = map[string][]Code{
 	// recovery is the same as for any other malformed parameter value, and a
 	// code it cannot act on differently is a code it should not have to know.
 	OpQueryIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The 400 here is the widest on this surface, and most of it is not this
+	// handler's: an unknown or malformed body member is, but the unfiltered
+	// durable sweep, the unrecognized tier and the malformed glob are all the
+	// ROLE's ErrValidation reaching the wire through failSweepErr. No 404 —
+	// this operation names no id — and no 409: a sweep has nothing to conflict
+	// with, since a bead another sweep already took is simply not in the set.
+	OpSweepIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

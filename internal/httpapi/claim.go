@@ -34,9 +34,10 @@ const (
 	// maxActorBytes is the document's cap on `actor`. The schema's maxLength
 	// counts characters; this byte limit is the binding one.
 	maxActorBytes = 256
-	// maxClaimBodyBytes bounds the request body. The only member is an actor of
-	// at most a few hundred bytes, so this is pure refusal of the absurd.
-	maxClaimBodyBytes = 1 << 20
+	// maxJSONBodyBytes bounds every request body on this surface. The largest
+	// documented one is a handful of short members, so this is pure refusal of
+	// the absurd.
+	maxJSONBodyBytes = 1 << 20
 	// claimContentType is the one media type this operation accepts, and
 	// refusing anything else is a CSRF control, not pedantry: a JSON content
 	// type is not CORS-"simple", so a cross-origin claim always triggers a
@@ -175,7 +176,7 @@ func (s *Server) requireJSONContent(w http.ResponseWriter, r *http.Request) bool
 // assignee column AND interpolated into the storage commit message — where an
 // unvalidated newline forges audit-trail lines that look like separate commits.
 func (s *Server) claimActor(w http.ResponseWriter, r *http.Request) (string, bool) {
-	members, res := decodeClaimBody(w, r)
+	members, res := decodeJSONObjectBody(w, r)
 	if res != nil {
 		s.fail(w, r, *res)
 		return "", false
@@ -223,12 +224,15 @@ func (s *Server) claimActor(w http.ResponseWriter, r *http.Request) (string, boo
 	return trimmed, true
 }
 
-// decodeClaimBody reads the body as a JSON object of raw members. Decoding the
-// members rather than the generated struct is what makes the schema's
+// decodeJSONObjectBody reads the body as a JSON object of raw members. Decoding
+// the members rather than the generated struct is what makes the schema's
 // additionalProperties: false enforceable by NAME: encoding/json's
 // DisallowUnknownFields reports the offender only inside an error string, and
-// this endpoint exists to let clients stop parsing prose.
-func decodeClaimBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, *Result) {
+// these endpoints exist to let clients stop parsing prose.
+//
+// Shared with the sweep, which has the same posture and the same reason for
+// it; the member vocabulary each operation accepts is its own.
+func decodeJSONObjectBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, *Result) {
 	// A body with no nameable part: `param` is documented absent on exactly
 	// this case and present on every other 400.
 	unparseable := func(detail string) *Result {
@@ -237,11 +241,11 @@ func decodeClaimBody(w http.ResponseWriter, r *http.Request) (map[string]json.Ra
 	}
 
 	var members map[string]json.RawMessage
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxClaimBodyBytes))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes))
 	if err := dec.Decode(&members); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return nil, unparseable(fmt.Sprintf("request body is larger than %d bytes", maxClaimBodyBytes))
+			return nil, unparseable(fmt.Sprintf("request body is larger than %d bytes", maxJSONBodyBytes))
 		}
 		return nil, unparseable("request body must be a JSON object")
 	}
@@ -364,6 +368,7 @@ var (
 	_ uow.IssueClaimerSource    = timedProvider{}
 	_ uow.ReadyCounterSource    = timedProvider{}
 	_ uow.QuerierSource         = timedProvider{}
+	_ uow.SweeperSource         = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -441,6 +446,15 @@ func (p timedProvider) ReadyCounter() (issueops.ReadyCounter, error) {
 // and it must land in this request's uow_ms rather than in nobody's.
 func (p timedProvider) Querier() (issueops.Querier, error) {
 	return uow.NewQuerier(p)
+}
+
+// Sweeper builds the sweeper OVER THIS WRAPPER, for the same reason as the two
+// above and with the sharpest version of the hazard: the sweep is the longest
+// unit of work on this surface, so a sweeper bound to the untimed provider
+// would report uow_ms=0.000 for exactly the request whose duration an operator
+// most wants in the log.
+func (p timedProvider) Sweeper() (issueops.Sweeper, error) {
+	return uow.NewSweeper(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

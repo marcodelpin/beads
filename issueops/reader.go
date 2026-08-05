@@ -469,14 +469,14 @@ type IssuePage struct {
 // types.WorkFilter there at all, so no filter is writable there either — both
 // are directory-scoped with no per-file exception, so a file added to that
 // package tomorrow is covered the moment it exists. That same forbidigo rule
-// covers cmd/bd deny-by-default with 61 named exceptions, so the files
+// covers cmd/bd deny-by-default with 59 named exceptions, so the files
 // implementing `bd list` and `bd show` cannot write a filter, and neither can
 // a file they are split or renamed into unless the new name lands on that
 // list. NOT ENFORCED: the rule forbids NAMING those types, not holding a
 // value, so the property is "no filter is written there", not "every filter
 // there came from a builder"; test files are exempt from both rules, because
 // the oracles hold filters in order to inspect them; `bd ready`'s files are
-// among the 61, since its listing and --claim are handed the filter itself and
+// among the 59, since its listing and --claim are handed the filter itself and
 // the blocked-issue views in those files name one directly, so it is guarded by
 // the builder and the golden files and not by the linter;
 // GET /healthz and GET /v0/beads/context are not issue queries and are on no

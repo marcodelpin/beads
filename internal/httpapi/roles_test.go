@@ -313,6 +313,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.Querier == nil {
 		cfg.Querier = &roleQuerier{}
 	}
+	if cfg.Sweeper == nil {
+		cfg.Sweeper = &roleSweeper{}
+	}
 	return cfg
 }
 
@@ -345,6 +348,36 @@ func (d *roleCycleDetector) DetectCycles(_ context.Context, req issueops.DetectC
 		return issueops.CycleReport{}, d.err
 	}
 	return d.report, nil
+}
+
+// roleSweeper is the store-shaped source's bulk-clearance role. Like the
+// others it answers with whatever a case configured, so every configured-roles
+// case can hand Listen a COMPLETE source without deciding what a sweep of its
+// fixture should do — which matters more here than for the reads, because the
+// alternative to a complete source is a server that binds and then
+// nil-dereferences on the one request that deletes beads.
+type roleSweeper struct {
+	result issueops.SweepResult
+	err    error
+
+	mu    sync.Mutex
+	calls []issueops.SweepRequest
+}
+
+func (s *roleSweeper) Sweep(_ context.Context, req issueops.SweepRequest) (issueops.SweepResult, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, req)
+	s.mu.Unlock()
+	if s.err != nil {
+		return issueops.SweepResult{}, s.err
+	}
+	return s.result, nil
+}
+
+func (s *roleSweeper) requests() []issueops.SweepRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]issueops.SweepRequest(nil), s.calls...)
 }
 
 // countedPage is the fixture both database sources answer with, so a body
@@ -440,6 +473,25 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			name:    "no querier",
 			cfg:     rolesConfigWithout(func(c *Config) { c.Querier = nil }),
 			wantErr: "no database source",
+		},
+		{
+			// The newest role, and the one whose absence would be worst: a
+			// Config written against the previous release binds, advertises
+			// issues.sweep in its own capability list, and nil-dereferences on
+			// the first request that deletes beads.
+			name:    "no sweeper",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Sweeper = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "a sweeper alone",
+			cfg:     Config{Sweeper: &roleSweeper{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a provider and a sweeper",
+			cfg:     Config{Provider: &fakeProvider{}, Sweeper: &roleSweeper{}},
+			wantErr: "exactly one database source",
 		},
 		{
 			name:    "a cycle detector alone",
@@ -822,16 +874,7 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 // package.
 func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 	t.Run("a missing issue is 404", func(t *testing.T) {
-		ts := newTestServer(t, Config{
-			Reader:        &roleReader{err: fmt.Errorf("get bd-404: %w", storage.ErrNotFound)},
-			Claimer:       &roleClaimer{},
-			Settings:      &roleSettings{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-			EdgeReader:    &roleEdgeReader{},
-			ReadyCounter:  &roleReadyCounter{},
-			Querier:       &roleQuerier{},
-		})
+		ts := newTestServer(t, rolesConfig(Config{Reader: &roleReader{err: fmt.Errorf("get bd-404: %w", storage.ErrNotFound)}}))
 		resp := ts.get(t, "/v0/beads/issues/bd-404")
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404: %s", resp.StatusCode, readAll(t, resp))
@@ -845,16 +888,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 		// The builders run INSIDE the role on this path, so their refusal
 		// arrives at the handler exactly as it does from a unit-of-work reader —
 		// and must still be mapped to its parameter rather than to a 500.
-		ts := newTestServer(t, Config{
-			Reader:        &roleReader{err: errors.New("invalid status bogus")},
-			Claimer:       &roleClaimer{},
-			Settings:      &roleSettings{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-			EdgeReader:    &roleEdgeReader{},
-			ReadyCounter:  &roleReadyCounter{},
-			Querier:       &roleQuerier{},
-		})
+		ts := newTestServer(t, rolesConfig(Config{Reader: &roleReader{err: errors.New("invalid status bogus")}}))
 		resp := ts.get(t, "/v0/beads/issues?status=bogus")
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", resp.StatusCode, readAll(t, resp))
@@ -866,21 +900,14 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 	})
 
 	t.Run("a foreign holder is 409 with its state", func(t *testing.T) {
-		ts := newTestServer(t, Config{
-			Reader:        &roleReader{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-			EdgeReader:    &roleEdgeReader{},
+		ts := newTestServer(t, rolesConfig(Config{
 			Claimer: &roleClaimer{err: &issueops.ClaimConflictError{
 				IssueID:  "bd-1",
 				Assignee: "bob",
 				Status:   types.StatusInProgress,
 				Err:      fmt.Errorf("claim bd-1: %w", storage.ErrAlreadyClaimed),
 			}},
-			Settings:     &roleSettings{},
-			ReadyCounter: &roleReadyCounter{},
-			Querier:      &roleQuerier{},
-		})
+		}))
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
 		if resp.StatusCode != http.StatusConflict {
 			t.Fatalf("status = %d, want 409: %s", resp.StatusCode, readAll(t, resp))
@@ -895,16 +922,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 	})
 
 	t.Run("a role failure is the generic 500", func(t *testing.T) {
-		ts := newTestServer(t, Config{
-			Reader:        &roleReader{err: errors.New("backend is unreachable")},
-			Claimer:       &roleClaimer{},
-			Settings:      &roleSettings{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-			EdgeReader:    &roleEdgeReader{},
-			ReadyCounter:  &roleReadyCounter{},
-			Querier:       &roleQuerier{},
-		})
+		ts := newTestServer(t, rolesConfig(Config{Reader: &roleReader{err: errors.New("backend is unreachable")}}))
 		resp := ts.get(t, "/v0/beads/ready")
 		if resp.StatusCode != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500: %s", resp.StatusCode, readAll(t, resp))
@@ -1001,16 +1019,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 	// tell a broken role from an absent issue.
 	t.Run("a reader with no detail view is the documented miss", func(t *testing.T) {
 		silent := newTestServer(t, rolesConfig(Config{}))
-		missed := newTestServer(t, Config{
-			Reader:        &roleReader{err: fmt.Errorf("get bd-1: %w", storage.ErrNotFound)},
-			Claimer:       &roleClaimer{},
-			Settings:      &roleSettings{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-			EdgeReader:    &roleEdgeReader{},
-			ReadyCounter:  &roleReadyCounter{},
-			Querier:       &roleQuerier{},
-		})
+		missed := newTestServer(t, rolesConfig(Config{Reader: &roleReader{err: fmt.Errorf("get bd-1: %w", storage.ErrNotFound)}}))
 
 		got := silent.get(t, "/v0/beads/issues/bd-1")
 		want := missed.get(t, "/v0/beads/issues/bd-1")
@@ -1033,16 +1042,9 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 	// fault reaches the log as a stack trace instead of as an error, and the
 	// panic path writes no request_error line for an operator to alert on.
 	t.Run("a claimer with no issue is the generic failure", func(t *testing.T) {
-		ts := newTestServer(t, Config{
-			Reader:        &roleReader{},
-			Claimer:       &roleClaimer{result: issueops.ClaimResult{Changed: true}},
-			Settings:      &roleSettings{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-			EdgeReader:    &roleEdgeReader{},
-			ReadyCounter:  &roleReadyCounter{},
-			Querier:       &roleQuerier{},
-		})
+		ts := newTestServer(t, rolesConfig(Config{
+			Claimer: &roleClaimer{result: issueops.ClaimResult{Changed: true}},
+		}))
 
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
 		if resp.StatusCode != http.StatusInternalServerError {

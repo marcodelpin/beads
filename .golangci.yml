@@ -254,7 +254,7 @@ linters:
         linters:
           - forbidigo
       # Inside cmd/bd the rule is deny-by-default, so each entry below is a
-      # HOLE in it and carries the reason that hole exists. 61 of the 388
+      # HOLE in it and carries the reason that hole exists. 59 of the 389
       # non-test files under cmd/bd are on this list; widening it is an edit
       # here and a diff a reviewer sees. internal/httpapi has no entry and is
       # meant not to.
@@ -303,7 +303,14 @@ linters:
       # issueops request and name no filter type, so the hole they needed is
       # closed rather than merely unused. Removing an entry here is how a role
       # commit proves its front doors reached the role.
-      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|purge|search|todo|wisp)(_proxied_server)?\.go$'
+      #
+      # `purge` left it the same way when the Sweeper role took the candidate
+      # filter off both `bd purge` and `bd prune`: cmd/bd/purge.go now builds an
+      # issueops.SweepRequest, and cmd/bd/purge_proxied_server.go is down to the
+      # provider's capability accessor. `gc` stays — it is a different command
+      # that still selects its own closed beads, and it now shares only the pure
+      # recheck (workapi.FilterSweepCandidates) with the role.
+      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|search|todo|wisp)(_proxied_server)?\.go$'
         linters:
           - forbidigo
       # Molecule reporting: each selects the members of one molecule.

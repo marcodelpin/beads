@@ -207,6 +207,12 @@ type Config struct {
 	EdgeReader    issueops.EdgeReader
 	ReadyCounter  issueops.ReadyCounter
 	Querier       issueops.Querier
+	// Sweeper is the DESTRUCTIVE one, and it is required on the same terms as
+	// every other role rather than opt-in. A Config that could omit it would
+	// be a Config that quietly decides whether this build erases beads, which
+	// is a decision that belongs to the operator who chose to run bd serve at
+	// all — not to whether a caller remembered a field.
+	Sweeper issueops.Sweeper
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -250,6 +256,7 @@ type Server struct {
 	issueEdges        issueops.EdgeReader
 	issueReadyCounter issueops.ReadyCounter
 	issueQuerier      issueops.Querier
+	issueSweeper      issueops.Sweeper
 
 	listener net.Listener
 	http     *http.Server
@@ -354,6 +361,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueEdges:        cfg.EdgeReader,
 		issueReadyCounter: cfg.ReadyCounter,
 		issueQuerier:      cfg.Querier,
+		issueSweeper:      cfg.Sweeper,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -457,12 +465,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter, cfg.Querier}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, ReadyCounter and Querier"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, ReadyCounter, Querier and Sweeper"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -718,6 +726,25 @@ func (s *Server) querier(r *http.Request) (issueops.Querier, error) {
 	}
 	var src uow.QuerierSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.Querier()
+}
+
+// sweeper returns the guarded bulk-clearance surface for one request.
+//
+// The same two sources as every role above, for the same reasons, and held by
+// INTERFACE so uow.SweeperSource is load-bearing rather than decorative. It
+// goes out unwrapped for the reason readyCounter does: SweepResult is a VALUE,
+// so there is no pointer for a caller-supplied role to hand back nil in.
+//
+// The role this returns is the ONLY thing standing between a POST body and a
+// mass delete — the require-a-filter gate, the pinned protection and the
+// closed_at recheck are all inside it — which is why the Config field it comes
+// from is required rather than optional.
+func (s *Server) sweeper(r *http.Request) (issueops.Sweeper, error) {
+	if s.provider == nil {
+		return s.issueSweeper, nil
+	}
+	var src uow.SweeperSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.Sweeper()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

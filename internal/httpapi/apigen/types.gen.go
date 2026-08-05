@@ -25,6 +25,24 @@ func (e HealthStatus) Valid() bool {
 	}
 }
 
+// Defines values for SweepRequestTier.
+const (
+	Durable   SweepRequestTier = "durable"
+	Ephemeral SweepRequestTier = "ephemeral"
+)
+
+// Valid indicates whether the value is a known member of the SweepRequestTier enum.
+func (e SweepRequestTier) Valid() bool {
+	switch e {
+	case Durable:
+		return true
+	case Ephemeral:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QueryIssuesParamsSort.
 const (
 	QueryIssuesParamsSortAssignee QueryIssuesParamsSort = "assignee"
@@ -120,7 +138,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -314,6 +332,79 @@ type StatsResponse struct {
 	//
 	// This is the struct `bd status --json` marshals under `summary`, pinned so the two surfaces are one compatibility domain.
 	Summary Statistics `json:"summary"`
+}
+
+// SweepRequest Which closed beads to clear. The predicate is FIXED at "closed beads of one tier" and the two narrowing members only narrow it: there is no status, no assignee, no label and no free-text query here, because every one of those would be another way to spell a destructive selection that a caller could get subtly wrong.
+//
+// `additionalProperties: false`, so an unknown member is a `400` naming the member — the same posture the query-parameter rule takes, and for the same reason: on this operation a silently ignored narrowing term widens what is erased.
+type SweepRequest struct {
+	// Actor Caller-asserted attribution for wherever the backend records it, under the same rules and for the same reasons as `ClaimRequest`'s `actor`: trimmed, refused when empty after trimming, over 256 BYTES, or carrying any control character. Optional — a deleted bead leaves no row to attribute the deletion on.
+	Actor *string `json:"actor,omitempty"`
+
+	// ClosedBefore Keep only beads closed STRICTLY BEFORE this instant (RFC 3339). A bead closed exactly at it is kept, which is the half-open interval every other time bound on this surface uses. `bd prune --older-than 30d` resolves the duration itself and sends the resulting instant.
+	ClosedBefore *time.Time `json:"closed_before,omitempty"`
+
+	// DryRun Report what the sweep WOULD do and delete nothing. The counts, the skips and the refusals are the same ones the real sweep would produce, computed against the same snapshot — and nothing is recorded in history either.
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// Pattern Keep only beads whose id matches this shell glob (`*`, `?`, `[...]`, `\` escapes; `*` also crosses `-` and `.`, since an id is not a path). Absent matches every bead in the tier. A MALFORMED glob is a `400`, never a pattern that matches nothing.
+	Pattern *string `json:"pattern,omitempty"`
+
+	// ProtectReferenced Skip candidates whose id is CITED — as a literal, at word boundaries — in the description, notes or comments of any bead that is not done, so a decision trail a live bead still points at is not deleted out from under it. It costs a full scan of the not-done set and its comments, which is why it is asked for rather than always on. `bd prune` asks unless `--ignore-references`; `bd purge` never does.
+	ProtectReferenced *bool `json:"protect_referenced,omitempty"`
+
+	// Tier Which plane to clear. `ephemeral` is the wisp tier (`bd purge`) and `durable` is the issue tier (`bd prune`). The two are DISJOINT: a sweep of one can never touch a bead of the other. Required, with no default — a caller handed the wrong tier has nothing to notice until the beads are gone.
+	Tier SweepRequestTier `json:"tier"`
+}
+
+// SweepRequestTier Which plane to clear. `ephemeral` is the wisp tier (`bd purge`) and `durable` is the issue tier (`bd prune`). The two are DISJOINT: a sweep of one can never touch a bead of the other. Required, with no default — a caller handed the wrong tier has nothing to notice until the beads are gone.
+type SweepRequestTier string
+
+// SweepResult What one sweep did. Every number describes the SAME snapshot, because the selection and the deletion ran in one transaction.
+//
+// It is NOT `x-go-type`-pinned, for the reason `ReadyCount` is not: there is no canonical Go struct whose JSON encoding is this contract. The CLI publishes these numbers under its own per-command keys (`purged_count`, `pruned_count`), which are a stdout presentation rather than a wire type, so pinning would weld this body to one of them.
+type SweepResult struct {
+	// Dependencies Dependency edge rows removed with them. Reported because a sweep's visible effect is much larger than its bead count.
+	Dependencies int `json:"dependencies"`
+
+	// DryRun Echoes the request, so a result carries whether its numbers describe beads that are gone or beads that would go.
+	DryRun bool `json:"dry_run"`
+
+	// Events Event rows removed with the swept beads.
+	Events int `json:"events"`
+
+	// Labels Label rows removed with the swept beads.
+	Labels int `json:"labels"`
+
+	// ReferencedIds A BOUNDED SAMPLE of the ids `skipped.referenced` counts — at most 100, in the order the candidate query returned them. It is a sample, not the set: compare its length against 100 to tell a truncated one from a complete one. Absent when nothing was protected.
+	ReferencedIds *[]string `json:"referenced_ids,omitempty"`
+
+	// Skipped The candidates a sweep declined to delete, bucketed by WHY. They are separate counters rather than one number because they mean different things: the first two are PROTECTIONS, and the last four are the sweep declining to trust its own input.
+	Skipped SweepSkips `json:"skipped"`
+
+	// Swept How many beads were deleted, or under `dry_run` would be.
+	Swept int `json:"swept"`
+}
+
+// SweepSkips The candidates a sweep declined to delete, bucketed by WHY. They are separate counters rather than one number because they mean different things: the first two are PROTECTIONS, and the last four are the sweep declining to trust its own input.
+type SweepSkips struct {
+	// ClosedAtOrAfterCutoff Candidates whose close timestamp did not satisfy `closed_before`. See `not_closed`.
+	ClosedAtOrAfterCutoff int `json:"closed_at_or_after_cutoff"`
+
+	// NotClosed Candidates the tier query returned that the recheck found were not closed. A NON-ZERO VALUE HERE IS A DEFENSE FIRING, not a normal outcome: the query asked for exactly the beads this excludes.
+	NotClosed int `json:"not_closed"`
+
+	// Pinned Candidates protected by the pinned flag. No request member overrides it — a caller who wants a pinned bead gone unpins it first.
+	Pinned int `json:"pinned"`
+
+	// Referenced Candidates protected by `protect_referenced`. Always 0 when that member is false or absent, so a 0 read without having asked says nothing about whether beads are cited.
+	Referenced int `json:"referenced"`
+
+	// UnknownClosedAt Closed candidates carrying no close timestamp. See `not_closed`.
+	UnknownClosedAt int `json:"unknown_closed_at"`
+
+	// Unreadable Rows the tier query returned as nothing at all. A defense of the same kind, on a shape rather than a value.
+	Unreadable int `json:"unreadable"`
 }
 
 // IssueID defines model for IssueID.
@@ -574,3 +665,6 @@ type GetStatsParams struct {
 
 // ClaimIssueJSONRequestBody defines body for ClaimIssue for application/json ContentType.
 type ClaimIssueJSONRequestBody = ClaimRequest
+
+// SweepIssuesJSONRequestBody defines body for SweepIssues for application/json ContentType.
+type SweepIssuesJSONRequestBody = SweepRequest

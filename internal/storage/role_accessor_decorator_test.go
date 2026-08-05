@@ -11,9 +11,9 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the fourteen-strong capability surface every storage
+// roleAccessorNames is the sixteen-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a fifteenth role to DoltStorage without deciding what each decorator
+// adding a seventeenth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
@@ -27,6 +27,7 @@ var roleAccessorNames = []string{
 	"CycleDetector",
 	"ReadyCounter",
 	"Querier",
+	"Sweeper",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -68,9 +69,9 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the fourteen role
-// accessors, each answering with a distinguishable sentinel so a test can tell
-// a decorated surface from a passed-through one.
+// roleAccessorStore is a DoltStorage whose only real methods are the sixteen
+// role accessors, each answering with a distinguishable sentinel so a test can
+// tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
 	DoltStorage
 	lifecycle    issueops.Lifecycle
@@ -88,6 +89,7 @@ type roleAccessorStore struct {
 	editor       issueops.DependencyEditor
 	readyCounter issueops.ReadyCounter
 	querier      issueops.Querier
+	sweeper      issueops.Sweeper
 	err          error
 }
 
@@ -109,6 +111,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		editor:       sentinel,
 		readyCounter: sentinel,
 		querier:      sentinel,
+		sweeper:      sentinel,
 	}
 }
 
@@ -135,6 +138,9 @@ func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return s.readyCounter, s.err
 }
 func (s *roleAccessorStore) Querier() (issueops.Querier, error) { return s.querier, s.err }
+func (s *roleAccessorStore) Sweeper() (issueops.Sweeper, error) {
+	return s.sweeper, s.err
+}
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
@@ -143,7 +149,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all fourteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all sixteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -216,6 +222,10 @@ func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) 
 func (*roleAccessorSentinel) Query(context.Context, issueops.QueryRequest) (issueops.IssuePage, error) {
 	return issueops.IssuePage{}, nil
 }
+
+func (*roleAccessorSentinel) Sweep(context.Context, issueops.SweepRequest) (issueops.SweepResult, error) {
+	return issueops.SweepResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -276,6 +286,11 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }, inner.readyCounter, false},
 		{"Querier", func() (any, error) { return store.Querier() }, inner.querier, false},
+		// The one WRITE role in the unwrapped column, and the reason is the
+		// hook vocabulary rather than the role: there is no on_delete hook to
+		// fire and a swept row is gone, so hook_sweeper.go recurses. Asserting
+		// it here is what keeps that a decision.
+		{"Sweeper", func() (any, error) { return store.Sweeper() }, inner.sweeper, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -321,6 +336,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }},
 		{"Querier", func() (any, error) { return store.Querier() }},
+		{"Sweeper", func() (any, error) { return store.Sweeper() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

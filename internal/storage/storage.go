@@ -217,6 +217,18 @@ type Storage interface {
 	// CONJUNCTION — every field narrows — and no arrangement of its fields
 	// expresses a disjunction. Reads fire no hooks, as for IssueReader.
 	Querier() (issueops.Querier, error)
+	// Sweeper returns the guarded bulk-clearance surface for this store —
+	// `bd purge` and `bd prune`, which are one capability over two disjoint
+	// tiers rather than two. Its own role because it describes a SET and then
+	// acts on it: no Lifecycle patch names a set, and composing a count with a
+	// delete would reopen the window this role exists to close.
+	//
+	// It is the one WRITE role whose hook decorator recurses UNWRAPPED, and
+	// that is a fact about the hook vocabulary rather than about the role:
+	// there is no on_delete hook to fire (internal/hooks publishes create,
+	// update and close), and the rows a sweep would name it with are gone.
+	// See hook_sweeper.go.
+	Sweeper() (issueops.Sweeper, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

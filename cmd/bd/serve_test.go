@@ -258,7 +258,14 @@ func TestServeBuildsOnlyAProviderBackedServer(t *testing.T) {
 					continue
 				}
 				switch key.Name {
-				case "Reader", "Claimer", "EdgeReader":
+				// NOT the whole role set — Settings, Stats, CycleDetector and
+				// ReadyCounter are absent, which is a gap someone should close
+				// by inverting this into "any key that is not one of the
+				// non-role fields". Sweeper is here because it is the one
+				// whose absence would cost most: a roles-backed server over
+				// the embedded store answers a BULK DELETE while its
+				// per-request atomicity claim is false.
+				case "Reader", "Claimer", "EdgeReader", "Sweeper":
 					t.Errorf("%s: bd serve sets httpapi.Config.%s. The roles source bypasses the unit-of-work "+
 						"provider serveModeGate vouched for, and internal/httpapi cannot tell an embedded-backed "+
 						"role from any other — read serveModeGate before changing this",

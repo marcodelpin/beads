@@ -77,7 +77,17 @@ WHAT THIS DOES NOT DO
 
   An actor on an HTTP request is caller-asserted provenance for the audit trail,
   not authenticated identity — the same thing it has always been on the CLI,
-  where any local process can pass any --actor.`,
+  where any local process can pass any --actor.
+
+DESTRUCTIVE OPERATIONS
+
+  POST /v0/beads/issues:sweep deletes closed beads in bulk — the operation
+  behind bd purge and bd prune — and nothing it deletes comes back. It shares
+  the library surface those commands call, so it inherits their guards: pinned
+  beads are never swept, and a durable sweep with neither a cutoff nor an id
+  pattern is refused rather than clearing every closed bead in the workspace.
+  Combined with the trust model above, that means anyone who can reach this
+  address can erase closed work; bind it accordingly.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runServe()
@@ -152,7 +162,8 @@ func runServe() error {
 	if serveAllowNonLoopback {
 		fmt.Fprintf(os.Stderr,
 			"bd serve: WARNING: --allow-non-loopback binds %s beyond loopback. "+
-				"This API has no authentication and no TLS: any peer that can reach it can read every issue and claim work as any actor.\n",
+				"This API has no authentication and no TLS: any peer that can reach it can read every issue, claim work as any actor, "+
+				"and bulk-delete closed beads.\n",
 			serveAddr)
 	}
 

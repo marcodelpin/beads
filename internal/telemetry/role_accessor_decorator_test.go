@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the fourteen-strong capability surface every storage
+// roleAccessorNames is the sixteen-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -28,6 +28,7 @@ var roleAccessorNames = []string{
 	"CycleDetector",
 	"ReadyCounter",
 	"Querier",
+	"Sweeper",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -58,8 +59,8 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the fourteen role
-// accessors, each answering with a distinguishable sentinel so a test can tell
+// roleAccessorStore is a DoltStorage whose only real methods are the sixteen
+// role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
 	storage.DoltStorage
@@ -90,6 +91,9 @@ func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) Querier() (issueops.Querier, error) { return s.surface, s.err }
+func (s *roleAccessorStore) Sweeper() (issueops.Sweeper, error) {
+	return s.surface, s.err
+}
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.surface, s.err
 }
@@ -98,7 +102,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all fourteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all sixteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -171,6 +175,10 @@ func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) 
 func (*roleAccessorSentinel) Query(context.Context, issueops.QueryRequest) (issueops.IssuePage, error) {
 	return issueops.IssuePage{}, nil
 }
+
+func (*roleAccessorSentinel) Sweep(context.Context, issueops.SweepRequest) (issueops.SweepResult, error) {
+	return issueops.SweepResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -193,7 +201,7 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // DoltStorage, and silently drops every span and timing on that role.
 //
 // Unlike the hook decorator, this one has no read-role exemption: telemetry
-// spans reads as well as writes, so ALL THIRTEEN must come back wrapped. Only
+// spans reads as well as writes, so ALL FOURTEEN must come back wrapped. Only
 // IssueLifecycle and IssueReader had a recursion pin of their own before this
 // test; the rest had no test at all.
 func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
@@ -220,6 +228,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return wrapped.ReadyCounter() }},
 		{"Querier", func() (any, error) { return wrapped.Querier() }},
+		{"Sweeper", func() (any, error) { return wrapped.Sweeper() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
@@ -263,6 +272,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"ReadyCounter", func() (any, error) { return wrapped.ReadyCounter() }},
 		{"Querier", func() (any, error) { return wrapped.Querier() }},
+		{"Sweeper", func() (any, error) { return wrapped.Sweeper() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},

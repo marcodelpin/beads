@@ -100,6 +100,16 @@ in; 13 is the HTTP surface, which lands with the command rather than after it.
    `hook_counter.go`). Either way the accessor must EXIST on the decorator: it
    is declared, never inherited, and there is a reflection test that says so.
 
+   **The read/write split is about the HOOK VOCABULARY, not about whether the
+   role writes.** `internal/hooks` publishes on_create, on_update and on_close
+   and nothing else, so a write the vocabulary cannot name recurses like a
+   read: `issueops.Sweeper` deletes rows and `hook_sweeper.go` is three lines,
+   because there is no on_delete to fire and the rows a hook script would be
+   handed are gone. Say which it is and why in the file, and assert it in
+   `role_accessor_decorator_test.go`'s wrapped/unwrapped table — the whole
+   point of that table is that "recurses" reads identically whether it was a
+   decision or an omission.
+
 7. **The telemetry wrapper.** `internal/telemetry/<role>.go`. No read/write
    distinction here — telemetry spans reads too, so every method gets
    `storage.op` / `storage.done`.

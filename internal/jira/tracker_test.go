@@ -682,6 +682,10 @@ func (s *configStore) ReadyCounter() (issueops.ReadyCounter, error) {
 func (s *configStore) Querier() (issueops.Querier, error) {
 	return nil, &storage.ErrUnsupported{Op: "Querier", Backend: "jira-config-stub"}
 }
+
+func (s *configStore) Sweeper() (issueops.Sweeper, error) {
+	return nil, &storage.ErrUnsupported{Op: "Sweeper", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {

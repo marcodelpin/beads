@@ -425,3 +425,36 @@ func TestQuerierExposesTypedUnsupportedError(t *testing.T) {
 		t.Fatalf("Querier() error = %v, want *beads.ErrUnsupported", err)
 	}
 }
+
+// TestSweeperKeepsTelemetryOutermost is the bulk-clearance role's version of
+// the same pin, and it is the ONE WRITE role that answers the way the reads
+// do: there is no on_delete hook to fire (internal/storage/hook_sweeper.go), so
+// the hook decorator adds no layer and the outermost surface a caller gets is
+// the instrumented one. Pinning it here is what keeps that a decision rather
+// than a wrapper someone forgot to write.
+func TestSweeperKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	sweeper, err := storage.NewHookFiringStore(instrumented, nil).Sweeper()
+	if err != nil {
+		t.Fatalf("Sweeper() error = %v", err)
+	}
+	if got := reflect.TypeOf(sweeper).String(); got != "*telemetry.instrumentedSweeper" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestSweeperExposesTypedUnsupportedError(t *testing.T) {
+	sweeper, err := (*dolt.DoltStore)(nil).Sweeper()
+	if sweeper != nil {
+		t.Fatalf("Sweeper() sweeper = %T, want nil", sweeper)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Sweeper() error = %v, want *beads.ErrUnsupported", err)
+	}
+}

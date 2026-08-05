@@ -181,6 +181,25 @@ var routeTable = []route{
 		implemented: true,
 		handler:     (*Server).handleClaim,
 	},
+	{
+		op:     OpSweepIssues,
+		method: http.MethodPost,
+		// A collection-level custom method, spelled the way countReadyWork's
+		// is and needing no specPath declaration for the same reason: the
+		// segment is a LITERAL. Only a WILDCARD segment is inexpressible as a
+		// ServeMux pattern, which is what makes the claim route the one
+		// exception.
+		//
+		// It is registered AFTER the claim's `/v0/beads/issues/{idop}`, and
+		// ServeMux precedence is by specificity rather than by order, so the
+		// literal wins over the wildcard for this exact path. That is what
+		// keeps a sweep from being parsed as a claim of an issue called
+		// ":sweep"; TestSweepPathReachesItsHandler drives the documented path.
+		pattern:     "/v0/beads/issues:sweep",
+		capability:  "issues.sweep",
+		implemented: true,
+		handler:     (*Server).handleSweep,
+	},
 }
 
 // specPathOf is the document path for a route, defaulting to the router
