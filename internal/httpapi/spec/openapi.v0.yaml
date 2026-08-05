@@ -956,6 +956,111 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/dependencies:
+    get:
+      operationId: listDependencies
+      summary: List the stored dependency edges of several issues
+      description: >-
+        The STORED EDGE ROWS whose source is each named issue — the answer
+        `bd dep list a b c` gives, and the same `Dependency` elements that
+        command's `--json` emits.
+
+
+        THESE ARE ROWS, NOT NEIGHBOURS, and that is the difference from the
+        `dependencies` member of `GET /v0/beads/issues/{id}`'s issue body. A
+        dependency target may be an `external:` reference or an id belonging to
+        another repository, and this database holds no issue for either; such
+        an edge is returned here with its target spelled exactly as stored, and
+        nothing is looked up on the far end. The `id` member of each element is
+        absent: the read behind this operation does not select the row's
+        surrogate key, so the `(issue_id, depends_on_id, type)` triple is what
+        identifies an edge on this surface.
+
+
+        THE DIRECTION IS OUTGOING ONLY — what each issue depends on. There is
+        no direction parameter: the inbound bulk read is a different read
+        against a different key with its own de-duplication rule across the two
+        dependency tables, and adding it later is additive.
+
+
+        A NAMED ISSUE THAT DOES NOT EXIST IS NOT A 404. It is listed in
+        `missing`, and the edges of the issues that do exist are still
+        returned: a batch that failed on one absent id would throw away the
+        answers for the ids that were found. An issue that exists and depends
+        on nothing is absent from `missing` and contributes no `items`, which
+        is the distinction this operation exists to publish — an empty edge
+        list is otherwise indistinguishable from a typo, and the empty list is
+        the common case.
+
+
+        THERE IS NO `limit` AND NO CURSOR. `bd dep list` has no limit either,
+        so one here would make the two surfaces answer differently by default;
+        instead the QUESTION is bounded — at most 100 `issue_id` values per
+        call — which bounds the answer without truncating it. Each issue's
+        edges are unbounded, exactly as the `dependencies` member of
+        `GET /v0/beads/issues/{id}` already is.
+      parameters:
+        - name: issue_id
+          in: query
+          description: >-
+            The issues to read edges for. Repeat the parameter; at least one is
+            required and at most 100 are accepted, and either bound is a 400
+            `invalid_argument` with `param: "issue_id"`, `reason:
+            "invalid_value"`.
+
+
+            Each value must be an EXACT canonical issue id: there is no fuzzy,
+            prefix or substring resolution on this surface, for the reason
+            `GET /v0/beads/issues/{id}` gives. A value that matches nothing is
+            reported in `missing` rather than refused. An empty value is a 400.
+
+
+            Repeats collapse: an id named twice is one entry in `missing` at
+            most once, and its edges appear once.
+          style: form
+          explode: true
+          required: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+        - name: type
+          in: query
+          description: >-
+            Edge types to include. Repeat the parameter. Empty means every
+            type.
+
+
+            The vocabulary is OPEN — a workspace configures its own edge types
+            — so an unrecognized value is not an error here: it simply matches
+            no edge. What IS refused, with a 400 `invalid_argument`, is a value
+            no edge could ever carry: empty, or longer than the column.
+
+
+            The filter narrows EDGES, never the named issues. An issue whose
+            every edge the filter rejects is still not in `missing`.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: The stored edges of the named issues.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencyEdges'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
 
   parameters:
@@ -1804,8 +1909,8 @@ components:
           description: >-
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `issues.list`,
-            `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows
-            `issues.get`, `issues.claim`, `dependencies.cycles`; it grows
+            `issues.get`, `issues.claim`, `stats.get`, `config.list`,
+            `config.get`, `dependencies.cycles`, `dependencies.list`; it grows
             additively, and an operation never appears here unless it is fully
             implemented. This is how a client checks for an operation — never
             the version string.
@@ -1958,6 +2063,41 @@ components:
             answer rather than echoed from the request: `skip_blocked` is a
             hint, and a backend with no cheaper path answers with the full
             numbers and this flag false.
+    DependencyEdges:
+      type: object
+      description: >-
+        The stored edges of the named issues, plus the ids that named nothing.
+        It is NOT a page: this operation has no limit and no cursor, because
+        the number of issues asked about is what bounds it.
+      required: [items, missing]
+      properties:
+        items:
+          type: array
+          description: >-
+            Every matching edge, flattened across the named issues rather than
+            keyed by source — the same flat array `bd dep list a b c --json`
+            emits, so the two surfaces are one compatibility domain. Group by
+            `issue_id` to recover the per-source view. Empty array (never null)
+            when nothing matches.
+
+
+            The order is by the named issues in the order the request named
+            them, and within each issue by target id.
+          items:
+            $ref: '#/components/schemas/Dependency'
+        missing:
+          type: array
+          description: >-
+            The requested `issue_id` values that name neither an issue nor a
+            wisp, in the order they were named. Empty array (never null) when
+            every named issue exists.
+
+
+            An id here contributes no `items`, and the absence of an id here is
+            NOT a claim that it has edges — an issue that exists and depends on
+            nothing is in neither list.
+          items:
+            type: string
 
     ClaimRequest:
       type: object

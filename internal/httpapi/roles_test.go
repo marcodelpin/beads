@@ -20,6 +20,8 @@ import (
 // These tests cover the OTHER database source: a backend whose facade is a
 // store rather than a unit-of-work provider, served by handing Listen the roles
 // directly.
+// store rather than a unit-of-work provider, served by handing Listen the issue
+// roles directly.
 //
 // The fakes below implement issueops.Reader, issueops.Claimer,
 // issueops.WorkspaceConfig and issueops.StatsReporter and NOTHING else —
@@ -27,6 +29,11 @@ import (
 // produce a unit of work is still servable" is the property this whole seam
 // exists for. If any of them ever grows a NewUOW method these tests stop
 // proving it.
+// The fakes below implement issueops.Reader, issueops.Claimer and
+// issueops.EdgeReader and NOTHING else — deliberately not
+// uow.UnitOfWorkProvider, because "a backend that cannot produce a unit of work
+// is still servable" is the property this whole seam exists for. If any of them
+// ever grows a NewUOW method these tests stop proving it.
 
 type roleReader struct {
 	page    issueops.IssuePage
@@ -79,6 +86,30 @@ func (r *roleReader) getRequests() []issueops.GetRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]issueops.GetRequest(nil), r.get...)
+}
+
+type roleEdgeReader struct {
+	result issueops.EdgeReadResult
+	err    error
+
+	mu    sync.Mutex
+	reads []issueops.EdgeReadRequest
+}
+
+func (e *roleEdgeReader) ReadEdges(_ context.Context, req issueops.EdgeReadRequest) (issueops.EdgeReadResult, error) {
+	e.mu.Lock()
+	e.reads = append(e.reads, req)
+	e.mu.Unlock()
+	if e.err != nil {
+		return issueops.EdgeReadResult{}, e.err
+	}
+	return e.result, nil
+}
+
+func (e *roleEdgeReader) edgeRequests() []issueops.EdgeReadRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]issueops.EdgeReadRequest(nil), e.reads...)
 }
 
 type roleClaimer struct {
@@ -211,6 +242,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.CycleDetector == nil {
 		cfg.CycleDetector = &roleCycleDetector{}
 	}
+	if cfg.EdgeReader == nil {
+		cfg.EdgeReader = &roleEdgeReader{}
+	}
 	return cfg
 }
 
@@ -261,6 +295,10 @@ func countedPage() []*types.IssueWithCounts {
 // HALF-SET set is the dangerous one: a Config carrying a reader and no claimer
 // would bind, answer every read, and fail the one issue write on this surface
 // with a nil dereference — at claim time, in a handler, on a live server.
+// PARTIALLY-SET role set is the dangerous one: a Config carrying a reader and
+// no claimer would bind, answer every read, and fail the one write on this
+// surface with a nil dereference — at claim time, in a handler, on a live
+// server. Each role an operation reaches has a row here for the same reason.
 func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -309,6 +347,11 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 		{
 			name:    "no cycle detector",
 			cfg:     rolesConfigWithout(func(c *Config) { c.CycleDetector = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "no edge reader",
+			cfg:     rolesConfigWithout(func(c *Config) { c.EdgeReader = nil }),
 			wantErr: "no database source",
 		},
 		{
@@ -376,13 +419,9 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 		readIssues: &recordingIssues{items: items},
 		readConfig: emptyConfig{},
 	}})
-	viaRoles := newTestServer(t, Config{
-		Reader:        &roleReader{page: issueops.IssuePage{Items: items}},
-		Claimer:       &roleClaimer{},
-		Settings:      &roleSettings{},
-		Stats:         &roleStats{},
-		CycleDetector: &roleCycleDetector{},
-	})
+	viaRoles := newTestServer(t, rolesConfig(Config{
+		Reader: &roleReader{page: issueops.IssuePage{Items: items}},
+	}))
 
 	for _, path := range []string{"/v0/beads/ready", "/v0/beads/issues"} {
 		fromProvider := viaProvider.get(t, path)
@@ -419,7 +458,13 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	}
 	blocked := 2
 	reporter := &roleStats{summary: types.Statistics{TotalIssues: 7, OpenIssues: 5, BlockedIssues: &blocked}}
-	ts := newTestServer(t, rolesConfig(Config{Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter}))
+	edges := &roleEdgeReader{result: issueops.EdgeReadResult{Anchors: []issueops.AnchorEdges{
+		{ID: "bd-1", Edges: []*types.Dependency{{IssueID: "bd-1", DependsOnID: "bd-2", Type: types.DepBlocks}}},
+		{ID: "bd-9", Missing: true},
+	}}}
+	ts := newTestServer(t, rolesConfig(Config{
+		Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter, EdgeReader: edges,
+	}))
 
 	t.Run("ready", func(t *testing.T) {
 		resp := ts.get(t, "/v0/beads/ready?sort=oldest")
@@ -569,6 +614,34 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 			t.Errorf("the workspace-wide method was called %d times, want the 1 from the subtest above: an assignee asks the other question", len(got))
 		}
 	})
+
+	t.Run("dependencies", func(t *testing.T) {
+		resp := ts.get(t, "/v0/beads/dependencies?issue_id=bd-1&issue_id=bd-9&type=blocks")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+		}
+		body := decodeBody(t, resp)
+		items, _ := body["items"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("items = %v, want the one edge the role returned", body["items"])
+		}
+		if edge, _ := items[0].(map[string]any); edge["issue_id"] != "bd-1" || edge["depends_on_id"] != "bd-2" {
+			t.Errorf("edge = %v, want the row the role returned", items[0])
+		}
+		// The ghost anchor is on `missing`, not a 404 and not an item.
+		missing, _ := body["missing"].([]any)
+		if len(missing) != 1 || missing[0] != "bd-9" {
+			t.Errorf("missing = %v, want the one anchor the role reported absent", body["missing"])
+		}
+		// The role is handed the request the wire named, not a rewritten one.
+		reqs := edges.edgeRequests()
+		if len(reqs) != 1 || len(reqs[0].IDs) != 2 || reqs[0].IDs[0] != "bd-1" || reqs[0].IDs[1] != "bd-9" {
+			t.Fatalf("edge requests = %+v, want one carrying both ids in order", reqs)
+		}
+		if len(reqs[0].Types) != 1 || reqs[0].Types[0] != types.DepBlocks {
+			t.Errorf("edge request types = %v, want the one the wire named", reqs[0].Types)
+		}
+	})
 }
 
 // TestConfiguredRolesKeepTheDocumentedRefusals: the error vocabulary belongs to
@@ -583,6 +656,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Settings:      &roleSettings{},
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
+			EdgeReader:    &roleEdgeReader{},
 		})
 		resp := ts.get(t, "/v0/beads/issues/bd-404")
 		if resp.StatusCode != http.StatusNotFound {
@@ -603,6 +677,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Settings:      &roleSettings{},
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
+			EdgeReader:    &roleEdgeReader{},
 		})
 		resp := ts.get(t, "/v0/beads/issues?status=bogus")
 		if resp.StatusCode != http.StatusBadRequest {
@@ -619,6 +694,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Reader:        &roleReader{},
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
+			EdgeReader:    &roleEdgeReader{},
 			Claimer: &roleClaimer{err: &issueops.ClaimConflictError{
 				IssueID:  "bd-1",
 				Assignee: "bob",
@@ -647,6 +723,7 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 			Settings:      &roleSettings{},
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
+			EdgeReader:    &roleEdgeReader{},
 		})
 		resp := ts.get(t, "/v0/beads/ready")
 		if resp.StatusCode != http.StatusInternalServerError {
@@ -750,6 +827,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			Settings:      &roleSettings{},
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
+			EdgeReader:    &roleEdgeReader{},
 		})
 
 		got := silent.get(t, "/v0/beads/issues/bd-1")
@@ -779,6 +857,7 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 			Settings:      &roleSettings{},
 			Stats:         &roleStats{},
 			CycleDetector: &roleCycleDetector{},
+			EdgeReader:    &roleEdgeReader{},
 		})
 
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
@@ -845,16 +924,11 @@ func TestListenRefusesARoleThatFiresTheWorkspaceHooks(t *testing.T) {
 	}
 
 	listen := func(cl issueops.Claimer) (*Server, error) {
-		return Listen(Config{
-			Addr:          "127.0.0.1:0",
-			Stdout:        io.Discard,
-			Stderr:        io.Discard,
-			Reader:        &roleReader{},
-			Claimer:       cl,
-			Settings:      &roleSettings{},
-			Stats:         &roleStats{},
-			CycleDetector: &roleCycleDetector{},
-		})
+		cfg := rolesConfig(Config{Claimer: cl})
+		cfg.Addr = "127.0.0.1:0"
+		cfg.Stdout = io.Discard
+		cfg.Stderr = io.Discard
+		return Listen(cfg)
 	}
 
 	if _, err := listen(fromTheStore); err == nil {

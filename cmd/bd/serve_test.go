@@ -208,8 +208,8 @@ func useStorageModeGlobals(t *testing.T) {
 // httpapi.Listen once took a unit-of-work provider or nothing, and there is no
 // provider for the embedded backend, so an embedded-backed server could not be
 // built even with serveModeGate deleted. httpapi.Config now also accepts the
-// two issue roles as a database source, and the embedded store publishes both
-// accessors — so the shortest edit from here to a server whose per-request
+// issue roles as a database source, and the embedded store publishes every one
+// of those accessors — so the shortest edit from here to a server whose per-request
 // atomicity claim is false is handing Listen the roles off the store the root
 // command already opened. internal/httpapi will not catch it: a role is an
 // interface, and nothing about one says which backend is behind it.
@@ -258,7 +258,7 @@ func TestServeBuildsOnlyAProviderBackedServer(t *testing.T) {
 					continue
 				}
 				switch key.Name {
-				case "Reader", "Claimer":
+				case "Reader", "Claimer", "EdgeReader":
 					t.Errorf("%s: bd serve sets httpapi.Config.%s. The roles source bypasses the unit-of-work "+
 						"provider serveModeGate vouched for, and internal/httpapi cannot tell an embedded-backed "+
 						"role from any other — read serveModeGate before changing this",

@@ -153,6 +153,11 @@ const (
 	OpListSettings         = "listSettings"
 	OpGetSetting           = "getSetting"
 	OpListDependencyCycles = "listDependencyCycles"
+	// OpListDependencies reads STORED EDGE ROWS for several issues at once.
+	// It is a separate operation from getIssue's embedded `dependencies`
+	// member because it answers per named issue, reports the ids that named
+	// nothing, and returns edges whose target this database holds no row for.
+	OpListDependencies = "listDependencies"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -196,6 +201,10 @@ var operationCodes = map[string][]Code{
 	// The cycle sweep takes no parameters at all, so it has no 400 of its own:
 	// the two uniform ones above are the whole of its invalid-argument story.
 	OpListDependencyCycles: {CodeBusy, CodeDBUnavailable, CodeInternal},
+	// No not_found here, deliberately: an id that names nothing is reported in
+	// the response's `missing` member, so a batch keeps the answers for the ids
+	// that were found. A 404 would discard them.
+	OpListDependencies: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

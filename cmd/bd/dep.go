@@ -688,6 +688,106 @@ func dependencyStoreKey(s storage.DoltStorage) string {
 	return fmt.Sprintf("instance:%p", s)
 }
 
+// depListAnchor is one resolved `bd dep list` argument: the canonical id, the
+// store that actually holds it, and the routing handle that has to be closed.
+type depListAnchor struct {
+	fullID string
+	store  storage.DoltStorage
+	result *RoutedResult
+}
+
+// readDepListEdges asks each anchor's OWN store for its stored edges and
+// reassembles the answers into the order the arguments named.
+//
+// The grouping is what keeps the answer on ONE shape. Before the role, a batch
+// whose anchors routed to different stores — and a batch whose single batched
+// read simply failed — fell through to the hydrated neighbor listing, so
+// `bd dep list a b c --json` silently emitted an array of ISSUES where it
+// documents an array of dependency records. Both fall-throughs are gone: a
+// failure is now a failure, and a split batch is N role calls merged back into
+// one answer.
+func readDepListEdges(ctx context.Context, anchors []depListAnchor, typeFilter string) ([]issueops.AnchorEdges, error) {
+	var depTypes []types.DependencyType
+	if typeFilter != "" {
+		depTypes = []types.DependencyType{types.DependencyType(typeFilter)}
+	}
+
+	// Grouped by store IDENTITY, not by the store's workspace path: two handles
+	// onto the same database are still two connections, and asking one of them
+	// for the other's ids would answer that every one of them is missing.
+	byStore := map[storage.DoltStorage][]string{}
+	var order []storage.DoltStorage
+	for _, anchor := range anchors {
+		if _, seen := byStore[anchor.store]; !seen {
+			order = append(order, anchor.store)
+		}
+		byStore[anchor.store] = append(byStore[anchor.store], anchor.fullID)
+	}
+
+	answered := make(map[string]issueops.AnchorEdges, len(anchors))
+	for _, st := range order {
+		reader, err := st.EdgeReader()
+		if err != nil {
+			return nil, err
+		}
+		result, err := reader.ReadEdges(ctx, issueops.EdgeReadRequest{IDs: byStore[st], Types: depTypes})
+		if err != nil {
+			return nil, err
+		}
+		for _, anchor := range result.Anchors {
+			answered[anchor.ID] = anchor
+		}
+	}
+
+	out := make([]issueops.AnchorEdges, 0, len(anchors))
+	seen := make(map[string]struct{}, len(anchors))
+	for _, anchor := range anchors {
+		if _, dup := seen[anchor.fullID]; dup {
+			continue
+		}
+		seen[anchor.fullID] = struct{}{}
+		out = append(out, answered[anchor.fullID])
+	}
+	return out, nil
+}
+
+// printDepListEdges renders the role's per-anchor answer, and is shared by both
+// routes so the two cannot drift apart in what they print.
+//
+// A GHOST ANCHOR goes to stderr in both modes, in the same words the direct
+// route already uses for an argument that would not resolve. Keeping it off
+// stdout is what leaves `--json` a flat array of dependency records, which is
+// the shape the command documents.
+func printDepListEdges(anchors []issueops.AnchorEdges) error {
+	for _, anchor := range anchors {
+		if anchor.Missing {
+			fmt.Fprintf(os.Stderr, "warning: no issue found: %s (skipped)\n", anchor.ID)
+		}
+	}
+	if jsonOutput {
+		out := []*types.Dependency{}
+		for _, anchor := range anchors {
+			out = append(out, anchor.Edges...)
+		}
+		return outputJSON(out)
+	}
+	for _, anchor := range anchors {
+		if anchor.Missing {
+			continue
+		}
+		if len(anchor.Edges) == 0 {
+			fmt.Printf("\n%s has no dependencies\n", anchor.ID)
+			continue
+		}
+		fmt.Printf("\n%s %s depends on:\n\n", ui.RenderAccent("📋"), anchor.ID)
+		for _, dep := range anchor.Edges {
+			fmt.Printf("  %s via %s\n", dep.DependsOnID, dep.Type)
+		}
+	}
+	fmt.Println()
+	return nil
+}
+
 var depListCmd = &cobra.Command{
 	Use:   "list [issue-id...]",
 	Short: "List dependencies or dependents of one or more issues",
@@ -729,12 +829,7 @@ Examples:
 			direction = "down"
 		}
 
-		type resolvedID struct {
-			fullID string
-			store  storage.DoltStorage
-			result *RoutedResult
-		}
-		var resolved []resolvedID
+		var resolved []depListAnchor
 		batchMode := len(args) > 1
 		for _, arg := range args {
 			routedResult, err := resolveAndGetIssueWithRouting(ctx, store, arg)
@@ -756,7 +851,7 @@ Examples:
 			if routedResult.Routed && routedResult.Store != nil {
 				depStore = routedResult.Store
 			}
-			resolved = append(resolved, resolvedID{
+			resolved = append(resolved, depListAnchor{
 				fullID: routedResult.ResolvedID,
 				store:  depStore,
 				result: routedResult,
@@ -777,60 +872,22 @@ Examples:
 			}
 		}()
 
-		// The multi-id edge listing is a different question with a different
-		// answer shape — raw edge records keyed by source, printed per source —
-		// and no role describes it: Relations is anchored on ONE issue and
-		// answers with the issues on the far end of its edges, not with the
-		// edges themselves. It keeps the batched records read, exactly as the
-		// proxied route keeps its own unit of work for the same question.
+		// The multi-id edge listing is a different question from the neighbor
+		// query below — raw edge records keyed by source, printed per source,
+		// with a per-anchor miss — and it is on the EdgeReader role. Relations
+		// cannot answer it: it is anchored on ONE issue, it answers with the
+		// issues on the far end of its edges rather than the edges themselves,
+		// and it drops every edge whose target this database has no row for.
+		//
+		// The accessor is taken PER STORE rather than once for the command,
+		// like the neighbor query below: a routed anchor answers from its own
+		// store, carrying its own decorator stack.
 		if len(resolved) > 1 && direction == "down" {
-			allSameStore := true
-			firstStore := resolved[0].store
-			for _, r := range resolved[1:] {
-				if r.store != firstStore {
-					allSameStore = false
-					break
-				}
+			anchors, err := readDepListEdges(ctx, resolved, typeFilter)
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
 			}
-			if allSameStore {
-				ids := make([]string, len(resolved))
-				for i, r := range resolved {
-					ids[i] = r.fullID
-				}
-				depMap, err := firstStore.GetDependencyRecordsForIssues(ctx, ids)
-				if err == nil {
-					var allDeps []*types.Dependency
-					for _, id := range ids {
-						for _, dep := range depMap[id] {
-							if typeFilter == "" || string(dep.Type) == typeFilter {
-								allDeps = append(allDeps, dep)
-							}
-						}
-					}
-					if jsonOutput {
-						if allDeps == nil {
-							allDeps = []*types.Dependency{}
-						}
-						return outputJSON(allDeps)
-					}
-					for _, id := range ids {
-						deps := depMap[id]
-						if len(deps) == 0 {
-							fmt.Printf("\n%s has no dependencies\n", id)
-							continue
-						}
-						fmt.Printf("\n%s %s depends on:\n\n", ui.RenderAccent("📋"), id)
-						for _, dep := range deps {
-							if typeFilter != "" && string(dep.Type) != typeFilter {
-								continue
-							}
-							fmt.Printf("  %s via %s\n", dep.DependsOnID, dep.Type)
-						}
-					}
-					fmt.Println()
-					return nil
-				}
-			}
+			return printDepListEdges(anchors)
 		}
 
 		// The neighbor query is on the Relations role: one call per anchor, each

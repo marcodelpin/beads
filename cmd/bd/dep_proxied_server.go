@@ -51,6 +51,20 @@ func proxiedIssueRelations() (issueops.Relations, error) {
 	return src.IssueRelations()
 }
 
+// proxiedEdgeReader hands back the guarded stored-edge surface for the
+// proxied-server provider, through the provider's OWN capability accessor —
+// the same two-step a direct command performs on a store.
+func proxiedEdgeReader() (issueops.EdgeReader, error) {
+	if uowProvider == nil {
+		return nil, errors.New("proxied-server UOW provider not initialized")
+	}
+	src, ok := uowProvider.(uow.EdgeReaderSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the stored-edge surface", uowProvider)
+	}
+	return src.EdgeReader()
+}
+
 // addDependencyEdgesProxied asserts edges through the DependencyEditor role.
 //
 // skipPerEdgeCycleCheck is a separate argument from the --no-cycle-check flag
@@ -358,8 +372,8 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 	}
 
 	// The multi-id edge listing is a different question with a different
-	// answer shape — raw edge records keyed by source, printed per source —
-	// and no role describes it. It keeps its own unit of work.
+	// answer shape — raw edge records keyed by source, printed per source,
+	// with a per-anchor miss — and it is on the EdgeReader role.
 	if len(args) > 1 && direction == "down" {
 		return runDepListRecordsProxiedServer(ctx, args, typeFilter)
 	}
@@ -432,49 +446,35 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 }
 
 // runDepListRecordsProxiedServer answers `bd dep list a b c` with raw edge
-// records grouped by source. It is off the Relations role deliberately: the
-// role answers with the ISSUES on the far end of an anchor's edges, and this
-// prints the edges themselves, per source, for several sources at once.
-// Routing it through the role would mean N anchor probes and a hydration of
-// every neighbor this output never shows.
+// records grouped by source, on the EdgeReader role. It is off the Relations
+// role deliberately: that one answers with the ISSUES on the far end of ONE
+// anchor's edges, and this prints the edges themselves, per source, for several
+// sources at once.
+//
+// THIS ROUTE NOW REPORTS GHOST ANCHORS. It used to hand the raw arguments to
+// the dependency use case, which keys its answer by source and simply has no
+// entry for an id that names nothing — so a typo printed "<id> has no
+// dependencies" and a script read a clean graph. The role probes each anchor,
+// so the same typo now prints the warning the direct route has always printed
+// for an argument it could not resolve.
+//
+// It still resolves NOTHING: an id is passed exactly as the caller spelled it,
+// because this route has never done partial-id resolution and the role's ids
+// are exact.
 func runDepListRecordsProxiedServer(ctx context.Context, args []string, typeFilter string) error {
-	uw, err := proxiedOpenReadUOW(ctx)
-	if err != nil {
-		return err
-	}
-	defer uw.Close(ctx)
-
-	depMap, err := uw.DependencyUseCase().GetIssueDependencyRecords(ctx, args)
+	reader, err := proxiedEdgeReader()
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
-	if jsonOutput {
-		allDeps := []*types.Dependency{}
-		for _, id := range args {
-			for _, dep := range depMap[id] {
-				if typeFilter == "" || string(dep.Type) == typeFilter {
-					allDeps = append(allDeps, dep)
-				}
-			}
-		}
-		return outputJSON(allDeps)
+	request := issueops.EdgeReadRequest{IDs: args}
+	if typeFilter != "" {
+		request.Types = []types.DependencyType{types.DependencyType(typeFilter)}
 	}
-	for _, id := range args {
-		deps := depMap[id]
-		if len(deps) == 0 {
-			fmt.Printf("\n%s has no dependencies\n", id)
-			continue
-		}
-		fmt.Printf("\n%s %s depends on:\n\n", ui.RenderAccent("📋"), id)
-		for _, dep := range deps {
-			if typeFilter != "" && string(dep.Type) != typeFilter {
-				continue
-			}
-			fmt.Printf("  %s via %s\n", dep.DependsOnID, dep.Type)
-		}
+	result, err := reader.ReadEdges(ctx, request)
+	if err != nil {
+		return HandleErrorRespectJSON("%v", err)
 	}
-	fmt.Println()
-	return nil
+	return printDepListEdges(result.Anchors)
 }
 
 func runDepTreeProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {

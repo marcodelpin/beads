@@ -189,8 +189,8 @@ func runServe() error {
 // THIS IS THE ENFORCEMENT POINT, and it is now the only one. It used to be
 // redundant: httpapi.Listen took a unit-of-work provider or nothing, so deleting
 // this gate would still have left an embedded-backed server unbuildable.
-// httpapi.Config now also accepts the two issue roles as a database source and
-// the embedded store publishes both accessors, so it is buildable — and nothing
+// httpapi.Config now also accepts the issue roles as a database source and the
+// embedded store publishes every one of those accessors, so it is buildable — and nothing
 // downstream will catch a bypass here, because internal/httpapi cannot see the
 // backend behind a role. That is also why runServe builds a provider and never
 // hands Listen roles, which TestServeBuildsOnlyAProviderBackedServer pins.

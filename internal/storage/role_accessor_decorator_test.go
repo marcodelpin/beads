@@ -19,6 +19,7 @@ var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
 	"IssueRelations",
+	"EdgeReader",
 	"Counter",
 	"WorkspaceConfig",
 	"StatsReporter",
@@ -72,6 +73,7 @@ type roleAccessorStore struct {
 	lifecycle issueops.Lifecycle
 	reader    issueops.Reader
 	relations issueops.Relations
+	edges     issueops.EdgeReader
 	counter   issueops.Counter
 	settings  issueops.WorkspaceConfig
 	stats     issueops.StatsReporter
@@ -89,6 +91,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		lifecycle: sentinel,
 		reader:    sentinel,
 		relations: sentinel,
+		edges:     sentinel,
 		counter:   sentinel,
 		settings:  sentinel,
 		stats:     sentinel,
@@ -114,7 +117,8 @@ func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
 func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.cycles, s.err
 }
-func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.commenter, s.err }
+func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.edges, s.err }
+func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s.commenter, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
@@ -150,6 +154,9 @@ func (*roleAccessorSentinel) Get(context.Context, issueops.GetRequest) (*issueop
 }
 func (*roleAccessorSentinel) Related(context.Context, issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
 	return nil, nil
+}
+func (*roleAccessorSentinel) ReadEdges(context.Context, issueops.EdgeReadRequest) (issueops.EdgeReadResult, error) {
+	return issueops.EdgeReadResult{}, nil
 }
 func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
 	return issueops.CountResult{}, nil
@@ -216,6 +223,12 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // (hook_issue_reader.go, hook_relations.go, hook_counter.go,
 // hook_cycle_detector.go); this test pins that as a decision rather than
 // leaving it indistinguishable from the regression above.
+// The four read roles are asserted the OTHER way round on purpose. Reads fire
+// no completion hooks, so IssueReader, IssueRelations, EdgeReader and Counter
+// deliberately return the inner surface unwrapped (hook_issue_reader.go,
+// hook_relations.go, hook_edgereader.go, hook_counter.go); this test pins that
+// as a decision rather than leaving it indistinguishable from the regression
+// above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -233,6 +246,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }, inner.editor, true},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
+		{"EdgeReader", func() (any, error) { return store.EdgeReader() }, inner.edges, false},
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }, inner.stats, false},
@@ -274,6 +288,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
+		{"EdgeReader", func() (any, error) { return store.EdgeReader() }},
 		{"Counter", func() (any, error) { return store.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }},

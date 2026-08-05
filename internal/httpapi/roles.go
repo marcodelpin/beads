@@ -38,6 +38,11 @@ import (
 // Ready and List need nothing from it: both return a VALUE, and wireItems
 // already drops a nil element out of a page. Get is the whole reason the type
 // exists.
+//
+// issueops.EdgeReader has no wrapper here for the same reason Ready and List
+// need nothing: it answers with a value, and wireEdges drops a nil edge. A role
+// that hands back no pointer cannot be dereferenced into a panic, so a checked
+// wrapper over it would be a layer with nothing to check.
 type checkedReader struct{ inner issueops.Reader }
 
 // Ready passes the request through unchanged.

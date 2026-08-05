@@ -70,6 +70,17 @@ Twelve steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way in.
    (`CanonicalCyclePaths`, `BuildCycles`), so they are pinned in milliseconds
    without a database and the conformance contract is left to assert what only a
    real backend can show.
+   **Unless the role needs ONE TRANSACTION.** A body that must read twice and
+   have both reads see one snapshot — an existence probe plus the read it
+   qualifies, which is what `Relations` and `EdgeReader` both do — cannot live
+   above `storage.DoltStorage`, because that interface publishes no way to scope
+   two calls to a transaction. Those bodies are `Validate…`/`Execute…InTx`
+   functions in `internal/storage/issueops` (`relations.go`, `edges.go`) and
+   each store's accessor wraps them in its own `withReadTx`/`withConn`. dolt and
+   embeddeddolt still share ONE body, which is what step 3 is for; only its
+   address differs. There is no step-12 depguard entry to add for one of these
+   — the shared function takes a transaction, so no front door can call it at
+   all.
 
 4. **The unit-of-work body and its source interface.**
    `internal/storage/uow/<role>.go`, declaring `type <Role>Source interface {

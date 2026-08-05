@@ -286,6 +286,38 @@ func TestCycleDetectorExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestEdgeReaderKeepsTelemetryOutermost is the stored-edge role's version of
+// TestIssueRelationsKeepsTelemetryOutermost, and it is the READ answer for the
+// same reason: reading edges fires no completion hooks, so the hook decorator
+// adds no layer and the outermost surface a caller gets is the instrumented
+// one.
+func TestEdgeReaderKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	edges, err := storage.NewHookFiringStore(instrumented, nil).EdgeReader()
+	if err != nil {
+		t.Fatalf("EdgeReader() error = %v", err)
+	}
+	if got := reflect.TypeOf(edges).String(); got != "*telemetry.instrumentedEdgeReader" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestEdgeReaderExposesTypedUnsupportedError(t *testing.T) {
+	edges, err := (*dolt.DoltStore)(nil).EdgeReader()
+	if edges != nil {
+		t.Fatalf("EdgeReader() reader = %T, want nil", edges)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("EdgeReader() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	counter, err := (*dolt.DoltStore)(nil).Counter()
 	if counter != nil {

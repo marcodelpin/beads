@@ -81,7 +81,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows `issues.get`, `issues.claim`, `dependencies.cycles`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -123,6 +123,19 @@ type CyclesPage struct {
 
 // Dependency A dependency edge between two issues.
 type Dependency = types.Dependency
+
+// DependencyEdges The stored edges of the named issues, plus the ids that named nothing. It is NOT a page: this operation has no limit and no cursor, because the number of issues asked about is what bounds it.
+type DependencyEdges struct {
+	// Items Every matching edge, flattened across the named issues rather than keyed by source — the same flat array `bd dep list a b c --json` emits, so the two surfaces are one compatibility domain. Group by `issue_id` to recover the per-source view. Empty array (never null) when nothing matches.
+	//
+	// The order is by the named issues in the order the request named them, and within each issue by target id.
+	Items []Dependency `json:"items"`
+
+	// Missing The requested `issue_id` values that name neither an issue nor a wisp, in the order they were named. Empty array (never null) when every named issue exists.
+	//
+	// An id here contributes no `items`, and the absence of an id here is NOT a claim that it has edges — an issue that exists and depends on nothing is in neither list.
+	Missing []string `json:"missing"`
+}
 
 // Health defines model for Health.
 type Health struct {
@@ -264,6 +277,23 @@ type NotFound = Problem
 
 // Unavailable RFC 9457 problem detail. This is the only error shape on this surface. The core declares `type`; this server never emits it, so `about:blank` is implied throughout.
 type Unavailable = Problem
+
+// ListDependenciesParams defines parameters for ListDependencies.
+type ListDependenciesParams struct {
+	// IssueId The issues to read edges for. Repeat the parameter; at least one is required and at most 100 are accepted, and either bound is a 400 `invalid_argument` with `param: "issue_id"`, `reason: "invalid_value"`.
+	//
+	// Each value must be an EXACT canonical issue id: there is no fuzzy, prefix or substring resolution on this surface, for the reason `GET /v0/beads/issues/{id}` gives. A value that matches nothing is reported in `missing` rather than refused. An empty value is a 400.
+	//
+	// Repeats collapse: an id named twice is one entry in `missing` at most once, and its edges appear once.
+	IssueId []string `form:"issue_id" json:"issue_id"`
+
+	// Type Edge types to include. Repeat the parameter. Empty means every type.
+	//
+	// The vocabulary is OPEN — a workspace configures its own edge types — so an unrecognized value is not an error here: it simply matches no edge. What IS refused, with a 400 `invalid_argument`, is a value no edge could ever carry: empty, or longer than the column.
+	//
+	// The filter narrows EDGES, never the named issues. An issue whose every edge the filter rejects is still not in `missing`.
+	Type *[]string `form:"type,omitempty" json:"type,omitempty"`
+}
 
 // ListIssuesParams defines parameters for ListIssues.
 type ListIssuesParams struct {

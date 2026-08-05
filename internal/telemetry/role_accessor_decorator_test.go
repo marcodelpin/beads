@@ -20,6 +20,7 @@ var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
 	"IssueRelations",
+	"EdgeReader",
 	"Counter",
 	"WorkspaceConfig",
 	"StatsReporter",
@@ -77,7 +78,8 @@ func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
 func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.surface, s.err
 }
-func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.surface, s.err }
+func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.surface, s.err }
+func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s.surface, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.surface, s.err
 }
@@ -113,6 +115,9 @@ func (*roleAccessorSentinel) Get(context.Context, issueops.GetRequest) (*issueop
 }
 func (*roleAccessorSentinel) Related(context.Context, issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
 	return nil, nil
+}
+func (*roleAccessorSentinel) ReadEdges(context.Context, issueops.EdgeReadRequest) (issueops.EdgeReadResult, error) {
+	return issueops.EdgeReadResult{}, nil
 }
 func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
 	return issueops.CountResult{}, nil
@@ -183,6 +188,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"IssueLifecycle", func() (any, error) { return wrapped.IssueLifecycle() }},
 		{"IssueReader", func() (any, error) { return wrapped.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
+		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
@@ -222,6 +228,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueLifecycle", func() (any, error) { return wrapped.IssueLifecycle() }},
 		{"IssueReader", func() (any, error) { return wrapped.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
+		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},

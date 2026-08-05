@@ -577,8 +577,8 @@ func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 		got = append(got, c.(string))
 	}
 	want := []string{
-		"config.get", "config.list", "dependencies.cycles", "issues.claim",
-		"issues.get", "issues.list", "ready.list", "stats.get",
+		"config.get", "config.list", "dependencies.cycles", "dependencies.list",
+		"issues.claim", "issues.get", "issues.list", "ready.list", "stats.get",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("capabilities = %v, want %v", got, want)

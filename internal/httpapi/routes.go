@@ -128,6 +128,14 @@ var routeTable = []route{
 		handler:     (*Server).handleGetSetting,
 	},
 	{
+		op:          OpListDependencies,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/dependencies",
+		capability:  "dependencies.list",
+		implemented: true,
+		handler:     (*Server).handleListDependencies,
+	},
+	{
 		op:      OpClaimIssue,
 		method:  http.MethodPost,
 		pattern: "/v0/beads/issues/{" + claimPathValue + "}",

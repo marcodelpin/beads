@@ -123,8 +123,12 @@ type Config struct {
 	// Reader, Claimer, Settings and Stats are the roles this server answers
 	// from, for a backend whose facade is a STORE rather than a unit-of-work
 	// provider. sourceRoles is the authoritative list.
+	// Reader, Claimer and EdgeReader are the issue roles this server answers
+	// from, for a backend whose facade is a STORE rather than a unit-of-work
+	// provider.
 	//
 	// Set them together, and only when Provider is nil: they are the other
+	// Set them all together, and only when Provider is nil: they are the other
 	// complete database source, not an override of one. Listen refuses every
 	// other combination, including a PARTIAL set — a reader without a claimer
 	// would bind, answer every read, and fail the one write on this surface with
@@ -135,6 +139,11 @@ type Config struct {
 	// another field here and another one this source must carry, because a
 	// database source that answers some operations and faults on others is not
 	// a source.
+	// other combination, including a partially-set set — a server missing one
+	// role would bind, answer every other route, and fail that one with a nil
+	// dereference inside a handler on a live server. The set grows by one each
+	// time an operation reaches a role this source does not yet carry, and it
+	// grows in the same change as the operation for exactly that reason.
 	//
 	// A caller with a store takes them off the store's own accessors, and WHICH
 	// store value it takes them off is the whole question. Every decorator a
@@ -154,6 +163,8 @@ type Config struct {
 	//	wc, err := src.WorkspaceConfig()
 	//	st, err := src.StatsReporter()
 	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Settings: wc, Stats: st, ...})
+	//	ed, err := src.EdgeReader()
+	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, EdgeReader: ed, ...})
 	//
 	// Listen refuses a hook-firing role rather than trusting the paragraph
 	// above — see checkDatabaseSource.
@@ -173,22 +184,18 @@ type Config struct {
 	// (see Server.reader) — and a role reached this way opens none through this
 	// server, so a rebuild would buy nothing.
 	//
-	// Settings and Stats join them for the same reason Claimer does, and the
-	// "set them together" rule covers all of them: this surface publishes two
-	// settings operations and a summary operation, so a Reader and a Claimer
-	// without them would bind, answer every issue route, and fail those routes
-	// with a nil dereference inside a handler.
 	// Every one of these is required for the reason the half-set pair is
 	// refused: a server that binds while unable to answer an operation its own
 	// capability list advertises is the failure this check exists to prevent,
 	// and a nil role would produce it on the first request to that route
 	// instead of at startup. Take them all off the same store, beneath the hook
-	// layer.
+	// layer. sourceRoles is the authoritative list.
 	Reader        issueops.Reader
 	Claimer       issueops.Claimer
 	Settings      issueops.WorkspaceConfig
 	Stats         issueops.StatsReporter
 	CycleDetector issueops.CycleDetector
+	EdgeReader    issueops.EdgeReader
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -220,11 +227,16 @@ type Server struct {
 	// exactly when provider is nil. They are what reader(), claimer() and
 	// cycleDetector() hand back on the store-shaped source; the names differ
 	// from those methods because a struct cannot carry both.
+	// issueReader, issueClaimer and issueEdges are the configured roles, set
+	// exactly when provider is nil. They are what reader(), claimer() and
+	// edgeReader() hand back on the store-shaped source; the names differ from
+	// those methods because a struct cannot carry both.
 	issueReader  issueops.Reader
 	issueClaimer issueops.Claimer
 	settings     issueops.WorkspaceConfig
 	issueStats   issueops.StatsReporter
 	issueCycles  issueops.CycleDetector
+	issueEdges   issueops.EdgeReader
 
 	listener net.Listener
 	http     *http.Server
@@ -326,6 +338,7 @@ func Listen(cfg Config) (*Server, error) {
 		settings:     cfg.Settings,
 		issueStats:   cfg.Stats,
 		issueCycles:  cfg.CycleDetector,
+		issueEdges:   cfg.EdgeReader,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -387,6 +400,11 @@ func Listen(cfg Config) (*Server, error) {
 // live server. A missing settings or summary role is the same failure on a
 // different route, which is why the set is all-or-nothing rather than a
 // required pair plus optional extras.
+// provider, or the issue roles. A PARTIALLY-SET role set is refused with the
+// same message as none at all, because it is the same mistake and the failure
+// it would otherwise produce is the worst shape available — a config missing
+// one role binds, answers every other route, and fails that one with a nil
+// dereference in a handler on a live server.
 //
 // Both together is refused rather than resolved by precedence: a caller that
 // set both holds two different opinions about where this server reads from, and
@@ -413,12 +431,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats and CycleDetector"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector and EdgeReader"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -619,6 +637,24 @@ func (s *Server) workspaceConfig(r *http.Request) (issueops.WorkspaceConfig, err
 	}
 	var src uow.WorkspaceConfigSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.WorkspaceConfig()
+}
+
+// edgeReader returns the guarded stored-edge surface for one request.
+//
+// It is the third of the same shape, for the same reasons: the configured role
+// on the roles source, and on the provider source one built per request so its
+// units of work are timed into THIS request's log line, held by INTERFACE so
+// uow.EdgeReaderSource is load-bearing rather than decorative.
+//
+// There is no checked wrapper here, and roles.go says why: this role answers
+// with a VALUE, so no handler dereferences a pointer it returned. checkedReader
+// exists for Get alone.
+func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
+	if s.provider == nil {
+		return s.issueEdges, nil
+	}
+	var src uow.EdgeReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.EdgeReader()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

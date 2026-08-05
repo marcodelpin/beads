@@ -357,6 +357,9 @@ var (
 	_ uow.IssueReaderSource     = timedProvider{}
 	_ uow.IssueClaimerSource    = timedProvider{}
 	_ uow.CycleDetectorSource   = timedProvider{}
+	_ uow.IssueReaderSource     = timedProvider{}
+	_ uow.IssueClaimerSource    = timedProvider{}
+	_ uow.EdgeReaderSource      = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -412,6 +415,14 @@ func (p timedProvider) StatsReporter() (issueops.StatsReporter, error) {
 // uow_ms=0.000 for the one round trip the request makes.
 func (p timedProvider) CycleDetector() (issueops.CycleDetector, error) {
 	return uow.NewCycleDetector(p)
+}
+
+// EdgeReader builds the stored-edge reader OVER THIS WRAPPER, for the same
+// reason and with the same hazard as the two above: the role opens one unit of
+// work per call, and it must go through NewUOW below or the dependencies route
+// reports uow_ms=0.000.
+func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
+	return uow.NewEdgeReader(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

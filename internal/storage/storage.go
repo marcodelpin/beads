@@ -185,6 +185,13 @@ type Storage interface {
 	// anchor's neighbors. Reads fire no hooks, so the hook decorator's answer is
 	// its inner store's unchanged, as it is for IssueReader.
 	CycleDetector() (issueops.CycleDetector, error)
+	// EdgeReader returns the guarded stored-edge surface for this store: raw
+	// dependency rows for many anchors at once, keyed by source, with a
+	// per-anchor miss. Its own role rather than a second IssueRelations method
+	// because that one is single-anchor, answers with hydrated issues, and
+	// refuses a missing anchor outright. Reads fire no hooks, as for
+	// IssueReader.
+	EdgeReader() (issueops.EdgeReader, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error
