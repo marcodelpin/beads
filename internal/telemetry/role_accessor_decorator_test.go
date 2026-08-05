@@ -23,6 +23,7 @@ var roleAccessorNames = []string{
 	"Counter",
 	"WorkspaceConfig",
 	"StatsReporter",
+	"CycleDetector",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -70,6 +71,10 @@ func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) 
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
+	return s.surface, s.err
+}
+
+func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.surface, s.err }
@@ -133,6 +138,10 @@ func (*roleAccessorSentinel) Stats(context.Context, issueops.StatsRequest) (issu
 func (*roleAccessorSentinel) AssigneeStats(context.Context, issueops.AssigneeStatsRequest) (issueops.StatsResult, error) {
 	return issueops.StatsResult{}, nil
 }
+
+func (*roleAccessorSentinel) DetectCycles(context.Context, issueops.DetectCyclesRequest) (issueops.CycleReport, error) {
+	return issueops.CycleReport{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -177,6 +186,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
+		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
@@ -215,6 +225,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return wrapped.StatsReporter() }},
+		{"CycleDetector", func() (any, error) { return wrapped.CycleDetector() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},

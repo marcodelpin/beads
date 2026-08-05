@@ -354,6 +354,9 @@ var (
 	_ uow.IssueClaimerSource    = timedProvider{}
 	_ uow.WorkspaceConfigSource = timedProvider{}
 	_ uow.StatsReporterSource   = timedProvider{}
+	_ uow.IssueReaderSource     = timedProvider{}
+	_ uow.IssueClaimerSource    = timedProvider{}
+	_ uow.CycleDetectorSource   = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -401,6 +404,14 @@ func (p timedProvider) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 // would log uow_ms=0.000 forever.
 func (p timedProvider) StatsReporter() (issueops.StatsReporter, error) {
 	return uow.NewStatsReporter(p)
+}
+
+// CycleDetector builds the detector OVER THIS WRAPPER, for the same reason and
+// with the same hazard as the two above: the sweep opens its own read-only unit
+// of work, and a detector bound to the untimed provider would report
+// uow_ms=0.000 for the one round trip the request makes.
+func (p timedProvider) CycleDetector() (issueops.CycleDetector, error) {
+	return uow.NewCycleDetector(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

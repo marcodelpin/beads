@@ -88,6 +88,14 @@ var routeTable = []route{
 		handler:     (*Server).handleStats,
 	},
 	{
+		op:          OpListDependencyCycles,
+		method:      http.MethodGet,
+		pattern:     "/v0/beads/dependencies/cycles",
+		capability:  "dependencies.cycles",
+		implemented: true,
+		handler:     (*Server).handleDependencyCycles,
+	},
+	{
 		op:          OpListIssues,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/issues",

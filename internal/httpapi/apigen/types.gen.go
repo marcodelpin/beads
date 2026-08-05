@@ -7,6 +7,7 @@ import (
 	"time"
 
 	types "github.com/steveyegge/beads/internal/types"
+	issueops "github.com/steveyegge/beads/issueops"
 )
 
 // Defines values for HealthStatus.
@@ -80,7 +81,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `issues.list`, `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows `issues.get`, `issues.claim`, `dependencies.cycles`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -97,6 +98,27 @@ type ContextResponse struct {
 
 	// SchemaVersion The shared JSON schema version — the same constant the CLI's stdout JSON envelope reports. Diagnostic only: it can move for CLI-only reasons with no HTTP wire change, so clients MUST NOT branch on it.
 	SchemaVersion int `json:"schema_version"`
+}
+
+// Cycle One circular blocking dependency: its members in EDGE ORDER, so `members[i]` blocks on `members[i+1]` and the last member blocks on the first. The closing edge is implied and is not repeated as a final member.
+//
+// The rotation is canonical — the lowest id comes first — which is what makes two snapshots of an unchanged workspace comparable.
+type Cycle = issueops.Cycle
+
+// CycleMember One node on a dependency cycle.
+//
+// `id` is always present, and its presence is what proves the node is on the cycle. `issue` is the row behind it, and is ABSENT — never null — when this workspace holds no record for that id: a target in another repository's namespace, an `external:` reference, or a row whose edges outlived it. That absence means the node cannot be DESCRIBED here, never that it is not really on the cycle.
+//
+// `issue` is spelled as a bare `$ref` with no sibling keywords, following the codegen note at the top of this document.
+type CycleMember = issueops.CycleMember
+
+// CyclesPage defines model for CyclesPage.
+type CyclesPage struct {
+	// HasMore Always false in v0: this operation takes no limit, so the report is never truncated. Present so that adding a bound later is additive.
+	HasMore bool `json:"has_more"`
+
+	// Items Empty array (never null) when the workspace has no cycles. Its LENGTH is the total: a cycle whose members this workspace cannot describe is still counted here, so the number cannot shrink because a row went missing.
+	Items []Cycle `json:"items"`
 }
 
 // Dependency A dependency edge between two issues.

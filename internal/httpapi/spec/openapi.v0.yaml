@@ -58,10 +58,14 @@ info:
       `GET /v0/beads/context`, `GET /v0/beads/issues/{id}`,
       `POST /v0/beads/issues/{id}:claim`, `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`) reject every query key the same way.
+      `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
+      `GET /v0/beads/issues/{id}`, `POST /v0/beads/issues/{id}:claim`) reject
+      every query key the same way.
 
 
     Both are uniform rules, reachable on EVERY route including `GET /healthz`,
     and are stated here instead of being repeated on all nine operations. The
+    and are stated here instead of being repeated on all seven operations. The
     per-operation `responses` below therefore list what an operation produces
     BEYOND these two: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses
@@ -106,6 +110,14 @@ info:
     same change — a two-way JSON-tag bijection test, covering all eight, fails
     CI otherwise. A
     breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
+    `IssueWithDependencyMetadata`, `Dependency`, `Comment`, `BondRef`, `Cycle`
+    and `CycleMember` are pinned to the canonical Go structs (`x-go-type`), so
+    the CLI's `--json` output and these response bodies are one compatibility
+    domain and cannot drift apart. Changes to them are limited to NEW optional
+    fields, and each addition must land with its entry in this document in the
+    same change — a two-way JSON-tag bijection test, covering all nine, fails CI
+    otherwise. A breaking change to those shapes requires cutting `/v1`, not
+    editing `/v0`.
 
 
     A member that is absent is not set. When reading a RESPONSE, clients MUST
@@ -492,6 +504,51 @@ paths:
                 $ref: '#/components/schemas/StatsResponse'
         '400':
           $ref: '#/components/responses/InvalidArgument'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/dependencies/cycles:
+    get:
+      operationId: listDependencyCycles
+      summary: List dependency cycles
+      description: >-
+        Every circular blocking dependency in the workspace, the same sweep
+        `bd dep cycles` performs. Items are `Cycle` — the element type that
+        command's `--json` emits — so the two surfaces carry one shape.
+
+
+        THE ANSWER IS CANONICAL: each cycle's members are rotated so the lowest
+        id comes first, and the cycles are sorted against each other, so two
+        calls against an unchanged workspace return the same bytes. A client may
+        diff two snapshots and read a difference as a real change.
+
+
+        EDGES ARE NARROWER THAN THEY ARE AT WRITE TIME. The walk follows
+        `blocks` and `conditional-blocks` only: `waits-for` is gate semantics, so
+        a mutual wait is not a deadlock, and `parent-child` is walked by the
+        refusal a dependency WRITE performs but not by this report. A workspace
+        this operation calls clean can therefore still refuse an edge.
+
+
+        Both dependency planes — durable and ephemeral — are one graph here, so
+        a cycle that runs issue → wisp → issue is reported.
+
+
+        THERE IS NO `limit` AND NO CURSOR, and `has_more` is therefore always
+        false in v0. Truncating would shrink the count, and the count is the
+        number an operator acts on; the response is bounded by the number of
+        cycles in the workspace, which in a healthy one is zero. `has_more` is
+        present so that adding a bound later is additive rather than a new
+        envelope.
+      responses:
+        '200':
+          description: Every dependency cycle, canonically ordered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CyclesPage'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -973,6 +1030,7 @@ components:
     # Pinned schemas.
     #
     # Each of the eight below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the nine below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.
@@ -983,6 +1041,11 @@ components:
     # TestWireTagBijection (internal/httpapi/wire_bijection_test.go): a field
     # added to the Go struct without an entry here fails CI, and an entry here
     # with no Go field fails CI.
+    #
+    # Seven of the nine are pinned to `internal/types`; `Cycle` and
+    # `CycleMember`, which appear after `BondRef`, are pinned to the role
+    # package `issueops` instead, because that is where those canonical structs
+    # live.
     # ---------------------------------------------------------------------
 
     Issue:
@@ -1604,6 +1667,70 @@ components:
         average_lead_time_hours:
           type: number
           description: ALWAYS 0, for the reason above.
+    # The two cycle schemas are pinned like the seven above, and to the same end,
+    # but to the canonical types in `issueops` rather than in `internal/types`:
+    # the role's own result IS the CLI's `--json` element, so `bd dep cycles`
+    # and this operation cannot drift apart. TestWireTagBijection covers them on
+    # the same terms and reads each schema's declared import path.
+
+    CycleMember:
+      type: object
+      description: >-
+        One node on a dependency cycle.
+
+
+        `id` is always present, and its presence is what proves the node is on
+        the cycle. `issue` is the row behind it, and is ABSENT — never null —
+        when this workspace holds no record for that id: a target in another
+        repository's namespace, an `external:` reference, or a row whose edges
+        outlived it. That absence means the node cannot be DESCRIBED here, never
+        that it is not really on the cycle.
+
+
+        `issue` is spelled as a bare `$ref` with no sibling keywords, following
+        the codegen note at the top of this document.
+      x-go-type: issueops.CycleMember
+      x-go-type-import:
+        name: issueops
+        path: github.com/steveyegge/beads/issueops
+      required: [id]
+      properties:
+        id:
+          type: string
+        issue:
+          $ref: '#/components/schemas/Issue'
+
+    Cycle:
+      type: object
+      description: >-
+        One circular blocking dependency: its members in EDGE ORDER, so
+        `members[i]` blocks on `members[i+1]` and the last member blocks on the
+        first. The closing edge is implied and is not repeated as a final member.
+
+
+        The rotation is canonical — the lowest id comes first — which is what
+        makes two snapshots of an unchanged workspace comparable.
+      x-go-type: issueops.Cycle
+      x-go-type-import:
+        name: issueops
+        path: github.com/steveyegge/beads/issueops
+      required: [members, partial]
+      properties:
+        members:
+          type: array
+          description: The nodes, in edge order, starting at the lowest id. Never empty.
+          items:
+            $ref: '#/components/schemas/CycleMember'
+        partial:
+          type: boolean
+          description: >-
+            True when at least one member has no `issue`. It is always present,
+            including when false: a consumer must be able to read "this path is
+            complete" from the answer rather than from the absence of a key.
+
+
+            `members` is complete either way. This flag says the DESCRIPTIONS
+            beside the ids are not.
 
     # ---------------------------------------------------------------------
     # Envelope schemas. These have no canonical Go type behind them: they are
@@ -1678,6 +1805,7 @@ components:
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `issues.list`,
             `issues.get`, `issues.claim`, `config.list`, `config.get`; it grows
+            `issues.get`, `issues.claim`, `dependencies.cycles`; it grows
             additively, and an operation never appears here unless it is fully
             implemented. This is how a client checks for an operation — never
             the version string.
@@ -1698,6 +1826,25 @@ components:
           description: >-
             True when the limit truncated the result. There is no cursor on
             this operation; narrow the filters or raise the limit.
+
+    CyclesPage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          description: >-
+            Empty array (never null) when the workspace has no cycles. Its
+            LENGTH is the total: a cycle whose members this workspace cannot
+            describe is still counted here, so the number cannot shrink because
+            a row went missing.
+          items:
+            $ref: '#/components/schemas/Cycle'
+        has_more:
+          type: boolean
+          description: >-
+            Always false in v0: this operation takes no limit, so the report is
+            never truncated. Present so that adding a bound later is additive.
 
     IssuesPage:
       type: object

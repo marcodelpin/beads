@@ -148,6 +148,11 @@ type DependencySQLRepository interface {
 	DeleteAllForIDs(ctx context.Context, ids []string, opts DepInsertOpts) (int, error)
 	CountAllForIDs(ctx context.Context, ids []string, opts DepCountsOpts) (int, error)
 	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
+	// DetectCycleReport answers the same walk in the shape issueops.CycleDetector
+	// publishes: canonically ordered, and carrying every member of a cycle
+	// whether or not this database can describe it. DetectCycles above is the
+	// lossy legacy shape and stays for the callers that still read it.
+	DetectCycleReport(ctx context.Context) (issueops.CycleReport, error)
 
 	GetTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
@@ -178,6 +183,9 @@ type DependencyUseCase interface {
 	IsBlocked(ctx context.Context, issueID string) (bool, []string, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
 	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
+	// DetectCycleReport is the shape issueops.CycleDetector publishes; see the
+	// repository method of the same name.
+	DetectCycleReport(ctx context.Context) (issueops.CycleReport, error)
 
 	GetDependencyTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
 	// AddDependencies asserts a batch of edges, each landing in the plane its
@@ -590,6 +598,14 @@ func (u *dependencyUseCaseImpl) DetectCycles(ctx context.Context) ([][]*types.Is
 	out, err := u.depRepo.DetectCycles(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("DetectCycles: %w", err)
+	}
+	return out, nil
+}
+
+func (u *dependencyUseCaseImpl) DetectCycleReport(ctx context.Context) (issueops.CycleReport, error) {
+	out, err := u.depRepo.DetectCycleReport(ctx)
+	if err != nil {
+		return issueops.CycleReport{}, fmt.Errorf("DetectCycleReport: %w", err)
 	}
 	return out, nil
 }

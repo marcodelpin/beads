@@ -143,15 +143,16 @@ var ErrBusy = errors.New("server busy")
 
 // Operation ids, matching the spec's operationId values exactly.
 const (
-	OpHealth        = "health"
-	OpGetContext    = "getContext"
-	OpListReadyWork = "listReadyWork"
-	OpGetStats      = "getStats"
-	OpListIssues    = "listIssues"
-	OpGetIssue      = "getIssue"
-	OpClaimIssue    = "claimIssue"
-	OpListSettings  = "listSettings"
-	OpGetSetting    = "getSetting"
+	OpHealth               = "health"
+	OpGetContext           = "getContext"
+	OpListReadyWork        = "listReadyWork"
+	OpGetStats             = "getStats"
+	OpListIssues           = "listIssues"
+	OpGetIssue             = "getIssue"
+	OpClaimIssue           = "claimIssue"
+	OpListSettings         = "listSettings"
+	OpGetSetting           = "getSetting"
+	OpListDependencyCycles = "listDependencyCycles"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -166,6 +167,7 @@ const (
 // row here. They are uniform rules, not per-operation behavior, and the spec
 // documents them once at the document level rather than repeating them on all
 // nine operations; these rows carry what an operation produces beyond them.
+// seven operations; these rows carry what an operation produces beyond them.
 // Keep the two documents in step: a row here and the document-level prose are
 // the only two places that carve-out exists.
 var operationCodes = map[string][]Code{
@@ -191,6 +193,9 @@ var operationCodes = map[string][]Code{
 	// `assignee` the document refuses rather than answering with the rows that
 	// have no assignee.
 	OpGetStats: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The cycle sweep takes no parameters at all, so it has no 400 of its own:
+	// the two uniform ones above are the whole of its invalid-argument story.
+	OpListDependencyCycles: {CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

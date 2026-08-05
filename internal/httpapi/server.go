@@ -178,10 +178,17 @@ type Config struct {
 	// settings operations and a summary operation, so a Reader and a Claimer
 	// without them would bind, answer every issue route, and fail those routes
 	// with a nil dereference inside a handler.
-	Reader   issueops.Reader
-	Claimer  issueops.Claimer
-	Settings issueops.WorkspaceConfig
-	Stats    issueops.StatsReporter
+	// Every one of these is required for the reason the half-set pair is
+	// refused: a server that binds while unable to answer an operation its own
+	// capability list advertises is the failure this check exists to prevent,
+	// and a nil role would produce it on the first request to that route
+	// instead of at startup. Take them all off the same store, beneath the hook
+	// layer.
+	Reader        issueops.Reader
+	Claimer       issueops.Claimer
+	Settings      issueops.WorkspaceConfig
+	Stats         issueops.StatsReporter
+	CycleDetector issueops.CycleDetector
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -209,10 +216,15 @@ type Server struct {
 	// are what reader(), claimer(), workspaceConfig() and statsReporter() hand
 	// back on the store-shaped source; some names differ from those methods
 	// because a struct cannot carry both.
+	// issueReader, issueClaimer and issueCycles are the configured roles, set
+	// exactly when provider is nil. They are what reader(), claimer() and
+	// cycleDetector() hand back on the store-shaped source; the names differ
+	// from those methods because a struct cannot carry both.
 	issueReader  issueops.Reader
 	issueClaimer issueops.Claimer
 	settings     issueops.WorkspaceConfig
 	issueStats   issueops.StatsReporter
+	issueCycles  issueops.CycleDetector
 
 	listener net.Listener
 	http     *http.Server
@@ -313,6 +325,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueClaimer: cfg.Claimer,
 		settings:     cfg.Settings,
 		issueStats:   cfg.Stats,
+		issueCycles:  cfg.CycleDetector,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -400,12 +413,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings and Stats"
+const roleSourceNames = "Reader, Claimer, Settings, Stats and CycleDetector"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -550,6 +563,26 @@ func (s *Server) statsReporter(r *http.Request) (issueops.StatsReporter, error) 
 	}
 	var src uow.StatsReporterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.StatsReporter()
+}
+
+// cycleDetector returns the guarded cycle-report surface for one request.
+//
+// It is the third of the same trio, built the same two ways for the same
+// reasons: the configured role on the roles source, and on the provider source
+// one built per request so its unit of work lands in THIS request's log line,
+// held by INTERFACE so uow.CycleDetectorSource is load-bearing rather than
+// decorative.
+//
+// There is no checked wrapper around it, and that is the difference from its
+// two siblings. Those exist because a handler DEREFERENCES a pointer the role
+// returned; this report is a value whose slice a nil-safe range walks, so there
+// is no dereference for a misbehaving implementation to turn into a panic.
+func (s *Server) cycleDetector(r *http.Request) (issueops.CycleDetector, error) {
+	if s.provider == nil {
+		return s.issueCycles, nil
+	}
+	var src uow.CycleDetectorSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.CycleDetector()
 }
 
 // claimer returns the guarded atomic-claim surface for one request.

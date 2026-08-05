@@ -143,38 +143,6 @@ func isDisallowedHierarchicalDependency(fromID, toID string, depType types.Depen
 	return depType != types.DepParentChild || toID != immediateParent
 }
 
-// warnIfCyclesExist checks for dependency cycles and prints a warning if found.
-func warnIfCyclesExist(s storage.DoltStorage) {
-	if s == nil {
-		return // Skip cycle check if store is not available
-	}
-	cycles, err := s.DetectCycles(rootCtx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to check for cycles: %v\n", err)
-		return
-	}
-	if len(cycles) == 0 {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "\n%s Warning: Dependency cycle detected!\n", ui.RenderWarn("⚠"))
-	fmt.Fprintf(os.Stderr, "This can hide issues from the ready work list and cause confusion.\n\n")
-	fmt.Fprintf(os.Stderr, "Cycle path:\n")
-	for _, cycle := range cycles {
-		for j, issue := range cycle {
-			if j == 0 {
-				fmt.Fprintf(os.Stderr, "  %s", issue.ID)
-			} else {
-				fmt.Fprintf(os.Stderr, " → %s", issue.ID)
-			}
-		}
-		if len(cycle) > 0 {
-			fmt.Fprintf(os.Stderr, " → %s", cycle[0].ID)
-		}
-		fmt.Fprintf(os.Stderr, "\n")
-	}
-	fmt.Fprintf(os.Stderr, "\nRun 'bd dep cycles' for detailed analysis.\n\n")
-}
-
 var depCmd = &cobra.Command{
 	Use:     "dep [issue-id]",
 	GroupID: "deps",
@@ -1210,37 +1178,9 @@ var depCyclesCmd = &cobra.Command{
 			}
 		}()
 
-		if usesProxiedServer() {
-			return runDepCyclesProxiedServer(cmd, rootCtx)
-		}
-
-		ctx := rootCtx
-		cycles, err := store.DetectCycles(ctx)
-		if err != nil {
-			return HandleErrorRespectJSON("%v", err)
-		}
-
-		if jsonOutput {
-			if cycles == nil {
-				cycles = [][]*types.Issue{}
-			}
-			return outputJSON(cycles)
-		}
-
-		if len(cycles) == 0 {
-			fmt.Printf("\n%s No dependency cycles detected\n\n", ui.RenderPass("✓"))
-			return nil
-		}
-
-		fmt.Printf("\n%s Found %d dependency cycles:\n\n", ui.RenderFail("⚠"), len(cycles))
-		for i, cycle := range cycles {
-			fmt.Printf("%d. Cycle involving:\n", i+1)
-			for _, issue := range cycle {
-				fmt.Printf("   - %s: %s\n", issue.ID, issue.Title)
-			}
-			fmt.Println()
-		}
-		return nil
+		// Both routes, one body: the only difference between them is which
+		// accessor answers, and that is inside openCycleDetector.
+		return runDepCycles()
 	},
 }
 

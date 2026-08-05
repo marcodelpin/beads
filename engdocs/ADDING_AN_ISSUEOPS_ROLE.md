@@ -51,6 +51,26 @@ Twelve steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way in.
    constructor there is one line away from any front door, and a front door
    that constructed the role directly would get one stripped of its decorators.
 
+   **When the body needs a TRANSACTION, step 3 moves down instead of out.**
+   `storage.DoltStorage` publishes methods, not transactions, so a role whose
+   work is several reads that must see one snapshot cannot be written against
+   it. `issueops.CycleDetector` is the case: it builds a graph and then hydrates
+   the nodes it found. Its shared body is a tx-level function beside its
+   siblings in `internal/storage/issueops`
+   (`cycle_report.go`: `DetectCycleReportInTx`), and each store package holds a
+   five-line accessor around its own `withReadTx`/`withConn`
+   (`dolt/cycle_detector.go`, `embeddeddolt/cycle_detector.go`). The unit-of-work
+   body reaches the same function through a new method on the domain repository
+   and use case. Two wrappers over one function is still ONE vote, exactly as a
+   shared `store<role>` package would be, and there is no importable constructor
+   for step 12's depguard entry to deny — the body types are unexported and the
+   accessor is the only door.
+
+   Put the parts that decide what the answer MEANS in PURE functions either way
+   (`CanonicalCyclePaths`, `BuildCycles`), so they are pinned in milliseconds
+   without a database and the conformance contract is left to assert what only a
+   real backend can show.
+
 4. **The unit-of-work body and its source interface.**
    `internal/storage/uow/<role>.go`, declaring `type <Role>Source interface {
    <Role>() (publicops.<Role>, error) }` and implementing the accessor on

@@ -256,6 +256,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bd dep cycles` output is deterministic, and no longer shortens a cycle it
+  cannot fully describe** (bd-wfkbv). Two changes, both visible in bytes.
+
+  The report is now CANONICAL: each cycle's members are rotated so the lowest
+  id comes first, and the cycles are sorted against each other. Two runs
+  against an unchanged database previously disagreed — the walk iterated a Go
+  map, so both the order of the cycles and each one's starting point moved
+  between runs, `--json` included, and on a graph with overlapping cycles even
+  the SET of cycles could differ. Diffing two snapshots is now meaningful.
+
+  A cycle whose member has no row behind it is now reported HONESTLY. Members
+  that could not be looked up were silently dropped from the path, so a
+  three-node cycle rendered as a two-node one and looked complete, and a cycle
+  none of whose members could be looked up vanished from the report and from
+  the `Found N dependency cycles` count. Every member is now carried with its
+  id, its description is omitted rather than the member, and the cycle is
+  marked partial. The count no longer shrinks because rows went missing.
+
+  `--json` therefore emits a NEW SHAPE: an array of
+  `{"members": [{"id", "issue"?}], "partial": bool}` where it used to emit an
+  array of arrays of issues. The `issue` member is the same issue object as
+  before and is absent — never null — for a member this workspace holds no
+  record of. Scripts that read `bd dep cycles --json` need updating.
+
+  The post-add cycle warning that `bd dep add`, `bd dep --blocks` and
+  `bd link` print is the same sweep and gains the same two properties, on both
+  the direct and the proxied route.
+
+- **`bd serve` publishes `GET /v0/beads/dependencies/cycles`** (bd-wfkbv). The
+  cycle sweep is now an HTTP operation as well as a command, answering from the
+  same role, and `capabilities` gains `dependencies.cycles`. It takes no
+  parameters and is not paginated: truncating would shrink the count, which is
+  the number an operator acts on. `bd link` on a team server also runs its
+  cycle sweep and its title lookups AFTER the write commits rather than inside
+  it, so the warning describes a graph other clients can see.
+
 - **`bd count` is one implementation again** (bd-m8hn7). The command had two:
   the direct route opened its own store and the proxied route re-parsed the
   same flags against a unit of work, and each independently loaded the

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,7 +18,7 @@ import (
 type depAddResult struct {
 	fromTitle string
 	toTitle   string
-	cycles    [][]*types.Issue
+	cycles    []issueops.Cycle
 	cycleErr  error
 }
 
@@ -73,25 +72,41 @@ func addDependencyEdgesProxied(ctx context.Context, edges []issueops.DependencyE
 }
 
 // depEdgeFeedback gathers the cycle sweep and the titles the confirmation line
-// wants, in a second READ-ONLY unit of work once the edges have landed.
+// wants, once the edges have landed.
 //
 // Neither belongs in the write. The role's request IS the transaction, and a
 // cycle warning computed inside a transaction that has not committed describes
-// a graph nobody else can see; a title is presentation. Failing to open the
-// unit of work cannot fail the command either — the edges are already durable
-// — so it is reported the way a failed sweep already was.
+// a graph nobody else can see; a title is presentation. Failing here cannot
+// fail the command either — the edges are already durable — so both halves
+// report the way a failed sweep already did.
+//
+// THE SWEEP IS RESOLVED FIRST AND ASKED FOR SECOND. The role is only requested
+// when checkCycles is set, so an invocation that wants titles alone never
+// touches the cycle accessor: a provider that does not offer it must fail on
+// the sweep it was asked for, not on the two lookups beside it.
 func depEdgeFeedback(ctx context.Context, fromID, toID string, checkCycles bool) depAddResult {
 	var res depAddResult
 	if fromID == "" && toID == "" && !checkCycles {
 		return res
 	}
+	if checkCycles {
+		res.cycles, res.cycleErr = proxiedCycleReport(ctx)
+	}
+	if fromID == "" && toID == "" {
+		return res
+	}
+
 	if uowProvider == nil {
-		res.cycleErr = errors.New("proxied-server UOW provider not initialized")
+		if res.cycleErr == nil {
+			res.cycleErr = errors.New("proxied-server UOW provider not initialized")
+		}
 		return res
 	}
 	uw, err := uowProvider.NewUOW(ctx)
 	if err != nil {
-		res.cycleErr = fmt.Errorf("open unit of work: %w", err)
+		if res.cycleErr == nil {
+			res.cycleErr = fmt.Errorf("open unit of work: %w", err)
+		}
 		return res
 	}
 	defer uw.Close(ctx)
@@ -102,10 +117,21 @@ func depEdgeFeedback(ctx context.Context, fromID, toID string, checkCycles bool)
 	if toID != "" {
 		res.toTitle = proxiedLookupTitle(ctx, uw, toID)
 	}
-	if checkCycles {
-		res.cycles, res.cycleErr = uw.DependencyUseCase().DetectCycles(ctx)
-	}
 	return res
+}
+
+// proxiedCycleReport runs the post-write sweep on the proxied route through the
+// cycle role, which opens its own read-only unit of work.
+func proxiedCycleReport(ctx context.Context) ([]issueops.Cycle, error) {
+	detector, err := proxiedCycleDetector()
+	if err != nil {
+		return nil, err
+	}
+	report, err := detector.DetectCycles(ctx, issueops.DetectCyclesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return report.Cycles, nil
 }
 
 func proxiedLookupTitle(ctx context.Context, uw uow.UnitOfWork, id string) string {
@@ -121,35 +147,6 @@ func proxiedLookupTitle(ctx context.Context, uw uow.UnitOfWork, id string) strin
 		return wisp.Title
 	}
 	return ""
-}
-
-func printCycleDetectionError(err error) {
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to check for cycles: %v\n", err)
-	}
-}
-
-func printCycleWarnings(cycles [][]*types.Issue) {
-	if len(cycles) == 0 {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "\n%s Warning: Dependency cycle detected!\n", ui.RenderWarn("⚠"))
-	fmt.Fprintf(os.Stderr, "This can hide issues from the ready work list and cause confusion.\n\n")
-	fmt.Fprintf(os.Stderr, "Cycle path:\n")
-	for _, cycle := range cycles {
-		for j, issue := range cycle {
-			if j == 0 {
-				fmt.Fprintf(os.Stderr, "  %s", issue.ID)
-			} else {
-				fmt.Fprintf(os.Stderr, " → %s", issue.ID)
-			}
-		}
-		if len(cycle) > 0 {
-			fmt.Fprintf(os.Stderr, " → %s", cycle[0].ID)
-		}
-		fmt.Fprintf(os.Stderr, "\n")
-	}
-	fmt.Fprintf(os.Stderr, "\nRun 'bd dep cycles' for detailed analysis.\n\n")
 }
 
 func runDepBlocksProxiedServer(cmd *cobra.Command, ctx context.Context, blockerID, blockedID string) error {
@@ -590,44 +587,5 @@ func runDepTreeProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 
 	renderTree(tree, maxDepth, direction)
 	fmt.Println()
-	return nil
-}
-
-func runDepCyclesProxiedServer(_ *cobra.Command, ctx context.Context) error {
-	if uowProvider == nil {
-		return HandleErrorRespectJSON("proxied-server UOW provider not initialized")
-	}
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		return HandleErrorRespectJSON("open unit of work: %v", err)
-	}
-	defer uw.Close(ctx)
-
-	cycles, err := uw.DependencyUseCase().DetectCycles(ctx)
-	if err != nil {
-		return HandleErrorRespectJSON("%v", err)
-	}
-
-	if jsonOutput {
-		if cycles == nil {
-			cycles = [][]*types.Issue{}
-		}
-		_ = outputJSON(cycles)
-		return nil
-	}
-
-	if len(cycles) == 0 {
-		fmt.Printf("\n%s No dependency cycles detected\n\n", ui.RenderPass("✓"))
-		return nil
-	}
-
-	fmt.Printf("\n%s Found %d dependency cycles:\n\n", ui.RenderFail("⚠"), len(cycles))
-	for i, cycle := range cycles {
-		fmt.Printf("%d. Cycle involving:\n", i+1)
-		for _, issue := range cycle {
-			fmt.Printf("   - %s: %s\n", issue.ID, issue.Title)
-		}
-		fmt.Println()
-	}
 	return nil
 }

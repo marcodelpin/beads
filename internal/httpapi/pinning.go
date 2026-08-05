@@ -3,6 +3,7 @@ package httpapi
 import (
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // Compile-time proof that the generated wire types ARE the canonical structs,
@@ -31,10 +32,17 @@ var (
 	_ apigen.BondRef                     = types.BondRef{}
 	_ apigen.Statistics                  = types.Statistics{}
 
+	// The cycle pair is pinned to the ROLE package rather than to
+	// internal/types, because that is where its canonical structs live: the
+	// role's result IS what `bd dep cycles --json` marshals.
+	_ apigen.Cycle       = issueops.Cycle{}
+	_ apigen.CycleMember = issueops.CycleMember{}
+
 	// The envelopes carry the canonical types too — pinning the schema is not
 	// enough if a page's items resolve to something else.
 	_ []types.IssueWithCounts = apigen.ReadyPage{}.Items
 	_ []types.IssueWithCounts = apigen.IssuesPage{}.Items
 	_ types.Issue             = apigen.ClaimResponse{}.Issue
 	_ types.Statistics        = apigen.StatsResponse{}.Summary
+	_ []issueops.Cycle        = apigen.CyclesPage{}.Items
 )

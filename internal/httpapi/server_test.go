@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // These tests are pure: no database, no cgo, no build tag. The whole request
@@ -76,6 +77,14 @@ type emptyDeps struct{ domain.DependencyUseCase }
 
 func (emptyDeps) GetIssueDependencyRecords(context.Context, []string) (map[string][]*types.Dependency, error) {
 	return nil, nil
+}
+
+// DetectCycleReport answers for a workspace with no cycles, which is what an
+// empty fake should say. Without it the promoted method on the embedded nil
+// interface panics, and the provider-backed cycle route would 500 through the
+// panic recovery rather than answering.
+func (emptyDeps) DetectCycleReport(context.Context) (issueops.CycleReport, error) {
+	return issueops.CycleReport{Cycles: []issueops.Cycle{}}, nil
 }
 
 func (u *fakeUOW) Commit(_ context.Context, message string) error {
@@ -196,7 +205,7 @@ func newTestServer(t *testing.T, cfg Config) *testServer {
 	// The default source, for the tests that care about something else. A
 	// config that already names a source — either one — keeps it: defaulting a
 	// provider onto a roles-backed config would serve the wrong one and pass.
-	if cfg.Provider == nil && cfg.Reader == nil && cfg.Claimer == nil {
+	if cfg.Provider == nil && cfg.Reader == nil && cfg.Claimer == nil && cfg.CycleDetector == nil {
 		cfg.Provider = &fakeProvider{}
 	}
 	cfg.Stdout = stdout
@@ -567,7 +576,10 @@ func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 	for _, c := range caps {
 		got = append(got, c.(string))
 	}
-	want := []string{"config.get", "config.list", "issues.claim", "issues.get", "issues.list", "ready.list", "stats.get"}
+	want := []string{
+		"config.get", "config.list", "dependencies.cycles", "issues.claim",
+		"issues.get", "issues.list", "ready.list", "stats.get",
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("capabilities = %v, want %v", got, want)
 	}

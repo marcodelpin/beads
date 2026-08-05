@@ -663,6 +663,10 @@ func (s *configStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 func (s *configStore) StatsReporter() (issueops.StatsReporter, error) {
 	return nil, &storage.ErrUnsupported{Op: "StatsReporter", Backend: "jira-config-stub"}
 }
+
+func (s *configStore) CycleDetector() (issueops.CycleDetector, error) {
+	return nil, &storage.ErrUnsupported{Op: "CycleDetector", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {

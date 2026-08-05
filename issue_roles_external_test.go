@@ -256,6 +256,36 @@ func TestStatsReporterExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestCycleDetectorKeepsTelemetryOutermost is the cycle role's version of
+// TestCounterKeepsTelemetryOutermost, and the READ answer for the same reason:
+// a cycle sweep fires no completion hooks, so the hook decorator adds no layer.
+func TestCycleDetectorKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	detector, err := storage.NewHookFiringStore(instrumented, nil).CycleDetector()
+	if err != nil {
+		t.Fatalf("CycleDetector() error = %v", err)
+	}
+	if got := reflect.TypeOf(detector).String(); got != "*telemetry.instrumentedCycleDetector" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestCycleDetectorExposesTypedUnsupportedError(t *testing.T) {
+	detector, err := (*dolt.DoltStore)(nil).CycleDetector()
+	if detector != nil {
+		t.Fatalf("CycleDetector() detector = %T, want nil", detector)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("CycleDetector() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	counter, err := (*dolt.DoltStore)(nil).Counter()
 	if counter != nil {

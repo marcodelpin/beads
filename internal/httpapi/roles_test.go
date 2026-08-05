@@ -208,7 +208,41 @@ func rolesConfig(cfg Config) Config {
 	if cfg.Stats == nil {
 		cfg.Stats = &roleStats{}
 	}
+	if cfg.CycleDetector == nil {
+		cfg.CycleDetector = &roleCycleDetector{}
+	}
 	return cfg
+}
+
+// rolesConfigWithout is a complete source with exactly one role removed, which
+// is the shape every half-set case in TestListenRequiresExactlyOneDatabaseSource
+// wants. Naming the role to DROP rather than the roles to keep is what stops
+// those cases from having to be edited every time the set grows.
+func rolesConfigWithout(drop func(*Config)) Config {
+	cfg := rolesConfig(Config{})
+	drop(&cfg)
+	return cfg
+}
+
+// roleCycleDetector is the third role of the store-shaped source. It is the
+// same shape as the two above so that every configured-roles case can hand
+// Listen a complete source without deciding what its cycle answer should be.
+type roleCycleDetector struct {
+	report issueops.CycleReport
+	err    error
+
+	mu    sync.Mutex
+	calls []issueops.DetectCyclesRequest
+}
+
+func (d *roleCycleDetector) DetectCycles(_ context.Context, req issueops.DetectCyclesRequest) (issueops.CycleReport, error) {
+	d.mu.Lock()
+	d.calls = append(d.calls, req)
+	d.mu.Unlock()
+	if d.err != nil {
+		return issueops.CycleReport{}, d.err
+	}
+	return d.report, nil
 }
 
 // countedPage is the fixture both database sources answer with, so a body
@@ -244,29 +278,42 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 		},
 		{
 			name: "every role together is a complete source",
-			cfg:  Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}, Stats: &roleStats{}},
+			cfg:  rolesConfig(Config{}),
 		},
+		// One case per role, each dropping exactly that role from an otherwise
+		// complete source. The set is all-or-nothing rather than a required
+		// pair plus optional extras: a Config missing any one role binds,
+		// advertises that operation's capability, and then faults inside a
+		// handler on a live server. A new role adds one line here and one to
+		// rolesConfig, and nothing else in this test.
 		{
-			name:    "a reader without a claimer",
-			cfg:     Config{Reader: &roleReader{}, Settings: &roleSettings{}, Stats: &roleStats{}},
+			name:    "no reader",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Reader = nil }),
 			wantErr: "no database source",
 		},
 		{
-			name:    "a claimer without a reader",
-			cfg:     Config{Claimer: &roleClaimer{}, Settings: &roleSettings{}, Stats: &roleStats{}},
+			name:    "no claimer",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Claimer = nil }),
 			wantErr: "no database source",
 		},
 		{
-			name:    "the issue roles without the settings role",
-			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Stats: &roleStats{}},
+			name:    "no settings role",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Settings = nil }),
 			wantErr: "no database source",
 		},
 		{
-			// The role set is all-or-nothing rather than a required pair plus
-			// optional extras: a config missing the summary role binds and then
-			// faults on one route, which is the same mistake in a new place.
-			name:    "the read and write roles without the summary role",
-			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}},
+			name:    "no summary role",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Stats = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "no cycle detector",
+			cfg:     rolesConfigWithout(func(c *Config) { c.CycleDetector = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "a cycle detector alone",
+			cfg:     Config{CycleDetector: &roleCycleDetector{}},
 			wantErr: "no database source",
 		},
 		{
@@ -280,8 +327,17 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "exactly one database source",
 		},
 		{
-			name:    "a provider and every role",
-			cfg:     Config{Provider: &fakeProvider{}, Reader: &roleReader{}, Claimer: &roleClaimer{}, Settings: &roleSettings{}, Stats: &roleStats{}},
+			name:    "a provider and a cycle detector",
+			cfg:     Config{Provider: &fakeProvider{}, CycleDetector: &roleCycleDetector{}},
+			wantErr: "exactly one database source",
+		},
+		{
+			name: "a provider and every role",
+			cfg: func() Config {
+				cfg := rolesConfig(Config{})
+				cfg.Provider = &fakeProvider{}
+				return cfg
+			}(),
 			wantErr: "exactly one database source",
 		},
 	} {
@@ -321,10 +377,11 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 		readConfig: emptyConfig{},
 	}})
 	viaRoles := newTestServer(t, Config{
-		Reader:   &roleReader{page: issueops.IssuePage{Items: items}},
-		Claimer:  &roleClaimer{},
-		Settings: &roleSettings{},
-		Stats:    &roleStats{},
+		Reader:        &roleReader{page: issueops.IssuePage{Items: items}},
+		Claimer:       &roleClaimer{},
+		Settings:      &roleSettings{},
+		Stats:         &roleStats{},
+		CycleDetector: &roleCycleDetector{},
 	})
 
 	for _, path := range []string{"/v0/beads/ready", "/v0/beads/issues"} {
@@ -362,7 +419,7 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	}
 	blocked := 2
 	reporter := &roleStats{summary: types.Statistics{TotalIssues: 7, OpenIssues: 5, BlockedIssues: &blocked}}
-	ts := newTestServer(t, Config{Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter})
+	ts := newTestServer(t, rolesConfig(Config{Reader: reader, Claimer: claimer, Settings: settings, Stats: reporter}))
 
 	t.Run("ready", func(t *testing.T) {
 		resp := ts.get(t, "/v0/beads/ready?sort=oldest")
@@ -521,10 +578,11 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 	t.Run("a missing issue is 404", func(t *testing.T) {
 		ts := newTestServer(t, Config{
-			Reader:   &roleReader{err: fmt.Errorf("get bd-404: %w", storage.ErrNotFound)},
-			Claimer:  &roleClaimer{},
-			Settings: &roleSettings{},
-			Stats:    &roleStats{},
+			Reader:        &roleReader{err: fmt.Errorf("get bd-404: %w", storage.ErrNotFound)},
+			Claimer:       &roleClaimer{},
+			Settings:      &roleSettings{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 		})
 		resp := ts.get(t, "/v0/beads/issues/bd-404")
 		if resp.StatusCode != http.StatusNotFound {
@@ -540,10 +598,11 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 		// arrives at the handler exactly as it does from a unit-of-work reader —
 		// and must still be mapped to its parameter rather than to a 500.
 		ts := newTestServer(t, Config{
-			Reader:   &roleReader{err: errors.New("invalid status bogus")},
-			Claimer:  &roleClaimer{},
-			Settings: &roleSettings{},
-			Stats:    &roleStats{},
+			Reader:        &roleReader{err: errors.New("invalid status bogus")},
+			Claimer:       &roleClaimer{},
+			Settings:      &roleSettings{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 		})
 		resp := ts.get(t, "/v0/beads/issues?status=bogus")
 		if resp.StatusCode != http.StatusBadRequest {
@@ -557,8 +616,9 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 
 	t.Run("a foreign holder is 409 with its state", func(t *testing.T) {
 		ts := newTestServer(t, Config{
-			Reader: &roleReader{},
-			Stats:  &roleStats{},
+			Reader:        &roleReader{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 			Claimer: &roleClaimer{err: &issueops.ClaimConflictError{
 				IssueID:  "bd-1",
 				Assignee: "bob",
@@ -582,10 +642,11 @@ func TestConfiguredRolesKeepTheDocumentedRefusals(t *testing.T) {
 
 	t.Run("a role failure is the generic 500", func(t *testing.T) {
 		ts := newTestServer(t, Config{
-			Reader:   &roleReader{err: errors.New("backend is unreachable")},
-			Claimer:  &roleClaimer{},
-			Settings: &roleSettings{},
-			Stats:    &roleStats{},
+			Reader:        &roleReader{err: errors.New("backend is unreachable")},
+			Claimer:       &roleClaimer{},
+			Settings:      &roleSettings{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 		})
 		resp := ts.get(t, "/v0/beads/ready")
 		if resp.StatusCode != http.StatusInternalServerError {
@@ -684,10 +745,11 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 	t.Run("a reader with no detail view is the documented miss", func(t *testing.T) {
 		silent := newTestServer(t, rolesConfig(Config{}))
 		missed := newTestServer(t, Config{
-			Reader:   &roleReader{err: fmt.Errorf("get bd-1: %w", storage.ErrNotFound)},
-			Claimer:  &roleClaimer{},
-			Settings: &roleSettings{},
-			Stats:    &roleStats{},
+			Reader:        &roleReader{err: fmt.Errorf("get bd-1: %w", storage.ErrNotFound)},
+			Claimer:       &roleClaimer{},
+			Settings:      &roleSettings{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 		})
 
 		got := silent.get(t, "/v0/beads/issues/bd-1")
@@ -712,10 +774,11 @@ func TestARoleThatAnswersWithNothingIsNotDereferenced(t *testing.T) {
 	// panic path writes no request_error line for an operator to alert on.
 	t.Run("a claimer with no issue is the generic failure", func(t *testing.T) {
 		ts := newTestServer(t, Config{
-			Reader:   &roleReader{},
-			Claimer:  &roleClaimer{result: issueops.ClaimResult{Changed: true}},
-			Settings: &roleSettings{},
-			Stats:    &roleStats{},
+			Reader:        &roleReader{},
+			Claimer:       &roleClaimer{result: issueops.ClaimResult{Changed: true}},
+			Settings:      &roleSettings{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 		})
 
 		resp := ts.claim(t, claimPath, `{"actor":"alice"}`)
@@ -783,13 +846,14 @@ func TestListenRefusesARoleThatFiresTheWorkspaceHooks(t *testing.T) {
 
 	listen := func(cl issueops.Claimer) (*Server, error) {
 		return Listen(Config{
-			Addr:     "127.0.0.1:0",
-			Stdout:   io.Discard,
-			Stderr:   io.Discard,
-			Reader:   &roleReader{},
-			Claimer:  cl,
-			Settings: &roleSettings{},
-			Stats:    &roleStats{},
+			Addr:          "127.0.0.1:0",
+			Stdout:        io.Discard,
+			Stderr:        io.Discard,
+			Reader:        &roleReader{},
+			Claimer:       cl,
+			Settings:      &roleSettings{},
+			Stats:         &roleStats{},
+			CycleDetector: &roleCycleDetector{},
 		})
 	}
 

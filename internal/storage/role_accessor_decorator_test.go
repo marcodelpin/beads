@@ -22,6 +22,7 @@ var roleAccessorNames = []string{
 	"Counter",
 	"WorkspaceConfig",
 	"StatsReporter",
+	"CycleDetector",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -74,6 +75,7 @@ type roleAccessorStore struct {
 	counter   issueops.Counter
 	settings  issueops.WorkspaceConfig
 	stats     issueops.StatsReporter
+	cycles    issueops.CycleDetector
 	commenter issueops.Commenter
 	claimer   issueops.ReadyClaimer
 	closer    issueops.BatchCloser
@@ -90,6 +92,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		counter:   sentinel,
 		settings:  sentinel,
 		stats:     sentinel,
+		cycles:    sentinel,
 		commenter: sentinel,
 		claimer:   sentinel,
 		closer:    sentinel,
@@ -106,6 +109,10 @@ func (s *roleAccessorStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) 
 }
 func (s *roleAccessorStore) StatsReporter() (issueops.StatsReporter, error) {
 	return s.stats, s.err
+}
+
+func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
+	return s.cycles, s.err
 }
 func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.commenter, s.err }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
@@ -168,6 +175,10 @@ func (*roleAccessorSentinel) Stats(context.Context, issueops.StatsRequest) (issu
 func (*roleAccessorSentinel) AssigneeStats(context.Context, issueops.AssigneeStatsRequest) (issueops.StatsResult, error) {
 	return issueops.StatsResult{}, nil
 }
+
+func (*roleAccessorSentinel) DetectCycles(context.Context, issueops.DetectCyclesRequest) (issueops.CycleReport, error) {
+	return issueops.CycleReport{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -199,6 +210,12 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // vocabulary has nothing to hand a hook script (hook_workspace_config.go).
 // This test pins all five as decisions rather than leaving them
 // indistinguishable from the regression above.
+// The four read roles are asserted the OTHER way round on purpose. Reads fire
+// no completion hooks, so IssueReader, IssueRelations, Counter and
+// CycleDetector deliberately return the inner surface unwrapped
+// (hook_issue_reader.go, hook_relations.go, hook_counter.go,
+// hook_cycle_detector.go); this test pins that as a decision rather than
+// leaving it indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -219,6 +236,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }, inner.stats, false},
+		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -259,6 +277,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Counter", func() (any, error) { return store.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
 		{"StatsReporter", func() (any, error) { return store.StatsReporter() }},
+		{"CycleDetector", func() (any, error) { return store.CycleDetector() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
+	publicops "github.com/steveyegge/beads/issueops"
 )
 
 func NewDependencySQLRepository(runner Runner) domain.DependencySQLRepository {
@@ -810,6 +811,14 @@ func (r *dependencySQLRepositoryImpl) DetectCycles(ctx context.Context) ([][]*ty
 	out, err := issueops.DetectCyclesInTx(ctx, r.runner)
 	if err != nil {
 		return nil, fmt.Errorf("db: DependencySQLRepository.DetectCycles: %w", err)
+	}
+	return out, nil
+}
+
+func (r *dependencySQLRepositoryImpl) DetectCycleReport(ctx context.Context) (publicops.CycleReport, error) {
+	out, err := issueops.DetectCycleReportInTx(ctx, r.runner)
+	if err != nil {
+		return publicops.CycleReport{}, fmt.Errorf("db: DependencySQLRepository.DetectCycleReport: %w", err)
 	}
 	return out, nil
 }

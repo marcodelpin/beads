@@ -179,6 +179,12 @@ type Storage interface {
 	// re-project a value into a normalized lookup table — a side effect no
 	// issue role has anywhere to describe.
 	WorkspaceConfig() (issueops.WorkspaceConfig, error)
+	// CycleDetector returns the guarded cycle-report surface for this store: its
+	// own role because it is asked of the WHOLE graph and answers with paths,
+	// where every Relations request names one anchor and answers with that
+	// anchor's neighbors. Reads fire no hooks, so the hook decorator's answer is
+	// its inner store's unchanged, as it is for IssueReader.
+	CycleDetector() (issueops.CycleDetector, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error
