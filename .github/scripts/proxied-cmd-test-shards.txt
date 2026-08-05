@@ -71,6 +71,7 @@
 15 7 TestProxiedServerMolStale
 15 7 TestProxiedServerReadyWisp
 15 7 TestProxiedServerReclaim
+15 7 TestProxiedServerRelate
 
 15 8 TestProxiedServerCreate
 15 8 TestProxiedServerGC
@@ -101,6 +102,7 @@
 15 11 TestProxiedServerCompactHistory
 15 11 TestProxiedServerDeleteWisp
 15 11 TestProxiedServerEpic
+15 11 TestProxiedServerHuman
 15 11 TestProxiedServerInfo
 15 11 TestProxiedServerMolDistill
 15 11 TestProxiedServerReady

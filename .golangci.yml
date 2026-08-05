@@ -276,7 +276,7 @@ linters:
       #
       # Commands with a direct route and a proxied twin that build the same
       # filter on both:
-      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|purge|search|status|todo|wisp)(_proxied_server)?\.go$'
+      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|human|info|label|orphans|purge|search|status|todo|wisp)(_proxied_server)?\.go$'
         linters:
           - forbidigo
       # Molecule reporting: each selects the members of one molecule.
@@ -299,7 +299,7 @@ linters:
         linters:
           - forbidigo
       # One command each, no family to join.
-      - path: '^cmd/bd/(cleanup|completions|count|gate_discover|human|lint|ping|repo|swarm|template)\.go$'
+      - path: '^cmd/bd/(cleanup|completions|count|gate_discover|lint|ping|repo|swarm|template)\.go$'
         linters:
           - forbidigo
       # Tests are exempt for the same reason the depguard twin exempts them:
