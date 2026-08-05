@@ -75,6 +75,7 @@ type IssueSQLRepository interface {
 	GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
 	UnclaimIssue(ctx context.Context, id, actor string, force bool) error
+	HeartbeatIssue(ctx context.Context, id, actor string) error
 	ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, filter types.ReclaimFilter, actor string) ([]types.ReclaimedLease, error)
 }
 
@@ -282,6 +283,7 @@ type IssueUseCase interface {
 	GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
 	Unclaim(ctx context.Context, id, actor string, force bool) error
+	Heartbeat(ctx context.Context, id, actor string) error
 	ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, filter types.ReclaimFilter, actor string) ([]types.ReclaimedLease, error)
 
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
@@ -1796,6 +1798,20 @@ func (u *issueUseCaseImpl) Unclaim(ctx context.Context, id, actor string, force 
 	}
 	if err := u.issueRepo.UnclaimIssue(ctx, id, actor, force); err != nil {
 		return fmt.Errorf("Unclaim: %w", err)
+	}
+	return nil
+}
+
+// Heartbeat refreshes the lease on an issue actor holds in_progress. The
+// write touches ONLY the ephemeral leases table (bd-lrgn1), so the caller
+// must run it under uow.RunTxEphemeral's no-Dolt-commit form — a heartbeat
+// mints no Dolt commit and no history in any mode (bd-aq0ql).
+func (u *issueUseCaseImpl) Heartbeat(ctx context.Context, id, actor string) error {
+	if id == "" {
+		return fmt.Errorf("Heartbeat: id must not be empty")
+	}
+	if err := u.issueRepo.HeartbeatIssue(ctx, id, actor); err != nil {
+		return fmt.Errorf("Heartbeat: %w", err)
 	}
 	return nil
 }

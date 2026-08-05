@@ -1110,6 +1110,25 @@ func (r *issueSQLRepositoryImpl) UnclaimIssue(ctx context.Context, id, actor str
 	return nil
 }
 
+// HeartbeatIssue refreshes the lease on an issue actor holds in_progress,
+// mirroring DoltStore.HeartbeatIssue: wisps are ephemeral and never leased,
+// and the SQL work is the classic issueops.HeartbeatIssueInTx — same clock
+// (time.Now().UTC()), same TTL resolution (issueops.LeaseTTL), and the same
+// only-current-owner classification (storage.ErrAlreadyClaimed /
+// ErrNotClaimable) — so classic `bd reclaim` staleness semantics see proxied
+// heartbeats identically. Deliberately NO Dolt commit: the leases table is
+// dolt_ignored (bd-lrgn1), and the cmd layer commits this transaction with
+// uow.RunTxEphemeral (plain SQL COMMIT, nothing in dolt_log).
+func (r *issueSQLRepositoryImpl) HeartbeatIssue(ctx context.Context, id, actor string) error {
+	if issueops.IsActiveWispInTx(ctx, r.runner, id) {
+		return fmt.Errorf("db: IssueSQLRepository.HeartbeatIssue: %w: %s is ephemeral", storage.ErrNotClaimable, id)
+	}
+	if err := issueops.HeartbeatIssueInTx(ctx, r.runner, id, actor); err != nil {
+		return fmt.Errorf("db: IssueSQLRepository.HeartbeatIssue: %w", err)
+	}
+	return nil
+}
+
 func (r *issueSQLRepositoryImpl) ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, filter types.ReclaimFilter, actor string) ([]types.ReclaimedLease, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
 	out, err := issueops.ReclaimExpiredLeasesInTx(ctx, r.runner, cutoff, filter, actor)

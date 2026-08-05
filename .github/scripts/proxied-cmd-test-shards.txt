@@ -66,6 +66,7 @@
 15 7 TestProxiedServerClose
 15 7 TestProxiedServerCloseConcurrent
 15 7 TestProxiedServerExternalCreate
+15 7 TestProxiedServerHeartbeat
 15 7 TestProxiedServerMolStale
 15 7 TestProxiedServerReadyWisp
 15 7 TestProxiedServerReclaim
