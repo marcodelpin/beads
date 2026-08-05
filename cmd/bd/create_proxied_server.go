@@ -145,6 +145,14 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 			// this can't drift from parseDepSpec's normalization rules.
 			DiscoveredFromParent: discoveredFromParentSpec(deps),
 			ForcePrefix:          in.force,
+			// RULING R1: `bd create` is create-only — an occupied --id must
+			// refuse, never silently upsert the existing row. This routes the
+			// insert through the domain's strict form (EnsureIssueIDAvailableInTx
+			// + InsertIssueStrictInTx, which still stamps a fresh row_lock)
+			// instead of the upsert-by-default insertIssueRow, matching the uow
+			// facade's createParams. Batch/upsert callers (bd import) keep the
+			// upsert form.
+			CreateOnly: true,
 		}
 
 		var result domain.CreateIssueResult
@@ -161,6 +169,12 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		return result.Issue, fmt.Sprintf("bd: create %s", result.Issue.ID), nil
 	})
 	if err != nil {
+		// RULING R1: an occupied --id is a refusal, not a silent full-row
+		// upsert reported as success. Same message and exit code as the
+		// embedded path (cmd/bd/create.go).
+		if errors.Is(err, storage.ErrAlreadyExists) && in.explicitID != "" {
+			return HandleErrorRespectJSON("%s already exists; use bd update, or bd import for upsert semantics", in.explicitID)
+		}
 		return HandleError("%v", err)
 	}
 
