@@ -76,6 +76,7 @@ type IssueSQLRepository interface {
 	GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
 	UnclaimIssue(ctx context.Context, id, actor string, force bool) error
+	UnclaimIssueIfAssignee(ctx context.Context, id, actor, expectedAssignee string) error
 	HeartbeatIssue(ctx context.Context, id, actor string) error
 	ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, filter types.ReclaimFilter, actor string) ([]types.ReclaimedLease, error)
 }
@@ -284,6 +285,7 @@ type IssueUseCase interface {
 	GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error)
 	GetEpicsEligibleForClosure(ctx context.Context) ([]*types.EpicStatus, error)
 	Unclaim(ctx context.Context, id, actor string, force bool) error
+	UnclaimIfAssignee(ctx context.Context, id, actor, expectedAssignee string) error
 	Heartbeat(ctx context.Context, id, actor string) error
 	ReclaimExpiredLeases(ctx context.Context, olderThan time.Duration, filter types.ReclaimFilter, actor string) ([]types.ReclaimedLease, error)
 
@@ -1812,6 +1814,24 @@ func (u *issueUseCaseImpl) Unclaim(ctx context.Context, id, actor string, force 
 	}
 	if err := u.issueRepo.UnclaimIssue(ctx, id, actor, force); err != nil {
 		return fmt.Errorf("Unclaim: %w", err)
+	}
+	return nil
+}
+
+// UnclaimIfAssignee is the compare-and-swap release: it clears the claim only
+// while the issue is still assigned to expectedAssignee, and otherwise returns
+// storage.ErrAssigneeMismatch having written nothing. It is the conditional
+// twin of Unclaim and runs the SAME transition (assignee cleared, status
+// reopened, started_at cleared, lease dropped, row_lock rewritten, "unclaimed"
+// event recorded) because both reach the one classic implementation in
+// issueops — which is what makes `bd unclaim --if-assignee` behave identically
+// on the proxied-server and embedded backends.
+func (u *issueUseCaseImpl) UnclaimIfAssignee(ctx context.Context, id, actor, expectedAssignee string) error {
+	if id == "" {
+		return fmt.Errorf("UnclaimIfAssignee: id must not be empty")
+	}
+	if err := u.issueRepo.UnclaimIssueIfAssignee(ctx, id, actor, expectedAssignee); err != nil {
+		return fmt.Errorf("UnclaimIfAssignee: %w", err)
 	}
 	return nil
 }

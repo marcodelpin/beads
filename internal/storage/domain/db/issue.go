@@ -1125,6 +1125,19 @@ func (r *issueSQLRepositoryImpl) UnclaimIssue(ctx context.Context, id, actor str
 	return nil
 }
 
+// UnclaimIssueIfAssignee runs the classic compare-and-swap release against this
+// runner. Like UnclaimIssue it takes no IssueTableOpts: issueops routes the
+// write to the issues or wisps tables from the row itself, so a wisp's claim is
+// released against the wisp tables on both backends. The mismatch verdict
+// (storage.ErrAssigneeMismatch, nothing written) is produced by the shared
+// helper, not restated here.
+func (r *issueSQLRepositoryImpl) UnclaimIssueIfAssignee(ctx context.Context, id, actor, expectedAssignee string) error {
+	if err := issueops.UnclaimIssueIfAssigneeInTx(ctx, r.runner, id, actor, expectedAssignee); err != nil {
+		return fmt.Errorf("db: IssueSQLRepository.UnclaimIssueIfAssignee: %w", err)
+	}
+	return nil
+}
+
 // HeartbeatIssue refreshes the lease on an issue actor holds in_progress,
 // mirroring DoltStore.HeartbeatIssue: wisps are ephemeral and never leased,
 // and the SQL work is the classic issueops.HeartbeatIssueInTx — same clock
