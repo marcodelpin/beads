@@ -232,6 +232,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bd count` is one implementation again** (bd-m8hn7). The command had two:
+  the direct route opened its own store and the proxied route re-parsed the
+  same flags against a unit of work, and each independently loaded the
+  workspace list configuration before applying `--include-infra`. The
+  cardinality contract `bd count` keeps with `bd list` was therefore asserted
+  once and implemented twice. Both routes now go through the new
+  `issueops.Counter` role, which builds its filter with the same shared
+  builder `bd list` uses. Text and `--json` output are unchanged on both
+  routes — the committed protocol corpus fixture for `bd count` is
+  byte-identical — so this is a change you should only notice if the two
+  routes previously disagreed. Two behaviours are now written down as
+  promises rather than left as accidents: an unrecognised `--status` or
+  `--type` still matches nothing and answers `0` rather than refusing (where
+  `bd list` validates both), and a grouped count's `Total` is computed
+  independently of its buckets, so overlapping dimensions such as labels do
+  not sum to it.
+
+- **Proxied `bd create`, `bd reopen` and `bd update` emit the same `--json`
+  shape as their direct counterparts** (bd-7oyh5, bd-1f5a2, bd-xt6de). Each of
+  the three now answers from the hydrated post-state snapshot the
+  `issueops.Lifecycle` role returns instead of a bare row read, so all three
+  gained the `labels` field they were silently dropping, and — as on the
+  direct route — dependency records are not included. Scripts that read
+  proxied output should expect the direct route's documented shape; nothing
+  was removed. `bd update --claim --json` is the one exception and still
+  strips labels.
+
+- **Proxied multi-id `bd reopen` records one history entry per id**
+  (bd-1f5a2). It wrote a single combined entry covering every id in the
+  batch; the direct route has always written one per id, and both routes now
+  do. On a team server a `bd reopen a b c` is consequently three round trips
+  and three Dolt commits rather than one, which a script reopening a large
+  batch will feel.
+
+- **Proxied `bd create` validates the way the direct route validates**
+  (bd-7oyh5). Its custom issue-type check no longer falls back to
+  `config.yaml` when the database has no custom types, its explicit-id prefix
+  guard no longer consults the YAML prefix overlay, and its `--type`,
+  `--status` and prefix refusals are worded as the role words them. The
+  direct route has never had either fallback, so this is convergence onto the
+  stricter of the two. The version-control entry a proxied create records
+  also changes text, from `bd: create <id>` to `create issue`: the role
+  publishes no field for a caller-supplied label, and no test asserted either
+  string.
+
+- **Proxied `bd update` error messages no longer name the stage that failed**
+  (bd-xt6de). "opening unit of work" and "committing" collapse into the
+  generic per-id update failure, and an update whose commit fails with a
+  context cancellation now aborts the batch instead of recording a per-id
+  verdict for it. This matches the choice `bd update --claim` already made
+  when it moved to the role. Exit codes are unchanged.
+
 - **An empty-string label is dropped rather than stored** (bd-yby99.29). Adding
   or replacing labels with an empty value wrote a `labels` row keyed on `''` on
   the Dolt-backed stores and dropped it on the unit-of-work one, so the same
@@ -659,6 +711,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#4675](https://github.com/gastownhall/beads/pull/4675).)
 
 ### Fixed
+
+- **`bd create --id <id>` on a proxied server refuses an occupied id instead
+  of overwriting it** (bd-7oyh5). The direct route has always been create-only.
+  The proxied route passed no such flag, so `bd create --id bd-abc123 --title
+  ...` against an id that already existed silently upserted every column of
+  the resident issue — title, type, description, labels — and exited zero. The
+  original was gone, with no history entry naming a create and nothing in the
+  output to suggest anything had been replaced. Both routes now return
+  `ErrAlreadyExists` naming the id and leave the stored row untouched, across
+  the shared id space: an occupied durable id refuses a wisp create and an
+  occupied wisp id refuses a durable one. If you have automation that relied
+  on `--id` as an upsert, it should call `bd update`.
+
+- **Proxied `bd update --ephemeral` and `--no-history` move the issue instead
+  of flagging it in place** (bd-xt6de). The direct route sends these through an
+  atomic aggregate move: insert into the target plane, copy the auxiliary rows,
+  retarget inbound dependency edges, drop the lease, delete from the source.
+  The proxied route instead ran a plain column update on whichever table the
+  row already sat in, so a proxied `bd update --ephemeral` left the issue in
+  `issues` carrying `ephemeral = 1` — still durable, still versioned, still
+  replicated, but invisible to every wisp-plane read and skipped by JSONL
+  export. Both routes now perform the move. The inverse spellings
+  `--persistent` and `--history` appeared to work before only by accident:
+  moving a row that never left `issues` is a no-op that still clears the flag.
+  **This does not repair existing rows.** Any issue a proxied
+  `bd update --ephemeral` produced before this release is still in `issues`
+  with the flag set, and nothing here finds it; that needs its own migration.
+
+- **Proxied `bd reopen` reopens an issue in a configured done status**
+  (bd-1f5a2). The proxied handler short-circuited on `status != closed` and
+  reported "nothing to do" for any workspace-configured done status, so on a
+  team server an issue in a custom done state such as `verified` could not be
+  reopened at all while the same command worked locally. Both routes now go
+  through `issueops.Lifecycle.Reopen`, which spans the whole configured done
+  category. Reopening something genuinely not closed is still a no-op and
+  still says so.
 
 - **`bd update --parent` on a proxied server no longer leaves a stale parent**
   (bd-yby99.26). A parent id is a *set* assignment: setting it replaces every
