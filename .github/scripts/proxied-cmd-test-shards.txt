@@ -18,6 +18,7 @@
 15 1 TestProxiedServerCount
 15 1 TestProxiedServerDelete
 15 1 TestProxiedServerDoltRemoteRemove
+15 1 TestProxiedServerGateLifecycle
 15 1 TestProxiedServerMolCurrent
 15 1 TestProxiedServerPathHelpers
 15 1 TestProxiedServerTodo

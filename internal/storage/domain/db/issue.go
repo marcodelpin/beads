@@ -833,6 +833,12 @@ func normalizeUpdateValue(key string, value any) any {
 		case []byte:
 			return string(v)
 		}
+	case "waiters":
+		// The column is TEXT holding a JSON array; the embedded path
+		// (issueops.updateIssueInTx) marshals unconditionally, and a raw
+		// []string would be refused by the SQL driver here.
+		waitersJSON, _ := json.Marshal(value)
+		return string(waitersJSON)
 	}
 	return value
 }
