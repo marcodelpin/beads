@@ -8,15 +8,14 @@ import (
 )
 
 // TestReadyCounterContract runs the ReadyCounter contract against the
-// unit-of-work provider — the one implementation that does not hand back
-// internal/workapi/storereadycounter, and the one that answers by counting the
+// unit-of-work provider — the one implementation that answers by counting the
 // unbounded page rather than with an indexed COUNT(*). It is the SECOND of two
 // votes, not the third: the two store backends share the other body.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so dolt_log and the issues table are database-global
-// and a parallel subtest would corrupt another subtest's history delta.
+// copy-on-write branch, so a parallel subtest would corrupt another's history
+// delta.
 func TestReadyCounterContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWReadyCounterFixture(t, ctx, "rdc")
@@ -48,8 +47,8 @@ func newUOWReadyCounterFixture(t *testing.T, ctx context.Context, prefix string)
 	t.Helper()
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessors, not NewReadyCounter/NewIssueReader: a
-	// provider that stopped offering either role is the regression, and a
-	// constructor call would hide it.
+	// provider that stopped offering either role is the regression a constructor
+	// call would hide.
 	source, ok := provider.(ReadyCounterSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the ReadyCounter accessor", provider)

@@ -16,22 +16,15 @@ const oldQueryWindow = 100
 
 // TestAPredicateQueryFindsAMatchBeyondTheOldWindow is the end-to-end proof of
 // the defect this role shipped to fix, and it lives HERE — one backend, not the
-// portable contract — on purpose.
-//
-// Making the old window observable needs more than a hundred candidate rows in
-// one store. That is a few seconds at this backend and would be a few seconds
-// times three if it were a conformance case, for one bit of information about
-// arithmetic that is identical in both bodies: they execute the same
-// workapi.QueryPlan, whose predicate branch carries no row limit at all, and
-// TestBuildQueryPlanLeavesAPredicateQueryUNBOUNDED pins that in microseconds.
-// What no unit test can show is that the whole path — plan, SQL, predicate,
-// page — actually returns the row, so exactly one backend runs it.
+// portable contract — because making the old window observable needs more than
+// a hundred candidate rows, which would cost three times as much as a
+// conformance case for arithmetic already pinned in microseconds by
+// TestBuildQueryPlanLeavesAPredicateQueryUNBOUNDED.
 //
 // THE SHAPE OF THE OLD FAILURE, which is what the seeding reproduces. With
 // --limit 1 the old code fetched 100 candidate rows and applied the predicate
 // to those; a match sitting at row 101 of the query's own order was therefore
-// absent from the page AND unreported by has-more, so the caller was handed an
-// empty answer to a question with a match in it. The single matching row is
+// absent from the page AND unreported by has-more. The single matching row is
 // seeded at the WORST priority so the default order (priority ASC, created
 // DESC, id ASC) puts it last, behind a full window of rows the predicate
 // rejects.

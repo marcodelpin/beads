@@ -14,10 +14,9 @@ import (
 // TestProxiedServerDelete pins the CONVERGED semantics on a team server.
 //
 // This route used to hardcode cascade at both of its call sites and refuse the
-// --cascade flag outright, so `bd delete X --force` deleted X's whole subtree
-// and there was no way to ask for anything else. The three modes below are the
-// direct route's, unchanged, and this test is what says so from the far side
-// of a real Dolt sql-server.
+// --cascade flag outright, so `bd delete X --force` deleted X's whole subtree.
+// The three modes below are the direct route's, unchanged, checked from the far
+// side of a real Dolt sql-server.
 func TestProxiedServerDelete(t *testing.T) {
 	requireSharedProxiedServer(t)
 	t.Parallel()

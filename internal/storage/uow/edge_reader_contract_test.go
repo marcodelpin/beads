@@ -11,14 +11,13 @@ import (
 // provider — the one EdgeReader implementation that does not call
 // storage/issueops.ExecuteEdgeRead, so this is the wiring where a genuine body
 // divergence shows up. It probes anchor existence through two batched use-case
-// reads, one per plane, where the two store backends run one batched EXISTS
-// over both tables; that makes this the SECOND of two votes rather than the
-// third.
+// reads, one per plane, where the two store backends run one batched EXISTS over
+// both tables; that makes this the SECOND of two votes rather than the third.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so dolt_log and the issues table are database-global
-// and a parallel subtest would corrupt another subtest's history delta.
+// copy-on-write branch, so a parallel subtest would corrupt another subtest's
+// history delta.
 func TestEdgeReaderContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWEdgeReaderFixture(t, ctx, "edg")

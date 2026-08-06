@@ -14,10 +14,9 @@ import (
 // genuine body divergence shows up. The two store backends share those bodies
 // between them, which makes this the SECOND of two votes rather than the third.
 //
-// It is also the only wiring where "the identity is still there afterwards" is
-// a question with a hard answer: this body reads, refuses and writes inside ONE
-// transaction and every assertion reads back through a NEW one, so a write that
-// never committed shows up here and nowhere else.
+// This body reads, refuses and writes inside ONE transaction and every
+// assertion reads back through a NEW one, so a write that never committed shows
+// up here and nowhere else.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
@@ -71,9 +70,7 @@ func newUOWBootstrapperFixture(t *testing.T, ctx context.Context) conformance.Bo
 	provider := newUOWRoleFixtureProvider(t, ctx, "boot")
 	// Through the capability accessors, not NewBootstrapper/NewInitVerifier: a
 	// provider that stopped offering either role is the regression, and a
-	// constructor call would hide it. The two sources are asserted separately
-	// because they ARE separate — a caller that may only read must be able to
-	// hold one without the other.
+	// constructor call would hide it.
 	bootstrapSource, ok := provider.(BootstrapperSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the Bootstrapper accessor", provider)
@@ -94,10 +91,9 @@ func newUOWBootstrapperFixture(t *testing.T, ctx context.Context) conformance.Bo
 	return conformance.BootstrapperFixture{
 		Bootstrapper: bootstrapper,
 		InitVerifier: verifier,
-		// Past both roles, through the seams their bodies write through, in
-		// their own committed transaction: the frozen kit can set a prefix but
-		// cannot unset one, and an unidentified substrate is the state a
-		// bootstrap needs to be reachable at all on a provisioned database.
+		// Past both roles, in their own committed transaction: the frozen kit
+		// can set a prefix but cannot unset one, and an unidentified substrate
+		// is the state a bootstrap needs to be reachable at all.
 		SeedIdentity: func(ctx context.Context, prefix, projectID string) error {
 			return RunTx(ctx, provider, func(ctx context.Context, uw UnitOfWork) (string, error) {
 				cfg := uw.ConfigUseCase()

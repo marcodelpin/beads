@@ -13,12 +13,10 @@ import (
 // for a sweep.
 //
 // The cases are subtests of one parent so the whole role suite shares one
-// store and one copy-on-write branch. That sharing is what makes the id
-// pattern in every case load-bearing rather than tidy: a sweep is asked of a
-// whole TIER, so a case that swept without one would delete the next case's
-// seeds. setupTestStore already marks the PARENT parallel; no subtest here
-// calls t.Parallel, and RecordsAtMostOneHistoryEntry takes a before/after
-// delta that is only meaningful while they run sequentially.
+// store and one copy-on-write branch. setupTestStore already marks the PARENT
+// parallel; no subtest here calls t.Parallel, and RecordsAtMostOneHistoryEntry
+// takes a before/after delta that is only meaningful while they run
+// sequentially.
 func TestSweeperContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltSweeperFixture(t, "swp")
 	defer cleanup()

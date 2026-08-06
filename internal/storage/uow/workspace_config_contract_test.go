@@ -8,21 +8,18 @@ import (
 )
 
 // TestWorkspaceConfigContract runs the WorkspaceConfig contract against the
-// unit-of-work provider — the one WorkspaceConfig implementation that does not
-// hand back internal/workapi/storeworkspaceconfig, so this is the wiring where
-// a genuine body divergence shows up. The two store backends share that body
-// between them, which makes this the SECOND of two votes rather than the third.
+// unit-of-work provider — the one implementation that does not hand back
+// internal/workapi/storeworkspaceconfig. The two store backends share that
+// body, which makes this the SECOND of two votes rather than the third.
 //
-// It is also the wiring the projection cases were written for. This backend
+// It is also the wiring the projection cases were written for: this backend
 // stored status.custom and types.custom without rewriting the tables that reads
 // consult first, so a proxied `bd config set types.custom` reported success and
-// never took effect; ProjectsCustomTypes is the case that failed here and
-// passed on the other two.
+// never took effect.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so the config plane and dolt_log are database-global
-// and a parallel subtest would corrupt another subtest's history delta.
+// copy-on-write branch, so the config plane and dolt_log are database-global.
 func TestWorkspaceConfigContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWWorkspaceConfigFixture(t, ctx, "wcfg")
@@ -77,8 +74,7 @@ func newUOWWorkspaceConfigFixture(t *testing.T, ctx context.Context, prefix stri
 	// is what the protected-key cases need to remove and restore.
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessor, not NewWorkspaceConfig: a provider that
-	// stopped offering the role is the regression, and a constructor call would
-	// hide it.
+	// stopped offering the role is the regression a constructor call would hide.
 	source, ok := provider.(WorkspaceConfigSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the WorkspaceConfig accessor", provider)

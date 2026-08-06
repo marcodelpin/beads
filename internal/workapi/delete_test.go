@@ -10,8 +10,7 @@ import (
 
 // The database-free half of issueops.Deleter, pinned in milliseconds. Every
 // backend runs these functions, so a disagreement about what a malformed
-// request means, or about what order the ids come back in, is caught here
-// rather than three times over in the conformance suite.
+// request means is caught here rather than three times over in conformance.
 
 func TestValidateDeleteRequest(t *testing.T) {
 	for _, test := range []struct {

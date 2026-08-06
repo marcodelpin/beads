@@ -13,8 +13,7 @@ import (
 // The conformance contract pins what only a real backend can show — that a row
 // and its projection land together, and that a refusal leaves both alone. What
 // is here is the part all three implementations share, so a rule broken here
-// would otherwise fail three suites at once and be diagnosed from a Dolt server
-// boot.
+// would otherwise fail three suites at once.
 
 func TestValidateSettingKeyRefusesOnlyTheEmptyKey(t *testing.T) {
 	for _, key := range []string{"", " ", "\t\n"} {
@@ -23,8 +22,7 @@ func TestValidateSettingKeyRefusesOnlyTheEmptyKey(t *testing.T) {
 		}
 	}
 	// Everything else is a key, including the shapes a front door routes
-	// elsewhere: which SOURCE owns a key is not this validator's question, and
-	// a rule here that guessed at it would refuse writes the CLI performs.
+	// elsewhere: which SOURCE owns a key is not this validator's question.
 	for _, key := range []string{
 		"custom.anything",
 		"status.custom",
@@ -49,9 +47,8 @@ func TestValidateSettingWriteRefusesTheProtectedKeyInBothSpellings(t *testing.T)
 		if !errors.Is(err, issueops.ErrValidation) {
 			t.Fatalf("ValidateSettingWrite(%q) error = %v, want ErrValidation", key, err)
 		}
-		// The message names the commands that DO own the prefix. A refusal that
-		// only said "no" would send a caller looking for a flag on the verb
-		// that just refused them.
+		// The message names the commands that DO own the prefix, so a caller is
+		// not left hunting for a flag on the verb that just refused them.
 		for _, want := range []string{"bd init --prefix", "bd bootstrap", "bd rename-prefix"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("ValidateSettingWrite(%q) message %q does not name %q", key, err, want)
@@ -64,9 +61,8 @@ func TestValidateSettingWriteParsesTheCustomStatusValue(t *testing.T) {
 	for _, value := range []string{
 		"awaiting_review",
 		"awaiting_review:active,awaiting_docs:wip",
-		// Empty CLEARS the set, and clearing is not a value to parse. The
-		// projection reads it the same way, so refusing it here would make the
-		// key impossible to unset by writing.
+		// Empty CLEARS the set, and clearing is not a value to parse. Refusing
+		// it here would make the key impossible to unset by writing.
 		"",
 	} {
 		if _, err := ValidateSettingWrite("status.custom", value); err != nil {
@@ -88,7 +84,7 @@ func TestValidateSettingWriteParsesTheCustomStatusValue(t *testing.T) {
 // TestValidateSettingWriteReturnsTheValueUnchanged is the machine half of
 // issueops.SetSettingResult.Value's promise: a successful write stores what the
 // caller sent. Nothing normalizes today, and this is what would fail if
-// something started to without the result type saying so.
+// something started to.
 func TestValidateSettingWriteReturnsTheValueUnchanged(t *testing.T) {
 	for _, test := range []struct{ key, value string }{
 		{"custom.thing", "  spaced  "},

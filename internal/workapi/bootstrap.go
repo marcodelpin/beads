@@ -10,24 +10,17 @@ import (
 // This file holds the shared, database-free half of issueops.Bootstrapper and
 // issueops.InitVerifier: the keys the identity lives under, the request
 // validation, and the normalization that makes the prefix a bootstrap stores
-// the same string on every backend. It is a pure file for the reason
-// PlanVersionReconcile is one — three implementations decide through it, so the
-// answer cannot differ by backend, and the refusals are pinned in milliseconds
-// without a database.
+// the same string on every backend. It is pure so that three implementations
+// decide through one body and the refusals pin without a database.
 
 // The two keys a workspace's IDENTITY lives under.
 //
-// They are named here rather than spelled at each call site because three
-// implementations, two front doors and three conformance wirings read and write
-// them, and a key spelled differently in one of those places is an identity
-// nothing else can find — which looks exactly like a database nobody ever
-// initialized.
+// They are named here rather than spelled at each call site because a key
+// spelled differently in one of the places that read them is an identity nothing
+// else can find — which looks exactly like a database nobody ever initialized.
 //
 // These two and no others decide whether a substrate is bootstrapped at all,
 // and either one of them present is what Bootstrapper.Bootstrap refuses over.
-// The per-clone bookkeeping `bd init` also seeds — the fingerprints, the
-// synced-at marker, the recorded binary version — is not identity and is not
-// named here; see issueops.Bootstrapper for why it is not on the role either.
 const (
 	// ConfigKeyIssuePrefix lives on the durable settings plane, which is where
 	// every other reader of the prefix already looks for it.
@@ -40,12 +33,10 @@ const (
 
 // NormalizeBootstrapPrefix returns the prefix as a bootstrap STORES it.
 //
-// The settings plane strips a trailing hyphen from this key and has since long
-// before these roles existed. Doing it here instead of relying on that means
-// BootstrapResult.Prefix, the value a later VerifyIdentity answers with and the
-// string the front door goes on to print are one value on every backend,
-// including the unit-of-work one whose write does not pass through that plane's
-// normalizer at all.
+// The settings plane strips a trailing hyphen from this key. Doing it here
+// instead of relying on that means BootstrapResult.Prefix and the value a later
+// VerifyIdentity answers with are one value on every backend, including the
+// unit-of-work one whose write does not pass through that plane's normalizer.
 func NormalizeBootstrapPrefix(prefix string) string {
 	return strings.TrimRight(prefix, "-")
 }
@@ -53,15 +44,9 @@ func NormalizeBootstrapPrefix(prefix string) string {
 // ValidateBootstrapRequest refuses a bootstrap that cannot produce a usable
 // workspace and returns the request as it will be WRITTEN.
 //
-// Every implementation validates through it BEFORE opening a transaction, so a
-// refused bootstrap costs no database work — which is what makes
-// issueops.Bootstrapper's "a refusal writes nothing" true of the connection as
-// well as of the keys.
-//
-// Both fields are required, and for the same underlying reason stated two ways
-// on the request: a substrate carrying one of them and not the other is exactly
-// the half-identified state the refusal below cannot tell from a deliberately
-// half-provisioned database.
+// Every implementation validates through it BEFORE opening a transaction, which
+// is what makes issueops.Bootstrapper's "a refusal writes nothing" true of the
+// connection as well as of the keys.
 func ValidateBootstrapRequest(req issueops.BootstrapRequest) (issueops.BootstrapRequest, error) {
 	req.Prefix = NormalizeBootstrapPrefix(req.Prefix)
 	if req.Prefix == "" {

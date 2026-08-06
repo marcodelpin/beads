@@ -304,14 +304,8 @@ func parseMarkdownFile(path string) ([]*IssueTemplate, error) {
 }
 
 // createIssuesFromMarkdown creates every issue in a markdown file as ONE act,
-// through issueops.BatchCreator.
-//
-// THE BATCH IS NOT IMPLEMENTED HERE, and that is the point. Which rows land
-// together, what an occupied explicit id does, what an edge onto an absent
-// target does, the create-only guard, the wisp routing and the history entry
-// all belong to the contract; this function parses a file, lints it, builds one
-// request and prints what came back. The proxied route builds the SAME request
-// and the only difference between the two is which accessor answers.
+// through issueops.BatchCreator. It parses the file, lints it, builds one
+// request and prints what came back; the proxied route builds the SAME request.
 func createIssuesFromMarkdown(ctx context.Context, in createInput) error {
 	templates, err := parseMarkdownFile(in.markdownFile)
 	if err != nil {
@@ -359,13 +353,11 @@ func createIssuesFromMarkdown(ctx context.Context, in createInput) error {
 }
 
 // buildMarkdownBatchRequest is the ONE projection of a parsed markdown file
-// onto the role's request, shared by both front doors. Every rule about what a
-// `--file` create MEANS lives here or below it, so the two routes cannot answer
-// differently.
+// onto the role's request, shared by both front doors, so the two routes cannot
+// answer differently.
 //
-// It lints first, because the lint is about the FILE the user wrote — a
-// template with no acceptance criteria is worth refusing before anything is
-// created, and refusing it here costs no transaction.
+// It lints first, because the lint is about the FILE the user wrote and
+// refusing it here costs no transaction.
 func buildMarkdownBatchRequest(templates []*IssueTemplate, in createInput) (issueops.CreateBatchRequest, error) {
 	if err := lintMarkdownTemplates(templates, in); err != nil {
 		return issueops.CreateBatchRequest{}, err

@@ -12,11 +12,10 @@ import (
 // server-backed store.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch. Sharing matters here the way it does for the
-// settings role and not the way it does for the issue roles: the two version
-// markers are GLOBAL to a workspace and cannot be namespaced under the fixture
-// prefix, so every case seeds both of them explicitly instead of relying on
-// what the case before it left. setupTestStore already marks the PARENT
+// and one copy-on-write branch. The two version markers are GLOBAL to a
+// workspace and cannot be namespaced under the fixture prefix, so every case
+// seeds both of them explicitly instead of relying on what the case before it
+// left. setupTestStore already marks the PARENT
 // parallel; no subtest here calls t.Parallel, because the no-history case takes
 // a log delta.
 func TestVersionReconcilerContract(t *testing.T) {

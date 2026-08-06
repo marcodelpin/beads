@@ -131,11 +131,6 @@ type Config struct {
 	// dereference inside a handler on a live server, which is worse than not
 	// starting.
 	//
-	// The set grows as operations do: each role a new operation reaches becomes
-	// another field here and another one this source must carry, in the same
-	// change as the operation, because a database source that answers some
-	// operations and faults on others is not a source.
-	//
 	// A caller with a store takes them off the store's own accessors, and WHICH
 	// store value it takes them off is the whole question. Every decorator a
 	// store wears is on the value its accessor returns — that is what the
@@ -174,11 +169,6 @@ type Config struct {
 	// one reason — so the units of work they open land in that request's uow_ms
 	// (see Server.reader) — and a role reached this way opens none through this
 	// server, so a rebuild would buy nothing.
-	//
-	// Every one of these is required for one reason: a server that binds while
-	// unable to answer an operation its own capability list advertises is the
-	// failure this check exists to prevent, and a nil role would produce it on
-	// the first request to that route instead of at startup.
 	Reader            issueops.Reader
 	Claimer           issueops.Claimer
 	Settings          issueops.WorkspaceConfig
@@ -189,16 +179,12 @@ type Config struct {
 	TreeWalker        issueops.TreeWalker
 	ReadyCounter      issueops.ReadyCounter
 	Querier           issueops.Querier
-	// Sweeper is the DESTRUCTIVE one, and it is required on the same terms as
-	// every other role rather than opt-in. A Config that could omit it would
-	// be a Config that quietly decides whether this build erases beads, which
-	// is a decision that belongs to the operator who chose to run bd serve at
-	// all — not to whether a caller remembered a field.
+	// Sweeper is the DESTRUCTIVE one, required on the same terms as every other
+	// role rather than opt-in: whether this build erases beads is a decision
+	// for the operator who chose to run bd serve, not a consequence of whether
+	// a caller remembered a field.
 	Sweeper issueops.Sweeper
-	// Deleter is the OTHER destructive one, required on the same terms and for
-	// the same reason: whether this build can erase named beads is the
-	// operator's decision, not a consequence of whether a caller remembered a
-	// field.
+	// Deleter is the OTHER destructive one, required for the same reason.
 	Deleter      issueops.Deleter
 	BatchCreator issueops.BatchCreator
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
@@ -407,15 +393,12 @@ func Listen(cfg Config) (*Server, error) {
 // set is refused with the same message as none at all, because it is the same
 // mistake and the failure it would otherwise produce is the worst shape
 // available — a Config missing one role binds, answers every other route, and
-// fails that one with a nil dereference in a handler on a live server. That is
-// why the set is all-or-nothing rather than a required pair plus optional
-// extras.
+// fails that one with a nil dereference in a handler on a live server.
 //
-// The set GROWS as this surface grows, and that is deliberate rather than
-// unfortunate: every operation added here is an operation a roles-backed
-// deployment must be able to answer, so a role added to the set turns "this
-// build serves an operation your Config cannot answer" into a startup error
-// instead of a 500 on the first client that finds it.
+// The set GROWS as this surface grows: every operation added here is an
+// operation a roles-backed deployment must be able to answer, so a role added
+// to the set turns "this build serves an operation your Config cannot answer"
+// into a startup error instead of a 500 on the first client that finds it.
 //
 // Both together is refused rather than resolved by precedence: a caller that
 // set both holds two different opinions about where this server reads from, and
@@ -431,16 +414,16 @@ func Listen(cfg Config) (*Server, error) {
 // at Listen is the difference between a startup error naming the store to take
 // roles from and a server that has been quietly running a user's subprocess per
 // claim since it booted.
+
 // sourceRoles is the store-shaped source's roles in ONE place, so the three
 // questions checkDatabaseSource asks — is any set, is any missing, does any
-// fire hooks — cannot drift apart from each other as the set grows. An
-// operation that reaches a role this source does not yet carry adds a line
-// here and a line to roleSourceNames, and nothing else in this file.
+// fire hooks — cannot drift apart as the set grows. An operation that reaches a
+// role this source does not yet carry adds a line here and a line to
+// roleSourceNames, and nothing else in this file.
 //
 // A role is compared against nil as an INTERFACE, which is what the caller
-// actually sets; a typed nil stored in one of these fields is a value as far
-// as this check is concerned, exactly as it was when the check was a hand-
-// written boolean per role.
+// actually sets; a typed nil stored in one of these fields is a value as far as
+// this check is concerned.
 func sourceRoles(cfg Config) []any {
 	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator}
 }
@@ -576,14 +559,9 @@ func (s *Server) reader(r *http.Request) (issueops.Reader, error) {
 
 // statsReporter returns the guarded summary-statistics surface for one request.
 //
-// It is the third of the same shape reader() and claimer() have, for the same
-// reasons: the configured role on the roles source, one built per request on the
-// provider source so its units of work land in THIS request's uow_ms, and the
-// source held by INTERFACE so uow.StatsReporterSource is load-bearing rather
-// than decorative.
-//
-// There is no checked wrapper around it, and that is a property of the role
-// rather than an omission: issueops.StatsResult carries a VALUE, so there is no
+// Same two sources as reader() and claimer(), for the same reasons, and held by
+// INTERFACE so uow.StatsReporterSource is load-bearing rather than decorative.
+// No checked wrapper: issueops.StatsResult carries a VALUE, so there is no
 // nil-with-nil-error answer for a handler to dereference. checkedReader exists
 // because Reader.Get hands back a pointer.
 func (s *Server) statsReporter(r *http.Request) (issueops.StatsReporter, error) {
@@ -596,16 +574,11 @@ func (s *Server) statsReporter(r *http.Request) (issueops.StatsReporter, error) 
 
 // cycleDetector returns the guarded cycle-report surface for one request.
 //
-// It is the third of the same trio, built the same two ways for the same
-// reasons: the configured role on the roles source, and on the provider source
-// one built per request so its unit of work lands in THIS request's log line,
-// held by INTERFACE so uow.CycleDetectorSource is load-bearing rather than
-// decorative.
-//
-// There is no checked wrapper around it, and that is the difference from its
-// two siblings. Those exist because a handler DEREFERENCES a pointer the role
-// returned; this report is a value whose slice a nil-safe range walks, so there
-// is no dereference for a misbehaving implementation to turn into a panic.
+// Same two sources as reader() and claimer(), for the same reasons, and held by
+// INTERFACE so uow.CycleDetectorSource is load-bearing rather than decorative.
+// No checked wrapper: this report is a value whose slice a nil-safe range
+// walks, so there is no dereference for a misbehaving implementation to turn
+// into a panic.
 func (s *Server) cycleDetector(r *http.Request) (issueops.CycleDetector, error) {
 	if s.provider == nil {
 		return s.issueCycles, nil
@@ -638,10 +611,9 @@ func (s *Server) claimer(r *http.Request) (issueops.Claimer, error) {
 //
 // Same two sources as reader and claimer above, for the same reasons, and held
 // by INTERFACE so uow.WorkspaceConfigSource is load-bearing rather than
-// decorative. It needs no checked wrapper: both settings handlers read VALUES
-// out of the result, so there is no pointer for a caller-supplied role to hand
-// back nil in — which is exactly what checkedReader and checkedClaimer exist
-// to make safe.
+// decorative. No checked wrapper: both settings handlers read VALUES out of the
+// result, so there is no pointer for a caller-supplied role to hand back nil
+// in.
 func (s *Server) workspaceConfig(r *http.Request) (issueops.WorkspaceConfig, error) {
 	if s.provider == nil {
 		return s.settings, nil
@@ -652,14 +624,10 @@ func (s *Server) workspaceConfig(r *http.Request) (issueops.WorkspaceConfig, err
 
 // edgeReader returns the guarded stored-edge surface for one request.
 //
-// It is the third of the same shape, for the same reasons: the configured role
-// on the roles source, and on the provider source one built per request so its
-// units of work are timed into THIS request's log line, held by INTERFACE so
-// uow.EdgeReaderSource is load-bearing rather than decorative.
-//
-// There is no checked wrapper here, and roles.go says why: this role answers
-// with a VALUE, so no handler dereferences a pointer it returned. checkedReader
-// exists for Get alone.
+// Same two sources as reader() and claimer(), for the same reasons, and held by
+// INTERFACE so uow.EdgeReaderSource is load-bearing rather than decorative. No
+// checked wrapper: this role answers with a VALUE, so no handler dereferences a
+// pointer it returned — checkedReader exists for Get alone.
 func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
 	if s.provider == nil {
 		return s.issueEdges, nil
@@ -669,15 +637,10 @@ func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
 }
 
 // blockingAnnotator returns the derived blocking-decoration surface for one
-// request, on the same terms as every role above: the configured role on the
-// roles source, one built per request on the provider source so the unit of
-// work the annotation opens lands in THIS request's uow_ms, and held by
-// INTERFACE so uow.BlockingAnnotatorSource is load-bearing rather than
-// decorative.
-//
-// It goes out UNWRAPPED, for the reason edgeReader's answer does: this role
-// answers with a VALUE, so no handler dereferences a pointer it returned, and
-// checkedReader exists for Get alone.
+// request, on the same terms as every role above and held by INTERFACE so
+// uow.BlockingAnnotatorSource is load-bearing rather than decorative. It goes
+// out UNWRAPPED for the reason edgeReader's answer does: this role answers with
+// a VALUE, and checkedReader exists for Get alone.
 func (s *Server) blockingAnnotator(r *http.Request) (issueops.BlockingAnnotator, error) {
 	if s.provider == nil {
 		return s.issueBlocking, nil
@@ -688,14 +651,10 @@ func (s *Server) blockingAnnotator(r *http.Request) (issueops.BlockingAnnotator,
 
 // treeWalker returns the guarded dependency-tree surface for one request.
 //
-// Built the same two ways as its siblings and for the same reasons: the
-// configured role on the roles source, and on the provider source one built per
-// request so its unit of work lands in THIS request's log line, held by
-// INTERFACE so uow.TreeWalkerSource is load-bearing rather than decorative.
-//
-// No checked wrapper, for the reason cycleDetector gives: this role answers with
-// a VALUE whose slice a nil-safe range walks, so there is no pointer for a
-// misbehaving implementation to turn into a panic.
+// Built the same two ways as its siblings and for the same reasons, held by
+// INTERFACE so uow.TreeWalkerSource is load-bearing rather than decorative. No
+// checked wrapper, for the reason cycleDetector gives: this role answers with a
+// VALUE whose slice a nil-safe range walks.
 func (s *Server) treeWalker(r *http.Request) (issueops.TreeWalker, error) {
 	if s.provider == nil {
 		return s.issueTree, nil
@@ -704,18 +663,13 @@ func (s *Server) treeWalker(r *http.Request) (issueops.TreeWalker, error) {
 	return src.TreeWalker()
 }
 
-// readyCounter returns the ready-count surface for one request.
+// readyCounter returns the ready-count surface for one request, on the same
+// terms as every role above and held by INTERFACE so uow.ReadyCounterSource is
+// load-bearing rather than decorative.
 //
-// It is the third role this server hands a handler, and the read-side twin of
-// the two above in every respect: the configured role on the roles source, one
-// built per request on the provider source so the unit of work the count opens
-// lands in THIS request's uow_ms, and held by INTERFACE so
-// uow.ReadyCounterSource is load-bearing rather than decorative.
-//
-// It goes out UNWRAPPED, and that is the difference worth stating. checkedReader
-// and checkedClaimer exist because their handlers dereference a POINTER a role
-// returned; CountReady answers with a value, so there is no dereference to make
-// safe and a wrapper would be ceremony that reads like a guarantee.
+// It goes out UNWRAPPED. checkedReader and checkedClaimer exist because their
+// handlers dereference a POINTER a role returned; CountReady answers with a
+// value, so a wrapper would be ceremony that reads like a guarantee.
 func (s *Server) readyCounter(r *http.Request) (issueops.ReadyCounter, error) {
 	if s.provider == nil {
 		return s.issueReadyCounter, nil
@@ -725,14 +679,10 @@ func (s *Server) readyCounter(r *http.Request) (issueops.ReadyCounter, error) {
 }
 
 // querier returns the boolean-query surface for one request, on the same terms
-// as every role above: the configured role on the roles source, one built per
-// request on the provider source so the unit of work the query opens lands in
-// THIS request's uow_ms, and held by INTERFACE so uow.QuerierSource is
-// load-bearing rather than decorative.
-//
-// It goes out UNWRAPPED, like the counter and unlike checkedReader: the handler
-// dereferences no pointer this role returned — a page is a value carrying a
-// slice — so there is nothing for a wrapper to make safe.
+// as every role above and held by INTERFACE so uow.QuerierSource is
+// load-bearing rather than decorative. It goes out UNWRAPPED, like the counter
+// and unlike checkedReader: a page is a value carrying a slice, so there is
+// nothing for a wrapper to make safe.
 func (s *Server) querier(r *http.Request) (issueops.Querier, error) {
 	if s.provider == nil {
 		return s.issueQuerier, nil
@@ -741,12 +691,10 @@ func (s *Server) querier(r *http.Request) (issueops.Querier, error) {
 	return src.Querier()
 }
 
-// sweeper returns the guarded bulk-clearance surface for one request.
-//
-// The same two sources as every role above, for the same reasons, and held by
-// INTERFACE so uow.SweeperSource is load-bearing rather than decorative. It
-// goes out unwrapped for the reason readyCounter does: SweepResult is a VALUE,
-// so there is no pointer for a caller-supplied role to hand back nil in.
+// sweeper returns the guarded bulk-clearance surface for one request, on the
+// same terms as every role above and held by INTERFACE so uow.SweeperSource is
+// load-bearing rather than decorative. It goes out unwrapped: SweepResult is a
+// VALUE, so there is no pointer for a caller-supplied role to hand back nil in.
 //
 // The role this returns is the ONLY thing standing between a POST body and a
 // mass delete — the require-a-filter gate, the pinned protection and the
@@ -760,12 +708,10 @@ func (s *Server) sweeper(r *http.Request) (issueops.Sweeper, error) {
 	return src.Sweeper()
 }
 
-// deleter returns the named-row erasure surface for one request.
-//
-// The same two sources as every role above, for the same reasons, and held by
-// INTERFACE so uow.DeleterSource is load-bearing rather than decorative. It
-// goes out unwrapped for the reason the sweeper does: DeleteResult is a VALUE,
-// so there is no pointer for a caller-supplied role to hand back nil in.
+// deleter returns the named-row erasure surface for one request, on the same
+// terms as every role above and held by INTERFACE so uow.DeleterSource is
+// load-bearing rather than decorative. It goes out unwrapped for the reason the
+// sweeper does: DeleteResult is a VALUE.
 //
 // The role this returns is the only thing standing between a POST body and an
 // orphaned dependency graph — the guard, the id resolution and the reference
@@ -779,16 +725,14 @@ func (s *Server) deleter(r *http.Request) (issueops.Deleter, error) {
 	return src.Deleter()
 }
 
-// batchCreator returns the batch-create surface for one request, the same two
-// ways every other role is reached: the configured role on the roles source,
-// one built per request on the provider source so the unit of work the batch
-// opens lands in THIS request's uow_ms, and held by INTERFACE so
-// uow.BatchCreatorSource is load-bearing rather than decorative.
+// batchCreator returns the batch-create surface for one request, on the same
+// terms as every role above and held by INTERFACE so uow.BatchCreatorSource is
+// load-bearing rather than decorative.
 //
 // It goes out CHECKED, unlike the ready counter. CreateBatchResult carries a
 // slice of POINTERS and the response body carries values, so the handler
-// dereferences every one of them — the same hazard checkedClaimer exists for,
-// N times over. See checkedBatchCreator.
+// dereferences every one of them — the checkedClaimer hazard, N times over.
+// See checkedBatchCreator.
 func (s *Server) batchCreator(r *http.Request) (issueops.BatchCreator, error) {
 	if s.provider == nil {
 		return checkedBatchCreator{inner: s.issueBatchCreator}, nil

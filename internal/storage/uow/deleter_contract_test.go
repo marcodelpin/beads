@@ -9,19 +9,17 @@ import (
 
 // TestDeleterContract runs the Deleter contract against the unit-of-work
 // provider — the one implementation that does not run
-// internal/storage/issueops.DeleteInTx, and the one that reaches the same
-// questions through the domain use cases. It is the SECOND of two votes, not
-// the third: the two store backends share the other body.
+// internal/storage/issueops.DeleteInTx. It is the SECOND of two votes, not the
+// third: the two store backends share the other body.
 //
-// It is also the backend this role changes most. Before this commit the proxied
-// route hardcoded cascade at both of its call sites and REFUSED `--cascade` as
-// an unsupported flag, so there was no way to delete an issue on a team server
-// without taking its dependents — the guard and the orphan mode below are new
-// behaviour here rather than a re-assertion of old.
+// It is also the backend this role changes most: the proxied route hardcoded
+// cascade at both of its call sites and REFUSED `--cascade` as an unsupported
+// flag, so there was no way to delete an issue on a team server without taking
+// its dependents. The guard and the orphan mode below are new behaviour here.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so dolt_log and the issues table are database-global.
+// copy-on-write branch, so dolt_log and issues are database-global.
 func TestDeleterContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWDeleterFixture(t, ctx, "del")
@@ -77,8 +75,7 @@ func newUOWDeleterFixture(t *testing.T, ctx context.Context, prefix string) conf
 	t.Helper()
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessor, not NewDeleter: a provider that stopped
-	// offering the role is the regression, and a constructor call would hide
-	// it.
+	// offering the role is the regression a constructor call would hide.
 	source, ok := provider.(DeleterSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the Deleter accessor", provider)

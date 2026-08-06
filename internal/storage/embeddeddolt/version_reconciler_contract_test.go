@@ -16,10 +16,9 @@ import (
 // SetLocalMetadata, differing only in the engine underneath. That is what this
 // wiring catches; it is not an independent vote on the body.
 //
-// One environment for the whole suite, and here that is a correctness
-// requirement rather than only a runtime one: the two version markers are
-// global to a workspace, so the subtests have to run sequentially over one
-// plane, each seeding the state it asserts about.
+// One environment for the whole suite, and that is a correctness requirement:
+// the two version markers are global to a workspace, so the subtests have to
+// run sequentially over one plane, each seeding the state it asserts about.
 func TestVersionReconcilerContract(t *testing.T) {
 	skipUnlessEmbeddedDolt(t)
 	te := newTestEnv(t, "vrec")

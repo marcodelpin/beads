@@ -35,11 +35,11 @@ var _ publicops.CycleDetector = (*cycleDetector)(nil)
 
 // DetectCycles walks the blocking graph inside ONE read-only unit of work.
 //
-// One unit of work matters more here than it does for a count. The report is a
-// graph read followed by a hydration per member, and on this backend both run on
-// the same transaction — so the rows a cycle names are the rows that were on the
-// cycle, rather than the rows that exist by the time the second query runs. The
-// two store-backed bodies get the same property from their own read transaction.
+// The report is a graph read followed by a hydration per member, and on this
+// backend both run on the same transaction — so the rows a cycle names are the
+// rows that were on the cycle, rather than the rows that exist by the time the
+// second query runs. The two store-backed bodies get the same property from
+// their own read transaction.
 func (c *cycleDetector) DetectCycles(ctx context.Context, _ publicops.DetectCyclesRequest) (publicops.CycleReport, error) {
 	return RunTxRead(ctx, c.provider, func(ctx context.Context, uw UnitOfWork) (publicops.CycleReport, error) {
 		return uw.DependencyUseCase().DetectCycleReport(ctx)

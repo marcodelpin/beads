@@ -15,19 +15,13 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// `bd dep tree` on ONE role and ONE body.
-//
-// What is left here is the front door's own work: flag vocabulary, id
-// resolution, and rendering. The walk, the depth bound, the cycle policy, the
-// prune and the defensive cap are issueops.TreeWalker's.
+// `bd dep tree` on ONE role and ONE body. What is left here is the front door's
+// own work: flag vocabulary, id resolution, and rendering.
 
-// treeTarget is a resolved root and the walker that can answer about it.
-//
-// The two travel together because on the DIRECT route they are one decision:
-// resolveIDWithRouting may resolve the id against a prefix-ROUTED database, and
-// the walk then has to be asked of that store rather than of the local one. A
-// helper that returned only the id would have left the caller holding a resolved
-// id and the wrong store.
+// treeTarget is a resolved root and the walker that can answer about it. The two
+// travel together because on the DIRECT route resolveIDWithRouting may resolve
+// the id against a prefix-ROUTED database, and the walk then has to be asked of
+// that store rather than of the local one.
 type treeTarget struct {
 	rootID  string
 	walker  issueops.TreeWalker
@@ -35,13 +29,11 @@ type treeTarget struct {
 }
 
 // resolveTreeTarget resolves the argument to an exact id and hands back the tree
-// role for whichever route this invocation is on, each through its OWN
-// capability accessor.
+// role for whichever route this invocation is on.
 //
-// RESOLUTION HAPPENS FIRST, AND THE ROLE IS ASKED FOR ONLY AFTER IT SUCCEEDS.
-// That order is deliberate: a lookup that finds nothing must report the lookup
-// failure, not a provider that cannot offer a surface the command never got to
-// use.
+// RESOLUTION HAPPENS FIRST, AND THE ROLE IS ASKED FOR ONLY AFTER IT SUCCEEDS: a
+// lookup that finds nothing must report the lookup failure, not a missing
+// surface the command never got to use.
 func resolveTreeTarget(ctx context.Context, arg string) (treeTarget, error) {
 	if usesProxiedServer() {
 		return proxiedTreeTarget(ctx, arg)
@@ -61,11 +53,9 @@ func resolveTreeTarget(ctx context.Context, arg string) (treeTarget, error) {
 // proxiedTreeTarget resolves the argument against the proxied server and hands
 // back the provider's tree surface.
 //
-// THIS ROUTE GAINS PARTIAL-ID RESOLUTION HERE, which it has never had: it passed
-// the argument to the use case verbatim, so `bd dep tree a1b2` worked on a
-// direct workspace and failed on a team server. The resolution runs in its own
-// short-lived read unit of work — the walk opens its own inside the role — and
-// the id it produces is exact, which is what the role's contract requires.
+// THIS ROUTE GAINS PARTIAL-ID RESOLUTION, which it has never had: it passed the
+// argument to the use case verbatim, so `bd dep tree a1b2` worked on a direct
+// workspace and failed on a team server.
 func proxiedTreeTarget(ctx context.Context, arg string) (treeTarget, error) {
 	uw, err := proxiedOpenReadUOW(ctx)
 	if err != nil {
@@ -110,12 +100,10 @@ func runDepTree(cmd *cobra.Command, ctx context.Context, args []string) error {
 		directionFlag = string(issueops.TreeDown)
 	}
 
-	// The flag vocabulary is checked HERE rather than left to the role, for the
-	// reason internal/httpapi/edges.go checks its own bounds: these refusals name
-	// a FLAG and are worded for the person who typed one, while the role's name a
-	// request field and are worded for a library caller. The role refuses the
-	// same two things independently, so a caller that is not this command still
-	// cannot walk with a bad direction or a zero depth.
+	// The flag vocabulary is checked HERE rather than left to the role: these
+	// refusals name a FLAG and are worded for the person who typed one, while
+	// the role's name a request field. The role refuses the same two things
+	// independently.
 	direction := issueops.TreeDirection(directionFlag)
 	switch direction {
 	case issueops.TreeDown, issueops.TreeUp, issueops.TreeBoth:
@@ -126,11 +114,9 @@ func runDepTree(cmd *cobra.Command, ctx context.Context, args []string) error {
 		return HandleErrorRespectJSON("--max-depth must be >= 1")
 	}
 
-	// The cap is resolved here and CARRIED ON THE REQUEST, which is the change
-	// for the proxied route: it used to refuse --max-rows outright, because the
-	// unit-of-work path threaded no cap. It threads one now — the shared walk
-	// body enforces it for all three backends — so the flag means the same thing
-	// wherever the command runs.
+	// The cap is resolved here and CARRIED ON THE REQUEST: the proxied route
+	// used to refuse --max-rows outright because it threaded no cap. It threads
+	// one now, so the flag means the same thing wherever the command runs.
 	maxRows, maxRowsSource, err := resolveMaxRows(cmd)
 	if err != nil {
 		return err
@@ -161,8 +147,7 @@ func runDepTree(cmd *cobra.Command, ctx context.Context, args []string) error {
 	// Handle format presets (json handled earlier, near the flag read).
 	if formatStr == "mermaid" {
 		// The raw argument, not the resolved id: this is only read when the tree
-		// is empty, and changing which spelling that one line prints is not
-		// something this commit was asked for.
+		// is empty.
 		outputMermaidTree(tree, args[0])
 		return nil
 	}

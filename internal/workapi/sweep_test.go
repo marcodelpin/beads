@@ -11,10 +11,9 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The DATABASE-FREE half of issueops.Sweeper, pinned in milliseconds: what a
-// request means, which candidates survive the recheck, and what counts as a
-// citation. The conformance contract is left to assert what only a real
-// backend can show.
+// The DATABASE-FREE half of issueops.Sweeper: what a request means, which
+// candidates survive the recheck, and what counts as a citation. The
+// conformance contract asserts what only a real backend can show.
 
 func TestValidateSweepRequestRequiresATier(t *testing.T) {
 	for _, test := range []struct {
@@ -272,10 +271,8 @@ func TestPartitionSweepReferencedBoundsTheSample(t *testing.T) {
 
 // TestCandidateIDMatcherLargeFixture is the NFR-02 budget from be-5sn, moved
 // here with the scan itself: 10K bodies of ~5KB each, matched against 100
-// candidates, in under five seconds. It is the matcher that made the old
-// per-candidate substring scan unaffordable, so the matcher is what the budget
-// is written against — the store round trips it used to include measured the
-// fixture, not the algorithm.
+// candidates, in under five seconds. It is written against the MATCHER,
+// because the store round trips it used to include measured the fixture.
 func TestCandidateIDMatcherLargeFixture(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping large fixture bench")
@@ -327,8 +324,7 @@ func TestCandidateIDMatcherLargeFixture(t *testing.T) {
 
 	// The race detector adds multi-x overhead that invalidates a wall-clock
 	// budget, so only enforce the bound in non-race builds. The correctness
-	// assertions below still run under -race, which is where the large-fixture
-	// pass earns its keep as a data-race check.
+	// assertions below still run under -race.
 	if !raceEnabled && elapsed > maxDurationSeconds*time.Second {
 		t.Errorf("scan took %v; must complete in <%ds on a %d-body fixture", elapsed, maxDurationSeconds, bodyCount)
 	}

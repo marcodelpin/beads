@@ -19,17 +19,12 @@ func (s *DoltStore) TreeWalker() (issueops.TreeWalker, error) {
 
 // treeWalker answers a dependency-tree walk from one read transaction.
 //
-// There is no shared constructor package for this role, for the reason
-// cycleDetector gives next door: the work is a root probe, a recursion of
-// adjacency reads and a hydration per node, all of which must see ONE snapshot —
-// and for a `both` walk that covers two directions. A transaction is not
-// reachable through storage.DoltStorage, so the sharing happens one level down
-// at issueops.WalkDependencyTreeInTx and this body is five lines around it. Two
-// wrappers over one body is still ONE vote, and the conformance contract says
-// so.
-//
-// A front door cannot construct this: the type is unexported and the accessor is
-// the only door.
+// There is no shared constructor package for this role: the work is a root
+// probe, a recursion of adjacency reads and a hydration per node, all of which
+// must see ONE snapshot — and for a `both` walk that covers two directions. A
+// transaction is not reachable through storage.DoltStorage, so the sharing
+// happens one level down at issueops.WalkDependencyTreeInTx. Two wrappers over
+// one body is still ONE vote, and the conformance contract says so.
 type treeWalker struct{ store *DoltStore }
 
 var _ issueops.TreeWalker = (*treeWalker)(nil)

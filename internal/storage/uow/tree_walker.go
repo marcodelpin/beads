@@ -38,14 +38,10 @@ var _ publicops.TreeWalker = (*treeWalker)(nil)
 //
 // One unit of work is load-bearing here rather than tidy. The walk is a root
 // probe, a recursion of adjacency reads and a hydration per node, and a `both`
-// request runs the whole thing twice; on this backend all of it shares one
-// transaction, so the answer describes a graph that existed rather than a
-// stitching of several that did. The two store-backed bodies get the same
-// property from their own read transaction.
-//
-// It is also the change this role makes to the PROXIED front door, which
-// previously called the use case twice for a `both` walk with no transaction
-// spanning the pair.
+// request runs the whole thing twice; sharing one transaction is what makes the
+// answer describe a graph that existed rather than a stitching of several that
+// did. The proxied front door previously called the use case twice for a `both`
+// walk with no transaction spanning the pair.
 func (t *treeWalker) WalkTree(ctx context.Context, req publicops.WalkTreeRequest) (publicops.TreeResult, error) {
 	return RunTxRead(ctx, t.provider, func(ctx context.Context, uw UnitOfWork) (publicops.TreeResult, error) {
 		return uw.DependencyUseCase().WalkDependencyTree(ctx, req)

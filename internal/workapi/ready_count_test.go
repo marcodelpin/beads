@@ -10,10 +10,9 @@ import (
 
 // TestBuildReadyCountFilterIsTheUnboundedReadyFilter is the filter-level half
 // of the identity issueops.ReadyCounter promises: the predicate a count runs is
-// the predicate the listing runs, with the page taken off. Asserting it against
-// BuildReadyFilter rather than field by field is what makes it survive a new
-// ReadyRequest field — one the count builder forgot to carry would show up here
-// as a difference, where a field-by-field check would simply not mention it.
+// the predicate the listing runs, with the page taken off. It is asserted
+// against BuildReadyFilter rather than field by field so a new ReadyRequest
+// field the count builder forgot to carry shows up as a difference.
 func TestBuildReadyCountFilterIsTheUnboundedReadyFilter(t *testing.T) {
 	priority := 1
 	request := issueops.ReadyRequest{
@@ -59,10 +58,8 @@ func TestBuildReadyCountFilterIsTheUnboundedReadyFilter(t *testing.T) {
 
 // TestBuildReadyCountFilterRefusesAPage pins the two deterministic refusals the
 // role states (issueops/readycounter.go:74-86). The explicitly-unlimited limit
-// is refused with the rest: an unlimited count is the only kind there is, so
-// asking for one is asking for the default, and accepting the pointer here
-// would make "unset" and "explicitly unlimited" mean different things to a
-// count than they mean to a page.
+// is refused with the rest: accepting the pointer here would make "unset" and
+// "explicitly unlimited" mean different things to a count than to a page.
 func TestBuildReadyCountFilterRefusesAPage(t *testing.T) {
 	limit := 10
 	unlimited := 0
@@ -99,10 +96,8 @@ func TestBuildReadyCountFilterLeavesTheRequestAlone(t *testing.T) {
 }
 
 // TestBuildReadyCountFilterRefusesAnInvalidSort keeps the count's refusals a
-// SUPERSET of the listing's rather than a replacement: a sort policy the
-// listing rejects is not quietly accepted here because a count has no order.
-// The request has to stay the listing's request for the identity to hold, and
-// that includes the ways it can be wrong.
+// SUPERSET of the listing's: a sort policy the listing rejects is not quietly
+// accepted here because a count has no order.
 func TestBuildReadyCountFilterRefusesAnInvalidSort(t *testing.T) {
 	if _, err := BuildReadyCountFilter(issueops.ReadyRequest{Sort: "bogus"}); !errors.Is(err, issueops.ErrValidation) {
 		t.Fatalf("BuildReadyCountFilter(sort=bogus) error = %v, want ErrValidation", err)

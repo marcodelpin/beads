@@ -17,9 +17,7 @@ import (
 
 // These cover `bd dep list a b c`'s two halves above the role: which store each
 // resolved anchor is asked, and what the shared printer emits. Everything below
-// them — what Missing means, the edge order, the type filter — is the role's,
-// and is pinned by backend/conformance/edge_reader_contract.go at all three
-// backends.
+// them is the role's, pinned by backend/conformance/edge_reader_contract.go.
 
 // edgeReaderStore is a DoltStorage whose only real method is the accessor under
 // test. Every other call is a nil panic, which is the assertion: this path must
@@ -68,14 +66,10 @@ func edgeReaderAnchorFor(id string, reader issueops.EdgeReader) depListAnchor {
 	return depListAnchor{fullID: id, store: &edgeReaderStore{reader: reader}}
 }
 
-// TestDepListEdgesReportsTheReadFailure is the regression for the shipped
-// defect this role's adoption fixes.
-//
-// The pre-role code called GetDependencyRecordsForIssues and, on ANY error,
-// fell through to the hydrated neighbor listing — so a transient failure
-// turned `bd dep list a b --json` from an array of dependency records into an
-// array of ISSUES, with no error and no warning. A caller parsing the first
-// shape read an empty result from the second.
+// TestDepListEdgesReportsTheReadFailure is the regression for a shipped defect:
+// the pre-role code fell through to the hydrated neighbor listing on ANY error,
+// so a transient failure turned `bd dep list a b --json` from an array of
+// dependency records into an array of ISSUES, with no error and no warning.
 func TestDepListEdgesReportsTheReadFailure(t *testing.T) {
 	want := errors.New("dependency table is unreachable")
 	reader := &fakeEdgeReader{err: want}
@@ -89,13 +83,12 @@ func TestDepListEdgesReportsTheReadFailure(t *testing.T) {
 	}
 }
 
-// TestDepListEdgesAsksEachAnchorsOwnStore pins the routed case, which is the
-// second half of the same defect: a batch whose anchors resolved to different
-// stores also fell through to the neighbor listing, so a cross-rig
-// `bd dep list` emitted a different document from a same-rig one.
-//
-// It also pins that no store is asked for another store's ids — an id sent to
-// the wrong database would come back Missing, which reads as "no such issue".
+// TestDepListEdgesAsksEachAnchorsOwnStore pins the routed half of the same
+// defect: a batch whose anchors resolved to different stores also fell through
+// to the neighbor listing, so a cross-rig `bd dep list` emitted a different
+// document from a same-rig one. It also pins that no store is asked for another
+// store's ids — an id sent to the wrong database comes back Missing, which
+// reads as "no such issue".
 func TestDepListEdgesAsksEachAnchorsOwnStore(t *testing.T) {
 	home := &fakeEdgeReader{edges: map[string][]*types.Dependency{
 		"hq-1": {{IssueID: "hq-1", DependsOnID: "hq-2", Type: types.DepBlocks}},
@@ -186,12 +179,10 @@ func (r *recordingTypeEdgeReader) ReadEdges(_ context.Context, req issueops.Edge
 }
 
 // TestDepListPrintsGhostAnchorsToStderr pins the Q11-approved user-visible
-// change, and the reason it is on stderr.
-//
-// A ghost used to print "<id> has no dependencies" on the proxied route, which
-// reads as a clean graph. It now prints the warning the direct route has always
-// printed for an argument it could not resolve. Keeping it off stdout is what
-// leaves --json a flat array of dependency records.
+// change. A ghost used to print "<id> has no dependencies" on the proxied
+// route, which reads as a clean graph; it now prints the warning the direct
+// route has always printed for an argument it could not resolve. Keeping it off
+// stdout is what leaves --json a flat array of dependency records.
 func TestDepListPrintsGhostAnchorsToStderr(t *testing.T) {
 	anchors := []issueops.AnchorEdges{
 		{ID: "bd-1", Edges: []*types.Dependency{{IssueID: "bd-1", DependsOnID: "bd-2", Type: types.DepBlocks}}},

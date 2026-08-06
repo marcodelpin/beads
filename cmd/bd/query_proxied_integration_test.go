@@ -348,8 +348,8 @@ func TestProxiedServerQuery(t *testing.T) {
 	})
 
 	// The wording is the ROLE's now, on both routes: the expression is parsed
-	// inside issueops.Querier, so the refusal a caller reads is the one the
-	// library wrote rather than one of two the front doors each wrote.
+	// inside issueops.Querier, so the refusal a caller reads is the library's
+	// rather than one of two the front doors each wrote.
 	t.Run("invalid_expression_fails", func(t *testing.T) {
 		out := bdProxiedQueryFail(t, bd, p, "===invalid===")
 		if !strings.Contains(out, "invalid query expression") {

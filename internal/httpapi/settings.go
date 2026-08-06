@@ -13,14 +13,13 @@ import (
 // The two settings operations. Each one decodes its parameters, hands the whole
 // request to the workspace-settings role, and shapes the answer onto the wire.
 //
-// WHAT IS NOT HERE IS THE POINT, as it is in reads.go. No key is routed to a
-// source, no value is parsed, no projection is performed, no unit of work is
-// opened: all of that is inside issueops.WorkspaceConfig's implementation,
-// which `bd config` reaches through the same accessor. In particular this
-// surface cannot answer the multi-source questions `bd config show`, `drift`,
-// `apply` and `validate` ask — three of their five sources are files on the
-// CLIENT's filesystem — and it therefore publishes no operation that pretends
-// to.
+// WHAT IS NOT HERE, as in reads.go: no key is routed to a source, no value is
+// parsed, no projection is performed, no unit of work is opened. All of that is
+// inside issueops.WorkspaceConfig's implementation, which `bd config` reaches
+// through the same accessor. This surface cannot answer the multi-source
+// questions `bd config show`, `drift`, `apply` and `validate` ask — three of
+// their five sources are files on the CLIENT's filesystem — so it publishes no
+// operation that pretends to.
 //
 // THE ONE THING THIS FILE DECIDES THAT THE ROLE DOES NOT is redaction, and that
 // is a wire decision rather than a storage one. The CLI prints stored values in
@@ -90,10 +89,8 @@ func (s *Server) handleGetSetting(w http.ResponseWriter, r *http.Request) {
 // proceed.
 //
 // The refusal is a 400 rather than the 404 the issue routes give a malformed
-// id, and the difference is not cosmetic: this operation HAS no 404, because a
-// key nothing stored and a key stored empty are one answer here. A 404 would
-// therefore be a status a client could never map back to anything, where a 400
-// naming `key` says exactly what was wrong with the request.
+// id: this operation HAS no 404, because a key nothing stored and a key stored
+// empty are one answer here.
 //
 // A control character is refused rather than looked up because a percent-escape
 // in the path decodes to one, and a key carrying a newline could only have come
@@ -115,10 +112,10 @@ func (s *Server) settingKey(w http.ResponseWriter, r *http.Request) (string, boo
 // wireSetting projects one stored setting onto the wire, withholding the value
 // when the KEY marks the setting as credential-bearing.
 //
-// The predicate is internal/config's, unchanged and not re-implemented: it is
-// the same rule `bd config set` uses to refuse writing a secret into a
-// git-tracked file, so the set of keys this surface protects and the set the
-// CLI warns about cannot drift apart. It is a decision about the key ALONE — no
+// The predicate is internal/config's, not re-implemented: it is the same rule
+// `bd config set` uses to refuse writing a secret into a git-tracked file, so
+// the set of keys this surface protects and the set the CLI warns about cannot
+// drift apart. It is a decision about the key ALONE — no
 // value is inspected — which is stated on the wire in `Setting.redacted` so
 // that no operator concludes a credential stored under an innocuous name is
 // covered by it.

@@ -19,10 +19,7 @@ func (s *DoltStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 //
 // It is unexported for the reason newEdgeReader beside it is: a command holds
 // the storage.DoltStorage interface and reaches the role through the accessor
-// above, which is where each decorator adds its layer. There is no shared
-// constructor for the cmd-bd-role-constructors depguard rule to deny here
-// because the shared body is an InTx function — it needs a transaction this
-// store owns, so no front door can reach it at all.
+// above, which is where each decorator adds its layer.
 func newBlockingAnnotator(store *DoltStore) (issueops.BlockingAnnotator, error) {
 	if store == nil {
 		return nil, &storage.ErrUnsupported{Op: "newBlockingAnnotator", Backend: "nil"}

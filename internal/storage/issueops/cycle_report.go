@@ -11,26 +11,20 @@ import (
 // The cycle REPORT: the shared body behind issueops.CycleDetector on all three
 // backends, split into a pure half and a transactional half so the part that
 // decides what the answer MEANS is testable without a database.
-//
 // CanonicalCyclePaths holds the determinism ruling and BuildCycles the
-// honest-partial one; both are pure, so both are pinned in
-// cycle_report_test.go without a database. DetectCycleReportInTx is the only
-// part that needs a transaction.
+// honest-partial one; both are pinned in cycle_report_test.go.
 
 // CanonicalCyclePaths returns the cycles of a blocking graph as id paths, in a
 // canonical form: each path rotated so its lowest id comes first, and the paths
 // sorted against each other.
 //
 // EVERY SOURCE OF NONDETERMINISM IS REMOVED HERE, not just the order of the
-// answer, because ordering the answer would not have been enough. A depth-first
-// cycle enumeration records one cycle per BACK EDGE, and which edges are back
-// edges depends on the walk: the roots came off a Go map and the adjacency lists
-// came out of an unordered SQL read, so two runs against an unchanged database
-// could disagree about which cycles exist at all, not merely about their order.
-// Sorting the roots and the neighbors fixes the walk; rotating and sorting fix
-// the presentation.
+// answer. A depth-first cycle enumeration records one cycle per BACK EDGE, and
+// which edges are back edges depends on the walk: the roots came off a Go map
+// and the adjacency lists came out of an unordered SQL read, so two runs against
+// an unchanged database could disagree about which cycles exist at all.
 //
-// Duplicate neighbors are collapsed. A parallel edge adds nothing to
+// Duplicate neighbors are collapsed: a parallel edge adds nothing to
 // reachability, and left in place it would make the same back edge report the
 // same cycle twice.
 //
@@ -87,10 +81,9 @@ func CanonicalCyclePaths(graph map[string][]string) [][]string {
 }
 
 // rotateToLowest returns a copy of a cycle path rotated so its lowest id comes
-// first, preserving edge order.
-//
-// The members of a cycle are distinct — the path it is taken from is a simple
-// path — so the lowest id is unique and names exactly one rotation.
+// first, preserving edge order. The members of a cycle are distinct — the path
+// it is taken from is a simple path — so the lowest id is unique and names
+// exactly one rotation.
 func rotateToLowest(path []string) []string {
 	lowest := 0
 	for i, id := range path {
@@ -109,13 +102,11 @@ func rotateToLowest(path []string) []string {
 //
 // A LOOKUP THAT FINDS NOTHING DOES NOT FAIL THE REPORT and does not shorten the
 // path: hydrate answers nil, the member keeps its id, and the cycle is marked
-// partial. Both halves of that are deliberate. Failing outright would throw away
-// what the walk learned about every other cycle over one unreadable row — and
-// the rows that are unreadable here are the ordinary ones: an edge into another
+// partial. The unreadable rows are the ordinary ones — an edge into another
 // repository's namespace, an "external:" reference, a row whose edges outlived
 // it. Dropping the member instead, which is what this used to do, rendered a
 // three-node cycle as a two-node one and dropped a wholly unreadable cycle out
-// of the report and out of its count entirely.
+// of the report entirely.
 //
 // hydrate is a plain lookup rather than a transaction so that the rule above is
 // testable without a database; DetectCycleReportInTx supplies the real one.
@@ -141,19 +132,17 @@ func BuildCycles(paths [][]string, hydrate func(id string) *types.Issue) []publi
 }
 
 // DetectCycleReportInTx is the whole read: build the blocking graph across both
-// planes, canonicalize it, and hydrate what it can.
-//
-// It reads the same two tables and the same two edge types DetectCyclesInTx
-// reads, because it is the same question — this is the shape the answer has now.
+// planes, canonicalize it, and hydrate what it can. It reads the same two tables
+// and the same two edge types DetectCyclesInTx reads, because it is the same
+// question.
 func DetectCycleReportInTx(ctx context.Context, tx DBTX) (publicops.CycleReport, error) {
 	graph := make(map[string][]string)
 	if err := AppendBlockingGraphInTx(ctx, tx, cycleDetectionTables(), graph); err != nil {
 		return publicops.CycleReport{}, err
 	}
 	hydrate := func(id string) *types.Issue {
-		// The error is deliberately not distinguished from a miss. Neither is
-		// something a caller could act on differently, and both mean the same
-		// thing to the answer: this database did not describe the node.
+		// The error is deliberately not distinguished from a miss: both mean the
+		// same thing to the answer, that this database did not describe the node.
 		issue, _ := GetIssueInTx(ctx, tx, id)
 		return issue
 	}

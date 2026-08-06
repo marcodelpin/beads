@@ -16,8 +16,7 @@ import (
 const treePath = "/v0/beads/dependencies/tree"
 
 // treeServer binds a roles-backed server whose tree walker answers with walker.
-// The rest of the role set is inert: this operation touches none of it, but
-// Listen requires a COMPLETE source, so rolesConfig fills them in.
+// Listen requires a COMPLETE source, so rolesConfig fills in the rest.
 func treeServer(t *testing.T, walker *roleTreeWalker) *testServer {
 	t.Helper()
 	return newTestServer(t, rolesConfig(Config{TreeWalker: walker}))
@@ -34,11 +33,10 @@ func treeNode(id string, depth int, parentID string, edge types.DependencyType) 
 
 // TestTreeCarriesTheRolesAnswerToTheWire is the whole point of the operation:
 // the body is the role's node list projected onto the envelope, in order, with
-// no shaping in between.
-//
-// It asserts the JSON rather than the Go value because the alias is what makes
-// them the same thing — apigen.TreeNode IS types.TreeNode — so the only way for
-// this to fail is a handler that reordered, renamed or dropped something.
+// no shaping in between. It asserts the JSON rather than the Go value because
+// the alias is what makes them the same thing — apigen.TreeNode IS
+// types.TreeNode — so the only way for this to fail is a handler that reordered,
+// renamed or dropped something.
 func TestTreeCarriesTheRolesAnswerToTheWire(t *testing.T) {
 	ts := treeServer(t, &roleTreeWalker{result: issueops.TreeResult{Nodes: []*types.TreeNode{
 		treeNode("bd-root", 0, "", ""),
@@ -82,8 +80,7 @@ func TestTreeCarriesTheRolesAnswerToTheWire(t *testing.T) {
 		}
 	}
 	// The root carries no edge, so `edge_from_parent` is omitted rather than
-	// emitted empty — the same "absent means not set" rule the rest of this
-	// surface reads.
+	// emitted empty.
 	root, _ := items[0].(map[string]any)
 	if _, present := root["edge_from_parent"]; present {
 		t.Errorf("the root carries an edge_from_parent key (%#v); it was reached from nothing", root["edge_from_parent"])
@@ -170,8 +167,8 @@ func TestTreeAnswersAnEmptyArrayRatherThanNull(t *testing.T) {
 }
 
 // TestTreeRefusesTheDocumentedBadRequests pins each 400 the operation can raise
-// AND which parameter it attributes it to, because `param` is what a client
-// dispatches on and the three have different recoveries.
+// AND which parameter it attributes it to: `param` is what a client dispatches
+// on, and the three have different recoveries.
 func TestTreeRefusesTheDocumentedBadRequests(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -253,8 +250,7 @@ func TestTreeAnswers404ForARootThatIsNotThere(t *testing.T) {
 }
 
 // TestTreeMapsARoleFailureThroughTheOneErrorMapping keeps the walk on the same
-// classification every other route uses, rather than inventing a status for a
-// graph read.
+// classification every other route uses.
 func TestTreeMapsARoleFailureThroughTheOneErrorMapping(t *testing.T) {
 	ts := treeServer(t, &roleTreeWalker{err: errors.New("backend is unreachable")})
 
@@ -269,8 +265,7 @@ func TestTreeMapsARoleFailureThroughTheOneErrorMapping(t *testing.T) {
 
 // TestTreeReachesTheProviderAccessor covers the OTHER database source: the
 // handler must reach the role through uow.TreeWalkerSource on the timed
-// provider, not through a constructor and not through the roles fields, which
-// are nil on this server.
+// provider, not through the roles fields, which are nil on this server.
 func TestTreeReachesTheProviderAccessor(t *testing.T) {
 	ts := newTestServer(t, Config{})
 
@@ -280,8 +275,7 @@ func TestTreeReachesTheProviderAccessor(t *testing.T) {
 	if strings.Contains(ts.stderr.String(), "event=panic") {
 		t.Fatalf("the handler panicked; it read a role this source does not set:\n%s", ts.stderr.String())
 	}
-	// What the fake provider answers is its own business; that the request got
-	// past the accessor is the assertion.
+	// That the request got past the accessor is the assertion.
 	if resp.StatusCode == http.StatusInternalServerError {
 		t.Fatalf("status = 500 from the provider-backed source: %s", readAll(t, resp))
 	}

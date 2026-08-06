@@ -160,14 +160,14 @@ const (
 	OpListDependencies = "listDependencies"
 	// OpListBlockingAnnotations reads the DERIVED blocking decoration for
 	// several issues at once — open blockers, issues blocked, and the parent.
-	// It is a separate operation from listDependencies because it answers a
-	// summary over two edge types with a status rule applied, where that one
-	// returns the stored rows and applies nothing.
+	// It is separate from listDependencies because it answers a summary over
+	// two edge types with a status rule applied, where that one returns the
+	// stored rows and applies nothing.
 	OpListBlockingAnnotations = "listBlockingAnnotations"
-	// OpGetDependencyTree walks the dependency graph from ONE root. It is a
-	// separate operation from listDependencies because that one answers raw
-	// edge rows for many anchors at one hop, and this one recurses from a
-	// single anchor with a depth, a cycle policy and a node shape of its own.
+	// OpGetDependencyTree walks the dependency graph from ONE root. It is
+	// separate from listDependencies because that one answers raw edge rows for
+	// many anchors at one hop, and this one recurses from a single anchor with a
+	// depth, a cycle policy and a node shape of its own.
 	OpGetDependencyTree = "getDependencyTree"
 	OpCountReadyWork    = "countReadyWork"
 	OpQueryIssues       = "queryIssues"
@@ -175,9 +175,9 @@ const (
 	// bulk clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
 	// OpDeleteIssues is the other DESTRUCTIVE operation: erasure of beads the
-	// request NAMES, behind issueops.Deleter. It is the one operation on this
-	// surface whose refusals include a question about the GRAPH — a named bead
-	// with a dependent the request did not name — as well as about the request.
+	// request NAMES, behind issueops.Deleter. It is the one operation here whose
+	// refusals include a question about the GRAPH — a named bead with a
+	// dependent the request did not name.
 	OpDeleteIssues = "deleteIssues"
 	// OpBatchCreateIssues creates many issues as one transaction, or none.
 	OpBatchCreateIssues = "batchCreateIssues"
@@ -211,9 +211,9 @@ var operationCodes = map[string][]Code{
 	// invalid_argument it can raise is the document-level unknown-query-key
 	// rule this table deliberately omits.
 	OpListSettings: {CodeBusy, CodeDBUnavailable, CodeInternal},
-	// No 404, and that is the operation's whole shape: a key nothing stored and
-	// a key stored as the empty string are one answer on this surface, so the
-	// only refusal a key can earn is the 400 that says it was not a key.
+	// No 404: a key nothing stored and a key stored as the empty string are one
+	// answer on this surface, so the only refusal a key can earn is the 400
+	// that says it was not a key.
 	OpGetSetting: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The 400 here is this operation's own, not the document-level
 	// unknown-parameter rule: a malformed `skip_blocked`, and the EMPTY
@@ -231,29 +231,26 @@ var operationCodes = map[string][]Code{
 	// for a stronger version of the same reason: this operation probes no id's
 	// existence at all, so there is nothing it could 404 on.
 	OpListBlockingAnnotations: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
-	// The 404 is the difference from the row above, and it is the same
-	// difference: this operation has ONE anchor, so there is no other answer to
-	// preserve by reporting the miss in the body. Its 400 is its own — an empty
-	// root, a direction outside the closed set, a non-positive max_depth — and
-	// all three are the ROLE's ErrValidation reaching the wire.
+	// The 404 is the difference from the row above: this operation has ONE
+	// anchor, so there is no other answer to preserve by reporting the miss in
+	// the body. Its 400 is its own — an empty root, a direction outside the
+	// closed set, a non-positive max_depth — all three the ROLE's ErrValidation
+	// reaching the wire.
 	OpGetDependencyTree: {CodeInvalidArgument, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The same vocabulary as the listing it sizes: it takes the same filters
 	// and can refuse them the same way. limit=0's mode-dependent refusal has no
-	// analog here because there is no limit to pass — but that was a
-	// CodeInvalidArgument too, so this row would not change if there were.
+	// analog here because there is no limit to pass.
 	OpCountReadyWork: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The listing's vocabulary minus the cursor: this operation has none, so
 	// invalid_cursor cannot arise. An unparseable EXPRESSION is an
 	// invalid_argument on `q` rather than a code of its own — a client's
-	// recovery is the same as for any other malformed parameter value, and a
-	// code it cannot act on differently is a code it should not have to know.
+	// recovery is the same as for any other malformed parameter value.
 	OpQueryIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The 400 here is the widest on this surface, and most of it is not this
-	// handler's: an unknown or malformed body member is, but the unfiltered
-	// durable sweep, the unrecognized tier and the malformed glob are all the
-	// ROLE's ErrValidation reaching the wire through failSweepErr. No 404 —
-	// this operation names no id — and no 409: a sweep has nothing to conflict
-	// with, since a bead another sweep already took is simply not in the set.
+	// handler's: the unfiltered durable sweep, the unrecognized tier and the
+	// malformed glob are all the ROLE's ErrValidation reaching the wire through
+	// failSweepErr. No 404 — this operation names no id — and no 409: a bead
+	// another sweep already took is simply not in the set.
 	OpSweepIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// CodeNotFound is the one this operation has and the sweep does not: a
 	// sweep describes a set that can legitimately be empty, while a delete
@@ -263,11 +260,11 @@ var operationCodes = map[string][]Code{
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
-	// No not_found, and that is a decision rather than an omission. The role
-	// refuses an edge whose target names nothing, and that refusal is about the
-	// REQUEST BODY the client sent, not about a resource this operation was
-	// asked to address — there is no id in the path to have missed. A 404 here
-	// would tell a client its request went to the wrong place.
+	// No not_found. The role refuses an edge whose target names nothing, and
+	// that refusal is about the REQUEST BODY the client sent, not about a
+	// resource this operation was asked to address — there is no id in the path
+	// to have missed. A 404 here would tell a client its request went to the
+	// wrong place.
 	//
 	// No conflict code either: this operation publishes no `id` member, so no
 	// item can collide with a stored row and the role's ErrAlreadyExists is

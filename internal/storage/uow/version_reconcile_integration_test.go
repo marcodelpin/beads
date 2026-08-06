@@ -67,10 +67,8 @@ func newTestUOWProvider(t *testing.T) UnitOfWorkProvider {
 //
 // The role cannot express that — every write through it commits — so the
 // rolled-back leg drives the metadata seam directly, the same seam the role's
-// body writes through. Everything else the old version of this test covered
-// (fresh install, no-op, upgrade, persistence into a NEW unit of work) is now
-// TestVersionReconcilerContract, which runs it here and on the two store
-// backends instead of only here.
+// body writes through. Everything else about version reconciliation is
+// TestVersionReconcilerContract, which runs here and on the two store backends.
 func TestReconcileVersionPersistsAcrossUOW(t *testing.T) {
 	provider := newTestUOWProvider(t)
 	ctx := context.Background()

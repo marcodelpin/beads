@@ -40,13 +40,12 @@ var _ publicops.BlockingAnnotator = (*blockingAnnotator)(nil)
 // two edge reads and the status lookups behind them see one snapshot — the
 // property the two store-backed bodies get from a shared read transaction.
 //
-// This is the genuinely separate body. The store side partitions the ids by
-// plane and reads each anchor's outbound edges from the tier it lives on; the
-// use case below reads BOTH tiers for every id and merges, and it resolves
-// blocker statuses only for the ids that appeared in a row rather than for the
-// whole batch. The three maps it hands back are the same three maps, and
-// FinishBlockingAnnotation is what makes the SHAPE of the answer — the entry per
-// id, the pinned order, the collapse of repeats — one decision rather than two.
+// This is the genuinely separate body: the store side partitions the ids by
+// plane and reads each anchor's outbound edges from the tier it lives on, while
+// the use case below reads BOTH tiers for every id and merges. The three maps
+// are the same three maps, and FinishBlockingAnnotation is what makes the SHAPE
+// of the answer — the entry per id, the pinned order, the collapse of repeats —
+// one decision rather than two.
 func (a *blockingAnnotator) AnnotateBlocking(ctx context.Context, request publicops.BlockingRequest) (publicops.BlockingResult, error) {
 	if err := storageissueops.ValidateBlockingRequest(request); err != nil {
 		return publicops.BlockingResult{}, err

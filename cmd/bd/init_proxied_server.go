@@ -178,11 +178,8 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		fmt.Fprintf(os.Stderr, "Warning: could not compute clone ID: %v\n", err)
 	}
 
-	// The identity goes through the two roles, so this route and the direct one
-	// share one definition of what a workspace's identity is and one rule about
-	// when it may be written. The order is VERIFY, then bootstrap or adopt:
-	// Bootstrapper REFUSES an already-identified substrate, which is the guard
-	// below both front doors, and asking first is how a front door tells a
+	// The order is VERIFY, then bootstrap or adopt: Bootstrapper REFUSES an
+	// already-identified substrate, and asking first is how a front door tells a
 	// re-init from the collision that guard exists for.
 	verifier, err := proxiedInitVerifier(initUOWProvider)
 	if err != nil {
@@ -207,10 +204,9 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		switch {
 		case existing.Prefix != "" || existing.ProjectID != "":
 			// Another rig — or an earlier init — already identified this
-			// database. ADOPT it. Before this went through the roles, this
-			// route rewrote the prefix and the project id every time, which is
-			// what renamed the ids a co-tenant was about to mint; the direct
-			// route has adopted here since it was written.
+			// database. ADOPT it: this route used to rewrite the prefix and the
+			// project id every time, which renamed the ids a co-tenant was
+			// about to mint.
 			adoptedPrefix, adoptedProjectID = existing.Prefix, existing.ProjectID
 			if !in.quiet {
 				fmt.Printf("  %s Adopted project identity from existing database\n", ui.RenderPass("✓"))
@@ -239,10 +235,9 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		}
 
 		// The Dolt remote is configured SEPARATELY from the identity, the way
-		// the direct route has always configured it. They are different facts
-		// with different lifetimes — where this database syncs to, versus what
-		// it is — and folding them into one call is what let a remote that could
-		// not be created fail a bootstrap that had already succeeded.
+		// the direct route has always configured it: folding them into one call
+		// is what let a remote that could not be created fail a bootstrap that
+		// had already succeeded.
 		if remoteURL != "" {
 			if err := configureProxiedInitDoltRemote(ctx, initUOWProvider, remoteURL); err != nil {
 				return HandleError("%v", err)
@@ -313,14 +308,11 @@ func resolveProxiedInitRemoteURL(ctx context.Context, gitUC domain.GitUseCase, i
 }
 
 // proxiedInitVerifier and proxiedBootstrapper hand back the two identity
-// surfaces through the provider's OWN capability accessors — the same two-step
-// proxiedCounter performs, and for the same reason: the accessor is where each
-// layer is added.
+// surfaces through the provider's own capability accessors.
 //
-// They are asked for SEPARATELY rather than as one surface because the roles are
-// separate, and team-server mode is what that separation is for: it holds a
-// verifier and never obtains a bootstrapper, so the path bd must not write on
-// cannot reach the write.
+// They are asked for SEPARATELY, and team-server mode is what that separation
+// is for: it holds a verifier and never obtains a bootstrapper, so the path bd
+// must not write on cannot reach the write.
 func proxiedInitVerifier(provider uow.UnitOfWorkProvider) (issueops.InitVerifier, error) {
 	src, ok := provider.(uow.InitVerifierSource)
 	if !ok {
@@ -337,15 +329,14 @@ func proxiedBootstrapper(provider uow.UnitOfWorkProvider) (issueops.Bootstrapper
 	return src.Bootstrapper()
 }
 
-// recordProxiedInitTrackingState seeds the per-clone bookkeeping that used to
-// ride along inside BootstrapProject: the repository and clone fingerprints,
-// the synced-at marker and the recorded binary version.
+// recordProxiedInitTrackingState seeds the per-clone bookkeeping: the
+// repository and clone fingerprints, the synced-at marker and the recorded
+// binary version.
 //
 // It is separate from the identity because its LIFETIME is: the identity is
 // written once and then adopted forever, while these four describe the clone
-// running init and are refreshed every time it runs. Keeping them in the
-// refusable one-time write would have meant a re-init on a shared database
-// silently stopped recording them.
+// running init and are refreshed every time it runs. In the refusable one-time
+// write, a re-init on a shared database would silently stop recording them.
 func recordProxiedInitTrackingState(ctx context.Context, provider uow.UnitOfWorkProvider, repoID, cloneID string) error {
 	return uow.RunTx(ctx, provider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
 		cfg := uw.ConfigUseCase()
@@ -373,8 +364,7 @@ func recordProxiedInitTrackingState(ctx context.Context, provider uow.UnitOfWork
 }
 
 // configureProxiedInitDoltRemote adds the sync remote, skipping a name that is
-// already taken. It is the remote half of what BootstrapProject used to do in
-// one call with the identity; the direct route has always kept the two apart.
+// already taken.
 func configureProxiedInitDoltRemote(ctx context.Context, provider uow.UnitOfWorkProvider, remoteURL string) error {
 	return uow.RunTx(ctx, provider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
 		remotes, err := uw.DoltRemoteUseCase().ListRemotes(ctx)
@@ -397,13 +387,10 @@ func configureProxiedInitDoltRemote(ctx context.Context, provider uow.UnitOfWork
 // database, following the gateway contract: adopt if present, hard error if
 // absent — bd never writes identity in team-server mode.
 //
-// It takes an issueops.InitVerifier rather than a config reader of its own
-// because the distinction it is built around — an ABSENT identity means
-// "unprovisioned, tell them to run bts init", an UNREADABLE one means "the
-// connection failed, say so" — is now the role's promise rather than this
-// function's care. The two markers also arrive as ONE snapshot, so the prefix it
-// adopts and the project id it adopts cannot come from either side of a
-// concurrent write.
+// ABSENT means "unprovisioned, tell them to run bts init" and UNREADABLE means
+// "the connection failed, say so"; keeping those apart is the InitVerifier
+// role's promise. The two markers arrive as ONE snapshot, so the prefix and the
+// project id cannot come from either side of a concurrent write.
 func adoptTeamServerIdentity(ctx context.Context, verifier issueops.InitVerifier, dbName, localPrefix string, prefixIsExplicit bool, localProjectID string) (prefix, projectID string, err error) {
 	identity, readErr := verifier.VerifyIdentity(ctx, issueops.VerifyIdentityRequest{})
 	if _, err := resolveInitIssuePrefix(true, identity.Prefix, dbName, localPrefix, readErr); err != nil {

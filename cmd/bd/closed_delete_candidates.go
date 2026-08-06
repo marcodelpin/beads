@@ -8,15 +8,11 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The closed-candidate recheck used to live here in full, shared by `bd gc`,
-// `bd purge` and `bd prune`. purge and prune are behind issueops.Sweeper now
-// and the role applies it below both front doors; `bd gc` is not, so what is
-// left here is a thin call into the SAME pure function
-// (workapi.FilterSweepCandidates) plus gc's own warning line.
-//
-// One definition, two callers: gc and the role cannot come to disagree about
-// what "a closed bead safe to delete" means, which is exactly the drift this
-// file existed to prevent between purge and prune in the first place.
+// `bd gc` is the one caller left that is not behind issueops.Sweeper, so what
+// is here is a thin call into the SAME pure function
+// (workapi.FilterSweepCandidates) the role applies below both front doors,
+// plus gc's own warning line. One definition, two callers: gc and the role
+// cannot come to disagree about what "a closed bead safe to delete" means.
 
 type closedDeletionCandidateStats = issueops.SweepSkips
 

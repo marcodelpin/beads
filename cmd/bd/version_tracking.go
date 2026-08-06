@@ -233,9 +233,7 @@ func autoMigrateOnVersionBump(beadsDir string) {
 	// needed. (be-1he)
 	//
 	// The probe asks the ROLE for the marker rather than reading the metadata
-	// key itself, which is why the read shares issueops.VersionReconciler with
-	// the write: this front door needs the read alone, and a store opened
-	// read-only can answer it.
+	// key itself: a store opened read-only can answer it.
 	if roStore, roErr := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true}); roErr == nil {
 		recorded, probeErr := recordedWorkspaceVersion(ctx, roStore)
 		_ = roStore.Close()
@@ -258,9 +256,8 @@ func autoMigrateOnVersionBump(beadsDir string) {
 	}()
 
 	// Everything the version markers mean — is this an upgrade, is it a
-	// downgrade to refuse, does the high-water mark move — is the role's, and
-	// the same decision answers on the proxied route. This front door reads the
-	// outcome and logs it.
+	// downgrade to refuse, does the high-water mark move — is the role's. This
+	// front door reads the outcome and logs it.
 	//
 	// No Dolt commit is needed after it: local_metadata is dolt-ignored and
 	// persists in the working set for the lifetime of the server session.
@@ -286,12 +283,9 @@ func autoMigrateOnVersionBump(beadsDir string) {
 }
 
 // recordedWorkspaceVersion reads the marker through the role's accessor on a
-// store the caller owns and closes.
-//
-// It takes the storage interface rather than the concrete store so the probe
-// above cannot drift into using a seam the role hides; it is a helper only
-// because the probe's store is opened, read and closed in one statement's
-// worth of scope.
+// store the caller owns and closes. It takes the storage interface rather than
+// the concrete store so the probe above cannot drift into using a seam the role
+// hides.
 func recordedWorkspaceVersion(ctx context.Context, store storage.Storage) (string, error) {
 	reconciler, err := store.VersionReconciler()
 	if err != nil {

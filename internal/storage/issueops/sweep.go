@@ -15,25 +15,19 @@ import (
 // transaction.
 //
 // It lives here rather than in an importable internal/workapi/store<role>
-// package for the reason DetectCycleReportInTx does: the work is several reads
-// and a write that must see one snapshot, and storage.DoltStorage publishes
-// methods, not transactions. The two Dolt-backed stores share this body and
-// differ only in how they reach a transaction, so they are ONE vote and the
-// unit-of-work provider is the second. There is nothing here a front door
-// could construct — the function takes a transaction — so no depguard entry is
-// needed to keep it out of cmd/bd.
+// package because the work is several reads and a write that must see one
+// snapshot, and storage.DoltStorage publishes methods, not transactions. The
+// two Dolt-backed stores share this body, so they are ONE vote and the
+// unit-of-work provider is the second.
 //
 // It assumes a request already refused by workapi.ValidateSweepRequest. The
 // accessors validate BEFORE opening a transaction, so a refusal costs no
-// database work and, as issueops.Sweeper promises, changes nothing.
+// database work.
 //
-// ONE TRANSACTION IS THE POINT. The direct CLI route this replaces searched in
-// one transaction and deleted in another, so a row closed, unpinned or cited
-// between the two was reported as one thing and treated as another. It is also
-// what this gives up: the server-backed store's own DeleteIssues splits large
-// wisp deletions into batched transactions to stay inside Dolt's write
-// timeout, and a sweep cannot both do that and promise that the set it counted
-// is the set it deleted. It promises the latter.
+// WHAT ONE TRANSACTION GIVES UP: the server-backed store's own DeleteIssues
+// splits large wisp deletions into batched transactions to stay inside Dolt's
+// write timeout, and a sweep cannot both do that and promise that the set it
+// counted is the set it deleted. It promises the latter.
 func SweepInTx(ctx context.Context, tx *sql.Tx, req publicops.SweepRequest) (publicops.SweepResult, error) {
 	result := publicops.SweepResult{DryRun: req.DryRun}
 
@@ -65,12 +59,9 @@ func SweepInTx(ctx context.Context, tx *sql.Tx, req publicops.SweepRequest) (pub
 	}
 
 	// cascade=false, force=true: a sweep deletes what it selected and ORPHANS
-	// dependents outside the selection, which is what the direct route has
-	// always done for a real run. The DRY RUN passes the same flags rather
-	// than the force=false the route used to pass, so a preview reports what
-	// the sweep would do instead of refusing over dependents the sweep would
-	// have orphaned — the old dry run could fail where the real run succeeded,
-	// and the CLI answered that failure with zeros.
+	// dependents outside the selection. The DRY RUN passes the same flags rather
+	// than the force=false the direct route used to pass, so a preview cannot
+	// fail where the real run would succeed.
 	deleted, err := DeleteIssuesInTx(ctx, tx, ids, false, true, req.DryRun)
 	if err != nil {
 		return publicops.SweepResult{}, err
@@ -86,10 +77,10 @@ func SweepInTx(ctx context.Context, tx *sql.Tx, req publicops.SweepRequest) (pub
 // is not done, reading the not-done set and its comments on the SAME
 // transaction the candidates came off.
 //
-// Reading the workspace's custom statuses is required rather than
-// best-effort: an error propagates and aborts the sweep, because a scan that
-// silently missed a custom active status would under-protect and delete a bead
-// a live bead still cites (issueops.SweepRequest.ProtectReferenced).
+// Reading the workspace's custom statuses is required rather than best-effort:
+// an error aborts the sweep, because a scan that silently missed a custom active
+// status would under-protect and delete a bead a live bead still cites
+// (issueops.SweepRequest.ProtectReferenced).
 func sweepReferencedInTx(ctx context.Context, tx *sql.Tx, candidates []*types.Issue) (map[string]bool, error) {
 	if len(candidates) == 0 {
 		return nil, nil

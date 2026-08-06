@@ -118,9 +118,7 @@ var routeTable = []route{
 	{
 		op:     OpQueryIssues,
 		method: http.MethodGet,
-		// A collection-level custom method, spelled as ready:count is: the
-		// segment is a LITERAL, so the router registers the documented path
-		// itself and no specPath declaration is needed.
+		// A collection-level custom method, spelled as ready:count is.
 		pattern:     "/v0/beads/issues:query",
 		capability:  "issues.query",
 		implemented: true,
@@ -161,11 +159,9 @@ var routeTable = []route{
 	{
 		op:     OpListBlockingAnnotations,
 		method: http.MethodGet,
-		// A literal path under the same collection as the stored-edge read, so
-		// no specPath declaration is needed and no wildcard is involved: the
-		// router registers the documented path itself, and it cannot collide
-		// with /v0/beads/dependencies or /v0/beads/dependencies/cycles, both of
-		// which are literals too.
+		// A literal path under the same collection as the stored-edge read. No
+		// wildcard is involved, so it cannot collide with /v0/beads/dependencies
+		// or /v0/beads/dependencies/cycles, both of which are literals too.
 		pattern:     "/v0/beads/dependencies/blocking",
 		capability:  "dependencies.blocking",
 		implemented: true,
@@ -185,9 +181,7 @@ var routeTable = []route{
 	{
 		op:     OpBatchCreateIssues,
 		method: http.MethodPost,
-		// A collection-level custom method, spelled the way ready:count's is
-		// and registered as the literal path for the same reason: the segment
-		// carries no wildcard, so ServeMux can match it exactly.
+		// A collection-level custom method, spelled the way ready:count's is.
 		//
 		// It does not collide with the claim row's wide POST wildcard below.
 		// That pattern is /v0/beads/issues/{idop} and requires the separating
@@ -227,11 +221,7 @@ var routeTable = []route{
 	{
 		op:     OpSweepIssues,
 		method: http.MethodPost,
-		// A collection-level custom method, spelled the way countReadyWork's
-		// is and needing no specPath declaration for the same reason: the
-		// segment is a LITERAL. Only a WILDCARD segment is inexpressible as a
-		// ServeMux pattern, which is what makes the claim route the one
-		// exception.
+		// A collection-level custom method, spelled the way countReadyWork's is.
 		//
 		// It is registered AFTER the claim's `/v0/beads/issues/{idop}`, and
 		// ServeMux precedence is by specificity rather than by order, so the

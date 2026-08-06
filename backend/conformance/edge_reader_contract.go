@@ -11,9 +11,8 @@ import (
 
 // This file holds the contract every implementation of publicops.EdgeReader
 // must satisfy. Each case asserts what issueops/edgereader.go PROMISES, cited
-// by line, rather than what any one backend happens to do today; a backend that
-// disagrees is parked at its own wiring site with skipKnownDivergence so the
-// case still runs on the ones that agree.
+// by line; a backend that disagrees is parked at its own wiring site with
+// skipKnownDivergence so the case still runs on the ones that agree.
 //
 // There are three wirings — the server-backed store, the embedded store and the
 // unit-of-work provider — and TWO BODIES, not three. dolt and embeddeddolt both
@@ -23,16 +22,13 @@ import (
 // batched by-id use-case reads instead of a batched EXISTS over the two tables.
 // What all three share is ValidateEdgeReadRequest, EdgeReadAnchors and
 // FinishEdgeRead — the request rules, the de-duplication and the ordering — so
-// what these cases can catch below those three is the EXECUTION half: which
-// plane each seam probes, which table it reads edges from, and whether the two
-// see one snapshot.
+// what these cases catch below those three is the EXECUTION half.
 //
 // EVERY CASE NAMES THE EXACT IDS IT SEEDED. The three fixtures share one
 // database per suite and the two store fixtures share it with every other
 // role's cases, so an assertion that read "every anchor" would be an assertion
 // about the whole workspace and would fail the moment a sibling suite seeded a
-// row. Naming the anchors also keeps the expected answers small enough to write
-// literally.
+// row.
 //
 // What is deliberately NOT here:
 //   - the mapping from `bd dep list`'s arguments to a request, which is the
@@ -44,8 +40,7 @@ import (
 
 // EdgeReaderFixture supplies adapter-specific storage access for the
 // stored-edge assertions. Every field is named and typed exactly like the
-// per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
-// accessor plus prefix with no adapter in between.
+// per-backend roleFixtureKit hook it is filled from.
 type EdgeReaderFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
@@ -62,17 +57,15 @@ type EdgeReaderFixture struct {
 	AddDependency func(context.Context, *types.Dependency, string) error
 	// CountHistory reports how many history entries the fixture's branch has.
 	// A nil hook means "this backend cannot observe history", and the case that
-	// needs it SKIPS with that reason rather than passing quietly.
+	// needs it SKIPS rather than passing quietly.
 	CountHistory func(context.Context) (int, error)
 }
 
 // RunEdgeReaderAnswersOnePerAnchorInRequestOrder pins edgereader.go:127-133:
-// one entry per requested id, in the order the request named them.
-//
-// The ids are seeded in the REVERSE of the order the request asks for them, so
-// a body that returned the storage seam's natural order — which is ascending by
-// source id, because that is what the batched read's ORDER BY gives — would
-// fail here rather than passing by coincidence.
+// one entry per requested id, in the order the request named them. The ids are
+// seeded in the REVERSE of that order, so a body that answered in the storage
+// seam's natural order (ascending by source id) fails rather than passing by
+// coincidence.
 func RunEdgeReaderAnswersOnePerAnchorInRequestOrder(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	first := fixture.IssuePrefix + "-order-c"
@@ -88,9 +81,9 @@ func RunEdgeReaderAnswersOnePerAnchorInRequestOrder(t *testing.T, ctx context.Co
 // edgereader.go:45-48 and :188-191 together: a miss is reported ON THE ANCHOR
 // and the call still succeeds, so the anchors that were found still come back.
 //
-// The ghost is named BETWEEN two real anchors deliberately. A body that
-// short-circuited on the first miss would still return the first anchor, and a
-// case whose ghost came last would not tell the two apart.
+// The ghost is named BETWEEN two real anchors deliberately: a case whose ghost
+// came last could not tell a correct body from one that short-circuited on the
+// first miss.
 func RunEdgeReaderReportsAMissingAnchorRatherThanFailing(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	real1 := fixture.IssuePrefix + "-ghost-real1"
@@ -105,10 +98,10 @@ func RunEdgeReaderReportsAMissingAnchorRatherThanFailing(t *testing.T, ctx conte
 	assertEdgeReaderMissing(t, result, real2, false)
 }
 
-// RunEdgeReaderDistinguishesNoEdgesFromNoAnchor pins edgereader.go:104-115 —
-// the whole reason the flag exists. An issue with no dependencies is the COMMON
-// case, so a body that reported presence from "did any edges come back" would
-// pass every other case in this file and fail only here.
+// RunEdgeReaderDistinguishesNoEdgesFromNoAnchor pins edgereader.go:104-115. An
+// issue with no dependencies is the COMMON case, so a body that reported
+// presence from "did any edges come back" would pass every other case in this
+// file and fail only here.
 func RunEdgeReaderDistinguishesNoEdgesFromNoAnchor(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	bare := fixture.IssuePrefix + "-bare-present"
@@ -137,8 +130,7 @@ func RunEdgeReaderDistinguishesNoEdgesFromNoAnchor(t *testing.T, ctx context.Con
 // This is the sharpest difference from Relations, which drops such an edge
 // because it has no far end to hydrate. Two flavors are seeded — an
 // "external:" reference and a dangling id in another repository's prefix —
-// because they take different typed target columns and a body that read only
-// one of them would pass with the other.
+// because they take different typed target columns.
 func RunEdgeReaderReturnsTargetsVerbatim(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-verbatim-src"
@@ -155,11 +147,9 @@ func RunEdgeReaderReturnsTargetsVerbatim(t *testing.T, ctx context.Context, fixt
 }
 
 // RunEdgeReaderCollapsesRepeatedAnchors pins edgereader.go:59-62: an id named
-// twice is one anchor, at the position of its first mention.
-//
-// The repeat is placed AFTER a different anchor, so a body that de-duplicated
-// by sorting rather than by first-mention order would answer b, a instead of a,
-// b and fail.
+// twice is one anchor, at the position of its first mention. The repeat is
+// placed AFTER a different anchor, so a body that de-duplicated by sorting
+// rather than by first mention answers b, a instead of a, b and fails.
 func RunEdgeReaderCollapsesRepeatedAnchors(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	first := fixture.IssuePrefix + "-dup-b"
@@ -177,11 +167,9 @@ func RunEdgeReaderCollapsesRepeatedAnchors(t *testing.T, ctx context.Context, fi
 // The three edges are inserted in an order that is neither the target order nor
 // its reverse, so an implementation answering in insertion order fails here.
 //
-// ONLY THE PRIMARY KEY IS EXERCISED, and that is a property of the schema
-// rather than a hole in the case: all three backends refuse a second edge for a
-// (source, target) pair they already hold, so an answer with two edges to break
-// a tie between cannot be seeded through the fixture's AddDependency hook. The
-// leaf doc states the tiebreaker as a totality guarantee for that reason.
+// ONLY THE PRIMARY KEY IS EXERCISED: all three backends refuse a second edge
+// for a (source, target) pair they already hold, so an answer with two edges to
+// break a tie between cannot be seeded through AddDependency.
 func RunEdgeReaderOrdersEdgesByTarget(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-sort-src"
@@ -208,11 +196,8 @@ func RunEdgeReaderOrdersEdgesByTarget(t *testing.T, ctx context.Context, fixture
 
 // RunEdgeReaderFiltersEdgesNotAnchors pins edgereader.go:73-75: the type filter
 // narrows edges, and an anchor whose every edge it rejects stays present with
-// none.
-//
-// That anchor is the case worth having. A body that dropped an anchor with no
-// surviving edges would look correct on the first half of this assertion and
-// would turn a filtered listing into a report that the issue does not exist.
+// none. A body that dropped it would turn a filtered listing into a report that
+// the issue does not exist.
 func RunEdgeReaderFiltersEdgesNotAnchors(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	kept := fixture.IssuePrefix + "-filter-kept"
@@ -236,9 +221,7 @@ func RunEdgeReaderFiltersEdgesNotAnchors(t *testing.T, ctx context.Context, fixt
 
 // RunEdgeReaderReadsBothPlanes pins the anchor probe against edgereader.go:104:
 // "no issue AND no wisp carries this id". A wisp anchor is present, and its
-// edges come back from the ephemeral tier the seed routed them to.
-//
-// It is the case most likely to catch a real divergence, because the three
+// edges come back from the ephemeral tier the seed routed them to. The three
 // bodies reach the two planes by different routes: a batched EXISTS over
 // `issues` then `wisps` on the store side, and GetIssuesByIDs plus
 // GetWispsByIDs on the unit-of-work side.
@@ -257,11 +240,8 @@ func RunEdgeReaderReadsBothPlanes(t *testing.T, ctx context.Context, fixture Edg
 
 // RunEdgeReaderResolvesExactIDsOnly pins edgereader.go:36-43: a prefix of a
 // real id, a case variant and an id carrying whitespace are all misses, not
-// resolutions.
-//
-// They are misses rather than errors here, which is the per-anchor spelling of
-// the same promise RelatedRequest.ID makes: this role reports them beside the
-// anchor that did resolve.
+// resolutions. They are misses rather than errors: this role reports them
+// beside the anchor that did resolve.
 func RunEdgeReaderResolvesExactIDsOnly(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-exact-anchor"
@@ -297,11 +277,9 @@ func RunEdgeReaderAnswersAnEmptyRequest(t *testing.T, ctx context.Context, fixtu
 }
 
 // RunEdgeReaderRefusesAnEmptyID pins edgereader.go:50-52: the empty string is
-// ErrValidation rather than a nameless ghost.
-//
-// The refusal must beat the good anchor beside it — a body that answered for
-// the ids it could and reported the empty one as missing would leave a caller
-// with an anchor it has no name for.
+// ErrValidation rather than a nameless ghost. The refusal must beat the good
+// anchor beside it — a body that answered for the ids it could would leave a
+// caller with an anchor it has no name for.
 func RunEdgeReaderRefusesAnEmptyID(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-emptyid-anchor"
@@ -315,7 +293,6 @@ func RunEdgeReaderRefusesAnEmptyID(t *testing.T, ctx context.Context, fixture Ed
 
 // RunEdgeReaderRefusesAnUnusableType pins edgereader.go:67-71: an entry no edge
 // could ever carry is ErrValidation rather than a filter that matches nothing.
-//
 // The vocabulary itself stays OPEN, which the second half asserts: a
 // workspace's own type is accepted and simply matches no edge here.
 func RunEdgeReaderRefusesAnUnusableType(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
@@ -365,10 +342,8 @@ func RunEdgeReaderLeavesTheRequestAlone(t *testing.T, ctx context.Context, fixtu
 }
 
 // RunEdgeReaderWritesNothing pins edgereader.go:175-178: reading edges records
-// no history entry.
-//
-// The delta is taken around the call rather than as an absolute count, because
-// the seeds above it are versioned writes of their own.
+// no history entry. The delta is taken around the call rather than as an
+// absolute count, because the seeds above it are versioned writes of their own.
 func RunEdgeReaderWritesNothing(t *testing.T, ctx context.Context, fixture EdgeReaderFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {

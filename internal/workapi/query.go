@@ -18,13 +18,11 @@ const DefaultQueryLimit = 50
 // QueryPlan is an evaluated query request: what to ask the database, what to
 // decide in Go afterwards, and how to cut the page.
 //
-// It exists because the two executions of one query are NOT the same shape.
-// A filter-expressible expression is a filter the database answers whole; an
-// expression with an OR or a general NOT is a base filter plus a predicate,
-// and the predicate is a Go function that no seam can push down. Both
-// implementations of issueops.Querier build one of these, so the decision
-// about which shape an expression takes — and, crucially, what row limit each
-// shape may carry — is made once here rather than once per backend.
+// The two executions of one query are NOT the same shape. A filter-expressible
+// expression is a filter the database answers whole; an expression with an OR
+// or a general NOT is a base filter plus a Go predicate no seam can push down.
+// Both implementations of issueops.Querier build one of these, so which shape
+// an expression takes — and what row limit it may carry — is decided once here.
 type QueryPlan struct {
 	// Filter is what the database is asked. For a predicate query it carries
 	// the expression's base filters and NO row limit; see BuildQueryPlan.
@@ -35,11 +33,10 @@ type QueryPlan struct {
 	// Limit is the number of rows the CALLER receives, which is not always
 	// what Filter carries. 0 means unlimited.
 	Limit int
-	// Offset is the number of matching rows to skip. It is reported here
-	// rather than written onto Filter because only one of the two seams can
-	// render OFFSET, and only the filter-expressible shape may push it down at
-	// all — skipping candidate rows before a predicate runs would drop rows
-	// the predicate never accepted (issueops/querier.go:70-86).
+	// Offset is the number of matching rows to skip. It is reported here rather
+	// than written onto Filter because only the filter-expressible shape may
+	// push it down: skipping candidate rows before a predicate runs would drop
+	// rows the predicate never accepted (issueops/querier.go:70-86).
 	Offset int
 	// SortBy and Reverse are the display order, applied by the page epilogue.
 	SortBy  string
@@ -49,22 +46,18 @@ type QueryPlan struct {
 // RequiresPredicate reports whether this plan is answered in two steps.
 func (p QueryPlan) RequiresPredicate() bool { return p.Predicate != nil }
 
-// BuildQueryPlan turns a query request into its executable plan. It is the
-// single definition of what `bd query` MEANS: the parse, the evaluation, the
-// default closed exclusion, the limit defaulting, and the row bound each shape
-// of query may carry.
+// BuildQueryPlan turns a query request into its executable plan: the parse, the
+// evaluation, the default closed exclusion, the limit defaulting, and the row
+// bound each shape of query may carry.
 //
 // THE ROW BOUND IS THE WHOLE REASON THIS IS ONE FUNCTION. A predicate query's
 // Filter gets NO limit — the predicate must see every candidate row, or the
 // page it produces is an arbitrary prefix of the answer reported as the whole
-// of it (issueops/querier.go:118-133). Both front doors used to bound that
-// query at max(3*Limit, 100) and filter what came back, in two places, with
-// the arithmetic written out twice. The bound is gone and the decision has one
-// home.
+// of it (issueops/querier.go:118-133). The front doors used to bound that query
+// at max(3*Limit, 100) and filter what came back; that bound is gone.
 //
-// It reads no configuration and touches no store: the query vocabulary is
-// closed and the evaluator resolves it entirely, which is why both
-// implementations can share this without either supplying a config source.
+// It reads no configuration and touches no store, so both implementations share
+// it without supplying a config source.
 func BuildQueryPlan(in issueops.QueryRequest) (QueryPlan, error) {
 	expression := strings.TrimSpace(in.Expression)
 	if expression == "" {
@@ -143,13 +136,11 @@ func mentionsStatus(node query.Node) bool {
 
 // ApplyQueryPredicate keeps the rows the predicate accepts, in the order they
 // arrived. Both implementations of issueops.Querier call it, so "what the
-// predicate is applied to" cannot come to mean two things: it is applied to
-// every row the database returned, and the database was not asked for a
-// bounded set.
+// predicate is applied to" cannot come to mean two things: every row the
+// database returned, and the database was not asked for a bounded set.
 //
 // A nil row, or a row carrying no issue, is dropped rather than offered to the
-// predicate — a predicate reads issue fields and would be handed nothing to
-// read.
+// predicate.
 func ApplyQueryPredicate(rows []*types.IssueWithCounts, predicate func(*types.Issue) bool) []*types.IssueWithCounts {
 	if predicate == nil {
 		return rows

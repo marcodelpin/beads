@@ -12,8 +12,7 @@ import (
 
 // proxiedVersionReconciler hands back the clone-local version markers for the
 // proxied-server provider, through the provider's OWN capability accessor —
-// the same two-step proxiedCounter performs, and for the same reason: the
-// accessor is where each layer is added.
+// the same two-step proxiedCounter performs.
 func proxiedVersionReconciler() (issueops.VersionReconciler, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")
@@ -28,11 +27,10 @@ func proxiedVersionReconciler() (issueops.VersionReconciler, error) {
 // reconcileVersionProxiedServer records this binary's version on the proxied
 // route, and is the twin of autoMigrateOnVersionBump's tail.
 //
-// EVERY FAILURE HERE IS SWALLOWED TO A DEBUG LINE, deliberately, and
-// issueops.VersionReconciler says that this is what its callers do. This runs
-// from PersistentPreRun before every proxied command: a workspace whose markers
-// cannot be read is a workspace whose commands must still run, and turning that
-// into an error would refuse `bd list` over a number nobody asked for.
+// EVERY FAILURE HERE IS SWALLOWED TO A DEBUG LINE, as
+// issueops.VersionReconciler says its callers do. This runs from
+// PersistentPreRun before every proxied command: a workspace whose markers
+// cannot be read is a workspace whose commands must still run.
 func reconcileVersionProxiedServer(ctx context.Context) {
 	if !versionUpgradeDetected || uowProvider == nil {
 		return

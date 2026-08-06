@@ -17,8 +17,7 @@ import (
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so dolt_log and the issues table are database-global and
-// a parallel subtest would corrupt another subtest's history delta.
+// copy-on-write branch, so dolt_log and the issues table are database-global.
 func TestBatchCreatorContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWBatchCreatorFixture(t, ctx, "bcr")

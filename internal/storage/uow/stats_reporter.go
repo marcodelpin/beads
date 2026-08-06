@@ -9,8 +9,7 @@ import (
 )
 
 // StatsReporterSource is the capability accessor a unit-of-work provider offers
-// for the summary-statistics role, the sibling of IssueReaderSource and
-// CounterSource.
+// for the summary-statistics role.
 type StatsReporterSource interface {
 	StatsReporter() (publicops.StatsReporter, error)
 }
@@ -38,14 +37,10 @@ var _ publicops.StatsReporter = (*statsReporter)(nil)
 
 // Stats answers the workspace summary inside one read-only unit of work.
 //
-// IT DOES NOT TAKE THE SkipBlocked HINT, and that is a property of this seam
-// rather than an oversight: domain.IssueUseCase publishes GetStatistics and no
-// no-blocked variant, so there is no cheaper query to run. The alternative —
-// running the full query and then nilling the two numbers it just computed —
-// would answer more slowly and tell the caller less, so the hint is ignored
-// and the full summary is returned. issueops.StatsRequest.SkipBlocked states
-// that possibility from the caller's side: BlockedIssues being non-nil is how
-// a caller learns the hint was not taken.
+// IT DOES NOT TAKE THE SkipBlocked HINT: domain.IssueUseCase publishes
+// GetStatistics and no no-blocked variant, so there is no cheaper query to run
+// and the full summary is returned. BlockedIssues being non-nil is how a caller
+// learns the hint was not taken.
 func (r *statsReporter) Stats(ctx context.Context, _ publicops.StatsRequest) (publicops.StatsResult, error) {
 	return RunTxRead(ctx, r.provider, func(ctx context.Context, uw UnitOfWork) (publicops.StatsResult, error) {
 		summary, err := uw.IssueUseCase().GetStatistics(ctx)
@@ -64,10 +59,9 @@ func (r *statsReporter) Stats(ctx context.Context, _ publicops.StatsRequest) (pu
 // what makes "your work" mean one thing on both `bd status --assigned` routes.
 //
 // BOTH QUERIES SHARE ONE UNIT OF WORK here, where the store seam has no
-// transaction to share, so this backend's two halves see one snapshot. The
-// role deliberately does NOT promise that: a contract clause only one of the
-// implementations can meet is not a contract. What all three share is the
-// definition of the numbers.
+// transaction to share, so this backend's two halves see one snapshot. The role
+// deliberately does NOT promise that: a contract clause only one of the
+// implementations can meet is not a contract.
 func (r *statsReporter) AssigneeStats(ctx context.Context, req publicops.AssigneeStatsRequest) (publicops.StatsResult, error) {
 	assignee, err := workapi.ValidateStatsAssignee(req.Assignee)
 	if err != nil {

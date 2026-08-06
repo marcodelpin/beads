@@ -16,43 +16,35 @@ import (
 
 // This file holds the contract every implementation of publicops.CycleDetector
 // must satisfy. Each case asserts what issueops/cycledetector.go PROMISES,
-// cited by line, rather than what any one backend happens to do today; a backend
-// that disagrees is parked at its own wiring site with skipKnownDivergence so
-// the case still runs on the ones that agree.
+// cited by line; a backend that disagrees is parked at its own wiring site with
+// skipKnownDivergence so the case still runs on the ones that agree.
 //
 // There are three wirings and TWO INDEPENDENT BODIES. The server-backed and
 // embedded stores each wrap issueops.DetectCycleReportInTx in five lines around
 // their own transaction, so they are one vote plus an engine check; the
 // unit-of-work provider reaches the same function through the domain repository
 // and is the second. The canonicalization and the partial-hydration rule are
-// pure functions below all three and are pinned directly, without a database, in
-// internal/storage/issueops/cycle_report_test.go. What these cases add is
-// everything the pure tests cannot see: which TABLES each seam reads, whether
-// the two planes are merged, which edge types are followed, and whether the
-// hydration finds the same rows the walk named.
+// pure functions below all three and are pinned without a database in
+// internal/storage/issueops/cycle_report_test.go. What these cases add is what
+// the pure tests cannot see: which TABLES each seam reads, whether the two
+// planes are merged, and which edge types are followed.
 //
 // SEEDING A CYCLE TAKES RAW SQL, and that is a fact about the system rather
-// than a shortcut. Every write path refuses to create one — the editor's
-// per-edge probe, its whole-graph gate, and the same check inside the storage
-// seam — so there is no supported verb that produces the state this role
-// exists to report. Cycles reach a real database by import, by bulk writes, by
-// concurrent adds that each saw an acyclic graph, and from rows written before
-// the gate existed. The fixture's Exec hook is how a case reproduces that, and
-// the INSERT text is written once here rather than three times in the wirings.
+// than a shortcut: every write path refuses to create one, so no supported verb
+// produces the state this role exists to report. Cycles reach a real database by
+// import, by bulk writes, by concurrent adds that each saw an acyclic graph, and
+// from rows written before the gate existed.
 //
 // EVERY CASE SCOPES ITSELF BY MEMBER SET. The report is global — a cycle has no
 // anchor to filter on — and the fixtures share one database with each other's
-// cases and, on the two store backends, with every other role's suite. So a case
-// seeds ids under the fixture prefix and then looks for the ONE reported cycle
-// whose members are exactly those ids, instead of asserting about the size of
-// the whole report.
+// cases. So a case seeds ids under the fixture prefix and then looks for the ONE
+// reported cycle whose members are exactly those ids.
 
 // CycleDetectorFixture supplies adapter-specific storage access for the cycle
 // assertions. Every field but Exec is named and typed exactly like the
 // per-backend roleFixtureKit hook it is filled from.
 type CycleDetectorFixture struct {
-	// IssuePrefix namespaces the ids each assertion seeds, so several of them
-	// can share one database.
+	// IssuePrefix namespaces the ids each assertion seeds.
 	IssuePrefix string
 	Detector    publicops.CycleDetector
 	// CreateIssue seeds a durable issue in the issues plane.
@@ -61,20 +53,19 @@ type CycleDetectorFixture struct {
 	CreateWisp func(context.Context, *types.Issue, string) error
 	// Exec runs every statement IN ORDER ON ONE SESSION, and is the only way to
 	// seed a cycle at all; see the note above. It is NOT a roleFixtureKit hook —
-	// the kit is frozen and exposes reads only — so each wiring supplies its own
-	// short closure over the raw SQL access that backend's tests already use.
+	// the kit is frozen and exposes reads only.
 	//
-	// ONE SESSION is load-bearing rather than a convenience. Seeding an orphaned
-	// edge means turning foreign_key_checks off around the inserts, and that is a
-	// SESSION variable: a hook that took one statement at a time would silently
-	// re-enable the constraint between the toggle and the insert it was for.
+	// ONE SESSION is load-bearing. Seeding an orphaned edge means turning
+	// foreign_key_checks off around the inserts, and that is a SESSION variable:
+	// a hook that took one statement at a time would silently re-enable the
+	// constraint between the toggle and the insert it was for.
 	//
 	// A nil Exec means "this backend cannot seed a cycle", and every case that
 	// needs one SKIPS with that reason rather than passing quietly.
 	Exec func(ctx context.Context, statements []SQLStatement) error
 	// CountHistory reports how many history entries the fixture's branch has. A
 	// nil hook means "this backend cannot observe history", and the case that
-	// needs it SKIPS with that reason.
+	// needs it SKIPS.
 	CountHistory func(context.Context) (int, error)
 }
 
@@ -86,12 +77,9 @@ type SQLStatement struct {
 
 // RunCycleDetectorReportsNoCycleForAnAcyclicSubgraph pins cycledetector.go:135
 // from the empty side: an acyclic graph is an empty report and a nil error,
-// with no ErrNotFound to classify.
-//
-// It asserts about the ids it seeded rather than about the size of the whole
-// report, because the report is global and the sibling cases below deliberately
-// leave cycles in the database. The nil-slice half IS asserted globally — that
-// one is a property of the answer, not of the workspace (cycledetector.go:78).
+// with no ErrNotFound to classify. The nil-slice half IS asserted globally —
+// that one is a property of the answer, not of the workspace
+// (cycledetector.go:78).
 func RunCycleDetectorReportsNoCycleForAnAcyclicSubgraph(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	first := fixture.IssuePrefix + "-acyclic-a"
@@ -116,11 +104,9 @@ func RunCycleDetectorReportsNoCycleForAnAcyclicSubgraph(t *testing.T, ctx contex
 // (cycledetector.go:63).
 //
 // The three ids are seeded so that the edge order and the sorted order are NOT
-// the same sequence — the walk is entered at the lowest id and the cycle runs
-// away from it in id order only by accident — which is what makes the rotation
-// assertion say something. The Issue on each member is checked by TITLE, not
-// merely for being non-nil: hydration reading the right row is the half a
-// present-but-wrong pointer would pass.
+// the same sequence, which is what makes the rotation assertion say something.
+// The Issue on each member is checked by TITLE: a present-but-wrong pointer
+// would pass the weaker check.
 func RunCycleDetectorFindsADurableCycleRotatedToItsLowestID(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	// b -> c -> a -> b. Rotated to the lowest id the path reads a, b, c.
@@ -153,14 +139,13 @@ func RunCycleDetectorFindsADurableCycleRotatedToItsLowestID(t *testing.T, ctx co
 }
 
 // RunCycleDetectorReportsTheSameCyclesEveryRun pins cycledetector.go:52-58 and
-// :91-92 — the ruling that made this commit necessary. Two calls against an
-// unchanged database must agree, id for id and cycle for cycle.
+// :91-92: two calls against an unchanged database must agree, id for id and
+// cycle for cycle.
 //
-// It compares the WHOLE report rather than the case's own cycle, because the
-// failure it guards against is not local: the walk used to iterate a Go map, so
-// an unrelated cycle elsewhere in the workspace could change which back edges
-// this one's nodes were reached by. Several calls, because a map with few keys
-// can iterate the same way twice by chance.
+// It compares the WHOLE report rather than the case's own cycle: the walk used
+// to iterate a Go map, so an unrelated cycle elsewhere could change which back
+// edges this one's nodes were reached by. Several calls, because a map with few
+// keys can iterate the same way twice by chance.
 func RunCycleDetectorReportsTheSameCyclesEveryRun(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	// A branchy fixture: two cycles sharing a node, plus a tail into them, so
@@ -191,10 +176,8 @@ func RunCycleDetectorReportsTheSameCyclesEveryRun(t *testing.T, ctx context.Cont
 
 // RunCycleDetectorMergesTheDurableAndEphemeralPlanes pins
 // cycledetector.go:120-122: the two dependency planes are one graph, so a cycle
-// that runs issue → wisp → issue is found.
-//
-// This is the clause a single-table read passes every other case and fails here,
-// and it is why the role cannot be answered by reading `dependencies` alone.
+// that runs issue → wisp → issue is found. This is the clause a single-table
+// read passes every other case and fails here.
 func RunCycleDetectorMergesTheDurableAndEphemeralPlanes(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	issue := fixture.IssuePrefix + "-plane-issue"
@@ -220,10 +203,9 @@ func RunCycleDetectorMergesTheDurableAndEphemeralPlanes(t *testing.T, ctx contex
 // `waits-for`, whose gate semantics make a mutual wait legitimate, and not
 // `parent-child`, which the ADD-time gate does walk.
 //
-// The conditional-blocks half is asserted in the same case as the two
-// exclusions on purpose: a body that narrowed the edge set to `blocks` alone
-// would pass an exclusion-only case, and a body that walked everything would
-// pass an inclusion-only one.
+// The conditional-blocks half is asserted in the same case as the exclusions on
+// purpose: a body narrowed to `blocks` alone would pass an exclusion-only case,
+// and a body that walked everything would pass an inclusion-only one.
 func RunCycleDetectorFollowsOnlyBlockingEdges(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	for _, test := range []struct {
@@ -256,11 +238,9 @@ func RunCycleDetectorFollowsOnlyBlockingEdges(t *testing.T, ctx context.Context,
 
 // RunCycleDetectorReportsAnHonestPartial pins cycledetector.go:140-144 and
 // :24-33 against real storage: a member the database cannot describe keeps its
-// place on the path, carries no issue, and marks the cycle.
-//
-// The failure it guards against is the shipped one. The previous body dropped
-// the member, so this three-node cycle came back as a TWO-node cycle and looked
-// complete; nothing on the wire said a name was missing.
+// place on the path, carries no issue, and marks the cycle. The previous body
+// dropped the member, so this three-node cycle came back as a TWO-node cycle and
+// looked complete.
 func RunCycleDetectorReportsAnHonestPartial(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	live := fixture.IssuePrefix + "-partial-a"
@@ -294,12 +274,9 @@ func RunCycleDetectorReportsAnHonestPartial(t *testing.T, ctx context.Context, f
 
 // RunCycleDetectorCountsAWhollyUndescribableCycle pins cycledetector.go:81-85:
 // a cycle no member of which can be described is still IN the report, so the
-// count cannot shrink because rows went missing.
-//
-// It is the half of the ruling the case above cannot show. Under the previous
-// body this cycle produced nothing at all — not a shortened path, not a marked
-// one — so `bd dep cycles` printed a smaller number and a workspace looked
-// healthier than it was.
+// count cannot shrink because rows went missing. Under the previous body this
+// cycle produced nothing at all, so `bd dep cycles` printed a smaller number and
+// a workspace looked healthier than it was.
 func RunCycleDetectorCountsAWhollyUndescribableCycle(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	first := fixture.IssuePrefix + "-ghost-a"
@@ -321,12 +298,10 @@ func RunCycleDetectorCountsAWhollyUndescribableCycle(t *testing.T, ctx context.C
 }
 
 // RunCycleDetectorWritesNothing pins cycledetector.go:130-131: detecting is a
-// read. Nothing records a history entry.
-//
-// It is asserted on the history log rather than on a row read-back because that
-// is the observable an accidental commit would move: every versioned unit of
-// work in this tree ends in a Dolt commit, so a sweep that took a write
-// transaction would show up here even when it changed no column.
+// read. It is asserted on the history log rather than on a row read-back
+// because every versioned unit of work in this tree ends in a Dolt commit, so a
+// sweep that took a write transaction would show up here even when it changed
+// no column.
 func RunCycleDetectorWritesNothing(t *testing.T, ctx context.Context, fixture CycleDetectorFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {
@@ -350,16 +325,13 @@ func RunCycleDetectorWritesNothing(t *testing.T, ctx context.Context, fixture Cy
 }
 
 // cycleDetectorEdge is one raw blocking edge a case seeds. The zero value of
-// every optional field is the ordinary durable, issue-targeted `blocks` edge, so
-// the common case reads as source and target and nothing else.
+// every optional field is the ordinary durable, issue-targeted `blocks` edge.
 type cycleDetectorEdge struct {
 	// Table is "dependencies" (default) or "wisp_dependencies". It follows the
 	// SOURCE's plane, exactly as a real add does.
 	Table string
 	// TargetColumn is the typed column the target id lands in:
 	// depends_on_issue_id (default), depends_on_wisp_id, or depends_on_external.
-	// The graph resolves whichever is set, so this is about fidelity to how a
-	// real row is written rather than about what the walk can read.
 	TargetColumn string
 	Source       string
 	Target       string
@@ -371,16 +343,12 @@ type cycleDetectorEdge struct {
 //
 // It writes them all in ONE session because of orphaned: a cycle whose members
 // are not all rows needs foreign_key_checks off, and that is a session variable.
-// The constraint is real, and it is what makes an orphaned member hard to
-// produce on purpose — dependencies.issue_id references issues(id) and
-// wisp_dependencies.issue_id references wisps(id), both ON DELETE CASCADE — so a
-// live database reaches this state only the way it actually does: an import, a
-// clone, or a migration that wrote with the checks off.
+// The constraint is real — dependencies.issue_id references issues(id) and
+// wisp_dependencies.issue_id references wisps(id), both ON DELETE CASCADE.
 //
 // Each edge's primary key is derived from the edge rather than random, so that
-// re-running a suite against a surviving database is idempotent instead of a
-// duplicate-key failure, and hashed because the column is CHAR(36) and the ids
-// are not.
+// re-running a suite against a surviving database is idempotent, and hashed
+// because the column is CHAR(36) and the ids are not.
 func seedCycleDetectorEdges(t *testing.T, ctx context.Context, fixture CycleDetectorFixture, orphaned bool, edges ...cycleDetectorEdge) {
 	t.Helper()
 	if fixture.Exec == nil {
@@ -445,7 +413,7 @@ func seedCycleDetectorWisp(t *testing.T, ctx context.Context, fixture CycleDetec
 }
 
 // cycleDetectorSeed titles each row with its own id, so a hydration assertion
-// can tell "the right row" from "a row".
+// can tell the right row from a row.
 func cycleDetectorSeed(id string) *types.Issue {
 	return &types.Issue{
 		ID:        id,
@@ -466,7 +434,7 @@ func cycleDetectorReport(t *testing.T, ctx context.Context, fixture CycleDetecto
 }
 
 // cycleDetectorPaths renders a report as id paths, which is what the
-// determinism case compares and what a failure message can be read from.
+// determinism case compares.
 func cycleDetectorPaths(report publicops.CycleReport) [][]string {
 	out := make([][]string, 0, len(report.Cycles))
 	for _, cycle := range report.Cycles {
@@ -480,11 +448,9 @@ func cycleDetectorPaths(report publicops.CycleReport) [][]string {
 }
 
 // cycleDetectorFind returns the one reported cycle whose members are exactly
-// ids, and fails the case when there is not exactly one.
-//
-// Matching on the whole member SET rather than on containment is what makes the
-// scoping honest: a body that added a node to the path, or dropped one, does not
-// quietly satisfy a containment check.
+// ids, and fails the case when there is not exactly one. Matching on the whole
+// member SET rather than on containment is what makes the scoping honest: a
+// body that added a node to the path, or dropped one, does not pass.
 func cycleDetectorFind(t *testing.T, report publicops.CycleReport, ids ...string) publicops.Cycle {
 	t.Helper()
 	want := slices.Sorted(slices.Values(ids))
@@ -507,8 +473,7 @@ func cycleDetectorFind(t *testing.T, report publicops.CycleReport, ids ...string
 }
 
 // cycleDetectorTouching returns the paths of every reported cycle that mentions
-// any of ids, for the cases that assert a cycle is ABSENT. It reports the paths
-// rather than a count so a failure names what it found.
+// any of ids, for the cases that assert a cycle is ABSENT.
 func cycleDetectorTouching(report publicops.CycleReport, ids ...string) [][]string {
 	var out [][]string
 	for _, path := range cycleDetectorPaths(report) {
@@ -519,10 +484,9 @@ func cycleDetectorTouching(report publicops.CycleReport, ids ...string) [][]stri
 	return out
 }
 
-// assertCycleDetectorPath checks a cycle's path against the expected edge order
-// after canonical rotation, which the caller states in edge order starting
-// anywhere. It rotates the expectation itself, so a case can spell the cycle the
-// way it seeded it and still assert the canonical answer.
+// assertCycleDetectorPath checks a cycle's path against the expected edge
+// order, which the caller may state starting anywhere: it rotates the
+// expectation itself.
 func assertCycleDetectorPath(t *testing.T, cycle publicops.Cycle, edgeOrder ...string) {
 	t.Helper()
 	lowest := 0

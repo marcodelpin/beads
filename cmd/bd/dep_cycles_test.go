@@ -16,10 +16,10 @@ import (
 // The rendering half of `bd dep cycles` and of the post-add warning, driven
 // directly with a report rather than through a database.
 //
-// These need no store and no server: what they pin is the one thing the
-// conformance contract and the HTTP tests cannot see, which is what a human
-// reads. The partial phrasing in particular exists only here — a member with no
-// row behind it used to be dropped, so there was nothing to print.
+// These need no store and no server: they pin the one thing the conformance
+// contract and the HTTP tests cannot see, which is what a human reads. The
+// partial phrasing exists only here — a member with no row behind it used to be
+// dropped, so there was nothing to print.
 
 func TestDepCyclesNamesTheMembersItCannotDescribe(t *testing.T) {
 	out := captureCycleStdout(t, func() {
@@ -63,8 +63,7 @@ func TestDepCyclesSaysNothingIsWrongForACleanWorkspace(t *testing.T) {
 
 // TestCycleWarningSpellsTheWholePathIncludingUndescribableMembers pins the
 // post-add warning both dep-add routes and `bd link` print. It is spelled from
-// the member IDS, so a node with no row behind it still appears — the visible
-// half of the honest partial.
+// the member IDS, so a node with no row behind it still appears.
 func TestCycleWarningSpellsTheWholePathIncludingUndescribableMembers(t *testing.T) {
 	origStderr := os.Stderr
 	r, w, err := os.Pipe()
@@ -88,8 +87,8 @@ func TestCycleWarningSpellsTheWholePathIncludingUndescribableMembers(t *testing.
 	_ = r.Close()
 
 	out := buf.String()
-	// The closing edge is drawn by repeating the first member, which is how the
-	// path reads as a cycle rather than as a chain.
+	// The closing edge is drawn by repeating the first member, so the path
+	// reads as a cycle rather than as a chain.
 	if !strings.Contains(out, "bd-a → bd-ghost → bd-c → bd-a") {
 		t.Errorf("cycle path is not the whole rotated path closed on itself:\n%s", out)
 	}
@@ -144,11 +143,9 @@ func printCycleReportForTest(t *testing.T, report issueops.CycleReport) {
 // fixedCycleStore is a store whose only real method is the cycle accessor. It
 // embeds the interface, so any other method the command reached for would panic
 // rather than quietly answering zero — which is the assertion that `bd dep
-// cycles` opens nothing but the role.
-// The detector is a separate type rather than the store answering for itself,
-// because the store's LEGACY surface already carries a DetectCycles with a
-// different signature — which is the clearest statement available that the role
-// and the old seam are two different questions.
+// cycles` opens nothing but the role. The detector is a separate type because
+// the store's LEGACY surface already carries a DetectCycles with a different
+// signature.
 type fixedCycleStore struct {
 	storage.DoltStorage
 	report issueops.CycleReport

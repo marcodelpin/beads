@@ -14,16 +14,15 @@ func queryRequest(expression string, limit int) issueops.QueryRequest {
 }
 
 // TestBuildQueryPlanLeavesAPredicateQueryUNBOUNDED is the unit-level pin on the
-// defect this role shipped to fix, and it is here rather than only in the
-// conformance contract because it is the ARITHMETIC that was wrong, not the
-// backend: both front doors set the row limit to max(3*Limit, 100) and filtered
-// what came back, so an OR query over a workspace with more than a hundred
-// candidate rows returned a prefix of its answer and reported it as whole.
+// defect this role shipped to fix. Both front doors set the row limit to
+// max(3*Limit, 100) and filtered what came back, so an OR query over a workspace
+// with more than a hundred candidate rows returned a prefix of its answer and
+// reported it as whole.
 //
-// A predicate query's filter must carry NO row limit. There is no value it
-// could carry that is safe: the predicate rejects an unknown fraction of the
-// rows the database returns, so any bound on the fetch is a bound on the
-// matches with no relationship to the page the caller asked for.
+// A predicate query's filter must carry NO row limit. The predicate rejects an
+// unknown fraction of the rows the database returns, so any bound on the fetch
+// is a bound on the matches with no relationship to the page the caller asked
+// for.
 func TestBuildQueryPlanLeavesAPredicateQueryUNBOUNDED(t *testing.T) {
 	for _, expression := range []string{
 		"type=bug OR type=feature",
@@ -132,8 +131,8 @@ func TestBuildQueryPlanExcludesClosedUnlessTheExpressionSaysOtherwise(t *testing
 }
 
 // TestBuildQueryPlanRefusals pins every deterministic refusal, each of which a
-// front door would otherwise have to make for itself — which is how the two
-// routes came to disagree about what an offset means.
+// front door would otherwise make for itself — which is how the two routes came
+// to disagree about what an offset means.
 func TestBuildQueryPlanRefusals(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -156,9 +155,8 @@ func TestBuildQueryPlanRefusals(t *testing.T) {
 
 // TestAQueryExpressionRefusalNamesItselfForTheWire pins the message prefix
 // internal/httpapi matches to turn an unparseable expression into a 400 on `q`
-// rather than a 500. It is the same bounded prose dependency the filter
-// builders already carry, written down here so a reword fails beside the
-// sentence it rewords.
+// rather than a 500, written down here so a reword fails beside the sentence it
+// rewords.
 func TestAQueryExpressionRefusalNamesItselfForTheWire(t *testing.T) {
 	_, err := BuildQueryPlan(issueops.QueryRequest{Expression: "===invalid==="})
 	if err == nil {

@@ -10,12 +10,9 @@ import (
 )
 
 // InitVerifierSource is the capability accessor a unit-of-work provider offers
-// for the identity read, the sibling of BootstrapperSource.
-//
-// It is a SEPARATE source from BootstrapperSource for the reason the two roles
-// are separate: the callers that only read — a bts-provisioned team database, an
-// authenticating gateway with a read-only credential — must not be able to
-// reach the write.
+// for the identity read, the sibling of BootstrapperSource. It is a SEPARATE
+// source so that callers which only read — a bts-provisioned team database, an
+// authenticating gateway with a read-only credential — cannot reach the write.
 type InitVerifierSource interface {
 	InitVerifier() (publicops.InitVerifier, error)
 }
@@ -40,9 +37,8 @@ func NewInitVerifier(provider UnitOfWorkProvider) (publicops.InitVerifier, error
 
 var _ publicops.InitVerifier = (*initVerifier)(nil)
 
-// VerifyIdentity reads both markers inside ONE read transaction, which is what
-// makes the pair a snapshot rather than two reads a concurrent bootstrap can
-// land between.
+// VerifyIdentity reads both markers inside ONE read transaction, so the pair is
+// a snapshot rather than two reads a concurrent bootstrap can land between.
 func (v *initVerifier) VerifyIdentity(ctx context.Context, _ publicops.VerifyIdentityRequest) (publicops.VerifyIdentityResult, error) {
 	return RunTxRead(ctx, v.provider, func(ctx context.Context, uw UnitOfWork) (publicops.VerifyIdentityResult, error) {
 		prefix, projectID, err := readWorkspaceIdentity(ctx, uw.ConfigUseCase())
@@ -54,9 +50,8 @@ func (v *initVerifier) VerifyIdentity(ctx context.Context, _ publicops.VerifyIde
 }
 
 // readWorkspaceIdentity reads the pair the bootstrap refusal and the verifier
-// both ask about, so the two cannot come to disagree about what "identified"
-// means on this backend. It is this package's twin of
-// issueops.verifyIdentityInTx, which serves the two store backends.
+// both ask about, so the two cannot disagree about what "identified" means on
+// this backend. It is this package's twin of issueops.verifyIdentityInTx.
 func readWorkspaceIdentity(ctx context.Context, cfg domain.ConfigUseCase) (prefix, projectID string, err error) {
 	prefix, err = cfg.GetConfig(ctx, workapi.ConfigKeyIssuePrefix)
 	if err != nil {

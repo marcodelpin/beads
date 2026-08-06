@@ -11,9 +11,7 @@ import (
 )
 
 // SweeperSource is the capability accessor a unit-of-work provider offers for
-// the bulk-clearance role, the sibling of CounterSource and IssueReaderSource.
-// A consumer holding a provider by interface asks for the role here instead of
-// reaching for a constructor.
+// the bulk-clearance role.
 type SweeperSource interface {
 	Sweeper() (publicops.Sweeper, error)
 }
@@ -41,18 +39,15 @@ var _ publicops.Sweeper = (*sweeper)(nil)
 // Sweep clears the request's tier inside ONE unit of work.
 //
 // This is the genuinely separate body: the two store backends share
-// issueops.SweepInTx, and this one reaches the same four questions through the
-// domain use cases. What it must NOT do differently is which rows go — the
-// selection, the pattern, the pinned and closed_at rechecks and the citation
-// rule all run through the same internal/workapi functions the shared body
-// runs, so the two implementations differ in their plumbing rather than in
-// their answer.
+// issueops.SweepInTx, and this one reaches the same questions through the domain
+// use cases. What it must NOT do differently is WHICH ROWS GO — the selection,
+// the pattern, the pinned and closed_at rechecks and the citation rule all run
+// through the same internal/workapi functions the shared body runs.
 //
 // ONE UNIT OF WORK matters more here than it does for a read. The candidate
 // query and the delete are on the same transaction, so a row closed, unpinned
 // or cited between them cannot change what is deleted — the promise
-// issueops.Sweeper.Sweep makes and the property the direct CLI route did not
-// have before this role existed.
+// issueops.Sweeper.Sweep makes.
 //
 // A DRY RUN TAKES A READ-ONLY UNIT OF WORK: it writes nothing, so it must not
 // take the committing path and leave a history entry describing a preview.
@@ -123,11 +118,8 @@ func sweepInUOW(ctx context.Context, uw UnitOfWork, req publicops.SweepRequest) 
 
 // sweepReferencedInUOW returns which of the candidates a not-done row cites,
 // reading the not-done set and its comments on the same unit of work the
-// candidates came off.
-//
-// It reads the comments of the whole not-done set in ONE batch rather than one
-// query per row, which is what makes the protection affordable on the corpora
-// `bd prune` runs over.
+// candidates came off. Comments are read for the whole not-done set in ONE
+// batch rather than one query per row.
 func sweepReferencedInUOW(ctx context.Context, uw UnitOfWork, candidates []*types.Issue) (map[string]bool, error) {
 	if len(candidates) == 0 {
 		return nil, nil

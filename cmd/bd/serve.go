@@ -408,12 +408,10 @@ func errServeEmbedded() error {
 //
 // The assertion is conditional because a BD_NO_HOOKS=1 workspace has no hook
 // layer to peel.
-// It returns the WHOLE set httpapi.Config requires, not the two the first
-// version of this arm needed. httpapi.Listen refuses a partial set (see
-// checkDatabaseSource), so a role added to Config without being added here is
-// a startup failure on this arm rather than a nil dereference on the first
-// request that reaches it — which is why this returns a struct that must be
-// spread field-by-field instead of a growing list of unnamed results.
+//
+// It returns the WHOLE set httpapi.Config requires; Listen refuses a partial
+// set (see checkDatabaseSource), so a role missing here is a startup failure
+// rather than a nil dereference on the first request that reaches it.
 func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
 	var roles serveRoles
 	if src == nil {
@@ -425,9 +423,8 @@ func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
 		src = hooked.Unwrap()
 	}
 
-	// Each entry binds one Config field to the accessor that fills it. A role
-	// whose accessor errors names itself in the failure, so an unsupported
-	// role on some future backend says which one at startup.
+	// Each entry binds one Config field to the accessor that fills it, and
+	// names itself in the failure.
 	type binding struct {
 		name string
 		get  func() error
@@ -457,7 +454,7 @@ func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
 // serveRoles is the store-shaped database source, assembled once before Listen.
 // It is deliberately NOT an httpapi.Config: the gate test in serve_test.go
 // requires every httpapi.Config literal in this package to sit in a function
-// that consulted serveDatabaseSource, and this one has not.
+// that consulted serveDatabaseSource.
 type serveRoles struct {
 	reader       issueops.Reader
 	claimer      issueops.Claimer

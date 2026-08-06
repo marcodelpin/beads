@@ -522,14 +522,10 @@ func (s *testSuite) resetLocalMetadata() {
 // issueops.VersionReconciler's unit-of-work body reads and writes its two
 // markers that way, inside one transaction.
 //
-// WHAT USED TO BE HERE was seven subtests of a ReconcileVersion method on this
-// use case: a fresh install, an upgrade, two refused downgrades, a catch-up to
-// the high-water mark. That method held one of the TWO copies of the version
-// decision — cmd/bd/version_tracking.go held the other, and nothing compared
-// them — and both are now workapi.PlanVersionReconcile, whose table is pinned
-// exhaustively and without a database in
+// The version decision the ReconcileVersion subtests used to cover is now
+// workapi.PlanVersionReconcile, pinned exhaustively and without a database in
 // internal/workapi/versionreconcile_test.go. What only a real backend can
-// show, that the markers persist and that a refusal writes nothing, is
+// show — that the markers persist and that a refusal writes nothing — is
 // asserted at all three backends by TestVersionReconcilerContract.
 func (s *testSuite) configLocalMetadataRoundTrip() {
 	s.resetLocalMetadata()

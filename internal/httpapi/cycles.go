@@ -9,13 +9,12 @@ import (
 
 // handleDependencyCycles answers GET /v0/beads/dependencies/cycles.
 //
-// WHAT IS NOT HERE IS THE POINT, as it is for the read operations next door. No
-// graph is built, no table is chosen, no path is rotated and no report is
-// sorted: the canonicalization the document promises is inside
-// issueops.CycleDetector's implementation, which `bd dep cycles` reaches
-// through the same accessor. A handler that ordered the answer for itself would
-// be a second definition of "canonical" and the two surfaces would drift the
-// first time either was edited.
+// WHAT IS NOT HERE, as for the read operations next door: no graph is built, no
+// table is chosen, no path is rotated and no report is sorted. The
+// canonicalization the document promises is inside issueops.CycleDetector's
+// implementation, which `bd dep cycles` reaches through the same accessor; a
+// handler that ordered the answer for itself would be a second definition of
+// "canonical".
 //
 // The element type is an ALIAS of issueops.Cycle — the same struct the CLI's
 // --json marshals — so there is no second wire struct here and there must never
@@ -47,13 +46,11 @@ func (s *Server) handleDependencyCycles(w http.ResponseWriter, r *http.Request) 
 }
 
 // wireCycles projects the role's report onto the generated envelope's element
-// type, which is an alias of the role's own struct — so this is a slice copy
-// and nothing else.
+// type, which is an alias of the role's own struct.
 //
 // It exists for the one thing that is not free: the document says `items` is an
-// empty array and never null, and the role's slice is already empty rather than
-// nil for an acyclic workspace. Making the guarantee here as well means the
-// wire promise does not depend on the role keeping its own.
+// empty array and never null. Making the guarantee here as well means the wire
+// promise does not depend on the role keeping its own.
 func wireCycles(cycles []issueops.Cycle) []apigen.Cycle {
 	if cycles == nil {
 		return []apigen.Cycle{}

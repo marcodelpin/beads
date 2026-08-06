@@ -55,11 +55,10 @@ func (c *counter) Count(ctx context.Context, req publicops.CountRequest) (public
 //
 // Sharing the unit of work is free here — this seam has a transaction and the
 // store seam does not — so both queries see one snapshot on this backend.
-// issueops.CountByGroupResult.Total deliberately does NOT promise that: the
-// store-backed body cannot offer it, and a contract stating the stronger
-// property would be a contract only one of the three implementations meets.
-// What is shared across all three is that the total is the SCALAR count rather
-// than the sum of the buckets, which is the part callers can be wrong about.
+// issueops.CountByGroupResult.Total deliberately does NOT promise that, because
+// the store-backed body cannot offer it. What all three implementations share is
+// that the total is the SCALAR count rather than the sum of the buckets, which
+// is the part callers can be wrong about.
 func (c *counter) CountByGroup(ctx context.Context, req publicops.CountByGroupRequest) (publicops.CountByGroupResult, error) {
 	group, err := workapi.ValidateCountGroup(req.GroupBy)
 	if err != nil {
@@ -86,9 +85,8 @@ func (c *counter) CountByGroup(ctx context.Context, req publicops.CountByGroupRe
 }
 
 // countFilter builds the storage filter from the unit of work the call already
-// holds, loading configuration only when IncludeInfra can read it — the same
-// two decisions the store-backed body makes, for the same reasons, through the
-// same builder.
+// holds, loading configuration only when IncludeInfra can read it — the same two
+// decisions the store-backed body makes, through the same builder.
 func countFilter(ctx context.Context, uw UnitOfWork, req publicops.CountRequest) (types.IssueFilter, error) {
 	var cfg workapi.ListConfig
 	if req.IncludeInfra {

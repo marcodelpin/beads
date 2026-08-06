@@ -56,10 +56,8 @@ Examples:
 }
 
 // openCounter hands back the count role for whichever route this invocation is
-// on, each through its OWN capability accessor — the store's for the direct
-// route and the provider's for the proxied one. Neither branch builds a
-// filter, loads config or opens a unit of work: that is the whole of what
-// moved behind the role, and it used to be written out twice, once per route.
+// on, each through its own capability accessor. Neither branch builds a filter,
+// loads config or opens a unit of work.
 func openCounter() (issueops.Counter, error) {
 	if usesProxiedServer() {
 		return proxiedCounter()
@@ -67,10 +65,9 @@ func openCounter() (issueops.Counter, error) {
 	return store.Counter()
 }
 
-// parseCountRequest turns the flag set into the role's request. It is flag
-// parsing and nothing else: normalization of labels and ids, the wisp-tier
-// policy and the workspace's infra vocabulary all live behind the role, so the
-// two routes cannot come to disagree about them.
+// parseCountRequest turns the flag set into the role's request. Normalization
+// of labels and ids, the wisp-tier policy and the workspace's infra vocabulary
+// all live behind the role, so the two routes cannot come to disagree.
 func parseCountRequest(cmd *cobra.Command) (issueops.CountRequest, issueops.CountGroup, error) {
 	groupBy, err := countGroupFlag(cmd)
 	if err != nil {

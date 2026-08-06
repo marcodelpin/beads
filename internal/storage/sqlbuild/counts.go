@@ -21,8 +21,7 @@ const DepJSONObject = `JSON_OBJECT(
 )`
 
 // CountsHydration selects which per-row aggregates the counts mega-query
-// computes. Both members are opt-OUTs: the zero value hydrates everything,
-// which is what every caller that has not been told otherwise wants.
+// computes. Both members are opt-OUTs: the zero value hydrates everything.
 //
 // Neither one changes WHICH ROWS come back or in what order — the aggregates
 // hang off LEFT JOINs that preserve every driver row, so dropping one drops a
@@ -34,7 +33,7 @@ const DepJSONObject = `JSON_OBJECT(
 // SkipLabels leaves labels_json NULL, which the scan turns into no labels.
 // SkipCounts leaves the three cardinalities 0, which a caller must read as
 // unknown rather than as none — the promise issueops.ListRequest.SkipCounts
-// states for the callers above storage.
+// makes above storage.
 type CountsHydration struct {
 	SkipLabels bool
 	SkipCounts bool
@@ -172,10 +171,9 @@ func SearchCountsSQL(tables FilterTables, ids []string, whereSQL, orderBySQL, li
 		reverseBlockerSelect,
 		tables.Comments, ccWhere)
 	if hyd.SkipCounts {
-		// Constants in the same three positions: the scan reads these
-		// columns by index, and the rc join above is the one the embedded
-		// engine cannot index (see the by-IDs rationale above), so dropping
-		// it is the whole point of the knob.
+		// Constants in the same three positions: the scan reads these columns
+		// by index, and the rc join above is the one the embedded engine
+		// cannot index (see the by-IDs rationale above).
 		countsSelect = `0 AS dep_count,
 			0 AS rdep_count,
 			0 AS comment_count`

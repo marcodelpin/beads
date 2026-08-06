@@ -538,13 +538,10 @@ func TestProxiedServerUpdate2(t *testing.T) {
 		bdProxiedUpdateOne(t, bd, p.dir, issue.ID, "--no-history")
 
 		// --no-history selects a WISP RETENTION MODE, so the aggregate moves to
-		// the ephemeral plane rather than flipping a column on the durable row:
-		// issueops.IssuePatch.Persistence says "Ephemeral and NoHistory select
-		// wisp retention modes, never durable unversioned storage" and "every
-		// aggregate move is atomic". The direct route has always done this; the
-		// proxied route flipped the column in place until it joined the
-		// contract, which left a durable row that the wisp-plane reads could
-		// not see (bd-xt6de).
+		// the ephemeral plane rather than flipping a column on the durable row
+		// (issueops.IssuePatch.Persistence). The proxied route flipped the
+		// column in place until it joined the contract, which left a durable
+		// row that the wisp-plane reads could not see (bd-xt6de).
 		if got := readPersistenceFlag(t, db, "wisps", "no_history", issue.ID); got != 1 {
 			t.Errorf("wisps.no_history: got %d, want 1 after --no-history", got)
 		}

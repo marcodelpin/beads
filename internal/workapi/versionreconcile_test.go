@@ -13,9 +13,8 @@ import (
 //
 // The two marker states a workspace reaches ONLY through something outside the
 // role — a recorded version below the high-water mark — are here rather than
-// there for the same reason: they are decisions, and reproducing them on three
-// backends costs a seeded write per case to test arithmetic that never touches
-// storage.
+// there: reproducing them on three backends costs a seeded write per case to
+// test arithmetic that never touches storage.
 func TestPlanVersionReconcile(t *testing.T) {
 	for _, test := range []struct {
 		name          string

@@ -12,10 +12,9 @@ import (
 )
 
 // These cover the transport half of GET /v0/beads/dependencies: the two size
-// refusals this operation owns, how a role refusal is named on the wire, and
-// the two never-null members. Everything below the wire — which plane an anchor
-// is probed on, what Missing means, the edge order — is the role's, and is
-// pinned by backend/conformance/edge_reader_contract.go at all three backends.
+// refusals this operation owns, how a role refusal is named on the wire, and the
+// two never-null members. Everything below the wire is the role's, and is pinned
+// by backend/conformance/edge_reader_contract.go at all three backends.
 
 func newEdgesServer(t *testing.T, edges *roleEdgeReader) *testServer {
 	t.Helper()
@@ -130,9 +129,8 @@ func TestDependenciesRefuseAnUnknownParameter(t *testing.T) {
 // role's ErrValidation onto the two parameters that can cause it.
 //
 // The role owns both refusals — an empty id, an unusable dependency type — so
-// the handler cannot re-derive which one happened from the error; it names the
-// parameter from the request it still holds. An empty entry can only have come
-// from issue_id, so anything else is type.
+// the handler names the parameter from the request it still holds: an empty
+// entry can only have come from issue_id, so anything else is type.
 func TestADependencyRoleRefusalIsTheDocumentedBadRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

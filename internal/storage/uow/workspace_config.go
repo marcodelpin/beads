@@ -69,17 +69,13 @@ func (c *workspaceConfig) ListSettings(ctx context.Context, _ publicops.ListSett
 // The projection of status.custom and types.custom into their normalized
 // tables happens in the config repository this use case sits on
 // (internal/storage/domain/db/config.go), so the row and its table land in
-// THIS transaction and commit together. That is the same guarantee the store
-// backends get from their own SetConfig, reached a different way — and it is
-// the half of this plane that was missing on this backend until this role
-// existed: a proxied `bd config set types.custom` wrote the string, left
-// custom_types holding the previous set, and the table-first read kept
-// answering with the previous set forever.
+// THIS transaction and commit together. Before this role existed a proxied
+// `bd config set types.custom` wrote the string, left custom_types holding the
+// previous set, and the table-first read kept answering with it forever.
 //
-// VALIDATION HAPPENS BEFORE THE UNIT OF WORK IS OPENED. A refused write should
-// cost no connection and no transaction, and — more to the point — a validation
-// failure raised inside RunTx would be indistinguishable at the call site from
-// a write that rolled back.
+// VALIDATION HAPPENS BEFORE THE UNIT OF WORK IS OPENED: a validation failure
+// raised inside RunTx would be indistinguishable at the call site from a write
+// that rolled back.
 func (c *workspaceConfig) SetSetting(ctx context.Context, req publicops.SetSettingRequest) (publicops.SetSettingResult, error) {
 	value, err := workapi.ValidateSettingWrite(req.Key, req.Value)
 	if err != nil {

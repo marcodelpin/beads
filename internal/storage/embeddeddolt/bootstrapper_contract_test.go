@@ -18,9 +18,8 @@ import (
 // on the bodies.
 //
 // One environment for the whole suite, and here that is a correctness
-// requirement rather than only a runtime one: the identity is global to a
-// workspace, so the subtests run sequentially over one plane, each seeding the
-// state it asserts about.
+// requirement: the identity is global to a workspace, so the subtests run
+// sequentially over one plane, each seeding the state it asserts about.
 func TestBootstrapperContract(t *testing.T) {
 	skipUnlessEmbeddedDolt(t)
 	te := newTestEnv(t, "boot")

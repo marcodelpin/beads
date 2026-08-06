@@ -10,10 +10,8 @@ import (
 // TestBlockingAnnotatorContract runs the BlockingAnnotator contract against the
 // unit-of-work provider — the one implementation that does not call
 // storage/issueops.ExecuteBlockingAnnotation, so this is the wiring where a
-// genuine body divergence shows up. It reads BOTH dependency tiers for every id
-// and merges, where the two store backends partition the ids by plane and read
-// each one's outbound edges from the tier it lives on; that makes this the
-// SECOND of two votes rather than the third.
+// genuine body divergence shows up. It is the SECOND of two votes, not the
+// third.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test

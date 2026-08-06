@@ -31,10 +31,9 @@ func (s *Server) handleBlockingAnnotations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// Both bounds are checked here rather than left to the role, for the reason
-	// handleListDependencies gives: they are this operation's own limits on one
-	// shared process, not statements about what a blocking annotation means,
-	// and the role answers an empty request with an empty result rather than a
-	// refusal.
+	// handleListDependencies gives: they are this operation's own limits, not
+	// statements about what a blocking annotation means, and the role answers an
+	// empty request with an empty result rather than a refusal.
 	if len(ids) == 0 {
 		requestInfo(r.Context()).refuse("issue_id")
 		s.fail(w, r, InvalidArgument("issue_id", ReasonInvalidValue, "name at least one issue_id"))
@@ -63,11 +62,8 @@ func (s *Server) handleBlockingAnnotations(w http.ResponseWriter, r *http.Reques
 // failBlockingErr answers a failed blocking annotation. The role's one
 // request-validation refusal — an empty id — is the caller's own input and
 // reaches the client as the 400 it is; everything else keeps going through the
-// one mapping in problem.go.
-//
-// It classifies on the SENTINEL rather than on prose, as failEdgeReadErr does,
-// and it needs no parameter guess: `issue_id` is the only parameter this
-// operation has.
+// one mapping in problem.go. It classifies on the SENTINEL rather than on
+// prose, as failEdgeReadErr does.
 func (s *Server) failBlockingErr(w http.ResponseWriter, r *http.Request, err error) {
 	if !errors.Is(err, issueops.ErrValidation) {
 		s.failErr(w, r, err)
@@ -83,9 +79,8 @@ func (s *Server) failBlockingErr(w http.ResponseWriter, r *http.Request, err err
 // one.
 //
 // It exists for the one thing that is not free: the document says `items` is an
-// empty array and never null, and the role's slice is already empty rather than
-// nil for a request that named nothing. Making the guarantee here as well means
-// the wire promise does not depend on the role keeping its own.
+// empty array and never null, so the wire promise does not depend on the role
+// keeping its own.
 func wireBlocking(result issueops.BlockingResult) apigen.BlockingAnnotations {
 	if result.Items == nil {
 		return apigen.BlockingAnnotations{Items: []apigen.IssueBlocking{}}

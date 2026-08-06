@@ -15,7 +15,7 @@ import (
 // prints, on ONE role and ONE renderer.
 
 // openCycleDetector hands back the cycle role for whichever route this
-// invocation is on, each through its OWN capability accessor.
+// invocation is on.
 func openCycleDetector() (issueops.CycleDetector, error) {
 	if usesProxiedServer() {
 		return proxiedCycleDetector()
@@ -24,9 +24,7 @@ func openCycleDetector() (issueops.CycleDetector, error) {
 }
 
 // proxiedCycleDetector hands back the guarded cycle-report surface for the
-// proxied-server provider, through the provider's own capability accessor — the
-// same two-step proxiedCounter performs, and for the same reason: the accessor
-// is where each layer is added.
+// proxied-server provider, through the provider's own capability accessor.
 func proxiedCycleDetector() (issueops.CycleDetector, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")
@@ -78,9 +76,6 @@ func runDepCycles() error {
 
 // cycleMemberTitle renders a member's description, naming the absence rather
 // than printing a blank line after the id.
-//
-// The absence is worth a phrase because it is the whole point of carrying the
-// member: this used to be the case where the member vanished from the path.
 func cycleMemberTitle(member issueops.CycleMember) string {
 	if member.Issue == nil {
 		return ui.RenderMuted("(no record in this database)")
@@ -132,9 +127,8 @@ func printCycleDetectionError(err error) {
 // closed by repeating the first member.
 //
 // The path is spelled from the role's MEMBER IDS, which are complete whether or
-// not each member has a row behind it. That is the visible half of the honest
-// partial: a cycle whose middle node has no record used to print as a shorter
-// path, or — when no member had one — not at all.
+// not each member has a row behind it: a cycle whose middle node has no record
+// used to print as a shorter path, or not at all.
 func printCycleWarnings(cycles []issueops.Cycle) {
 	if len(cycles) == 0 {
 		return

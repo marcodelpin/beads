@@ -16,12 +16,9 @@ func (s *DoltStore) EdgeReader() (issueops.EdgeReader, error) {
 
 // newEdgeReader returns guarded stored-edge reads backed by store.
 //
-// It is unexported, unlike NewIssueRelations beside it: a command holds the
-// storage.DoltStorage interface and reaches the role through the accessor
-// above, which is where each decorator adds its layer. There is no shared
-// constructor for the cmd-bd-role-constructors depguard rule to deny here
-// because the shared body is an InTx function — it needs a transaction this
-// store owns, so no front door can reach it at all.
+// It is unexported, unlike NewIssueRelations beside it: the shared body is an
+// InTx function that needs a transaction this store owns, so no front door can
+// reach it at all.
 func newEdgeReader(store *DoltStore) (issueops.EdgeReader, error) {
 	if store == nil {
 		return nil, &storage.ErrUnsupported{Op: "newEdgeReader", Backend: "nil"}

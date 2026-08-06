@@ -764,21 +764,14 @@ func RunReaderListEmptyPageIsWellFormed(t *testing.T, ctx context.Context, fixtu
 // that exceeds it is either HONORED — no page, an error — or REFUSED with a
 // typed *ErrUnsupported, and never SILENTLY IGNORED.
 //
-// It is the MIRROR of RunReaderOffsetIsHonoredOrRefused above, one field over
-// and pointing the other way: there the unit-of-work body honors and the
-// store-backed one refuses, here the store-backed one honors and the
-// unit-of-work one refuses. Which does which is a per-backend fact asserted at
-// the wirings, not here, and the shared assertion is deliberately the weaker
-// one — the two bodies disagree by design, so a case written to either
-// behavior would fail the other.
+// It is the MIRROR of RunReaderOffsetIsHonoredOrRefused above. Which body
+// honors and which refuses is a per-backend fact asserted at the wirings, not
+// here: the two disagree by design, so the shared assertion is the weaker one.
 //
-// The never-silently clause is the whole value, exactly as it is for Offset. A
-// cap is a CIRCUIT BREAKER: a caller sets it because it would rather fail than
-// wait, so a body that accepts the field and answers the unbounded query hands
-// that caller the runaway result it was guarding against, with nothing on the
-// answer to say so. That is the failure this pins, and it is the one the
-// unit-of-work query path would have had — it reads no MaxRows at all — if the
-// field had been added without a refusal beside it.
+// The never-silently clause is the whole value. A cap is a CIRCUIT BREAKER: a
+// caller sets it because it would rather fail than wait, so a body that accepts
+// the field and answers the unbounded query hands that caller the runaway
+// result it was guarding against.
 //
 // The complement is asserted too: the SAME request under a cap the result set
 // fits inside must come back as an ordinary page everywhere. Without it a body
@@ -794,8 +787,7 @@ func RunReaderListMaxRowsIsHonoredOrRefused(t *testing.T, ctx context.Context, f
 	idScope := readerIDFilter(ids...)
 
 	// A cap the three seeded rows fit inside. Answered as an ordinary page by
-	// the body that honors caps, and refused by the body that honors none —
-	// which is why the refusal branch is accepted here as well.
+	// the body that honors caps, and refused by the body that honors none.
 	const roomyWhat = "List under a cap the result set fits inside"
 	roomy, err := fixture.Reader.List(ctx, publicops.ListRequest{
 		IDFilter: idScope, SortBy: "created", MaxRows: len(ids) + 1, MaxRowsSource: "--max-rows",
@@ -822,7 +814,7 @@ func RunReaderListMaxRowsIsHonoredOrRefused(t *testing.T, ctx context.Context, f
 	}
 	// The honoring branch. The leaf names the answer — *ErrTooManyRows — so a
 	// caller can tell "the cap fired" from any other failure without reading
-	// error text, and that is what is asserted rather than a message.
+	// error text.
 	var tooMany *storageops.ErrTooManyRows
 	if !errors.As(err, &tooMany) {
 		t.Fatalf("List honored MaxRows and failed with %v; an honored cap has to answer with *ErrTooManyRows a caller can classify", err)
@@ -850,19 +842,14 @@ func RunReaderListMaxRowsIsHonoredOrRefused(t *testing.T, ctx context.Context, f
 //     of them, so the knob demonstrably reached the query rather than being
 //     accepted and dropped; and
 //   - NOTHING ELSE MOVES. Same rows, same order, same Parent, same has-more
-//     verdict as the identical request without the knob. This is a HYDRATION
-//     opt-out, and the way it could go wrong is by changing which rows match —
-//     the aggregates hang off outer joins, so an implementation that made one
-//     of them inner would answer with a strict subset and still look like it
-//     had "skipped the counts".
-//
-// The comparison is against the SAME request run both ways rather than against
-// a written-out expectation, so the case says exactly what the doc says: this
-// field changes what is hydrated and not what is returned.
+//     verdict as the identical request without the knob. The aggregates hang
+//     off outer joins, so an implementation that made one of them inner would
+//     answer with a strict subset and still look like it had "skipped the
+//     counts".
 //
 // Zero is asserted rather than "unknown" because zero is what the wire and the
 // struct can carry; the doc's instruction to READ it as unknown is a promise to
-// the caller, not something an implementation can express differently.
+// the caller.
 func RunReaderListSkipCountsDropsTheCardinalitiesAndNothingElse(t *testing.T, ctx context.Context, fixture ReaderFixture) {
 	t.Helper()
 	subject := readerID(fixture, "skipcounts", "subject")
@@ -874,9 +861,8 @@ func RunReaderListSkipCountsDropsTheCardinalitiesAndNothingElse(t *testing.T, ct
 	}
 	// One outgoing blocks edge, one incoming one, and a parent-child edge, so
 	// the subject row carries a nonzero DependencyCount, DependentCount and
-	// Parent at once. Parent rides the same mega-query as the counts and is
-	// NOT a count, which is what makes it the tripwire for a knob that
-	// suppressed too much.
+	// Parent at once. Parent rides the same mega-query as the counts and is NOT
+	// a count: it is the tripwire for a knob that suppressed too much.
 	for _, edge := range []*types.Dependency{
 		{IssueID: subject, DependsOnID: blocker, Type: types.DepBlocks},
 		{IssueID: dependent, DependsOnID: subject, Type: types.DepBlocks},

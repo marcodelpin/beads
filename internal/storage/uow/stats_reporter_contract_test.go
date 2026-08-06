@@ -11,8 +11,7 @@ import (
 // unit-of-work provider — the THIRD independent body for this role, not the
 // second. Both Dolt stores hand back internal/workapi/storestats, but each of
 // the three spells the blocked count and the ready subtraction itself
-// (domain/db/issue.go here), so this suite is the only place a disagreement
-// between the two stores and the use case can surface.
+// (domain/db/issue.go here).
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: the workspace-wide cases assert
@@ -67,8 +66,7 @@ func newUOWStatsReporterFixture(t *testing.T, ctx context.Context, prefix string
 	t.Helper()
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessor, not NewStatsReporter: a provider that
-	// stopped offering the role is the regression, and a constructor call would
-	// hide it.
+	// stopped offering the role is the regression.
 	source, ok := provider.(StatsReporterSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the StatsReporter accessor", provider)

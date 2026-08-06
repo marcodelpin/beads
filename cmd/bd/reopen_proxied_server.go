@@ -20,36 +20,27 @@ import (
 // before the reopens ran.
 type reopenProxiedTarget struct {
 	id string
-	// status is the prior status, and it feeds the audit sidecar's old_value
-	// and nothing else. The role's result is a post-state snapshot and carries
-	// no prior status, and a constant "closed" is exactly the value this commit
-	// would make wrong, now that a configured done status reopens here.
+	// status is the prior status, and it feeds the audit sidecar's old_value and
+	// nothing else. The role's result is a post-state snapshot with no prior
+	// status, and a constant "closed" is now wrong: a configured done status
+	// reopens here too.
 	status types.Status
 }
 
 // runReopenProxiedServer reopens each id through issueops.Lifecycle — the same
 // role, reached through the same kind of accessor, that the direct route calls.
-// Nothing here decides what a reopen means: the plane resolve, the done-category
-// rule, the reopened event, the version-control entry and the whole-attempt
-// retry all live behind the call, so the two routes can no longer answer the
-// same command differently.
-//
-// TWO BEHAVIORS CHANGE, both of them toward the direct route.
+// Nothing here decides what a reopen means.
 //
 // A CONFIGURED DONE STATUS NOW REOPENS. This route used to compare the current
 // status against literal StatusClosed and report "already <status>" for
 // anything else, so an issue parked on a custom done status could not be
 // reopened on a team server while the same command worked locally. The role
 // speaks in terms of the configured done CATEGORY
-// (issueops/issueops.go:417-420), and the contract pins that at all three
-// backends.
+// (issueops/issueops.go:417-420).
 //
 // ONE CALL PER ID, so one transaction and one history entry per id, where this
 // route used to run every id in one unit of work under a hand-composed
-// "bd: reopen a, b" message. The role hands out no transaction handle to hold
-// open, and a batch role for a two-flag command is not warranted (Q2,
-// recommended and non-blocking), so the per-id entry the direct route has
-// always written is what both routes now write.
+// "bd: reopen a, b" message.
 func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return HandleErrorRespectJSON("no issue ID provided")
@@ -91,8 +82,7 @@ func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		if !result.Changed {
 			// Read off the result rather than off the pre-read: the status the
 			// reopen left in place is the one the operation saw inside its own
-			// transaction, and it is what lets this route reach the
-			// already-open line without a short-circuit of its own.
+			// transaction.
 			fmt.Fprintln(os.Stderr, reopenNoOpMessage(target.id, reopenStatusOf(result.Issue, nil)))
 			continue
 		}
@@ -104,8 +94,7 @@ func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		if jsonOut {
 			if issue := result.Issue; issue != nil {
 				// `bd reopen` has never printed dependency records, on either
-				// route: the direct route drops them from the operation's own
-				// snapshot for exactly this reason.
+				// route.
 				issue.Dependencies = nil
 				reopenedIssues = append(reopenedIssues, issue)
 			}
@@ -132,16 +121,13 @@ func runReopenProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 // reports the ones that did not resolve, returning the survivors with the
 // status each sat at.
 //
-// It is the shape `bd close`'s preflight landed with, and it exists for the two
-// things the role's result cannot supply: the audit sidecar's old_value, and
-// the difference between an absent id and a backend that failed to answer —
-// which this route has always drawn, and which reportIssueLookupFailure spells
-// the same way here as it does for `bd show`.
+// It exists for the two things the role's result cannot supply: the audit
+// sidecar's old_value, and the difference between an absent id and a backend
+// that failed to answer.
 //
 // It decides NOTHING about the reopen. A resolved id goes to the role whatever
-// status it is at, including a status this route used to refuse; the read is a
-// transaction earlier than the mutation, and every guard that matters is inside
-// the role's own.
+// status it is at, including a status this route used to refuse; every guard
+// that matters is inside the role's own transaction.
 func reopenProxiedResolve(ctx context.Context, ids []string) ([]reopenProxiedTarget, bool, error) {
 	var targets []reopenProxiedTarget
 	failed := false

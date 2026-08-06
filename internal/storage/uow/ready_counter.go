@@ -9,9 +9,7 @@ import (
 )
 
 // ReadyCounterSource is the capability accessor a unit-of-work provider offers
-// for the ready-count role, the sibling of IssueReaderSource and
-// ReadyClaimerSource. A consumer holding a provider by interface asks for the
-// role here instead of reaching for a constructor.
+// for the ready-count role.
 type ReadyCounterSource interface {
 	ReadyCounter() (publicops.ReadyCounter, error)
 }
@@ -38,21 +36,18 @@ var _ publicops.ReadyCounter = (*readyCounter)(nil)
 
 // CountReady answers one ready count inside one read-only unit of work.
 //
-// IT COUNTS THE PAGE, and that is a deliberate choice rather than a missing
-// optimization. This seam has no COUNT(*) over the ready predicate — the ready
-// set is a UNION of two tables whose overlap the id query resolves in Go
-// (domain/db/issue_search.go: an id present in both planes is a hard error
-// here, not a de-duplication) — so a hand-rolled COUNT would be a second
-// definition of the ready set on the one backend whose definition is already
-// separate code. Running the SAME query Reader.Ready runs, unbounded, and
-// taking its length makes the identity CountReady promises true BY
-// CONSTRUCTION on this backend, including the way it fails.
+// IT COUNTS THE PAGE, deliberately. This seam has no COUNT(*) over the ready
+// predicate — the ready set is a UNION of two tables whose overlap the id query
+// resolves in Go (domain/db/issue_search.go: an id present in both planes is a
+// hard error here, not a de-duplication) — so a hand-rolled COUNT would be a
+// second definition of the ready set. Running the SAME query Reader.Ready runs,
+// unbounded, and taking its length makes the identity CountReady promises true
+// BY CONSTRUCTION, including the way it fails.
 //
 // What that costs is the unbounded ready query the store-backed sibling avoids
 // with an indexed COUNT(*). Both front doors ask for this number only when a
 // page came back full, so the cost is paid on truncated listings and nowhere
-// else; issueops.ReadyCounter promises the answer and says out loud that it
-// does not promise the cost.
+// else.
 func (c *readyCounter) CountReady(ctx context.Context, req publicops.ReadyRequest) (publicops.ReadyCountResult, error) {
 	// The same builder the store-backed sibling runs, which is also
 	// BuildReadyFilter with the page removed — so the refusals of a Limit and

@@ -13,21 +13,18 @@ import (
 // the orphan list and the dependents refusal — are ordered.
 //
 // Every implementation runs these, so `bd delete` has one definition of a
-// malformed request rather than one per backend, and the parts that decide
-// what the answer MEANS are pinned in delete_test.go without a database.
+// malformed request rather than one per backend.
 //
 // What is NOT here is the deletion. The existence probe, the guard and the
-// erasure need one transaction (issueops.Deleter.Delete), which no interface
-// above a store publishes; the bodies live in
+// erasure need one transaction (issueops.Deleter.Delete); the bodies live in
 // internal/storage/issueops/delete.go and in the unit-of-work provider.
 
 // ValidateDeleteRequest applies the request rules every Deleter implementation
 // shares, before anything is read.
 //
-// There is deliberately no require-a-filter analog of the sweep gate here.
-// A delete request carries no predicate at all: a caller cannot spell
-// "everything" without typing every id, so the shape that gate protects
-// against does not exist on this role. The guard that does matter — dependents
+// There is deliberately no require-a-filter analog of the sweep gate here: a
+// delete request carries no predicate at all, so a caller cannot spell
+// "everything" without typing every id. The guard that does matter — dependents
 // outside the request — needs the graph and therefore lives in the bodies.
 func ValidateDeleteRequest(in issueops.DeleteRequest) error {
 	if len(in.IDs) == 0 {
@@ -46,8 +43,7 @@ func ValidateDeleteRequest(in issueops.DeleteRequest) error {
 //
 // First-mention order rather than sorted, because it is the order the front
 // doors echo back in their "issues not found" line and in the confirmation
-// hint they print, and a caller re-reading its own `--from-file` list against
-// that output should not have to re-sort it.
+// hint they print.
 //
 // It assumes a request already accepted by ValidateDeleteRequest, so no entry
 // trims to empty.

@@ -19,18 +19,13 @@ func (s *DoltStore) CycleDetector() (issueops.CycleDetector, error) {
 
 // cycleDetector answers the cycle report from one read transaction.
 //
-// There is no shared constructor package for this role the way there is for the
-// count role, and that is not an omission. The work is a graph read plus a
-// hydration, both of which need a TRANSACTION — the two planes must be read as
-// one snapshot — and a transaction is not reachable through storage.DoltStorage.
-// So the sharing happens one level down instead: this body and the embedded
-// store's are five lines each around issueops.DetectCycleReportInTx, which is
-// the same function both stores' legacy DetectCycles already call. Two wrappers
-// over one body is still ONE vote, and the conformance contract says so.
-//
-// A front door cannot construct this: the type is unexported and the accessor is
-// the only door, which is what the cmd-bd-role-constructors depguard rule buys
-// the roles whose bodies live in an importable package.
+// There is no shared constructor package for this role: the work is a graph
+// read plus a hydration, both of which need a TRANSACTION — the two planes must
+// be read as one snapshot — and a transaction is not reachable through
+// storage.DoltStorage. The sharing happens one level down instead: this body
+// and the embedded store's are five lines each around
+// issueops.DetectCycleReportInTx. Two wrappers over one body is still ONE vote,
+// and the conformance contract says so.
 type cycleDetector struct{ store *DoltStore }
 
 var _ issueops.CycleDetector = (*cycleDetector)(nil)

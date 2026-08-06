@@ -12,13 +12,10 @@ import (
 )
 
 // ValidateEdgeReadRequest applies the request rules every EdgeReader
-// implementation shares.
-//
-// There are only two, and both are about telling a caller's mistake from a
-// legitimately empty answer. An empty ID entry names nothing, so it is refused
-// rather than reported as a missing anchor with no name; an unusable dependency
-// type is refused rather than becoming a filter that silently matches nothing.
-// An empty ID SLICE is neither: it asks about no anchors and gets none back.
+// implementation shares. Both tell a caller's mistake from a legitimately empty
+// answer: an empty ID entry names nothing, and an unusable dependency type would
+// become a filter that silently matches nothing. An empty ID SLICE is neither —
+// it asks about no anchors and gets none back.
 func ValidateEdgeReadRequest(request publicops.EdgeReadRequest) error {
 	for i, id := range request.IDs {
 		if id == "" {
@@ -37,15 +34,10 @@ func ValidateEdgeReadRequest(request publicops.EdgeReadRequest) error {
 // EdgeReadAnchors is the de-duplicated anchor list a read runs against: the
 // request's ids with repeats collapsed onto their first mention.
 //
-// It is a shared function rather than a loop in each implementation because the
-// de-duplication decides the SHAPE of the answer — one entry per distinct id,
-// in first-mention order — and an implementation that skipped it would return a
-// different number of anchors than its sibling for the same request.
-//
-// Every batch-anchored role collapses its ids this way and reaches it here:
-// BlockingAnnotator makes the same promise over the same shape of request
-// (blocking_annotation.go), and the two making it out of one function is what
-// keeps "repeats collapse" from meaning two things.
+// It is shared rather than a loop in each implementation because the
+// de-duplication decides the SHAPE of the answer — one entry per distinct id, in
+// first-mention order. BlockingAnnotator makes the same promise over the same
+// shape of request (blocking_annotation.go) and reaches it here too.
 func EdgeReadAnchors(ids []string) []string {
 	seen := make(map[string]struct{}, len(ids))
 	out := make([]string, 0, len(ids))
@@ -62,16 +54,13 @@ func EdgeReadAnchors(ids []string) []string {
 // FinishEdgeRead assembles the per-anchor answer from the two things every
 // implementation reads: which anchors exist, and the edges keyed by source.
 //
-// It is one function rather than two copies for the reason FinishRelatedPage
-// is: the type filter, the pinned order and the empty-versus-absent
-// distinction are the whole observable contract of this role, and an
-// implementation that applied them for itself is one the two will eventually
-// disagree about.
+// It is one function rather than two copies because the type filter, the pinned
+// order and the empty-versus-absent distinction are the whole observable
+// contract of this role.
 //
 // THE ORDER is ascending by target id, with the edge type breaking a tie. The
 // row's own surrogate key is deliberately not a third term — the source-keyed
-// read does not select it, so it is empty on every row here and sorting by it
-// would be sorting by nothing.
+// read does not select it, so it is empty on every row here.
 func FinishEdgeRead(anchors []string, present map[string]struct{}, edges map[string][]*types.Dependency, depTypes []types.DependencyType) publicops.EdgeReadResult {
 	allowed := make(map[types.DependencyType]struct{}, len(depTypes))
 	for _, depType := range depTypes {
@@ -84,8 +73,7 @@ func FinishEdgeRead(anchors []string, present map[string]struct{}, edges map[str
 		entry := publicops.AnchorEdges{ID: id, Missing: !exists, Edges: []*types.Dependency{}}
 		// A missing anchor carries no edges even if rows are keyed to it: a
 		// dependency row whose source has been deleted is orphaned data, and
-		// reporting it under an anchor this call just said does not exist would
-		// contradict the flag beside it.
+		// reporting it would contradict the flag beside it.
 		if exists {
 			for _, edge := range edges[id] {
 				if edge == nil {
@@ -112,13 +100,12 @@ func FinishEdgeRead(anchors []string, present map[string]struct{}, edges map[str
 
 // ExecuteEdgeRead returns each anchor's stored outgoing edges in tx. It is the
 // store-backed body behind the EdgeReader accessor; the unit-of-work provider
-// has its own, which reaches the same two reads through its use cases.
+// reaches the same two reads through its use cases.
 //
 // The existence probe and the edge read share ONE transaction, which is what
 // lets AnchorEdges.Missing mean what it says: a probe in its own transaction
-// could report an anchor missing and then a second transaction could return
-// that anchor's edges, and the answer would contradict itself in a single
-// response body.
+// could report an anchor missing while a second transaction returned that
+// anchor's edges, contradicting itself in one response body.
 func ExecuteEdgeRead(ctx context.Context, tx DBTX, request publicops.EdgeReadRequest) (publicops.EdgeReadResult, error) {
 	anchors := EdgeReadAnchors(request.IDs)
 	if len(anchors) == 0 {
@@ -137,9 +124,8 @@ func ExecuteEdgeRead(ctx context.Context, tx DBTX, request publicops.EdgeReadReq
 
 // PresentIssueOrWispIDsInTx reports which of ids exist, on either plane. It is
 // the batched form of RequireIssueOrWispInTx, and it answers with a set rather
-// than an error for the same reason the role reports Missing per anchor: a
-// batch that failed on the first absent id would throw away the answers for the
-// ids that were found.
+// than an error because a batch that failed on the first absent id would throw
+// away the answers for the ids that were found.
 //
 // A missing wisps table is "no wisps", exactly as the single-id probe treats
 // it: older schemas predate that plane and an anchor there is simply not one.

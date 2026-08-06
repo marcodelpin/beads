@@ -22,43 +22,35 @@ import (
 // apart than usual. dolt and embeddeddolt share internal/workapi/
 // storereadycounter, which is one indexed COUNT(*) per plane minus their
 // overlap; the unit-of-work provider runs the unbounded ready query and takes
-// its length. So the three wirings are one vote plus an engine check on the
-// cheap path, and a second, genuinely independent vote on the expensive one —
-// and the cases below are written to catch the arithmetic that only the first
-// of those does (the wisp merge, the overlap subtraction), which is exactly
-// where a COUNT can disagree with the page it claims to size.
+// its length. So the wirings are one vote plus an engine check on the cheap
+// path and a second, independent vote on the expensive one, and the cases below
+// aim at the arithmetic only the first of them does.
 //
-// EVERY CASE IS SCOPED BY A LABEL, for the reason the ready-claim contract
-// gives: the ready front is a property of the whole database, not of an id
-// prefix, so a row seeded by one assertion is inside the next one's answer
-// unless each asks through Filter.Labels.
+// EVERY CASE IS SCOPED BY A LABEL: the ready front is a property of the whole
+// database, not of an id prefix, so a row seeded by one assertion is inside the
+// next one's answer unless each asks through Filter.Labels.
 //
-// EVERY CASE NAMES A SORT POLICY even though a count has no order, and that is
-// deliberate rather than copied: ReadyRequest.Sort's empty value resolves to
-// hybrid at the storage layer, which the leaf says no front door may rely on
-// (issueops/reader.go:79-83), and a count whose request is not the listing's
-// request is not the count this role promises.
+// EVERY CASE NAMES A SORT POLICY even though a count has no order.
+// ReadyRequest.Sort's empty value resolves to hybrid at the storage layer, which
+// the leaf says no front door may rely on (issueops/reader.go:79-83), and a
+// count whose request is not the listing's request is not the count this role
+// promises.
 
 // ReadyCounterFixture supplies adapter-specific storage access for the
-// ready-count assertions. Every field is named and typed exactly like the
-// per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
-// accessors plus prefix with no adapter in between.
+// ready-count assertions.
 type ReadyCounterFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
 	IssuePrefix string
 	// ReadyCounter is the surface under test.
 	ReadyCounter publicops.ReadyCounter
-	// Reader is the SAME backend's reader accessor, and this fixture cannot do
-	// without it: the role's central promise is an IDENTITY with
-	// len(Reader.Ready(r with Limit=0).Items) (issueops/readycounter.go:60-70),
-	// and the only way to observe an identity is to ask both surfaces.
+	// Reader is the SAME backend's reader accessor. The role's central promise
+	// is an IDENTITY with len(Reader.Ready(r with Limit=0).Items)
+	// (issueops/readycounter.go:60-70), so both surfaces have to be asked.
 	Reader publicops.Reader
 	// CreateIssue seeds a durable issue in the issues plane.
 	CreateIssue func(context.Context, *types.Issue, string) error
-	// CreateWisp seeds an ephemeral issue in the wisps plane. It is a separate
-	// field rather than an Ephemeral flag on CreateIssue because the three
-	// adapters reach the two planes through different verbs.
+	// CreateWisp seeds an ephemeral issue in the wisps plane.
 	CreateWisp func(context.Context, *types.Issue, string) error
 	// AddDependency seeds ONE edge, which is how a case takes a row OFF the
 	// ready front without deleting or closing it.
@@ -74,20 +66,18 @@ type ReadyCounterFixture struct {
 // len(Reader.Ready(r with Limit=0).Items), for every request the method
 // accepts.
 //
-// The case asks the SAME question three ways — an unbounded page, a page
-// bounded well below the seeded set, and the count — because the failure this
-// exists to prevent is a total that describes a different set than the page it
-// is printed beside. `bd ready` publishes both numbers together as "showing 2
-// of 5", and a reader takes the second as "how much work is left".
+// The failure this exists to prevent is a total that describes a different set
+// than the page it is printed beside: `bd ready` publishes both numbers as
+// "showing 2 of 5", and a reader takes the second as "how much work is left".
 //
 // The bounded page is the half that matters. A count computed by re-running
 // the listing would pass an unbounded comparison trivially; a count computed
 // from a COUNT(*) over a predicate assembled somewhere else is where the two
 // come apart, and it only shows up once a limit makes the numbers differ.
 //
-// The high-priority OUTSIDER is what makes the equality mean something: it is
-// ready, it would be counted by any request whose label predicate went missing
-// between the two surfaces, and it is outside the scope both are asked about.
+// The high-priority OUTSIDER is ready and outside the scope both surfaces are
+// asked about, so it is counted by any request whose label predicate went
+// missing between them.
 func RunReadyCounterEqualsTheUnboundedPage(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	label := fixture.IssuePrefix + "-rceq"
@@ -122,16 +112,10 @@ func RunReadyCounterEqualsTheUnboundedPage(t *testing.T, ctx context.Context, fi
 // A bounded count would answer "how many of the first N", which is not a
 // cardinality and would make the identity above false; an offset would
 // subtract the rows it skipped from the size of a set that still holds them.
-// The refusal is the promise that neither is quietly dropped.
 //
-// The explicit zero is here for the reason the claim contract states it:
 // ReadyRequest.Limit is a pointer so "unset" and "explicitly unlimited" stay
 // distinguishable (issueops/reader.go:85-89), and only the first is what this
 // request permits — an unlimited count is the only kind there is.
-//
-// A countable row is seeded first so each refusal runs against a set that
-// WOULD have answered, which is what makes a refusal a refusal rather than an
-// empty front reported the hard way.
 func RunReadyCounterRejectsLimitAndOffset(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	label := fixture.IssuePrefix + "-rcrej"
@@ -164,10 +148,9 @@ func RunReadyCounterRejectsLimitAndOffset(t *testing.T, ctx context.Context, fix
 // with an open blocker is not in the count even though it is open, unclosed and
 // otherwise indistinguishable from the row beside it.
 //
-// It is asserted against the listing rather than against a literal alone, so
-// the case says the two agree ON THE SAME SET and not merely that both happen
-// to be 2 today. The literal is checked as well, because an identity between
-// two surfaces that both dropped the blocker predicate would still hold.
+// Both the listing and the literal are checked: the listing says the two agree
+// on the same set, and the literal catches an identity that holds because both
+// surfaces dropped the blocker predicate.
 func RunReadyCounterCountsTheBlockerAwareSet(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	label := fixture.IssuePrefix + "-rcblock"
@@ -205,14 +188,13 @@ func RunReadyCounterCountsTheBlockerAwareSet(t *testing.T, ctx context.Context, 
 // rows counts them exactly as the listing lists them, and one that does not
 // counts neither.
 //
-// This is the case aimed at the cheap path specifically. The store-backed body
-// sizes the ready set as one COUNT(*) per plane MINUS their overlap
-// (internal/storage/issueops.CountReadyWorkInTx) while the listing merges the
-// two planes row by row, so the wisp tier is the one place where the count is
-// assembled by different arithmetic than the page. Both directions of the gate
-// are asserted because each fails on its own: a body that always merged the
-// wisp plane would over-count a default request, and one that never merged it
-// would under-count an opted-in one.
+// The store-backed body sizes the ready set as one COUNT(*) per plane MINUS
+// their overlap (internal/storage/issueops.CountReadyWorkInTx) while the
+// listing merges the two planes row by row, so the wisp tier is where the count
+// is assembled by different arithmetic than the page. Both directions of the
+// gate are asserted because each fails on its own: a body that always merged
+// the wisp plane over-counts a default request, one that never merged it
+// under-counts an opted-in one.
 func RunReadyCounterEphemeralGateMatchesTheListing(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	label := fixture.IssuePrefix + "-rcwisp"
@@ -235,11 +217,10 @@ func RunReadyCounterEphemeralGateMatchesTheListing(t *testing.T, ctx context.Con
 // "not found" story (issueops/readycounter.go:84-87): a predicate that matches
 // nothing is 0 with a NIL ERROR.
 //
-// The nil is the load-bearing half. An empty ready front is the steady state of
+// The nil is the load-bearing half: an empty ready front is the steady state of
 // a drained queue, and a poller that had to classify an error to read a zero
 // would be pattern-matching prose. The decoy makes the zero about the FILTER
-// rather than about an empty database: a ready, countable row exists
-// throughout, it simply does not match.
+// rather than about an empty database.
 func RunReadyCounterEmptyFrontIsZeroAndNil(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	label := fixture.IssuePrefix + "-rcempty"
@@ -269,9 +250,7 @@ func RunReadyCounterEmptyFrontIsZeroAndNil(t *testing.T, ctx context.Context, fi
 // is the observable both an accidental commit and an accidental write would
 // move: every versioned unit of work in this tree ends in a Dolt commit, so a
 // count that took a write transaction would show up here even though it changed
-// no column. That is not a hypothetical for this role — the unit-of-work body
-// runs a query the listing runs, and the listing's own transaction wrapper is
-// two characters away from the writing one.
+// no column.
 func RunReadyCounterWritesNothing(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {
@@ -313,11 +292,9 @@ func RunReadyCounterWritesNothing(t *testing.T, ctx context.Context, fixture Rea
 // Priority pointer. Every one is populated here with a value normalization
 // would want to touch — untrimmed, duplicated, comma-joined — and the
 // comparison is against a second copy built by the same function, so an
-// in-place trim, dedupe, sort, alias expansion or write-through fails.
-//
-// The filter matches nothing on purpose. The promise is about the request, not
-// about the answer, and an empty front is the one outcome that does not depend
-// on what the rest of the suite has seeded.
+// in-place trim, dedupe, sort, alias expansion or write-through fails. The
+// filter matches nothing on purpose: the promise is about the request, not the
+// answer.
 func RunReadyCounterDoesNotMutateTheCallerRequest(t *testing.T, ctx context.Context, fixture ReadyCounterFixture) {
 	t.Helper()
 	build := func() publicops.ReadyRequest {
@@ -345,11 +322,9 @@ func RunReadyCounterDoesNotMutateTheCallerRequest(t *testing.T, ctx context.Cont
 	}
 }
 
-// readyCounterSort is the order every case names, for the reason
-// readyClaimerSort is named: it is the policy whose SQL is a plain "ORDER BY
-// priority, created_at, id", so no case depends on when the fixture was seeded.
-// A count has no order of its own — the policy is here because the request has
-// to be the listing's request for the identity to mean anything.
+// readyCounterSort is the order every case names: the policy whose SQL is a
+// plain "ORDER BY priority, created_at, id", so no case depends on when the
+// fixture was seeded.
 const readyCounterSort = "priority"
 
 func readyCounterIssue(id string, priority int, labels ...string) *types.Issue {
@@ -387,8 +362,7 @@ func seedReadyCounterWisp(t *testing.T, ctx context.Context, fixture ReadyCounte
 	}
 }
 
-// readyCounterTotal runs one count and fails the case on an error, because
-// every caller here has already established that the request is well-formed.
+// readyCounterTotal runs one count and fails the case on an error.
 func readyCounterTotal(t *testing.T, ctx context.Context, fixture ReadyCounterFixture, request publicops.ReadyRequest) int64 {
 	t.Helper()
 	result, err := fixture.ReadyCounter.CountReady(ctx, request)
@@ -418,8 +392,8 @@ func readyCounterPageIDs(t *testing.T, ctx context.Context, fixture ReadyCounter
 }
 
 // assertReadyCounterAgreesWithTheListing checks the identity and the literal
-// together for one request. The literal is what says the two surfaces agree on
-// the RIGHT set; the identity is what says they agree at all.
+// together: the identity says the two surfaces agree, the literal says they
+// agree on the RIGHT set.
 func assertReadyCounterAgreesWithTheListing(t *testing.T, ctx context.Context, fixture ReadyCounterFixture, request publicops.ReadyRequest, want int64, because string) {
 	t.Helper()
 	listed := readyCounterPageIDs(t, ctx, fixture, request, 0)

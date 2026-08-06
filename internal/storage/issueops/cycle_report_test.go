@@ -14,10 +14,9 @@ import (
 // in pure functions precisely so they can be pinned here, in milliseconds,
 // instead of only through three backends that each need a server.
 //
-// The conformance contract in backend/conformance still runs the same clauses
-// against real storage. What it cannot do is seed a graph that exercises the
-// walk itself: cycles are refused at write time on every backend, so a contract
-// case can build one small cycle and not the branchy graphs below.
+// The conformance contract in backend/conformance runs the same clauses against
+// real storage, but cycles are refused at write time on every backend, so a
+// contract case can seed one small cycle and not the branchy graphs below.
 
 func TestCanonicalCyclePathsRotatesEachCycleToItsLowestID(t *testing.T) {
 	// One 3-cycle, spelled starting from each of its three nodes. The walk's
@@ -50,12 +49,10 @@ func TestCanonicalCyclePathsSortsTheCycles(t *testing.T) {
 
 // TestCanonicalCyclePathsIsIndependentOfMapOrder is the case Q4 exists for.
 //
-// It re-runs the SAME graph, rebuilt each time with its keys and adjacency
-// lists in a fresh random order, and demands byte-identical answers. The
-// previous implementation walked the graph map directly and appended neighbours
-// in SQL row order, so the answer moved between runs — including under --json,
-// where a caller diffing two snapshots of an unchanged database saw changes that
-// were not changes.
+// The previous implementation walked the graph map directly and appended
+// neighbours in SQL row order, so the answer moved between runs — including
+// under --json, where a caller diffing two snapshots of an unchanged database
+// saw changes that were not changes.
 //
 // The graph is deliberately branchy and multi-cyclic: with one isolated cycle
 // nondeterminism can only reorder the answer, but with overlapping cycles a

@@ -10,11 +10,10 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The pins for POST /v0/beads/issues:sweep. The role is the surface under
-// scrutiny everywhere else in this package's storage tests; what is asserted
-// here is the WIRE EDGE — that the handler decodes the document's six members
-// into the role's request faithfully, refuses what the document refuses, and
-// does not re-implement anything the role owns.
+// The pins for POST /v0/beads/issues:sweep. What is asserted here is the WIRE
+// EDGE — that the handler decodes the document's six members into the role's
+// request faithfully, refuses what the document refuses, and does not
+// re-implement anything the role owns.
 
 const sweepPath = "/v0/beads/issues:sweep"
 
@@ -23,11 +22,11 @@ func (ts *testServer) sweep(t *testing.T, body string) *http.Response {
 	return ts.claimRequest(t, sweepPath, "application/json", body)
 }
 
-// TestSweepPathReachesItsHandler is the routing assertion the claim row's twin
-// makes: the sweep path is a LITERAL segment registered beside the claim's
-// wildcard `/v0/beads/issues/{idop}`, and ServeMux precedence is by specificity
-// rather than by registration order. A 404 or a claim-shaped refusal here would
-// mean the sweep is being parsed as a claim of an issue named ":sweep".
+// TestSweepPathReachesItsHandler: the sweep path is a LITERAL segment
+// registered beside the claim's wildcard `/v0/beads/issues/{idop}`, and ServeMux
+// precedence is by specificity rather than by registration order. A 404 or a
+// claim-shaped refusal here would mean the sweep is being parsed as a claim of
+// an issue named ":sweep".
 func TestSweepPathReachesItsHandler(t *testing.T) {
 	sweeper := &roleSweeper{result: issueops.SweepResult{Swept: 3}}
 	ts := newTestServer(t, rolesConfig(Config{Sweeper: sweeper}))
@@ -45,10 +44,9 @@ func TestSweepPathReachesItsHandler(t *testing.T) {
 // TestSweepForwardsEveryDocumentedMember is the operation's central pin: each
 // of the six body members reaches the role's request unchanged.
 //
-// It is asserted on the REQUEST the role received rather than on the response,
-// because a body carrying the right numbers says nothing about which set was
-// swept — this is the operation where the handler dropping a narrowing member
-// widens what is erased.
+// It is asserted on the REQUEST the role received rather than on the response:
+// a body carrying the right numbers says nothing about which set was swept, and
+// a handler dropping a narrowing member widens what is erased.
 func TestSweepForwardsEveryDocumentedMember(t *testing.T) {
 	sweeper := &roleSweeper{}
 	ts := newTestServer(t, rolesConfig(Config{Sweeper: sweeper}))
@@ -96,7 +94,7 @@ func TestSweepForwardsEveryDocumentedMember(t *testing.T) {
 // The dry-run default is the one worth pinning. `dry_run` absent must mean
 // false — that is what the document says — and a handler that defaulted it the
 // safe-looking way would make the endpoint silently incapable of deleting
-// anything, which is a worse failure than it sounds: a caller would retry.
+// anything.
 func TestSweepDefaultsTheOptionalMembers(t *testing.T) {
 	sweeper := &roleSweeper{}
 	ts := newTestServer(t, rolesConfig(Config{Sweeper: sweeper}))
@@ -119,9 +117,8 @@ func TestSweepDefaultsTheOptionalMembers(t *testing.T) {
 }
 
 // TestSweepHonorsAnExplicitProtectReferencedFalse is the other half of the
-// default: opting OUT still works, and it has to be spelled. Without this the
-// defaults test alone could be satisfied by a handler that ignored the member
-// entirely and hard-coded protection on.
+// default: opting OUT still works. Without this the defaults test alone could be
+// satisfied by a handler that hard-coded protection on.
 func TestSweepHonorsAnExplicitProtectReferencedFalse(t *testing.T) {
 	sweeper := &roleSweeper{}
 	ts := newTestServer(t, rolesConfig(Config{Sweeper: sweeper}))
@@ -138,10 +135,9 @@ func TestSweepHonorsAnExplicitProtectReferencedFalse(t *testing.T) {
 	}
 }
 
-// TestSweepPublishesTheWholeResult pins the projection, which exists because
-// SweepResult is deliberately not x-go-type-pinned: there is no compile-time
-// tie between the role's result and this body, so a field added to the role and
-// forgotten here would vanish from the wire in silence.
+// TestSweepPublishesTheWholeResult pins the projection. SweepResult is
+// deliberately not x-go-type-pinned, so a field added to the role and forgotten
+// here would vanish from the wire in silence.
 func TestSweepPublishesTheWholeResult(t *testing.T) {
 	sweeper := &roleSweeper{result: issueops.SweepResult{
 		DryRun:       true,
@@ -213,8 +209,8 @@ func TestSweepOmitsAnEmptyReferencedSample(t *testing.T) {
 }
 
 // TestSweepRefusesTheDocumentedBodies walks the 400 table. Every case names the
-// member it is about in `param`, which is the whole reason the handler decodes
-// member by member instead of unmarshaling the generated struct.
+// member it is about in `param`, which is why the handler decodes member by
+// member instead of unmarshaling the generated struct.
 func TestSweepRefusesTheDocumentedBodies(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -259,12 +255,10 @@ func TestSweepRefusesTheDocumentedBodies(t *testing.T) {
 }
 
 // TestSweepPublishesTheRolesRefusalAsA400 is the reason failSweepErr exists.
-//
 // The require-a-filter gate, the tier vocabulary and the glob are all refused
 // BELOW the wire, by issueops.Sweeper — that is what makes this endpoint
 // incapable of an unguarded mass delete. A role refusal reaching the client as
-// a 500 would tell it the server was broken when the request was, and would
-// hide the one sentence that says what to send instead.
+// a 500 would hide the one sentence that says what to send instead.
 func TestSweepPublishesTheRolesRefusalAsA400(t *testing.T) {
 	// The sentinel has to MATCH, not merely be mentioned in the text.
 	sweeper := &roleSweeper{err: wrapValidation("a durable sweep requires a closed-before cutoff or an id pattern")}
@@ -290,10 +284,9 @@ func TestSweepPublishesTheRolesRefusalAsA400(t *testing.T) {
 	}
 }
 
-// TestSweepRefusesAForeignMediaType: the CSRF control the claim documents
-// applies here for a sharper reason. A JSON content type is not CORS-"simple",
+// TestSweepRefusesAForeignMediaType: a JSON content type is not CORS-"simple",
 // so a cross-origin sweep always triggers a preflight this server never
-// approves; accepting text/plain would let an attacker's page drive a mass
+// approves. Accepting text/plain would let an attacker's page drive a mass
 // delete from any browser on the host.
 func TestSweepRefusesAForeignMediaType(t *testing.T) {
 	sweeper := &roleSweeper{}

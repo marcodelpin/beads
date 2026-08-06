@@ -1,12 +1,9 @@
 package main
 
 // End-to-end cover for `bd create --file` on the DIRECT route, which is where
-// this command's behaviour actually changed when it moved onto
-// issueops.BatchCreator.
-//
-// They run the real bd binary against an isolated embedded-Dolt workspace, the
-// same way create_deps_atomic_test.go does, and reuse that file's hermetic
-// environment and output helpers.
+// this command's behaviour changed when it moved onto issueops.BatchCreator.
+// They run the real bd binary against an isolated embedded-Dolt workspace and
+// reuse create_deps_atomic_test.go's hermetic environment and output helpers.
 
 import (
 	"os"
@@ -62,11 +59,10 @@ Second body.
 		}
 	})
 
-	// The Q11 change this commit exists for. The direct route used to hand the
-	// whole slice to the store's batch create with no create-only guard and no
-	// per-item content validation; a file the workspace refuses now refuses
-	// WHOLE, so a caller can fix the file and re-run it without first working
-	// out which half landed.
+	// The direct route used to hand the whole slice to the store's batch create
+	// with no create-only guard and no per-item content validation. A file the
+	// workspace refuses now refuses WHOLE, so a caller can fix the file and
+	// re-run it without working out which half landed.
 	t.Run("a_refused_template_leaves_nothing_behind", func(t *testing.T) {
 		plan := writeMarkdownPlan(t, dir, "half-bad.md", `## Lands before the refusal
 
@@ -93,9 +89,8 @@ test-nosuchissue
 	})
 
 	// --ephemeral is not in singleIssueOnlyFlags, so this route has always
-	// ACCEPTED it. It used to build the issues without ever reading it, so a
-	// caller who asked for scratch work got durable rows and no warning; the
-	// proxied route has honoured it all along.
+	// ACCEPTED it while building the issues without reading it: a caller who
+	// asked for scratch work got durable rows and no warning.
 	t.Run("ephemeral_is_honoured_rather_than_accepted_and_ignored", func(t *testing.T) {
 		plan := writeMarkdownPlan(t, dir, "scratch.md", `## Scratch from file
 
@@ -114,8 +109,7 @@ Ephemeral body.
 	})
 
 	// The edges the file declares are written with the issues, in the same
-	// transaction — including an edge onto an issue created EARLIER in the same
-	// file, which a loop over single creates cannot do.
+	// transaction — including an edge onto an issue created EARLIER in the file.
 	t.Run("writes_the_edges_the_file_declares", func(t *testing.T) {
 		blocker := strings.TrimSpace(runCreateDepsBD(t, bd, dir, "create", "file edge blocker", "--silent"))
 		if blocker == "" {

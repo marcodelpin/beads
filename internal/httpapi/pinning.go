@@ -56,10 +56,9 @@ var (
 	// The envelopes that are NOT pages resolve their items the same way and are
 	// pinned for the same reason: one whose items generated as a mirror struct
 	// would put a second wire shape for one fact on this surface, silently.
-	// DependencyEdges is here because wave 2 shipped without it and two reviews
-	// did not catch that (bd-5o3gt); with it, every envelope on this surface
-	// whose items are a canonical struct is now pinned, and the list has no
-	// remaining hole to grow.
+	// DependencyEdges is here because wave 2 shipped without it (bd-5o3gt);
+	// every envelope on this surface whose items are a canonical struct is now
+	// pinned.
 	_ []types.Dependency       = apigen.DependencyEdges{}.Items
 	_ []issueops.IssueBlocking = apigen.BlockingAnnotations{}.Items
 	_ []types.Issue            = apigen.BatchCreateResponse{}.Items

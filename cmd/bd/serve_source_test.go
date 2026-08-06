@@ -184,9 +184,7 @@ func writeBrokenBeadsConfig(t *testing.T, beadsDir string) {
 // pin the peel DEPTH, which is the whole property under test: serveIssueRoles
 // peels once and then calls every accessor on that one store value, so no role
 // can come from a different layer than these two did. The rest return nil
-// because the extraction does not inspect them — httpapi.Listen is what
-// refuses a nil role, and TestServeAnswersFromARegisteredBackendStore is what
-// exercises that end of it against a real store.
+// because the extraction does not inspect them.
 type serveRolesStore struct {
 	storage.DoltStorage
 	reader  *serveStubReader

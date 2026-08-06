@@ -180,8 +180,7 @@ func (s *serveIdentityStore) Close() error { return nil }
 //
 // They hand back serveIdentityRole, which satisfies each interface by
 // EMBEDDING it rather than implementing it: non-nil, so the set is complete,
-// while an actual call panics naming the method it reached — the same choice
-// the nil DoltStorage above makes, for the same reason.
+// while an actual call panics naming the method it reached.
 func (*serveIdentityStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	return serveIdentityRole{}, nil
 }

@@ -11,16 +11,15 @@ import (
 )
 
 // This file holds the contract every implementation of publicops.Counter must
-// satisfy. Each case asserts what issueops/counter.go PROMISES, cited by line,
-// rather than what any one backend happens to do today; a backend that
-// disagrees is parked at its own wiring site with skipKnownDivergence so the
-// case still runs on the ones that agree.
+// satisfy. Each case asserts what issueops/counter.go PROMISES, cited by line;
+// a backend that disagrees is parked at its own wiring site with
+// skipKnownDivergence so the case still runs on the ones that agree.
 //
 // There are three wirings — the server-backed store, the embedded store and
-// the unit-of-work provider — and, unusually for this suite, only ONE shared
-// body between any two of them: dolt and embeddeddolt both hand back
-// internal/workapi/storecounter, so they are one vote plus an engine check,
-// and the unit-of-work provider is the second. All three build their filter
+// the unit-of-work provider — but only two independent votes: dolt and
+// embeddeddolt both hand back internal/workapi/storecounter, so they are one
+// vote plus an engine check, and the unit-of-work provider is the second. All
+// three build their filter
 // through workapi.BuildCountFilter, so what these cases can catch below that
 // builder is the EXECUTION half — which table each seam counts, how it merges
 // the wisp tier, and how it names a bucket.
@@ -29,9 +28,7 @@ import (
 // The three fixtures share one database per suite and the two store fixtures
 // share it with every other role's cases, so an unscoped count would be an
 // assertion about the whole workspace and would fail the moment a sibling
-// suite seeded a row. Scoping also makes the expected numbers small enough to
-// write literally, which is what lets a failure read as "3 rows, want 2"
-// rather than as two large numbers that differ.
+// suite seeded a row.
 //
 // What is deliberately NOT here:
 //   - the mapping from flags to a request, which is `bd count`'s job and is
@@ -44,8 +41,7 @@ import (
 
 // CounterFixture supplies adapter-specific storage access for the count
 // assertions. Every field is named and typed exactly like the per-backend
-// roleFixtureKit hook it is filled from, so a wiring is kit plus accessor plus
-// prefix with no adapter in between.
+// roleFixtureKit hook it is filled from.
 type CounterFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
@@ -59,18 +55,16 @@ type CounterFixture struct {
 	CreateWisp func(context.Context, *types.Issue, string) error
 	// CountHistory reports how many history entries the fixture's branch has.
 	// A nil hook means "this backend cannot observe history", and the case
-	// that needs it SKIPS with that reason rather than passing quietly.
+	// that needs it SKIPS rather than passing quietly.
 	CountHistory func(context.Context) (int, error)
 }
 
 // RunCounterCountsTheDurablePlaneByDefault pins counter.go:123-126 from the
 // unset side: without IncludeInfra a count answers for the durable plane only.
 //
-// The wisp seeded here is the half that catches a body that dropped the
-// SkipWisps default — the merge is the storage seam's DEFAULT (search.go and
-// count.go both merge unless told not to), so "durable only" is an active
-// decision this builder makes on every plain count and not something that
-// falls out of doing nothing.
+// The wisp seeded here catches a body that dropped the SkipWisps default: the
+// merge is the storage seam's DEFAULT, so "durable only" is an active decision
+// this builder makes on every plain count.
 func RunCounterCountsTheDurablePlaneByDefault(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	durable := fixture.IssuePrefix + "-plane-durable"
@@ -84,11 +78,8 @@ func RunCounterCountsTheDurablePlaneByDefault(t *testing.T, ctx context.Context,
 
 // RunCounterIncludeInfraMergesTheWispTier pins the first of the four things
 // counter.go:108-117 promises IncludeInfra does at once: the ephemeral tier is
-// merged in.
-//
-// It is the same two seeds the case above uses, deliberately: the pair of
-// cases is one A/B on a single flag, so a failure names the flag rather than
-// leaving a reader to compare two differently-seeded fixtures.
+// merged in. It is the same two seeds the case above uses, deliberately: the
+// pair of cases is one A/B on a single flag.
 func RunCounterIncludeInfraMergesTheWispTier(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	durable := fixture.IssuePrefix + "-infra-durable"
@@ -110,7 +101,7 @@ func RunCounterIncludeInfraMergesTheWispTier(t *testing.T, ctx context.Context, 
 // The DEFAULT count is asserted first and includes the gate, which is the
 // asymmetry worth pinning: the exclusion belongs to the --include-infra mode
 // alone, because that mode exists to match `bd list --include-infra --all`'s
-// cardinality and a default listing hides gates. A plain count hides nothing.
+// cardinality.
 func RunCounterIncludeInfraExcludesGates(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	task := fixture.IssuePrefix + "-gate-task"
@@ -134,10 +125,8 @@ func RunCounterIncludeInfraExcludesGates(t *testing.T, ctx context.Context, fixt
 
 // RunCounterCountsClosedRows pins counter.go:233-235: an empty request counts
 // every durable row INCLUDING closed ones, because a count applies none of the
-// listing's default exclusions.
-//
-// This is the clause that makes Counter a separate role from Reader rather
-// than a counted variant of it. A `bd list` of the same two rows shows one.
+// listing's default exclusions. A `bd list` of the same two rows shows one,
+// which is what makes Counter a separate role from Reader.
 func RunCounterCountsClosedRows(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	open := fixture.IssuePrefix + "-status-open"
@@ -164,8 +153,7 @@ func RunCounterCountsClosedRows(t *testing.T, ctx context.Context, fixture Count
 // since dropped reads a zero, and that is the shipped behavior of both front
 // doors.
 //
-// The nil error is the load-bearing half. There is no ErrNotFound on this
-// role: a question about a set has an answer even when the set is empty.
+// The nil error is the load-bearing half: there is no ErrNotFound on this role.
 func RunCounterAnUnknownStatusMatchesNothing(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-unknown-status"
@@ -226,10 +214,9 @@ func RunCounterGroupsPartitionTheScalarSet(t *testing.T, ctx context.Context, fi
 //
 // This is the one dimension where a caller summing the buckets reports a
 // workspace larger than it is, and it is why the role computes the total with
-// a scalar count instead of a SUM. The "(no labels)" bucket is asserted in the
-// same case because it is the other half of the same query
-// (countByLabelInTx): a body that dropped it would leave the buckets summing
-// to LESS than the total, which is the mirror-image failure.
+// a scalar count instead of a SUM. The "(no labels)" bucket is asserted here
+// too because a body that dropped it would leave the buckets summing to LESS
+// than the total, which is the mirror-image failure.
 func RunCounterLabelBucketsOverlapSoTotalIsNotTheirSum(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	tagged := fixture.IssuePrefix + "-label-tagged"
@@ -254,12 +241,9 @@ func RunCounterLabelBucketsOverlapSoTotalIsNotTheirSum(t *testing.T, ctx context
 
 // RunCounterNamesTheEmptyBuckets pins the two synthesized keys
 // CountByGroupResult.Groups promises (counter.go:159-161): unassigned rows
-// bucket under "(unassigned)", never under the empty string.
-//
-// The empty string is the failure this guards against and not a hypothetical:
-// the column holds one for an unassigned row, so a body that skipped the
-// normalization would produce a map with a "" key that every front door prints
-// as a blank line with a number after it.
+// bucket under "(unassigned)", never under the empty string. The column holds
+// an empty string for an unassigned row, so a body that skipped the
+// normalization produces a map with a "" key.
 func RunCounterNamesTheEmptyBuckets(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	assigned := fixture.IssuePrefix + "-assignee-taken"
@@ -279,13 +263,9 @@ func RunCounterNamesTheEmptyBuckets(t *testing.T, ctx context.Context, fixture C
 
 // RunCounterPrefixesPriorityBuckets pins the third normalization
 // CountByGroupResult.Groups promises (counter.go:157-158): a priority bucket
-// is "P" followed by the number.
-//
-// It matters beyond cosmetics because the key is what both front doors print
-// and what a JSON consumer keys on. It is also the one bucket whose underlying
-// column is an integer, so it is the one a body reaches through a CAST — the
-// step where a backend can come back with "2" where another comes back with
-// "P2".
+// is "P" followed by the number. It is the one bucket whose underlying column
+// is an integer, so it is the one a body reaches through a CAST — the step
+// where a backend can come back with "2" where another comes back with "P2".
 func RunCounterPrefixesPriorityBuckets(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	high := fixture.IssuePrefix + "-priority-high"
@@ -306,11 +286,9 @@ func RunCounterPrefixesPriorityBuckets(t *testing.T, ctx context.Context, fixtur
 // CountGroup set is closed, and a value outside it is ErrValidation rather
 // than an empty answer.
 //
-// The empty GroupBy is included because it is the one a caller reaches by
-// forgetting a field rather than by misspelling one, and because "no dimension"
-// is not a scalar count in disguise — a caller that wanted a number calls
-// Count. The refusal is TYPED so both front doors classify it with errors.Is
-// instead of matching on the storage seam's "unsupported groupBy" prose.
+// The empty GroupBy is included because "no dimension" is not a scalar count
+// in disguise. The refusal is TYPED so both front doors classify it with
+// errors.Is instead of matching on the seam's "unsupported groupBy" prose.
 func RunCounterRefusesAnUnknownGroup(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-badgroup"
@@ -330,12 +308,9 @@ func RunCounterRefusesAnUnknownGroup(t *testing.T, ctx context.Context, fixture 
 // RunCounterNormalizesLabelsAndLeavesTheRequestAlone pins the two halves of
 // counter.go:76-80 and :217-221 that meet on the same field: label entries are
 // trimmed and de-duplicated INSIDE, and the caller's slice is not written
-// through on the way.
-//
-// The snapshot half is not free here the way it is for a request of three
-// strings. CountRequest carries two slices, normalization is exactly the step
-// that would write through them, and a caller reusing one request for several
-// counts is the ordinary way to use this role.
+// through on the way. Normalization is exactly the step that would write
+// through the caller's slices, and reusing one request for several counts is
+// the ordinary way to use this role.
 func RunCounterNormalizesLabelsAndLeavesTheRequestAlone(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	tagged := fixture.IssuePrefix + "-normalize"
@@ -368,10 +343,8 @@ func RunCounterNormalizesLabelsAndLeavesTheRequestAlone(t *testing.T, ctx contex
 // records a history entry, and a refused count does not either.
 //
 // It is asserted on the history log rather than on a row read-back because
-// that is the observable both an accidental commit and an accidental write
-// would move: every versioned unit of work in this tree ends in a Dolt commit,
-// so a count that took a write transaction would show up here even when it
-// changed no column.
+// every versioned unit of work in this tree ends in a Dolt commit, so a count
+// that took a write transaction shows up here even when it changed no column.
 func RunCounterWritesNothing(t *testing.T, ctx context.Context, fixture CounterFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-readonly"
@@ -394,12 +367,6 @@ func RunCounterWritesNothing(t *testing.T, ctx context.Context, fixture CounterF
 
 // counterScope is the request every case starts from: a predicate narrowed to
 // exactly the ids that case seeded.
-//
-// It exists because the three fixtures share a database with each other's
-// cases and, on the two store backends, with every other role's suite. An
-// unscoped count would assert about the whole workspace and would break the
-// day a sibling seeded a row, which is a failure that says nothing about the
-// count.
 func counterScope(ids ...string) publicops.CountRequest {
 	filter := ""
 	for i, id := range ids {
@@ -436,8 +403,7 @@ func seedCounterWisp(t *testing.T, ctx context.Context, fixture CounterFixture, 
 	}
 }
 
-// counterTotal runs one scalar count and fails the case on an error, because
-// every caller here has already established that the predicate is well-formed.
+// counterTotal runs one scalar count and fails the case on an error.
 func counterTotal(t *testing.T, ctx context.Context, fixture CounterFixture, request publicops.CountRequest) int64 {
 	t.Helper()
 	result, err := fixture.Counter.Count(ctx, request)
@@ -480,10 +446,9 @@ func assertCounterBuckets(t *testing.T, got map[string]int, want map[string]int)
 	}
 }
 
-// counterHistoryCount reads the branch's history depth, or SKIPS the case with
-// the reason when the backend cannot observe history at all. A silent pass
-// would be worse than no case: the read-only clause would look pinned on a
-// backend that never checked it.
+// counterHistoryCount reads the branch's history depth, or SKIPS the case when
+// the backend cannot observe history at all. A silent pass would leave the
+// read-only clause looking pinned on a backend that never checked it.
 func counterHistoryCount(t *testing.T, ctx context.Context, fixture CounterFixture) int {
 	t.Helper()
 	if fixture.CountHistory == nil {

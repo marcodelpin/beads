@@ -16,8 +16,7 @@ import (
 // rather than on the answer. `bd dep list` takes no limit, so a `limit`
 // parameter here would make the two front doors answer differently by default;
 // a cap on the answer with no cursor behind it would truncate with no way to
-// fetch the rest. Bounding the anchors bounds the work without doing either,
-// and it is the same shape of bound the document states.
+// fetch the rest. Bounding the anchors bounds the work without doing either.
 const maxDependencyAnchors = 100
 
 // handleListDependencies answers GET /v0/beads/dependencies.
@@ -25,9 +24,8 @@ const maxDependencyAnchors = 100
 // Everything below the wire is on issueops.EdgeReader: which plane each anchor
 // is probed on, whether an absent anchor is a miss or an error, the type
 // filter, the edge order, and the de-duplication of a repeated id. What stays
-// here is transport — decoding two repeatable parameters, the size bound, and
-// flattening the role's per-anchor answer onto the flat array `bd dep list
-// --json` emits.
+// here is transport — two repeatable parameters, the size bound, and flattening
+// the role's per-anchor answer onto the flat array `bd dep list --json` emits.
 func (s *Server) handleListDependencies(w http.ResponseWriter, r *http.Request) {
 	q := newQuery(r.URL.Query())
 
@@ -41,9 +39,8 @@ func (s *Server) handleListDependencies(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Both bounds are checked here rather than left to the role: they are this
-	// operation's own limits on one shared process, not statements about what a
-	// stored-edge read means, and the role answers an empty request with an
-	// empty result rather than a refusal.
+	// operation's own limits, not statements about what a stored-edge read
+	// means, and the role answers an empty request with an empty result.
 	if len(ids) == 0 {
 		requestInfo(r.Context()).refuse("issue_id")
 		s.fail(w, r, InvalidArgument("issue_id", ReasonInvalidValue, "name at least one issue_id"))
@@ -76,9 +73,8 @@ func (s *Server) handleListDependencies(w http.ResponseWriter, r *http.Request) 
 //
 // It classifies on the SENTINEL rather than on prose, unlike the read handlers'
 // invalidFilterParam: this role publishes issueops.ErrValidation for exactly
-// those two cases, so there is no message to match. Which of the two parameters
-// is named comes from the request the handler still holds — an empty entry can
-// only have come from `issue_id`, so anything else is `type`.
+// those two cases. Which parameter is named comes from the request the handler
+// still holds — an empty entry can only have come from `issue_id`.
 func (s *Server) failEdgeReadErr(w http.ResponseWriter, r *http.Request, err error, ids []string) {
 	if !errors.Is(err, issueops.ErrValidation) {
 		s.failErr(w, r, err)
@@ -98,11 +94,10 @@ func (s *Server) failEdgeReadErr(w http.ResponseWriter, r *http.Request, err err
 // wireEdges flattens the role's per-anchor answer onto the wire envelope.
 //
 // The element type is an ALIAS of types.Dependency — the same struct the CLI's
-// --json marshals — so this copies a header and shares everything under it.
-// There is no second wire struct here and there must never be one.
+// --json marshals. There is no second wire struct here and there must never be
+// one.
 //
-// Both members are non-nil so the body carries `[]` rather than `null`, which
-// the document states for each of them.
+// Both members are non-nil so the body carries `[]` rather than `null`.
 func wireEdges(result issueops.EdgeReadResult) apigen.DependencyEdges {
 	body := apigen.DependencyEdges{
 		Items:   []apigen.Dependency{},

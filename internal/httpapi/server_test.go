@@ -79,18 +79,15 @@ func (emptyDeps) GetIssueDependencyRecords(context.Context, []string) (map[strin
 	return nil, nil
 }
 
-// DetectCycleReport answers for a workspace with no cycles, which is what an
-// empty fake should say. Without it the promoted method on the embedded nil
-// interface panics, and the provider-backed cycle route would 500 through the
-// panic recovery rather than answering.
+// DetectCycleReport answers for a workspace with no cycles. Without it the
+// promoted method on the embedded nil interface panics, and the provider-backed
+// cycle route would 500 through the panic recovery rather than answering.
 func (emptyDeps) DetectCycleReport(context.Context) (issueops.CycleReport, error) {
 	return issueops.CycleReport{Cycles: []issueops.Cycle{}}, nil
 }
 
-// WalkDependencyTree answers a one-node tree, for the same reason
-// DetectCycleReport answers an empty report: without it the promoted method on
-// the embedded nil interface panics and the provider-backed tree route 500s
-// through the panic recovery instead of answering.
+// WalkDependencyTree answers a one-node tree, present for the same reason
+// DetectCycleReport is.
 //
 // A ONE-NODE tree rather than an empty one, because that is what the role
 // promises for a root with no edges, and a fake that answered nothing would let

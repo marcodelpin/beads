@@ -20,17 +20,15 @@ const (
 	// have no size in them.
 	maxBatchCreateItems = 100
 	// maxBatchCreateBodyBytes bounds the request body. A hundred items each
-	// carrying a description, a design and acceptance criteria is the shape
-	// this has to admit, so it is generous where the claim's is not; it exists
-	// to refuse the absurd before any of it is parsed.
+	// carrying a description, a design and acceptance criteria is the shape this
+	// has to admit, so it refuses the absurd before any of it is parsed.
 	maxBatchCreateBodyBytes = 4 << 20
 )
 
 // batchCreateMembers is the document's member list at each level. The schemas
-// are additionalProperties: false, so anything else is refused BY NAME — which
-// is the whole reason these are decoded as raw members first: encoding/json's
-// DisallowUnknownFields reports the offender only inside an error string, and
-// this surface exists to let clients stop parsing prose.
+// are additionalProperties: false, so anything else is refused BY NAME, which is
+// why these are decoded as raw members first: encoding/json's
+// DisallowUnknownFields reports the offender only inside an error string.
 var (
 	batchCreateRequestMembers    = []string{"actor", "items"}
 	batchCreateItemMembers       = []string{"title", "description", "design", "acceptance_criteria", "priority", "issue_type", "assignee", "labels", "dependencies"}
@@ -39,12 +37,10 @@ var (
 
 // handleBatchCreate creates every issue in the request body, or none of them.
 //
-// WHAT IS NOT HERE is the point. Which rows land together, what an edge onto an
-// absent target does, the create-only guard, the workspace's type and status
-// vocabulary, the id assignment, the wisp routing, the transaction retry and the
-// history entry all belong to issueops.BatchCreator, reached through the
-// provider's own accessor. This function decodes a body, refuses the shapes the
-// document refuses, and marshals what came back.
+// The create-only guard, the vocabulary, the id assignment, the wisp routing,
+// the retry and the history entry all belong to issueops.BatchCreator. This
+// function decodes a body, refuses the shapes the document refuses, and
+// marshals what came back.
 //
 // It shares the claim's posture exactly: the actor is caller-ASSERTED
 // provenance and not authenticated identity, hooks do not fire, and the
@@ -83,9 +79,9 @@ func (s *Server) handleBatchCreate(w http.ResponseWriter, r *http.Request) {
 // request may proceed.
 //
 // Every refusal here happens BEFORE any database work, which is what lets the
-// 400s be specific: they reflect the caller's own input back. The role's own
-// refusals cannot be that specific without quoting a storage error into a
-// response, so failBatchCreate answers those in the server's own words.
+// 400s reflect the caller's own input back. The role's own refusals cannot be
+// that specific without quoting a storage error into a response, so
+// failBatchCreate answers those in the server's own words.
 func (s *Server) batchCreateRequest(w http.ResponseWriter, r *http.Request) (issueops.CreateBatchRequest, bool) {
 	members, res := decodeJSONObject(w, r, maxBatchCreateBodyBytes)
 	if res != nil {
@@ -108,10 +104,9 @@ func (s *Server) batchCreateRequest(w http.ResponseWriter, r *http.Request) (iss
 	return issueops.CreateBatchRequest{Actor: actor, Items: items}, true
 }
 
-// batchCreateActor validates `actor` under the claim's rules, which the
-// document says are the same rules and which are shared here rather than
-// restated: the value lands in the same columns and the same storage commit
-// message, so a newline forges the same audit-trail lines.
+// batchCreateActor validates `actor` under the claim's rules, shared rather
+// than restated: the value lands in the same columns and the same storage
+// commit message, so a newline forges the same audit-trail lines.
 func (s *Server) batchCreateActor(w http.ResponseWriter, r *http.Request, members map[string]json.RawMessage) (string, bool) {
 	raw, ok := members[claimActorMember]
 	if !ok {
@@ -176,12 +171,10 @@ func (s *Server) batchCreateItems(w http.ResponseWriter, r *http.Request, member
 	return items, true
 }
 
-// batchCreateItem projects one decoded item onto the role's item, or reports
-// the refusal it earned.
-//
-// It decodes into the GENERATED struct, which is what makes a member's type the
-// document's type: `priority: "high"` is refused here rather than reaching a
-// role that would have to guess what the caller meant.
+// batchCreateItem projects one decoded item onto the role's item, or reports the
+// refusal it earned. It decodes into the GENERATED struct, which is what makes a
+// member's type the document's type: `priority: "high"` is refused here rather
+// than reaching a role that would have to guess what the caller meant.
 func batchCreateItem(index int, raw map[string]json.RawMessage) (issueops.BatchCreateItem, *Result) {
 	refuse := func(member, detail string) *Result {
 		res := InvalidArgument(batchCreateItemParam(index, member), ReasonInvalidValue, detail)
@@ -202,14 +195,11 @@ func batchCreateItem(index int, raw map[string]json.RawMessage) (issueops.BatchC
 		return issueops.BatchCreateItem{}, refuse("title",
 			fmt.Sprintf("`title` is longer than the %d characters storage holds", types.MaxFieldLen))
 	}
-	// The role validates the type against the workspace's configured
-	// vocabulary, which this server cannot read without a transaction. What is
-	// checked here is only what the schema declares: a value at all, and one
-	// short enough for the column.
-	//
-	// A SLICE and not a map, so that an item breaking both rules always names
-	// the same offender: `param` is what a client dispatches on, and it must
-	// not depend on map order.
+	// The role validates the type against the workspace's configured vocabulary,
+	// which this server cannot read without a transaction; what is checked here
+	// is only what the schema declares. A SLICE and not a map, so that an item
+	// breaking both rules always names the same offender: `param` is what a
+	// client dispatches on, and it must not depend on map order.
 	for _, bounded := range []struct {
 		member string
 		value  *string
@@ -260,9 +250,9 @@ func batchCreateItem(index int, raw map[string]json.RawMessage) (issueops.BatchC
 				"`target_id` is required and must be at most "+fmt.Sprint(types.MaxFieldLen)+" characters")
 		}
 		// A value at all, and one the column holds — never membership of a
-		// known-types list. The edge vocabulary is OPEN, exactly as
-		// EdgeReadRequest.Types says it is, so a workspace's own type passes
-		// here and only an unstorable one is refused.
+		// known-types list. The edge vocabulary is OPEN, as EdgeReadRequest.Types
+		// says, so a workspace's own type passes and only an unstorable one is
+		// refused.
 		if !types.DependencyType(dependency.Type).IsValid() {
 			return issueops.BatchCreateItem{}, refuse("dependencies.type",
 				fmt.Sprintf("`type` must be 1 to %d characters", types.MaxDependencyTypeLen))
@@ -277,9 +267,9 @@ func batchCreateItem(index int, raw map[string]json.RawMessage) (issueops.BatchC
 
 // rawDependencyMembers decodes an item's edges as raw members, so an unknown
 // member INSIDE an edge is refused by name like every other one. It answers nil
-// — which carries no unknown member — when the shape is not the one the
-// generated decode already accepted, because a disagreement between the two
-// decodes is not a client-attributable refusal.
+// — carrying no unknown member — when the shape is not the one the generated
+// decode accepted, because a disagreement between the two decodes is not a
+// client-attributable refusal.
 func rawDependencyMembers(item map[string]json.RawMessage) []map[string]json.RawMessage {
 	raw, ok := item["dependencies"]
 	if !ok {
@@ -301,8 +291,7 @@ func rawEdgeAt(edges []map[string]json.RawMessage, j int) map[string]json.RawMes
 }
 
 // batchCreateItemParam spells the `param` member for a refusal inside `items`,
-// so a client dispatching on it learns WHICH item and WHICH member without
-// reading the detail.
+// so a client dispatching on it learns WHICH item and WHICH member.
 func batchCreateItemParam(index int, member string) string {
 	param := fmt.Sprintf("items[%d]", index)
 	if member == "" {
@@ -322,25 +311,22 @@ func (s *Server) failUnknownMember(w http.ResponseWriter, r *http.Request, offen
 
 // failBatchCreate answers a failed batch.
 //
-// The role's ErrValidation is answered HERE rather than in ClassifyError, and
-// the reason is the same one that makes this operation's 400 worth having: the
+// The role's ErrValidation is answered HERE rather than in ClassifyError: the
 // role wraps its dangling-edge refusal in BOTH ErrValidation and ErrNotFound,
 // so the shared classifier — which reaches ErrNotFound first — would answer 404
 // for a request that addressed no resource at all.
 //
 // NEITHER BRANCH QUOTES THE ROLE'S MESSAGE. A refused edge arrives as a driver
 // error naming tables and constraints, and 4xx details on this surface reflect
-// the caller's own input back rather than server internals. The two sentences
-// below say exactly what the client can act on, and the real error goes to the
-// log with the request id, which is where the rest of it belongs.
+// the caller's own input back rather than server internals. The real error goes
+// to the log with the request id.
 func (s *Server) failBatchCreate(w http.ResponseWriter, r *http.Request, err error) {
 	if !errors.Is(err, storage.ErrValidation) {
 		s.failErr(w, r, err)
 		return
 	}
 	// The 4xx path does not log by default, so this is the one place the real
-	// refusal is recorded: without it the operator has a request id and a
-	// sentence that deliberately says less than the error did.
+	// refusal is recorded for the operator.
 	s.event("request_refused", "request_id", requestInfo(r.Context()).id, "error", err.Error())
 	if errors.Is(err, storage.ErrNotFound) {
 		s.fail(w, r, InvalidArgument("items", ReasonInvalidValue,

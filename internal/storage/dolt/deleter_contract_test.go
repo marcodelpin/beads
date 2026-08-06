@@ -13,11 +13,10 @@ import (
 // for a deletion.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch. That sharing is why every case namespaces its
-// seeds under fixture.IssuePrefix plus its own tag. setupTestStore already
-// marks the PARENT parallel; no subtest here calls t.Parallel, and
-// RecordsAtMostOneHistoryEntry takes a before/after delta that is only
-// meaningful while they run sequentially.
+// and one copy-on-write branch, which is why every case namespaces its seeds
+// under fixture.IssuePrefix plus its own tag. setupTestStore already marks the
+// PARENT parallel; no subtest here calls t.Parallel, because
+// RecordsAtMostOneHistoryEntry takes a before/after delta.
 func TestDeleterContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltDeleterFixture(t, "del")
 	defer cleanup()

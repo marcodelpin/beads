@@ -298,22 +298,19 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // satisfying DoltStorage, and silently stops every completion hook on that
 // role.
 //
-// THE PASS-THROUGH ROLES are asserted the other way round on purpose, and the
-// table below is the list — one paragraph rather than the four near-identical
-// ones four wave-2 slices each appended (bd-8ri3m is the same defect in the
-// spec's own comments). Reads fire no completion hooks, so IssueReader,
-// IssueRelations, Counter, StatsReporter, CycleDetector, EdgeReader,
-// BlockingAnnotator, TreeWalker, ReadyCounter, Querier and InitVerifier
-// deliberately return the inner surface unwrapped, each in its own hook_*.go.
-// The ones in that column that are NOT reads are WorkspaceConfig,
-// VersionReconciler, Bootstrapper and Deleter: a settings write changes the
-// workspace rather than a bead, a version marker names no bead at all, a
-// bootstrap makes a database into a workspace, and the hook vocabulary has no
-// name for a deletion — so this decorator's issue-shaped hook vocabulary has
-// nothing to hand a hook script (hook_workspace_config.go,
-// hook_version_reconciler.go, hook_bootstrapper.go, hook_deleter.go). This test
-// pins every one of them as a decision rather than leaving it
-// indistinguishable from the regression above.
+// THE PASS-THROUGH ROLES are asserted the other way round on purpose, in one
+// paragraph rather than four near-identical ones (bd-8ri3m). Reads fire no
+// completion hooks, so IssueReader, IssueRelations, Counter, StatsReporter,
+// CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter,
+// Querier and InitVerifier deliberately return the inner surface unwrapped,
+// each in its own hook_*.go. The ones in that column that are NOT reads are
+// WorkspaceConfig, VersionReconciler, Bootstrapper, Sweeper and Deleter: a
+// settings write changes the workspace rather than a bead, a version marker
+// names no bead at all, a bootstrap lands on a workspace whose hooks are not
+// installed yet, a swept row is gone, and the hook vocabulary has no name for a
+// deletion — so this decorator's issue-shaped hook vocabulary has nothing to
+// hand a hook script. This test pins every one of them as a decision rather
+// than leaving it indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -342,16 +339,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }, inner.readyCounter, false},
 		{"Querier", func() (any, error) { return store.Querier() }, inner.querier, false},
-		// The WRITE roles in the unwrapped column, and the reason is the hook
-		// vocabulary rather than the role. There is no on_delete hook to fire
-		// and a swept row is gone, so hook_sweeper.go recurses; a bootstrap
-		// names no bead and lands on a workspace whose hooks are not installed
-		// yet, so hook_bootstrapper.go does too. Asserting them here is what
-		// keeps those decisions.
 		{"Sweeper", func() (any, error) { return store.Sweeper() }, inner.sweeper, false},
-		// The other WRITE role in the unwrapped column, for the same reason:
-		// hook_deleter.go recurses because the hook vocabulary has no name for
-		// a deletion, not because the role reads.
 		{"Deleter", func() (any, error) { return store.Deleter() }, inner.deleter, false},
 		{"Bootstrapper", func() (any, error) { return store.Bootstrapper() }, inner.bootstrapper, false},
 		{"InitVerifier", func() (any, error) { return store.InitVerifier() }, inner.verifier, false},

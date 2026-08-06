@@ -11,20 +11,15 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The filter semantics of `bd count` no longer live in this package: the
-// Counter role owns them, they are built once in workapi.BuildCountFilter, and
-// the cardinality-parity assertions that used to be here moved to
-// internal/workapi/count_test.go where they can compare the two SHARED
-// builders instead of a CLI helper against one of them.
-//
-// What is left here is what is still this package's job: turning flags into
-// the role's request, and refusing a flag combination the request cannot
-// express.
+// The filter semantics of `bd count` live in the Counter role now, built once
+// in workapi.BuildCountFilter, with the cardinality-parity assertions in
+// internal/workapi/count_test.go. What is left here is turning flags into the
+// role's request and refusing a combination the request cannot express.
 
 // TestCountIncludeInfraFlagShape pins the flag's existence and default so
 // scripted callers keep byte-identical behavior (GH#4387). The no-flag path
-// carries IncludeInfra=false into the role, which is where the durable-only
-// default is now decided.
+// carries IncludeInfra=false into the role, where the durable-only default is
+// now decided.
 func TestCountIncludeInfraFlagShape(t *testing.T) {
 	flag := countCmd.Flags().Lookup("include-infra")
 	if flag == nil {
@@ -43,10 +38,10 @@ func TestCountIncludeInfraFlagShape(t *testing.T) {
 	}
 }
 
-// TestParseCountRequestCarriesEveryFilterFlag is the tripwire for the one
-// failure mode this seam has left: a flag that is registered, documented and
-// silently dropped on the way into the request. Every filter flag is set to a
-// value distinguishable from its zero and read back off the request.
+// TestParseCountRequestCarriesEveryFilterFlag is the tripwire for a flag that
+// is registered, documented and silently dropped on the way into the request.
+// Every filter flag is set to a value distinguishable from its zero and read
+// back off the request.
 func TestParseCountRequestCarriesEveryFilterFlag(t *testing.T) {
 	flags := newCountFlagSet(t)
 	for flag, value := range map[string]string{
@@ -90,7 +85,7 @@ func TestParseCountRequestCarriesEveryFilterFlag(t *testing.T) {
 	// parseTimeFlag resolves a bare date in the LOCAL zone, which is what a
 	// user typing --created-after 2026-01-01 means. The expectation says so
 	// rather than normalizing to UTC, so a change to that resolution shows up
-	// here instead of shifting every date bound by the test machine's offset.
+	// here instead of shifting every bound by the test machine's offset.
 	day := func(d int) *time.Time {
 		stamp := time.Date(2026, 1, d, 0, 0, 0, 0, time.Local)
 		return &stamp
@@ -128,8 +123,7 @@ func TestParseCountRequestCarriesEveryFilterFlag(t *testing.T) {
 
 // TestParseCountRequestResolvesTheGroupingFlags pins each --by-* flag to its
 // dimension and the refusal for two at once. The exclusivity check cannot live
-// behind the role — by the time a request reaches it only one dimension is
-// left — so it is checked here, beside the flags it is about.
+// behind the role — by then only one dimension is left — so it is checked here.
 func TestParseCountRequestResolvesTheGroupingFlags(t *testing.T) {
 	for flag, want := range map[string]issueops.CountGroup{
 		"by-status":   issueops.CountGroupStatus,
@@ -175,10 +169,8 @@ func TestParseCountRequestRejectsAnUnparseableDate(t *testing.T) {
 	}
 }
 
-// newCountFlagSet returns a command carrying `bd count`'s flags with every one
-// at its default, so a case can set exactly the flags it is about.
-//
-// It REGISTERS the flags rather than copying countCmd's set: cobra's
+// newCountFlagSet returns a command carrying `bd count`'s flags at their
+// defaults. It REGISTERS them rather than copying countCmd's set: cobra's
 // AddFlagSet shares the underlying *Flag values, so a case that set a flag on
 // the copy would leak it into the real command and into every later case.
 func newCountFlagSet(t *testing.T) *cobra.Command {

@@ -195,12 +195,9 @@ func TestIssueRelationsExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestCounterKeepsTelemetryOutermost is the count role's version of
-// TestIssueRelationsKeepsTelemetryOutermost, and it is the READ answer for the
-// same reason: counting fires no completion hooks, so the hook decorator adds
-// no layer and the outermost surface a caller gets is the instrumented one. A
-// hook wrapper appearing here would mean a layer landed on a path with nothing
-// to fire.
+// TestCounterKeepsTelemetryOutermost is the READ answer for the reason
+// TestIssueRelationsKeepsTelemetryOutermost gives: counting fires no completion
+// hooks, so the hook decorator adds no layer.
 func TestCounterKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -217,16 +214,13 @@ func TestCounterKeepsTelemetryOutermost(t *testing.T) {
 	}
 }
 
-// TestWorkspaceConfigKeepsTelemetryOutermost is the settings role's version of
-// the pin, and it is the only place in this file where the read answer is given
-// for a role that WRITES.
+// TestWorkspaceConfigKeepsTelemetryOutermost is the first place in this file
+// where the read answer is given for a role that WRITES.
 //
 // The hook decorator's vocabulary is on_create / on_update / on_close and every
 // one of them hands a hook script an ISSUE. A settings write changes the
 // workspace rather than a bead, so there is nothing to hand one — and the
-// legacy config verbs this decorator inherits fire nothing either. A hook
-// wrapper appearing here would therefore mean a layer landed on a path with
-// nothing to fire, which is exactly what the read-role pins above catch.
+// legacy config verbs this decorator inherits fire nothing either.
 func TestWorkspaceConfigKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -243,14 +237,11 @@ func TestWorkspaceConfigKeepsTelemetryOutermost(t *testing.T) {
 	}
 }
 
-// TestVersionReconcilerKeepsTelemetryOutermost is the version-marker role's
-// version of the pin, and the second place in this file where the read answer
-// is given for a role that WRITES.
-//
-// The reason is the settings role's, plus one this role has on its own: it runs
-// from PersistentPreRun on every startup, so a hook wrapper here would run a
-// user's script before every command — including the ones that go on to fail on
-// their own arguments — with no bead to hand it.
+// TestVersionReconcilerKeepsTelemetryOutermost is the settings role's reason
+// plus one this role has on its own: it runs from PersistentPreRun on every
+// startup, so a hook wrapper here would run a user's script before every
+// command — including the ones that go on to fail on their own arguments —
+// with no bead to hand it.
 func TestVersionReconcilerKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -267,16 +258,13 @@ func TestVersionReconcilerKeepsTelemetryOutermost(t *testing.T) {
 	}
 }
 
-// TestBootstrapperKeepsTelemetryOutermost is the identity-seeding role's
-// version of the pin, and the third place in this file where the READ answer is
-// given for a role that WRITES.
-//
-// The reason is neither the settings role's nor the version marker's. A
-// bootstrap writes, and loudly — it is what turns a database into a workspace —
-// but this decorator's hook vocabulary is issue-shaped and a bootstrap names no
-// issue; and on a workspace this new, `bd init` has not installed .beads/hooks/
-// yet, so a hook fired here would run whatever the previous project in that
-// directory left behind. See internal/storage/hook_bootstrapper.go.
+// TestBootstrapperKeepsTelemetryOutermost has a reason that is neither the
+// settings role's nor the version marker's. A bootstrap writes, and loudly —
+// it is what turns a database into a workspace — but this decorator's hook
+// vocabulary is issue-shaped and a bootstrap names no issue; and on a workspace
+// this new, `bd init` has not installed .beads/hooks/ yet, so a hook fired here
+// would run whatever the previous project in that directory left behind. See
+// internal/storage/hook_bootstrapper.go.
 func TestBootstrapperKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -356,10 +344,8 @@ func TestWorkspaceConfigExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestStatsReporterKeepsTelemetryOutermost is the summary role's version of
-// the same pin, and the READ answer again: reporting fires no completion hooks,
-// so the hook decorator recurses and the outermost surface is the instrumented
-// one.
+// TestStatsReporterKeepsTelemetryOutermost is the READ answer again: reporting
+// fires no completion hooks, so the hook decorator recurses.
 func TestStatsReporterKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -387,9 +373,8 @@ func TestStatsReporterExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestCycleDetectorKeepsTelemetryOutermost is the cycle role's version of
-// TestCounterKeepsTelemetryOutermost, and the READ answer for the same reason:
-// a cycle sweep fires no completion hooks, so the hook decorator adds no layer.
+// TestCycleDetectorKeepsTelemetryOutermost is the READ answer again: a cycle
+// sweep fires no completion hooks, so the hook decorator adds no layer.
 func TestCycleDetectorKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -417,11 +402,8 @@ func TestCycleDetectorExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestEdgeReaderKeepsTelemetryOutermost is the stored-edge role's version of
-// TestIssueRelationsKeepsTelemetryOutermost, and it is the READ answer for the
-// same reason: reading edges fires no completion hooks, so the hook decorator
-// adds no layer and the outermost surface a caller gets is the instrumented
-// one.
+// TestEdgeReaderKeepsTelemetryOutermost is the READ answer again: reading edges
+// fires no completion hooks, so the hook decorator adds no layer.
 func TestEdgeReaderKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -449,10 +431,9 @@ func TestEdgeReaderExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestBlockingAnnotatorKeepsTelemetryOutermost is the blocking-decoration
-// role's version of the same pin, and the READ answer for the same reason:
+// TestBlockingAnnotatorKeepsTelemetryOutermost is the READ answer again:
 // annotating a page fires no completion hooks, so the hook decorator adds no
-// layer and the outermost surface a caller gets is the instrumented one.
+// layer.
 func TestBlockingAnnotatorKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -480,10 +461,8 @@ func TestBlockingAnnotatorExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestTreeWalkerKeepsTelemetryOutermost is the dependency-tree role's version of
-// TestEdgeReaderKeepsTelemetryOutermost, and the READ answer for the same
-// reason: a tree walk fires no completion hooks, so the hook decorator adds no
-// layer and the outermost surface a caller gets is the instrumented one.
+// TestTreeWalkerKeepsTelemetryOutermost is the READ answer again: a tree walk
+// fires no completion hooks, so the hook decorator adds no layer.
 func TestTreeWalkerKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -522,10 +501,8 @@ func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestReadyCounterKeepsTelemetryOutermost is the ready-count role's version of
-// the same pin, and it is the READ answer again: sizing the ready set fires no
-// completion hooks, so the hook decorator adds no layer and the outermost
-// surface a caller gets is the instrumented one.
+// TestReadyCounterKeepsTelemetryOutermost is the READ answer again: sizing the
+// ready set fires no completion hooks, so the hook decorator adds no layer.
 func TestReadyCounterKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -553,10 +530,8 @@ func TestReadyCounterExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestQuerierKeepsTelemetryOutermost is the boolean-query role's version of the
-// same pin, and it is the READ answer again: a query fires no completion hooks,
-// so the hook decorator adds no layer and the outermost surface a caller gets
-// is the instrumented one.
+// TestQuerierKeepsTelemetryOutermost is the READ answer again: a query fires no
+// completion hooks, so the hook decorator adds no layer.
 func TestQuerierKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -584,12 +559,11 @@ func TestQuerierExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestSweeperKeepsTelemetryOutermost is the bulk-clearance role's version of
-// the same pin, and it is the ONE WRITE role that answers the way the reads
-// do: there is no on_delete hook to fire (internal/storage/hook_sweeper.go), so
-// the hook decorator adds no layer and the outermost surface a caller gets is
-// the instrumented one. Pinning it here is what keeps that a decision rather
-// than a wrapper someone forgot to write.
+// TestSweeperKeepsTelemetryOutermost is a WRITE role that answers the way the
+// reads do: there is no on_delete hook to fire
+// (internal/storage/hook_sweeper.go), so the hook decorator adds no layer.
+// Pinning it here is what keeps that a decision rather than a wrapper someone
+// forgot to write.
 func TestSweeperKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
@@ -617,11 +591,9 @@ func TestSweeperExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
-// TestDeleterKeepsTelemetryOutermost is the named-row erasure role's version of
-// the same pin, and the SECOND write role to answer the way the reads do: there
-// is no on_delete hook to fire (internal/storage/hook_deleter.go), so the hook
-// decorator adds no layer and the outermost surface a caller gets is the
-// instrumented one.
+// TestDeleterKeepsTelemetryOutermost is the second write role to answer the way
+// the reads do: there is no on_delete hook to fire
+// (internal/storage/hook_deleter.go), so the hook decorator adds no layer.
 func TestDeleterKeepsTelemetryOutermost(t *testing.T) {
 	t.Setenv("BD_OTEL_STDOUT", "true")
 	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)

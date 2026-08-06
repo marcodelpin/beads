@@ -12,17 +12,16 @@ import (
 // lives in roles_test.go, beside the other store-shaped-source cases.
 
 // TestCountReadyRunsTheListingsQueryUnbounded asserts the property the
-// operation exists to deliver rather than the number it happened to return: the
-// count runs the SAME ready query the listing runs, with the page taken off.
+// operation exists to deliver: the count runs the SAME ready query the listing
+// runs, with the page taken off.
 //
-// The recorded filter is the only place that is visible. A body carrying the
-// right total says nothing about which set was counted — every wrong predicate
-// also produces a number — so the assertions are on the filter: the label the
-// wire named, the listing's own sort policy, and Limit 0. Limit is the one that
-// would silently break the operation's promise, because the shared builder
-// defaults an UNSET limit to workapi.DefaultReadyLimit: a count assembled
-// without the role would answer "how many of the first 100" and be published as
-// a total.
+// A body carrying the right total says nothing about which set was counted —
+// every wrong predicate also produces a number — so the assertions are on the
+// filter: the label the wire named, the listing's own sort policy, and Limit 0.
+// Limit is the one that would silently break the operation's promise, because
+// the shared builder defaults an UNSET limit to workapi.DefaultReadyLimit: a
+// count assembled without the role would answer "how many of the first 100" and
+// be published as a total.
 func TestCountReadyRunsTheListingsQueryUnbounded(t *testing.T) {
 	rec := &recordingIssues{items: countedPage()}
 	ts := newTestServer(t, Config{Provider: &fakeProvider{
@@ -59,11 +58,10 @@ func TestCountReadyRunsTheListingsQueryUnbounded(t *testing.T) {
 
 // TestCountReadyPublishesNoPageParameters: `limit`, `offset` and `sort` are the
 // listing's parameters and are absent from this operation's table, so sending
-// one is version skew rather than a bad value — the client is asking for
-// something this operation does not have, and `unknown_parameter` is the answer
-// that tells it so. Silently accepting `limit` would be the failure the role
-// itself refuses; silently accepting `sort` would advertise a knob that changes
-// nothing about a set with no order.
+// one is version skew rather than a bad value and `unknown_parameter` is the
+// answer. Silently accepting `limit` would be the failure the role itself
+// refuses; silently accepting `sort` would advertise a knob that changes nothing
+// about a set with no order.
 func TestCountReadyPublishesNoPageParameters(t *testing.T) {
 	for _, param := range []string{"limit=5", "limit=0", "offset=1", "sort=oldest"} {
 		ts, _ := newReadServer(t, Config{})
@@ -83,8 +81,7 @@ func TestCountReadyPublishesNoPageParameters(t *testing.T) {
 // rests on: every filter the listing accepts, the count accepts too, and both
 // build the same predicate from it. A parameter one of them knew and the other
 // did not would make "the size of the page you would get" false for exactly the
-// clients that sent it — and would fail as a 400 on one path only, which is the
-// kind of asymmetry nobody notices until a script breaks.
+// clients that sent it, and would fail as a 400 on one path only.
 func TestCountReadyAndListReadyAdmitTheSameFilters(t *testing.T) {
 	shared := "assignee=alice&unassigned=false&type=bug&exclude_type=epic&label=api&label_any=x" +
 		"&exclude_label=wip&label_pattern=tech-*&label_regex=^tech-&priority=1&parent=bd-1" +

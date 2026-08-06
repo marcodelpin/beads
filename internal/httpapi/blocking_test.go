@@ -23,9 +23,9 @@ func newBlockingServer(t *testing.T, annotator *roleBlockingAnnotator) *testServ
 }
 
 // TestBlockingAnnotationsPassTheIDsThroughUnaltered pins the half of this
-// handler that is easiest to get wrong by helping: the ids go to the role in the
-// order they arrived, repeats and all, because collapsing them is the ROLE's
-// promise and a handler that did it first would make the two front doors
+// handler that is easiest to get wrong by helping: the ids go to the role in
+// the order they arrived, repeats and all. Collapsing them is the ROLE's
+// promise, and a handler that did it first would make the two front doors
 // collapse in different places.
 func TestBlockingAnnotationsPassTheIDsThroughUnaltered(t *testing.T) {
 	annotator := &roleBlockingAnnotator{}
@@ -137,11 +137,10 @@ func TestBlockingAnnotationsBoundTheQuestion(t *testing.T) {
 	}
 }
 
-// TestBlockingAnnotationsRefuseAnUnknownParameter keeps this operation under the
-// document's uniform rule. It matters more here than on most routes: this
-// operation publishes exactly ONE parameter, so a client that guessed at a
-// `type` or `direction` filter would otherwise receive the unfiltered
-// decoration and believe it narrowed.
+// TestBlockingAnnotationsRefuseAnUnknownParameter keeps this operation under
+// the document's uniform rule. It publishes exactly ONE parameter, so a client
+// that guessed at a `type` or `direction` filter would otherwise receive the
+// unfiltered decoration and believe it narrowed.
 func TestBlockingAnnotationsRefuseAnUnknownParameter(t *testing.T) {
 	ts := newBlockingServer(t, &roleBlockingAnnotator{})
 

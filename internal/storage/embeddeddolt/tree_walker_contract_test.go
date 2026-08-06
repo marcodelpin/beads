@@ -15,8 +15,7 @@ import (
 // store. It reaches the same tx-level body the server-backed store reaches
 // (issueops.WalkDependencyTreeInTx) and differs only in the engine underneath;
 // that is what this wiring catches, and it is NOT an independent vote on the
-// body — see the note at the top of the contract file, which says so for all
-// three legs of this particular role.
+// body.
 //
 // One environment for the whole suite. Every case seeds ids under its own prefix
 // and asserts only about those, so the subtests are order-independent.
@@ -93,10 +92,10 @@ func newEmbeddedTreeWalkerFixture(t *testing.T, te *testEnv, prefix string) conf
 		CreateWisp:    kit.CreateWisp,
 		AddDependency: kit.AddDependency,
 		// The frozen kit exposes reads only. This is the write half of the same
-		// short-lived raw connection its QueryScalar opens, and RETURNS the error
-		// rather than failing the test, so the contract's own seeding failure
+		// short-lived raw connection its QueryScalar opens, and RETURNS the
+		// error rather than failing the test, so the contract's own seeding
 		// message is the one a reader sees. One PINNED CONNECTION for the whole
-		// script, as the server-backed wiring does.
+		// script.
 		Exec: func(ctx context.Context, statements []conformance.SQLStatement) error {
 			db, cleanup, err := embeddeddolt.OpenSQL(ctx, te.dataDir, te.database, "main")
 			if err != nil {

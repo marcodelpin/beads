@@ -15,60 +15,42 @@ import (
 // wiring site with skipKnownDivergence so the case still runs on the ones that
 // agree.
 //
-// THIS CONTRACT HAS A DIFFERENT SHAPE FROM THE ISSUE CONTRACTS, and copying one
-// of those wholesale would have produced the wrong test. The issue roles assert
-// ISSUE STATE: seed rows, run the operation, read the rows back. Nothing here
-// has rows to seed. What this plane promises is PRECEDENCE — which of two
-// writes a later read sees, and whether a refusal leaves the earlier value
-// standing — and SIDE EFFECTS: two of its keys are PROJECTED into normalized
-// lookup tables that reads consult before the key itself, so "the write
-// succeeded" and "the write took effect" are separate facts and the second one
-// is the one that was broken. Every projection case therefore reads the TABLE
-// through QueryScalar rather than reading the setting back through the role,
-// because reading it back through the role is exactly the check that passed on
-// a backend where nothing took effect.
+// THIS CONTRACT HAS A DIFFERENT SHAPE FROM THE ISSUE CONTRACTS: there are no
+// rows to seed. What this plane promises is PRECEDENCE and SIDE EFFECTS — two
+// of its keys are PROJECTED into normalized lookup tables that reads consult
+// before the key itself, so "the write succeeded" and "the write took effect"
+// are separate facts. Every projection case therefore reads the TABLE through
+// QueryScalar; reading the setting back through the role is exactly the check
+// that passed on a backend where nothing took effect.
 //
 // There are three wirings — the server-backed store, the embedded store and the
 // unit-of-work provider — and only TWO independent bodies between them: dolt
-// and embeddeddolt both hand back internal/workapi/storeworkspaceconfig and
-// project through their own SetConfig, so they are one vote plus an engine
-// check; the unit-of-work provider is the second, and it projects in the config
-// repository its use case sits on. All three share the refusals, which come
-// from workapi.ValidateSettingWrite, so what these cases can catch below that
+// and embeddeddolt both hand back internal/workapi/storeworkspaceconfig, so
+// they are one vote plus an engine check. All three share the refusals, which
+// come from workapi.ValidateSettingWrite, so what these cases catch below that
 // validator is the EXECUTION half.
 //
-// KEYS ARE NAMESPACED WITH THE FIXTURE PREFIX wherever they can be. Config keys
-// are global to a workspace — there is no per-test plane — so an unscoped probe
-// key would be an assertion about state a sibling case wrote. The two keys that
-// CANNOT be namespaced are status.custom and types.custom: their whole point is
-// that those exact names are projected, so the projection cases write the real
-// keys and each one asserts the EXACT resulting table content rather than a
-// delta. That is safe because a write rewrites the table outright, which is
-// itself one of the promises under test.
+// KEYS ARE NAMESPACED WITH THE FIXTURE PREFIX wherever they can be, because
+// config keys are global to a workspace. status.custom and types.custom cannot
+// be: their whole point is that those exact names are projected, so those cases
+// write the real keys and assert the EXACT resulting table content rather than
+// a delta — safe because a write rewrites the table outright.
 //
-// What is deliberately NOT here:
-//   - which SOURCE owns a key (config.yaml, git config, this plane). That is
-//     front-door routing over files on the client's machine and the role says
-//     so; cmd/bd/config.go performs it and cmd/bd/config_test.go pins it.
-//   - the multi-source views (`bd config show`, `drift`, `apply`, `validate`),
-//     which are not on this role at all.
-//   - the process-local caches the store backends drop on a write. They are one
-//     backend's optimization, not a promise of the plane, and a second process
-//     cannot observe them.
+// NOT here: which SOURCE owns a key, and the multi-source views over it
+// (`bd config show`, `drift`, `apply`, `validate`). That is front-door routing
+// over files on the client's machine; cmd/bd/config_test.go pins it.
 
 // WorkspaceConfigFixture supplies adapter-specific storage access for the
 // settings assertions. Every field is named and typed exactly like the
-// per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
-// accessor plus prefix with no adapter in between.
+// per-backend roleFixtureKit hook it is filled from.
 type WorkspaceConfigFixture struct {
 	// IssuePrefix namespaces the keys each assertion writes, so several of them
 	// can share one database.
 	IssuePrefix     string
 	WorkspaceConfig publicops.WorkspaceConfig
-	// SetConfig writes one workspace config key OUT OF BAND, past the role. It
-	// is how the one case that removes the protected key puts it back, since
-	// the role refuses to write it — the same seam a workspace's own
-	// initialization uses.
+	// SetConfig writes one workspace config key OUT OF BAND, past the role —
+	// the same seam a workspace's own initialization uses. It is how the case
+	// that removes the protected key puts it back.
 	SetConfig func(context.Context, string, string) error
 	// QueryScalar runs a single-row query and scans it, and RETURNS the error
 	// rather than failing the test. It is how the projection cases read the
@@ -81,15 +63,11 @@ type WorkspaceConfigFixture struct {
 }
 
 // RunWorkspaceConfigStoresAValueVerbatim pins workspaceconfig.go:93-100: a
-// successful write stores the value as given, and the result says so, so a
-// caller may treat SetSetting as "what I sent is what is stored" without
-// re-reading it.
+// successful write stores the value as given, and the result says so.
 //
-// The value carries surrounding space and an inner comma on purpose. Both are
-// characters this plane's other keys give meaning to — the comma separates
-// entries in status.custom and types.custom — so a body that reached for a
-// splitter or a trimmer on the general path would be caught here rather than on
-// the one key where the behavior is correct.
+// The value carries surrounding space and an inner comma on purpose: the comma
+// separates entries in status.custom and types.custom, so a body that reached
+// for a splitter or a trimmer on the general path is caught here.
 func RunWorkspaceConfigStoresAValueVerbatim(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	key := workspaceConfigKey(fixture, "verbatim")
@@ -103,8 +81,8 @@ func RunWorkspaceConfigStoresAValueVerbatim(t *testing.T, ctx context.Context, f
 }
 
 // RunWorkspaceConfigReplacesAnExistingValue pins workspaceconfig.go's "Set
-// stores one setting, REPLACING any value already there": the plane holds one
-// value per key, and a second write is not an append and not a refusal.
+// stores one setting, REPLACING any value already there": one value per key, so
+// a second write is not an append and not a refusal.
 func RunWorkspaceConfigReplacesAnExistingValue(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	key := workspaceConfigKey(fixture, "replace")
@@ -119,9 +97,8 @@ func RunWorkspaceConfigReplacesAnExistingValue(t *testing.T, ctx context.Context
 // for BOTH a key nothing ever wrote and a key written as the empty string, and
 // there is no ErrNotFound on this role.
 //
-// It is asserted rather than left implicit because it is the promise a caller
-// is most likely to assume the other way round, and because the conflation is
-// what lets `bd config get` print "(not set)" for a key that was in fact set.
+// The conflation is what lets `bd config get` print "(not set)" for a key that
+// was in fact set.
 func RunWorkspaceConfigConflatesAnUnsetKeyWithAnEmptyValue(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	never := workspaceConfigKey(fixture, "never-written")
@@ -131,10 +108,9 @@ func RunWorkspaceConfigConflatesAnUnsetKeyWithAnEmptyValue(t *testing.T, ctx con
 	setWorkspaceConfigSetting(t, ctx, fixture, emptied, "")
 	assertWorkspaceConfigValue(t, ctx, fixture, emptied, "")
 
-	// The two are the same ANSWER, but they are not the same row: the written
-	// one is present in the enumeration and the never-written one is not. That
-	// is the only way a caller can tell them apart on this role, so it is
-	// pinned here beside the conflation it qualifies.
+	// The two are the same ANSWER, but not the same row: the written one is
+	// present in the enumeration and the never-written one is not. That is the
+	// only way a caller can tell them apart on this role.
 	settings := listWorkspaceConfigSettings(t, ctx, fixture)
 	if _, ok := settings[emptied]; !ok {
 		t.Fatalf("ListSettings omits %q, which was written as the empty string", emptied)
@@ -183,8 +159,7 @@ func RunWorkspaceConfigUnsetRemovesTheSetting(t *testing.T, ctx context.Context,
 
 // RunWorkspaceConfigUnsetOfAnAbsentKeySucceeds pins workspaceconfig.go's
 // "Removing a key nothing set SUCCEEDS": UnsetSetting states an intended end
-// state, so a caller clearing configuration it is not sure was ever written
-// does not have to classify an error to learn it was already absent.
+// state, not a fact about the row it found.
 func RunWorkspaceConfigUnsetOfAnAbsentKeySucceeds(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	key := workspaceConfigKey(fixture, "absent")
@@ -204,9 +179,8 @@ func RunWorkspaceConfigUnsetOfAnAbsentKeySucceeds(t *testing.T, ctx context.Cont
 }
 
 // RunWorkspaceConfigRefusesAnEmptyKey pins the empty-key refusal on all three
-// verbs that take one, and pins it as ErrValidation rather than as any error:
-// the front doors classify on that sentinel to tell a caller's mistake from a
-// storage failure.
+// verbs that take one, as ErrValidation rather than as any error: the front
+// doors classify on that sentinel to tell a mistake from a storage failure.
 func RunWorkspaceConfigRefusesAnEmptyKey(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	for _, blank := range []string{"", "   "} {
@@ -226,19 +200,16 @@ func RunWorkspaceConfigRefusesAnEmptyKey(t *testing.T, ctx context.Context, fixt
 // will not write, in BOTH spellings, and pins that the refusal leaves the
 // stored prefix standing.
 //
-// The second half is the half that matters. A refusal that had already written
-// would be worse than no refusal at all: the workspace would be re-prefixed AND
-// the caller told it had not been. Every fixture is initialized with a prefix,
-// so this reads the value back rather than asserting absence.
+// A refusal that had already written would be worse than no refusal at all: the
+// workspace would be re-prefixed AND the caller told it had not been.
 func RunWorkspaceConfigRefusesTheProtectedKeyOnSet(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	before := getWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyIssuePrefix)
 
 	for _, test := range []struct{ key, want string }{
-		// The underscored spelling keeps whatever the workspace was
-		// initialized with; the dashed one is a key nothing has ever written,
-		// so a write that slipped through would show up as a value where there
-		// was none.
+		// The underscored spelling keeps whatever the workspace was initialized
+		// with; the dashed one was never written, so a write that slipped
+		// through shows up as a value where there was none.
 		{publicops.SettingKeyIssuePrefix, before},
 		{"issue-prefix", ""},
 	} {
@@ -253,11 +224,9 @@ func RunWorkspaceConfigRefusesTheProtectedKeyOnSet(t *testing.T, ctx context.Con
 // workspaceconfig.go's UnsetSetting doc records as bd-yby99.34: Set refuses the
 // prefix and Unset does not.
 //
-// It is pinned rather than fixed because refusing it is a user-visible change
-// this slice was not approved to make, and pinning is what keeps the asymmetry
-// from being read as an accident — or from being closed on one backend and not
-// the others while the owner decides. The prefix is restored afterwards, since
-// every later case in the suite shares the workspace.
+// It is pinned rather than fixed because refusing it is a user-visible change,
+// and pinning keeps it from being closed on one backend and not the others. The
+// prefix is restored afterwards, since the suite shares the workspace.
 func RunWorkspaceConfigUnsetDoesNotRefuseTheProtectedKey(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	before := getWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyIssuePrefix)
@@ -268,8 +237,7 @@ func RunWorkspaceConfigUnsetDoesNotRefuseTheProtectedKey(t *testing.T, ctx conte
 	unsetWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyIssuePrefix)
 	assertWorkspaceConfigValue(t, ctx, fixture, publicops.SettingKeyIssuePrefix, "")
 
-	// Restored out of band, through the same seam a workspace's own
-	// initialization uses, because the role refuses to write it back.
+	// Restored out of band, because the role refuses to write it back.
 	if err := fixture.SetConfig(ctx, publicops.SettingKeyIssuePrefix, before); err != nil {
 		t.Fatalf("restore %s to %q: %v", publicops.SettingKeyIssuePrefix, before, err)
 	}
@@ -279,20 +247,18 @@ func RunWorkspaceConfigUnsetDoesNotRefuseTheProtectedKey(t *testing.T, ctx conte
 // RunWorkspaceConfigRefusesAnUnparseableCustomStatus pins the one value-shape
 // refusal this plane makes, and pins that NOTHING is written when it fires.
 //
-// "Nothing" is two things here, and they are asserted separately because a body
-// could get one right and the other wrong: the config row keeps its previous
-// value, AND the custom_statuses table keeps its previous contents. The
-// projection is what makes the second one possible to break — a body that wrote
-// the row first and parsed while projecting would leave a stored status set
-// that no read agrees with.
+// "Nothing" is two things, asserted separately: the config row keeps its
+// previous value, AND custom_statuses keeps its previous contents. A body that
+// wrote the row first and parsed while projecting would leave a stored status
+// set that no read agrees with.
 func RunWorkspaceConfigRefusesAnUnparseableCustomStatus(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	const good = "awaiting_review:active"
 	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyStatusCustom, good)
 	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_statuses", 1)
 
-	// A built-in name: refused by the parser, and refused for a reason a caller
-	// could plausibly hit rather than a syntactic accident.
+	// A built-in name: refused by the parser, for a reason a caller could
+	// plausibly hit rather than a syntactic accident.
 	if _, err := fixture.WorkspaceConfig.SetSetting(ctx, publicops.SetSettingRequest{
 		Key: publicops.SettingKeyStatusCustom, Value: "open",
 	}); !errors.Is(err, publicops.ErrValidation) {
@@ -314,16 +280,14 @@ func RunWorkspaceConfigProjectsCustomStatuses(t *testing.T, ctx context.Context,
 }
 
 // RunWorkspaceConfigProjectsCustomTypes is the same pin for types.custom, and
-// it is the case that FAILED on the unit-of-work backend before this role
-// existed: that route wrote the string and left custom_types holding the
-// previous set, so `bd config set types.custom` reported success and
-// `bd create -t <the new type>` kept answering "invalid issue type" forever —
-// with doctor re-verifying against the string and reporting all-OK.
+// it FAILED on the unit-of-work backend before this role existed: that route
+// wrote the string and left custom_types holding the previous set, so
+// `bd config set types.custom` reported success while `bd create -t <the new
+// type>` kept answering "invalid issue type" and doctor reported all-OK.
 //
 // The three-stage sequence pins the REWRITE rather than an insert: a second
 // write replaces the first set instead of adding to it, and the empty value
-// clears the table. A body that appended would pass an assertion that only ever
-// grew the set.
+// clears the table.
 func RunWorkspaceConfigProjectsCustomTypes(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyTypesCustom, "research")
@@ -343,9 +307,8 @@ func RunWorkspaceConfigProjectsCustomTypes(t *testing.T, ctx context.Context, fi
 // key that configured a projection does NOT undo the projection, so the custom
 // types keep applying after the setting that named them is gone.
 //
-// All three implementations agree, so this is the plane's behavior rather than
-// a divergence, and pinning it is what keeps it from being quietly fixed on one
-// backend — which would leave a workspace's answer depending on which route
+// All three implementations agree, so pinning it keeps it from being quietly
+// fixed on one backend, which would make the answer depend on which route
 // removed the key.
 func RunWorkspaceConfigUnsetLeavesTheProjectionBehind(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
@@ -356,8 +319,7 @@ func RunWorkspaceConfigUnsetLeavesTheProjectionBehind(t *testing.T, ctx context.
 	assertWorkspaceConfigValue(t, ctx, fixture, publicops.SettingKeyTypesCustom, "")
 	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_types", 1)
 
-	// Left as this case found it, so a later case in the shared suite reads the
-	// plane rather than this one's residue.
+	// Left as this case found it: the suite shares the workspace.
 	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyTypesCustom, "")
 	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_types", 0)
 	unsetWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyTypesCustom)
@@ -368,8 +330,7 @@ func RunWorkspaceConfigUnsetLeavesTheProjectionBehind(t *testing.T, ctx context.
 // history entry behind either.
 //
 // The delta is taken around the refusal rather than read off the top of the
-// log, for the reason the kit's CountHistory doc gives: two commits made inside
-// one second tie on date and their order is not something to rely on.
+// log: two commits made inside one second tie on date.
 func RunWorkspaceConfigARefusedWriteRecordsNoHistory(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {
@@ -399,9 +360,7 @@ func RunWorkspaceConfigARefusedWriteRecordsNoHistory(t *testing.T, ctx context.C
 	}
 }
 
-// workspaceConfigKey namespaces a probe key under the fixture's prefix. Config
-// keys are global to a workspace, so an unscoped one would be an assertion
-// about whatever a sibling case last wrote.
+// workspaceConfigKey namespaces a probe key under the fixture's prefix.
 func workspaceConfigKey(fixture WorkspaceConfigFixture, name string) string {
 	return "custom." + fixture.IssuePrefix + "-" + name
 }
@@ -451,9 +410,8 @@ func listWorkspaceConfigSettings(t *testing.T, ctx context.Context, fixture Work
 }
 
 // assertWorkspaceConfigTableCount reads a normalized projection table directly.
-// The role gives no way to read one, deliberately — it is a projection, not a
-// setting — so this is the only assertion that can tell "the value was stored"
-// from "the value took effect".
+// The role deliberately gives no way to read one, so this is the only assertion
+// that can tell "the value was stored" from "the value took effect".
 //
 // The table name is interpolated because a table name cannot be a bind
 // parameter; both call sites pass a literal from this file.

@@ -204,16 +204,12 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return HandleError("--offset is only supported under --proxied-server")
 	}
 
-	// `bd list`'s PAGE is on issueops.Reader. What is still built here is the
-	// filter --watch and the hierarchical --parent tree consume as a VALUE:
+	// `bd list`'s PAGE is on issueops.Reader. The filter is still built here
+	// because --watch and the hierarchical --parent tree consume it as a VALUE:
 	// the poll loop re-runs it on a ticker and the tree walk re-parents a copy
-	// of it at every level, neither of which a page can express.
-	//
-	// The filter is therefore built unconditionally and used by two modes. That
-	// is one wasted build on the modes that reach the role instead, and it buys
-	// the order below: the page query still runs before the tree branch, so
-	// `--parent --pretty --max-rows N` still refuses on the cap exactly where it
-	// refused before this commit.
+	// of it at every level, neither of which a page can express. Building it
+	// unconditionally also keeps the page query ahead of the tree branch, so
+	// `--parent --pretty --max-rows N` still refuses on the cap where it did.
 	cfg, err := workapi.LoadStoreListConfig(rootCtx, store)
 	if err != nil {
 		return HandleError("%v", err)
@@ -248,21 +244,17 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 
 	// The accessor on the ROUTED store, not on the global one: a contributor
 	// listing is answered from the repository the routing rule picked, and a
-	// reader taken off `store` would read the wrong database. It is also where
-	// each storage decorator adds its layer, which is why no command builds the
-	// shared implementation itself.
+	// reader taken off `store` would read the wrong database.
 	reader, err := activeStore.IssueReader()
 	if err != nil {
 		return HandleError("%v", err)
 	}
 
-	// FIRST FLIP: --json. The role's List runs the same LoadStoreListConfig,
-	// the same BuildListFilter and the same workapi.FinishPage this branch ran
-	// longhand, over the same request, and the --ready arm is its ReadyFlag —
-	// so the page, its order, its trim and its has-more verdict are unchanged
-	// bytes. The cap still arrives as *ErrTooManyRows, which is why
-	// handleMaxRowsError still wraps the call: it rides the filter the builder
-	// produces, so the role trip does not move it.
+	// --json. The role's List runs the same LoadStoreListConfig, the same
+	// BuildListFilter and the same workapi.FinishPage this branch ran longhand,
+	// and the --ready arm is its ReadyFlag, so the page, its order, its trim and
+	// its has-more verdict are unchanged bytes. The cap still arrives as
+	// *ErrTooManyRows, which is why handleMaxRowsError still wraps the call.
 	if jsonOutput {
 		page, err := reader.List(ctx, in.ListRequest)
 		if err != nil {
@@ -285,11 +277,9 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// SECOND FLIP: every text rendering. They print no cardinality, and the
-	// query this branch used to run projected none, so the request carries
-	// SkipCounts — stage 1 added that field for exactly this arrival
-	// (issueops.ListRequest.SkipCounts). Without it the flip would trade a
-	// plain scan for three aggregate joins on the most-run command in the tree.
+	// The text renderings print no cardinality, so the request carries SkipCounts
+	// (issueops.ListRequest.SkipCounts). Without it this would trade a plain scan
+	// for three aggregate joins on the most-run command in the tree.
 	textRequest := in.ListRequest
 	textRequest.SkipCounts = true
 	page, err := reader.List(ctx, textRequest)
@@ -352,14 +342,11 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// THIRD FLIP: the decoration, onto issueops.BlockingAnnotator. The failure
-	// is still swallowed, and deliberately: this route has always rendered the
-	// page undecorated rather than failing on it. The proxied route fails
-	// instead, which is a difference between the two CALLERS rather than one
-	// between two answers — recorded for the owner in AMBIGUITIES.md (A-blk-1)
-	// rather than converged here, because deciding what a listing does when its
-	// decoration is unavailable is a behavior question this commit was not
-	// given.
+	// The decoration goes through issueops.BlockingAnnotator. Its failure is
+	// still swallowed: this route has always rendered the page undecorated
+	// rather than failing on it, while the proxied route fails — a difference
+	// between the two CALLERS, recorded for the owner in AMBIGUITIES.md
+	// (A-blk-1) rather than converged here.
 	blocking := annotateListBlocking(ctx, activeStore, issueIDs)
 
 	var buf strings.Builder

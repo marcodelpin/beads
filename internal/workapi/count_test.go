@@ -53,8 +53,7 @@ func TestBuildCountFilterIncludeInfraMirrorsListFilter(t *testing.T) {
 				t.Errorf("IssueType = %v, list --include-infra --all uses %v", got.IssueType, want.IssueType)
 			}
 			// A count defaults to all statuses and all pinned states, which is
-			// exactly what list's --all flag selects: none of these dimensions
-			// may carry a filter on either side.
+			// exactly what list's --all flag selects.
 			if !reflect.DeepEqual(got.Status, want.Status) {
 				t.Errorf("Status = %v, list --include-infra --all uses %v", got.Status, want.Status)
 			}
@@ -121,7 +120,7 @@ func TestBuildCountFilterDefaultsToTheDurablePlane(t *testing.T) {
 			countPtrStr(got.Status), got.ExcludeStatus, countPtrStr(got.Pinned))
 	}
 	// Limit and Offset are the two fields the count seam ignores, and
-	// issueops.CountRequest has no knob for either. Pinning them at zero says
+	// issueops.CountRequest has no knob for either: pinning them at zero says
 	// the builder does not invent one.
 	if got.Limit != 0 || got.Offset != 0 {
 		t.Errorf("Limit=%d Offset=%d, want a count filter to bound nothing", got.Limit, got.Offset)
@@ -161,8 +160,8 @@ func TestBuildCountFilterNormalizesLabelsAndIDs(t *testing.T) {
 
 // TestBuildCountFilterTakesStatusAndTypeAsWritten pins the deliberate absence
 // of validation: an unrecognized status or type reaches the filter as written
-// and matches nothing, rather than failing. Both front doors have always
-// behaved this way and a scripted caller counting a retired status reads 0.
+// and matches nothing, rather than failing. A scripted caller counting a
+// retired status reads 0.
 func TestBuildCountFilterTakesStatusAndTypeAsWritten(t *testing.T) {
 	got, err := BuildCountFilter(issueops.CountRequest{Status: "no-such-status", IssueType: "no-such-type"}, ListConfig{})
 	if err != nil {
@@ -189,9 +188,9 @@ func TestBuildCountFilterTakesStatusAndTypeAsWritten(t *testing.T) {
 
 // TestValidateCountGroupClosesTheDimensionSet pins the five published
 // dimensions and the typed refusal for everything else. The refusal has to be
-// ErrValidation rather than a bare string because both front doors classify
-// it, and because an empty GroupBy reaching storage would come back as an
-// "unsupported groupBy" that no caller can match on.
+// ErrValidation rather than a bare string because both front doors classify it,
+// and because an empty GroupBy reaching storage comes back as an "unsupported
+// groupBy" that no caller can match on.
 func TestValidateCountGroupClosesTheDimensionSet(t *testing.T) {
 	for group, want := range map[issueops.CountGroup]string{
 		issueops.CountGroupStatus:   "status",

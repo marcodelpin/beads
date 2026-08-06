@@ -26,9 +26,6 @@ func (s *DoltStore) Bootstrapper() (issueops.Bootstrapper, error) {
 // one level down instead — this body and the embedded store's are a few lines
 // each around issueops.BootstrapInTx — and two wrappers over one body is still
 // ONE vote, which the conformance contract says out loud.
-//
-// A front door cannot construct this: the type is unexported and the accessor
-// is the only door.
 type bootstrapper struct{ store *DoltStore }
 
 var _ issueops.Bootstrapper = (*bootstrapper)(nil)

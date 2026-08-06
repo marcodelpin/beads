@@ -3,14 +3,9 @@
 // accessor hands back.
 //
 // It is a package of its own for the reason internal/workapi/storereader is —
-// see that package's doc. A constructor sitting in internal/workapi would be a
-// one-line drop-in for store.Counter() from any front door, and one that
-// silently skips the decorators, because a decorator adds its layer in its own
-// accessor. Down here the only importers are the two Dolt store packages and
-// the cmd-bd-role-constructors depguard rule in .golangci.yml makes a front
-// door importing it a lint failure rather than a review comment.
-//
-// The accessor is the door. This is the thing behind it.
+// see that package's doc. Down here the only importers are the two Dolt store
+// packages, and the cmd-bd-role-constructors depguard rule in .golangci.yml
+// makes a front door importing it a lint failure rather than a review comment.
 package storecounter
 
 import (
@@ -82,11 +77,10 @@ func (c *storeCounter) CountByGroup(ctx context.Context, req issueops.CountByGro
 //
 // TWO THINGS ARE DELIBERATE. The load is SKIPPED unless IncludeInfra is set,
 // because that flag is the only thing in a count request the configuration
-// reaches — paying three config queries on every plain count would make the
-// cheapest command in the tree the one that talks to storage most. And when it
-// does run it runs PER CALL rather than once at construction: the infra
-// vocabulary is workspace state a caller can change between two counts, and a
-// counter that cached it would answer for the older workspace.
+// reaches. And when it does run it runs PER CALL rather than once at
+// construction: the infra vocabulary is workspace state a caller can change
+// between two counts, and a counter that cached it would answer for the older
+// workspace.
 func (c *storeCounter) filter(ctx context.Context, req issueops.CountRequest) (types.IssueFilter, error) {
 	var cfg workapi.ListConfig
 	if req.IncludeInfra {

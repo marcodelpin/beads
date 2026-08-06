@@ -10,8 +10,7 @@ import (
 
 // TestCycleDetectorContract runs the CycleDetector contract against the
 // unit-of-work provider — the one implementation that does not wrap the store's
-// own transaction, so this is the wiring where a genuine seam divergence shows
-// up. The two store backends share their five-line body between them, which
+// own transaction. The two store backends share their five-line body, which
 // makes this the SECOND of two votes rather than the third.
 //
 // One provider for the whole suite and NO t.Parallel: this backend has no
@@ -52,8 +51,7 @@ func newUOWCycleDetectorFixture(t *testing.T, ctx context.Context, prefix string
 	t.Helper()
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessor, not NewCycleDetector: a provider that
-	// stopped offering the role is the regression, and a constructor call would
-	// hide it.
+	// stopped offering the role is the regression a constructor call would hide.
 	source, ok := provider.(CycleDetectorSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the CycleDetector accessor", provider)
@@ -69,10 +67,9 @@ func newUOWCycleDetectorFixture(t *testing.T, ctx context.Context, prefix string
 		CreateIssue: kit.CreateIssue,
 		CreateWisp:  kit.CreateWisp,
 		// The frozen kit exposes reads only. This is the write half of the same
-		// unfiltered raw-SQL pass-through its QueryScalar reads through, inside
-		// ONE committing unit of work — which is also what gives the whole
-		// script one session, so a foreign_key_checks toggle covers the inserts
-		// it was written for.
+		// raw-SQL pass-through, inside ONE committing unit of work — which also
+		// gives the whole script one session, so a foreign_key_checks toggle
+		// covers the inserts it was written for.
 		Exec: func(ctx context.Context, statements []conformance.SQLStatement) error {
 			return RunTx(ctx, provider, func(ctx context.Context, uw UnitOfWork) (string, error) {
 				for _, stmt := range statements {

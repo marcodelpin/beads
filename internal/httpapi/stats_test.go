@@ -12,8 +12,7 @@ import (
 // pointers, never from the request that asked for the fast path.
 //
 // The role here TAKES the hint, which is the half the roles-path route test
-// cannot show — its reporter answers with a populated count. Both halves matter
-// because the two shipped backends differ on it.
+// cannot show. Both halves matter because the two shipped backends differ.
 func TestStatsReportsTheSkippedScanFromTheAnswer(t *testing.T) {
 	reporter := &roleStats{summary: types.Statistics{TotalIssues: 3, OpenIssues: 2}}
 	ts := newTestServer(t, rolesConfig(Config{Stats: reporter}))
@@ -64,8 +63,7 @@ func TestStatsRefusesAnEmptyAssignee(t *testing.T) {
 }
 
 // TestStatsRefusesAMalformedSkipBlocked pins the other 400 this operation can
-// produce on its own, which is why invalid_argument is in its row of the
-// handler table.
+// produce on its own.
 func TestStatsRefusesAMalformedSkipBlocked(t *testing.T) {
 	ts := newTestServer(t, rolesConfig(Config{Stats: &roleStats{}}))
 

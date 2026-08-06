@@ -413,79 +413,62 @@ func (p timedProvider) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 }
 
 // StatsReporter builds the summary role OVER THIS WRAPPER, for the same reason
-// as every accessor above it: a reporter bound to the wrapped provider would open
-// its units of work outside this request's measurement and the summary route
-// would log uow_ms=0.000 forever.
+// and with the same hazard as IssueReader.
 func (p timedProvider) StatsReporter() (issueops.StatsReporter, error) {
 	return uow.NewStatsReporter(p)
 }
 
 // CycleDetector builds the detector OVER THIS WRAPPER, for the same reason and
-// with the same hazard as the two above: the sweep opens its own read-only unit
-// of work, and a detector bound to the untimed provider would report
-// uow_ms=0.000 for the one round trip the request makes.
+// with the same hazard as IssueReader.
 func (p timedProvider) CycleDetector() (issueops.CycleDetector, error) {
 	return uow.NewCycleDetector(p)
 }
 
 // EdgeReader builds the stored-edge reader OVER THIS WRAPPER, for the same
-// reason and with the same hazard as the two above: the role opens one unit of
-// work per call, and it must go through NewUOW below or the dependencies route
-// reports uow_ms=0.000.
+// reason and with the same hazard as IssueReader.
 func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 	return uow.NewEdgeReader(p)
 }
 
 // BlockingAnnotator builds the blocking-decoration role OVER THIS WRAPPER, for
-// the same reason as the ones above: the annotation opens a unit of work of its
-// own, and it must land in this request's uow_ms rather than in nobody's.
+// the same reason and with the same hazard as IssueReader.
 func (p timedProvider) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return uow.NewBlockingAnnotator(p)
 }
 
 // TreeWalker builds the dependency-tree walker OVER THIS WRAPPER, for the same
-// reason and with the same hazard as the accessors above: the walk opens one
-// read-only unit of work per call, and it must go through NewUOW below or the
-// tree route reports uow_ms=0.000.
+// reason and with the same hazard as IssueReader.
 func (p timedProvider) TreeWalker() (issueops.TreeWalker, error) {
 	return uow.NewTreeWalker(p)
 }
 
 // ReadyCounter builds the ready counter OVER THIS WRAPPER, for the same reason
-// as the two above: the count opens a unit of work of its own, and it must land
-// in this request's uow_ms rather than in nobody's.
+// and with the same hazard as IssueReader.
 func (p timedProvider) ReadyCounter() (issueops.ReadyCounter, error) {
 	return uow.NewReadyCounter(p)
 }
 
 // Querier builds the boolean-query role OVER THIS WRAPPER, for the same reason
-// as every accessor above: the query opens a read-only unit of work of its own,
-// and it must land in this request's uow_ms rather than in nobody's.
+// and with the same hazard as IssueReader.
 func (p timedProvider) Querier() (issueops.Querier, error) {
 	return uow.NewQuerier(p)
 }
 
-// Sweeper builds the sweeper OVER THIS WRAPPER, for the same reason as the two
-// above and with the sharpest version of the hazard: the sweep is the longest
-// unit of work on this surface, so a sweeper bound to the untimed provider
-// would report uow_ms=0.000 for exactly the request whose duration an operator
-// most wants in the log.
+// Sweeper builds the sweeper OVER THIS WRAPPER, for the same reason and with
+// the same hazard as IssueReader.
 func (p timedProvider) Sweeper() (issueops.Sweeper, error) {
 	return uow.NewSweeper(p)
 }
 
-// Deleter builds the deleter OVER THIS WRAPPER, for the same reason: it opens
-// the request's unit of work, so a deleter bound to the untimed provider would
-// leave the longest transaction on this surface out of uow_ms.
+// Deleter builds the deleter OVER THIS WRAPPER, for the same reason and with
+// the same hazard as IssueReader.
 func (p timedProvider) Deleter() (issueops.Deleter, error) {
 	return uow.NewDeleter(p)
 }
 
 // BatchCreator builds the batch creator OVER THIS WRAPPER, for the same reason
-// as the roles above and with more at stake than any of them: this is the one
-// role here that opens a WRITE unit of work per call, so a creator bound to the
-// untimed provider would report uow_ms=0.000 for the slowest request this
-// server serves.
+// as the roles above. It is the one role here that opens a WRITE unit of work
+// per call.
 func (p timedProvider) BatchCreator() (issueops.BatchCreator, error) {
 	return uow.NewBatchCreator(p)
 }

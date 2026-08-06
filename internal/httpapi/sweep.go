@@ -41,16 +41,14 @@ var sweepMembers = []string{
 // handleSweep answers POST /v0/beads/issues:sweep — one of the two DESTRUCTIVE
 // operations on this surface, the other being issues:delete.
 //
-// WHAT THIS HANDLER DOES NOT DO is the whole point of it. It does not decide
-// which beads are closed, does not match the glob, does not recheck closed_at,
-// does not protect pinned beads, and — the one that matters most — does not
-// implement the require-a-filter safety gate. All of that is
-// issueops.Sweeper, the same library surface `bd prune` calls, so this
-// endpoint could not erase every closed bead in a workspace by omission even
-// if a future edit here forgot the rule existed. That is the reason the gate
-// was moved INTO the role rather than left in the CLI handler that historically
-// owned it: without it, a second front door is one handler away from an
-// unguarded mass delete.
+// WHAT THIS HANDLER DOES NOT DO. It does not decide which beads are closed,
+// does not match the glob, does not recheck closed_at, does not protect pinned
+// beads, and — the one that matters most — does not implement the
+// require-a-filter safety gate. All of that is issueops.Sweeper, the same
+// library surface `bd prune` calls, so this endpoint could not erase every
+// closed bead in a workspace by omission even if a future edit here forgot the
+// rule existed. With the gate in the CLI handler instead, a second front door
+// would be one handler away from an unguarded mass delete.
 //
 // Everything above the role here is argument validation: the media type, the
 // body shape, and the six members the document publishes.
@@ -125,10 +123,9 @@ func (s *Server) sweepRequest(w http.ResponseWriter, r *http.Request) (issueops.
 	// inverted exactly that: locally you opt OUT of protection, remotely you
 	// had to opt IN.
 	//
-	// The cost the default now accepts is a full scan of the not-done set and
-	// its comments. A caller that wants the cheaper sweep asks for it by
-	// sending `protect_referenced: false`, which is the request that should be
-	// the deliberate one.
+	// The cost is a full scan of the not-done set and its comments. A caller
+	// that wants the cheaper sweep asks for it by sending
+	// `protect_referenced: false`.
 	request.ProtectReferenced = true
 
 	raw, ok := members[sweepTierMember]
@@ -145,8 +142,8 @@ func (s *Server) sweepRequest(w http.ResponseWriter, r *http.Request) (issueops.
 	}
 	// The enum check uses the GENERATED validator, which is derived from the
 	// document rather than a second hand-written copy of the vocabulary. The
-	// role refuses an unrecognized tier too — this is here so the refusal can
-	// name the member, not because the role's is in doubt.
+	// role refuses an unrecognized tier too; this is here so the refusal can
+	// name the member.
 	if !apigen.SweepRequestTier(*tier).Valid() {
 		s.fail(w, r, InvalidArgument(sweepTierMember, ReasonInvalidValue,
 			"`"+sweepTierMember+"` must be \"ephemeral\" or \"durable\""))
@@ -162,8 +159,8 @@ func (s *Server) sweepRequest(w http.ResponseWriter, r *http.Request) (issueops.
 			return issueops.SweepRequest{}, false
 		}
 		// The claim's rules, unchanged: trim, then refuse empty, over-long and
-		// any control character. `param` reads "actor" there too, which is what
-		// makes the two operations one vocabulary for a client.
+		// any control character. `param` reads "actor" there too, so the two
+		// operations are one vocabulary for a client.
 		trimmed, res := validateActor(*value)
 		if res != nil {
 			s.fail(w, r, *res)
@@ -229,15 +226,12 @@ func sweepMemberList() string {
 // failSweepErr answers a failed sweep.
 //
 // issueops.ErrValidation is mapped to a 400 HERE rather than in ClassifyError,
-// and this was the FIRST operation to need that: the first whose ROLE performs
-// request validation the handler does not duplicate — the require-a-filter
-// gate, the tier vocabulary and the glob are all refused below the wire — so it
-// was the first place a role's refusal had to reach the client as its own fault
-// instead of as a 500. Delete, tree, edges, blocking and batch-create each draw
-// the same line in their own handler now, for the same reason and deliberately
-// in the same shape. Widening ClassifyError instead would change what every
-// other operation returns for an error it has never produced, which is a bigger
-// claim than any one of these operations is making.
+// because this operation's ROLE performs request validation the handler does
+// not duplicate — the require-a-filter gate, the tier vocabulary and the glob
+// are all refused below the wire. Delete, tree, edges, blocking and batch-create
+// each draw the same line in their own handler, deliberately in the same shape.
+// Widening ClassifyError instead would change what every other operation
+// returns for an error it has never produced.
 func (s *Server) failSweepErr(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, issueops.ErrValidation) {
 		// No `param`: the refusal is about the REQUEST rather than one member

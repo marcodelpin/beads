@@ -14,8 +14,7 @@ import (
 // The shared, DATABASE-FREE half of issueops.Sweeper: what a sweep request
 // means, which candidates survive the recheck, and what counts as a citation.
 // Every implementation of the role runs these, so `bd purge` and `bd prune`
-// have one definition rather than one per backend, and the parts that decide
-// what the answer MEANS are pinned in sweep_test.go in milliseconds.
+// have one definition rather than one per backend.
 //
 // What is NOT here is the sweep itself. Selecting rows and deleting them needs
 // one transaction (issueops.Sweeper.Sweep), which no interface above a store
@@ -25,10 +24,9 @@ import (
 // ValidateSweepRequest applies the request rules every Sweeper implementation
 // shares, before anything is read.
 //
-// The require-a-filter refusal for the durable tier is the one that matters,
-// and it is HERE rather than in a CLI handler on purpose: it is a safety
-// invariant, so a second front door inherits it by calling the role rather
-// than by remembering to re-implement it. See issueops.SweepRequest.
+// The require-a-filter refusal for the durable tier is a safety invariant, so
+// it lives HERE rather than in a CLI handler: a second front door inherits it
+// by calling the role. See issueops.SweepRequest.
 func ValidateSweepRequest(in issueops.SweepRequest) error {
 	switch in.Tier {
 	case issueops.SweepEphemeral, issueops.SweepDurable:
@@ -62,10 +60,9 @@ func ValidateSweepRequest(in issueops.SweepRequest) error {
 // the cutoff.
 //
 // The pattern is deliberately NOT in the filter. Globs are matched in Go
-// (MatchesSweepPattern) because the storage seam has no glob predicate and a
-// LIKE translation would silently disagree with filepath.Match on `[...]` and
-// on the escape rules — a disagreement that, on this operation, decides which
-// rows are deleted.
+// (MatchesSweepPattern) because a LIKE translation would silently disagree with
+// filepath.Match on `[...]` and on the escape rules — a disagreement that, on
+// this operation, decides which rows are deleted.
 //
 // Call ValidateSweepRequest first; this builder assumes a validated request
 // and does not re-refuse one.
@@ -86,8 +83,7 @@ func BuildSweepCandidateFilter(in issueops.SweepRequest) types.IssueFilter {
 // MatchesSweepPattern reports whether an id is admitted by a request's
 // IDPattern. An empty pattern admits everything.
 //
-// A malformed pattern reports false here; ValidateSweepRequest is what refuses
-// it, so this function is never the place a bad glob is discovered.
+// A malformed pattern reports false here; ValidateSweepRequest is what refuses it.
 func MatchesSweepPattern(pattern, id string) bool {
 	if pattern == "" {
 		return true
@@ -103,9 +99,9 @@ func MatchesSweepPattern(pattern, id string) bool {
 // THE ORDER IS PART OF THE ANSWER, and issueops.Sweeper.Sweep states it: the
 // pattern narrows first, so a pinned row the pattern excluded is not counted
 // as protected — it was never a candidate. The three closed_at buckets are
-// defenses against the tier query returning a row it was not asked for, and
-// they are counted rather than dropped so a disagreement between the query and
-// the recheck is visible instead of silent.
+// defenses against the tier query returning a row it was not asked for, counted
+// rather than dropped so a disagreement between the query and the recheck is
+// visible instead of silent.
 //
 // cutoff is the request's ClosedBefore; a nil cutoff performs the presence
 // checks and skips the comparison.
@@ -138,10 +134,10 @@ func FilterSweepCandidates(issues []*types.Issue, pattern string, cutoff *time.T
 }
 
 // SweepDefenseSkips is how many candidates the recheck rejected as
-// self-inconsistent — the three closed_at buckets plus the unreadable row.
-// It is separate from the two PROTECTIONS (pinned, referenced) because a
-// non-zero value here is a defense firing rather than a normal outcome, and
-// the front doors warn on exactly that.
+// self-inconsistent — the three closed_at buckets plus the unreadable row. It
+// is separate from the two PROTECTIONS (pinned, referenced) because a non-zero
+// value here is a defense firing rather than a normal outcome, and the front
+// doors warn on exactly that.
 func SweepDefenseSkips(s issueops.SweepSkips) int {
 	return s.Unreadable + s.NotClosed + s.UnknownClosedAt + s.ClosedAtOrAfterCutoff
 }
@@ -154,8 +150,7 @@ func SweepDefenseSkips(s issueops.SweepSkips) int {
 // what the storage seam takes reliably on both planes (a Statuses set, not an
 // ExcludeStatus). Reading the workspace's custom statuses is required, not
 // best-effort: a scan that missed a custom active status would under-protect
-// and delete a bead a live bead still cites — see
-// issueops.SweepRequest.ProtectReferenced.
+// and delete a bead a live bead still cites.
 func NotDoneStatusesForSweep(custom []types.CustomStatus) []types.Status {
 	statuses := []types.Status{
 		types.StatusOpen,
@@ -183,12 +178,11 @@ func BuildSweepReferenceScanFilter(custom []types.CustomStatus) types.IssueFilte
 // set in arbitrary text. It is the whole of what "cited" means for
 // issueops.SweepRequest.ProtectReferenced.
 //
-// It is bucketed by FIRST BYTE and each bucket sorted longest-first, because
-// the scan is run over every not-done bead's description, notes and comments:
-// a naive strings.Contains per candidate is O(candidates x text) and the
-// reference protection exists on the command that runs over the largest
-// corpora. Longest-first inside a bucket is what makes `be-1.1` win over
-// `be-1` where both are candidates and both start at the same offset.
+// It is bucketed by FIRST BYTE and each bucket sorted longest-first: the scan
+// runs over every not-done bead's description, notes and comments, where a
+// naive strings.Contains per candidate is O(candidates x text). Longest-first
+// inside a bucket is what makes `be-1.1` win over `be-1` where both are
+// candidates and both start at the same offset.
 type CandidateIDMatcher struct {
 	byFirstByte map[byte][]string
 }
@@ -254,10 +248,9 @@ func isASCIIWordByte(b byte) bool {
 
 // PartitionSweepReferenced splits candidates into the ones no not-done row
 // cites and the ones some row does, and returns the bounded sample
-// issueops.SweepResult.ReferencedIDs carries.
-//
-// The kept slice preserves the candidate order, and so does the sample, so two
-// runs over one snapshot report the same ids.
+// issueops.SweepResult.ReferencedIDs carries. Both the kept slice and the
+// sample preserve the candidate order, so two runs over one snapshot report the
+// same ids.
 func PartitionSweepReferenced(candidates []*types.Issue, referenced map[string]bool) (kept []*types.Issue, referencedCount int, sample []string) {
 	kept = make([]*types.Issue, 0, len(candidates))
 	for _, issue := range candidates {

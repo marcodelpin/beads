@@ -14,9 +14,8 @@ import (
 
 // These cover the transport half of POST /v0/beads/issues:batchCreate — the
 // body shape, the refusals this operation owns, and how a role refusal is named
-// on the wire. Everything below the wire — what lands together, what an edge
-// onto an absent target does, the id assignment — is the role's, and is pinned
-// by backend/conformance/batch_creator_contract.go at all three backends.
+// on the wire. Everything below the wire is the role's, pinned by
+// backend/conformance/batch_creator_contract.go at all three backends.
 
 const batchCreatePath = "/v0/beads/issues:batchCreate"
 
@@ -87,8 +86,7 @@ func TestBatchCreatePassesTheRequestToTheRoleAndAnswersWithWhatItCreated(t *test
 		t.Errorf("item 1 = %+v, want the wire's description and no priority", *got.Items[1].Issue)
 	}
 	// No provenance: the file name a CLI batch spells has no analogue here, so
-	// the entry reads as the implementation's default rather than as a lie
-	// about where the request came from.
+	// the entry reads as the implementation's default rather than as a lie.
 	if got.Provenance != "" {
 		t.Errorf("provenance = %q, want empty: this surface names no source file", got.Provenance)
 	}
@@ -170,14 +168,12 @@ func TestBatchCreateRefusesAnOversizeBatch(t *testing.T) {
 }
 
 // TestBatchCreateNamesARoleRefusalInTheServersOwnWords is the case
-// failBatchCreate exists for.
-//
-// The absent-target refusal arrives as ErrValidation WRAPPING ErrNotFound, and
-// the shared classifier reaches ErrNotFound first — so without the operation's
-// own failure path this 400 would be a 404 for a request that addressed no
-// resource at all. The detail is the server's own sentence: the role's carries
-// a driver error naming tables and constraints, and 4xx details here reflect
-// the caller's input rather than server internals.
+// failBatchCreate exists for. The absent-target refusal arrives as
+// ErrValidation WRAPPING ErrNotFound, and the shared classifier reaches
+// ErrNotFound first — so without the operation's own failure path this 400
+// would be a 404 for a request that addressed no resource at all. The detail
+// is the server's own sentence: the role's carries a driver error naming
+// tables and constraints.
 func TestBatchCreateNamesARoleRefusalInTheServersOwnWords(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -234,12 +230,9 @@ func TestBatchCreateReportsANonValidationRoleFailureAsTheGenericFailure(t *testi
 	}
 }
 
-// TestBatchCreateRefusesACreatorThatAnswersWithNothing pins checkedBatchCreator.
-//
-// The response body carries issue VALUES where the role answers with pointers,
-// so a nil entry is a nil dereference in the handler. It is the generic 500
-// with the fault in the log — not a 404, because nothing here knows an issue is
-// missing — and above all not a panic.
+// TestBatchCreateRefusesACreatorThatAnswersWithNothing pins
+// checkedBatchCreator: a nil entry would be a nil dereference in the handler,
+// so it is the generic 500 and above all not a panic.
 func TestBatchCreateRefusesACreatorThatAnswersWithNothing(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -263,9 +256,7 @@ func TestBatchCreateRefusesACreatorThatAnswersWithNothing(t *testing.T) {
 // TestBatchCreateRefusesANonJSONContentType pins the CSRF control this
 // operation inherits from the claim: a JSON content type is not CORS-"simple",
 // so a cross-origin write always triggers a preflight this server never
-// approves. It is the second write on this surface and the first one that
-// creates rows, so accepting text/plain here would be strictly worse than
-// accepting it there.
+// approves.
 func TestBatchCreateRefusesANonJSONContentType(t *testing.T) {
 	creator := &roleBatchCreator{}
 	ts := newBatchCreateServer(t, creator)

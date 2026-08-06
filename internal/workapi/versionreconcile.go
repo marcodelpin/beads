@@ -14,58 +14,42 @@ import (
 // answer cannot differ by backend, and the cases that matter (a downgrade below
 // the marker, a downgrade below the mark, a catch-up to the mark) are pinned in
 // milliseconds without a database.
-//
-// It is ALSO where the duplication went. Before this role, the direct route
-// compared versions in cmd/bd/version_tracking.go and the proxied route
-// compared them again in a use case, each with its own copy of the dotted
-// comparison; the two agreed, but nothing made them agree and no test compared
-// them. The conformance contract is left to assert what only a real backend can
-// show: that the markers persist, that a refusal writes nothing, and that
-// neither the read nor the write touches history.
 
 // MetadataKeyVersion and MetadataKeyVersionMax are the two clone-local,
-// dolt-ignored keys the version markers live under.
-//
-// They are named here rather than spelled at each call site because three
-// implementations and three conformance wirings write them, and a key spelled
-// differently in one of those places is a marker nothing else can find — which
-// looks exactly like a workspace that was never reconciled.
+// dolt-ignored keys the version markers live under. Three implementations and
+// three conformance wirings write them, and a key spelled differently in one of
+// those places is a marker nothing else can find — which looks exactly like a
+// workspace that was never reconciled.
 const (
 	MetadataKeyVersion    = "bd_version"
 	MetadataKeyVersionMax = "bd_version_max"
 )
 
 // VersionReconcilePlan is what a reconciliation decided, plus which of the two
-// markers that decision has to write.
-//
-// The writes are reported as flags rather than performed here because the three
-// backends reach the metadata plane differently — two through a store handle,
-// one through a unit of work — and the decision is the same on all of them.
+// markers that decision has to write. The writes are reported as flags rather
+// than performed here because the three backends reach the metadata plane
+// differently — two through a store handle, one through a unit of work.
 type VersionReconcilePlan struct {
 	// Result is what the caller returns, unchanged, once the writes below
-	// succeed. It is complete before any write happens, which is what makes
-	// "a failed reconciliation reports an error rather than a wrong outcome"
-	// checkable: there is no field a partial write could still be filling in.
+	// succeed. It is complete before any write happens, so there is no field a
+	// partial write could still be filling in.
 	Result issueops.VersionReconcileResult
 	// RecordVersion asks for MetadataKeyVersion to be set to Result.Current.
 	// It is set only for a migration; a no-op and a refusal both write nothing.
 	RecordVersion bool
 	// RecordHighWaterMark asks for MetadataKeyVersionMax to be set to
-	// Result.Current, and is a SEPARATE flag because the mark and the marker do
-	// not always move together: a workspace catching up to a mark a newer
-	// binary already left moves the marker to the mark and leaves the mark
-	// where it is.
+	// Result.Current. It is a SEPARATE flag because the two do not always move
+	// together: a workspace catching up to a mark a newer binary already left
+	// moves the marker to the mark and leaves the mark where it is.
 	RecordHighWaterMark bool
 }
 
 // ValidateReconcileVersion checks the version a caller wants to record, and
 // returns it unchanged.
 //
-// It is separate from the planner so a body can refuse BEFORE it reads
-// anything or opens a unit of work — the same reason
-// issueops.WorkspaceConfig's bodies validate ahead of RunTx. This runs on
-// every startup, so a refusal that costs a round trip is a refusal that costs
-// every command.
+// It is separate from the planner so a body can refuse BEFORE it reads anything
+// or opens a unit of work. This runs on every startup, so a refusal that costs
+// a round trip is a refusal that costs every command.
 //
 // The only rule at this end is that a version has to name something. Recording
 // "" over a real marker would silently take the downgrade guard down with it,
@@ -101,7 +85,7 @@ func PlanVersionReconcile(cliVersion, recorded, highWaterMark string) (VersionRe
 	// it means an older binary is opening a workspace a newer one has already
 	// prepared, and relabelling it would make the next upgrade re-run work that
 	// is already done. The mark catches the same thing after someone has since
-	// moved the marker back down; it is the only reason the second key exists.
+	// moved the marker back down — the only reason the second key exists.
 	refuse := (recorded != "" && compareDottedVersions(cliVersion, recorded) < 0) ||
 		(highWaterMark != "" && compareDottedVersions(cliVersion, highWaterMark) < 0)
 	if refuse {
@@ -123,9 +107,8 @@ func PlanVersionReconcile(cliVersion, recorded, highWaterMark string) (VersionRe
 // It is deliberately NOT a semver comparison, and issueops.VersionReconcileRequest
 // says so where callers will read it: "1.2.0" and "1.2.0-rc1" compare EQUAL
 // here, so a pre-release binary reconciles a workspace its release counterpart
-// already recorded without either refusing the other. Both front doors have
-// compared versions this way since the markers existed, and tightening it would
-// start refusing binaries that work today.
+// already recorded without either refusing the other. Tightening it would start
+// refusing binaries that work today.
 func compareDottedVersions(v1, v2 string) int {
 	parts1 := strings.Split(v1, ".")
 	parts2 := strings.Split(v2, ".")

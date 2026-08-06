@@ -15,42 +15,24 @@ import (
 // disagrees is parked at its own wiring site with skipKnownDivergence so the
 // case still runs on the ones that agree.
 //
-// THE TWO ROLES SHARE ONE CONTRACT FILE because they share one plane and every
-// promise on either of them is a statement about the other. Bootstrap's promise
-// is "a later VerifyIdentity answers with this result"; the verifier's promise
-// is that absence and unreadability are different answers, which is only
-// checkable against a substrate a bootstrap did or did not reach. Splitting
-// them would mean each file seeding the state the other one writes.
+// THE TWO ROLES SHARE ONE CONTRACT FILE because they share one plane: bootstrap's
+// promise is "a later VerifyIdentity answers with this result", and the
+// verifier's promise is only checkable against a substrate a bootstrap did or did
+// not reach.
 //
-// WHAT THIS CONTRACT IS FOR, given that the decision is elsewhere. All three
-// backends validate through workapi.ValidateBootstrapRequest and decide the
-// refusal through workapi.RefuseIdentifiedSubstrate, and those two functions'
-// whole tables — each required field, the trailing-hyphen normalization, all
-// three identified shapes — are pinned without a database in
-// internal/workapi/bootstrap_test.go. Repeating them here would be testing one
-// pure function three times over three sql-servers. What only a real backend
-// can show is the SUBSTRATE half:
-//
-//   - that the identity is there for the NEXT caller, which on the
-//     unit-of-work backend means a different transaction;
-//   - that a REFUSAL WROTE NOTHING — a statement about the keys on disk rather
-//     than about the error the validator already returned, and the one that
-//     matters most, because the whole point of Q8's ruling is that running init
-//     twice must not relabel a workspace other rigs are already minting ids
-//     against;
-//   - that the verifier reports a FAILED READ as an error rather than as an
-//     empty identity, which is the difference between "this database is
-//     unprovisioned, bootstrap it" and "this connection dropped";
-//   - that a bootstrap costs AT MOST ONE version-control entry rather than one
-//     per key.
+// The decision itself is elsewhere. All three backends validate through
+// workapi.ValidateBootstrapRequest and decide the refusal through
+// workapi.RefuseIdentifiedSubstrate, and those two functions' whole tables are
+// pinned without a database in internal/workapi/bootstrap_test.go. What only a
+// real backend can show is the SUBSTRATE half: that the identity is there for the
+// NEXT caller, that a REFUSAL WROTE NOTHING, that a failed read is an error
+// rather than an empty identity, and that a bootstrap costs AT MOST ONE
+// version-control entry.
 //
 // THE IDENTITY IS GLOBAL TO A WORKSPACE and cannot be namespaced the way the
-// issue contracts namespace their seeded ids: two keys are the point, and a
-// case that wrote them under a per-test name would assert nothing about the
-// pair the roles actually read. Every case therefore SEEDS the identity
-// explicitly through the fixture's out-of-band hook before it asserts, so the
-// cases are order-independent over one shared plane rather than a sequence that
-// has to run in order.
+// issue contracts namespace their seeded ids. Every case therefore SEEDS the
+// identity explicitly through the fixture's out-of-band hook before it asserts,
+// so the cases are order-independent over one shared plane.
 //
 // There are three wirings and only TWO independent bodies between them: dolt
 // and embeddeddolt both run internal/storage/issueops.BootstrapInTx and
@@ -62,8 +44,6 @@ import (
 // BootstrapperFixture supplies adapter-specific storage access for the identity
 // assertions.
 type BootstrapperFixture struct {
-	// Bootstrapper and InitVerifier are the two surfaces under test, taken
-	// from the backend's own capability accessors.
 	Bootstrapper publicops.Bootstrapper
 	InitVerifier publicops.InitVerifier
 	// SeedIdentity writes the two identity markers OUT OF BAND, past both
@@ -71,12 +51,9 @@ type BootstrapperFixture struct {
 	// empty string means "this substrate carries no such marker", which the
 	// roles read identically to an absent row (initverifier.go:13-19).
 	//
-	// It is NOT a roleFixtureKit hook — the kit is frozen, and it can seed a
-	// prefix but has no way to UNSEED one, which is the state a bootstrap needs
-	// to be reachable at all on a database its own test harness already
-	// initialized. Each wiring supplies its own short closure over the config
-	// and metadata seams that backend already publishes, the way the version
-	// contract supplies RecordMarkers.
+	// It is NOT a roleFixtureKit hook: the kit has no way to UNSEED a prefix,
+	// which is the state a bootstrap needs to be reachable at all on a database
+	// its own test harness already initialized.
 	SeedIdentity func(ctx context.Context, prefix, projectID string) error
 	// CountHistory reports how many history entries the fixture's branch has.
 	// A nil hook means "this backend cannot observe history", and the case that
@@ -113,9 +90,8 @@ func RunBootstrapperIdentifiesAFreshSubstrate(t *testing.T, ctx context.Context,
 // request.
 //
 // It is here as well as in the pure test because the normalization has to
-// survive the WRITE. Two of the three backends pass this key through a settings
-// plane that normalizes it again and one does not, which is exactly the way a
-// caller ends up with a prefix that depends on which route it initialized from.
+// survive the WRITE: two of the three backends pass this key through a settings
+// plane that normalizes it again and one does not.
 func RunBootstrapperStoresThePrefixWithoutItsTrailingHyphen(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "", "")
@@ -164,9 +140,8 @@ func RunBootstrapperRefusesAnIdentifiedSubstrate(t *testing.T, ctx context.Conte
 // half of the refusal.
 //
 // This is the shape that is NOT a re-init: a database several rigs share, or one
-// a provisioning tool stamped with a prefix, carries the prefix without a
-// project id. A bootstrap that keyed its refusal on the project id alone would
-// overwrite it and rename every id those rigs are about to mint.
+// a provisioning tool stamped, carries the prefix without a project id. A
+// bootstrap that keyed its refusal on the project id alone would overwrite it.
 func RunBootstrapperRefusesASubstrateCarryingOnlyAPrefix(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "acmeprefixonly", "")
@@ -184,9 +159,7 @@ func RunBootstrapperRefusesASubstrateCarryingOnlyAPrefix(t *testing.T, ctx conte
 // RunBootstrapperRefusesASubstrateCarryingOnlyAProjectID pins the other half.
 // It is the state a bootstrap that failed partway leaves behind on a backend
 // with no transaction to roll back, and bootstrapper.go's "ATOMICITY IS NOT
-// PROMISED ACROSS THE WHOLE WRITE" says it is refused rather than finished —
-// the safe direction, because the alternative is a retry that completes an
-// identity it did not choose.
+// PROMISED ACROSS THE WHOLE WRITE" says it is refused rather than finished.
 func RunBootstrapperRefusesASubstrateCarryingOnlyAProjectID(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "", "proj-idonly")
@@ -204,10 +177,9 @@ func RunBootstrapperRefusesASubstrateCarryingOnlyAProjectID(t *testing.T, ctx co
 // RunBootstrapperRefusesAnInvalidRequestWithoutWriting pins bootstrapper.go's
 // ErrValidation clauses against the substrate rather than against the error.
 //
-// Both facts matter and the second is why this case reads the identity back: a
-// body that validated AFTER its first write would leave a prefix on a substrate
-// the caller was told it had failed to bootstrap, and the next attempt would
-// then hit the refusal above.
+// The case reads the identity back because a body that validated AFTER its first
+// write would leave a prefix on a substrate the caller was told it had failed to
+// bootstrap, and the next attempt would then hit the refusal above.
 func RunBootstrapperRefusesAnInvalidRequestWithoutWriting(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "", "")
@@ -224,11 +196,10 @@ func RunBootstrapperRefusesAnInvalidRequestWithoutWriting(t *testing.T, ctx cont
 // RunBootstrapperLeavesTheSubstrateUntouchedWhenItCannotComplete pins the case
 // that separates a failure from a refusal.
 //
-// A canceled context is the one failure every backend can be made to have. It is
-// not the only one they will meet in the field, but a body that respects
-// cancellation on the way in is a body that has not written before it looked —
-// and the workspace it leaves behind is one the next attempt can still
-// bootstrap, rather than one the refusal above will reject forever.
+// A canceled context is the one failure every backend can be made to have. A
+// body that respects cancellation on the way in has not written before it
+// looked, so the workspace it leaves behind is one the next attempt can still
+// bootstrap rather than one the refusal above will reject forever.
 func RunBootstrapperLeavesTheSubstrateUntouchedWhenItCannotComplete(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "", "")
@@ -248,12 +219,10 @@ func RunBootstrapperLeavesTheSubstrateUntouchedWhenItCannotComplete(t *testing.T
 // RunBootstrapperRecordsAtMostOneHistoryEntry pins bootstrapper.go's "AT MOST
 // ONE VERSION-CONTROL ENTRY".
 //
-// The promise is deliberately an upper bound rather than a number: the identity
-// lands on planes that travel, so a backend that commits at all is right to
-// record the bootstrap, and one whose front door commits the whole of `bd init`
-// afterwards is right to record none. What it forbids is the shape a caller
-// writing these six values through six ordinary setters gets, which is six
-// entries.
+// The promise is an upper bound rather than a number: a backend that commits at
+// all is right to record the bootstrap, and one whose front door commits the
+// whole of `bd init` afterwards is right to record none. What it forbids is the
+// one-entry-per-key shape six ordinary setters would produce.
 func RunBootstrapperRecordsAtMostOneHistoryEntry(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {
@@ -282,9 +251,9 @@ func RunBootstrapperRecordsAtMostOneHistoryEntry(t *testing.T, ctx context.Conte
 // initverifier.go:13-19: "" is a NORMAL ANSWER, not an error and not a missing
 // row to classify.
 //
-// It is the answer the one caller that matters acts on — `bd init` deciding
-// whether there is anything to adopt — and turning it into ErrNotFound would
-// make the ordinary case look like a failure.
+// It is the answer `bd init` acts on when it decides whether there is anything
+// to adopt, so turning it into ErrNotFound would make the ordinary case look
+// like a failure.
 func RunInitVerifierAnswersEmptyForAnUnidentifiedSubstrate(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "", "")
@@ -301,12 +270,8 @@ func RunInitVerifierAnswersEmptyForAnUnidentifiedSubstrate(t *testing.T, ctx con
 // RunInitVerifierReportsAPartialIdentityAsItStands pins the verifier's job on
 // the state the refusal cases care about: it REPORTS what is there, marker by
 // marker, rather than collapsing a half-identified substrate into identified or
-// unidentified.
-//
-// That is what lets its caller tell a database a provisioning tool stamped with
-// a prefix apart from a bootstrap that failed partway — two states with the same
-// answer to "is this identified?" and different answers to "what should happen
-// next?".
+// unidentified. That is what lets its caller tell a database a provisioning tool
+// stamped with a prefix apart from a bootstrap that failed partway.
 func RunInitVerifierReportsAPartialIdentityAsItStands(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	seedWorkspaceIdentity(t, ctx, fixture, "acmepartial", "")
@@ -340,10 +305,8 @@ func RunInitVerifierReportsAFailedReadAsAnError(t *testing.T, ctx context.Contex
 }
 
 // RunInitVerifierWritesNothing pins initverifier.go's "IT WRITES NOTHING",
-// including the version-control entry: a verifier that repaired or recorded what
-// it found would be the bootstrap these two roles exist to keep separate, and a
-// read that committed would put an entry in the log of every workspace `bd init`
-// merely LOOKED at.
+// including the version-control entry: a read that committed would put an entry
+// in the log of every workspace `bd init` merely LOOKED at.
 func RunInitVerifierWritesNothing(t *testing.T, ctx context.Context, fixture BootstrapperFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {
@@ -397,8 +360,7 @@ func verifyWorkspaceIdentity(t *testing.T, ctx context.Context, fixture Bootstra
 }
 
 // assertWorkspaceIdentity reads the pair back THROUGH InitVerifier, which is the
-// promise being checked: bootstrapper.go says a later VerifyIdentity is what
-// "bootstrapped" means, and on the unit-of-work backend that read is a new
+// promise being checked. On the unit-of-work backend that read is a new
 // transaction — the only place a write that never committed shows up.
 func assertWorkspaceIdentity(t *testing.T, ctx context.Context, fixture BootstrapperFixture, prefix, projectID string) {
 	t.Helper()

@@ -8,14 +8,12 @@ import (
 )
 
 // The two projections `bd list` performs between its roles and its formatters.
-// Both routes call them, so a regression here is one that shows up on both at
-// once — which is exactly why they are pinned somewhere ungated rather than only
-// in the embedded and proxied suites.
+// Both routes call them, so a regression here shows up on both at once.
 
 // TestListPageIssuesKeepsThePageOrder pins the one thing the projection must not
-// do: reorder. The page's order is issueops.Reader.List's epilogue's decision,
-// and a projection that rebuilt the slice from a map would silently replace it
-// with map-iteration order.
+// do: reorder. The page's order is issueops.Reader.List's decision, and a
+// projection that rebuilt the slice from a map would replace it with
+// map-iteration order.
 func TestListPageIssuesKeepsThePageOrder(t *testing.T) {
 	page := issueops.IssuePage{
 		Items: []*types.IssueWithCounts{
@@ -41,9 +39,9 @@ func TestListPageIssuesKeepsThePageOrder(t *testing.T) {
 	}
 }
 
-// TestListPageIssuesDropsANilRowRatherThanPanicking pins the defensive half. The
-// role promises no nil row for a successful call; a listing is not where a
-// broken implementation of it should become a panic in front of a user.
+// TestListPageIssuesDropsANilRowRatherThanPanicking pins the defensive half: the
+// role promises no nil row, and a listing is not where a broken implementation
+// of it should become a panic in front of a user.
 func TestListPageIssuesDropsANilRowRatherThanPanicking(t *testing.T) {
 	page := issueops.IssuePage{Items: []*types.IssueWithCounts{
 		{Issue: &types.Issue{ID: "bd-1"}},
@@ -61,11 +59,10 @@ func TestListPageIssuesDropsANilRowRatherThanPanicking(t *testing.T) {
 // TestNewListBlockingKeysTheDecorationByID pins the other projection: the role
 // answers with a slice in request order, and the formatters index by id.
 //
-// The empty entry is the case worth having. formatDependencyInfo prints nothing
-// when all three are empty, and it reaches that decision through
-// `len(blockedBy) == 0 && len(blocks) == 0 && parent == ""` on the values these
-// maps hand back — so an absent key and an empty slice have to read the same,
-// which is what leaving the key out establishes.
+// The empty entry is the case worth having: formatDependencyInfo decides
+// through `len(blockedBy) == 0 && len(blocks) == 0 && parent == ""` on the
+// values these maps hand back, so an absent key and an empty slice have to read
+// the same.
 func TestNewListBlockingKeysTheDecorationByID(t *testing.T) {
 	blocking := newListBlocking(issueops.BlockingResult{Items: []issueops.IssueBlocking{
 		{ID: "bd-1", BlockedBy: []string{"bd-2", "bd-3"}, Blocks: []string{}, Parent: "bd-9"},

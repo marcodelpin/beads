@@ -39,10 +39,9 @@ var _ publicops.EdgeReader = (*edgeReader)(nil)
 // store-backed bodies get from a shared read transaction.
 //
 // The probe is the two batched by-id reads, one per plane, rather than the
-// per-id issue-then-wisp fallback Relations uses: this role's whole reason to
-// exist is that its question is asked about many anchors at once, and a probe
-// that fanned out per id would put the round trips back that the batched edge
-// read removed.
+// per-id issue-then-wisp fallback Relations uses: this role's question is asked
+// about many anchors at once, and a probe that fanned out per id would put back
+// the round trips the batched edge read removed.
 func (r *edgeReader) ReadEdges(ctx context.Context, request publicops.EdgeReadRequest) (publicops.EdgeReadResult, error) {
 	if err := storageissueops.ValidateEdgeReadRequest(request); err != nil {
 		return publicops.EdgeReadResult{}, err
@@ -76,9 +75,9 @@ func (r *edgeReader) ReadEdges(ctx context.Context, request publicops.EdgeReadRe
 			return publicops.EdgeReadResult{}, err
 		}
 		// The type filter and the order run HERE rather than in the reads
-		// above, so both implementations narrow and order through one
-		// function; a filter pushed into one side's query would put the
-		// narrowing in SQL on one backend and in Go on the other.
+		// above, so both implementations narrow and order through one function;
+		// a filter pushed into one side's query would put the narrowing in SQL
+		// on one backend and in Go on the other.
 		return storageissueops.FinishEdgeRead(anchors, present, edges, request.Types), nil
 	})
 }

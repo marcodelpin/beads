@@ -23,46 +23,35 @@ import (
 // provider is the second, and it is a genuinely different body:
 // GetBlockingInfoAcrossIssuesAndWisps reads BOTH dependency tiers for every id
 // and merges, where the store side partitions the ids by plane and reads each
-// one's outbound edges from the tier it lives on, and it resolves blocker
-// statuses only for the ids a row mentioned rather than for the whole batch.
+// one's outbound edges from the tier it lives on.
 //
-// What all three share is ValidateBlockingRequest, EdgeReadAnchors and
-// FinishBlockingAnnotation — the request rule, the de-duplication and the
-// order — so what these cases can catch below those three is the EXECUTION
-// half: which tier each seam reads, which row's status it consults to decide an
-// edge is live, and whether the reads see one snapshot.
+// All three share ValidateBlockingRequest, EdgeReadAnchors and
+// FinishBlockingAnnotation, so what these cases can catch below those three is
+// the EXECUTION half: which tier each seam reads, which row's status it consults
+// to decide an edge is live, and whether the reads see one snapshot.
 //
-// EVERY CASE NAMES THE EXACT IDS IT SEEDED, for the reason the stored-edge
-// contract next door gives: the three fixtures share one database per suite and
-// the two store fixtures share it with every other role's cases, so an
-// assertion about "every annotation" would be an assertion about the whole
-// workspace.
+// EVERY CASE NAMES THE EXACT IDS IT SEEDED: the three fixtures share one
+// database per suite and the two store fixtures share it with every other
+// role's cases, so an assertion about "every annotation" would be an assertion
+// about the whole workspace.
 //
-// What is deliberately NOT here:
-//   - existence, which this role does not probe and has no flag for
-//     (blockingannotator.go:101-106). The ghost case asserts the ABSENCE of a
-//     distinction, which is the promise;
-//   - the mapping from a page of issues to a request, which is the command's job;
-//   - the edge TYPES outside `blocks` and `parent-child`. They are EdgeReader's
-//     answer, and the filter case here pins that they are absent from this one.
+// Deliberately NOT here: existence, which this role does not probe and has no
+// flag for (blockingannotator.go:101-106); the mapping from a page of issues to a
+// request, which is the command's job; and the edge TYPES outside `blocks` and
+// `parent-child`, which are EdgeReader's answer.
 
 // BlockingAnnotatorFixture supplies adapter-specific storage access for the
 // blocking-annotation assertions. Every field is named and typed exactly like
-// the per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
-// accessor plus prefix with no adapter in between.
+// the per-backend roleFixtureKit hook it is filled from.
 type BlockingAnnotatorFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
 	IssuePrefix string
 	Annotator   publicops.BlockingAnnotator
-	// CreateIssue seeds a durable issue in the issues plane. The seed carries a
-	// STATUS, which is how the closed-blocker cases build their fixtures: this
-	// role's whole derivation is a status test, and closing through a lifecycle
-	// role would make the cases depend on a second role's behavior.
+	// CreateIssue seeds a durable issue in the issues plane, carrying the STATUS
+	// the closed-blocker cases need.
 	CreateIssue func(context.Context, *types.Issue, string) error
-	// CreateWisp seeds an ephemeral issue in the wisps plane. It is a separate
-	// field rather than an Ephemeral flag on CreateIssue because the three
-	// adapters reach the two planes through different verbs.
+	// CreateWisp seeds an ephemeral issue in the wisps plane.
 	CreateWisp func(context.Context, *types.Issue, string) error
 	// AddDependency seeds ONE edge, routed to the plane the edge's source lives
 	// in.
@@ -78,8 +67,8 @@ type BlockingAnnotatorFixture struct {
 // request named them.
 //
 // The ids are seeded in the REVERSE of the order the request asks for them, so a
-// body that answered in the storage seam's natural order — which for a batched
-// read is ascending by id — would fail here rather than passing by coincidence.
+// body answering in the storage seam's natural ascending-by-id order would fail
+// here rather than pass by coincidence.
 func RunBlockingAnnotatorAnswersOnePerIDInRequestOrder(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	first := fixture.IssuePrefix + "-order-c"
@@ -95,8 +84,7 @@ func RunBlockingAnnotatorAnswersOnePerIDInRequestOrder(t *testing.T, ctx context
 // id named twice is one entry, at the position of its first mention.
 //
 // The repeat is placed AFTER a different id, so a body that de-duplicated by
-// sorting rather than by first-mention order would answer b, a instead of a, b
-// and fail.
+// sorting rather than by first mention would answer b, a instead of a, b.
 func RunBlockingAnnotatorCollapsesRepeatedIDs(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	first := fixture.IssuePrefix + "-dup-b"
@@ -114,8 +102,7 @@ func RunBlockingAnnotatorCollapsesRepeatedIDs(t *testing.T, ctx context.Context,
 // closed.
 //
 // Both blockers are seeded, so the case separates "dropped because closed" from
-// "never read at all": an implementation that returned no blockers would fail
-// the first half, and one that ignored status would fail the second.
+// "never read at all".
 func RunBlockingAnnotatorReportsOpenBlockersOnly(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	blocked := fixture.IssuePrefix + "-open-blocked"
@@ -136,8 +123,7 @@ func RunBlockingAnnotatorReportsOpenBlockersOnly(t *testing.T, ctx context.Conte
 //
 // The two halves read the status of DIFFERENT rows to reach the same rule — an
 // edge is live exactly when its blocker is open — so an implementation that
-// checked the wrong end would pass one half and fail the other. Both are
-// asserted from the same seeded graph for that reason.
+// checked the wrong end would pass one half and fail the other.
 func RunBlockingAnnotatorReportsTheInboundDirection(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	openBlocker := fixture.IssuePrefix + "-inbound-live"
@@ -152,20 +138,18 @@ func RunBlockingAnnotatorReportsTheInboundDirection(t *testing.T, ctx context.Co
 
 	result := annotateBlocking(t, ctx, fixture, publicops.BlockingRequest{IDs: []string{openBlocker, closedBlocker}})
 	assertBlocks(t, result, openBlocker, blockedA, blockedB)
-	// The closed one still HAS an inbound edge; what it does not have is a live
-	// one, which is the whole point of asserting it here rather than seeding no
-	// edge at all.
+	// The closed one still HAS an inbound edge; what it does not have is a live one.
 	assertBlocks(t, result, closedBlocker)
 }
 
 // RunBlockingAnnotatorSeparatesParentFromBlockers pins
-// blockingannotator.go:55-56 together with :41-53: a `parent-child` edge is the
+// blockingannotator.go:55-56 together with :38-49: a `parent-child` edge is the
 // Parent and is NOT a blocker, in either direction.
 //
-// The second half is the one that catches a real defect. `parent-child` and
-// `blocks` come back from ONE query in both bodies, so an implementation that
-// forgot to split on type would report a child as blocked by its parent — which
-// is what the compact listing's status icon reads to decide a row is blocked.
+// `parent-child` and `blocks` come back from ONE query in both bodies, so an
+// implementation that forgot to split on type would report a child as blocked by
+// its parent — which is what the compact listing's status icon reads to decide a
+// row is blocked.
 func RunBlockingAnnotatorSeparatesParentFromBlockers(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	parent := fixture.IssuePrefix + "-parent-up"
@@ -177,8 +161,6 @@ func RunBlockingAnnotatorSeparatesParentFromBlockers(t *testing.T, ctx context.C
 	assertParent(t, result, child, parent)
 	assertBlockedBy(t, result, child)
 	assertBlocks(t, result, child)
-	// And nothing lands on the parent: the structural edge is not an inbound
-	// block, so the parent neither blocks nor is blocked by its child.
 	assertParent(t, result, parent, "")
 	assertBlockedBy(t, result, parent)
 	assertBlocks(t, result, parent)
@@ -189,8 +171,7 @@ func RunBlockingAnnotatorSeparatesParentFromBlockers(t *testing.T, ctx context.C
 //
 // It is the same status rule the blocker arm applies, on the arm where it is
 // easiest to forget: the parent is structural rather than blocking, so an
-// implementation could reasonably have decided a closed parent is still a
-// parent. The doc says it is not, and this is what says so.
+// implementation could reasonably have decided a closed parent is still a parent.
 func RunBlockingAnnotatorDropsAClosedParent(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	child := fixture.IssuePrefix + "-deadparent-child"
@@ -207,9 +188,9 @@ func RunBlockingAnnotatorDropsAClosedParent(t *testing.T, ctx context.Context, f
 // blockingannotator.go:129-134: ascending by id, repeats collapsed.
 //
 // The three blockers are seeded in an order that is neither ascending nor its
-// reverse, so an implementation answering in insertion order fails here. It is a
-// promise worth pinning because both lists are joined into ONE LINE of `bd list`
-// output, so the query's natural order is user-visible bytes.
+// reverse, so an implementation answering in insertion order fails here. Both
+// lists are joined into ONE LINE of `bd list` output, so the query's natural
+// order is user-visible bytes.
 func RunBlockingAnnotatorOrdersAndCollapsesEachList(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	blocked := fixture.IssuePrefix + "-sort-src"
@@ -230,10 +211,9 @@ func RunBlockingAnnotatorOrdersAndCollapsesEachList(t *testing.T, ctx context.Co
 // blocks, because an unreadable status is not `closed`.
 //
 // Two flavors are seeded — an `external:` reference and a dangling id in another
-// repository's prefix — because they take different typed target columns and a
-// body that read only one of them would pass with the other. This is the
-// conservative reading, and the case exists so that "we could not find the
-// blocker, so the work is ready" can never be introduced as an optimization.
+// repository's prefix — because they take different typed target columns. The
+// case exists so that "we could not find the blocker, so the work is ready" can
+// never be introduced as an optimization.
 func RunBlockingAnnotatorCountsAnUnresolvableBlockerAsOpen(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	blocked := fixture.IssuePrefix + "-ghostblocker-src"
@@ -251,13 +231,8 @@ func RunBlockingAnnotatorCountsAnUnresolvableBlockerAsOpen(t *testing.T, ctx con
 // RunBlockingAnnotatorReadsBothPlanes pins blockingannotator.go:125-127: the two
 // planes are one graph.
 //
-// It is the case most likely to catch a real divergence, because the two bodies
-// reach the tiers by different routes: the store side PARTITIONS the ids and
-// reads each one's outbound edges from the tier it lives on, and the
-// unit-of-work side reads both tiers for every id and merges. Both directions
-// are exercised from one graph — a wisp blocked by a durable issue, and the
-// durable issue's inbound view of the same edge — because the outbound read is
-// the partitioned one and the inbound read is not.
+// Both directions are exercised from one graph because the outbound read is the
+// partitioned one and the inbound read is not.
 func RunBlockingAnnotatorReadsBothPlanes(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	wisp := fixture.IssuePrefix + "-plane-wisp"
@@ -273,11 +248,9 @@ func RunBlockingAnnotatorReadsBothPlanes(t *testing.T, ctx context.Context, fixt
 
 // RunBlockingAnnotatorIgnoresNonBlockingEdgeTypes pins the narrowing at
 // blockingannotator.go:85-91: this role answers about two edge types out of the
-// whole vocabulary, and the rest are EdgeReader's.
-//
-// A `related` edge is the case worth having: it is the type a workspace uses
-// most freely, and an implementation that annotated every stored edge would
-// print half a knowledge graph beside every listing row.
+// whole vocabulary, and the rest are EdgeReader's. An implementation that
+// annotated every stored edge would print half a knowledge graph beside every
+// listing row.
 func RunBlockingAnnotatorIgnoresNonBlockingEdgeTypes(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-type-src"
@@ -289,7 +262,6 @@ func RunBlockingAnnotatorIgnoresNonBlockingEdgeTypes(t *testing.T, ctx context.C
 
 	result := annotateBlocking(t, ctx, fixture, publicops.BlockingRequest{IDs: []string{anchor, related}})
 	assertBlockedBy(t, result, anchor, blocker)
-	// And the far end of the `related` edge is not blocking anything either.
 	assertBlocks(t, result, related)
 }
 
@@ -298,10 +270,9 @@ func RunBlockingAnnotatorIgnoresNonBlockingEdgeTypes(t *testing.T, ctx context.C
 //
 // It asserts the ABSENCE of a distinction, which is why it seeds both halves: an
 // id that exists with no live edges and an id that exists nowhere must be
-// indistinguishable in the answer. An implementation that added a miss flag, or
-// that dropped the absent id, or that failed the call for it, fails here. The
-// never-nil clause at :44-45 and :53 is checked on the same answer, because a bare
-// entry is exactly where a nil slice would survive.
+// indistinguishable in the answer. The never-nil clause at :41-42 and :49 is
+// checked on the same answer, because a bare entry is exactly where a nil slice
+// would survive.
 func RunBlockingAnnotatorAnnotatesAnAbsentIDBare(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	bare := fixture.IssuePrefix + "-bare-present"
@@ -327,8 +298,8 @@ func RunBlockingAnnotatorAnnotatesAnAbsentIDBare(t *testing.T, ctx context.Conte
 // nothing rather than resolving.
 //
 // They are bare entries rather than errors, which is this role's spelling of the
-// same promise EdgeReadRequest.IDs makes — and here it is doubly load-bearing,
-// because with no miss flag a resolution would be silent.
+// same promise EdgeReadRequest.IDs makes. With no miss flag, a resolution would
+// be silent.
 func RunBlockingAnnotatorResolvesExactIDsOnly(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	blocked := fixture.IssuePrefix + "-exact-blocked"
@@ -352,11 +323,9 @@ func RunBlockingAnnotatorResolvesExactIDsOnly(t *testing.T, ctx context.Context,
 //
 // The case asserts only what is promised — exactly one, and one of the two
 // seeded — because both bodies reduce to a single parent before the shared
-// epilogue sees the rows, so there is nothing here that could make a stronger
-// assertion true. It SKIPS when the fixture cannot build the state at all,
-// rather than passing quietly: an issue with two parents is a thing the schema
-// may or may not permit, and a case that silently exercised one parent would
-// read as coverage it is not.
+// epilogue sees the rows. It SKIPS when the fixture cannot build the state at
+// all rather than passing quietly: a case that silently exercised one parent
+// would read as coverage it is not.
 func RunBlockingAnnotatorReportsAtMostOneParent(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	child := fixture.IssuePrefix + "-twoparents-child"
@@ -396,10 +365,9 @@ func RunBlockingAnnotatorAnswersAnEmptyRequest(t *testing.T, ctx context.Context
 // RunBlockingAnnotatorRefusesAnEmptyID pins blockingannotator.go:20-22: the
 // empty string is ErrValidation rather than a nameless annotation.
 //
-// The refusal must beat the good id beside it — a body that answered for the
-// ids it could would leave a caller with an entry it has no name for, and with
-// no miss flag on this role there is nothing else in the answer that would say
-// so.
+// The refusal must beat the good id beside it: a body that answered for the ids
+// it could would leave the caller an entry it has no name for, and with no miss
+// flag there is nothing else in the answer that would say so.
 func RunBlockingAnnotatorRefusesAnEmptyID(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture) {
 	t.Helper()
 	anchor := fixture.IssuePrefix + "-emptyid-anchor"
@@ -481,7 +449,7 @@ func seedBlockingIssues(t *testing.T, ctx context.Context, fixture BlockingAnnot
 
 // seedClosedBlockingIssue seeds a durable issue that is already closed. The
 // status arrives with the row rather than through a close, so the cases that
-// assert the status rule do not also assert a lifecycle role's behavior.
+// assert the status rule do not also depend on a lifecycle role.
 func seedClosedBlockingIssue(t *testing.T, ctx context.Context, fixture BlockingAnnotatorFixture, id string) {
 	t.Helper()
 	if err := fixture.CreateIssue(ctx, blockingSeed(id, types.StatusClosed, false), "blocking-annotator-seed"); err != nil {

@@ -179,17 +179,10 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			totalReady := len(results)
 			truncated := false
 			if filter.Limit > 0 && len(results) == filter.Limit {
-				// The page is full, so there may be more ready work. The size of
-				// the whole ready set is the ReadyCounter role's question, asked
-				// through the store's own accessor: the role promises its answer
-				// equals len(Reader.Ready(Limit=0).Items), which is what makes
-				// this total describe the page above it.
-				//
-				// It used to be asked here, of the store: unwrap past the
-				// decorators, type-assert to storage.ReadyWorkCounter, and fall
-				// back to the unbounded mega-query when the assertion missed.
-				// That is now the role's business and the assertion is a
-				// compile-time one (internal/workapi/storereadycounter).
+				// The page is full, so there may be more ready work. The
+				// ReadyCounter role promises its answer equals
+				// len(Reader.Ready(Limit=0).Items), which is what makes this
+				// total describe the page above it.
 				if n, countErr := readyTotal(ctx, activeStore, in); countErr == nil && n > len(results) {
 					totalReady = n
 					truncated = true
@@ -228,8 +221,7 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		if filter.Limit > 0 && len(issues) == filter.Limit {
 			// The same question the --json branch asks, through the same role,
 			// so the "Showing X of N" a human reads and the total a script
-			// parses are one number. This branch used to re-run the whole
-			// unbounded ready query to size N.
+			// parses are one number.
 			if n, countErr := readyTotal(ctx, activeStore, in); countErr == nil && n > len(issues) {
 				totalReady = n
 				truncated = true
@@ -341,13 +333,11 @@ var blockedCmd = &cobra.Command{
 //
 // BOTH OUTPUT MODES CALL IT and only when the page came back full, which is
 // the one situation where the answer can differ from what is already on
-// screen. The role has no --max-rows field to honor and needs none: the cap is
-// a bound on a page this machine will materialize, and a count materializes no
-// rows — which is also why handleMaxRowsError has nothing to classify here.
+// screen. The role has no --max-rows field to honor and needs none: the cap
+// bounds a page this machine materializes, and a count materializes no rows.
 //
-// A failed count is not a failed command. The page is already correct; all
-// that is lost is the "of N" beside it, exactly as it was before this question
-// became a role.
+// A failed count is not a failed command — the page is already correct; all
+// that is lost is the "of N" beside it.
 func readyTotal(ctx context.Context, activeStore storage.DoltStorage, in readyInput) (int, error) {
 	counter, err := activeStore.ReadyCounter()
 	if err != nil {

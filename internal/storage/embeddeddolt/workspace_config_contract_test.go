@@ -10,15 +10,13 @@ import (
 
 // TestWorkspaceConfigContract runs the WorkspaceConfig contract against the
 // embedded store, which hands back the SAME body the server-backed store does
-// (internal/workapi/storeworkspaceconfig) and projects through the same
-// SetConfig, differing only in the engine underneath. That is what this wiring
-// catches; it is not an independent vote on the body.
+// (internal/workapi/storeworkspaceconfig), differing only in the engine
+// underneath. It is not an independent vote on the body.
 //
-// One environment for the whole suite, and here that is a correctness
-// requirement rather than only a runtime one: config keys are global to a
-// workspace, the two projected keys are written by name, and the refused-write
-// case takes a history delta — all of which need the subtests sequential over
-// one plane.
+// One environment for the whole suite, and here that is a CORRECTNESS
+// requirement: config keys are global to a workspace, the two projected keys
+// are written by name, and the refused-write case takes a history delta — all
+// of which need the subtests sequential over one plane.
 func TestWorkspaceConfigContract(t *testing.T) {
 	skipUnlessEmbeddedDolt(t)
 	te := newTestEnv(t, "wcfg")

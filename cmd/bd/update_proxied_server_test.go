@@ -20,8 +20,7 @@ import (
 // The plain proxied update joined the claim on issueops.Lifecycle, so these pin
 // the same three things its sibling in update_claim_proxied_test.go pins: the
 // request this surface makes, the roles it reaches them through, and the fact
-// that it opens no unit of work of its own. The update's behaviour against real
-// Dolt is the integration suite's job.
+// that it opens no unit of work of its own.
 
 func captureStderrDuring(t *testing.T, fn func()) string {
 	t.Helper()
@@ -176,8 +175,8 @@ func mustProxiedUpdatePatch(t *testing.T, in *updateInput, before *types.Issue) 
 // `--force`. An earlier attempt was reverted for exactly this missing mapping:
 // the proxied caller built a request that never carried the override, so a
 // shared policy check refused the close with no way for the user to say
-// otherwise. One flag, two overrides — and the assignee half only applies to an
-// assignee edit, so `--force -s closed` asks for the close-policy half alone.
+// otherwise. The assignee half only applies to an assignee edit, so
+// `--force -s closed` asks for the close-policy half alone.
 func TestProxiedUpdateCarriesForce(t *testing.T) {
 	closing := map[string]any{"status": string(types.StatusClosed)}
 
@@ -203,9 +202,8 @@ func TestProxiedUpdateCarriesForce(t *testing.T) {
 }
 
 // TestProxiedUpdateCarriesConditionalGuards pins the bd-wsqvw guards onto the
-// request. They used to be applied by this file's own read-merge-write; the
-// contract now runs the compare-and-set inside the mutation transaction, which
-// is the only place it can be atomic with the write it gates.
+// request. The contract runs the compare-and-set inside the mutation
+// transaction, the only place it can be atomic with the write it gates.
 func TestProxiedUpdateCarriesConditionalGuards(t *testing.T) {
 	holder, status := "alice", string(types.StatusInProgress)
 	req := recordProxiedUpdateRequest(t, &updateInput{

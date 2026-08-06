@@ -12,8 +12,7 @@ import (
 )
 
 // The request body's member vocabulary. The schema is
-// additionalProperties: false, so anything else is refused BY NAME — the same
-// posture the sweep takes, and for the same reason sharpened: on this
+// additionalProperties: false, so anything else is refused BY NAME: on this
 // operation an ignored member is the difference between orphaning a dependent
 // and deleting it.
 const (
@@ -25,8 +24,8 @@ const (
 )
 
 // deleteMembers is the whole vocabulary, in one place, so the unknown-member
-// refusal and the decoding below cannot come to disagree about what this
-// operation accepts.
+// refusal and the decoding below cannot disagree about what this operation
+// accepts.
 var deleteMembers = []string{
 	deleteIDsMember,
 	deleteActorMember,
@@ -35,10 +34,9 @@ var deleteMembers = []string{
 	deleteDryRunMember,
 }
 
-// maxDeleteIDs bounds the `ids` array, matching the document's maxItems. It is
-// a bound on the REQUEST rather than on what a cascade expands to: the whole
-// delete is one transaction, so the practical ceiling is the backend's write
-// timeout and no number here can promise it.
+// maxDeleteIDs bounds the `ids` array, matching the document's maxItems. It
+// bounds the REQUEST rather than what a cascade expands to: the whole delete is
+// one transaction, so the practical ceiling is the backend's write timeout.
 const maxDeleteIDs = 1000
 
 // handleDelete answers POST /v0/beads/issues:delete — the second DESTRUCTIVE
@@ -48,12 +46,8 @@ const maxDeleteIDs = 1000
 // not resolve ids, does not expand a cascade, does not decide which rows are
 // dependents, and — the one that matters — does not implement the guard that
 // refuses an unforced delete over an outside dependent. All of that is
-// issueops.Deleter, the same library surface `bd delete` calls, so this
-// endpoint cannot orphan a workspace's graph by omission even if a future edit
-// here forgot the rule existed.
-//
-// Everything above the role here is argument validation: the media type, the
-// body shape, and the five members the document publishes.
+// issueops.Deleter, the same library surface `bd delete` calls. Everything
+// above the role here is argument validation.
 //
 // NO ACTOR IS INFERRED, for the reason the claim gives. It is OPTIONAL here as
 // it is on the sweep — a deleted bead leaves no row to attribute the deletion
@@ -111,9 +105,9 @@ func (s *Server) deleteRequest(w http.ResponseWriter, r *http.Request) (issueops
 	}
 
 	// cascade, force and dry_run all default to their ZERO values here, unlike
-	// the sweep's protect_referenced. That is not an inconsistency: false is
-	// already the guarded answer for all three, so an omitted member cannot buy
-	// weaker protection than the operator typing `bd delete` gets.
+	// the sweep's protect_referenced: false is already the guarded answer for
+	// all three, so an omitted member cannot buy weaker protection than the
+	// operator typing `bd delete` gets.
 	var request issueops.DeleteRequest
 
 	raw, ok := members[deleteIDsMember]
@@ -130,8 +124,7 @@ func (s *Server) deleteRequest(w http.ResponseWriter, r *http.Request) (issueops
 	}
 	if len(*ids) == 0 {
 		// The ROLE refuses this too. It is refused here as well so the client
-		// gets the member name, and because an empty array is the shape most
-		// likely to arrive from a caller's own broken construction.
+		// gets the member name.
 		s.fail(w, r, InvalidArgument(deleteIDsMember, ReasonInvalidValue,
 			"`"+deleteIDsMember+"` must name at least one bead"))
 		return issueops.DeleteRequest{}, false
@@ -150,8 +143,7 @@ func (s *Server) deleteRequest(w http.ResponseWriter, r *http.Request) (issueops
 				"`"+deleteActorMember+"` must be a string"))
 			return issueops.DeleteRequest{}, false
 		}
-		// The claim's rules, unchanged, which is what makes the two operations
-		// one vocabulary for a client.
+		// The claim's rules, unchanged.
 		trimmed, res := validateActor(*value)
 		if res != nil {
 			s.fail(w, r, *res)
@@ -196,23 +188,18 @@ func deleteMemberList() string {
 //
 // It draws the same ErrValidation-is-a-400 line the sweep draws, and adds ONE
 // more: the role's dependents refusal. That one is a 400 rather than a 409
-// because the fix is to change the REQUEST — send `cascade` or `force` — and
-// the detail carries the role's own sentence, which names the blocked id and
-// says exactly that.
+// because the fix is to change the REQUEST — send `cascade` or `force`.
 //
 // THE ABSENT-ID REFUSAL NEEDS NO BRANCH AT ALL, and does not get one: the
 // role's *NotFoundError wraps issueops.ErrNotFound, which ClassifyError already
 // maps to a 404 carrying NotFound()'s FIXED detail. The role's own message
 // names every id that did not resolve and the wire deliberately does not repeat
-// it — NotFound's doc says why, and it is a posture about this whole surface
-// rather than about this operation. `bd delete` still names them, because it is
+// it — NotFound's doc says why. `bd delete` still names them, because it is
 // talking to the person who typed them.
 func (s *Server) failDeleteErr(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, issueops.ErrValidation) || errors.Is(err, issueops.ErrDependentsOutsideRequest) {
 		// No `param`: neither refusal is about one member of the request. The
-		// dependents one is about the absence of a CHOICE between two of them,
-		// and the document's `param` is documented absent on exactly that kind
-		// of case.
+		// dependents one is about the absence of a CHOICE between two of them.
 		s.fail(w, r, InvalidArgument("", ReasonInvalidValue, err.Error()))
 		return
 	}
@@ -221,9 +208,8 @@ func (s *Server) failDeleteErr(w http.ResponseWriter, r *http.Request, err error
 
 // deleteResponse projects the role's result onto the wire type. It is a field
 // list rather than an alias for the reason sweepResponse is: DeleteResult is
-// deliberately not x-go-type-pinned, so the projection is where the two shapes
-// are held together and TestDeleteResponseCarriesEveryRoleField is what keeps a
-// new result field from being dropped here in silence.
+// deliberately not x-go-type-pinned, and TestDeleteResponseCarriesEveryRoleField
+// is what keeps a new result field from being dropped here in silence.
 func deleteResponse(result issueops.DeleteResult) apigen.DeleteIssuesResult {
 	body := apigen.DeleteIssuesResult{
 		DryRun:            result.DryRun,

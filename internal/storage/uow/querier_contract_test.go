@@ -16,10 +16,9 @@ import (
 // this seam renders OFFSET for a filter-expressible query and skips matches in
 // Go for a predicate one, where the store body refuses both uniformly.
 //
-// One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
-// Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so dolt_log and the issues table are database-global and
-// a parallel subtest would corrupt another subtest's history delta.
+// One provider for the whole suite and NO t.Parallel: this backend has no
+// per-test copy-on-write branch, so dolt_log and the issues table are
+// database-global and a parallel subtest would corrupt another's history delta.
 func TestQuerierContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWQuerierFixture(t, ctx, "qry")

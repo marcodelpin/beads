@@ -102,22 +102,12 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 
 	issue := buildCreateIssueFromInput(in)
 	// Labels ride on the issue because that is where the contract reads them:
-	// CreateRequest.Issue documents them as authoritative, and the request's
-	// own InheritLabelsFromParent adds the parent's inside the write
-	// transaction rather than from a second read out here.
+	// CreateRequest.Issue documents them as authoritative.
 	issue.Labels = append([]string(nil), in.labels...)
 	if err := inheritProxiedSourceRepo(ctx, issue, deps); err != nil {
 		return err
 	}
 
-	// THE CREATE IS NOT IMPLEMENTED HERE, and that is the point. Type and
-	// status validation against the workspace's configured vocabulary, the
-	// explicit-id prefix guard, infra-type wisp routing, child-id minting,
-	// label inheritance, edge creation and the create-only refusal all belong
-	// to the contract, which reads its create context inside the same
-	// transaction it writes in. What stays is this command's own protocol: the
-	// lint pass, the id-format check, --deps parsing and the dry-run preview.
-	//
 	// SPEC-GAP bd-yby99.32: Lifecycle.Create promises nothing about the
 	// version-control entry a create records and CreateRequest carries no
 	// Provenance to spell one, so this route's commit message moves from
@@ -134,8 +124,7 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 	if err != nil {
 		// RULING R1, reported the same way the direct route reports it: an
 		// occupied --id is a refusal, not a silent full-row upsert dressed up
-		// as success. The proxied route used to upsert, because it asked the
-		// use case for a plain create without the create-only guard.
+		// as success.
 		if errors.Is(err, storage.ErrAlreadyExists) && in.explicitID != "" {
 			return HandleErrorRespectJSON("%s already exists; use bd update, or bd import for upsert semantics", in.explicitID)
 		}
@@ -165,9 +154,7 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 
 // inheritProxiedSourceRepo copies a discovered-from parent's source repo onto
 // the new issue, which is what the direct route does before it calls the role
-// (cmd/bd/create.go). CreateRequest has no field for the derivation — the
-// contract takes the issue's own SourceRepo — so deriving one from an edge
-// stays this command's policy on both routes.
+// (cmd/bd/create.go).
 //
 // A failed lookup is not a verdict. The direct route ignores one and creates
 // with the default source repo; a genuinely absent target is refused by the
@@ -268,9 +255,7 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 }
 
 // proxiedBatchCreator reaches the batch-create role through the provider's own
-// capability accessor, the way proxiedIssueLifecycle reaches the lifecycle: the
-// accessor is where each decorator adds its layer, so a constructor call here
-// would get the role stripped of them.
+// capability accessor, which is where each decorator adds its layer.
 func proxiedBatchCreator() (issueops.BatchCreator, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")

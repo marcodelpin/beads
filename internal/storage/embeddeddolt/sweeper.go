@@ -20,15 +20,12 @@ func (s *EmbeddedDoltStore) Sweeper() (issueops.Sweeper, error) {
 	return &sweeper{store: s}, nil
 }
 
-// sweeper clears closed rows from one tier inside one connection's
-// transaction.
-//
-// It is a sibling of the server-backed store's body rather than a shared
-// package for the reason that one gives: the work needs a TRANSACTION, which
-// storage.DoltStorage does not publish, so the sharing happens below both of
-// them at issueops.SweepInTx. The two stores differ here only in how they
-// reach a transaction and in whether they record a version-control entry —
-// this one's commit runs outside the SQL transaction, so it records none.
+// sweeper clears closed rows from one tier inside one connection's transaction.
+// The work needs a TRANSACTION, which storage.DoltStorage does not publish, so
+// the sharing with the server-backed store happens at issueops.SweepInTx. The
+// two differ only in how they reach a transaction and in whether they record a
+// version-control entry — this one's commit runs outside the SQL transaction,
+// so it records none.
 type sweeper struct{ store *EmbeddedDoltStore }
 
 var _ issueops.Sweeper = (*sweeper)(nil)

@@ -139,8 +139,7 @@ type Storage interface {
 	// BatchCreator returns the guarded create-many surface for this store: the
 	// other role whose REQUEST is the transaction boundary. It is its own role
 	// rather than a Create overload because a batch is ALL OR NOTHING where a
-	// batch close keeps its survivors, and one method cannot make both
-	// promises.
+	// batch close keeps its survivors.
 	BatchCreator() (issueops.BatchCreator, error)
 
 	// DependencyEditor returns the guarded dependency-edge surface for this
@@ -157,12 +156,9 @@ type Storage interface {
 	// Counter returns the guarded issue-count surface for this store. It is
 	// its own role rather than a fourth IssueReader method because a count is
 	// a NUMBER about a set where the reader answers with pages of issues:
-	// there is no order, no page and no cursor in the question, and a request
-	// carrying those would invite a caller to believe a limit bounded the
-	// answer.
+	// there is no order, no page and no cursor in the question.
 	//
-	// Reads fire no hooks, so the hook decorator's answer is its inner store's
-	// unchanged, as it is for IssueReader.
+	// Reads fire no hooks, as for IssueReader.
 	Counter() (issueops.Counter, error)
 
 	// StatsReporter returns the guarded summary-statistics surface for this
@@ -184,63 +180,52 @@ type Storage interface {
 	// store: the durable key-value plane `bd config` reads and writes. It is
 	// its own role rather than more verbs elsewhere because it answers about
 	// the WORKSPACE rather than about an issue, and because a write here can
-	// re-project a value into a normalized lookup table — a side effect no
-	// issue role has anywhere to describe.
+	// re-project a value into a normalized lookup table.
 	WorkspaceConfig() (issueops.WorkspaceConfig, error)
 
 	// VersionReconciler returns the clone-local version markers for this store:
 	// the dolt-ignored pair recording which bd binary last opened this
 	// workspace and the highest one that ever has. It is its own role rather
 	// than two more keys on WorkspaceConfig because settings are durable and
-	// travel with the database while these two are deliberately per-clone, and
-	// it is the one role here that belongs to no command — it answers a startup
-	// hook, so its failure costs every invocation rather than one.
+	// travel with the database while these two are deliberately per-clone.
 	VersionReconciler() (issueops.VersionReconciler, error)
 
 	// CycleDetector returns the guarded cycle-report surface for this store: its
 	// own role because it is asked of the WHOLE graph and answers with paths,
 	// where every Relations request names one anchor and answers with that
-	// anchor's neighbors. Reads fire no hooks, so the hook decorator's answer is
-	// its inner store's unchanged, as it is for IssueReader.
+	// anchor's neighbors. Reads fire no hooks, as for IssueReader.
 	CycleDetector() (issueops.CycleDetector, error)
 	// EdgeReader returns the guarded stored-edge surface for this store: raw
 	// dependency rows for many anchors at once, keyed by source, with a
-	// per-anchor miss. Its own role rather than a second IssueRelations method
-	// because that one is single-anchor, answers with hydrated issues, and
-	// refuses a missing anchor outright. Reads fire no hooks, as for
-	// IssueReader.
+	// per-anchor miss. Its own role rather than a second IssueRelations method,
+	// which is single-anchor, answers with hydrated issues, and refuses a
+	// missing anchor outright. Reads fire no hooks, as for IssueReader.
 	EdgeReader() (issueops.EdgeReader, error)
 	// BlockingAnnotator returns the guarded blocking-decoration surface for this
 	// store: the open blockers, the issues blocked and the parent of a page of
 	// ids, which is what a listing prints beside each row. Its own role rather
 	// than a second EdgeReader method because that one answers with STORED ROWS
-	// of every type, targets spelled as stored and a per-anchor miss, where this
-	// one answers a DERIVED summary of two edge types with closed blockers
-	// dropped and no existence probe at all. Reads fire no hooks, as for
-	// IssueReader.
+	// where this one answers a DERIVED summary of two edge types with closed
+	// blockers dropped. Reads fire no hooks, as for IssueReader.
 	BlockingAnnotator() (issueops.BlockingAnnotator, error)
 	// TreeWalker returns the guarded dependency-tree surface for this store: the
 	// recursive walk from ONE root that `bd dep tree` renders. Its own role
-	// rather than a mode of IssueRelations or EdgeReader because both of those
-	// exclude it in their own words — a recursive walk has a depth, a cycle
-	// policy and a node shape of its own — and rather than a CycleDetector method
-	// because a cycle has no anchor and a tree is nothing but its anchor. Reads
-	// fire no hooks, as for IssueReader.
+	// rather than a mode of IssueRelations or EdgeReader because a recursive
+	// walk has a depth, a cycle policy and a node shape of its own. Reads fire
+	// no hooks, as for IssueReader.
 	TreeWalker() (issueops.TreeWalker, error)
 	// ReadyCounter returns the guarded ready-count surface for this store: the
 	// size of the ready set, which is the number `bd ready`'s pagination
-	// publishes and which no other role answers. IssueReader.Ready reports
-	// only whether the limit hid anything, and Counter's predicate is a filter
-	// over one table where the ready predicate is blocker-aware.
+	// publishes and which no other role answers. Counter's predicate is a
+	// filter over one table where the ready predicate is blocker-aware.
 	//
-	// Reads fire no hooks, so the hook decorator's answer is its inner store's
-	// unchanged, as it is for IssueReader.
+	// Reads fire no hooks, as for IssueReader.
 	ReadyCounter() (issueops.ReadyCounter, error)
 	// Querier returns the guarded boolean-query surface for this store: `bd
 	// query`'s expression language, which has OR, NOT and parentheses. Its own
 	// role rather than a mode of IssueReader because a ListRequest is a
-	// CONJUNCTION — every field narrows — and no arrangement of its fields
-	// expresses a disjunction. Reads fire no hooks, as for IssueReader.
+	// CONJUNCTION and expresses no disjunction. Reads fire no hooks, as for
+	// IssueReader.
 	Querier() (issueops.Querier, error)
 	// Sweeper returns the guarded bulk-clearance surface for this store —
 	// `bd purge` and `bd prune`, which are one capability over two disjoint
@@ -248,20 +233,16 @@ type Storage interface {
 	// acts on it: no Lifecycle patch names a set, and composing a count with a
 	// delete would reopen the window this role exists to close.
 	//
-	// It is the one WRITE role whose hook decorator recurses UNWRAPPED, and
-	// that is a fact about the hook vocabulary rather than about the role:
-	// there is no on_delete hook to fire (internal/hooks publishes create,
-	// update and close), and the rows a sweep would name it with are gone.
-	// See hook_sweeper.go.
+	// It is the one WRITE role whose hook decorator recurses UNWRAPPED: there
+	// is no on_delete hook to fire (internal/hooks publishes create, update
+	// and close), and the rows a sweep would name it with are gone. See
+	// hook_sweeper.go.
 	Sweeper() (issueops.Sweeper, error)
 	// Deleter returns the named-row erasure surface for this store —
 	// `bd delete`. Its own role rather than a Sweeper mode because Sweeper
 	// erases a set the caller DESCRIBED and this one erases rows the caller
-	// NAMED, which is what decides where each one's safety lives: a
-	// description can be accidentally too wide, so Sweeper carries a
-	// require-a-filter gate, while a list of ids cannot, so this one's guard is
-	// about the graph — a named row with a dependent the request did not name
-	// is refused unless the caller says cascade or force.
+	// NAMED: a named row with a dependent the request did not name is refused
+	// unless the caller says cascade or force.
 	//
 	// Its hook decorator recurses UNWRAPPED for the same reason Sweeper's
 	// does: there is no on_delete hook to fire and the rows are gone. See
@@ -269,27 +250,22 @@ type Storage interface {
 	Deleter() (issueops.Deleter, error)
 	// Bootstrapper returns the guarded identity-seeding surface for this store:
 	// the one-time write that turns a database bd can connect to into a
-	// workspace bd can use. It is the only slice of `bd init` that is a role at
-	// all — the rest of init CREATES the substrate, which an accessor on a
-	// store cannot do — and it is its own role rather than more keys on
+	// workspace bd can use. It is its own role rather than more keys on
 	// WorkspaceConfig because it REFUSES an already-identified substrate, which
 	// is a guard no settings write has anywhere to express.
 	//
-	// It is the second WRITE role whose hook decorator recurses unwrapped, and
-	// for the vocabulary reason Sweeper's does: a bootstrap names no issue, and
-	// on a workspace this new the hooks are not installed yet. See
-	// hook_bootstrapper.go.
+	// Its hook decorator recurses unwrapped for the vocabulary reason Sweeper's
+	// does: a bootstrap names no issue, and on a workspace this new the hooks
+	// are not installed yet. See hook_bootstrapper.go.
 	Bootstrapper() (issueops.Bootstrapper, error)
 	// InitVerifier returns the guarded identity-read surface for this store: the
 	// prefix and project id `bd init` adopts, reconciles against, or refuses to
-	// invent. It is NOT Bootstrapper's read half, the way RecordedVersion is
-	// VersionReconciler's: bd reads this identity on paths where it is forbidden
-	// to write one — a bts-provisioned team database, a gateway whose credential
-	// may be read-only — and a caller that must not write must not be handed the
-	// writer.
+	// invent. It is NOT Bootstrapper's read half: bd reads this identity on
+	// paths where it is forbidden to write one — a bts-provisioned team
+	// database, a gateway whose credential may be read-only — and a caller that
+	// must not write must not be handed the writer.
 	//
-	// Reads fire no hooks, so the hook decorator's answer is its inner store's
-	// unchanged, as it is for IssueReader.
+	// Reads fire no hooks, as for IssueReader.
 	InitVerifier() (issueops.InitVerifier, error)
 
 	// Issue CRUD
@@ -724,13 +700,12 @@ type BackupStore interface {
 // len(GetReadyWorkWithCounts(filter with Limit=0)) but computed with cheap
 // indexed COUNT(*)s over the ready predicate.
 //
-// THAT IDENTITY IS THIS INTERFACE'S WHOLE CONTRACT, and it is now also a public
-// promise: issueops.ReadyCounter states it for every backend, and the
-// store-backed body behind ReadyCounter() (internal/workapi/storereadycounter)
-// is this method plus the shared filter builder. `bd ready`'s "Showing X of N"
-// reaches it that way on both routes; it no longer type-asserts for the
-// capability itself, because a store that cannot answer now fails to compile
-// rather than falling back to an unbounded query at runtime.
+// THAT IDENTITY IS THIS INTERFACE'S WHOLE CONTRACT. issueops.ReadyCounter
+// states it for every backend, and the store-backed body behind ReadyCounter()
+// (internal/workapi/storereadycounter) is this method plus the shared filter
+// builder. `bd ready`'s "Showing X of N" reaches it that way on both routes; it
+// no longer type-asserts for the capability itself, so a store that cannot
+// answer fails to compile rather than falling back to an unbounded query.
 type ReadyWorkCounter interface {
 	CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error)
 }

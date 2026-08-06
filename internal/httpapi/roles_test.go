@@ -105,9 +105,9 @@ func (e *roleEdgeReader) edgeRequests() []issueops.EdgeReadRequest {
 }
 
 // roleBlockingAnnotator is the derived-decoration role of the store-shaped
-// source. It is its own fake beside roleEdgeReader rather than a second method
-// on it, because the two are separate interfaces for separate questions and a
-// double answering both would be the shape that seam exists to rule out.
+// source. It is its own fake beside roleEdgeReader because the two are separate
+// interfaces for separate questions, and a double answering both would be the
+// shape that seam exists to rule out.
 type roleBlockingAnnotator struct {
 	result issueops.BlockingResult
 	err    error
@@ -132,10 +132,10 @@ func (a *roleBlockingAnnotator) blockingRequests() []issueops.BlockingRequest {
 	return append([]issueops.BlockingRequest(nil), a.reads...)
 }
 
-// roleTreeWalker is the dependency-tree role of the store-shaped source. Like
-// its siblings it records the request it was handed, because the assertion the
-// tree route is worth making is that the WIRE's parameters reach the role
-// unrewritten — the walk itself belongs to the conformance contract.
+// roleTreeWalker is the dependency-tree role of the store-shaped source. It
+// records the request it was handed: the assertion worth making on the tree
+// route is that the WIRE's parameters reach the role unrewritten, since the
+// walk itself belongs to the conformance contract.
 type roleTreeWalker struct {
 	result issueops.TreeResult
 	err    error
@@ -160,11 +160,8 @@ func (w *roleTreeWalker) walkRequests() []issueops.WalkTreeRequest {
 	return append([]issueops.WalkTreeRequest(nil), w.walks...)
 }
 
-// roleReadyCounter is the third role a store-shaped source must supply. It is
-// its own fake rather than a method on roleReader for the reason the roles are
-// separate interfaces: a backend hands out one surface per question, and a test
-// double that answered two of them would be the shape this seam exists to rule
-// out.
+// roleReadyCounter is the ready-sizing role of the store-shaped source, its own
+// fake rather than a method on roleReader.
 type roleReadyCounter struct {
 	total int64
 	err   error
@@ -191,8 +188,8 @@ func (c *roleReadyCounter) countRequests() []issueops.ReadyRequest {
 
 // roleQuerier is the boolean-query role's double. It records the whole request
 // because the property this surface owes is that the EXPRESSION reaches the
-// role untouched: a handler that parsed it here would be the drift the role
-// exists to remove, and only the recorded sentence can show it did not.
+// role untouched: a handler that parsed it here would be a second
+// implementation of the query language.
 type roleQuerier struct {
 	page issueops.IssuePage
 	err  error
@@ -220,7 +217,7 @@ func (q *roleQuerier) queryRequests() []issueops.QueryRequest {
 // roleBatchCreator is the store-shaped source's batch-create role. It answers
 // with one issue per requested item by default, which is what the role promises
 // and what the handler's checked wrapper insists on; a case that wants the
-// broken shape sets issues explicitly.
+// broken shape sets issues.
 type roleBatchCreator struct {
 	issues []*types.Issue
 	err    error
@@ -359,12 +356,9 @@ func (s *roleStats) assigneeRequests() []issueops.AssigneeStatsRequest {
 	return append([]issueops.AssigneeStatsRequest(nil), s.assignees...)
 }
 
-// rolesConfig completes a store-shaped database source.
-//
-// Listen requires the WHOLE role set together (checkDatabaseSource), so a test
-// that exercises one operation still has to hand over the roles the other
-// operations reach. This fills the ones the caller left nil with inert fakes
-// and keeps the ones it set, so a test names only the role it is about.
+// rolesConfig completes a store-shaped database source. Listen requires the
+// WHOLE role set together (checkDatabaseSource), so this fills the roles the
+// caller left nil with inert fakes and a test names only the role it is about.
 //
 // Not for TestListenRequiresExactlyOneDatabaseSource: that test's whole subject
 // is the PARTIAL set, so it builds its Configs by hand.
@@ -411,19 +405,18 @@ func rolesConfig(cfg Config) Config {
 	return cfg
 }
 
-// rolesConfigWithout is a complete source with exactly one role removed, which
-// is the shape every half-set case in TestListenRequiresExactlyOneDatabaseSource
-// wants. Naming the role to DROP rather than the roles to keep is what stops
-// those cases from having to be edited every time the set grows.
+// rolesConfigWithout is a complete source with exactly one role removed. Naming
+// the role to DROP rather than the roles to keep is what stops the partial-set
+// cases from having to be edited every time the set grows.
 func rolesConfigWithout(drop func(*Config)) Config {
 	cfg := rolesConfig(Config{})
 	drop(&cfg)
 	return cfg
 }
 
-// roleCycleDetector is the third role of the store-shaped source. It is the
-// same shape as the two above so that every configured-roles case can hand
-// Listen a complete source without deciding what its cycle answer should be.
+// roleCycleDetector is the cycle-report role of the store-shaped source, the
+// same shape as its siblings so a case can hand Listen a complete source
+// without deciding what its cycle answer should be.
 type roleCycleDetector struct {
 	report issueops.CycleReport
 	err    error
@@ -442,12 +435,10 @@ func (d *roleCycleDetector) DetectCycles(_ context.Context, req issueops.DetectC
 	return d.report, nil
 }
 
-// roleSweeper is the store-shaped source's bulk-clearance role. Like the
-// others it answers with whatever a case configured, so every configured-roles
-// case can hand Listen a COMPLETE source without deciding what a sweep of its
-// fixture should do — which matters more here than for the reads, because the
-// alternative to a complete source is a server that binds and then
-// nil-dereferences on the one request that deletes beads.
+// roleSweeper is the store-shaped source's bulk-clearance role. Every case
+// hands Listen a COMPLETE source for a reason that bites hardest here: the
+// alternative is a server that binds and then nil-dereferences on the one
+// request that deletes beads.
 type roleSweeper struct {
 	result issueops.SweepResult
 	err    error
@@ -473,9 +464,7 @@ func (s *roleSweeper) requests() []issueops.SweepRequest {
 }
 
 // roleDeleter is the store-shaped source's named-row erasure role, the same
-// shape as roleSweeper and for the same reason: the alternative to a complete
-// source is a server that binds and then nil-dereferences on a request that
-// deletes beads.
+// shape as roleSweeper and for the same reason.
 type roleDeleter struct {
 	result issueops.DeleteResult
 	err    error
@@ -516,9 +505,7 @@ func countedPage() []*types.IssueWithCounts {
 // PARTIAL set is the dangerous one: a Config carrying a reader and no claimer
 // would bind, answer every read, and fail the one write on this surface with a
 // nil dereference — at claim time, in a handler, on a live server. Each role an
-// operation reaches has a row below for that reason, and the case that matters
-// most is the NEWEST role missing: that is what a caller written against the
-// previous release passes.
+// operation reaches has a row below for that reason.
 func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -539,10 +526,8 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			cfg:  rolesConfig(Config{}),
 		},
 		// One case per role, each dropping exactly that role from an otherwise
-		// complete source. The set is all-or-nothing rather than a required
-		// pair plus optional extras: a Config missing any one role binds,
-		// advertises that operation's capability, and then faults inside a
-		// handler on a live server. A new role adds one line here and one to
+		// complete source: the set is all-or-nothing rather than a required
+		// pair plus optional extras. A new role adds one line here and one to
 		// rolesConfig, and nothing else in this test.
 		{
 			name:    "no reader",
@@ -585,7 +570,7 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
-			// The other destructive role: a Config missing this one binds,
+			// The other destructive role: missing it, the server binds,
 			// advertises issues.delete, and nil-dereferences on the first
 			// request that erases a named bead.
 			name:    "no deleter",
@@ -603,9 +588,9 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
-			// The absence that would cost most: a Config missing this one binds,
-			// advertises issues.sweep in its own capability list, and
-			// nil-dereferences on the first request that deletes beads in bulk.
+			// The absence that would cost most: the server binds, advertises
+			// issues.sweep, and nil-dereferences on the first request that
+			// deletes beads in bulk.
 			name:    "no sweeper",
 			cfg:     rolesConfigWithout(func(c *Config) { c.Sweeper = nil }),
 			wantErr: "no database source",
@@ -636,9 +621,8 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "exactly one database source",
 		},
 		{
-			// The pair ALONE used to be a complete source, so this is the exact
-			// Config the first release of this arm accepted. It is here as a
-			// regression case rather than as another one-role-missing row.
+			// The exact Config the first release of this arm accepted: the pair
+			// ALONE used to be a complete source. A regression case.
 			name:    "a reader and a claimer without a ready counter",
 			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}},
 			wantErr: "no database source",
@@ -750,22 +734,17 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 }
 
 // TestConfiguredRolesAnswerEveryDatabaseRoute drives the database-touching
-// operations against a store-shaped source, which is the whole point: none of
-// them can reach a unit of work here, because there is no provider to open one.
+// operations against a store-shaped source: none of them can reach a unit of
+// work here, because there is no provider to open one.
 //
-// NOT ALL OF THEM, despite the name, and the shortfall is worth knowing before
-// reading a green run as coverage. The subtests below drive ten of the sixteen
-// capability-bearing operations in routes.go. The other six —
+// NOT ALL OF THEM, despite the name: the subtests below drive ten of the
+// sixteen capability-bearing operations in routes.go. The other six —
 // dependencies/cycles, dependencies/blocking, dependencies/tree,
 // issues:batchCreate, issues:sweep and issues:delete — are exercised against a
 // roles source in their own files (cycles_test.go, blocking_test.go,
-// tree_test.go, batch_create_test.go, sweep_test.go, delete_test.go) rather
-// than here.
-//
-// The name predates most of those and an earlier pass "fixed" a stale count in
-// it by widening the claim to "every", which made it less true rather than
-// more. Either add the six here or leave this paragraph accurate; do not
-// generalize the sentence again.
+// tree_test.go, batch_create_test.go, sweep_test.go, delete_test.go). Either
+// add the six here or keep this paragraph accurate; do not generalize the
+// sentence again.
 func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	details := &issueops.IssueDetails{Issue: *seededIssue("bd-1", "alice", types.StatusOpen)}
 	reader := &roleReader{page: issueops.IssuePage{Items: countedPage(), HasMore: true}, details: details}
@@ -817,9 +796,8 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 		if body := decodeBody(t, resp); body["total"] != float64(41) {
 			t.Errorf("total = %v, want the 41 the role reported", body["total"])
 		}
-		// The role is handed the listing's request with the page taken off:
-		// the filter the wire named, no Limit, no Offset, and the sort this
-		// server sends on both ready operations.
+		// The listing's request with the page taken off: the filter the wire
+		// named, no Limit, no Offset, and the sort both ready operations send.
 		reqs := counter.countRequests()
 		if len(reqs) != 1 {
 			t.Fatalf("count requests = %+v, want exactly one", reqs)
@@ -845,8 +823,8 @@ func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 			t.Errorf("query page carries a next_cursor: %v", body)
 		}
 		// The EXPRESSION reaches the role verbatim. A handler that parsed,
-		// normalised or re-quoted it would be the second implementation of the
-		// query language this role exists to prevent.
+		// normalised or re-quoted it would be a second implementation of the
+		// query language.
 		reqs := querier.queryRequests()
 		if len(reqs) != 1 {
 			t.Fatalf("query requests = %+v, want exactly one", reqs)

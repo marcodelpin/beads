@@ -11,13 +11,12 @@ import (
 // server-backed store.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch. That sharing matters more here than it does for
-// a read role: config keys are GLOBAL to a workspace, so the cases namespace
-// their probe keys under the fixture prefix and the two projected keys
-// (status.custom, types.custom) are written by name and asserted exactly. The
-// refused-write case takes a history delta, which is only meaningful while the
-// subtests run sequentially. setupTestStore already marks the PARENT parallel;
-// no subtest here calls t.Parallel.
+// and one copy-on-write branch. Config keys are GLOBAL to a workspace, so the
+// cases namespace their probe keys under the fixture prefix and the two
+// projected keys (status.custom, types.custom) are written by name and asserted
+// exactly. The refused-write case takes a history delta, which is only
+// meaningful while the subtests run sequentially. setupTestStore already marks
+// the PARENT parallel; no subtest here calls t.Parallel.
 func TestWorkspaceConfigContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltWorkspaceConfigFixture(t, "wcfg")
 	defer cleanup()
@@ -77,8 +76,8 @@ func newDoltWorkspaceConfigFixture(t *testing.T, prefix string) (conformance.Wor
 		t.Fatalf("WorkspaceConfig(): %v", err)
 	}
 	kit := newDoltRoleFixtureKit(store, prefix)
-	// The protected-key cases need an issue_prefix to remove and restore, and
-	// they need it written PAST the role, which refuses to write it.
+	// The protected-key cases need an issue_prefix to remove and restore,
+	// written PAST the role, which refuses to write it.
 	if err := kit.SetConfig(ctx, "issue_prefix", prefix); err != nil {
 		cancel()
 		storeCleanup()

@@ -83,12 +83,9 @@ func TestDeleteForwardsEveryDocumentedMember(t *testing.T) {
 // TestDeleteDefaultsTheOptionalMembers: a body carrying only `ids` reaches the
 // role as a GUARDED, non-cascading, real delete.
 //
-// All three flags default to their zero values, which is the one place this
-// operation's defaults differ in SPIRIT from the sweep's: there, false was the
-// unsafe answer for protect_referenced and the handler had to override it; here
-// false is the guarded answer for all three, so the zero value is the
-// protection and a handler that "helpfully" defaulted force on would be the
-// bug.
+// All three flags default to their zero values, and here — unlike the sweep's
+// protect_referenced — false is the GUARDED answer for all three. The zero value
+// is the protection, so a handler that "helpfully" defaulted force on is the bug.
 func TestDeleteDefaultsTheOptionalMembers(t *testing.T) {
 	deleter := &roleDeleter{}
 	ts := newTestServer(t, rolesConfig(Config{Deleter: deleter}))
@@ -106,10 +103,9 @@ func TestDeleteDefaultsTheOptionalMembers(t *testing.T) {
 	}
 }
 
-// TestDeletePublishesTheWholeResult drives every member of the response body,
-// which is the half deleteResponse owns: the schema is not x-go-type-pinned, so
-// a field added to the role's result and forgotten in the projection would be
-// silently absent from the wire.
+// TestDeletePublishesTheWholeResult drives every member of the response body:
+// the schema is not x-go-type-pinned, so a field added to the role's result and
+// forgotten in the projection would be silently absent from the wire.
 func TestDeletePublishesTheWholeResult(t *testing.T) {
 	deleter := &roleDeleter{result: issueops.DeleteResult{
 		DryRun:            true,
@@ -202,8 +198,7 @@ func TestDeleteRefusesTheDocumentedBodies(t *testing.T) {
 // The dependents guard is refused BELOW the wire, by issueops.Deleter — that is
 // what makes this endpoint incapable of orphaning a graph by omission. The
 // refusal reaching the client as a 500 would tell it the server was broken when
-// the request was, and would hide the one sentence that says what to send
-// instead.
+// the request was.
 func TestDeletePublishesTheRolesGuardAsA400(t *testing.T) {
 	// The typed error, not a lookalike: the handler keys on the sentinel it
 	// wraps.
@@ -234,11 +229,9 @@ func TestDeletePublishesTheRolesGuardAsA400(t *testing.T) {
 // TestDeletePublishesAnAbsentIDAsA404 pins the other refusal, and pins that its
 // detail does NOT name the ids.
 //
-// That is deliberate and is this surface's posture rather than this operation's
-// preference: NotFound's fixed sentence is what keeps a handler that decided a
-// miss without reading storage indistinguishable from one that read and missed.
-// `bd delete` still names them, because it is answering the person who typed
-// them.
+// NotFound's fixed sentence is what keeps a handler that decided a miss without
+// reading storage indistinguishable from one that read and missed. `bd delete`
+// still names them, because it is answering the person who typed them.
 func TestDeletePublishesAnAbsentIDAsA404(t *testing.T) {
 	deleter := &roleDeleter{err: &issueops.NotFoundError{IDs: []string{"bd-nosuch"}}}
 	ts := newTestServer(t, rolesConfig(Config{Deleter: deleter}))

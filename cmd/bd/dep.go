@@ -698,15 +698,10 @@ type depListAnchor struct {
 // readDepListEdges asks each anchor's OWN store for its stored edges and
 // reassembles the answers into the order the arguments named.
 //
-// The grouping is what keeps the answer on ONE shape. Before the role, three
-// different conditions fell through to the hydrated neighbor listing, so
-// `bd dep list a b c --json` silently emitted an array of ISSUES where it
-// documents an array of dependency records: a batch whose anchors routed to
-// different stores, a batch whose single batched read simply failed, and — the
-// one that outlived the other two — a batch in which enough anchors failed to
-// RESOLVE that only one survivor was left. All three are gone: a failure is now
-// a failure, a split batch is N role calls merged back into one answer, and the
-// caller's argument count picks the shape (see batchMode at the call site).
+// The grouping is what keeps the answer on ONE shape: a failure is a failure, a
+// split batch is N role calls merged back into one answer, and the caller's
+// argument count picks the shape (see batchMode at the call site). `bd dep list
+// a b c --json` documents an array of dependency records, not of issues.
 func readDepListEdges(ctx context.Context, anchors []depListAnchor, typeFilter string) ([]issueops.AnchorEdges, error) {
 	var depTypes []types.DependencyType
 	if typeFilter != "" {
@@ -755,10 +750,9 @@ func readDepListEdges(ctx context.Context, anchors []depListAnchor, typeFilter s
 // printDepListEdges renders the role's per-anchor answer, and is shared by both
 // routes so the two cannot drift apart in what they print.
 //
-// A GHOST ANCHOR goes to stderr in both modes, in the same words the direct
-// route already uses for an argument that would not resolve. Keeping it off
-// stdout is what leaves `--json` a flat array of dependency records, which is
-// the shape the command documents.
+// A GHOST ANCHOR goes to stderr in both modes. Keeping it off stdout is what
+// leaves `--json` a flat array of dependency records, which is the shape the
+// command documents.
 func printDepListEdges(anchors []issueops.AnchorEdges) error {
 	for _, anchor := range anchors {
 		if anchor.Missing {
@@ -873,24 +867,19 @@ Examples:
 			}
 		}()
 
-		// The multi-id edge listing is a different question from the neighbor
-		// query below — raw edge records keyed by source, printed per source,
-		// with a per-anchor miss — and it is on the EdgeReader role. Relations
-		// cannot answer it: it is anchored on ONE issue, it answers with the
-		// issues on the far end of its edges rather than the edges themselves,
-		// and it drops every edge whose target this database has no row for.
+		// The multi-id edge listing is on the EdgeReader role, not Relations:
+		// Relations is anchored on ONE issue, answers with the issues on the far
+		// end of its edges rather than the edges themselves, and drops every
+		// edge whose target this database has no row for.
 		//
-		// The accessor is taken PER STORE rather than once for the command,
-		// like the neighbor query below: a routed anchor answers from its own
-		// store, carrying its own decorator stack.
+		// The accessor is taken PER STORE rather than once for the command: a
+		// routed anchor answers from its own store, carrying its own decorator
+		// stack.
 		//
 		// The shape is chosen on batchMode — the count the CALLER TYPED — and
 		// not on len(resolved). Those differ exactly when an anchor did not
-		// resolve, and deciding on the survivors meant `bd dep list <good>
-		// <typo> --json` printed the neighbor shape (RelatedIssue objects) on
-		// this route while the proxied route printed the documented flat array
-		// of dependency records. The help text promises the records shape "with
-		// --json ... across all requested issues", so a skipped anchor must not
+		// resolve, and the help text promises the records shape "with --json
+		// ... across all requested issues", so a skipped anchor must not
 		// silently change what a script is parsing.
 		if batchMode && direction == "down" {
 			anchors, err := readDepListEdges(ctx, resolved, typeFilter)
@@ -1115,9 +1104,8 @@ honored on the --proxied-server route too, which it was not before.`,
 			}
 		}()
 
-		// Both routes, one body: the only differences between them are which
-		// accessor answers and how the root id is resolved, and both are inside
-		// resolveTreeTarget.
+		// Both routes, one body: which accessor answers and how the root id is
+		// resolved are both inside resolveTreeTarget.
 		return runDepTree(cmd, rootCtx, args)
 	},
 }
@@ -1420,12 +1408,9 @@ func init() {
 	depAddCmd.Flags().String("file", "", "Read dependency edges from JSONL file, or '-' for stdin")
 	depAddCmd.Flags().Bool("no-cycle-check", false, "Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit")
 
-	// DEPRECATED NO-OP, and it always was one: nothing has ever read this flag.
-	// It was accepted and threaded down to the walk, which never looked at it,
-	// so a diamond has always been rendered under one parent only. Implementing
-	// it now would be a feature wearing a refactor's clothes — nobody has
-	// specified what "all paths" means for a DAG with shared subtrees — so the
-	// role's contract states the first-visit rule as a promise
+	// DEPRECATED NO-OP, and it always was one: nothing has ever read this flag,
+	// so a diamond has always been rendered under one parent only. The role's
+	// contract states the first-visit rule as a promise
 	// (issueops/treewalker.go, TreeResult.Nodes) and this flag stays accepted so
 	// no script breaks. Same story as TreeNode.Truncated.
 	depTreeCmd.Flags().Bool("show-all-paths", false, "Deprecated no-op: accepted and ignored. A node reached by two paths is shown once, under the first.")
@@ -1435,8 +1420,7 @@ func init() {
 	depTreeCmd.Flags().String("status", "", "Filter to only show issues with this status (open, in_progress, blocked, deferred, closed)")
 	depTreeCmd.Flags().String("format", "", "Output format: 'mermaid' for Mermaid.js flowchart")
 	// Defensive row cap (be-x42v): applied to the node count after the walk, by
-	// the role, on BOTH routes — which is why it is the routed variant of the
-	// flag and why depTreeCmd no longer calls rejectMaxRowsUnderProxiedServer.
+	// the role, on BOTH routes — hence the routed variant of the flag.
 	addRoutedMaxRowsFlag(depTreeCmd)
 	// Note: --type flag intentionally omitted from depTreeCmd — TreeNode lacks
 	// dependency type info so filtering is not possible. Use 'bd dep list --type' instead.

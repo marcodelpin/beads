@@ -92,8 +92,7 @@ func (r *configSQLRepositoryImpl) SetConfig(ctx context.Context, key, value stri
 	// success and `bd create -t <the new type>` kept answering "invalid issue
 	// type", with doctor re-verifying against the string and reporting all-OK.
 	//
-	// The caller supplies a transactional runner (every production
-	// construction is internal/storage/uow's), so the row and its projection
+	// The caller supplies a transactional runner, so the row and its projection
 	// commit together or neither does.
 	switch key {
 	case "status.custom":

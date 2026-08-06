@@ -12,10 +12,8 @@ import (
 // store.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch. Every case seeds ids under its own prefix and
-// asserts only about those, so the order they run in does not matter;
-// setupTestStore already marks the PARENT parallel and no subtest here calls
-// t.Parallel.
+// and one copy-on-write branch. setupTestStore already marks the PARENT
+// parallel and no subtest here calls t.Parallel.
 func TestTreeWalkerContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltTreeWalkerFixture(t, "twk")
 	defer cleanup()
@@ -92,9 +90,8 @@ func newDoltTreeWalkerFixture(t *testing.T, prefix string) (conformance.TreeWalk
 		AddDependency: kit.AddDependency,
 		// The frozen kit exposes reads only, so the raw write the cycle case
 		// needs is supplied here — over the same *sql.DB the kit's QueryScalar
-		// reads through, which on this backend is the test's own branch. One
-		// PINNED CONNECTION for the whole script, as the cycle-detector wiring
-		// does, so a multi-statement seed cannot be split across sessions.
+		// reads through. One PINNED CONNECTION for the whole script, so a
+		// multi-statement seed cannot be split across sessions.
 		Exec: func(ctx context.Context, statements []conformance.SQLStatement) error {
 			conn, err := store.db.Conn(ctx)
 			if err != nil {

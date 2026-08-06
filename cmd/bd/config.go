@@ -216,10 +216,8 @@ var configSetCmd = &cobra.Command{
 
 		// Everything above this line is FRONT-DOOR routing: which source owns
 		// the key, and whether writing it to a file on this machine would leak
-		// a secret into git. None of it is answerable from a substrate, because
-		// two of the three sources are files this process can see and a server
-		// cannot. From here the key is known to belong to the workspace
-		// database, and the write is the role's.
+		// a secret into git. From here the key is known to belong to the
+		// workspace database, and the write is the role's.
 		settings, err := openWorkspaceConfig("config set requires direct database access")
 		if err != nil {
 			return HandleError("%v", err)
@@ -250,8 +248,8 @@ var configSetCmd = &cobra.Command{
 // store's for the direct route and the provider's for the proxied one.
 //
 // directRequirement is the message `ensureDirectMode` reports when a workspace
-// is reachable by neither route; it is per-verb because the shipped text names
-// the verb, and those strings are what a user sees.
+// is reachable by neither route. It is per-verb because the shipped text names
+// the verb.
 func openWorkspaceConfig(directRequirement string) (issueops.WorkspaceConfig, error) {
 	if usesProxiedServer() {
 		return proxiedWorkspaceConfig()
@@ -265,11 +263,9 @@ func openWorkspaceConfig(directRequirement string) (issueops.WorkspaceConfig, er
 // noteDirectConfigWrite marks the invocation as having written, which is what
 // the auto-commit epilogue in main.go keys on.
 //
-// It is DIRECT-ROUTE ONLY, and that is preserved rather than tidied: a proxied
-// write already committed inside the role's own unit of work, so flagging it
-// here would ask the epilogue to commit a second time on a route that has
-// nothing outstanding. The two routes genuinely differ here, which is why this
-// is the one line of the config commands that still asks which route it is on.
+// It is DIRECT-ROUTE ONLY: a proxied write already committed inside the role's
+// own unit of work, so flagging it here would ask the epilogue to commit a
+// second time on a route that has nothing outstanding.
 func noteDirectConfigWrite() {
 	if !usesProxiedServer() {
 		commandDidWrite.Store(true)
@@ -382,8 +378,7 @@ var configGetCmd = &cobra.Command{
 			})
 		}
 		// "(not set)" also prints for a key stored as the empty string: the
-		// role answers "" for both and issueops.SettingResult.Value says why it
-		// does not distinguish them. This is the shipped wording, kept.
+		// role answers "" for both, and issueops.SettingResult.Value says why.
 		if result.Value == "" {
 			fmt.Printf("%s (not set)\n", result.Key)
 		} else {
@@ -476,9 +471,8 @@ var configListCmd = &cobra.Command{
 		}
 
 		// The OTHER sources, reported beside the stored ones rather than merged
-		// into them. This is the boundary the role stops at: it answers for the
-		// database, and config.yaml and the environment are read here because
-		// they are files and variables of THIS process.
+		// into them: the role answers for the database, and config.yaml and the
+		// environment are files and variables of THIS process.
 		showConfigYAMLOverrides(stored)
 		return nil
 	},
@@ -834,13 +828,10 @@ Examples:
 
 		for _, p := range pairs {
 			// The same refusal `bd config set` makes, and it was MISSING here:
-			// this command partitions its pairs by source and wrote the database
-			// ones straight through, so `bd config set-many issue_prefix=x`
-			// re-prefixed the workspace behind the guard the single-key verb
-			// enforces. issueops.WorkspaceConfig refuses it at the substrate for
-			// every caller that goes through the role; this verb does not (see
-			// the write below), so it makes the refusal itself, with the same
-			// message and before any pair is written.
+			// `bd config set-many issue_prefix=x` re-prefixed the workspace
+			// behind the guard the single-key verb enforces. This verb does not
+			// go through issueops.WorkspaceConfig (see the write below), so it
+			// makes the refusal itself, before any pair is written.
 			if msg, rejected := rejectProtectedConfigKey(p.key); rejected {
 				fmt.Fprintln(os.Stderr, msg)
 				return SilentExit()
@@ -905,16 +896,8 @@ Examples:
 		// property TestProxiedServerConfigSetMany pins: the whole batch is ONE
 		// Dolt commit, which is the entire point of the verb ("faster and less
 		// noisy than separate calls, especially in CI"). The role writes one
-		// setting per call and commits each — that is what its contract says —
-		// so routing this through it would turn a three-key batch into three
-		// commits. A batched write is a different capability and gets a role of
-		// its own if it ever needs one, exactly as `bd create --file` stays off
-		// issueops.Lifecycle.Create.
-		//
-		// What it DOES borrow from the role is the refusal, applied above at
-		// the front door: before that, `bd config set-many issue_prefix=x`
-		// walked past the guard `bd config set` enforces and re-prefixed the
-		// workspace.
+		// setting per call and commits each, so routing this through it would
+		// turn a three-key batch into three commits.
 		if len(dbPairs) > 0 {
 			if usesProxiedServer() {
 				keys := make([]string, len(dbPairs))

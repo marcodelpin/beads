@@ -158,18 +158,14 @@ func RunIssueOperationsCreateRejectsMissingDependencyTargets(t *testing.T, ctx c
 }
 
 // RunIssueOperationsCreateRefusesAnOccupiedID pins the create-only half of the
-// Lifecycle.Create clause: "It is create-only across issues and wisps: an
-// occupied ID returns ErrAlreadyExists and leaves persistent state unchanged"
-// (issueops/issueops.go, Lifecycle.Create). ErrAlreadyExists says the same
-// thing from the other side — "The issue and wisp tables share one ID space"
-// (issueops/errors.go) — so ACROSS is asserted in both directions here, not
-// only for the plane the create happens to target.
+// Lifecycle.Create clause: "an occupied ID returns ErrAlreadyExists and leaves
+// persistent state unchanged" (issueops/issueops.go, Lifecycle.Create). The
+// issue and wisp tables share one ID space, so ACROSS is asserted in both
+// directions here, not only for the plane the create happens to target.
 //
-// This is not a hypothetical. The proxied-server `bd create` route asked its
-// use case for a plain create with no create-only guard, so `bd create --id
-// <occupied>` silently UPSERTED the stored row and reported success while the
-// direct route refused. A front door moving onto the role inherits whatever
-// the role's implementations do, so every one of them has to refuse.
+// The proxied-server `bd create` route asked its use case for a plain create
+// with no create-only guard, so `bd create --id <occupied>` silently UPSERTED
+// the stored row and reported success while the direct route refused.
 func RunIssueOperationsCreateRefusesAnOccupiedID(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
 	t.Helper()
 
@@ -242,8 +238,8 @@ func RunIssueOperationsCreateRefusesAnOccupiedID(t *testing.T, ctx context.Conte
 }
 
 // assertIssueOperationsAlreadyExists checks the refusal an occupied ID gets.
-// The message must name the ID: a caller that asked for one ID and was refused
-// cannot act on "issue already exists".
+// The message must name the ID: a caller refused with a bare "issue already
+// exists" cannot act on it.
 func assertIssueOperationsAlreadyExists(t *testing.T, err error, label, id string) {
 	t.Helper()
 	if err == nil {
@@ -260,15 +256,12 @@ func assertIssueOperationsAlreadyExists(t *testing.T, err error, label, id strin
 // RunIssueOperationsCreateInheritsParentLabels pins
 // CreateRequest.InheritLabelsFromParent — "copies the parent's labels at
 // creation" — against CreateRequest.Issue's own "Labels are authoritative"
-// (both issueops/issueops.go, CreateRequest). The two clauses meet on one
-// create, and the created issue must satisfy both: the request's labels are
-// there because they are authoritative, and the parent's are there because
-// inheritance was asked for.
+// (both issueops/issueops.go, CreateRequest). One create must satisfy both.
 //
-// Both `bd create --parent` front doors depend on exactly this. They spell it
-// differently — the direct route merges the parent's labels itself so its
-// --dry-run preview can show them and leaves the flag off, the proxied route
-// sets the flag — so the merge has to be the same set either way.
+// The two `bd create --parent` front doors spell it differently — the direct
+// route merges the parent's labels itself so its --dry-run preview can show
+// them and leaves the flag off, the proxied route sets the flag — so the merge
+// has to be the same set either way.
 func RunIssueOperationsCreateInheritsParentLabels(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
 	t.Helper()
 
@@ -289,12 +282,10 @@ func RunIssueOperationsCreateInheritsParentLabels(t *testing.T, ctx context.Cont
 		t.Fatalf("Create inheriting child: %v", err)
 	}
 	// A label the child and the parent both carry is one label, not two: the
-	// stored set is a set. The count assertion inside this helper is what says
-	// so.
+	// count assertion inside this helper is what says so.
 	assertIssueOperationsLabels(t, ctx, fixture, inherited.Issue.ID, "inheriting child", "own", "shared", "from-parent")
 	// CreateResult.Issue is "a detached snapshot with labels", so the same set
-	// has to come back on the result rather than only being readable from the
-	// row.
+	// has to come back on the result rather than only from the row.
 	assertIssueOperationsStringSet(t, "inheriting child result labels", inherited.Issue.Labels, "own", "shared", "from-parent")
 
 	// With inheritance off, the request's own labels are the whole set — the
@@ -1711,28 +1702,24 @@ func RunIssueOperationsUpdatePersistentPreservesUnversionedClass(t *testing.T, c
 }
 
 // RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits pins the two
-// compare-and-set preconditions as PRECONDITIONS ON A PLAIN EDIT, which is not
-// the same question the assignee-transfer case above asks of them. There they
-// appear beside a fenced transfer, to pin the ORDER the two guards resolve in;
-// here they gate an ordinary field update that no fence would touch, which is
-// how `bd update --if-status`/`--if-assignee` actually reach the contract.
+// compare-and-set preconditions as PRECONDITIONS ON A PLAIN EDIT. The
+// assignee-transfer case above pins the ORDER the two guards resolve in beside
+// a fenced transfer; here they gate an ordinary field update that no fence
+// would touch, which is how `bd update --if-status`/`--if-assignee` actually
+// reach the contract.
 //
 // The clauses: ExpectedAssignee "requires the current assignee to match" and
 // ExpectedStatus "requires the current status to match"
 // (issueops/issueops.go:250-256), under Lifecycle's standing promise that a
 // "refusal or validation error leaves persistent state unchanged"
-// (issueops/issueops.go:406-408). The SENTINELS the two refusals wear are not
-// named by those clauses; they are named by the contract, which already pins
-// ErrVersionMismatch/ErrStatusMismatch for the same fields on a fenced request
-// (this file, RunIssueOperationsUpdateAssigneeTransferFence), so asserting them
-// here extends an established promise rather than inventing one.
+// (issueops/issueops.go:406-408). The SENTINELS come from
+// RunIssueOperationsUpdateAssigneeTransferFence in this file.
 //
 // Both routes of `bd update` now send these guards to this contract instead of
-// applying them beside their own read: the direct one always did, and the
-// proxied one joined it when its hand-rolled read-merge-write was deleted
-// (bd-xt6de). A refusal that leaked a partial write would exit 13 — "another
-// actor won the race, nothing was written, do not retry" — while having
-// written.
+// applying them beside their own read; the proxied one joined when its
+// hand-rolled read-merge-write was deleted (bd-xt6de). A refusal that leaked a
+// partial write would exit 13 — "another actor won the race, nothing was
+// written, do not retry" — while having written.
 func RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
 	t.Helper()
 

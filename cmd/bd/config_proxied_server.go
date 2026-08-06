@@ -11,18 +11,13 @@ import (
 
 // proxiedWorkspaceConfig hands back the guarded workspace-settings surface for
 // the proxied-server provider, through the provider's OWN capability accessor —
-// the same two-step proxiedCounter performs, and for the same reason: the
-// accessor is where each layer is added.
+// the same two-step proxiedCounter performs.
 //
-// This file used to hold a second copy of the four single-key `bd config`
-// verbs: each one opened its own unit of work, called the config use case and
-// then printed the same lines the direct route prints a hundred lines away.
-// One of those copies had drifted in a way no reader could see. The proxied
-// `set` validated `status.custom` and stored it, but nothing on this route
-// re-synchronized the custom_statuses and custom_types tables that reads
-// consult FIRST — so a proxied `bd config set types.custom` reported success
-// and never took effect. That duplication is gone: the route now differs by
-// which accessor answers.
+// Routing the four single-key `bd config` verbs through the role fixed a copy
+// that had drifted: the proxied `set` stored `status.custom` without
+// re-synchronizing the custom_statuses and custom_types tables that reads
+// consult FIRST, so a proxied `bd config set types.custom` reported success and
+// never took effect.
 func proxiedWorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")
@@ -41,9 +36,7 @@ func proxiedWorkspaceConfig() (issueops.WorkspaceConfig, error) {
 // rather than N, which is what makes it usable in CI — and
 // TestProxiedServerConfigSetMany pins it. issueops.WorkspaceConfig writes one
 // setting per call and commits each, as its contract says, so routing this
-// through it would turn a three-key batch into three commits. A batched write
-// is a different capability and would get a role of its own, exactly as
-// `bd create --file` stays off issueops.Lifecycle.Create.
+// through it would turn a three-key batch into three commits.
 //
 // It does NOT re-implement the role's refusals: cmd/bd/config.go applies them
 // to every pair, before any of them is written.

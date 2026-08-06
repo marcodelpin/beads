@@ -16,10 +16,7 @@ import (
 //
 // It answers with the PAIR and one error, because that is the shape of the role:
 // the two markers are read in one snapshot, so there is no longer a state where
-// the prefix read succeeded and the project-id read did not. The two subtests
-// that asserted those separately are one subtest now, and it is a stronger
-// statement than the two it replaces — a caller cannot see half an identity
-// from a connection that dropped.
+// the prefix read succeeded and the project-id read did not.
 type fakeIdentityReader struct {
 	prefix    string
 	projectID string

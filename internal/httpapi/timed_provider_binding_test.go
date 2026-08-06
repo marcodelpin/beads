@@ -15,23 +15,18 @@ import (
 // CONSTRUCTOR beats an accessor: `uow.NewSweeper(p)` binds the role to the
 // wrapper, so every unit of work it opens goes through timedProvider.NewUOW and
 // lands in the request's uow_ms. `p.inner.Sweeper()` would return a role bound
-// to the untimed provider, and the measurement would silently read zero. The
-// comment on IssueReader records that a reviewer once proposed exactly that
-// change "for symmetry".
+// to the untimed provider, and the measurement would silently read zero — a
+// change the comment on IssueReader records a reviewer proposing "for
+// symmetry".
 //
-// WHY THIS TEST IS STRUCTURAL. The behavioral pins are per route: they need a
-// provider fake with a measurable delay, a valid request for that operation,
-// and a log line to read. Two of the thirteen roles have one
-// (TestAReadRouteTimesTheUnitsOfWorkItsReaderOpens,
-// TestAClaimTimesTheUnitsOfWorkItsClaimerOpens). The other eleven — including
-// all three WRITE roles, whose transactions are the longest this server runs —
-// had none, so the symmetric refactor could be applied to them with the whole
-// package still green.
+// WHY THIS TEST IS STRUCTURAL. The behavioral pins are per route, and only two
+// of the thirteen roles have one. The other eleven — including all three WRITE
+// roles, whose transactions are the longest this server runs — had none, so the
+// symmetric refactor could be applied to them with the whole package green.
 //
-// Reading the binding off the AST covers all thirteen at once and cannot be
-// satisfied by a passing suite. It is deliberately narrow: it says nothing
-// about what the roles DO, only that each is constructed over the receiver.
-// Keep the behavioral pins; this is not a replacement for them.
+// Reading the binding off the AST covers all thirteen at once. It says nothing
+// about what the roles DO, only that each is constructed over the receiver, so
+// it is not a replacement for the behavioral pins.
 func TestEveryTimedProviderAccessorBindsToTheWrapper(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "claim.go", nil, 0)

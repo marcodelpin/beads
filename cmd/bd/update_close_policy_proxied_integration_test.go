@@ -30,8 +30,7 @@ func countAttemptRefusals(out string) int {
 // other's stale shape. #5206 added the policy and its two proxied refusal arms
 // while this path still ran a bespoke read-merge-write of its own, and the only
 // proxied coverage it shipped was a unit test on the spec that path built —
-// which passes whether or not the refusal ever reaches a user. The
-// read-merge-write is gone now, but the assertions still earn their keep: they
+// which passes whether or not the refusal ever reaches a user. These assertions
 // are the only proxied close-policy coverage that watches a user-visible
 // boundary rather than an internal request.
 //

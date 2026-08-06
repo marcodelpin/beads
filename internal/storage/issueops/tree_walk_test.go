@@ -15,9 +15,7 @@ import (
 // asks for when a role's body has to live at transaction level.
 //
 // TestPruneTreeByStatus and the TestMergeBidirectionalTree_* family MOVED HERE
-// from cmd/bd/dep_test.go with the functions they exercise. They were written
-// against two CLI helpers that both routes each carried a call to; the helpers
-// are now one shared body below the role, so the tests belong beside it.
+// from cmd/bd/dep_test.go with the functions they exercise.
 
 func TestPruneTreeByStatus(t *testing.T) {
 	tree := []*types.TreeNode{

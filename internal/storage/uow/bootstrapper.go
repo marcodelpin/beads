@@ -39,19 +39,16 @@ var _ publicops.Bootstrapper = (*bootstrapper)(nil)
 // Bootstrap reads the identity, refuses over an identified substrate and
 // writes the new one inside ONE unit of work.
 //
-// THE REFUSAL IS INSIDE THE TRANSACTION on purpose, and this is the backend
-// where that matters most: it serves a workspace several clients share, so two
-// inits can arrive at one database at the same moment, and a refusal decided
-// from a read outside the transaction is one both of them pass.
+// THE REFUSAL IS INSIDE THE TRANSACTION, and this is the backend where that
+// matters most: it serves a workspace several clients share, so two inits can
+// arrive at one database at the same moment, and a refusal decided from a read
+// outside the transaction is one both of them pass.
 //
-// VALIDATION HAPPENS BEFORE THE UNIT OF WORK IS OPENED, for the reason
-// workspaceConfig.SetSetting gives — a refused bootstrap should cost no
-// connection and no transaction.
+// VALIDATION HAPPENS BEFORE THE UNIT OF WORK IS OPENED — a refused bootstrap
+// should cost no connection and no transaction.
 //
-// ONE VERSION-CONTROL ENTRY, which is what the role's "at most one" permits.
-// The identity lands on planes that travel, so this backend — the one whose
-// unit of work labels its own commit — records the bootstrap as a single entry
-// rather than as one per key.
+// ONE VERSION-CONTROL ENTRY, which is what the role's "at most one" permits:
+// one entry rather than one per key.
 //
 // The per-clone bookkeeping `bd init` seeds alongside the identity is not here
 // and not on the role; see issueops.Bootstrapper for why.

@@ -27,10 +27,9 @@ type hookBatchCreator struct {
 
 // CreateBatch fires the create hook once PER ITEM, in request order, and fires
 // nothing at all when the batch refused — the batch is all or nothing, so a
-// refusal created no issue for a script to be told about. Per item rather than
-// once for the batch because a hook script is written against one issue:
-// collapsing N creates into one firing would silently stop reporting N-1 of
-// them.
+// refusal created no issue for a script to be told about. Per item because a
+// hook script is written against one issue: collapsing N creates into one
+// firing would silently stop reporting N-1 of them.
 //
 // The edge list per item comes from the REQUEST, exactly as the single create's
 // does, because a reverse edge never appears in the created issue's own

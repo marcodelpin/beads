@@ -15,8 +15,7 @@ import (
 // vote rather than an engine check. The two stores share the role body
 // (internal/workapi/storestats), but the statistics QUERIES underneath are this
 // package's own: embeddeddolt/statistics.go writes its own blocked count and
-// ready subtraction, in one connection where the server-backed store spends two
-// read transactions. Only the status tally is shared code.
+// ready subtraction. Only the status tally is shared code.
 //
 // One environment for the whole suite: booting an embedded engine per case
 // would dominate the runtime, and the delta assertions need the subtests

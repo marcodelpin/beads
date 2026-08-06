@@ -12,17 +12,12 @@ import (
 )
 
 // The two seams `bd list` reaches its roles through, and the one projection its
-// text renderings need. Both routes call these, which is what keeps "the page
-// comes from Reader.List and the decoration from BlockingAnnotator" a single
-// statement rather than two that happen to agree.
+// text renderings need. Both routes call these, so the page and its decoration
+// come from one statement rather than two that happen to agree.
 
 // listPageIssues projects a counted page onto the plain rows the text
-// renderings take.
-//
-// It is a projection and not a second query: IssueWithCounts embeds the issue,
-// so this shares everything under the header and keeps the page's ORDER, which
-// the role's epilogue already decided. A nil row is dropped rather than
-// dereferenced — the role promises none for a successful call, and a listing is
+// renderings take, keeping the page's ORDER. A nil row is dropped rather than
+// dereferenced: the role promises none for a successful call, and a listing is
 // not where a broken implementation should become a panic.
 func listPageIssues(page issueops.IssuePage) ([]*types.Issue, bool) {
 	issues := make([]*types.Issue, 0, len(page.Items))
@@ -38,10 +33,9 @@ func listPageIssues(page issueops.IssuePage) ([]*types.Issue, bool) {
 // listBlocking is the decoration keyed the way the two formatters read it.
 //
 // The role answers with a SLICE in request order, because that is what an HTTP
-// body needs and what makes the answer zippable against the ids that were sent.
-// The formatters index by id, so the three maps are rebuilt here — at the front
-// door, once per route, rather than in a role that would then have to promise
-// three separate containers can never disagree.
+// body needs. The formatters index by id, so the three maps are rebuilt at the
+// front door, once per route, rather than in a role that would then have to
+// promise three separate containers can never disagree.
 type listBlocking struct {
 	blockedBy map[string][]string
 	blocks    map[string][]string
@@ -71,7 +65,6 @@ func newListBlocking(result issueops.BlockingResult) listBlocking {
 // annotateListBlocking is the DIRECT route's decoration read. It swallows every
 // failure, including the accessor's, because that is what this route has always
 // done: `bd list` renders the page undecorated rather than refusing to print it.
-// See the note at the call site for why that is recorded rather than converged.
 func annotateListBlocking(ctx context.Context, store storage.DoltStorage, ids []string) listBlocking {
 	annotator, err := store.BlockingAnnotator()
 	if err != nil {
@@ -85,8 +78,7 @@ func annotateListBlocking(ctx context.Context, store storage.DoltStorage, ids []
 }
 
 // proxiedBlockingAnnotator hands back the guarded blocking-decoration surface
-// for the proxied-server provider, through the provider's OWN capability
-// accessor — the same two-step a direct command performs on a store.
+// for the proxied-server provider, through the provider's own accessor.
 func proxiedBlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")

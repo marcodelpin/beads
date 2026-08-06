@@ -55,14 +55,12 @@ func (r *versionReconciler) RecordedVersion(ctx context.Context, _ publicops.Rec
 // could be written after another process had already moved the marker past it,
 // which is the one way this role could ever lower the high-water mark.
 //
-// VALIDATION HAPPENS BEFORE THE UNIT OF WORK IS OPENED, for the reason
-// workspaceConfig.SetSetting gives — a refused reconciliation should cost no
-// connection and no transaction, and this one runs before every command.
+// VALIDATION HAPPENS BEFORE THE UNIT OF WORK IS OPENED, so a refused
+// reconciliation costs no connection and no transaction.
 //
 // A NO-OP AND A REFUSAL STILL OPEN THE TRANSACTION and commit nothing, which is
 // how this backend answers "reconciliation records no history": the commit
-// message is only spent when something was written, and RunTxResult treats a
-// unit of work with nothing in it as the no-op it is.
+// message is only spent when something was written.
 func (r *versionReconciler) ReconcileVersion(ctx context.Context, req publicops.VersionReconcileRequest) (publicops.VersionReconcileResult, error) {
 	if _, err := workapi.ValidateReconcileVersion(req.CLIVersion); err != nil {
 		return publicops.VersionReconcileResult{}, err

@@ -22,16 +22,12 @@ func (s *DoltStore) Deleter() (issueops.Deleter, error) {
 
 // deleter erases named rows inside ONE transaction.
 //
-// There is no shared constructor package for this role, for the reason sweeper
-// gives: the work is an existence probe, a guard, a delete and a text rewrite
-// that must all see one snapshot, and a transaction is not reachable through
-// storage.DoltStorage. The sharing happens one level down instead — this body
-// and the embedded store's are a few lines each around
-// issueops.DeleteInTx — and two wrappers over one body is still ONE vote,
-// which the conformance contract says out loud.
-//
-// A front door cannot construct this: the type is unexported and the accessor
-// is the only door.
+// There is no shared constructor package for this role: the work is an
+// existence probe, a guard, a delete and a text rewrite that must all see one
+// snapshot, and a transaction is not reachable through storage.DoltStorage. The
+// sharing happens one level down instead — this body and the embedded store's
+// are a few lines each around issueops.DeleteInTx — so two wrappers over one
+// body is still ONE vote.
 type deleter struct{ store *DoltStore }
 
 var _ issueops.Deleter = (*deleter)(nil)
@@ -48,11 +44,10 @@ var _ issueops.Deleter = (*deleter)(nil)
 // like a mutation to everything watching the store.
 //
 // THE VERSION-CONTROL ENTRY IS ONE PER DELETION, recorded here rather than in
-// the shared body because only this backend records one at all: the embedded
-// store commits outside the SQL transaction and the unit-of-work provider
-// labels its own. A deletion confined to the wisp tables touches only tables
-// this plane ignores, so DOLT_COMMIT finds nothing to commit and records no
-// entry — the "at most one" the role promises, not "exactly one".
+// the shared body because only this backend records one at all. A deletion
+// confined to the wisp tables touches only tables this plane ignores, so
+// DOLT_COMMIT finds nothing to commit and records no entry — the "at most one"
+// the role promises, not "exactly one".
 func (s *deleter) Delete(ctx context.Context, req issueops.DeleteRequest) (issueops.DeleteResult, error) {
 	if err := workapi.ValidateDeleteRequest(req); err != nil {
 		return issueops.DeleteResult{}, err
@@ -79,9 +74,8 @@ func (s *deleter) Delete(ctx context.Context, req issueops.DeleteRequest) (issue
 		if result.Deleted == 0 {
 			return nil
 		}
-		// The same tables a sweep stages, because a delete IS a sweep of a
-		// named set — plus the neighbor rewrite, which lands in `issues` and
-		// is already on the list.
+		// The same tables a sweep stages; the neighbor rewrite lands in
+		// `issues`, which is already on the list.
 		for _, table := range sweptTables {
 			_ = schema.DrainCall(ctx, tx, "CALL DOLT_ADD(?)", table)
 		}

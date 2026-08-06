@@ -31,8 +31,7 @@ func runListProxiedServer(cmd *cobra.Command, ctx context.Context, in listInput)
 	default:
 		// The --ready arm is not a case of its own any more: it is
 		// ListRequest.ReadyFlag, and choosing the ready query from it is the
-		// ROLE's job on both routes. Two functions that differed only in which
-		// use-case method they called is exactly the drift this replaces.
+		// ROLE's job on both routes.
 		return runListProxiedPage(ctx, in)
 	}
 }
@@ -69,11 +68,9 @@ func runListProxiedTree(ctx context.Context, in listInput) error {
 // it is the same two in the same order: --json first, then every text
 // rendering, both over issueops.Reader.
 //
-// It opens no unit of work of its own. The role opens one per call, which is
+// It opens no unit of work of its own — the role opens one per call, which is
 // one more than this route used to for a listing that also loads dependency
-// records — the price of the page and the decoration each being one question
-// asked through one seam rather than several methods sharing a caller's
-// transaction. Nothing here was atomic across those reads before either: the
+// records. Nothing here was atomic across those reads before either: the
 // renderings ran after the query returned.
 func runListProxiedPage(ctx context.Context, in listInput) error {
 	rd, err := proxiedIssueReader()
@@ -222,9 +219,8 @@ func loadDepsForIssues(ctx context.Context, uw uow.UnitOfWork, issues []*types.I
 func renderProxiedListText(ctx context.Context, issues []*types.Issue, in listInput, truncated bool) error {
 	// --format and the pretty tree want the WHOLE dependency record set for the
 	// page — every edge type, no status rule — which is neither role's
-	// question: it is not a page and it is not the blocking decoration. They
-	// open their own unit of work for it, which is what lets every other
-	// rendering below reach its roles without one.
+	// question. They open their own unit of work for it, which is what lets
+	// every other rendering below reach its roles without one.
 	if in.formatStr != "" || in.prettyFormat {
 		uw, err := openProxiedListUOW(ctx)
 		if err != nil {
@@ -258,10 +254,9 @@ func renderProxiedListText(ctx context.Context, issues []*types.Issue, in listIn
 	}
 
 	// The decoration, onto issueops.BlockingAnnotator. This route FAILS on the
-	// read where the direct one swallows it, and this commit keeps both exactly
-	// as they were: the difference is what each CALLER does with a failure, not
-	// what the two answers are, and converging it is a behavior decision
-	// recorded for the owner (AMBIGUITIES.md, A-blk-1) rather than taken here.
+	// read where the direct one swallows it, and both are kept exactly as they
+	// were: converging them is a behavior decision recorded for the owner
+	// (AMBIGUITIES.md, A-blk-1) rather than taken here.
 	annotator, err := proxiedBlockingAnnotator()
 	if err != nil {
 		return err

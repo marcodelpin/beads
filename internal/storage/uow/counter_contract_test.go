@@ -9,9 +9,8 @@ import (
 
 // TestCounterContract runs the Counter contract against the unit-of-work
 // provider — the one Counter implementation that does not hand back
-// internal/workapi/storecounter, so this is the wiring where a genuine body
-// divergence shows up. The two store backends share that body between them,
-// which makes this the SECOND of two votes rather than the third.
+// internal/workapi/storecounter. The two store backends share that body between
+// them, which makes this the SECOND of two votes rather than the third.
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a
 // real Dolt sql-server) and NO t.Parallel: this backend has no per-test
@@ -63,8 +62,7 @@ func newUOWCounterFixture(t *testing.T, ctx context.Context, prefix string) conf
 	t.Helper()
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessor, not NewCounter: a provider that stopped
-	// offering the role is the regression, and a constructor call would hide
-	// it.
+	// offering the role is the regression, and a constructor call would hide it.
 	source, ok := provider.(CounterSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the Counter accessor", provider)

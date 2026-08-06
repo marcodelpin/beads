@@ -9,12 +9,11 @@ import (
 
 // TestSweeperContract runs the Sweeper contract against the unit-of-work
 // provider — the one implementation that does not run
-// internal/storage/issueops.SweepInTx, and the one that reaches the same four
-// questions through the domain use cases. It is the SECOND of two votes, not
-// the third: the two store backends share the other body.
+// internal/storage/issueops.SweepInTx. It is the SECOND of two votes, not the
+// third: the two store backends share the other body.
 //
-// One provider for the whole suite (each newUOWRoleFixtureProvider boots a
-// real Dolt sql-server) and NO t.Parallel: this backend has no per-test
+// One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
+// Dolt sql-server) and NO t.Parallel: this backend has no per-test
 // copy-on-write branch, so dolt_log and the issues table are database-global
 // and a parallel subtest would delete another subtest's rows — which on this
 // role is not a flake but the operation working as documented.
@@ -58,8 +57,7 @@ func newUOWSweeperFixture(t *testing.T, ctx context.Context, prefix string) conf
 	t.Helper()
 	provider := newUOWRoleFixtureProvider(t, ctx, prefix)
 	// Through the capability accessor, not NewSweeper: a provider that stopped
-	// offering the role is the regression, and a constructor call would hide
-	// it.
+	// offering the role is the regression a constructor call would hide.
 	source, ok := provider.(SweeperSource)
 	if !ok {
 		t.Fatalf("provider %T does not offer the Sweeper accessor", provider)

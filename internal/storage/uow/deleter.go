@@ -12,9 +12,7 @@ import (
 )
 
 // DeleterSource is the capability accessor a unit-of-work provider offers for
-// the named-row erasure role, the sibling of SweeperSource and CounterSource. A
-// consumer holding a provider by interface asks for the role here instead of
-// reaching for a constructor.
+// the named-row erasure role, the sibling of SweeperSource and CounterSource.
 type DeleterSource interface {
 	Deleter() (publicops.Deleter, error)
 }
@@ -45,17 +43,13 @@ var _ publicops.Deleter = (*deleter)(nil)
 // issueops.DeleteInTx, and this one reaches the same questions through the
 // domain use cases. What it must NOT do differently is which rows go and which
 // requests are refused — the id normalization and the request rules run through
-// the same internal/workapi functions the shared body runs, and the two
-// answers that need the graph are asserted equal by the conformance contract.
+// the same internal/workapi functions, and the conformance contract asserts the
+// two equal.
 //
-// THE GUARD IS HERE RATHER THAN IN THE USE CASE, and that is a deliberate
-// placement. domain.IssueUseCase.DeleteIssues already selects the right SET for
-// both modes — Cascade expands to the transitive dependents, no Cascade deletes
-// exactly what it was handed and orphans the rest — but it has never refused
-// anything, and the proxied route papered over that by hardcoding Cascade for
-// every call. The refusal belongs above the use case with the rest of the
-// role's policy, so a future use-case caller cannot inherit the capability and
-// miss the guard.
+// THE GUARD IS HERE RATHER THAN IN THE USE CASE, which selects the right SET
+// for both modes but has never refused anything. The refusal belongs above it
+// with the rest of the role's policy, where a future use-case caller cannot
+// inherit the capability and miss it.
 //
 // A DRY RUN TAKES A READ-ONLY UNIT OF WORK: it writes nothing, so it must not
 // take the committing path and leave a history entry describing a preview.
@@ -83,9 +77,9 @@ func (d *deleter) Delete(ctx context.Context, req publicops.DeleteRequest) (publ
 }
 
 // deleteInUOW is the whole deletion on one unit of work, shared by the preview
-// path and the committing one so the two cannot answer differently — which on
-// this role is the point rather than tidiness: issueops.Deleter promises that a
-// dry run refuses exactly where the real run refuses.
+// path and the committing one so the two cannot answer differently:
+// issueops.Deleter promises that a dry run refuses exactly where the real run
+// refuses.
 func deleteInUOW(ctx context.Context, uw UnitOfWork, req publicops.DeleteRequest) (publicops.DeleteResult, error) {
 	issueUC := uw.IssueUseCase()
 	result := publicops.DeleteResult{DryRun: req.DryRun}
@@ -155,9 +149,7 @@ func deleteInUOW(ctx context.Context, uw UnitOfWork, req publicops.DeleteRequest
 		IDs:     req.IDs,
 		Cascade: req.Cascade,
 		DryRun:  req.DryRun,
-		// A preview rewrites nothing, so it must not ask for the rewrite; the
-		// use case would stop short of it anyway, and asking would make the
-		// intent depend on that.
+		// A preview rewrites nothing, so it must not ask for the rewrite.
 		UpdateTextReferences: !req.DryRun,
 	}, req.Actor)
 	if err != nil {

@@ -125,16 +125,13 @@ func runReadyProxiedList(ctx context.Context, uw uow.UnitOfWork, in readyInput) 
 		// Parity with the direct route: the pagination key is emitted only
 		// when truncated, and it now carries the same Total, from the same
 		// role. This route published no total at all until ReadyCounter
-		// existed — the domain page reports has-more and nothing else, and
-		// there is no cheap COUNT(*) on this seam — so a script that read
-		// `pagination.total` got one number under a direct-mode workspace and
-		// no key at all under a proxied one.
+		// existed, so a script that read `pagination.total` got one number
+		// under a direct-mode workspace and no key at all under a proxied one.
 		//
-		// The guard is the direct route's guard: a total that does not exceed
-		// the page says nothing this envelope does not already say, and the
-		// two queries are not one snapshot (issueops.ReadyCounter.CountReady),
-		// so a close landing between them must not publish a total smaller
-		// than the page beside it.
+		// The guard is the direct route's guard: the two queries are not one
+		// snapshot (issueops.ReadyCounter.CountReady), so a close landing
+		// between them must not publish a total smaller than the page beside
+		// it.
 		var pag *PaginationMeta
 		if truncated {
 			pag = &PaginationMeta{
@@ -243,10 +240,9 @@ func runReadyProxiedClaim(ctx context.Context, in readyInput) error {
 // ReadyCounter accessor — the same role the direct route reaches through the
 // store's accessor, over the request both build in readyRoleRequest.
 //
-// It opens NO unit of work of its own, and the caller's is not handed to it:
-// the role's request is the transaction, exactly as it is for the claim beside
-// it. So the count runs in its own read-only unit of work rather than the one
-// the page came from, which is why the two are not one snapshot.
+// It opens NO unit of work of its own: the role's request IS the transaction,
+// so the count runs in its own read-only unit of work rather than the one the
+// page came from, which is why the two are not one snapshot.
 func proxiedReadyTotal(ctx context.Context, in readyInput) (int, error) {
 	if uowProvider == nil {
 		return 0, errors.New("proxied-server UOW provider not initialized")

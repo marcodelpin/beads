@@ -39,10 +39,8 @@ import (
 // already drops a nil element out of a page. Get is the whole reason the type
 // exists.
 //
-// issueops.EdgeReader has no wrapper here for the same reason Ready and List
-// need nothing: it answers with a value, and wireEdges drops a nil edge. A role
-// that hands back no pointer cannot be dereferenced into a panic, so a checked
-// wrapper over it would be a layer with nothing to check.
+// issueops.EdgeReader has no wrapper here for the same reason: it answers with
+// a value, and wireEdges drops a nil edge.
 type checkedReader struct{ inner issueops.Reader }
 
 // Ready passes the request through unchanged.
@@ -70,10 +68,8 @@ func (c checkedReader) Get(ctx context.Context, req issueops.GetRequest) (*issue
 //
 // The response body carries issue VALUES where the role answers with pointers,
 // so the handler dereferences every entry — checkedClaimer's hazard, once per
-// item. The role promises no nil entry for a successful call precisely because
-// a batch that could not create every item creates none; an entry that is nil
-// anyway is a broken implementation, so it is the generic 500 with the fault in
-// the log, not a 404 (nothing here knows an issue is missing) and not a panic.
+// item. An entry that is nil anyway is a broken implementation, so it is the
+// generic 500 with the fault in the log and not a panic.
 type checkedBatchCreator struct{ inner issueops.BatchCreator }
 
 // CreateBatch refuses a result that reports success without every issue the

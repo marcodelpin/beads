@@ -12,11 +12,10 @@ import (
 // seam that renders LIMIT without OFFSET.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch: each Run namespaces its ids and its label under
-// the fixture prefix and scopes its own EXPRESSION to that label, and
-// WritesNothing takes a before/after history delta, which is only meaningful
-// while the subtests run sequentially. setupTestStore already marks the PARENT
-// parallel; no subtest here calls t.Parallel.
+// and one copy-on-write branch: each Run scopes its own EXPRESSION to a label
+// under the fixture prefix, and WritesNothing takes a before/after history
+// delta, which is only meaningful while the subtests run sequentially.
+// setupTestStore already marks the PARENT parallel; no subtest calls t.Parallel.
 func TestQuerierContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltQuerierFixture(t, "qry")
 	defer cleanup()

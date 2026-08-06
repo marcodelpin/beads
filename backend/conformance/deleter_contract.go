@@ -24,30 +24,18 @@ import (
 // domain use cases and is genuinely separate code. So the wirings are one vote
 // plus an engine check, and a second independent vote.
 //
-// WHAT THE AUDIT SUITE ALREADY COVERS, AND WHY THIS IS NOT A SECOND COPY OF IT.
 // backend/conformance/audit_issue-lifecycle.go pins cascade, force, the orphan
-// guard and the dry-run counts at the STORAGE SEAM — `DeleteIssues` on
-// storage.DoltStorage — and it stays the right home for that method, which
-// `bd gc`, `bd wisp` and the sweeper still call directly. It cannot see the
-// role: its Factory hands back a bare storage.DoltStorage, so the unit-of-work
-// provider — the backend where the guard did not exist at all before this
-// commit — never runs a case placed there. The cases below are therefore
-// deliberately NOT that method's cases repeated: they are about the promises
-// the ROLE adds on top of it, which the storage seam has no opinion on —
-// id normalization, the ordered refusals, the typed errors, the reference
-// rewrite inside the transaction, and the history entry.
+// guard and the dry-run counts at the STORAGE SEAM, and cannot see the role at
+// all. The cases below are the promises the ROLE adds on top of it: id
+// normalization, the ordered refusals, the typed errors, the reference rewrite
+// inside the transaction, and the history entry.
 //
-// EVERY CASE NAMESPACES ITS SEEDS with fixture.IssuePrefix and its own tag,
-// because the three wirings share one database across the whole role suite and
-// a delete is one of the two operations here that can destroy another case's
-// fixture. Unlike the sweeper's cases they do not need a pattern to scope the
-// OPERATION — a delete only ever touches ids it was handed — so the namespacing
-// is about collisions rather than about blast radius.
+// EVERY CASE NAMESPACES ITS SEEDS with fixture.IssuePrefix and its own tag: the
+// three wirings share one database across the whole role suite, and a delete
+// can destroy another case's fixture.
 
 // DeleterFixture supplies adapter-specific storage access for the named-row
-// erasure assertions. Every field is named and typed exactly like the
-// per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
-// accessor plus prefix with no adapter in between.
+// erasure assertions.
 type DeleterFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
@@ -59,11 +47,10 @@ type DeleterFixture struct {
 	// CreateWisp seeds an ephemeral issue in the wisps plane.
 	CreateWisp func(context.Context, *types.Issue, string) error
 	// AddDependency seeds ONE edge, routed to the plane the edge's SOURCE
-	// lives in. It is what makes a dependent, which is what this role's guard
-	// is about.
+	// lives in.
 	AddDependency func(context.Context, *types.Dependency, string) error
 	// QueryScalar runs a single-row query and scans it. It is how these cases
-	// observe the ONE thing a delete result cannot be trusted to report about
+	// check the one thing a delete result cannot be trusted to report about
 	// itself: whether the rows are really gone.
 	QueryScalar func(context.Context, string, []any, ...any) error
 	// CountHistory reports how many history entries the fixture's branch has.
@@ -76,9 +63,9 @@ type DeleterFixture struct {
 // database (issueops/deleter.go, DeleteRequest.IDs: "an empty or all-blank
 // slice is ErrValidation rather than a no-op").
 //
-// A no-op would be the dangerous answer here rather than merely a sloppy one:
-// a caller whose id list came out empty because its own construction broke
-// would read "deleted 0" and conclude the workspace was already clean.
+// A no-op is the dangerous answer, not merely the sloppy one: a caller whose id
+// list came out empty because its own construction broke would read "deleted 0"
+// and conclude the workspace was already clean.
 func RunDeleterRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	for _, test := range []struct {
@@ -109,10 +96,8 @@ func RunDeleterRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixtu
 //
 // It is asserted with a REAL id beside the typo, because that is the only
 // arrangement that can fail: an implementation that deleted as it resolved
-// would pass a single-absent-id case perfectly and still have erased the row
-// this one seeds. And it is asserted under DryRun too, because the leaf
-// promises a preview refuses where the real run refuses — a preview that
-// succeeded here would tell a caller to go ahead.
+// would pass a single-absent-id case perfectly. And under DryRun too, because a
+// preview that succeeded here would tell a caller to go ahead.
 func RunDeleterRefusesAnAbsentID(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	stored := deleterSeedIssue(t, ctx, fixture, "gone", "real")
@@ -147,10 +132,9 @@ func RunDeleterRefusesAnAbsentID(t *testing.T, ctx context.Context, fixture Dele
 // refused"), and the exception beside it: a dependent the request DID name is
 // not a dependent for this purpose.
 //
-// The refusal is asserted with its EFFECT as well as its type. A guard that
+// The refusal is asserted with its EFFECT as well as its type: a guard that
 // returned the error after deleting would satisfy an errors.Is assertion
-// perfectly, and on this operation that is the failure worth spending seeded
-// rows to rule out.
+// perfectly.
 func RunDeleterRefusesDependentsOutsideTheRequest(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	blocker := deleterSeedIssue(t, ctx, fixture, "guard", "blocker")
@@ -196,13 +180,9 @@ func RunDeleterRefusesDependentsOutsideTheRequest(t *testing.T, ctx context.Cont
 
 // RunDeleterForceOrphansDependents pins what --force MEANS after this commit
 // (issueops/deleter.go, DeleteRequest.Force: "deletes the named rows and leaves
-// rows that depended on them ORPHANED"), and it is the case that would have
-// caught the drift this commit removes: the proxied route used to hardcode
-// cascade, so `--force` there deleted the dependent instead of orphaning it.
-//
-// DeleteResult.Orphaned is asserted alongside the surviving row, because the
-// number a caller acts on and the row that is actually there are two different
-// claims and only one of them was ever true on that route.
+// rows that depended on them ORPHANED"). It is the case that catches the drift
+// this commit removes: the proxied route used to hardcode cascade, so `--force`
+// there deleted the dependent instead of orphaning it.
 func RunDeleterForceOrphansDependents(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	blocker := deleterSeedIssue(t, ctx, fixture, "force", "blocker")
@@ -229,11 +209,9 @@ func RunDeleterForceOrphansDependents(t *testing.T, ctx context.Context, fixture
 // RunDeleterCascadeDeletesTheClosure pins the other mode (issueops/deleter.go,
 // DeleteRequest.Cascade) over a chain rather than a single edge, because
 // "transitive" is the whole claim and a one-edge fixture cannot tell a
-// transitive expansion from a direct one.
-//
-// It also pins the interaction the leaf spells out: a request carrying BOTH
-// Cascade and Force is legal and behaves as Cascade, with Orphaned empty —
-// there is nothing left outside the closure to orphan.
+// transitive expansion from a direct one. It also pins the interaction the leaf
+// spells out: a request carrying BOTH Cascade and Force is legal and behaves as
+// Cascade.
 func RunDeleterCascadeDeletesTheClosure(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	root := deleterSeedIssue(t, ctx, fixture, "casc", "root")
@@ -263,12 +241,10 @@ func RunDeleterCascadeDeletesTheClosure(t *testing.T, ctx context.Context, fixtu
 // TRANSITIVE CLOSURE of everything that depends on the named rows, IN BOTH
 // PLANES").
 //
-// RunDeleterCascadeDeletesTheClosure above proves the closure over a durable
-// chain and ErasesAcrossBothPlanes proves a mixed request over an EDGE-FREE
-// pair, so between them nothing asserted what a cascade rooted at a WISP does
-// to the durable rows hanging off it. That gap is not academic: `bd wisp gc`
-// deletes wisps with cascade hardcoded, so this is the quadrant routine
-// housekeeping runs through.
+// The other cascade cases are durable-only or edge-free, so nothing else
+// asserts what a cascade rooted at a WISP does to the durable rows hanging off
+// it. `bd wisp gc` deletes wisps with cascade hardcoded, so routine
+// housekeeping runs through this quadrant.
 //
 // The chain is two edges deep on purpose, and its second link is durable, so
 // this cannot be satisfied by a body that merely follows one cross-plane edge.
@@ -299,14 +275,11 @@ func RunDeleterCascadeFromAWispRootDeletesTheClosure(t *testing.T, ctx context.C
 // "WITHOUT Cascade AND WITHOUT Force, a NAMED ROW that some row OUTSIDE the
 // request depends on is refused" — a named row, not a named durable row).
 //
-// RunDeleterRefusesDependentsOutsideTheRequest and
-// RunDeleterForceOrphansDependents are both durable-only, so a body that
-// partitioned the request and asked the guard only about the durable half
-// passed them while silently orphaning a workspace's graph through the other
-// half. Both halves of the clause are asserted here — the unforced refusal and
-// the forced orphan report — because a body that reported the orphan without
-// refusing, or refused without reporting, is wrong in a different direction
-// and the two share one scan.
+// The other two guard cases are durable-only, so a body that partitioned the
+// request and asked the guard only about the durable half passed them while
+// silently orphaning a workspace's graph through the other half. Both halves of
+// the clause are asserted here — the unforced refusal and the forced orphan
+// report — because a body can get either one right on its own.
 func RunDeleterGuardsAWispNamedWithADurableDependent(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	wisp := deleterSeedWisp(t, ctx, fixture, "wguard", "wisp")
@@ -350,8 +323,6 @@ func RunDeleterGuardsAWispNamedWithADurableDependent(t *testing.T, ctx context.C
 	}
 	deleterAssertWispRows(t, ctx, fixture, 0, wisp)
 	deleterAssertIssueRows(t, ctx, fixture, 1, dependent)
-	// The orphan loses its cross-plane edge with the wisp it pointed at; a
-	// surviving edge into a deleted wisp would be dangling rather than orphaned.
 	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, wisp)
 }
 
@@ -362,8 +333,7 @@ func RunDeleterGuardsAWispNamedWithADurableDependent(t *testing.T, ctx context.C
 //
 // The two bodies scan different tables to answer it, so this is one of the few
 // places three green legs really would be two independent votes — and neither
-// was being taken. It is the shape of the defect wave 4 fixed: a guard that
-// asked about the durable half only, with 59 cases green.
+// was being taken.
 func RunDeleterGuardsADurableNamedWithAWispDependent(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	blocker := deleterSeedIssue(t, ctx, fixture, "dguard", "durable blocker")
@@ -412,22 +382,17 @@ func RunDeleterGuardsADurableNamedWithAWispDependent(t *testing.T, ctx context.C
 
 // RunDeleterNeverCallsALiveRowDeleted pins the invariant that makes the
 // under-deleting cascade impossible to reintroduce quietly: THE SET WHOSE
-// CITATIONS ARE REWRITTEN IS THE SET THAT WAS DELETED. A `[deleted:<id>]`
-// marker in a surviving row is a claim about the workspace, and this case
-// checks the claim against the rows.
+// CITATIONS ARE REWRITTEN IS THE SET THAT WAS DELETED.
 //
 // It is written as a biconditional rather than a count, because the counts
 // cannot see it: an implementation whose rewrite set is a strict SUPERSET of
 // its deletion set reports a perfectly plausible ReferencesUpdated and leaves
-// a neighbor's description saying a LIVE issue is gone. No other case here
-// reads a surviving row's text back and compares it against what is actually
-// stored.
+// a neighbor's description saying a LIVE issue is gone.
 //
 // The fixture is the cheapest arrangement in which the two sets can differ: a
 // wisp root, a durable row reachable only through it, and a third row that the
-// durable one DEPENDS ON — so the third row is a graph neighbor of the deletion
-// set (its text is in scope for the rewrite) without being a dependent of
-// anything (so it is never in the closure and always survives).
+// durable one DEPENDS ON — a graph neighbor of the deletion set (in scope for
+// the rewrite) that is never in the closure, so it always survives.
 func RunDeleterNeverCallsALiveRowDeleted(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	root := deleterSeedWisp(t, ctx, fixture, "live", "root")
@@ -470,13 +435,9 @@ func RunDeleterNeverCallsALiveRowDeleted(t *testing.T, ctx context.Context, fixt
 }
 
 // RunDeleterErasesAcrossBothPlanes pins that one request reaches BOTH tiers
-// (issueops/deleter.go, DeleteRequest.IDs: "in either plane").
-//
-// It is the case the storage seam's own suite cannot stand in for, because the
-// role is where a front door's mixed id list arrives: `bd delete` takes
-// whatever ids the caller names and one `--from-file` batch may legitimately
-// mix a wisp with an issue. A body that routed the whole request by one flag
-// would delete the issue and silently report the wisp as gone.
+// (issueops/deleter.go, DeleteRequest.IDs: "in either plane"). One `--from-file`
+// batch may legitimately mix a wisp with an issue, and a body that routed the
+// whole request by one flag would silently report the wisp as gone.
 func RunDeleterErasesAcrossBothPlanes(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	issue := deleterSeedIssue(t, ctx, fixture, "plane", "issue")
@@ -517,9 +478,9 @@ func RunDeleterCollapsesDuplicateIDs(t *testing.T, ctx context.Context, fixture 
 // becomes `[deleted:<id>]`, matched at word boundaries.
 //
 // The NEGATIVE half is the half worth having. A neighbor also cites an id that
-// merely has the deleted one as a PREFIX, and that citation must survive
-// untouched: a rewrite that used a bare substring match would corrupt a
-// bystander's text on every delete, and no count in the result would show it.
+// merely has the deleted one as a PREFIX, and that citation must survive: a
+// bare substring match would corrupt a bystander's text on every delete, and no
+// count in the result would show it.
 func RunDeleterRewritesReferencesInNeighbors(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	target := deleterSeedIssue(t, ctx, fixture, "refs", "target")
@@ -573,9 +534,9 @@ func RunDeleterRewritesReferencesInNeighbors(t *testing.T, ctx context.Context, 
 // preview reports the counts the real deletion goes on to report, rewrites
 // nothing, and leaves every row where it was.
 //
-// The two are compared against EACH OTHER rather than against literals, which
-// is the property a caller actually relies on — a preview whose number differs
-// from the run it precedes is worse than no preview.
+// The two are compared against EACH OTHER rather than against literals: a
+// preview whose number differs from the run it precedes is worse than no
+// preview.
 func RunDeleterDryRunChangesNothing(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	first := deleterSeedIssue(t, ctx, fixture, "dry", "1")
@@ -642,11 +603,9 @@ func RunDeleterRecordsAtMostOneHistoryEntry(t *testing.T, ctx context.Context, f
 // (issueops/deleter.go, DeleteRequest: "IDs is read, never written through, and
 // never sorted in place").
 //
-// It matters more here than on the roles whose requests are scalars: every
-// implementation NORMALIZES the id slice, and normalizing in place is the most
-// natural way to write that — it would hand the caller back a shorter, trimmed,
-// reordered version of the list it passed, which is the list a CLI then echoes
-// in its confirmation hint.
+// Every implementation NORMALIZES the id slice, and normalizing in place would
+// hand the caller back a shorter, trimmed, reordered version of the list it
+// passed — the list a CLI then echoes in its confirmation hint.
 func RunDeleterDoesNotMutateTheCallerRequest(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	id := deleterSeedIssue(t, ctx, fixture, "immutable", "target")
@@ -701,15 +660,13 @@ func deleterSeedIssue(t *testing.T, ctx context.Context, fixture DeleterFixture,
 	return deleterSeed(t, ctx, fixture, deleterIssue(fixture, tag, name, false))
 }
 
-// deleterSeedWisp is its ephemeral sibling, used by the one case that is
-// about which PLANE a row lives in.
+// deleterSeedWisp is its ephemeral sibling.
 func deleterSeedWisp(t *testing.T, ctx context.Context, fixture DeleterFixture, tag, name string) string {
 	t.Helper()
 	return deleterSeed(t, ctx, fixture, deleterIssue(fixture, tag, name, true))
 }
 
-// deleterAddEdge makes dependent depend on blocker, which is what makes
-// dependent a DEPENDENT of blocker for this role's guard.
+// deleterAddEdge makes dependent depend on blocker.
 func deleterAddEdge(t *testing.T, ctx context.Context, fixture DeleterFixture, dependent, blocker string) {
 	t.Helper()
 	err := fixture.AddDependency(ctx, &types.Dependency{
@@ -736,9 +693,8 @@ func deleterDelete(t *testing.T, ctx context.Context, fixture DeleterFixture, re
 	return result
 }
 
-// deleterAssertIssueRows counts the named ids in the ISSUES plane. It is the
-// assertion that does not trust the result the delete reported about itself,
-// which on a destructive operation is the one that matters.
+// deleterAssertIssueRows counts the named ids in the ISSUES plane, rather than
+// trusting the result the delete reported about itself.
 func deleterAssertIssueRows(t *testing.T, ctx context.Context, fixture DeleterFixture, want int, ids ...string) {
 	t.Helper()
 	placeholders := make([]string, len(ids))
@@ -777,8 +733,7 @@ func deleterAssertWispRows(t *testing.T, ctx context.Context, fixture DeleterFix
 }
 
 // deleterRowCount REPORTS how many rows one id has in one plane instead of
-// asserting a number, for the case whose assertion depends on which answer the
-// implementation gave.
+// asserting a number, for the case whose assertion depends on the answer.
 //
 //nolint:gosec // G201: table is chosen by the caller from the two plane tables.
 func deleterRowCount(t *testing.T, ctx context.Context, fixture DeleterFixture, table, id string) int {
@@ -805,9 +760,8 @@ func deleterAssertEdgeRows(t *testing.T, ctx context.Context, fixture DeleterFix
 	}
 }
 
-// deleterText reads one long text column straight out of the issues table,
-// because the rewrite is a claim about stored bytes rather than about anything
-// the role reports.
+// deleterText reads one long text column straight out of the issues table: the
+// rewrite is a claim about stored bytes, not about anything the role reports.
 //
 //nolint:gosec // G201: column is chosen by the caller from a fixed set of four.
 func deleterText(t *testing.T, ctx context.Context, fixture DeleterFixture, id, column string) string {

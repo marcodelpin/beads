@@ -17,30 +17,22 @@ import (
 //
 // It lives here rather than in an importable internal/workapi/store<role>
 // package for the reason SweepInTx does: the work is several reads and several
-// writes that must see one snapshot, and storage.DoltStorage publishes
-// methods, not transactions. The two Dolt-backed stores share this body and
-// differ only in how they reach a transaction, so they are ONE vote and the
-// unit-of-work provider is the second. There is nothing here a front door
-// could construct — the function takes a transaction — so no depguard entry is
-// needed to keep it out of cmd/bd.
+// writes that must see one snapshot.
 //
 // It assumes a request already refused by workapi.ValidateDeleteRequest and
 // already normalized by workapi.NormalizeDeleteIDs. The accessors do both
 // BEFORE opening a transaction, so a malformed request costs no database work.
 //
-// THE REWRITE IS INSIDE THE TRANSACTION, and that is what this body adds over
-// the code it replaces. The direct CLI route's batch path deleted the rows in
-// one transaction and then rewrote the neighbors' text through the store
-// afterwards, discarding each update's error; a failure between the two left a
-// workspace whose rows were gone and whose descriptions still cited them.
+// THE REWRITE IS INSIDE THE TRANSACTION. A route that deleted the rows in one
+// transaction and rewrote the neighbors' text afterwards left, on a failure
+// between the two, a workspace whose rows were gone and whose descriptions
+// still cited them.
 func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (publicops.DeleteResult, error) {
 	ids := req.IDs
 	result := publicops.DeleteResult{DryRun: req.DryRun}
 
 	// The existence probe comes FIRST, so `bd delete typo real` reports the
 	// typo rather than whatever the graph says about the id that resolved.
-	// It doubles as the hydration the rewrite needs later: an id present here
-	// is a row in one of the two planes.
 	wispSet, err := WispIDSetInTx(ctx, tx, ids)
 	if err != nil {
 		return publicops.DeleteResult{}, fmt.Errorf("delete: classify planes: %w", err)
@@ -74,10 +66,7 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 	// about dependents. Under Cascade there is nothing outside the set by
 	// construction, which is why the expansion below is not asked about it.
 	//
-	// IT ASKS ABOUT EVERY NAMED ID, IN BOTH PLANES. It used to ask only about
-	// the durable half, so a wisp named with a durable dependent was neither
-	// refused unforced nor reported as orphaning when forced, and the
-	// cross-plane edge it removed went uncounted. The leaf says "a NAMED ROW
+	// IT ASKS ABOUT EVERY NAMED ID, IN BOTH PLANES: the leaf says "a NAMED ROW
 	// that some row OUTSIDE the request depends on is refused" with no wisp
 	// exemption, and the unit-of-work body has always read it that way.
 	if !req.Cascade {
@@ -107,16 +96,11 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 		}
 	}
 
-	// THE DELETION SET IS RESOLVED ONCE, HERE, and the same value reaches all
-	// three of the reads and writes that must agree about it: the
-	// neighborhood read, the deletion, and the citation rewrite.
-	//
-	// It used to be resolved twice — once here for the rewrite from ALL ids,
-	// once inside DeleteIssuesInTx for the deletion from the DURABLE ids — and
-	// the two drifted. A cascade rooted at a wisp put the wisp's dependents in
-	// the rewrite set and not in the delete, so those rows survived and their
-	// neighbors' descriptions were rewritten to call them deleted. See
-	// DeletionSet.
+	// THE DELETION SET IS RESOLVED ONCE, HERE, and the same value reaches the
+	// neighborhood read, the deletion and the citation rewrite. Resolving it
+	// twice drifts: a cascade rooted at a wisp landed in the rewrite set and not
+	// in the delete, so those rows survived and their neighbors' descriptions
+	// were rewritten to call them deleted. See DeletionSet.
 	set, err := ResolveDeletionSetInTx(ctx, tx, ids, req.Cascade)
 	if err != nil {
 		return publicops.DeleteResult{}, fmt.Errorf("delete: %w", err)
@@ -132,8 +116,7 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 	}
 
 	// No guard argument to pass: this body has ALREADY answered the guard
-	// question above and holds the orphan list it produced, and
-	// DeleteResolvedSetInTx deletes what it is handed without asking again.
+	// question above, and DeleteResolvedSetInTx deletes what it is handed.
 	deleted, err := DeleteResolvedSetInTx(ctx, tx, set, req.DryRun)
 	if err != nil {
 		return publicops.DeleteResult{}, err
@@ -162,10 +145,8 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 // dependents that idSet does not contain — the rows a forced delete orphans
 // and an unforced one refuses over.
 //
-// It reads both dependency planes and skips a missing wisp plane, the way
-// every other cross-plane read here does. The per-source shape is what lets
-// the unforced refusal name ONE blocked id instead of a flat union that
-// answers "something is blocked".
+// The per-source shape is what lets the unforced refusal name ONE blocked id
+// instead of a flat union that answers "something is blocked".
 //
 //nolint:gosec // G201: inClause contains only ? placeholders
 func ExternalDependentsBySourceInTx(ctx context.Context, tx DBTX, ids []string, idSet map[string]bool) (map[string][]string, error) {
@@ -223,9 +204,8 @@ func ExternalDependentsBySourceInTx(ctx context.Context, tx DBTX, ids []string, 
 // by a dependency edge in either direction — the rows whose text the deletion
 // rewrites.
 //
-// One query per plane over the whole set rather than the two per deleted id
-// the CLI route used, because the neighborhood of a `--from-file` batch is
-// asked for once here and the route asked for it 2N times.
+// One query per plane over the whole set, so a `--from-file` batch costs two
+// queries rather than two per deleted id.
 //
 //nolint:gosec // G201: inClause contains only ? placeholders
 func deleteNeighborsInTx(ctx context.Context, tx DBTX, ids []string) ([]*types.Issue, error) {

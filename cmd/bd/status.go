@@ -91,12 +91,10 @@ Examples:
 		} else {
 			result, err = reporter.Stats(rootCtx, issueops.StatsRequest{SkipBlocked: noBlocked})
 			if err == nil && noBlocked && result.Summary.BlockedIssues != nil {
-				// The hint is a hint, and this is where a caller who asked for
-				// the fast path finds out it was not available. It is derived
-				// from the ANSWER rather than from the route: the two routes
-				// differ on it today (the unit-of-work seam publishes no
-				// no-blocked query), and a backend that gains one stops
-				// printing this without an edit here.
+				// Derived from the ANSWER rather than from the route: the two
+				// routes differ on it today (the unit-of-work seam publishes no
+				// no-blocked query), and a backend that gains one stops printing
+				// this without an edit here.
 				fmt.Fprintln(os.Stderr, "warning: this backend has no --no-blocked fast path; the full blocked-count query ran")
 			}
 		}
@@ -114,8 +112,7 @@ Examples:
 }
 
 // openStatsReporter hands back the summary role for whichever route this
-// invocation is on, each through its OWN capability accessor — the store's for
-// the direct route and the provider's for the proxied one.
+// invocation is on, each through its own capability accessor.
 func openStatsReporter() (issueops.StatsReporter, error) {
 	if usesProxiedServer() {
 		return proxiedStatsReporter()

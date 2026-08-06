@@ -12,12 +12,11 @@ import (
 // against the server-backed store.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch. Sharing matters here the way it does for the
-// settings and version roles and not the way it does for the issue roles: the
-// identity is GLOBAL to a workspace and cannot be namespaced under the fixture
-// prefix, so every case seeds it explicitly instead of relying on what the case
-// before it left. setupTestStore already marks the PARENT parallel; no subtest
-// here calls t.Parallel, because two of them take a log delta.
+// and one copy-on-write branch. The identity is GLOBAL to a workspace and
+// cannot be namespaced under the fixture prefix, so every case seeds it
+// explicitly instead of relying on what the case before it left. setupTestStore
+// already marks the PARENT parallel; no subtest here calls t.Parallel, because
+// two of them take a log delta.
 func TestBootstrapperContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltBootstrapperFixture(t)
 	defer cleanup()
@@ -80,11 +79,10 @@ func newDoltBootstrapperFixture(t *testing.T) (conformance.BootstrapperFixture, 
 	fixture := conformance.BootstrapperFixture{
 		Bootstrapper: bootstrapper,
 		InitVerifier: verifier,
-		// Past both roles, through the store's own config and metadata seams.
-		// This is the hook the frozen kit cannot supply: it can SET a prefix but
-		// has no way to unset one, and an unidentified substrate is the state a
-		// bootstrap needs to be reachable at all on a database setupTestStore
-		// already initialized.
+		// Past both roles, through the store's own config and metadata seams:
+		// the frozen kit can SET a prefix but has no way to unset one, and an
+		// unidentified substrate is the state a bootstrap needs on a database
+		// setupTestStore already initialized.
 		SeedIdentity: func(ctx context.Context, prefix, projectID string) error {
 			if err := store.SetConfig(ctx, workapi.ConfigKeyIssuePrefix, prefix); err != nil {
 				return err

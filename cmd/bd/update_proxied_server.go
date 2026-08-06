@@ -71,8 +71,7 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 }
 
 // proxiedIssueLifecycle asks the unit-of-work provider for the write role, the
-// same way proxiedIssueReader asks it for the read one. The accessor is the
-// door: a provider that cannot answer says so rather than being wired around.
+// same way proxiedIssueReader asks it for the read one.
 func proxiedIssueLifecycle() (issueops.Lifecycle, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")
@@ -85,12 +84,10 @@ func proxiedIssueLifecycle() (issueops.Lifecycle, error) {
 }
 
 // applyUpdateProxiedOne applies one issue's update — plain or --claim —
-// through issueops.Lifecycle rather than through a hand-rolled attempt.
-//
-// What stays here is this surface's own protocol: the template guard, the
-// advisory reassign pre-read, the per-id failure taxonomy the multi-id batch
-// needs, the notes-overwrite warning and the completion hooks — none of which
-// the HTTP surface has, and none of which is an update.
+// through issueops.Lifecycle. What stays here is this surface's own protocol:
+// the template guard, the advisory reassign pre-read, the per-id failure
+// taxonomy the multi-id batch needs, the notes-overwrite warning and the
+// completion hooks.
 //
 // Provenance carries the commit message this path has always written, so `bd
 // dolt log` reads the same after the move as before it. The plane is
@@ -98,11 +95,9 @@ func proxiedIssueLifecycle() (issueops.Lifecycle, error) {
 // unlike the HTTP claim endpoint, which serves durable issues only.
 //
 // The pre-read is a read of its own, one transaction earlier than the
-// mutation, so the guards it applies are advisory in a way they were not when
-// this file did the read itself. They guard command-shaped policy, not
-// invariants — the mutation's own guards are all inside the contract's
-// transaction, including the fence and the close policy — and paying for it is
-// what lets the update itself have exactly one implementation.
+// mutation, so the guards it applies are ADVISORY. The mutation's own guards
+// are all inside the contract's transaction, including the fence and the close
+// policy.
 func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*types.Issue, *updateIDFailure, error) {
 	ops, err := proxiedIssueLifecycle()
 	if err != nil {
@@ -140,8 +135,7 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 	if err != nil {
 		// Cancellation is not a verdict on this issue — SIGINT cancels bd's
 		// root context, and every remaining id in the batch would fail the same
-		// way. Abort the batch, as the loop this replaced did. The contract owns
-		// the unit of work now, so a commit that itself failed with a context
+		// way, so abort the batch. A commit that itself failed with a context
 		// error is indistinguishable from a cancellation between attempts;
 		// aborting is the right call for both.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -159,16 +153,12 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 	updated.Dependencies = nil
 	if in.claim {
 		// A CLAIM answers an already-published surface, and that surface is the
-		// bare row. issueops.ClaimResult says so outright — labels, dependency
-		// records and comments omitted, and "enriching it is a decision for the
-		// next revision window, not a side effect of moving the operation onto a
-		// role." Routing this path through Lifecycle hydrates labels, which is
-		// exactly that side effect, so they come back off here.
-		//
-		// This is what keeps `bd update --claim --json` byte-identical to the v0
-		// claim response, which TestProxiedServerServeClaim asserts with an EMPTY
-		// allowlist: any difference at all between the two surfaces is a real
-		// divergence. A plain update carries labels, as the direct route's does.
+		// bare row: issueops.ClaimResult omits labels, dependency records and
+		// comments, but routing this path through Lifecycle hydrates labels.
+		// Stripping them keeps `bd update --claim --json` byte-identical to the
+		// v0 claim response, which TestProxiedServerServeClaim asserts with an
+		// EMPTY allowlist. A plain update carries labels, as the direct route
+		// does.
 		updated.Labels = nil
 		updated.Comments = nil
 	}
@@ -211,16 +201,12 @@ func proxiedUpdateTarget(ctx context.Context, id string, in *updateInput) (*type
 		return nil, &updateIDFailure{ID: id, Error: err.Error()}
 	}
 	// bd-98s5c: an unguarded assignee update must not silently overwrite
-	// another actor's live claim. Skipped under --if-assignee: that CAS names
-	// the holder explicitly (park stays possible without --force). Also skipped
-	// under --claim: the claim CAS is itself the anti-steal gate (a foreign live
-	// claim fails it with the canonical "already claimed" copy), and an assignee
-	// edit that rides a WON claim only ever touches the actor's own fresh claim.
-	// The contract fences the same transfer inside the mutation with
-	// ErrAlreadyClaimed; this pre-read is what keeps the advice a user reads
-	// identical on both routes, exactly as update.go's own pre-read does.
-	// A policy refusal: terminal per-issue failure, exit 1, never
-	// GuardMismatch/13.
+	// another actor's live claim. Skipped under --if-assignee, whose CAS names
+	// the holder explicitly (park stays possible without --force), and under
+	// --claim, whose CAS is itself the anti-steal gate. The contract fences the
+	// same transfer inside the mutation with ErrAlreadyClaimed; this pre-read is
+	// what keeps the advice a user reads identical on both routes. A policy
+	// refusal: terminal per-issue failure, exit 1, never GuardMismatch/13.
 	if newAssignee, ok := in.fields["assignee"].(string); ok && in.ifAssignee == nil && !in.claim {
 		if err := validateIssueReassignable(id, current, actor, newAssignee,
 			proxiedClaimPoolAliases(ctx), in.force); err != nil {
@@ -232,11 +218,10 @@ func proxiedUpdateTarget(ctx context.Context, id string, in *updateInput) (*type
 }
 
 // proxiedClaimPoolAliases is uowClaimPoolAliases for a caller that owns no unit
-// of work. The mutation's transaction belongs to the contract now, so the
-// pre-read fence's claim.pools lookup opens a short-lived unit of work of its
-// own — and only when the fence is otherwise about to refuse, which is what the
-// thunk is for. A read that fails yields no aliases, the same fail-closed
-// answer its siblings give.
+// of work: the pre-read fence's claim.pools lookup opens a short-lived unit of
+// work of its own, and only when the fence is otherwise about to refuse, which
+// is what the thunk is for. A read that fails yields no aliases, the same
+// fail-closed answer its siblings give.
 func proxiedClaimPoolAliases(ctx context.Context) func() []string {
 	return func() []string {
 		if uowProvider == nil {
@@ -251,15 +236,13 @@ func proxiedClaimPoolAliases(ctx context.Context) func() []string {
 	}
 }
 
-// proxiedUpdateFailure sorts a refused update into the per-id verdicts, with
-// the same copy, the hand-rolled attempt this file used to run produced. A
-// guard refusal sets GuardMismatch so the batch exits 13 rather than 1.
+// proxiedUpdateFailure sorts a refused update into the per-id verdicts. A guard
+// refusal sets GuardMismatch so the batch exits 13 rather than 1.
 //
 // The one verdict it cannot reproduce is stage attribution: "opening unit of
 // work" and "committing" were told apart by watching the provider this path no
-// longer owns, so both now read as the generic update failure. That is the
-// price of the contract owning the transaction, and it costs a word in the
-// message, not a verdict — the id still fails, loudly and non-zero.
+// longer owns, so both now read as the generic update failure. The id still
+// fails, loudly and non-zero.
 func proxiedUpdateFailure(id string, err error) *updateIDFailure {
 	switch {
 	case errors.Is(err, storage.ErrNotFound):

@@ -14,10 +14,9 @@ import (
 // For most roles this is the wiring where a genuine seam divergence shows up,
 // because the unit of work is a second body. NOT FOR THIS ROLE: it reaches the
 // same issueops.WalkDependencyTreeInTx through the domain repository, so what
-// this leg checks is the WRAPPER — that the request survives the trip through
-// the repository and the use case, that the walk runs inside one unit of work,
-// and that the typed refusals still match errors.Is/errors.As after crossing two
-// layers whose siblings all wrap their errors.
+// this leg checks is the WRAPPER — that the request survives the trip and that
+// the typed refusals still match errors.Is/errors.As after crossing two layers
+// whose siblings wrap their errors.
 //
 // One provider for the whole suite and NO t.Parallel: this backend has no
 // per-test copy-on-write branch, so the tables are database-global. Every case
@@ -101,8 +100,7 @@ func newUOWTreeWalkerFixture(t *testing.T, ctx context.Context, prefix string) c
 		AddDependency: kit.AddDependency,
 		// The frozen kit exposes reads only. This is the write half of the same
 		// unfiltered raw-SQL pass-through its QueryScalar reads through, inside
-		// ONE committing unit of work — which is also what gives the whole script
-		// one session.
+		// ONE committing unit of work, which gives the whole script one session.
 		Exec: func(ctx context.Context, statements []conformance.SQLStatement) error {
 			return RunTx(ctx, provider, func(ctx context.Context, uw UnitOfWork) (string, error) {
 				for _, stmt := range statements {

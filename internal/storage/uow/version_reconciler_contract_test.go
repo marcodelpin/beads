@@ -21,9 +21,7 @@ import (
 //
 // One provider for the whole suite (each newUOWRoleFixtureProvider boots a real
 // Dolt sql-server) and NO t.Parallel: this backend has no per-test
-// copy-on-write branch, so the metadata plane and dolt_log are database-global
-// and a parallel subtest would corrupt another subtest's seeded markers and
-// history delta.
+// copy-on-write branch, so the metadata plane and dolt_log are database-global.
 func TestVersionReconcilerContract(t *testing.T) {
 	ctx := context.Background()
 	fixture := newUOWVersionReconcilerFixture(t, ctx, "vrec")

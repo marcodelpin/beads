@@ -12,10 +12,9 @@ import (
 // `bd ready` share: the claim and the count are asked over the LISTING's
 // request with the page removed.
 //
-// Both roles refuse a Limit and an Offset (ErrValidation), so a request that
-// carried either would fail at the seam rather than silently ignore it — and
-// for the count, which is published as "showing 2 of N", a limit that survived
-// would make N the size of the page instead of the size of the set.
+// Both roles refuse a Limit and an Offset (ErrValidation). For the count,
+// published as "showing 2 of N", a limit that survived would make N the size of
+// the page instead of the size of the set.
 func TestReadyRoleRequestDropsThePage(t *testing.T) {
 	got := runGatherReadyInput(t, newReadyFlagsCommand(t, "--limit", "5", "--label", "api"), nil)
 	if got.err != nil {
@@ -44,9 +43,9 @@ func TestReadyRoleRequestDropsThePage(t *testing.T) {
 		t.Errorf("the claim's filter and the shared role request differ:\nclaim: %+v\nrole:  %+v", claim.Filter, req)
 	}
 
-	// And the predicate the count actually runs is the listing's predicate,
-	// unbounded — the identity issueops.ReadyCounter promises, checked here at
-	// the front door rather than only at the three backends.
+	// And the predicate the count actually runs is the listing's, unbounded —
+	// the identity issueops.ReadyCounter promises, checked at the front door
+	// rather than only at the three backends.
 	counted, err := workapi.BuildReadyCountFilter(req)
 	if err != nil {
 		t.Fatalf("BuildReadyCountFilter: %v", err)
@@ -65,12 +64,9 @@ func TestReadyRoleRequestDropsThePage(t *testing.T) {
 
 // TestReadyRoleRequestCarriesTheDirectoryLabelDefault pins the one thing the
 // role request adds that the raw flags do not: GH#541's configured label,
-// applied under the same gate the listing applies it under.
-//
-// It goes on the REQUEST here rather than on the built filter, so it is
-// normalized with every other label — which is exactly why it is asserted:
-// a count or a claim that missed the default would answer for a wider set than
-// the listing beside it shows.
+// applied under the same gate the listing applies it under. A count or a claim
+// that missed the default would answer for a wider set than the listing beside
+// it shows.
 func TestReadyRoleRequestCarriesTheDirectoryLabelDefault(t *testing.T) {
 	const configured = "scope:web"
 	configureDirectoryLabel(t, configured)

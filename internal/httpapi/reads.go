@@ -92,10 +92,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 // It is one function because the two operations must admit exactly the same
 // filters: countReadyWork answers with the size of the set listReadyWork
 // returns, and a parameter one of them decoded and the other did not would
-// make that identity false for any client that sent it. Each parameter this
-// reads is also, by construction, one the operation accepts — the unknown-
-// parameter allowlist IS the set of names the handler asked for — so the two
-// parameter tables cannot drift apart either.
+// make that identity false for any client that sent it.
 func readyFilters(q *query) issueops.ReadyRequest {
 	return issueops.ReadyRequest{
 		Assignee:     q.str("assignee"),
@@ -129,11 +126,9 @@ func readyFilters(q *query) issueops.ReadyRequest {
 // bounded count past it even if a parameter for one existed.
 //
 // THE SORT IS SENT ANYWAY, and the operation publishes no parameter for it. A
-// count has no order, so there is nothing for a client to choose; but the
-// request still has to be a request the builder accepts, and sending the
-// listing's own default is how this stays the listing's question rather than a
-// second one that merely resembles it. Sending "" would adopt the storage
-// layer's hybrid fallback, which the document says no front door relies on.
+// count has no order, but the request still has to be one the builder accepts,
+// and sending "" would adopt the storage layer's hybrid fallback that no front
+// door relies on.
 func (s *Server) handleCountReady(w http.ResponseWriter, r *http.Request) {
 	q := newQuery(r.URL.Query())
 
@@ -251,12 +246,10 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 
 // handleQueryIssues answers GET /v0/beads/issues:query.
 //
-// The EXPRESSION IS NOT PARSED HERE, and that is the whole shape of this
-// handler. `bd query` used to parse it, evaluate it, decide from the result
-// whether a predicate was needed, and — because it knew — bound the scan at
-// max(3*limit, 100) rows, twice, once per route. Every one of those decisions
-// is inside the role, so this handler cannot make the truncating one: it reads
-// five parameters and hands the sentence over.
+// The EXPRESSION IS NOT PARSED HERE. Parsing, evaluation, the predicate
+// decision and the scan bound all live inside the role, so this handler cannot
+// make the truncating one: it reads five parameters and hands the sentence
+// over.
 func (s *Server) handleQueryIssues(w http.ResponseWriter, r *http.Request) {
 	q := newQuery(r.URL.Query())
 

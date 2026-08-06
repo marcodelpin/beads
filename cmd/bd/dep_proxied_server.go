@@ -51,8 +51,7 @@ func proxiedIssueRelations() (issueops.Relations, error) {
 }
 
 // proxiedEdgeReader hands back the guarded stored-edge surface for the
-// proxied-server provider, through the provider's OWN capability accessor —
-// the same two-step a direct command performs on a store.
+// proxied-server provider, through the provider's own capability accessor.
 func proxiedEdgeReader() (issueops.EdgeReader, error) {
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")
@@ -90,13 +89,11 @@ func addDependencyEdgesProxied(ctx context.Context, edges []issueops.DependencyE
 // Neither belongs in the write. The role's request IS the transaction, and a
 // cycle warning computed inside a transaction that has not committed describes
 // a graph nobody else can see; a title is presentation. Failing here cannot
-// fail the command either — the edges are already durable — so both halves
-// report the way a failed sweep already did.
+// fail the command either — the edges are already durable.
 //
-// THE SWEEP IS RESOLVED FIRST AND ASKED FOR SECOND. The role is only requested
-// when checkCycles is set, so an invocation that wants titles alone never
-// touches the cycle accessor: a provider that does not offer it must fail on
-// the sweep it was asked for, not on the two lookups beside it.
+// THE SWEEP IS RESOLVED FIRST AND ASKED FOR SECOND, and only when checkCycles
+// is set: a provider that does not offer the cycle accessor must fail on the
+// sweep it was asked for, not on the two lookups beside it.
 func depEdgeFeedback(ctx context.Context, fromID, toID string, checkCycles bool) depAddResult {
 	var res depAddResult
 	if fromID == "" && toID == "" && !checkCycles {
@@ -371,8 +368,8 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 	}
 
 	// The multi-id edge listing is a different question with a different
-	// answer shape — raw edge records keyed by source, printed per source,
-	// with a per-anchor miss — and it is on the EdgeReader role.
+	// answer shape — raw edge records keyed by source — and it is on the
+	// EdgeReader role.
 	if len(args) > 1 && direction == "down" {
 		return runDepListRecordsProxiedServer(ctx, args, typeFilter)
 	}
@@ -445,21 +442,15 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 }
 
 // runDepListRecordsProxiedServer answers `bd dep list a b c` with raw edge
-// records grouped by source, on the EdgeReader role. It is off the Relations
-// role deliberately: that one answers with the ISSUES on the far end of ONE
-// anchor's edges, and this prints the edges themselves, per source, for several
-// sources at once.
+// records grouped by source, on the EdgeReader role.
 //
-// THIS ROUTE NOW REPORTS GHOST ANCHORS. It used to hand the raw arguments to
-// the dependency use case, which keys its answer by source and simply has no
-// entry for an id that names nothing — so a typo printed "<id> has no
-// dependencies" and a script read a clean graph. The role probes each anchor,
-// so the same typo now prints the warning the direct route has always printed
-// for an argument it could not resolve.
+// THIS ROUTE NOW REPORTS GHOST ANCHORS. It used to have no entry for an id
+// that names nothing, so a typo printed "<id> has no dependencies" and a script
+// read a clean graph. The role probes each anchor, so the same typo now prints
+// the warning the direct route has always printed.
 //
 // It still resolves NOTHING: an id is passed exactly as the caller spelled it,
-// because this route has never done partial-id resolution and the role's ids
-// are exact.
+// because this route has never done partial-id resolution.
 func runDepListRecordsProxiedServer(ctx context.Context, args []string, typeFilter string) error {
 	reader, err := proxiedEdgeReader()
 	if err != nil {

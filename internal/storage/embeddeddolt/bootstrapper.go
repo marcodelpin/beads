@@ -21,13 +21,10 @@ func (s *EmbeddedDoltStore) Bootstrapper() (issueops.Bootstrapper, error) {
 }
 
 // bootstrapper seeds a substrate's identity inside one connection's
-// transaction.
-//
-// It is a sibling of the server-backed store's body rather than a shared
-// package for the reason that one gives: the work needs a TRANSACTION, which
-// storage.DoltStorage does not publish, so the sharing happens below both of
-// them at issueops.BootstrapInTx. The two stores differ here only in how they
-// reach a transaction.
+// transaction. It is a sibling of the server-backed store's body rather than a
+// shared package because the work needs a TRANSACTION, which
+// storage.DoltStorage does not publish; the sharing happens below both of them
+// at issueops.BootstrapInTx.
 type bootstrapper struct{ store *EmbeddedDoltStore }
 
 var _ issueops.Bootstrapper = (*bootstrapper)(nil)

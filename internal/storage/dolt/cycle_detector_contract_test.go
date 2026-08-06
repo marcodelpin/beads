@@ -12,11 +12,10 @@ import (
 // server-backed store.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch. They are also SEQUENTIAL by necessity rather
-// than by convention: the report is global, so each case's cycles stay visible
-// to the ones after it, and every assertion is scoped by member set for that
-// reason. setupTestStore already marks the PARENT parallel; no subtest here
-// calls t.Parallel.
+// and one copy-on-write branch. They are also SEQUENTIAL by necessity: the
+// report is global, so each case's cycles stay visible to the ones after it and
+// every assertion is scoped by member set. setupTestStore already marks the
+// PARENT parallel; no subtest here calls t.Parallel.
 func TestCycleDetectorContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltCycleDetectorFixture(t, "cyc")
 	defer cleanup()
@@ -65,7 +64,7 @@ func newDoltCycleDetectorFixture(t *testing.T, prefix string) (conformance.Cycle
 		CreateWisp:  kit.CreateWisp,
 		// The frozen kit exposes reads only, so the raw write this role's cases
 		// need is supplied here — over the same *sql.DB the kit's QueryScalar
-		// reads through, which on this backend is the test's own branch.
+		// reads through.
 		//
 		// One PINNED CONNECTION for the whole script: the pool would otherwise
 		// hand the inserts a different session than the foreign_key_checks

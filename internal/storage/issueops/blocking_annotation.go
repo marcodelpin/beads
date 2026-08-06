@@ -11,11 +11,8 @@ import (
 
 // ValidateBlockingRequest applies the one request rule every BlockingAnnotator
 // implementation shares: an empty id entry is refused rather than answered
-// with a nameless annotation.
-//
-// There is nothing else to validate. This role has no filter, no direction and
-// no type vocabulary, and an empty ID SLICE asks about nothing and gets nothing
-// back rather than being an error.
+// with a nameless annotation. An empty ID SLICE asks about nothing and gets
+// nothing back rather than being an error.
 func ValidateBlockingRequest(request publicops.BlockingRequest) error {
 	for i, id := range request.IDs {
 		if id == "" {
@@ -30,11 +27,10 @@ func ValidateBlockingRequest(request publicops.BlockingRequest) error {
 //
 // It is one function rather than two copies for the reason FinishEdgeRead is:
 // the entry-per-id shape, the pinned order and the collapse of repeats are the
-// whole observable contract of this role, and an implementation that applied
-// them for itself is one the two will eventually disagree about. Both bodies
-// below it answer with maps whose slice values arrive in query order and can
-// carry the same id twice — once from each dependency tier — so this is also
-// where that stops being visible.
+// whole observable contract of this role, and two implementations applying them
+// separately will eventually disagree. Both bodies below it answer with maps
+// whose slice values arrive in query order and can carry the same id twice —
+// once from each dependency tier.
 //
 // The maps are read, never written: the store body's caller owns them.
 func FinishBlockingAnnotation(

@@ -24,34 +24,27 @@ func (s *DoltStore) Sweeper() (issueops.Sweeper, error) {
 //
 // There is no shared constructor package for this role, for the reason
 // cycleDetector gives: the work is a candidate query, a recheck, an optional
-// reference scan and a delete that must all see one snapshot, and a
-// transaction is not reachable through storage.DoltStorage. The sharing
-// happens one level down instead — this body and the embedded store's are a
-// few lines each around issueops.SweepInTx — and two wrappers over one body is
-// still ONE vote, which the conformance contract says out loud.
-//
-// A front door cannot construct this: the type is unexported and the accessor
-// is the only door.
+// reference scan and a delete that must all see one snapshot, and a transaction
+// is not reachable through storage.DoltStorage. The sharing happens one level
+// down — this body and the embedded store's are a few lines each around
+// issueops.SweepInTx — and two wrappers over one body is still ONE vote.
 type sweeper struct{ store *DoltStore }
 
 var _ issueops.Sweeper = (*sweeper)(nil)
 
 // Sweep clears the request's tier.
 //
-// VALIDATION HAPPENS BEFORE THE TRANSACTION, so a refused request costs no
-// database work — which is what makes issueops.Sweeper's "a refusal changes
-// nothing" true of the connection as well as of the rows.
+// VALIDATION HAPPENS BEFORE THE TRANSACTION, which makes issueops.Sweeper's "a
+// refusal changes nothing" true of the connection as well as of the rows.
 //
 // A DRY RUN TAKES A READ TRANSACTION. It writes nothing by construction, so
 // giving it a write transaction and an empty commit would make the preview
 // look like a mutation to everything watching the store.
 //
 // THE VERSION-CONTROL ENTRY IS ONE PER SWEEP, recorded here rather than in the
-// shared body because only this backend records one at all: the embedded store
-// commits outside the SQL transaction and the unit-of-work provider labels its
-// own. An ephemeral sweep touches only the wisp tables, which this plane
-// ignores, so DOLT_COMMIT finds nothing to commit and the sweep records no
-// entry — the "at most one" the role promises, not "exactly one".
+// shared body because only this backend records one at all. An ephemeral sweep
+// touches only the wisp tables, which this plane ignores, so DOLT_COMMIT finds
+// nothing to commit — the "at most one" the role promises, not "exactly one".
 func (s *sweeper) Sweep(ctx context.Context, req issueops.SweepRequest) (issueops.SweepResult, error) {
 	if err := workapi.ValidateSweepRequest(req); err != nil {
 		return issueops.SweepResult{}, err

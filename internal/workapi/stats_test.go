@@ -11,9 +11,8 @@ import (
 // TestValidateStatsAssignee pins the one refusal on the summary role, and pins
 // it here because it needs no database: an assignee-scoped summary of nobody is
 // ErrValidation, and an accepted assignee comes back BYTE-IDENTICAL. The second
-// half is the load-bearing one — trimming would answer for a different actor
-// than the caller named, and it is exactly the kind of helpfulness a validator
-// grows by accident.
+// half is the load-bearing one: trimming would answer for a different actor
+// than the caller named.
 func TestValidateStatsAssignee(t *testing.T) {
 	for _, blank := range []string{"", " ", "\t\n"} {
 		got, err := ValidateStatsAssignee(blank)
@@ -61,9 +60,8 @@ func TestBuildStatsAssigneeFiltersCarryOnlyTheAssignee(t *testing.T) {
 }
 
 // TestFoldStatsAssigneeSummary is the definition of what `bd status --assigned`
-// means, checked without a database. It moved here from cmd/bd/status_test.go
-// with the fold itself: both routes read it from this one function now, so a
-// change to any number below is a change to both surfaces at once.
+// means, checked without a database. Both routes read it from this one function,
+// so a change to any number below is a change to both surfaces at once.
 func TestFoldStatsAssigneeSummary(t *testing.T) {
 	tests := []struct {
 		name       string

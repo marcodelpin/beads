@@ -101,10 +101,10 @@ Force: Delete and orphan dependents
 
 		issueID := issueIDs[0]
 		ctx := rootCtx
-		// Get the issue to be deleted, using prefix-based routing. Resolution is
-		// the FRONT DOOR'S job and stays here: issueops.DeleteRequest.IDs are
-		// exact, because resolving an ambiguous prefix to a row and then deleting
-		// it is the one place a convenience is not one.
+		// Get the issue to be deleted, using prefix-based routing. Resolution
+		// stays in the front door: issueops.DeleteRequest.IDs are exact, because
+		// resolving an ambiguous prefix and then deleting the row it hit is the
+		// one place a convenience is not.
 		routedResult, err := resolveAndGetIssueForMutation(ctx, store, issueID)
 		if err != nil {
 			if isNotFoundErr(err) {
@@ -122,13 +122,9 @@ Force: Delete and orphan dependents
 			return HandleError("%v", err)
 		}
 		// --force is this command's CONFIRMATION as well as its orphan mode, so an
-		// unconfirmed run asks the role the same question a --dry-run does.
-		// Everything else is the request the user typed: the guard, the deletion
-		// and the reference rewrite are all the role's, and none of them is
-		// written here any more. This path used to hold its own transaction that
-		// removed each edge by hand and rewrote the neighbors' text; the whole of
-		// it is issueops.Deleter now, which is also what puts the rewrite INSIDE
-		// the transaction that deletes.
+		// unconfirmed run asks the role the same question a --dry-run does. The
+		// rewrite runs INSIDE the transaction that deletes, because it is the
+		// role's.
 		request := issueops.DeleteRequest{
 			Actor:  actor,
 			IDs:    []string{issueID},
@@ -159,8 +155,7 @@ Force: Delete and orphan dependents
 
 		if jsonOutput {
 			// The single-issue keys, unchanged: `deleted` is the id rather than a
-			// list here, and this is the shape every `bd delete <one-id> --json`
-			// consumer already parses.
+			// list here, which is what every `bd delete <one-id> --json` parses.
 			if err := outputJSON(map[string]interface{}{
 				"deleted":              issueID,
 				"dependencies_removed": result.Dependencies,
@@ -177,13 +172,10 @@ Force: Delete and orphan dependents
 	},
 }
 
-// renderSingleDeletePreview prints the human preview for a one-issue delete.
-//
-// It is PRESENTATION ONLY. The counts come from the role's dry run; the edge
-// listing and the "which neighbors cite this id" lines are reads this handler
-// makes to say WHICH links and WHICH issues, which no result carries and which
-// the role deliberately does not return - a delete answers with an effect, not
-// with rows.
+// renderSingleDeletePreview prints the human preview for a one-issue delete. The
+// counts come from the role's dry run; the edge listing and the "which neighbors
+// cite this id" lines are reads this handler makes, because a delete answers
+// with an effect rather than with rows.
 func renderSingleDeletePreview(
 	ctx context.Context, activeStore storage.DoltStorage,
 	issueID string, issue *types.Issue, dryRun bool, result issueops.DeleteResult,
@@ -207,9 +199,8 @@ func renderSingleDeletePreview(
 	if err != nil {
 		return HandleError("getting dependency records: %v", err)
 	}
-	// The role's own citation rule, not a second copy of it: a preview that
-	// named a different set of neighbors than the deletion rewrites would be
-	// worse than no preview.
+	// The role's own citation rule, not a second copy: a preview naming a
+	// different set of neighbors than the deletion rewrites is worse than none.
 	re := storeissueops.DeletedReferencePattern(issueID)
 
 	fmt.Printf("\n%s\n", ui.RenderFail("⚠️  DELETE PREVIEW"))
@@ -266,10 +257,7 @@ func deleteIssue(ctx context.Context, issueID string) error {
 //
 // It resolves the ids the way this front door always has - prefix matching and
 // cross-repository routing, which issueops.DeleteRequest deliberately does not
-// do - and then hands the RESOLVED ids to the role. Everything below that line
-// used to live here: the orphan guard, the cascade expansion, the deletion, and
-// a text-reference rewrite that ran OUTSIDE the delete transaction and threw
-// away every update error it got.
+// do - and hands the RESOLVED ids to the role.
 //
 //nolint:unparam // cmd parameter required for potential future use
 func deleteBatch(_ *cobra.Command, issueIDs []string, force bool, dryRun bool, cascade bool, jsonOutput bool, _ bool, _ ...string) error {
@@ -386,9 +374,9 @@ func deleteBatch(_ *cobra.Command, issueIDs []string, force bool, dryRun bool, c
 // outputDeletionPreview renders a deletion preview without exposing issue
 // payloads in machine-readable or quiet output.
 //
-// result is the ROLE's dry run, or nil when the role refused - a refusal has
-// no counts, and printing zeros beside the refusal would read as "nothing
-// would have been deleted" rather than "we did not get that far".
+// result is the ROLE's dry run, or nil when the role refused: printing zeros
+// beside a refusal would read as "nothing would have been deleted" rather than
+// "we did not get that far".
 func outputDeletionPreview(issueIDs []string, issues map[string]*types.Issue, cascade bool, dryRun bool, result *issueops.DeleteResult, depError error, jsonOutput bool) error {
 	if jsonOutput {
 		preview := map[string]interface{}{

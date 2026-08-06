@@ -18,35 +18,26 @@ import (
 // backend that disagrees is parked at its own wiring site with
 // skipKnownDivergence so the case still runs on the ones that agree.
 //
-// TWO BODIES BEHIND THREE WIRINGS, as everywhere here: dolt and embeddeddolt
-// share internal/workapi/storequerier, and the unit-of-work provider is the
-// second, genuinely separate vote. They diverge in exactly two places and both
-// are capabilities rather than opinions — the uow seam renders OFFSET and
-// reports has-more natively — so the cases below are written to the promise and
-// the Offset one is written comparatively.
+// TWO BODIES BEHIND THREE WIRINGS: dolt and embeddeddolt share
+// internal/workapi/storequerier, and the unit-of-work provider is the second,
+// genuinely separate vote. They diverge only where the uow seam renders OFFSET
+// and reports has-more natively, which is why the Offset case is written
+// comparatively.
 //
-// WHAT THESE CASES DO NOT PROVE, stated plainly because the role exists to fix
-// a specific defect. Both front doors used to bound a predicate query's fetch
-// at max(3*Limit, 100) rows, so a match beyond that window vanished. Making
-// that window observable takes MORE THAN A HUNDRED candidate rows in one store,
-// which is minutes of seeding at three backends for one bit of information. The
-// arithmetic itself is pinned where it lives and costs nothing —
-// TestBuildQueryPlanLeavesAPredicateQueryUNBOUNDED in internal/workapi asserts
-// that a predicate plan's filter carries no row limit at all, and both bodies
-// execute that plan — and one end-to-end run over a candidate set larger than
-// the old window is in internal/storage/dolt. What the cases here pin is the
-// PROMISE the window broke: a page is a prefix of the complete matching set and
-// has-more is exact.
+// WHAT THESE CASES DO NOT PROVE: the max(3*Limit, 100) over-fetch window both
+// front doors used to apply, which takes MORE THAN A HUNDRED candidate rows to
+// observe. That is pinned by TestBuildQueryPlanLeavesAPredicateQueryUNBOUNDED
+// in internal/workapi and by one end-to-end run in internal/storage/dolt. What
+// the cases here pin is the PROMISE the window broke: a page is a prefix of the
+// complete matching set and has-more is exact.
 //
-// EVERY CASE IS SCOPED BY A LABEL and asks for it inside the EXPRESSION, which
-// is the only scoping tool this role has: there are no filter fields on a query
-// request, so a case that did not name its own rows would answer about every
-// row every other case seeded.
+// EVERY CASE IS SCOPED BY A LABEL asked for inside the EXPRESSION: a query
+// request has no filter fields, so a case that did not name its own rows would
+// answer about every row every other case seeded.
 
 // QuerierFixture supplies adapter-specific storage access for the boolean-query
 // assertions. Every field is named and typed exactly like the per-backend
-// roleFixtureKit hook it is filled from, so a wiring is kit plus accessor plus
-// prefix with no adapter in between.
+// roleFixtureKit hook it is filled from.
 type QuerierFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
@@ -63,13 +54,10 @@ type QuerierFixture struct {
 
 // RunQuerierDisjunctionAnswersEveryMatch pins the capability that makes this a
 // role at all (issueops/querier.go:99-107): an OR, which no conjunction of
-// ListRequest fields expresses, answers with the union of both arms and with
-// nothing else.
-//
-// The NOT arm is here for the same reason and is not redundant: a general NOT
-// is the OTHER expression shape the storage filter cannot carry, and it is the
-// one whose complement includes rows no base filter narrowed, so an
-// implementation that leaned on the base filters alone answers it wrongly.
+// ListRequest fields expresses, answers with the union of both arms and nothing
+// else. The NOT arm is not redundant — its complement includes rows no base
+// filter narrowed, so an implementation leaning on the base filters answers it
+// wrongly.
 func RunQuerierDisjunctionAnswersEveryMatch(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "or")
@@ -98,16 +86,15 @@ func RunQuerierDisjunctionAnswersEveryMatch(t *testing.T, ctx context.Context, f
 // shorter than that set.
 //
 // The limit is walked across the boundary — one below the match count, exactly
-// on it, and one above — because those three are where a page bound and a
-// verdict computed from different sets come apart. An implementation that
-// reported has-more from the row count the DATABASE returned rather than from
-// the count of MATCHES passes the middle case and fails the other two.
+// on it, and one above. An implementation that reported has-more from the row
+// count the DATABASE returned rather than from the count of MATCHES passes the
+// middle case and fails the other two.
 func RunQuerierPageIsAPrefixAndHasMoreIsExact(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "page")
-	// Four matching rows and one that does not match, so the matching set is a
-	// STRICT subset of what the base filters admit: a limit applied to the
-	// wrong one of those two answers a different page.
+	// Four matching rows and one that does not, so the matching set is a STRICT
+	// subset of what the base filters admit: a limit applied to the wrong one
+	// of those two answers a different page.
 	for i, tag := range []string{"a", "b", "c", "d"} {
 		seedQuerierIssue(t, ctx, fixture, querierIssue(querierID(fixture, "page", tag), types.TypeBug, i, scope))
 	}
@@ -149,16 +136,14 @@ func RunQuerierPageIsAPrefixAndHasMoreIsExact(t *testing.T, ctx context.Context,
 }
 
 // RunQuerierSortSeesTheWholeMatchingSet pins the half of the display-order
-// promise that only a predicate query can show (issueops/querier.go:45-53): the
-// order is applied to the rows the QUERY bounded, and a predicate query bounds
-// nothing, so a one-row page under a sort is the best row in the whole matching
-// set rather than the first one the database happened to return.
+// promise that only a predicate query can show (issueops/querier.go:45-53): a
+// predicate query bounds nothing, so a one-row page under a sort is the best row
+// in the whole matching set.
 //
 // The rows are seeded worst-priority-first so that "the first row the database
-// returned" and "the highest-priority match" are different answers. An
-// implementation that cut the page before ordering it — which is what both
-// front doors did, because the window they fetched was all they had — returns
-// the seeded-first row here.
+// returned" and "the highest-priority match" are different answers; an
+// implementation that cut the page before ordering it returns the seeded-first
+// row.
 func RunQuerierSortSeesTheWholeMatchingSet(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "sort")
@@ -195,9 +180,7 @@ func RunQuerierSortSeesTheWholeMatchingSet(t *testing.T, ctx context.Context, fi
 
 // RunQuerierHidesClosedUnlessTheExpressionOrTheFlagSaysOtherwise pins the
 // conditional default (issueops/querier.go:30-39). It is a CONTRACT clause
-// rather than a CLI default because both front doors have always applied it,
-// and because it is the one thing about a query's answer that the expression
-// does not fully determine.
+// rather than a CLI default because both front doors have always applied it.
 func RunQuerierHidesClosedUnlessTheExpressionOrTheFlagSaysOtherwise(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "closed")
@@ -223,13 +206,10 @@ func RunQuerierHidesClosedUnlessTheExpressionOrTheFlagSaysOtherwise(t *testing.T
 }
 
 // RunQuerierRefusesAMalformedRequest pins every deterministic refusal
-// (issueops/querier.go:23-27, 57-62, 65-91). Each is ErrValidation, and each
-// matters because a front door that had to make the same decision for itself is
-// how the two routes came to disagree about what an offset meant.
+// (issueops/querier.go:23-27, 57-62, 65-91). Each is ErrValidation.
 //
 // A matching row is seeded first so every refusal runs against a store that
-// WOULD have answered, which is what makes a refusal a refusal rather than an
-// empty result reported the hard way.
+// WOULD have answered, rather than an empty result reported the hard way.
 func RunQuerierRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "refuse")
@@ -265,25 +245,21 @@ func RunQuerierRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixtu
 // either HONORED or REFUSED with a typed *ErrUnsupported, and never SILENTLY
 // IGNORED.
 //
-// It is deliberately weaker than "Offset skips N rows", and the weakness is the
-// same one RunReaderOffsetIsHonoredOrRefused carries: the two bodies disagree by
-// design, because one seam renders OFFSET and the other does not. Which body
-// does which is a per-backend fact and is asserted at the wirings, not here.
+// It is deliberately weaker than "Offset skips N rows", for the same reason
+// RunReaderOffsetIsHonoredOrRefused is: the two bodies disagree by design,
+// because one seam renders OFFSET and the other does not. Which body does which
+// is asserted at the wirings, not here.
 //
-// BOTH SHAPES OF EXPRESSION ARE DRIVEN, and that is what this case adds over
-// the reader's. A predicate query's offset is applied in Go, after the
-// predicate, over the complete matching set — a different code path from the
-// filter-expressible one, and the path that used to be refused outright at the
-// front door because an offset into a truncated window meant nothing.
+// BOTH SHAPES OF EXPRESSION ARE DRIVEN, which is what this case adds over the
+// reader's: a predicate query's offset is applied in Go, after the predicate, a
+// different code path from the filter-expressible one.
 //
-// EVERY REQUEST HERE CARRIES A BOUNDED LIMIT, deliberately, and the reason is a
-// live defect rather than tidiness: an UNLIMITED request with a non-zero Offset
-// renders SQL the Dolt engine answers with a recovered panic ("makeslice: cap
-// out of range" out of topRowsIter) instead of rows, on the unit-of-work seam.
-// That predates this role — `bd query --offset N --limit 0 --proxied-server`
-// built the same filter — and it is a storage-seam bug, not a contract
-// question, so this case asks the question it can answer rather than pinning a
-// crash as behavior.
+// EVERY REQUEST HERE CARRIES A BOUNDED LIMIT: on the unit-of-work seam an
+// UNLIMITED request with a non-zero Offset renders SQL the Dolt engine answers
+// with a recovered panic ("makeslice: cap out of range" out of topRowsIter)
+// instead of rows. That is a storage-seam bug that predates this role, not a
+// contract question, so this case asks the question it can answer rather than
+// pinning a crash as behavior.
 func RunQuerierOffsetIsHonoredOrRefused(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "offset")
@@ -300,8 +276,8 @@ func RunQuerierOffsetIsHonoredOrRefused(t *testing.T, ctx context.Context, fixtu
 	} {
 		t.Run(test.what, func(t *testing.T) {
 			request := publicops.QueryRequest{Expression: test.expression, Limit: querierLimit(10)}
-			// Offset 0 is not a page request, so it is served everywhere and is
-			// the baseline the paged call has to differ from.
+			// Offset 0 is served everywhere; it is the baseline the paged call
+			// has to differ from.
 			unpaged := querierIDs(t, ctx, fixture, request)
 			if len(unpaged) != 3 {
 				t.Fatalf("Offset 0 returned %v, want the three seeded rows", unpaged)
@@ -326,8 +302,7 @@ func RunQuerierOffsetIsHonoredOrRefused(t *testing.T, ctx context.Context, fixtu
 				t.Fatalf("Offset 1 returned the same page as Offset 0 (%v) and no error: the offset was silently ignored", got)
 			}
 			// Honored means it skipped MATCHES: two of the three, still in the
-			// unpaged order, never a short page assembled from candidates the
-			// predicate had already rejected.
+			// unpaged order, never a page cut from rejected candidates.
 			if want := unpaged[1:]; !slices.Equal(got, want) {
 				t.Errorf("Offset 1 = %v, want %v — the tail of the same answer", got, want)
 			}
@@ -338,8 +313,7 @@ func RunQuerierOffsetIsHonoredOrRefused(t *testing.T, ctx context.Context, fixtu
 // RunQuerierEmptyMatchIsAWellFormedPage pins the empty answer
 // (issueops/querier.go:139-141): a nil error, an empty page that is not a nil
 // slice, and no has-more. There is no ErrNotFound on this role — a question
-// about a set has an answer even when the set is empty, and a caller polling
-// for work would otherwise have to classify an error to read "nothing".
+// about a set has an answer even when the set is empty.
 func RunQuerierEmptyMatchIsAWellFormedPage(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "empty")
@@ -391,10 +365,9 @@ func RunQuerierWritesNothing(t *testing.T, ctx context.Context, fixture QuerierF
 }
 
 // RunQuerierDoesNotMutateTheCallerRequest pins the no-mutation promise
-// (issueops/querier.go:147-148) against a fully populated request. It matters
-// here even though the request carries no slice: Limit is a POINTER, and an
-// implementation that defaulted it by writing through that pointer would change
-// the caller's own variable.
+// (issueops/querier.go:147-148) against a fully populated request. Limit is a
+// POINTER, so an implementation that defaulted it by writing through that
+// pointer would change the caller's own variable.
 func RunQuerierDoesNotMutateTheCallerRequest(t *testing.T, ctx context.Context, fixture QuerierFixture) {
 	t.Helper()
 	scope := querierLabel(fixture, "immutable")
@@ -449,8 +422,7 @@ func seedQuerierIssue(t *testing.T, ctx context.Context, fixture QuerierFixture,
 	}
 }
 
-// querierPage runs one query and fails the case on an error, because every
-// caller here has already established that the request is well-formed.
+// querierPage runs one query and fails the case on an error.
 func querierPage(t *testing.T, ctx context.Context, fixture QuerierFixture, request publicops.QueryRequest) publicops.IssuePage {
 	t.Helper()
 	page, err := fixture.Querier.Query(ctx, request)
@@ -476,8 +448,7 @@ func querierPageIDs(page publicops.IssuePage) []string {
 }
 
 // assertQuerierAnswered compares a page against the ids it must hold, ignoring
-// order: the cases that use it name no sort, and the order of an unsorted page
-// is the storage order rather than a promise this contract makes.
+// order: the order of an unsorted page is storage order, not a promise.
 func assertQuerierAnswered(t *testing.T, got, want []string, because string) {
 	t.Helper()
 	sortedGot := append([]string(nil), got...)

@@ -103,8 +103,7 @@ func TestCyclesOmitsAnUndescribableMemberIssueAndMarksThePath(t *testing.T) {
 }
 
 // TestCyclesAnswersAnEmptyArrayForACleanWorkspace pins the `never null` half of
-// the envelope. A client that had to tell null from empty to learn a workspace
-// is clean would have to branch on the difference.
+// the envelope.
 func TestCyclesAnswersAnEmptyArrayForACleanWorkspace(t *testing.T) {
 	ts := cyclesServer(t, &roleCycleDetector{})
 

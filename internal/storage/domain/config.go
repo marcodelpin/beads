@@ -43,16 +43,12 @@ type ConfigUseCase interface {
 	GetAllConfig(ctx context.Context) (map[string]string, error)
 	GetMetadata(ctx context.Context, key string) (string, error)
 	// SetMetadata writes one durable metadata value inside the caller's unit of
-	// work. It is the write half of the GetMetadata above it, published for the
-	// same reason SetLocalMetadata was: issueops.Bootstrapper's unit-of-work
-	// body reads the identity, refuses over an identified substrate and writes
-	// the new one in ONE transaction, and a refusal decided outside the
-	// transaction that writes is a refusal two racing inits both pass.
-	//
-	// It replaces BootstrapUseCase, which held its own copy of which keys an
-	// identity is made of — a copy the direct route never used and no test
-	// compared against it. The keys are named once in internal/workapi now and
-	// this seam moves bytes.
+	// work. It is the write half of the GetMetadata above it:
+	// issueops.Bootstrapper's unit-of-work body reads the identity, refuses over
+	// an identified substrate and writes the new one in ONE transaction, and a
+	// refusal decided outside the transaction that writes is a refusal two
+	// racing inits both pass. The identity's keys are named once, in
+	// internal/workapi; this seam moves bytes.
 	SetMetadata(ctx context.Context, key, value string) error
 	GetLocalMetadata(ctx context.Context, key string) (string, error)
 	// SetLocalMetadata writes one clone-local, dolt-ignored value inside the
@@ -62,11 +58,9 @@ type ConfigUseCase interface {
 	// writes them back — all in ONE transaction, which is what makes the read
 	// it qualifies and the write it plans see the same snapshot.
 	//
-	// The DECISION is deliberately not here. It used to be, as a
-	// ReconcileVersion method on this use case, and that left the rule for
-	// which version may overwrite which stated twice: once here for the
-	// proxied route and once in cmd/bd for the direct one. Both now plan
-	// through workapi.PlanVersionReconcile and this seam moves bytes.
+	// The DECISION is deliberately not here: both routes plan through
+	// workapi.PlanVersionReconcile, so the rule for which version may overwrite
+	// which is stated once.
 	SetLocalMetadata(ctx context.Context, key, value string) error
 }
 

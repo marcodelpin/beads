@@ -14,10 +14,9 @@ import (
 // embedded wiring is the same body on a different engine.
 //
 // The cases are subtests of one parent so the whole role suite shares one store
-// and one copy-on-write branch: each Run namespaces its ids under the fixture
-// prefix, and the history cases take a before/after delta, which is only
-// meaningful while the subtests run sequentially. setupTestStore already marks
-// the PARENT parallel; no subtest here calls t.Parallel.
+// and one copy-on-write branch: the history cases take a before/after delta,
+// which is only meaningful while the subtests run sequentially. setupTestStore
+// already marks the PARENT parallel; no subtest here calls t.Parallel.
 func TestBatchCreatorContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltBatchCreatorFixture(t, "bcr")
 	defer cleanup()

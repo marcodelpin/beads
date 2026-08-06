@@ -11,8 +11,7 @@ import (
 )
 
 // BatchCreatorSource is the capability accessor a unit-of-work provider offers
-// for the batch-create role, the sibling of BatchCloserSource and
-// IssueLifecycleSource.
+// for the batch-create role.
 type BatchCreatorSource interface {
 	BatchCreator() (publicops.BatchCreator, error)
 }
@@ -37,19 +36,15 @@ func NewBatchCreator(provider UnitOfWorkProvider) (publicops.BatchCreator, error
 
 var _ publicops.BatchCreator = (*batchCreator)(nil)
 
-// CreateBatch creates every item in ONE unit of work and commits them
-// together. The request is the transaction: N items are N creates and one
-// commit, which is the whole reason this is not a loop over Lifecycle.Create.
+// CreateBatch creates every item in ONE unit of work and commits them together:
+// N items are N creates and one commit.
 //
 // IT IS ALL OR NOTHING, unlike the batch CLOSE beside it. The first item that
-// refuses returns, which rolls the attempt back with nothing created — there is
-// no per-item outcome to carry a refusal in, because a create batch has no
-// survivors to keep.
+// refuses returns, which rolls the attempt back with nothing created.
 //
-// THE ITEMS ARE CREATED IN ORDER, and that is load-bearing rather than
-// incidental: this body writes each item's edges as it writes that item, so an
-// edge naming an EARLIER item of the same batch resolves and one naming a later
-// item does not. The role promises exactly the first of those.
+// THE ITEMS ARE CREATED IN ORDER, and that is load-bearing: this body writes
+// each item's edges as it writes that item, so an edge naming an EARLIER item
+// of the same batch resolves and one naming a later item does not.
 func (o *batchCreator) CreateBatch(ctx context.Context, request publicops.CreateBatchRequest) (publicops.CreateBatchResult, error) {
 	snapshot := storageissueops.CloneCreateBatchRequest(request)
 	if err := storageissueops.ValidateCreateBatchRequest(snapshot); err != nil {
@@ -76,8 +71,7 @@ func (o *batchCreator) CreateBatch(ctx context.Context, request publicops.Create
 
 // createBatchItem creates one item on the batch's unit of work, through the
 // same preparation, infra-type routing and error classification the single
-// create runs — so an item's content rules ARE Lifecycle.Create's rather than a
-// second copy of them that can drift.
+// create runs — so an item's content rules ARE Lifecycle.Create's.
 func createBatchItem(ctx context.Context, uw UnitOfWork, request publicops.CreateBatchRequest, item publicops.BatchCreateItem, createContext domain.CreateContext) (*types.Issue, error) {
 	prepared, err := storageissueops.PreparePublicCreateRequest(
 		storageissueops.CreateBatchItemRequest(request, item),
@@ -91,7 +85,7 @@ func createBatchItem(ctx context.Context, uw UnitOfWork, request publicops.Creat
 		return nil, err
 	}
 	// Configured infra types live in the wisp tables, the same routing
-	// ExecuteCreateBatch applies and the single create applies above it.
+	// ExecuteCreateBatch and the single create apply.
 	if !prepared.Issue.Ephemeral && !prepared.Issue.NoHistory && createContext.InfraTypes[string(prepared.Issue.IssueType)] {
 		prepared.Issue.Ephemeral = true
 	}

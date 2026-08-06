@@ -29,9 +29,8 @@ type purgeScope struct {
 	// (e.g. "closed ephemeral bead", "closed bead"). "(s)" is appended by
 	// the printer when multiple items are involved.
 	subjectNoun string
-	// tier is the plane this command sweeps. The two are DISJOINT, which is
-	// what makes purge and prune one capability rather than two: `prune` never
-	// touches a wisp that `purge` would handle, and vice versa.
+	// tier is the plane this command sweeps. The two are DISJOINT: `prune`
+	// never touches a wisp that `purge` would handle, and vice versa.
 	tier issueops.SweepTier
 	// protectReferenced asks the role to skip candidates cited by a bead that
 	// is not done. `bd prune` asks unless --ignore-references; `bd purge`
@@ -89,8 +88,7 @@ EXAMPLES:
 }
 
 // openSweeper hands back the bulk-clearance role for whichever route this
-// invocation is on, each through its OWN capability accessor — the store's for
-// the direct route and the provider's for the proxied one.
+// invocation is on.
 func openSweeper() (issueops.Sweeper, error) {
 	if usesProxiedServer() {
 		return proxiedSweeper()
@@ -104,12 +102,7 @@ func openSweeper() (issueops.Sweeper, error) {
 }
 
 // runPurgeOrPrune implements the shared delete-closed-beads flow used by both
-// `bd purge` (ephemeral tier) and `bd prune` (durable tier).
-//
-// It is ONE body across both routes now rather than two: the proxied twin held
-// a second copy of the selection, the recheck, the reference scan and every
-// line of output, and the two routes disagreed about which transaction the
-// deletion ran in.
+// `bd purge` (ephemeral tier) and `bd prune` (durable tier), on both routes.
 func runPurgeOrPrune(cmd *cobra.Command, scope purgeScope) error {
 	CheckReadonly(scope.cmdName)
 
@@ -119,13 +112,11 @@ func runPurgeOrPrune(cmd *cobra.Command, scope purgeScope) error {
 	pattern, _ := cmd.Flags().GetString("pattern")
 
 	// The ROLE refuses an unfiltered durable sweep — that guard is
-	// workapi.ValidateSweepRequest, below every front door, so an HTTP handler
-	// or a library embedder inherits it instead of having to remember it. This
-	// branch is here for the MESSAGE and nothing else: the role's refusal
-	// names request fields, and a person who typed `bd prune --force` needs to
-	// be told which two flags to reach for. The contract case
-	// RunSweeperRefusesAnUnfilteredDurableSweep is what proves the guard
-	// survives this branch being deleted.
+	// workapi.ValidateSweepRequest, below every front door. This branch is here
+	// for the MESSAGE: the role's refusal names request fields, not the two
+	// flags a person who typed `bd prune --force` has to reach for. The contract
+	// case RunSweeperRefusesAnUnfilteredDurableSweep proves the guard survives
+	// this branch being deleted.
 	if scope.tier == issueops.SweepDurable && olderThan == "" && pattern == "" {
 		return HandleErrorWithHint(
 			fmt.Sprintf("bd %s requires --older-than or --pattern", scope.cmdName),
@@ -141,9 +132,7 @@ func runPurgeOrPrune(cmd *cobra.Command, scope purgeScope) error {
 		ProtectReferenced: scope.protectReferenced,
 		// A --dry-run and an UNCONFIRMED run ask the role the same question —
 		// "what would this do" — so both send DryRun. --force is this
-		// command's confirmation, not a request field, and a sweep that
-		// answered the confirmation prompt by deleting would be the worst
-		// possible reading of it.
+		// command's confirmation, not a request field.
 		DryRun: dryRun || !force,
 	}
 	if olderThan != "" {
@@ -182,8 +171,7 @@ func runPurgeOrPrune(cmd *cobra.Command, scope purgeScope) error {
 
 // warnSweepDefenseSkips reports the candidates the role's own recheck threw
 // out. A non-zero count means the tier query and the recheck disagreed about
-// which rows are closed, which is worth a line on stderr whatever the output
-// mode — see issueops.SweepSkips.
+// which rows are closed, which earns a line on stderr in any output mode.
 func warnSweepDefenseSkips(skips issueops.SweepSkips) {
 	total := skips.Unreadable + skips.NotClosed + skips.UnknownClosedAt + skips.ClosedAtOrAfterCutoff
 	if total == 0 {

@@ -111,12 +111,8 @@ Examples:
 }
 
 // openQuerier hands back the boolean-query role for whichever route this
-// invocation is on, each through its OWN capability accessor — the store's for
-// the direct route and the provider's for the proxied one. Neither branch
-// parses the expression, builds a filter or opens a unit of work: that is the
-// whole of what moved behind the role, and it used to be written out twice,
-// once per route, including the over-fetch heuristic that made both of them
-// wrong.
+// invocation is on. Neither branch parses the expression, builds a filter or
+// opens a unit of work: that is what moved behind the role.
 func openQuerier() (issueops.Querier, error) {
 	if usesProxiedServer() {
 		return proxiedQuerier()
@@ -138,14 +134,12 @@ type queryInput struct {
 }
 
 // gatherQueryInput turns the flags into the role's request. It is flag parsing
-// and nothing else: the expression is handed over verbatim, because parsing it
-// — and deciding what an OR costs — is what the role exists to own.
+// and nothing else: the expression is handed over verbatim.
 //
 // ONE REFUSAL IS LEFT HERE, and it is flag hygiene rather than semantics: a
 // negative --offset is not a page request at all. The two that WERE here are
-// gone — the role refuses an offset under a display order for every caller,
-// and answers an offset over a predicate query correctly rather than refusing
-// it.
+// gone — the role refuses an offset under a display order for every caller, and
+// answers an offset over a predicate query correctly rather than refusing it.
 func gatherQueryInput(cmd *cobra.Command, args []string) (queryInput, error) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: query expression is required\n\n")
@@ -182,10 +176,8 @@ func gatherQueryInput(cmd *cobra.Command, args []string) (queryInput, error) {
 
 // printParsedQuery serves --parse-only, which opens no store: it is a debugging
 // view of the AST, not a query, and asking for the role to print it would make
-// a syntax check need a database.
-//
-// Its refusal is worded as the ROLE words the same fault, so a syntax error
-// reads the same whether or not the caller asked for the AST.
+// a syntax check need a database. Its refusal is worded as the ROLE words the
+// same fault, so a syntax error reads the same either way.
 func printParsedQuery(expression string) error {
 	node, err := query.Parse(expression)
 	if err != nil {
@@ -209,9 +201,9 @@ func runQuery(ctx context.Context, querier issueops.Querier, in queryInput) erro
 	} else {
 		outputQueryResults(queryPageIssues(page.Items), in.expression, in.longFormat)
 	}
-	// The hint is on stderr and on BOTH routes now. The direct one printed
-	// nothing before, not by choice: it had no has-more verdict to print,
-	// because the query it ran was the truncating one.
+	// The hint is on stderr and on BOTH routes now: the direct one had no
+	// has-more verdict to print before, because the query it ran was the
+	// truncating one.
 	printTruncationHint(page.HasMore, in.limit)
 	return nil
 }

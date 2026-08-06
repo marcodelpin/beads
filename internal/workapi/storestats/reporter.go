@@ -3,14 +3,9 @@
 // StatsReporter accessor hands back.
 //
 // It is a package of its own for the reason internal/workapi/storecounter is —
-// see that package's doc. A constructor sitting in internal/workapi would be a
-// one-line drop-in for store.StatsReporter() from any front door, and one that
-// silently skips the decorators, because a decorator adds its layer in its own
-// accessor. Down here the only importers are the two Dolt store packages and
-// the cmd-bd-role-constructors depguard rule in .golangci.yml makes a front
-// door importing it a lint failure rather than a review comment.
-//
-// The accessor is the door. This is the thing behind it.
+// see that package's doc. Down here the only importers are the two Dolt store
+// packages, and the cmd-bd-role-constructors depguard rule in .golangci.yml
+// makes a front door importing it a lint failure rather than a review comment.
 package storestats
 
 import (
@@ -69,10 +64,9 @@ func (r *storeStatsReporter) Stats(ctx context.Context, req issueops.StatsReques
 //
 // The ready-work failure is reported as zero ready work rather than as an
 // error, which AssigneeStats documents as this role's one number that may not
-// be an answer. It is the shipped behavior of both `bd status --assigned`
-// routes and is kept rather than tightened here: the alternative turns a
-// summary that is right about five numbers into no summary at all, on the one
-// query in this role slow enough to time out on a large graph.
+// be an answer. The alternative turns a summary that is right about five
+// numbers into no summary at all, on the one query in this role slow enough to
+// time out on a large graph.
 func (r *storeStatsReporter) AssigneeStats(ctx context.Context, req issueops.AssigneeStatsRequest) (issueops.StatsResult, error) {
 	assignee, err := workapi.ValidateStatsAssignee(req.Assignee)
 	if err != nil {

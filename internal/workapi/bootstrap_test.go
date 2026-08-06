@@ -11,9 +11,7 @@ import (
 // because they are the same on every backend by construction: all three
 // implementations validate through ValidateBootstrapRequest and decide the
 // refusal through RefuseIdentifiedSubstrate. The conformance contract is left
-// to assert what only a real backend can show — that a refusal wrote nothing,
-// that the identity is there for the next caller, that the two reads are one
-// snapshot.
+// to assert what only a real backend can show.
 
 func validBootstrapRequest() issueops.BootstrapRequest {
 	return issueops.BootstrapRequest{
@@ -50,8 +48,8 @@ func TestValidateBootstrapRequestNormalizesOnlyTheTrailingHyphen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateBootstrapRequest(): %v", err)
 	}
-	// Interior hyphens survive; only the trailing run goes, which is exactly
-	// what the settings plane has always done to this key.
+	// Interior hyphens survive; only the trailing run goes, which is what the
+	// settings plane has always done to this key.
 	if got.Prefix != "my-proj" {
 		t.Fatalf("normalized prefix = %q, want %q", got.Prefix, "my-proj")
 	}

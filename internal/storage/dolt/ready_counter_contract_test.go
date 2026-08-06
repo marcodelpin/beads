@@ -11,12 +11,11 @@ import (
 // server-backed store, which reaches the cheap indexed COUNT(*) path
 // (internal/workapi/storereadycounter over CountReadyWorkInTx).
 //
-// The cases are subtests of one parent so the whole role suite shares one
-// store and one copy-on-write branch: each Run namespaces its ids and labels
-// under the fixture prefix and scopes its own request to them, and
-// WritesNothing takes a before/after history delta, which is only meaningful
-// while the subtests run sequentially. setupTestStore already marks the PARENT
-// parallel; no subtest here calls t.Parallel.
+// The cases are subtests of one parent so the whole role suite shares one store
+// and one copy-on-write branch. WritesNothing takes a before/after history
+// delta, which is only meaningful while the subtests run sequentially:
+// setupTestStore already marks the PARENT parallel, and no subtest here calls
+// t.Parallel.
 func TestReadyCounterContract(t *testing.T) {
 	fixture, ctx, cleanup := newDoltReadyCounterFixture(t, "rdc")
 	defer cleanup()

@@ -40,9 +40,8 @@ var _ publicops.Querier = (*querier)(nil)
 // this seam's capabilities rather than a second opinion about the query. It
 // renders OFFSET, so a filter-expressible query pushes the skip down; and it
 // reports HasMore natively, so the epilogue's seed is that verdict rather than
-// an over-fetched row. The plan itself — which expressions need a predicate,
-// what row bound each shape may carry, the default closed exclusion — is
-// workapi.BuildQueryPlan, the same function the other body calls.
+// an over-fetched row. The plan itself is workapi.BuildQueryPlan, the same
+// function the other body calls.
 func (q *querier) Query(ctx context.Context, req publicops.QueryRequest) (publicops.IssuePage, error) {
 	plan, err := workapi.BuildQueryPlan(req)
 	if err != nil {

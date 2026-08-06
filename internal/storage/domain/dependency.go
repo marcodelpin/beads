@@ -151,14 +151,14 @@ type DependencySQLRepository interface {
 	// DetectCycleReport answers the same walk in the shape issueops.CycleDetector
 	// publishes: canonically ordered, and carrying every member of a cycle
 	// whether or not this database can describe it. DetectCycles above is the
-	// lossy legacy shape and stays for the callers that still read it.
+	// lossy legacy shape.
 	DetectCycleReport(ctx context.Context) (issueops.CycleReport, error)
 
 	GetTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
 	// WalkDependencyTree answers the tree walk in the shape issueops.TreeWalker
 	// publishes: validated, rooted, pruned by status and capped, with both
 	// directions of a `both` request inside ONE transaction. GetTree above is the
-	// unvalidated shape and stays for the callers that still read it.
+	// unvalidated shape.
 	WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error)
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
@@ -621,10 +621,8 @@ func (u *dependencyUseCaseImpl) DetectCycleReport(ctx context.Context) (issueops
 // WalkDependencyTree passes the request straight through.
 //
 // No pre-check and no error wrapping, unlike GetDependencyTree below: the
-// request's whole vocabulary is validated inside the shared body — one place, so
-// all three backends refuse in the same words — and its refusals are typed
-// sentinels both front doors classify. See the repository method for why the
-// wrap is absent.
+// request's whole vocabulary is validated inside the shared body, and its
+// refusals are typed sentinels both front doors classify.
 func (u *dependencyUseCaseImpl) WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error) {
 	return u.depRepo.WalkDependencyTree(ctx, req)
 }

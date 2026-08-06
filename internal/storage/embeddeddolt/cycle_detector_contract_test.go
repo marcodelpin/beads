@@ -13,9 +13,8 @@ import (
 
 // TestCycleDetectorContract runs the CycleDetector contract against the embedded
 // store. It reaches the same tx-level body the server-backed store reaches
-// (issueops.DetectCycleReportInTx) and differs only in the engine underneath;
-// that is what this wiring catches, and it is not an independent vote on the
-// body.
+// (issueops.DetectCycleReportInTx) and differs only in the engine underneath, so
+// it is an engine check rather than an independent vote on the body.
 //
 // One environment for the whole suite, and the subtests are sequential: the
 // report is global, so each case's cycles stay visible to the ones after it.
@@ -63,10 +62,8 @@ func newEmbeddedCycleDetectorFixture(t *testing.T, te *testEnv, prefix string) c
 		Detector:    detector,
 		CreateIssue: kit.CreateIssue,
 		CreateWisp:  kit.CreateWisp,
-		// The frozen kit exposes reads only. This is the write half of the same
-		// short-lived raw connection its QueryScalar opens, and RETURNS the
-		// error rather than failing the test, so the contract's own seeding
-		// failure message is the one a reader sees.
+		// The frozen kit exposes reads only, so this is the write half of the
+		// same short-lived raw connection its QueryScalar opens.
 		//
 		// One PINNED CONNECTION for the whole script, for the reason the
 		// server-backed wiring gives: a foreign_key_checks toggle and the insert

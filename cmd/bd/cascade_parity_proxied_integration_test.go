@@ -160,11 +160,10 @@ func runPruneSweep(t *testing.T, r cascadeRunner) pruneSweepOutcome {
 // the two shapes it actually runs — wh-gate-sweep's gate purge, and the
 // wisp-decay close+purge pair.
 //
-// It was written while the answer was YES. Proxied `bd delete` used to pass
-// Cascade:true unconditionally and refuse the --cascade flag outright, so each
-// scenario pinned two different outcomes and the gate case characterized live
-// data loss. bd-x82so put both routes on issueops.Deleter with the flag the
-// caller typed, so every scenario here now pins ONE outcome for both modes.
+// It was written while the answer was YES: proxied `bd delete` passed
+// Cascade:true unconditionally and refused the --cascade flag outright.
+// bd-x82so put both routes on issueops.Deleter with the flag the caller typed,
+// so every scenario here now pins ONE outcome for both modes.
 //
 // Both scenarios are still replayed against a classic embedded workspace and a
 // proxied one and the outcomes compared, so a re-divergence is reported as a
@@ -174,11 +173,9 @@ func TestProxiedServerCascadeParity(t *testing.T) {
 	t.Parallel()
 	bd := buildEmbeddedBD(t)
 
-	// THE CUTOVER BLOCKER THIS FILE WAS WRITTEN FOR, now closed.
-	//
-	// Proxied `bd delete <gate> --force` used to delete the bead the gate was
-	// gating and everything downstream of it, because the proxied route passed
-	// Cascade:true unconditionally. On wh-gate-sweep's fixture that was not a
+	// THE CUTOVER BLOCKER THIS FILE WAS WRITTEN FOR, now closed. Proxied
+	// `bd delete <gate> --force` used to delete the bead the gate was gating and
+	// everything downstream of it. On wh-gate-sweep's fixture that was not a
 	// nuance: the sweep's third step is `bd delete <gate> --force`, and
 	// `bd gate create --blocks <target>` makes the gated bead a DEPENDENT of the
 	// gate, so that step destroyed the work it had just unblocked.

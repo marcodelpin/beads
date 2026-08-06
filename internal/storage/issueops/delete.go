@@ -76,23 +76,19 @@ func deleteIssueRowInTx(ctx context.Context, tx *sql.Tx, id string, isWisp bool)
 // DeletionSet is the EXACT set of rows one delete removes, split by the plane
 // each row lives in.
 //
-// IT EXISTS BECAUSE THE SET USED TO BE COMPUTED TWICE. DeleteInTx expanded the
-// cascade from every named id while DeleteIssuesInTx expanded it from the
-// DURABLE named ids only, so `bd delete <wisp> --cascade` left a durable row
-// reachable only through that wisp alive and then rewrote its neighbors' text
-// to say `[deleted:<id>]` about it. Resolving once and passing the value down
-// is what makes that class of drift impossible rather than merely fixed: the
-// neighborhood read, the deletion and the reference rewrite all take THIS
-// value.
+// IT EXISTS BECAUSE THE SET USED TO BE COMPUTED TWICE, from different roots, so
+// `bd delete <wisp> --cascade` left a durable row reachable only through that
+// wisp alive and then rewrote its neighbors' text to say `[deleted:<id>]` about
+// it. The neighborhood read, the deletion and the reference rewrite all take
+// THIS value.
 type DeletionSet struct {
 	// WispIDs and RegularIDs partition All by plane. The two tiers are deleted
 	// through different tables and their associated rows counted from
 	// different ones, so the split is carried rather than recomputed.
 	WispIDs    []string
 	RegularIDs []string
-	// All is the whole set in one slice. It is what a caller scopes a
-	// neighborhood read or a citation rewrite to, and it is the answer to
-	// "which rows is this delete about" that nothing else may recompute.
+	// All is the whole set in one slice — what a caller scopes a neighborhood
+	// read or a citation rewrite to, and what nothing else may recompute.
 	All []string
 }
 
@@ -102,13 +98,9 @@ type DeletionSet struct {
 //
 // THE CASCADE IS ROOTED AT EVERY NAMED ID, WISPS INCLUDED. Rooting it at the
 // durable half is what made `bd wisp gc` (which hardcodes cascade) silently
-// under-delete, and it is the half of the drift that cost rows rather than
-// text. It matches what DeleteRequest.Cascade promises — "the TRANSITIVE
-// CLOSURE of everything that depends on the named rows, in both planes" — and
-// what domain.issueUseCase.deleteMany, the other Deleter body, already did.
-//
-// It does not read the caller's slice destructively: the non-cascade set is a
-// copy, because DeleteRequest promises IDs is never sorted in place.
+// under-delete. It does not read the caller's slice destructively either: the
+// non-cascade set is a copy, because DeleteRequest promises IDs is never
+// sorted in place.
 func ResolveDeletionSetInTx(ctx context.Context, tx DBTX, ids []string, cascade bool) (DeletionSet, error) {
 	all := append([]string(nil), ids...)
 	if cascade {
@@ -140,9 +132,6 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 
 	var orphaned []string
 	if !cascade {
-		// Without cascade the set is exactly the named ids, so set.RegularIDs
-		// is their durable half.
-		//
 		// The guard here is the STORAGE SEAM's, and it stays durable-only: the
 		// server-backed store peels wisps off before it ever reaches this
 		// function (dolt/issues.go DeleteIssues), so widening it would make the
@@ -152,10 +141,9 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		for _, id := range ids {
 			idSet[id] = true
 		}
-		// One scan of the dependency planes answers both modes: the guard
-		// needs to know WHICH id is blocked, and the forced path needs the
-		// union of what it orphans. ExternalDependentsBySourceInTx gives the
-		// per-source shape both read.
+		// One scan of the dependency planes answers both modes: the guard needs
+		// to know WHICH id is blocked, and the forced path needs the union of
+		// what it orphans.
 		external, err := ExternalDependentsBySourceInTx(ctx, tx, set.RegularIDs, idSet)
 		if err != nil {
 			return nil, fmt.Errorf("get dependents: %w", err)
@@ -191,8 +179,7 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 //
 // It is split out of DeleteIssuesInTx so the role body can read the
 // neighborhood BEFORE the delete and rewrite it AFTER against the SAME
-// DeletionSet the delete was handed. A caller that recomputed either end of
-// that instead is the bug DeletionSet documents.
+// DeletionSet the delete was handed.
 //
 //nolint:gosec // G201: inClause contains only ? placeholders
 func DeleteResolvedSetInTx(ctx context.Context, tx *sql.Tx, set DeletionSet, dryRun bool) (*types.DeleteIssuesResult, error) {

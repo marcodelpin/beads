@@ -39,10 +39,9 @@ func gatherDeleteInput(cmd *cobra.Command, args []string) (*deleteInput, error) 
 	in.force, _ = cmd.Flags().GetBool("force")
 	in.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	// --cascade IS SUPPORTED HERE NOW. This route used to refuse the flag
-	// outright ("delete always cascades") and hardcode Cascade: true at both of
-	// its call sites, so on a team server there was no way to delete an issue
-	// without taking its dependents and asking for the safer behavior was an
-	// error. Both routes now mean the same three things by the same two flags.
+	// outright ("delete always cascades") and hardcode Cascade: true, so on a
+	// team server there was no way to delete an issue without taking its
+	// dependents. Both routes now mean the same three things by the same flags.
 	in.cascade, _ = cmd.Flags().GetBool("cascade")
 	in.jsonOutput = jsonOutput
 	in.quiet = isQuiet()
@@ -50,8 +49,7 @@ func gatherDeleteInput(cmd *cobra.Command, args []string) (*deleteInput, error) 
 }
 
 // proxiedDeleter hands back the named-row erasure surface for the proxied
-// route, through the provider's OWN capability accessor rather than a
-// constructor — the accessor is where a decorator would add its layer.
+// route, through the provider's OWN capability accessor.
 func proxiedDeleter() (issueops.Deleter, error) {
 	if uowProvider == nil {
 		return nil, fmt.Errorf("proxied-server UOW provider not initialized")
@@ -63,15 +61,10 @@ func proxiedDeleter() (issueops.Deleter, error) {
 	return source.Deleter()
 }
 
-// runDeleteProxiedServer is `bd delete` against a team server.
-//
-// WHAT IT NO LONGER DOES is most of what it used to. It held its own copy of
-// the whole flow — a preview unit of work, a committing unit of work, its own
-// not-found check, and Cascade hardcoded true at both call sites — and the two
-// routes disagreed about what `--force` MEANS on a destructive command. The
-// selection, the guard and the deletion are issueops.Deleter now, the same
-// library surface the direct route calls; what is left here is this route's
-// output, which is not the direct route's and is pinned separately.
+// runDeleteProxiedServer is `bd delete` against a team server. The selection,
+// the guard and the deletion are issueops.Deleter, the same library surface the
+// direct route calls; what is left here is this route's own output, which is
+// not the direct route's and is pinned separately.
 func runDeleteProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	in, err := gatherDeleteInput(cmd, args)
 	if err != nil {
@@ -104,8 +97,7 @@ func runDeleteProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	if request.DryRun {
 		// The role answered WHAT WOULD HAPPEN; this read answers WHICH ROWS,
 		// which is presentation this route has always printed and which no
-		// result carries. It runs only after the role accepted the request, so
-		// a refusal costs it nothing.
+		// result carries. It runs only after the role accepted the request.
 		preview, err := runDeleteProxiedPreviewTx(ctx, in)
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)

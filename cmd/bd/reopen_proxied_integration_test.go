@@ -236,9 +236,7 @@ func TestProxiedServerReopen(t *testing.T) {
 
 	// Q2, adopted: a multi-id reopen writes ONE HISTORY ENTRY PER ID, naming
 	// that id, where this route used to write one combined "bd: reopen a, b".
-	// The role owns the transaction and hands out no handle to hold open, so
-	// per-id is what falls out of calling it once per id — and it is what the
-	// direct route has always written, which is the point of the move.
+	// It is what the direct route has always written.
 	t.Run("batch_commits_once_per_id", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "rosd")
