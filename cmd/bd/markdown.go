@@ -327,11 +327,20 @@ func createIssuesFromMarkdown(ctx context.Context, in createInput) error {
 	if err != nil {
 		return err
 	}
+	// The role creates its Dolt version commit inside the storage layer, so
+	// `--dolt-auto-commit batch` can only defer it by saying so on the context.
+	// commitPendingIfEmbedded below is the OTHER half and cannot substitute: it
+	// correctly no-ops in batch mode, which is exactly why forgetting this line
+	// produces a per-write commit that nothing later suppresses.
+	opsCtx, err := issueOpsContext(ctx)
+	if err != nil {
+		return HandleError("%v", err)
+	}
 	creator, err := store.BatchCreator()
 	if err != nil {
 		return HandleError("%v", err)
 	}
-	result, err := creator.CreateBatch(ctx, request)
+	result, err := creator.CreateBatch(opsCtx, request)
 	if err != nil {
 		return HandleError("creating issues from markdown: %v", err)
 	}

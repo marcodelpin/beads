@@ -355,6 +355,68 @@ func RunDeleterGuardsAWispNamedWithADurableDependent(t *testing.T, ctx context.C
 	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, wisp)
 }
 
+// RunDeleterGuardsADurableNamedWithAWispDependent is the OTHER half of the same
+// clause, and the quadrant the suite was missing.
+//
+// issueops.Deleter promises the guard reads both planes on BOTH ENDS of the
+// edge. RunDeleterGuardsAWispNamedWithADurableDependent covers one direction —
+// a named wisp whose dependent is durable — and every other case in this file
+// that touches a wisp also puts the wisp on the DELETED end. So nothing here
+// seeded a wisp as the DEPENDENT and then named the durable row it depends on,
+// which is the edge that lands in wisp_dependencies rather than dependencies.
+//
+// That gap matters more than an ordinary missing case. The two bodies scan
+// different tables to answer it (the shared body's dependents scan, and uow's
+// externalDependentsBySourceInUOW), so this is one of the few places where
+// three green legs really are two independent votes — and neither vote was
+// being taken. It is also the exact shape of the defect wave 4 fixed: a guard
+// that asked about the durable half of the request only, with 59 cases green.
+func RunDeleterGuardsADurableNamedWithAWispDependent(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	blocker := deleterSeedIssue(t, ctx, fixture, "dguard", "durable blocker")
+	dependent := deleterSeedWisp(t, ctx, fixture, "dguard", "wisp dependent")
+	deleterAddEdge(t, ctx, fixture, dependent, blocker)
+
+	for _, dryRun := range []bool{false, true} {
+		result, err := fixture.Deleter.Delete(ctx, publicops.DeleteRequest{
+			IDs:    []string{blocker},
+			DryRun: dryRun,
+		})
+		if !errors.Is(err, publicops.ErrDependentsOutsideRequest) {
+			t.Fatalf("Delete(dryRun=%v) unforced over a durable row with a wisp dependent: error = %v, want ErrDependentsOutsideRequest", dryRun, err)
+		}
+		var blocked *publicops.DependentsOutsideRequestError
+		if !errors.As(err, &blocked) {
+			t.Fatalf("Delete(dryRun=%v) error = %v, want *DependentsOutsideRequestError", dryRun, err)
+		}
+		if blocked.IssueID != blocker {
+			t.Errorf("DependentsOutsideRequestError.IssueID = %q, want the named durable row %q", blocked.IssueID, blocker)
+		}
+		if !reflect.DeepEqual(blocked.Dependents, []string{dependent}) {
+			t.Errorf("DependentsOutsideRequestError.Dependents = %v, want [%s] — the wisp on the other end of the edge counts", blocked.Dependents, dependent)
+		}
+		if result.Deleted != 0 {
+			t.Errorf("refused delete reported Deleted = %d, want 0", result.Deleted)
+		}
+		deleterAssertIssueRows(t, ctx, fixture, 1, blocker)
+		deleterAssertWispRows(t, ctx, fixture, 1, dependent)
+	}
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{blocker},
+		Force: true,
+	})
+	if result.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1 — force deletes the NAMED durable row and nothing else", result.Deleted)
+	}
+	if !reflect.DeepEqual(result.Orphaned, []string{dependent}) {
+		t.Errorf("Orphaned = %v, want [%s] — the orphan is a wisp, and it is still an orphan", result.Orphaned, dependent)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, blocker)
+	deleterAssertWispRows(t, ctx, fixture, 1, dependent)
+	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, blocker)
+}
+
 // RunDeleterNeverCallsALiveRowDeleted pins the invariant that makes the
 // under-deleting cascade impossible to reintroduce quietly: THE SET WHOSE
 // CITATIONS ARE REWRITTEN IS THE SET THAT WAS DELETED. A `[deleted:<id>]`

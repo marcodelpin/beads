@@ -46,6 +46,9 @@ func TestDeleterContract(t *testing.T) {
 	t.Run("GuardsAWispNamedWithADurableDependent", func(t *testing.T) {
 		conformance.RunDeleterGuardsAWispNamedWithADurableDependent(t, ctx, fixture)
 	})
+	t.Run("GuardsADurableNamedWithAWispDependent", func(t *testing.T) {
+		conformance.RunDeleterGuardsADurableNamedWithAWispDependent(t, ctx, fixture)
+	})
 	t.Run("NeverCallsALiveRowDeleted", func(t *testing.T) {
 		conformance.RunDeleterNeverCallsALiveRowDeleted(t, ctx, fixture)
 	})
