@@ -355,22 +355,15 @@ func RunDeleterGuardsAWispNamedWithADurableDependent(t *testing.T, ctx context.C
 	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, wisp)
 }
 
-// RunDeleterGuardsADurableNamedWithAWispDependent is the OTHER half of the same
-// clause, and the quadrant the suite was missing.
+// RunDeleterGuardsADurableNamedWithAWispDependent is the fourth quadrant of the
+// both-planes-both-ends guard, and the one the suite was missing: a WISP as the
+// DEPENDENT, so the edge lands in wisp_dependencies, with the durable row it
+// depends on named unforced.
 //
-// issueops.Deleter promises the guard reads both planes on BOTH ENDS of the
-// edge. RunDeleterGuardsAWispNamedWithADurableDependent covers one direction —
-// a named wisp whose dependent is durable — and every other case in this file
-// that touches a wisp also puts the wisp on the DELETED end. So nothing here
-// seeded a wisp as the DEPENDENT and then named the durable row it depends on,
-// which is the edge that lands in wisp_dependencies rather than dependencies.
-//
-// That gap matters more than an ordinary missing case. The two bodies scan
-// different tables to answer it (the shared body's dependents scan, and uow's
-// externalDependentsBySourceInUOW), so this is one of the few places where
-// three green legs really are two independent votes — and neither vote was
-// being taken. It is also the exact shape of the defect wave 4 fixed: a guard
-// that asked about the durable half of the request only, with 59 cases green.
+// The two bodies scan different tables to answer it, so this is one of the few
+// places three green legs really would be two independent votes — and neither
+// was being taken. It is the shape of the defect wave 4 fixed: a guard that
+// asked about the durable half only, with 59 cases green.
 func RunDeleterGuardsADurableNamedWithAWispDependent(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
 	blocker := deleterSeedIssue(t, ctx, fixture, "dguard", "durable blocker")

@@ -56,6 +56,12 @@ func TestTreeWalkerContract(t *testing.T) {
 	t.Run("RefusesAnAbsentRoot", func(t *testing.T) {
 		conformance.RunTreeWalkerRefusesAnAbsentRoot(t, ctx, fixture)
 	})
+	t.Run("ResolvesTheRootIDExactly", func(t *testing.T) {
+		conformance.RunTreeWalkerResolvesTheRootIDExactly(t, ctx, fixture)
+	})
+	t.Run("CrossesPlanesFromAWispRootAndUpward", func(t *testing.T) {
+		conformance.RunTreeWalkerCrossesPlanesFromAWispRootAndUpward(t, ctx, fixture)
+	})
 	t.Run("RefusesAnInvalidRequest", func(t *testing.T) {
 		conformance.RunTreeWalkerRefusesAnInvalidRequest(t, ctx, fixture)
 	})

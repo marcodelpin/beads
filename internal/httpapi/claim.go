@@ -386,6 +386,9 @@ var (
 // forever. TestAReadRouteTimesTheUnitsOfWorkItsReaderOpens is the assertion
 // that fails instead.
 //
+// That pin is per-route and there are thirteen accessors here, so
+// TestEveryTimedProviderAccessorBindsToTheWrapper covers the rest structurally.
+//
 // The cost is that a provider whose own accessor decorated its reader would be
 // bypassed here. There is one provider (doltSQLProvider) and its accessor is
 // this same construction, so nothing is bypassed today — but if a decorating

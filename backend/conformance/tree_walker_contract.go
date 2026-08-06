@@ -363,6 +363,81 @@ func RunTreeWalkerRefusesAnAbsentRoot(t *testing.T, ctx context.Context, fixture
 	}
 }
 
+// RunTreeWalkerResolvesTheRootIDExactly pins treewalker.go:52-66: a case
+// variant, surrounding whitespace, a prefix and a suffixed id are all misses.
+//
+// RunTreeWalkerRefusesAnAbsentRoot cannot stand in for it — a ghost id with no
+// near-real sibling is satisfied by exact, prefix, fuzzy and collation-loose
+// resolution alike. The case variant is the entry that earns this: it is the
+// same string under a case-insensitive collation, so the answer comes from the
+// engine rather than the role. A loose root here is a wrong GRAPH, not a wrong
+// row.
+func RunTreeWalkerResolvesTheRootIDExactly(t *testing.T, ctx context.Context, fixture TreeWalkerFixture) {
+	t.Helper()
+	root := fixture.IssuePrefix + "-exactroot"
+	child := fixture.IssuePrefix + "-exactroot-child"
+	seedTreeWalkerIssues(t, ctx, fixture, root, child)
+	seedTreeWalkerEdge(t, ctx, fixture, root, child, types.DepBlocks)
+
+	result := walkTree(t, ctx, fixture, publicops.WalkTreeRequest{RootID: root, MaxDepth: 10})
+	assertTreeWalkerIDs(t, result, root, child)
+
+	for _, test := range []struct{ what, id string }{
+		{"a case variant", strings.ToUpper(root)},
+		{"a trailing space", root + " "},
+		{"a leading space", " " + root},
+		{"a prefix of the id", root[:len(root)-2]},
+		{"the id with a suffix", root + "x"},
+	} {
+		_, err := fixture.TreeWalker.WalkTree(ctx, publicops.WalkTreeRequest{RootID: test.id, MaxDepth: 10})
+		if !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("WalkTree with %s (%q) error = %v, want ErrNotFound: this role resolves the stored spelling only",
+				test.what, test.id, err)
+		}
+	}
+}
+
+// RunTreeWalkerCrossesPlanesFromAWispRootAndUpward covers the two cross-plane
+// quadrants RunTreeWalkerMergesTheDurableAndEphemeralPlanes leaves open: a WISP
+// as the root, and an UP walk crossing a plane.
+//
+// A root probe reading only the issues table fails the first. An up-adjacency
+// reading only `dependencies` rather than the union fails the second — and
+// passes every other case here, because the up case is durable-only. All three
+// legs share one walk body, so nothing else will catch a regression in it.
+func RunTreeWalkerCrossesPlanesFromAWispRootAndUpward(t *testing.T, ctx context.Context, fixture TreeWalkerFixture) {
+	t.Helper()
+	head := fixture.IssuePrefix + "-xplane-head"
+	wisp := fixture.IssuePrefix + "-xplane-wisp"
+	tail := fixture.IssuePrefix + "-xplane-tail"
+	seedTreeWalkerIssues(t, ctx, fixture, head, tail)
+	seedTreeWalkerWisp(t, ctx, fixture, wisp)
+	seedTreeWalkerEdge(t, ctx, fixture, head, wisp, types.DepBlocks)
+	seedTreeWalkerEdge(t, ctx, fixture, wisp, tail, types.DepBlocks)
+
+	// The wisp resolves as a root and its DOWN walk crosses back into the
+	// durable plane.
+	down := walkTree(t, ctx, fixture, publicops.WalkTreeRequest{
+		RootID: wisp, MaxDepth: 10, Direction: publicops.TreeDown,
+	})
+	assertTreeWalkerIDs(t, down, wisp, tail)
+
+	// And its UP walk crosses the other way, over an edge stored in the wisp
+	// plane, to the durable row that depends on it.
+	up := walkTree(t, ctx, fixture, publicops.WalkTreeRequest{
+		RootID: wisp, MaxDepth: 10, Direction: publicops.TreeUp,
+	})
+	assertTreeWalkerIDs(t, up, wisp, head)
+
+	// The durable tail walked UP reaches the wisp and then the durable head, so
+	// the up-adjacency crosses a plane in the MIDDLE of a chain and not only at
+	// the root.
+	upFromTail := walkTree(t, ctx, fixture, publicops.WalkTreeRequest{
+		RootID: tail, MaxDepth: 10, Direction: publicops.TreeUp,
+	})
+	assertTreeWalkerIDs(t, upFromTail, tail, wisp, head)
+}
+
 // RunTreeWalkerRefusesAnInvalidRequest pins the request vocabulary at the
 // backends: treewalker.go:63 (empty root), :68-72 (a direction outside the
 // closed set) and :79-85 (a zero or negative depth).
