@@ -32,6 +32,9 @@ func TestBatchCreatorContract(t *testing.T) {
 	t.Run("RejectsAnUnusableRequest", func(t *testing.T) {
 		conformance.RunBatchCreatorRejectsAnUnusableRequest(t, ctx, fixture)
 	})
+	t.Run("RefusesACrossPlaneInBatchEdge", func(t *testing.T) {
+		conformance.RunBatchCreatorRefusesACrossPlaneInBatchEdge(t, ctx, fixture)
+	})
 	t.Run("LinksAnEarlierItemOfTheSameBatch", func(t *testing.T) {
 		conformance.RunBatchCreatorLinksAnEarlierItemOfTheSameBatch(t, ctx, fixture)
 	})

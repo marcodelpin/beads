@@ -196,6 +196,48 @@ func RunBatchCreatorRejectsAnUnusableRequest(t *testing.T, ctx context.Context, 
 	}
 }
 
+// RunBatchCreatorRefusesACrossPlaneInBatchEdge pins batchcreator.go's plane
+// clause: an edge BETWEEN the durable and ephemeral buckets "cannot be written
+// by the batch that creates both of its ends; a request that asks for one is
+// refused with everything else it asked for."
+//
+// No case seeded one, and the two bodies answered differently. The store
+// bodies assign every id first and hand the whole slice down as a SET, which
+// refuses. The unit-of-work body creates item by item, so by the time the
+// second item's edge is written its target is an ordinary existing row and the
+// domain layer writes the cross-plane edge — the identical request refused
+// whole by two backends and landed in full on the third.
+//
+// The all-or-nothing half is asserted too: a refusal must leave NEITHER row.
+func RunBatchCreatorRefusesACrossPlaneInBatchEdge(t *testing.T, ctx context.Context, fixture BatchCreatorFixture) {
+	t.Helper()
+	durable := fixture.IssuePrefix + "-bcplane-durable"
+	wisp := fixture.IssuePrefix + "-bcplane-wisp"
+
+	ephemeral := batchCreatorIssue(wisp, "the ephemeral end")
+	ephemeral.Ephemeral = true
+
+	_, err := fixture.BatchCreator.CreateBatch(ctx, publicops.CreateBatchRequest{
+		Actor:         "batch-writer",
+		ForceIDPrefix: true,
+		Items: []publicops.BatchCreateItem{
+			batchCreatorItem(batchCreatorIssue(durable, "the durable end")),
+			{
+				Issue:        ephemeral,
+				Dependencies: []publicops.CreateDependency{{TargetID: durable, Type: types.DepBlocks}},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("CreateBatch accepted an edge between the durable and ephemeral planes; the contract refuses it")
+	}
+	if !errors.Is(err, publicops.ErrValidation) {
+		t.Errorf("error = %v, want ErrValidation: a refused request is the caller's fault", err)
+	}
+	assertBatchCreatorRowCount(t, ctx, fixture, "issues", durable, 0)
+	assertBatchCreatorRowCount(t, ctx, fixture, "wisps", wisp, 0)
+}
+
 // RunBatchCreatorLinksAnEarlierItemOfTheSameBatch pins the capability that
 // makes the batch more than a loop (issueops/batchcreator.go:36-45): an item's
 // edge may name an item created EARLIER in the same request, and the edge is

@@ -196,3 +196,65 @@ func ExecuteCreateBatch(ctx context.Context, tx *sql.Tx, request publicops.Creat
 	}
 	return result, tables, nil
 }
+
+// CrossPlaneBatchEdgeError is the refusal the store-backed body raises from
+// filterCreateIssuesMixedBucketDependencies, spelled here so the unit-of-work
+// body can raise the identical one before it starts writing.
+func CrossPlaneBatchEdgeError(sourceID, targetID string) error {
+	return fmt.Errorf("mixed regular/wisp CreateIssues batch cannot include cross-bucket dependency %s -> %s; create the issues first, then add the in-batch dependency after both issues exist%.0w",
+		sourceID, targetID, publicops.ErrValidation)
+}
+
+// ValidateCreateBatchPlanes refuses a batch whose items would write an edge
+// BETWEEN the durable and ephemeral planes, which BatchCreator's contract says
+// "cannot be written by the batch that creates both of its ends".
+//
+// THE STORE BODY GETS THIS FOR FREE and the unit-of-work body does not. The
+// store body assigns every id first and then hands the whole slice to
+// CreateIssuesInTxWithResult, which sees the batch as a set and refuses. The
+// unit-of-work body creates item by item, so by the time an edge is written
+// its target is an ordinary existing row and the domain layer writes the
+// cross-plane edge happily — the identical request was refused whole by two
+// backends and landed in full on the third.
+//
+// Only an EXPLICIT id can be an in-batch target: a caller cannot name an id the
+// batch has not minted yet, so the ids known here are the only ones an edge can
+// reach inside the batch. infraTypes promotes the same types both bodies
+// promote, so the plane a row lands in is decided the same way it will be.
+func ValidateCreateBatchPlanes(request publicops.CreateBatchRequest, infraTypes map[string]bool) error {
+	wispByID := make(map[string]bool, len(request.Items))
+	var hasDurable, hasWisp bool
+	planeOf := func(issue *publicops.Issue) bool {
+		return issue.Ephemeral || issue.NoHistory || infraTypes[string(issue.IssueType)]
+	}
+	for _, item := range request.Items {
+		if item.Issue == nil {
+			continue
+		}
+		wisp := planeOf(item.Issue)
+		if wisp {
+			hasWisp = true
+		} else {
+			hasDurable = true
+		}
+		if item.Issue.ID != "" {
+			wispByID[item.Issue.ID] = wisp
+		}
+	}
+	if !hasDurable || !hasWisp {
+		return nil
+	}
+	for _, item := range request.Items {
+		if item.Issue == nil {
+			continue
+		}
+		source := planeOf(item.Issue)
+		for _, dep := range item.Dependencies {
+			target, inBatch := wispByID[dep.TargetID]
+			if inBatch && source != target {
+				return CrossPlaneBatchEdgeError(item.Issue.ID, dep.TargetID)
+			}
+		}
+	}
+	return nil
+}
