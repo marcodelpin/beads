@@ -380,6 +380,51 @@ func RunDeleterGuardsADurableNamedWithAWispDependent(t *testing.T, ctx context.C
 	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, blocker)
 }
 
+// RunDeleterCountsCrossPlaneEdgesItRemoves pins DeleteResult.Dependencies over
+// the two edge shapes that cross planes, which no case counted.
+//
+// The number is a claim about what the delete DID, and both routes print it —
+// `bd delete` says "Removed N dependency link(s)" and the wire field carries
+// it. The unit-of-work body counted each plane's ids against that plane's
+// table only, so an edge whose deleted end is the TARGET in the OTHER plane's
+// table was counted by neither query while being removed anyway. The store
+// bodies scan inbound edges across both tables and did not have the gap, so
+// the two routes reported different numbers for one delete.
+//
+// Both directions are seeded at once and the row count is asserted beside the
+// number, because "reported 2" and "removed 2" are different claims and only
+// one of them was ever checked here.
+func RunDeleterCountsCrossPlaneEdgesItRemoves(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	// A durable dependent of a deleted WISP: the edge lives in `dependencies`
+	// with the wisp as the target.
+	wisp := deleterSeedWisp(t, ctx, fixture, "xcount", "wisp")
+	durableDependent := deleterSeedIssue(t, ctx, fixture, "xcount", "durabledep")
+	deleterAddEdge(t, ctx, fixture, durableDependent, wisp)
+
+	// A wisp dependent of a deleted DURABLE row: the edge lives in
+	// `wisp_dependencies` with the durable row as the target.
+	durable := deleterSeedIssue(t, ctx, fixture, "xcount", "durable")
+	wispDependent := deleterSeedWisp(t, ctx, fixture, "xcount", "wispdep")
+	deleterAddEdge(t, ctx, fixture, wispDependent, durable)
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{wisp, durable},
+		Force: true,
+	})
+	if result.Deleted != 2 {
+		t.Fatalf("Deleted = %d, want 2 — force deletes the two NAMED rows", result.Deleted)
+	}
+	if result.Dependencies != 2 {
+		t.Errorf("Dependencies = %d, want 2: both removed edges cross a plane, and an edge is "+
+			"counted whichever end of it was deleted", result.Dependencies)
+	}
+	// The edges really are gone, so the number under-reported real removals
+	// rather than describing a delete that did less.
+	deleterAssertEdgeRows(t, ctx, fixture, 0, durableDependent, wisp)
+	deleterAssertWispEdgeRows(t, ctx, fixture, 0, wispDependent, durable)
+}
+
 // RunDeleterNeverCallsALiveRowDeleted pins the invariant that makes the
 // under-deleting cascade impossible to reintroduce quietly: THE SET WHOSE
 // CITATIONS ARE REWRITTEN IS THE SET THAT WAS DELETED.
@@ -781,4 +826,19 @@ func deleterHistory(t *testing.T, ctx context.Context, fixture DeleterFixture) i
 		t.Fatalf("CountHistory(): %v", err)
 	}
 	return entries
+}
+
+// deleterAssertWispEdgeRows is deleterAssertEdgeRows for the wisp plane's edge
+// table, where an edge whose SOURCE is a wisp lives.
+func deleterAssertWispEdgeRows(t *testing.T, ctx context.Context, fixture DeleterFixture, want int, dependent, blocker string) {
+	t.Helper()
+	var got int
+	query := "SELECT COUNT(*) FROM wisp_dependencies WHERE issue_id = ? AND " +
+		"COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) = ?"
+	if err := fixture.QueryScalar(ctx, query, []any{dependent, blocker}, &got); err != nil {
+		t.Fatalf("counting wisp edges %s -> %s: %v", dependent, blocker, err)
+	}
+	if got != want {
+		t.Errorf("wisp_dependencies rows %s -> %s = %d, want %d", dependent, blocker, got, want)
+	}
 }
