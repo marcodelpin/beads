@@ -46,6 +46,9 @@ func TestTreeWalkerContract(t *testing.T) {
 	t.Run("FollowsEveryTypeButRelatesTo", func(t *testing.T) {
 		conformance.RunTreeWalkerFollowsEveryTypeButRelatesTo(t, ctx, fixture)
 	})
+	t.Run("PrunesEachHalfOfABothWalk", func(t *testing.T) {
+		conformance.RunTreeWalkerPrunesEachHalfOfABothWalk(t, ctx, fixture)
+	})
 	t.Run("AnswersBothDirectionsWithTheRootOnce", func(t *testing.T) {
 		conformance.RunTreeWalkerAnswersBothDirectionsWithTheRootOnce(t, ctx, fixture)
 	})

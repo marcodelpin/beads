@@ -144,13 +144,9 @@ func WalkDependencyTreeInTx(ctx context.Context, tx DBTX, req publicops.WalkTree
 		return publicops.TreeResult{}, err
 	}
 
-	nodes, err := walkTreeDirectionsInTx(ctx, tx, req.RootID, req.MaxDepth, direction)
+	nodes, err := walkTreeDirectionsInTx(ctx, tx, req.RootID, req.MaxDepth, direction, req.Status)
 	if err != nil {
 		return publicops.TreeResult{}, err
-	}
-
-	if req.Status != "" {
-		nodes = PruneTreeByStatus(nodes, req.Status)
 	}
 	if nodes == nil {
 		nodes = []*types.TreeNode{}
@@ -166,10 +162,29 @@ func WalkDependencyTreeInTx(ctx context.Context, tx DBTX, req publicops.WalkTree
 	return publicops.TreeResult{Nodes: nodes}, nil
 }
 
-// walkTreeDirectionsInTx runs the one or two walks a direction asks for.
-func walkTreeDirectionsInTx(ctx context.Context, tx DBTX, rootID string, maxDepth int, direction publicops.TreeDirection) ([]*types.TreeNode, error) {
+// walkTreeDirectionsInTx runs the one or two walks a direction asks for, and
+// applies the status prune to EACH HALF BEFORE merging them.
+//
+// The order matters. PruneTreeByStatus keys its parent chain by node ID, and a
+// merged `both` list may legitimately carry one ID TWICE with a different
+// ParentID in each half — TreeResult.Nodes says so. Pruning the merged list
+// therefore built one last-write-wins parent map for two different facts, so a
+// survivor in the up half had its ancestors looked up through the DOWN half's
+// parents: the real ancestors were dropped and the answer came back with nodes
+// whose ParentID named something absent, which is the scatter of orphans the
+// prune promise exists to prevent.
+//
+// Pruned per half, each ID appears once in the map it is looked up in.
+func walkTreeDirectionsInTx(ctx context.Context, tx DBTX, rootID string, maxDepth int, direction publicops.TreeDirection, status types.Status) ([]*types.TreeNode, error) {
 	if direction != publicops.TreeBoth {
-		return GetDependencyTreeInTx(ctx, tx, rootID, maxDepth, false, direction == publicops.TreeUp)
+		nodes, err := GetDependencyTreeInTx(ctx, tx, rootID, maxDepth, false, direction == publicops.TreeUp)
+		if err != nil {
+			return nil, err
+		}
+		if status != "" {
+			nodes = PruneTreeByStatus(nodes, status)
+		}
+		return nodes, nil
 	}
 	downTree, err := GetDependencyTreeInTx(ctx, tx, rootID, maxDepth, false, false)
 	if err != nil {
@@ -179,5 +194,36 @@ func walkTreeDirectionsInTx(ctx context.Context, tx DBTX, rootID string, maxDept
 	if err != nil {
 		return nil, err
 	}
+	if status != "" {
+		downTree, upTree = pruneBidirectionalByStatus(downTree, upTree, rootID, status)
+	}
 	return MergeBidirectionalTree(downTree, upTree, rootID), nil
+}
+
+// pruneBidirectionalByStatus prunes the two halves of a `both` walk and keeps
+// the merge's root invariant.
+//
+// Each half's survivors chain up to the ROOT, and MergeBidirectionalTree takes
+// the root from the DOWN half so it appears once. So an up half that survived a
+// prune the down half did not would lose the node its chain ends at: the root
+// copy it carried is dropped by the merge, and the down half has none to give.
+// When that happens the down tree's own root node is put back.
+func pruneBidirectionalByStatus(downTree, upTree []*types.TreeNode, rootID string, status types.Status) ([]*types.TreeNode, []*types.TreeNode) {
+	down := PruneTreeByStatus(downTree, status)
+	up := PruneTreeByStatus(upTree, status)
+	if len(up) == 0 {
+		return down, up
+	}
+	for _, node := range down {
+		if node != nil && node.ID == rootID {
+			return down, up
+		}
+	}
+	for _, node := range downTree {
+		if node != nil && node.ID == rootID {
+			clone := *node
+			return append([]*types.TreeNode{&clone}, down...), up
+		}
+	}
+	return down, up
 }

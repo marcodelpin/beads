@@ -263,6 +263,66 @@ func RunTreeWalkerFollowsEveryTypeButRelatesTo(t *testing.T, ctx context.Context
 	assertTreeWalkerIDSet(t, result, root, discovered, related)
 }
 
+// RunTreeWalkerPrunesEachHalfOfABothWalk combines Status with TreeBoth, which
+// no case did.
+//
+// The two are independently covered and their INTERACTION was the gap. A `both`
+// answer may legitimately carry one id TWICE with a DIFFERENT ParentID in each
+// half; the prune keyed its parent chain by id, so one last-write-wins map
+// answered for two different facts and a survivor in the up half had its
+// ancestors looked up through the DOWN half's parents. The real ancestors were
+// dropped and the answer came back with nodes whose ParentID named something
+// absent — the scatter of orphans the prune promise exists to prevent.
+//
+// THE FIXTURE IS THE POINT. `mid` must reach the root by one path walking down
+// and a different path walking up, which takes a three-node ring:
+//
+//	root --parent-child--> mid --discovered-from--> side --blocks--> root
+//
+// Walking DOWN, mid's parent is the root; walking UP it is side. The ring is
+// not a blocking cycle — one edge is discovered-from — so the ordinary
+// dependency writer accepts it, no raw SQL required. `leaf` is the closed row
+// that survives the prune, hanging off mid in the UP half only.
+//
+// THE ASSERTION IS THE INVARIANT, not a node list: every ParentID must name a
+// node that is present. That is what a renderer rebuilding the shape from Depth
+// and ParentID depends on, whichever half a survivor came from.
+func RunTreeWalkerPrunesEachHalfOfABothWalk(t *testing.T, ctx context.Context, fixture TreeWalkerFixture) {
+	t.Helper()
+	root := fixture.IssuePrefix + "-bothprune-root"
+	mid := fixture.IssuePrefix + "-bothprune-mid"
+	side := fixture.IssuePrefix + "-bothprune-side"
+	leaf := fixture.IssuePrefix + "-bothprune-leaf"
+	seedTreeWalkerIssues(t, ctx, fixture, root, mid, side)
+	seedTreeWalkerIssueWithStatus(t, ctx, fixture, leaf, types.StatusClosed)
+
+	seedTreeWalkerEdge(t, ctx, fixture, root, mid, types.DepParentChild)
+	seedTreeWalkerEdge(t, ctx, fixture, mid, side, types.DepDiscoveredFrom)
+	seedTreeWalkerEdge(t, ctx, fixture, side, root, types.DepBlocks)
+	seedTreeWalkerEdge(t, ctx, fixture, leaf, mid, types.DepBlocks)
+
+	result := walkTree(t, ctx, fixture, publicops.WalkTreeRequest{
+		RootID: root, MaxDepth: 10, Direction: publicops.TreeBoth, Status: types.StatusClosed,
+	})
+
+	present := make(map[string]bool, len(result.Nodes))
+	for _, node := range result.Nodes {
+		present[node.ID] = true
+	}
+	for _, node := range result.Nodes {
+		if node.ParentID != "" && !present[node.ParentID] {
+			t.Errorf("node %s names parent %s, which is not in the answer: a pruned tree must not "+
+				"return orphans (present: %v)", node.ID, node.ParentID, treeWalkerIDs(result))
+		}
+	}
+	if !present[leaf] {
+		t.Errorf("the closed row is missing from the pruned `both` answer: %v", treeWalkerIDs(result))
+	}
+	if !present[root] {
+		t.Errorf("the root is missing though a survivor chains to it: %v", treeWalkerIDs(result))
+	}
+}
+
 // RunTreeWalkerAnswersBothDirectionsWithTheRootOnce pins treewalker.go:179-189:
 // a `both` walk concatenates the up half without its root and the down half
 // with it, so the root appears exactly once.
