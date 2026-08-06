@@ -58,6 +58,21 @@ func TestLoadNonexistent(t *testing.T) {
 	}
 }
 
+// Corrupt must never be conflated with absent (bd-aj3g5): the proxied
+// provider takes the fresh-workspace defaults on (nil, nil), so a parse
+// failure that returned nil would silently reroute it to the wrong database.
+func TestLoadCorruptIsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(ConfigPath(tmpDir), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seed corrupt: %v", err)
+	}
+
+	cfg, err := Load(tmpDir)
+	if err == nil {
+		t.Fatalf("Load() of corrupt config returned nil error (cfg=%+v); corrupt must not be conflated with absent", cfg)
+	}
+}
+
 func TestDatabasePath(t *testing.T) {
 	beadsDir := "/home/user/project/.beads"
 	// DatabasePath always returns dolt path regardless of Database field
@@ -790,6 +805,24 @@ func TestProxiedServerClientInfo_RoundTrip(t *testing.T) {
 		}
 		if got.External == nil || got.External.Socket != "/var/run/dolt.sock" {
 			t.Errorf("External round-trip lost data: %+v", got.External)
+		}
+	})
+
+	// The absent-vs-corrupt distinction is load-bearing for the proxied
+	// provider (bd-aj3g5): absent means (nil, nil) and the caller may take
+	// the fresh-workspace defaults; a file that EXISTS but cannot be parsed
+	// must be an error, or the caller silently forks a fresh database.
+	t.Run("corrupt sidecar is an error, not nil", func(t *testing.T) {
+		sub := t.TempDir()
+		if err := os.WriteFile(ProxiedServerClientInfoPath(sub), []byte("{not json"), 0o600); err != nil {
+			t.Fatalf("seed corrupt: %v", err)
+		}
+		got, err := LoadProxiedServerClientInfo(sub)
+		if err == nil {
+			t.Fatalf("Load of corrupt sidecar returned nil error (got=%+v); corrupt must not be conflated with absent", got)
+		}
+		if !strings.Contains(err.Error(), ProxiedServerClientInfoFileName) {
+			t.Errorf("error should name the file: %v", err)
 		}
 	})
 

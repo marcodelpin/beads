@@ -174,6 +174,27 @@ func (s *DoltStore) batchWispExists(ctx context.Context, ids []string) map[strin
 	return result
 }
 
+// PartitionWispIDs reports which of ids currently live in the wisps table
+// (single batched membership query; IDs absent from the wisps table are
+// returned as permanent). Export's plane-marker stamping uses this to tell an
+// unpromoted no-history wisp apart from a promoted one, which row flags
+// cannot do (bd-r9uce). batchWispExists tolerates a missing wisps table by
+// reporting no members, matching PartitionWispIDsInTx.
+func (s *DoltStore) PartitionWispIDs(ctx context.Context, ids []string) (wispIDs, permIDs []string, err error) {
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	set := s.batchWispExists(ctx, ids)
+	for _, id := range ids {
+		if set[id] {
+			wispIDs = append(wispIDs, id)
+		} else {
+			permIDs = append(permIDs, id)
+		}
+	}
+	return wispIDs, permIDs, nil
+}
+
 // PromoteFromEphemeral copies an issue from the wisps table to the issues table,
 // clearing the Ephemeral flag. Used by bd promote and mol squash to crystallize wisps.
 //

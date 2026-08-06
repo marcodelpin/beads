@@ -1064,6 +1064,13 @@ var rootCmd = &cobra.Command{
 		// silently skipped if "remote" were ever added to noDbCommands.
 		needsStoreDoltGrandchildren := []string{"remote"}
 
+		// bd-m7zzd: "human" is listed in noDbCommands for its bare help
+		// screen, but list/respond/dismiss/stats are DB-backed. Without this
+		// they skip store init entirely, which direct mode papered over by
+		// lazily opening a store via ensureStoreActive() — and which in
+		// proxied mode left no UOW provider for the proxied duals.
+		needsStoreHumanSubcommands := []string{"list", "respond", "dismiss", "stats"}
+
 		skipStoreMigrateSubcommands := []string{"from-server-to-proxied-server", "from-proxied-server-to-server", "from-shared-server-to-proxied-server", "from-proxied-server-to-shared-server"}
 
 		// Check both the command name and parent command name for subcommands
@@ -1076,6 +1083,8 @@ var rootCmd = &cobra.Command{
 				// GH#2042: dolt push/pull/commit need the store — fall through to init
 			} else if slices.Contains(needsStoreDoltGrandchildren, parentName) {
 				// GH#2224: dolt remote add/list/remove need the store — fall through to init
+			} else if parentName == "human" && slices.Contains(needsStoreHumanSubcommands, cmdName) {
+				// bd-m7zzd: human list/respond/dismiss/stats need the store — fall through to init
 			} else if parentName == "migrate" && slices.Contains(skipStoreMigrateSubcommands, cmdName) {
 				skipsStoreInit = true
 			} else if slices.Contains(noDbCommands, parentName) {

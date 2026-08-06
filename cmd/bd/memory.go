@@ -67,6 +67,162 @@ func matchesKnownCommand(cmd *cobra.Command, insight string) (string, bool) {
 	return "", false
 }
 
+// rememberBareKeyPath implements the desire-path / footgun guard for
+// `bd remember <bare-slug>` (no --key): a bare slug naming an EXISTING memory
+// is recalled instead of stored; a bare slug naming nothing is refused.
+// Shared by the classic and proxied-server paths. The caller only invokes it
+// when memoryKeyFlag == "" and slugify(insight) == insight.
+func rememberBareKeyPath(key, insight, existing string) error {
+	if existing != "" {
+		if jsonOutput {
+			return outputJSON(map[string]interface{}{
+				"key":    key,
+				"value":  existing,
+				"found":  true,
+				"action": "recalled",
+			})
+		}
+		fmt.Fprintf(os.Stderr,
+			"(recalled %q -- a bare existing key READS. To overwrite: `bd remember \"<new content>\" --key %s`)\n",
+			key, key)
+		fmt.Printf("%s\n", existing)
+		return nil
+	}
+	return HandleErrorRespectJSON(
+		"no memory named %q to recall -- and refusing to store a bare key-like token as its own content. "+
+			"`bd remember` WRITES (its positional arg is CONTENT, not a key). "+
+			"To store it anyway: `bd remember %q --key %s`. To browse keys: `bd memories`",
+		key, insight, key)
+}
+
+// printRememberResult renders the `bd remember` success output. Shared by
+// the classic and proxied-server paths.
+func printRememberResult(verb, key, insight string) error {
+	if jsonOutput {
+		return outputJSON(map[string]string{
+			"key":    key,
+			"value":  insight,
+			"action": strings.ToLower(verb),
+		})
+	}
+	fmt.Printf("%s [%s]: %s\n", verb, key, truncateMemory(insight, 80))
+	return nil
+}
+
+// memoriesFromConfig filters a full config map down to the kv.memory.*
+// namespace (stripping the prefix), optionally filtered by a lowercase
+// search term matched against key or value. Shared by the classic and
+// proxied-server paths.
+func memoriesFromConfig(allConfig map[string]string, search string) map[string]string {
+	fullPrefix := kvkeys.MemoryConfigKeyPrefix
+	memories := make(map[string]string)
+	for k, v := range allConfig {
+		if strings.HasPrefix(k, fullPrefix) {
+			userKey := strings.TrimPrefix(k, fullPrefix)
+			memories[userKey] = v
+		}
+	}
+	if search != "" {
+		filtered := make(map[string]string)
+		for k, v := range memories {
+			if strings.Contains(strings.ToLower(k), search) ||
+				strings.Contains(strings.ToLower(v), search) {
+				filtered[k] = v
+			}
+		}
+		memories = filtered
+	}
+	return memories
+}
+
+// printMemoriesResult renders the `bd memories` output. Shared by the
+// classic and proxied-server paths.
+func printMemoriesResult(memories map[string]string, search string) error {
+	if jsonOutput {
+		return outputJSON(memories)
+	}
+
+	if len(memories) == 0 {
+		if search != "" {
+			fmt.Printf("No memories matching %q\n", search)
+		} else {
+			fmt.Println("No memories stored. Use 'bd remember \"insight\"' to add one.")
+		}
+		return nil
+	}
+
+	keys := make([]string, 0, len(memories))
+	for k := range memories {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if search != "" {
+		fmt.Printf("Memories matching %q:\n\n", search)
+	} else {
+		fmt.Printf("Memories (%d):\n\n", len(memories))
+	}
+	for _, k := range keys {
+		v := memories[k]
+		fmt.Printf("  %s\n", k)
+		fmt.Printf("    %s\n\n", truncateMemory(v, 120))
+	}
+	return nil
+}
+
+// printForgetNotFound renders the `bd forget` missing-key output (including
+// the SilentExit contract). Shared by the classic and proxied-server paths.
+func printForgetNotFound(key string) error {
+	if jsonOutput {
+		if jerr := outputJSON(map[string]string{
+			"key":   key,
+			"found": "false",
+		}); jerr != nil {
+			return jerr
+		}
+		return SilentExit()
+	}
+	fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
+	return SilentExit()
+}
+
+// printForgetResult renders the `bd forget` success output. Shared by the
+// classic and proxied-server paths.
+func printForgetResult(key, existing string) error {
+	if jsonOutput {
+		return outputJSON(map[string]string{
+			"key":     key,
+			"deleted": "true",
+		})
+	}
+	fmt.Printf("Forgot [%s]: %s\n", key, truncateMemory(existing, 80))
+	return nil
+}
+
+// printRecallResult renders the `bd recall` output (including the not-found
+// SilentExit contract). Shared by the classic and proxied-server paths.
+func printRecallResult(key, value string) error {
+	if jsonOutput {
+		if jerr := outputJSON(map[string]interface{}{
+			"key":   key,
+			"value": value,
+			"found": value != "",
+		}); jerr != nil {
+			return jerr
+		}
+		if value == "" {
+			return SilentExit()
+		}
+		return nil
+	}
+	if value == "" {
+		fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
+		return SilentExit()
+	}
+	fmt.Printf("%s\n", value)
+	return nil
+}
+
 // rememberCmd stores a memory.
 var rememberCmd = &cobra.Command{
 	Use:   `remember "<insight>"`,
@@ -91,9 +247,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("remember is not supported in proxied-server mode")
-		}
 		CheckReadonly("remember")
 
 		evt := metrics.NewCommandEvent("remember")
@@ -102,10 +255,6 @@ Examples:
 				c.CloseEventAndAdd(evt)
 			}
 		}()
-
-		if err := ensureDirectMode("remember requires direct database access"); err != nil {
-			return HandleError("%v", err)
-		}
 
 		insight := args[0]
 		if strings.TrimSpace(insight) == "" {
@@ -137,6 +286,14 @@ Examples:
 			return HandleErrorRespectJSON("could not generate key from content; use --key to specify one")
 		}
 
+		if usesProxiedServer() {
+			return runRememberProxiedServer(rootCtx, key, insight)
+		}
+
+		if err := ensureDirectMode("remember requires direct database access"); err != nil {
+			return HandleError("%v", err)
+		}
+
 		storageKey := kvPrefix + memoryPrefix + key
 
 		ctx := rootCtx
@@ -157,26 +314,7 @@ Examples:
 		//                        create a junk memory that hides the mistake
 		// Passing --key states write intent and bypasses both branches.
 		if memoryKeyFlag == "" && slugify(insight) == insight {
-			if existing != "" {
-				if jsonOutput {
-					return outputJSON(map[string]interface{}{
-						"key":    key,
-						"value":  existing,
-						"found":  true,
-						"action": "recalled",
-					})
-				}
-				fmt.Fprintf(os.Stderr,
-					"(recalled %q -- a bare existing key READS. To overwrite: `bd remember \"<new content>\" --key %s`)\n",
-					key, key)
-				fmt.Printf("%s\n", existing)
-				return nil
-			}
-			return HandleErrorRespectJSON(
-				"no memory named %q to recall -- and refusing to store a bare key-like token as its own content. "+
-					"`bd remember` WRITES (its positional arg is CONTENT, not a key). "+
-					"To store it anyway: `bd remember %q --key %s`. To browse keys: `bd memories`",
-				key, insight, key)
+			return rememberBareKeyPath(key, insight, existing)
 		}
 
 		if err := store.SetConfig(ctx, storageKey, insight); err != nil {
@@ -184,15 +322,7 @@ Examples:
 		}
 		commandDidWrite.Store(true)
 
-		if jsonOutput {
-			return outputJSON(map[string]string{
-				"key":    key,
-				"value":  insight,
-				"action": strings.ToLower(verb),
-			})
-		}
-		fmt.Printf("%s [%s]: %s\n", verb, key, truncateMemory(insight, 80))
-		return nil
+		return printRememberResult(verb, key, insight)
 	},
 }
 
@@ -211,15 +341,21 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("memories is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("memories")
 		defer func() {
 			if c := metrics.Global(); c != nil {
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		var search string
+		if len(args) > 0 {
+			search = strings.ToLower(args[0])
+		}
+
+		if usesProxiedServer() {
+			return runMemoriesProxiedServer(rootCtx, search)
+		}
 
 		if err := ensureDirectMode("memories requires direct database access"); err != nil {
 			return HandleError("%v", err)
@@ -231,61 +367,7 @@ Examples:
 			return HandleErrorRespectJSON("listing memories: %v", err)
 		}
 
-		// Filter for kv.memory.* keys
-		fullPrefix := kvkeys.MemoryConfigKeyPrefix
-		memories := make(map[string]string)
-		for k, v := range allConfig {
-			if strings.HasPrefix(k, fullPrefix) {
-				userKey := strings.TrimPrefix(k, fullPrefix)
-				memories[userKey] = v
-			}
-		}
-
-		var search string
-		if len(args) > 0 {
-			search = strings.ToLower(args[0])
-		}
-		if search != "" {
-			filtered := make(map[string]string)
-			for k, v := range memories {
-				if strings.Contains(strings.ToLower(k), search) ||
-					strings.Contains(strings.ToLower(v), search) {
-					filtered[k] = v
-				}
-			}
-			memories = filtered
-		}
-
-		if jsonOutput {
-			return outputJSON(memories)
-		}
-
-		if len(memories) == 0 {
-			if search != "" {
-				fmt.Printf("No memories matching %q\n", search)
-			} else {
-				fmt.Println("No memories stored. Use 'bd remember \"insight\"' to add one.")
-			}
-			return nil
-		}
-
-		keys := make([]string, 0, len(memories))
-		for k := range memories {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		if search != "" {
-			fmt.Printf("Memories matching %q:\n\n", search)
-		} else {
-			fmt.Printf("Memories (%d):\n\n", len(memories))
-		}
-		for _, k := range keys {
-			v := memories[k]
-			fmt.Printf("  %s\n", k)
-			fmt.Printf("    %s\n\n", truncateMemory(v, 120))
-		}
-		return nil
+		return printMemoriesResult(memoriesFromConfig(allConfig, search), search)
 	},
 }
 
@@ -305,9 +387,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("forget is not supported in proxied-server mode")
-		}
 		CheckReadonly("forget")
 
 		evt := metrics.NewCommandEvent("forget")
@@ -317,28 +396,23 @@ Examples:
 			}
 		}()
 
+		key := args[0]
+
+		if usesProxiedServer() {
+			return runForgetProxiedServer(rootCtx, key)
+		}
+
 		if err := ensureDirectMode("forget requires direct database access"); err != nil {
 			return HandleError("%v", err)
 		}
 
-		key := args[0]
 		storageKey := kvPrefix + memoryPrefix + key
 
 		ctx := rootCtx
 
 		existing, _ := store.GetConfig(ctx, storageKey)
 		if existing == "" {
-			if jsonOutput {
-				if jerr := outputJSON(map[string]string{
-					"key":   key,
-					"found": "false",
-				}); jerr != nil {
-					return jerr
-				}
-				return SilentExit()
-			}
-			fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
-			return SilentExit()
+			return printForgetNotFound(key)
 		}
 
 		if err := store.DeleteConfig(ctx, storageKey); err != nil {
@@ -346,14 +420,7 @@ Examples:
 		}
 		commandDidWrite.Store(true)
 
-		if jsonOutput {
-			return outputJSON(map[string]string{
-				"key":     key,
-				"deleted": "true",
-			})
-		}
-		fmt.Printf("Forgot [%s]: %s\n", key, truncateMemory(existing, 80))
-		return nil
+		return printForgetResult(key, existing)
 	},
 }
 
@@ -371,9 +438,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
-			return HandleErrorRespectJSON("recall is not supported in proxied-server mode")
-		}
 		evt := metrics.NewCommandEvent("recall")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -381,11 +445,16 @@ Examples:
 			}
 		}()
 
+		key := args[0]
+
+		if usesProxiedServer() {
+			return runRecallProxiedServer(rootCtx, key)
+		}
+
 		if err := ensureDirectMode("recall requires direct database access"); err != nil {
 			return HandleError("%v", err)
 		}
 
-		key := args[0]
 		storageKey := kvPrefix + memoryPrefix + key
 
 		ctx := rootCtx
@@ -394,25 +463,7 @@ Examples:
 			return HandleErrorRespectJSON("recalling memory: %v", err)
 		}
 
-		if jsonOutput {
-			if jerr := outputJSON(map[string]interface{}{
-				"key":   key,
-				"value": value,
-				"found": value != "",
-			}); jerr != nil {
-				return jerr
-			}
-			if value == "" {
-				return SilentExit()
-			}
-			return nil
-		}
-		if value == "" {
-			fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
-			return SilentExit()
-		}
-		fmt.Printf("%s\n", value)
-		return nil
+		return printRecallResult(key, value)
 	},
 }
 

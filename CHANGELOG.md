@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bd serve` runs on a registered storage backend.** A downstream
+  distribution that registers a backend
+  (`github.com/steveyegge/beads/backend`.`Register`) could already use it from
+  every ordinary `bd` command — `bd list`, `bd create` and friends dispatch
+  the store open through the registry — but `bd serve` alone reimplemented a
+  creation path of its own, hard-wired to Dolt's SQL wire, and refused the
+  workspace before it got there. It now uses the store the root command
+  already opened, through the same registry dispatch: zero creation calls of
+  its own, so there is one creation path rather than two. The two issue roles
+  are taken from BENEATH the workspace's hook decorator, keeping the
+  documented "hooks do not fire" contract (`httpapi.Listen` refuses a
+  hook-firing role rather than trusting the caller), and the store's lifecycle
+  stays where it was — opened and closed by the root command, closed only
+  after the server has drained. The startup line names the source
+  (`db=roles`) and the backend (`mode="<name> (registered backend)"`).
+
+  The permanent refusal is unchanged and unweakened: an embedded-Dolt
+  workspace is still refused, because its commit protocol runs outside the SQL
+  transaction and this server's per-request atomicity would be a lie there.
+  The classification consults the registry before any Dolt-mode signal, which
+  is the order the store open already resolves them in — and which also fixes
+  a latent `CGO_ENABLED=0` bug where a registered workspace was handed to the
+  Dolt provider and either failed with a misleading Dolt error or connected to
+  a defaulted host and served the wrong database.
+
+### Changed
+
+- **BREAKING: `bd --readonly serve` is now refused instead of binding a server
+  that cannot do what it advertises.** On a Dolt SQL-server workspace this
+  previously bound a fully functional, fully writable server — the flag was a
+  silent no-op there — so anyone scripting `bd --readonly serve` as a "safe"
+  read server loses it on upgrade and should drop the flag. The advertised capability set is a property of the
+  build and includes the issue-claim operation, so under strict readonly the
+  two database sources degraded differently and silently: a registered backend
+  bound on its read-only store and answered every claim with an opaque 500
+  while still advertising `issues.claim`, and a Dolt SQL-server workspace built
+  its own writable provider and let every claim land, so the flag bought
+  nothing. `bd serve` now refuses to start under `--readonly` (or `readonly` in
+  config), before it resolves the workspace, so the answer is the same on both.
+
+### Fixed
+
+- **`GET /v0/beads/context` and `bd context` no longer describe every
+  workspace as Dolt.** The shared identity projection hardcoded
+  `backend: dolt` and copied `dolt_mode` and `database` unconditionally — and
+  both of those default rather than fail, so a workspace on a registered
+  backend was reported as `backend="dolt"`, `dolt_mode="embedded"`,
+  `database="beads"`: a confident description of a topology it is not on, on
+  the one endpoint automation is told to trust for a server's identity. The
+  backend is now named as the store open resolves it, and the two Dolt-derived
+  values are reported only for the Dolt backend; a registered backend reports
+  the empty string for both, which is the only value `bd` can assert about a
+  backend it does not implement. No wire field is renamed, retyped or dropped
+  — both remain required strings, and the `v0` shape is unchanged.
+
 - **Public surface for out-of-tree storage backends** (bd-h3dib.2). The
   storage backend contract and its conformance suite are now importable by
   external Go modules — the conformance-gated external-backend path promised

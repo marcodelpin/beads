@@ -929,6 +929,20 @@ func (s *EmbeddedDoltStore) PromoteFromEphemeral(ctx context.Context, id string,
 	})
 }
 
+// PartitionWispIDs reports which of ids currently live in the wisps table
+// (batched membership query; IDs absent from the wisps table are returned as
+// permanent). Export's plane-marker stamping uses this to tell an unpromoted
+// no-history wisp apart from a promoted one, which row flags cannot do
+// (bd-r9uce).
+func (s *EmbeddedDoltStore) PartitionWispIDs(ctx context.Context, ids []string) (wispIDs, permIDs []string, err error) {
+	err = s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var inErr error
+		wispIDs, permIDs, inErr = issueops.PartitionWispIDsInTx(ctx, tx, ids)
+		return inErr
+	})
+	return wispIDs, permIDs, err
+}
+
 // GetNextChildID is implemented in child_id.go.
 
 // ---------------------------------------------------------------------------
