@@ -174,6 +174,32 @@ func (s *serveIdentityStore) IssueClaimer() (issueops.Claimer, error) {
 // store it finds left behind. There is nothing to release.
 func (s *serveIdentityStore) Close() error { return nil }
 
+// The rest of the roles httpapi.Config requires. Listen refuses a partial
+// set, so the server does not bind at all without them. They embed their
+// interfaces rather than implementing them: non-nil, so the set is complete,
+// while any actual call panics naming the method it reached.
+func (*serveIdentityStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return serveIdentityRole{}, nil
+}
+func (*serveIdentityStore) StatsReporter() (issueops.StatsReporter, error) {
+	return serveIdentityRole{}, nil
+}
+func (*serveIdentityStore) CycleDetector() (issueops.CycleDetector, error) {
+	return serveIdentityRole{}, nil
+}
+func (*serveIdentityStore) EdgeReader() (issueops.EdgeReader, error) { return serveIdentityRole{}, nil }
+func (*serveIdentityStore) ReadyCounter() (issueops.ReadyCounter, error) {
+	return serveIdentityRole{}, nil
+}
+
+type serveIdentityRole struct {
+	issueops.WorkspaceConfig
+	issueops.StatsReporter
+	issueops.CycleDetector
+	issueops.EdgeReader
+	issueops.ReadyCounter
+}
+
 type serveIdentityReader struct{ id string }
 
 func (r serveIdentityReader) Ready(context.Context, issueops.ReadyRequest) (issueops.IssuePage, error) {

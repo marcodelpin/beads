@@ -169,15 +169,20 @@ func runServe() error {
 		// runs after this function returns, which is after the server has
 		// fully drained, so no request can reach a closed store. runServe must
 		// not close it.
-		reader, claimer, err := serveIssueRoles(store)
+		roles, err := serveIssueRoles(store)
 		if err != nil {
 			return HandleError("bd serve: %v", err)
 		}
 		return serveListen(httpapi.Config{
 			Addr:             serveAddr,
 			AllowNonLoopback: serveAllowNonLoopback,
-			Reader:           reader,
-			Claimer:          claimer,
+			Reader:           roles.reader,
+			Claimer:          roles.claimer,
+			Settings:         roles.settings,
+			Stats:            roles.stats,
+			CycleDetector:    roles.cycles,
+			EdgeReader:       roles.edges,
+			ReadyCounter:     roles.readyCounter,
 			Workspace:        info,
 			SchemaVersion:    JSONSchemaVersion,
 			Mode:             serveResolvedMode(info, db),
@@ -404,24 +409,55 @@ func errServeEmbedded() error {
 //
 // The assertion is conditional because a BD_NO_HOOKS=1 workspace has no hook
 // layer to peel.
-func serveIssueRoles(src storage.DoltStorage) (issueops.Reader, issueops.Claimer, error) {
+func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
+	var roles serveRoles
 	if src == nil {
-		// Two nil roles would reach Listen as "no database source" — true, and
+		// An all-nil set would reach Listen as "no database source" — true, and
 		// useless. Name the condition that actually happened.
-		return nil, nil, errors.New("no store is open for this workspace")
+		return roles, errors.New("no store is open for this workspace")
 	}
 	if hooked, ok := src.(*storage.HookFiringStore); ok {
 		src = hooked.Unwrap()
 	}
-	reader, err := src.IssueReader()
-	if err != nil {
-		return nil, nil, fmt.Errorf("issue reader: %w", err)
+
+	// Each entry binds one Config field to the accessor that fills it, so an
+	// unsupported role names itself at startup.
+	type binding struct {
+		name string
+		get  func() error
 	}
-	claimer, err := src.IssueClaimer()
-	if err != nil {
-		return nil, nil, fmt.Errorf("issue claimer: %w", err)
+	for _, b := range []binding{
+		{"issue reader", func() (err error) { roles.reader, err = src.IssueReader(); return }},
+		{"issue claimer", func() (err error) { roles.claimer, err = src.IssueClaimer(); return }},
+		{"workspace config", func() (err error) { roles.settings, err = src.WorkspaceConfig(); return }},
+		{"stats reporter", func() (err error) { roles.stats, err = src.StatsReporter(); return }},
+		{"cycle detector", func() (err error) { roles.cycles, err = src.CycleDetector(); return }},
+		{"edge reader", func() (err error) { roles.edges, err = src.EdgeReader(); return }},
+		{"ready counter", func() (err error) { roles.readyCounter, err = src.ReadyCounter(); return }},
+	} {
+		if err := b.get(); err != nil {
+			return serveRoles{}, fmt.Errorf("%s: %w", b.name, err)
+		}
 	}
-	return reader, claimer, nil
+	return roles, nil
+}
+
+// serveRoles is the store-shaped database source. httpapi.Listen refuses a
+// PARTIAL set, so a role added to httpapi.Config without being added here is a
+// startup failure on this arm rather than a nil dereference on the first
+// request that reaches it.
+//
+// It is deliberately not an httpapi.Config: the gate test in serve_test.go
+// requires every httpapi.Config literal in this package to sit in a function
+// that consulted serveDatabaseSource, and the extraction has not.
+type serveRoles struct {
+	reader       issueops.Reader
+	claimer      issueops.Claimer
+	settings     issueops.WorkspaceConfig
+	stats        issueops.StatsReporter
+	cycles       issueops.CycleDetector
+	edges        issueops.EdgeReader
+	readyCounter issueops.ReadyCounter
 }
 
 // serveResolvedMode labels the topology for the startup log line. Cosmetic —
