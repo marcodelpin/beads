@@ -749,9 +749,23 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 	}
 }
 
-// TestConfiguredRolesAnswerEveryDatabaseRoute drives every database-touching
-// operation against a store-shaped source, which is the whole point: none of
+// TestConfiguredRolesAnswerEveryDatabaseRoute drives the database-touching
+// operations against a store-shaped source, which is the whole point: none of
 // them can reach a unit of work here, because there is no provider to open one.
+//
+// NOT ALL OF THEM, despite the name, and the shortfall is worth knowing before
+// reading a green run as coverage. The subtests below drive ten of the sixteen
+// capability-bearing operations in routes.go. The other six —
+// dependencies/cycles, dependencies/blocking, dependencies/tree,
+// issues:batchCreate, issues:sweep and issues:delete — are exercised against a
+// roles source in their own files (cycles_test.go, blocking_test.go,
+// tree_test.go, batch_create_test.go, sweep_test.go, delete_test.go) rather
+// than here.
+//
+// The name predates most of those and an earlier pass "fixed" a stale count in
+// it by widening the claim to "every", which made it less true rather than
+// more. Either add the six here or leave this paragraph accurate; do not
+// generalize the sentence again.
 func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	details := &issueops.IssueDetails{Issue: *seededIssue("bd-1", "alice", types.StatusOpen)}
 	reader := &roleReader{page: issueops.IssuePage{Items: countedPage(), HasMore: true}, details: details}

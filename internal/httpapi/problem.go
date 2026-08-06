@@ -171,8 +171,8 @@ const (
 	OpGetDependencyTree = "getDependencyTree"
 	OpCountReadyWork    = "countReadyWork"
 	OpQueryIssues       = "queryIssues"
-	// OpSweepIssues is the one DESTRUCTIVE operation on this surface: bulk
-	// clearance of closed beads from one tier, behind issueops.Sweeper.
+	// OpSweepIssues is one of the two DESTRUCTIVE operations on this surface:
+	// bulk clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
 	// OpDeleteIssues is the other DESTRUCTIVE operation: erasure of beads the
 	// request NAMES, behind issueops.Deleter. It is the one operation on this

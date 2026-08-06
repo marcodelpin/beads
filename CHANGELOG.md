@@ -157,6 +157,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself rather than by the handler, and `dry_run: true` costs the same request
   without writing anything.
 
+  **`protect_referenced` defaults to `true` here**, where the CLI's equivalent
+  (`--ignore-references`) is opt-out. The local flag and the remote member
+  therefore disagree on purpose: this surface has no authentication, and a
+  remote caller who omits a member should not get a weaker guard than the
+  operator typing the same sweep locally. Send `protect_referenced: false` to
+  match the CLI default.
+
 - **`GET /v0/beads/config` and `GET /v0/beads/config/{key}` — the workspace's
   stored settings over HTTP** (bd-kzepq). `bd serve` now answers for the
   settings plane `bd config list` and `bd config get` read. Both operations run
@@ -399,8 +406,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suite run against the Dolt server store, the embedded Dolt store and the
   unit-of-work provider, and each reached by the CLI's direct route, the CLI's
   `--proxied-server` route and — where the capability is published — one HTTP
-  operation, all calling the same role. `bd serve` publishes sixteen operations,
-  ten of them added by the programme, every one written into
+  operation, all calling the same role. `bd serve` publishes sixteen
+  capability-bearing operations, twelve of them added by the programme, every one written into
   `internal/httpapi/spec/openapi.v0.yaml` before its handler existed.
 
   **What did NOT get a role is as deliberate as what did.** `bd show` and
@@ -717,7 +724,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the direct and the proxied route.
 
 - **The v0 HTTP surface reaches twelve operations** (facade wave 2). This
-  release adds five: `GET /v0/beads/stats` (bd-4ze25),
+  release adds six: `GET /v0/beads/stats` (bd-4ze25),
   `GET /v0/beads/dependencies/cycles` (bd-wfkbv), `GET /v0/beads/dependencies`
   (bd-nhsno), `GET /v0/beads/ready:count` (bd-s10oa) and the two config reads
   (bd-kzepq). Every one answers from the SAME `issueops` role its `bd` command

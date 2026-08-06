@@ -1279,8 +1279,8 @@ paths:
       description: >-
         Bulk clearance of CLOSED beads from ONE tier: the operation behind
         `bd purge` (`tier: ephemeral`) and `bd prune` (`tier: durable`). It is
-        the only DESTRUCTIVE operation on this surface, and nothing it deletes
-        comes back.
+        one of the two DESTRUCTIVE operations on this surface — the other is
+        `issues:delete` — and nothing it deletes comes back.
 
 
         A collection-level custom method rather than `DELETE
@@ -1363,9 +1363,9 @@ paths:
       summary: Delete named beads
       description: >-
         Erases the beads this request NAMES, and — under `cascade` — everything
-        that depends on them. It is the operation behind `bd delete`, the
-        second DESTRUCTIVE operation on this surface, and nothing it deletes
-        comes back.
+        that depends on them. It is the operation behind `bd delete`, the other
+        DESTRUCTIVE operation on this surface alongside `issues:sweep`, and
+        nothing it deletes comes back.
 
 
         It is a different operation from `POST /v0/beads/issues:sweep`, not a
@@ -1877,8 +1877,7 @@ components:
     # ---------------------------------------------------------------------
     # Pinned schemas.
     #
-    # Each of the eight below is `x-go-type`-pinned to the canonical Go struct,
-    # Each of the ten below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the twelve below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.

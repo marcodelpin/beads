@@ -38,8 +38,8 @@ var sweepMembers = []string{
 	sweepDryRunMember,
 }
 
-// handleSweep answers POST /v0/beads/issues:sweep — the one DESTRUCTIVE
-// operation on this surface.
+// handleSweep answers POST /v0/beads/issues:sweep — one of the two DESTRUCTIVE
+// operations on this surface, the other being issues:delete.
 //
 // WHAT THIS HANDLER DOES NOT DO is the whole point of it. It does not decide
 // which beads are closed, does not match the glob, does not recheck closed_at,
@@ -228,14 +228,16 @@ func sweepMemberList() string {
 
 // failSweepErr answers a failed sweep.
 //
-// issueops.ErrValidation is a 400 HERE and nowhere else yet, and that is
-// deliberate rather than an oversight in ClassifyError: this is the first
-// operation whose ROLE performs request validation the handler does not
-// duplicate — the require-a-filter gate, the tier vocabulary and the glob are
-// all refused below the wire — so it is the first place a role's refusal must
-// reach the client as its own fault instead of as a 500. Widening
-// ClassifyError would change what every other operation returns for an error
-// it has never produced, which is a bigger claim than this commit is making.
+// issueops.ErrValidation is mapped to a 400 HERE rather than in ClassifyError,
+// and this was the FIRST operation to need that: the first whose ROLE performs
+// request validation the handler does not duplicate — the require-a-filter
+// gate, the tier vocabulary and the glob are all refused below the wire — so it
+// was the first place a role's refusal had to reach the client as its own fault
+// instead of as a 500. Delete, tree, edges, blocking and batch-create each draw
+// the same line in their own handler now, for the same reason and deliberately
+// in the same shape. Widening ClassifyError instead would change what every
+// other operation returns for an error it has never produced, which is a bigger
+// claim than any one of these operations is making.
 func (s *Server) failSweepErr(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, issueops.ErrValidation) {
 		// No `param`: the refusal is about the REQUEST rather than one member

@@ -370,8 +370,9 @@ var (
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
-// wrapped provider's own accessor, and this and IssueClaimer below are the two
-// places where a constructor is the right call: the whole purpose of the wrapper is
+// wrapped provider's own accessor. Every accessor on timedProvider does this,
+// and this type is the ONE place in the codebase where a constructor is the
+// right call rather than an accessor: the whole purpose of the wrapper is
 // that every unit of work the reader opens goes through NewUOW below and lands
 // in this request's uow_ms. `p.inner.IssueReader()` would return a reader
 // bound to the untimed provider and the measurement would silently read zero.
@@ -408,8 +409,8 @@ func (p timedProvider) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 	return uow.NewWorkspaceConfig(p)
 }
 
-// StatsReporter builds the summary role OVER THIS WRAPPER, for the third time
-// and for the same reason: a reporter bound to the wrapped provider would open
+// StatsReporter builds the summary role OVER THIS WRAPPER, for the same reason
+// as every accessor above it: a reporter bound to the wrapped provider would open
 // its units of work outside this request's measurement and the summary route
 // would log uow_ms=0.000 forever.
 func (p timedProvider) StatsReporter() (issueops.StatsReporter, error) {
