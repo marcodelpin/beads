@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the eighteen-strong capability surface every storage
+// roleAccessorNames is the twenty-one-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -31,6 +31,8 @@ var roleAccessorNames = []string{
 	"Querier",
 	"Sweeper",
 	"Deleter",
+	"Bootstrapper",
+	"InitVerifier",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -62,7 +64,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the eighteen
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-one
 // role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -103,6 +105,12 @@ func (s *roleAccessorStore) Sweeper() (issueops.Sweeper, error) {
 func (s *roleAccessorStore) Deleter() (issueops.Deleter, error) {
 	return s.surface, s.err
 }
+func (s *roleAccessorStore) Bootstrapper() (issueops.Bootstrapper, error) {
+	return s.surface, s.err
+}
+func (s *roleAccessorStore) InitVerifier() (issueops.InitVerifier, error) {
+	return s.surface, s.err
+}
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.surface, s.err
 }
@@ -114,7 +122,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all eighteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all twenty-one roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -198,6 +206,12 @@ func (*roleAccessorSentinel) Delete(context.Context, issueops.DeleteRequest) (is
 func (*roleAccessorSentinel) Sweep(context.Context, issueops.SweepRequest) (issueops.SweepResult, error) {
 	return issueops.SweepResult{}, nil
 }
+func (*roleAccessorSentinel) Bootstrap(context.Context, issueops.BootstrapRequest) (issueops.BootstrapResult, error) {
+	return issueops.BootstrapResult{}, nil
+}
+func (*roleAccessorSentinel) VerifyIdentity(context.Context, issueops.VerifyIdentityRequest) (issueops.VerifyIdentityResult, error) {
+	return issueops.VerifyIdentityResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -253,6 +267,8 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"Querier", func() (any, error) { return wrapped.Querier() }},
 		{"Sweeper", func() (any, error) { return wrapped.Sweeper() }},
 		{"Deleter", func() (any, error) { return wrapped.Deleter() }},
+		{"Bootstrapper", func() (any, error) { return wrapped.Bootstrapper() }},
+		{"InitVerifier", func() (any, error) { return wrapped.InitVerifier() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},
@@ -300,6 +316,8 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Querier", func() (any, error) { return wrapped.Querier() }},
 		{"Sweeper", func() (any, error) { return wrapped.Sweeper() }},
 		{"Deleter", func() (any, error) { return wrapped.Deleter() }},
+		{"Bootstrapper", func() (any, error) { return wrapped.Bootstrapper() }},
+		{"InitVerifier", func() (any, error) { return wrapped.InitVerifier() }},
 		{"Commenter", func() (any, error) { return wrapped.Commenter() }},
 		{"ReadyClaimer", func() (any, error) { return wrapped.ReadyClaimer() }},
 		{"BatchCloser", func() (any, error) { return wrapped.BatchCloser() }},

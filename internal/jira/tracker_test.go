@@ -670,6 +670,14 @@ func (s *configStore) VersionReconciler() (issueops.VersionReconciler, error) {
 	return nil, &storage.ErrUnsupported{Op: "VersionReconciler", Backend: "jira-config-stub"}
 }
 
+func (s *configStore) Bootstrapper() (issueops.Bootstrapper, error) {
+	return nil, &storage.ErrUnsupported{Op: "Bootstrapper", Backend: "jira-config-stub"}
+}
+
+func (s *configStore) InitVerifier() (issueops.InitVerifier, error) {
+	return nil, &storage.ErrUnsupported{Op: "InitVerifier", Backend: "jira-config-stub"}
+}
+
 func (s *configStore) CycleDetector() (issueops.CycleDetector, error) {
 	return nil, &storage.ErrUnsupported{Op: "CycleDetector", Backend: "jira-config-stub"}
 }

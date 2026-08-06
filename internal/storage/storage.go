@@ -31,6 +31,7 @@ var (
 	ErrCloseBlocked      = issueops.ErrCloseBlocked
 	ErrCloseOpenChildren = issueops.ErrCloseOpenChildren
 	ErrAlreadyExists     = issueops.ErrAlreadyExists
+	ErrAlreadyIdentified = issueops.ErrAlreadyIdentified
 	ErrVersionMismatch   = issueops.ErrVersionMismatch
 	ErrStatusMismatch    = issueops.ErrStatusMismatch
 )
@@ -258,6 +259,30 @@ type Storage interface {
 	// does: there is no on_delete hook to fire and the rows are gone. See
 	// hook_deleter.go.
 	Deleter() (issueops.Deleter, error)
+	// Bootstrapper returns the guarded identity-seeding surface for this store:
+	// the one-time write that turns a database bd can connect to into a
+	// workspace bd can use. It is the only slice of `bd init` that is a role at
+	// all — the rest of init CREATES the substrate, which an accessor on a
+	// store cannot do — and it is its own role rather than more keys on
+	// WorkspaceConfig because it REFUSES an already-identified substrate, which
+	// is a guard no settings write has anywhere to express.
+	//
+	// It is the second WRITE role whose hook decorator recurses unwrapped, and
+	// for the vocabulary reason Sweeper's does: a bootstrap names no issue, and
+	// on a workspace this new the hooks are not installed yet. See
+	// hook_bootstrapper.go.
+	Bootstrapper() (issueops.Bootstrapper, error)
+	// InitVerifier returns the guarded identity-read surface for this store: the
+	// prefix and project id `bd init` adopts, reconciles against, or refuses to
+	// invent. It is NOT Bootstrapper's read half, the way RecordedVersion is
+	// VersionReconciler's: bd reads this identity on paths where it is forbidden
+	// to write one — a bts-provisioned team database, a gateway whose credential
+	// may be read-only — and a caller that must not write must not be handed the
+	// writer.
+	//
+	// Reads fire no hooks, so the hook decorator's answer is its inner store's
+	// unchanged, as it is for IssueReader.
+	InitVerifier() (issueops.InitVerifier, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

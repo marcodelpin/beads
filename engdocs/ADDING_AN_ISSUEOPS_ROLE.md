@@ -29,6 +29,29 @@ question (`Count` and `CountByGroup` share a predicate and differ only in
 whether the answer is a number or a number per bucket). The rule forbids
 APPENDING later, not being born whole.
 
+**And one command may be born with TWO roles.** `bd init` is the case:
+`Bootstrapper` writes the workspace identity and `InitVerifier` reads it, and
+they are separate even though `VersionReconciler` — whose read and write are
+also two shapes of one question — is one. The test that separates them is not
+"is it the same question" but **can one caller be entitled to the read and not
+the write**. bd reads a workspace identity on paths where it is forbidden to
+write one: a bts-provisioned team database whose identity the provisioning tool
+owns, an authenticating gateway whose credential may be read-only. Handing those
+callers a surface with the write on it is the shape that produces writes the
+front door then has to suppress flag by flag — `shouldWriteProjectIDLocally`,
+`shouldWriteInitStateToDB`, `shouldInitSharedGlobalDB` are three of those. A
+capability a caller must not have is a capability it should not be able to
+reach.
+
+**Ask what the role's fields' LIFETIMES are before folding them in.** The same
+slice teaches this: `bd init` seeds five values, and only two of them —
+the prefix and the project id — are written once and adopted forever. The
+repository and clone fingerprints, the synced-at marker and the recorded binary
+version are refreshed on EVERY init, adopt or not, because a fresh clone of an
+already-identified database needs its own. Putting those on a one-time,
+refusable write means either a refusal that skips them or a write that is no
+longer one-time. They stayed off the role.
+
 ## The checklist
 
 Thirteen steps. Steps 1-9 are the role; 10-12 are what makes it the ONLY way
@@ -189,6 +212,15 @@ in; 13 is the HTTP surface, which lands with the command rather than after it.
     Writing that decision down — in the leaf doc, beside the promises, and in
     AMBIGUITIES.md for the owner — is the work. Adding an operation because the
     checklist has a row for one is not.
+
+    `issueops.Bootstrapper` and `issueops.InitVerifier` are the second and third,
+    and their reason is different enough to be worth its own sentence: a server
+    can only serve a database it is already bound to, and binding it required
+    the identity the bootstrapper writes, so the only caller that could reach
+    such an endpoint would be asking a running server to identify a workspace
+    that is by construction already identified. The read half has no endpoint
+    because it already has one — `ContextResponse.project_id` is its answer, on
+    the wire, today.
 
     **The ROLES database source is the part that surprises.** `httpapi.Config`
     carries either a unit-of-work provider or the roles, and the roles are

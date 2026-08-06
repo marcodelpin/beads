@@ -30,6 +30,7 @@ import (
 	"github.com/steveyegge/beads/internal/templates/agents"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/issueops"
 	"golang.org/x/term"
 )
 
@@ -76,33 +77,40 @@ func applyInitGatewayCredential(ctx context.Context, beadsDir string, doltCfg *d
 	return nil
 }
 
-// resolveInitIssuePrefix decides how init sets the issue_prefix. readErr is the
-// error (if any) from reading the current issue_prefix out of the database.
+// resolveInitIssuePrefix decides which issue_prefix init would set. readErr is
+// the error (if any) from reading the workspace's identity out of the database.
 //
-// Non-gateway (legacy, unchanged): if none is configured yet, set the sanitized
-// prefix (dots -> underscores so issue IDs stay valid identifiers); if one exists,
-// leave it (avoid clobbering a shared database). readErr is ignored here, exactly
+// Non-gateway (legacy, unchanged): if none is configured yet, return the
+// sanitized prefix (dots -> underscores so issue IDs stay valid identifiers); if
+// one exists, return "" — there is nothing to set, because init must not clobber
+// a prefix a shared database already carries. readErr is ignored here, exactly
 // as legacy init ignored it. Gateway: the prefix is server-provisioned, so an
-// existing value is adopted (no write). A missing value is a provisioning-contract
-// violation — bd will not choose a prefix for a hosted database — but only when the
-// read genuinely succeeded and returned empty: a read error means we could not
-// consult the server, so it is surfaced as the transient failure it is rather than
-// misdiagnosed as an unprovisioned database.
-func resolveInitIssuePrefix(gateway bool, existing, dbName, prefix string, readErr error) (value string, write bool, err error) {
+// existing value is adopted. A missing value is a provisioning-contract
+// violation — bd will not choose a prefix for a hosted database — but only when
+// the read genuinely succeeded and returned empty: a read error means we could
+// not consult the server, so it is surfaced as the transient failure it is
+// rather than misdiagnosed as an unprovisioned database.
+//
+// It used to also return WHETHER to write. That half is gone: whether the prefix
+// may be written is the same question as whether the substrate is unidentified,
+// and issueops.Bootstrapper answers it inside the transaction it writes in
+// rather than here, several hundred lines earlier. A "" value means what it
+// always meant — nothing for init to set.
+func resolveInitIssuePrefix(gateway bool, existing, dbName, prefix string, readErr error) (value string, err error) {
 	if existing != "" {
-		return "", false, nil
+		return "", nil
 	}
 	if gateway {
 		if readErr != nil {
-			return "", false, fmt.Errorf(
+			return "", fmt.Errorf(
 				"reading issue_prefix from hosted database %q: %w", dbName, readErr)
 		}
-		return "", false, fmt.Errorf(
+		return "", fmt.Errorf(
 			"hosted database %q has no issue_prefix -- provisioning-contract violation; "+
 				"bd will not choose one for a hosted database (re-provision server-side, then re-run init)",
 			dbName)
 	}
-	return strings.ReplaceAll(prefix, ".", "_"), true, nil
+	return strings.ReplaceAll(prefix, ".", "_"), nil
 }
 
 // resolveInitProjectID decides init's project identity by reconciling the local
@@ -216,6 +224,62 @@ func shouldWriteInitStateToDB(gateway bool) bool {
 // server-owned writes.
 func shouldInitSharedGlobalDB(sharedServer, sharedServerMode, gateway bool) bool {
 	return (sharedServer || sharedServerMode) && !gateway
+}
+
+// seedInitWorkspaceIdentity records the workspace's identity through
+// issueops.Bootstrapper, or adopts the one already on the substrate.
+//
+// VERIFY, THEN BOOTSTRAP OR ADOPT. The role REFUSES an already-identified
+// substrate, which is Q8's ruling and the guard that now sits below both front
+// doors rather than only in front of one; asking first is how a front door tells
+// a workspace it may identify from one it must leave alone. That refusal is what
+// makes `bd init` safe to run against a database another rig is already minting
+// ids in: before this, the proxied route rewrote both markers every time.
+//
+// found is the identity the caller already read with InitVerifier, in the same
+// snapshot it read the prefix in. projectID is "" only when init composed no
+// metadata.json — an explicit BEADS_DIR whose Dolt data lives elsewhere — and the
+// workspace's own metadata.json is then the place to ask.
+func seedInitWorkspaceIdentity(
+	ctx context.Context,
+	store storage.DoltStorage,
+	found issueops.VerifyIdentityResult,
+	prefix, projectID, beadsDir string,
+) error {
+	if store == nil {
+		return nil
+	}
+	if found.Prefix != "" || found.ProjectID != "" {
+		// Adopt. The caller has already reconciled metadata.json against
+		// found.ProjectID; re-stamping the substrate with the value it gave us
+		// would be a write with nothing to say.
+		return nil
+	}
+	if projectID == "" {
+		// No metadata.json was composed on this path. Take the id the workspace
+		// already records so the substrate and the file agree, and mint one only
+		// when neither exists — a prefix without an identity is exactly the
+		// half-bootstrapped state the role refuses to complete later.
+		if existing, err := configfile.Load(beadsDir); err == nil && existing != nil {
+			projectID = existing.ProjectID
+		}
+		if projectID == "" {
+			projectID = configfile.GenerateProjectID()
+		}
+	}
+
+	bootstrapper, err := store.Bootstrapper()
+	if err != nil {
+		return fmt.Errorf("failed to reach the workspace identity: %v", err)
+	}
+	_, err = bootstrapper.Bootstrap(ctx, issueops.BootstrapRequest{
+		Prefix:    prefix,
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to record the workspace identity: %v", err)
+	}
+	return nil
 }
 
 var initCmd = &cobra.Command{
@@ -1353,24 +1417,32 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// These settings define fundamental behavior (issue IDs, sync workflow).
 		// Failure here indicates a serious problem that prevents normal operation.
 
-		// Set the issue prefix in config (only if not already configured —
-		// avoid clobbering when multiple rigs share the same Dolt database)
-		existing, existingErr := store.GetConfig(ctx, "issue_prefix")
+		// Read the workspace's identity ONCE, through issueops.InitVerifier.
+		//
+		// It used to be two reads at two places — the prefix here and
+		// _project_id four hundred lines down — each with its own error
+		// handling. The role reads the pair in one snapshot, so the prefix this
+		// init adopts and the project id it reconciles against cannot come from
+		// either side of another rig's write, and an UNREADABLE identity is an
+		// error rather than an empty one the gateway paths would misdiagnose as
+		// an unprovisioned database.
+		initVerifier, err := store.InitVerifier()
+		if err != nil {
+			_ = store.Close()
+			return fmt.Errorf("failed to reach the workspace identity: %v", err)
+		}
+		dbIdentity, identityReadErr := initVerifier.VerifyIdentity(ctx, issueops.VerifyIdentityRequest{})
+
 		// Sanitize dots to underscores so issue IDs (e.g. "GPUPolynomials_jl-1")
 		// remain valid identifiers. Must match DoltDatabase sanitization above.
 		// In gateway mode the prefix is server-provisioned: adopt an existing one,
 		// refuse to invent a missing one. A read error is surfaced as a transient
 		// failure rather than misread as an unprovisioned (contract-violating) db.
-		issuePrefix, writePrefix, err := resolveInitIssuePrefix(doltCfg.Gateway, existing, dbName, prefix, existingErr)
+		// seedInitWorkspaceIdentity, below, is where issuePrefix lands.
+		issuePrefix, err := resolveInitIssuePrefix(doltCfg.Gateway, dbIdentity.Prefix, dbName, prefix, identityReadErr)
 		if err != nil {
 			_ = store.Close()
 			return err
-		}
-		if writePrefix {
-			if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
-				_ = store.Close()
-				return fmt.Errorf("failed to set issue prefix: %v", err)
-			}
 		}
 
 		// === TRACKING METADATA (Pattern B: Warn and Continue) ===
@@ -1414,6 +1486,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 
+		// bootstrapProjectID is the identity seedInitWorkspaceIdentity will
+		// record, resolved inside the metadata.json block below because that is
+		// where local and database identities are reconciled. It stays "" when
+		// that block does not run, and the seeding step reads the workspace's
+		// own metadata.json for it instead.
+		bootstrapProjectID := ""
+
 		// Create or preserve metadata.json for database metadata (bd-zai fix)
 		if useLocalBeads {
 			// First, check if metadata.json already exists
@@ -1456,18 +1535,19 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// (GH#4637 Part A) and fails before this code runs at all. Without the
 			// Gateway skip, init would save the stale id as success and every later
 			// normal open would hard-fail with PROJECT IDENTITY MISMATCH.
+			//
+			// The id itself comes from the single InitVerifier read taken
+			// beside the prefix, rather than from a second GetMetadata here.
+			// shouldConsultInitProjectID still decides whether to USE it, so
+			// which identities init adopts is unchanged; what changed is that
+			// the two halves of one identity can no longer be read either side
+			// of another rig's write.
 			adoptedFromDB := ""
-			var adoptReadErr error
 			if store != nil && shouldConsultInitProjectID(doltCfg.Gateway, cfg.ProjectID, database, bootstrappedFromRemote) {
-				existingID, err := store.GetMetadata(ctx, "_project_id")
-				if err != nil {
-					adoptReadErr = err
-				} else if existingID != "" {
-					adoptedFromDB = existingID
-				}
+				adoptedFromDB = dbIdentity.ProjectID
 			}
 			localID := cfg.ProjectID
-			resolvedID, identityChanged, err := resolveInitProjectID(doltCfg.Gateway, localID, adoptedFromDB, dbName, adoptReadErr)
+			resolvedID, identityChanged, err := resolveInitProjectID(doltCfg.Gateway, localID, adoptedFromDB, dbName, identityReadErr)
 			if err != nil {
 				_ = store.Close()
 				return err
@@ -1557,14 +1637,10 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				// Non-fatal - continue anyway
 			}
 
-			// Write project identity to database for cross-project verification (GH#2372).
-			// Skip in gateway mode: the identity is server-authoritative and the
-			// credential may be read-only, so bd must not write it back.
-			if store != nil && shouldWriteProjectIDLocally(doltCfg.Gateway, cfg.ProjectID) {
-				if err := store.SetMetadata(ctx, "_project_id", cfg.ProjectID); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write project ID to database: %v\n", err)
-				}
-			}
+			// The identity write itself happens once, below this block, through
+			// issueops.Bootstrapper — see seedInitWorkspaceIdentity. This is
+			// where the id it uses is decided.
+			bootstrapProjectID = cfg.ProjectID
 
 			// Create config.yaml template (prefix is stored in DB, not config.yaml)
 			if err := createConfigYaml(beadsDir, false, ""); err != nil {
@@ -1619,11 +1695,27 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 
+		// Seed the workspace's identity, through issueops.Bootstrapper, in the
+		// one place this route writes it. Gateway mode skips it: the identity
+		// is server-authoritative and the credential may be read-only, so bd
+		// adopts what it verified rather than writing it back.
+		if shouldWriteInitStateToDB(doltCfg.Gateway) {
+			if err := seedInitWorkspaceIdentity(ctx, store, dbIdentity, issuePrefix, bootstrapProjectID, beadsDir); err != nil {
+				_ = store.Close()
+				return err
+			}
+		}
+
 		// Initialize last_import_time metadata to mark the database as synced.
 		// This prevents bd doctor from reporting "No last_import_time recorded in database"
 		// after init completes. Sets the metadata to current time in RFC3339 format.
 		// (mybd-9gw: sync divergence fix). Skipped in gateway mode: this is client-local
 		// sync state that must not be written into the shared, server-owned database.
+		//
+		// It is NOT part of the bootstrap, and neither are the fingerprints
+		// above: those four values are refreshed on EVERY init, adopt or not,
+		// while the identity is written once and adopted forever. See
+		// issueops.Bootstrapper.
 		if shouldWriteInitStateToDB(doltCfg.Gateway) {
 			if err := store.SetMetadata(ctx, "last_import_time", time.Now().Format(time.RFC3339)); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to initialize last_import_time: %v\n", err)
@@ -2052,8 +2144,8 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// appears in IDs, so the summary must show it instead of a prefix that
 		// will never be minted.
 		effectivePrefix := prefix
-		if existing != "" {
-			effectivePrefix = existing
+		if dbIdentity.Prefix != "" {
+			effectivePrefix = dbIdentity.Prefix
 		}
 		fmt.Printf("  Database: %s\n", ui.RenderAccent(dbName))
 		fmt.Printf("  Issue prefix: %s\n", ui.RenderAccent(effectivePrefix))

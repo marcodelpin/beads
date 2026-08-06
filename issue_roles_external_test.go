@@ -267,6 +267,73 @@ func TestVersionReconcilerKeepsTelemetryOutermost(t *testing.T) {
 	}
 }
 
+// TestBootstrapperKeepsTelemetryOutermost is the identity-seeding role's
+// version of the pin, and the third place in this file where the READ answer is
+// given for a role that WRITES.
+//
+// The reason is neither the settings role's nor the version marker's. A
+// bootstrap writes, and loudly — it is what turns a database into a workspace —
+// but this decorator's hook vocabulary is issue-shaped and a bootstrap names no
+// issue; and on a workspace this new, `bd init` has not installed .beads/hooks/
+// yet, so a hook fired here would run whatever the previous project in that
+// directory left behind. See internal/storage/hook_bootstrapper.go.
+func TestBootstrapperKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	bootstrapper, err := storage.NewHookFiringStore(instrumented, nil).Bootstrapper()
+	if err != nil {
+		t.Fatalf("Bootstrapper() error = %v", err)
+	}
+	if got := reflect.TypeOf(bootstrapper).String(); got != "*telemetry.instrumentedBootstrapper" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+// TestInitVerifierKeepsTelemetryOutermost is the ordinary read-role pin: reads
+// fire no hooks, so the hook decorator recurses and the telemetry wrapper is
+// what a caller holds.
+func TestInitVerifierKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	verifier, err := storage.NewHookFiringStore(instrumented, nil).InitVerifier()
+	if err != nil {
+		t.Fatalf("InitVerifier() error = %v", err)
+	}
+	if got := reflect.TypeOf(verifier).String(); got != "*telemetry.instrumentedInitVerifier" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestBootstrapperExposesTypedUnsupportedError(t *testing.T) {
+	bootstrapper, err := (*dolt.DoltStore)(nil).Bootstrapper()
+	if bootstrapper != nil {
+		t.Fatalf("Bootstrapper() bootstrapper = %T, want nil", bootstrapper)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Bootstrapper() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
+func TestInitVerifierExposesTypedUnsupportedError(t *testing.T) {
+	verifier, err := (*dolt.DoltStore)(nil).InitVerifier()
+	if verifier != nil {
+		t.Fatalf("InitVerifier() verifier = %T, want nil", verifier)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("InitVerifier() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestVersionReconcilerExposesTypedUnsupportedError(t *testing.T) {
 	reconciler, err := (*dolt.DoltStore)(nil).VersionReconciler()
 	if reconciler != nil {

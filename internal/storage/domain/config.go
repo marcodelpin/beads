@@ -42,6 +42,18 @@ type ConfigUseCase interface {
 	DeleteConfig(ctx context.Context, key string) error
 	GetAllConfig(ctx context.Context) (map[string]string, error)
 	GetMetadata(ctx context.Context, key string) (string, error)
+	// SetMetadata writes one durable metadata value inside the caller's unit of
+	// work. It is the write half of the GetMetadata above it, published for the
+	// same reason SetLocalMetadata was: issueops.Bootstrapper's unit-of-work
+	// body reads the identity, refuses over an identified substrate and writes
+	// the new one in ONE transaction, and a refusal decided outside the
+	// transaction that writes is a refusal two racing inits both pass.
+	//
+	// It replaces BootstrapUseCase, which held its own copy of which keys an
+	// identity is made of — a copy the direct route never used and no test
+	// compared against it. The keys are named once in internal/workapi now and
+	// this seam moves bytes.
+	SetMetadata(ctx context.Context, key, value string) error
 	GetLocalMetadata(ctx context.Context, key string) (string, error)
 	// SetLocalMetadata writes one clone-local, dolt-ignored value inside the
 	// caller's unit of work. It is the write half of GetLocalMetadata, and it
@@ -221,6 +233,13 @@ func (u *configUseCaseImpl) GetAllConfig(ctx context.Context) (map[string]string
 		return nil, fmt.Errorf("GetAllConfig: %w", err)
 	}
 	return out, nil
+}
+
+func (u *configUseCaseImpl) SetMetadata(ctx context.Context, key, value string) error {
+	if err := u.cfgRepo.SetMetadata(ctx, key, value); err != nil {
+		return fmt.Errorf("SetMetadata: %w", err)
+	}
+	return nil
 }
 
 func (u *configUseCaseImpl) SetLocalMetadata(ctx context.Context, key, value string) error {

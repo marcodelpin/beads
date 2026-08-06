@@ -11,9 +11,9 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the eighteen-strong capability surface every storage
+// roleAccessorNames is the twenty-one-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a nineteenth role to DoltStorage without deciding what each decorator
+// adding a twenty-second role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
@@ -30,6 +30,8 @@ var roleAccessorNames = []string{
 	"Querier",
 	"Sweeper",
 	"Deleter",
+	"Bootstrapper",
+	"InitVerifier",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -72,7 +74,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the eighteen
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-one
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -96,6 +98,8 @@ type roleAccessorStore struct {
 	querier      issueops.Querier
 	sweeper      issueops.Sweeper
 	deleter      issueops.Deleter
+	bootstrapper issueops.Bootstrapper
+	verifier     issueops.InitVerifier
 	err          error
 }
 
@@ -121,6 +125,8 @@ func newRoleAccessorStore() *roleAccessorStore {
 		querier:      sentinel,
 		sweeper:      sentinel,
 		deleter:      sentinel,
+		bootstrapper: sentinel,
+		verifier:     sentinel,
 	}
 }
 
@@ -156,6 +162,12 @@ func (s *roleAccessorStore) Sweeper() (issueops.Sweeper, error) {
 func (s *roleAccessorStore) Deleter() (issueops.Deleter, error) {
 	return s.deleter, s.err
 }
+func (s *roleAccessorStore) Bootstrapper() (issueops.Bootstrapper, error) {
+	return s.bootstrapper, s.err
+}
+func (s *roleAccessorStore) InitVerifier() (issueops.InitVerifier, error) {
+	return s.verifier, s.err
+}
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
 }
@@ -167,7 +179,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all eighteen roles at once. Nothing calls its
+// roleAccessorSentinel implements all twenty-one roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -251,6 +263,12 @@ func (*roleAccessorSentinel) Delete(context.Context, issueops.DeleteRequest) (is
 func (*roleAccessorSentinel) Sweep(context.Context, issueops.SweepRequest) (issueops.SweepResult, error) {
 	return issueops.SweepResult{}, nil
 }
+func (*roleAccessorSentinel) Bootstrap(context.Context, issueops.BootstrapRequest) (issueops.BootstrapResult, error) {
+	return issueops.BootstrapResult{}, nil
+}
+func (*roleAccessorSentinel) VerifyIdentity(context.Context, issueops.VerifyIdentityRequest) (issueops.VerifyIdentityResult, error) {
+	return issueops.VerifyIdentityResult{}, nil
+}
 func (*roleAccessorSentinel) AddComment(context.Context, issueops.AddCommentRequest) (issueops.AddCommentResult, error) {
 	return issueops.AddCommentResult{}, nil
 }
@@ -281,15 +299,16 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // ones four wave-2 slices each appended (bd-8ri3m is the same defect in the
 // spec's own comments). Reads fire no completion hooks, so IssueReader,
 // IssueRelations, Counter, StatsReporter, CycleDetector, EdgeReader,
-// BlockingAnnotator, ReadyCounter and Querier deliberately return the inner
-// surface unwrapped,
-// each in its own hook_*.go. WorkspaceConfig and VersionReconciler do too, and
-// those two are the ones that are NOT reads: a settings write changes the
-// workspace rather than a bead and a version marker names no bead at all, so
-// this decorator's issue-shaped hook vocabulary has nothing to hand a hook
-// script (hook_workspace_config.go, hook_version_reconciler.go). This test pins
-// every one of them as a decision rather than leaving it indistinguishable from
-// the regression above.
+// BlockingAnnotator, ReadyCounter, Querier and InitVerifier deliberately return
+// the inner surface unwrapped, each in its own hook_*.go. The three in that
+// column that are NOT reads are WorkspaceConfig, VersionReconciler and
+// Bootstrapper: a settings write changes the workspace rather than a bead, a
+// version marker names no bead at all, and a bootstrap makes a database into a
+// workspace, so this decorator's issue-shaped hook vocabulary has nothing to
+// hand a hook script (hook_workspace_config.go, hook_version_reconciler.go,
+// hook_bootstrapper.go). Deleter is the fourth, for the reason its own row
+// records. This test pins every one of them as a decision rather than leaving
+// it indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -317,15 +336,19 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"CycleDetector", func() (any, error) { return store.CycleDetector() }, inner.cycles, false},
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }, inner.readyCounter, false},
 		{"Querier", func() (any, error) { return store.Querier() }, inner.querier, false},
-		// The one WRITE role in the unwrapped column, and the reason is the
-		// hook vocabulary rather than the role: there is no on_delete hook to
-		// fire and a swept row is gone, so hook_sweeper.go recurses. Asserting
-		// it here is what keeps that a decision.
+		// The WRITE roles in the unwrapped column, and the reason is the hook
+		// vocabulary rather than the role. There is no on_delete hook to fire
+		// and a swept row is gone, so hook_sweeper.go recurses; a bootstrap
+		// names no bead and lands on a workspace whose hooks are not installed
+		// yet, so hook_bootstrapper.go does too. Asserting them here is what
+		// keeps those decisions.
 		{"Sweeper", func() (any, error) { return store.Sweeper() }, inner.sweeper, false},
 		// The other WRITE role in the unwrapped column, for the same reason:
 		// hook_deleter.go recurses because the hook vocabulary has no name for
 		// a deletion, not because the role reads.
 		{"Deleter", func() (any, error) { return store.Deleter() }, inner.deleter, false},
+		{"Bootstrapper", func() (any, error) { return store.Bootstrapper() }, inner.bootstrapper, false},
+		{"InitVerifier", func() (any, error) { return store.InitVerifier() }, inner.verifier, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -375,6 +398,8 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Querier", func() (any, error) { return store.Querier() }},
 		{"Sweeper", func() (any, error) { return store.Sweeper() }},
 		{"Deleter", func() (any, error) { return store.Deleter() }},
+		{"Bootstrapper", func() (any, error) { return store.Bootstrapper() }},
+		{"InitVerifier", func() (any, error) { return store.InitVerifier() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

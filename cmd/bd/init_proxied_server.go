@@ -19,6 +19,8 @@ import (
 	"github.com/steveyegge/beads/internal/storage/git"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/workapi"
+	"github.com/steveyegge/beads/issueops"
 )
 
 type initProxiedServerInput struct {
@@ -176,43 +178,76 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		fmt.Fprintf(os.Stderr, "Warning: could not compute clone ID: %v\n", err)
 	}
 
-	adoptedPrefix, adoptedProjectID := prefix, projectID
-	err = uow.RunTx(ctx, initUOWProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
-		if in.teamServer {
-			// bts owns the shared database: adopt identity and write nothing —
-			// no identity, no tracking metadata (repo_id/clone_id are per-clone
-			// fingerprints; last-init-wins overwrites feed false cross-project
-			// mismatch diagnostics), no Dolt remote. Empty message skips the
-			// Dolt commit.
-			p, id, err := adoptTeamServerIdentity(ctx, uw.ConfigUseCase(), dbName, prefix, in.prefix != "", projectID)
-			if err != nil {
-				return "", err
-			}
-			adoptedPrefix, adoptedProjectID = p, id
-			return "", nil
-		}
-
-		bootstrapParams := domain.BootstrapProjectParams{
-			Prefix:         prefix,
-			ProjectID:      projectID,
-			BdVersion:      Version,
-			LastImportTime: time.Now(),
-			RepoID:         repoID,
-			CloneID:        cloneID,
-		}
-		if remoteURL != "" {
-			bootstrapParams.RemoteName = "origin"
-			bootstrapParams.RemoteURL = remoteURL
-		}
-
-		if _, err := uw.BootstrapUseCase().BootstrapProject(ctx, bootstrapParams); err != nil {
-			return "", fmt.Errorf("bootstrap project: %w", err)
-		}
-
-		return "bd init", nil
-	})
+	// The identity goes through the two roles, so this route and the direct one
+	// share one definition of what a workspace's identity is and one rule about
+	// when it may be written. The order is VERIFY, then bootstrap or adopt:
+	// Bootstrapper REFUSES an already-identified substrate, which is the guard
+	// below both front doors, and asking first is how a front door tells a
+	// re-init from the collision that guard exists for.
+	verifier, err := proxiedInitVerifier(initUOWProvider)
 	if err != nil {
 		return HandleError("%v", err)
+	}
+
+	adoptedPrefix, adoptedProjectID := prefix, projectID
+	if in.teamServer {
+		// bts owns the shared database: adopt identity and write nothing — no
+		// identity, no tracking metadata (repo_id/clone_id are per-clone
+		// fingerprints; last-init-wins overwrites feed false cross-project
+		// mismatch diagnostics), no Dolt remote.
+		adoptedPrefix, adoptedProjectID, err = adoptTeamServerIdentity(ctx, verifier, dbName, prefix, in.prefix != "", projectID)
+		if err != nil {
+			return HandleError("%v", err)
+		}
+	} else {
+		existing, err := verifier.VerifyIdentity(ctx, issueops.VerifyIdentityRequest{})
+		if err != nil {
+			return HandleError("reading project identity from database %q: %v", dbName, err)
+		}
+		switch {
+		case existing.Prefix != "" || existing.ProjectID != "":
+			// Another rig — or an earlier init — already identified this
+			// database. ADOPT it. Before this went through the roles, this
+			// route rewrote the prefix and the project id every time, which is
+			// what renamed the ids a co-tenant was about to mint; the direct
+			// route has adopted here since it was written.
+			adoptedPrefix, adoptedProjectID = existing.Prefix, existing.ProjectID
+			if !in.quiet {
+				fmt.Printf("  %s Adopted project identity from existing database\n", ui.RenderPass("✓"))
+			}
+		default:
+			bootstrapper, err := proxiedBootstrapper(initUOWProvider)
+			if err != nil {
+				return HandleError("%v", err)
+			}
+			result, err := bootstrapper.Bootstrap(ctx, issueops.BootstrapRequest{
+				Prefix:    prefix,
+				ProjectID: projectID,
+			})
+			if err != nil {
+				return HandleError("bootstrap project: %v", err)
+			}
+			adoptedPrefix, adoptedProjectID = result.Prefix, result.ProjectID
+		}
+
+		// The per-clone tracking state is written on EVERY init, adopt or not,
+		// which is why it is not on the role: a fresh clone of an
+		// already-identified database needs its own fingerprints precisely
+		// because it bootstrapped nothing.
+		if err := recordProxiedInitTrackingState(ctx, initUOWProvider, repoID, cloneID); err != nil {
+			return HandleError("%v", err)
+		}
+
+		// The Dolt remote is configured SEPARATELY from the identity, the way
+		// the direct route has always configured it. They are different facts
+		// with different lifetimes — where this database syncs to, versus what
+		// it is — and folding them into one call is what let a remote that could
+		// not be created fail a bootstrap that had already succeeded.
+		if remoteURL != "" {
+			if err := configureProxiedInitDoltRemote(ctx, initUOWProvider, remoteURL); err != nil {
+				return HandleError("%v", err)
+			}
+		}
 	}
 
 	// metadata.json was written with a locally-minted project id before any
@@ -277,18 +312,102 @@ func resolveProxiedInitRemoteURL(ctx context.Context, gitUC domain.GitUseCase, i
 	return ""
 }
 
-type teamServerIdentityReader interface {
-	GetConfig(ctx context.Context, key string) (string, error)
-	GetMetadata(ctx context.Context, key string) (string, error)
+// proxiedInitVerifier and proxiedBootstrapper hand back the two identity
+// surfaces through the provider's OWN capability accessors — the same two-step
+// proxiedCounter performs, and for the same reason: the accessor is where each
+// layer is added.
+//
+// They are asked for SEPARATELY rather than as one surface because the roles are
+// separate, and team-server mode is what that separation is for: it holds a
+// verifier and never obtains a bootstrapper, so the path bd must not write on
+// cannot reach the write.
+func proxiedInitVerifier(provider uow.UnitOfWorkProvider) (issueops.InitVerifier, error) {
+	src, ok := provider.(uow.InitVerifierSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the identity-read surface", provider)
+	}
+	return src.InitVerifier()
+}
+
+func proxiedBootstrapper(provider uow.UnitOfWorkProvider) (issueops.Bootstrapper, error) {
+	src, ok := provider.(uow.BootstrapperSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the identity-seeding surface", provider)
+	}
+	return src.Bootstrapper()
+}
+
+// recordProxiedInitTrackingState seeds the per-clone bookkeeping that used to
+// ride along inside BootstrapProject: the repository and clone fingerprints,
+// the synced-at marker and the recorded binary version.
+//
+// It is separate from the identity because its LIFETIME is: the identity is
+// written once and then adopted forever, while these four describe the clone
+// running init and are refreshed every time it runs. Keeping them in the
+// refusable one-time write would have meant a re-init on a shared database
+// silently stopped recording them.
+func recordProxiedInitTrackingState(ctx context.Context, provider uow.UnitOfWorkProvider, repoID, cloneID string) error {
+	return uow.RunTx(ctx, provider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
+		cfg := uw.ConfigUseCase()
+		// An absent fingerprint is recorded as nothing rather than as "": an
+		// empty row reads back to cross-project verification as a clone whose
+		// fingerprint failed to compute.
+		if repoID != "" {
+			if err := cfg.SetMetadata(ctx, "repo_id", repoID); err != nil {
+				return "", fmt.Errorf("record repo_id: %w", err)
+			}
+		}
+		if cloneID != "" {
+			if err := cfg.SetMetadata(ctx, "clone_id", cloneID); err != nil {
+				return "", fmt.Errorf("record clone_id: %w", err)
+			}
+		}
+		if err := cfg.SetMetadata(ctx, "last_import_time", time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return "", fmt.Errorf("record last_import_time: %w", err)
+		}
+		if err := cfg.SetLocalMetadata(ctx, workapi.MetadataKeyVersion, Version); err != nil {
+			return "", fmt.Errorf("record bd_version: %w", err)
+		}
+		return "bd init", nil
+	})
+}
+
+// configureProxiedInitDoltRemote adds the sync remote, skipping a name that is
+// already taken. It is the remote half of what BootstrapProject used to do in
+// one call with the identity; the direct route has always kept the two apart.
+func configureProxiedInitDoltRemote(ctx context.Context, provider uow.UnitOfWorkProvider, remoteURL string) error {
+	return uow.RunTx(ctx, provider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
+		remotes, err := uw.DoltRemoteUseCase().ListRemotes(ctx)
+		if err != nil {
+			return "", fmt.Errorf("list remotes: %w", err)
+		}
+		for _, r := range remotes {
+			if r.Name == "origin" {
+				return "", nil
+			}
+		}
+		if err := uw.DoltRemoteUseCase().CreateRemote(ctx, "origin", remoteURL); err != nil {
+			return "", fmt.Errorf("create remote origin: %w", err)
+		}
+		return "", nil
+	})
 }
 
 // adoptTeamServerIdentity reads the bts-provisioned identity out of the shared
 // database, following the gateway contract: adopt if present, hard error if
 // absent — bd never writes identity in team-server mode.
-func adoptTeamServerIdentity(ctx context.Context, reader teamServerIdentityReader, dbName, localPrefix string, prefixIsExplicit bool, localProjectID string) (prefix, projectID string, err error) {
-	dbPrefix, prefixReadErr := reader.GetConfig(ctx, "issue_prefix")
-	if _, _, err := resolveInitIssuePrefix(true, dbPrefix, dbName, localPrefix, prefixReadErr); err != nil {
-		if prefixReadErr == nil {
+//
+// It takes an issueops.InitVerifier rather than a config reader of its own
+// because the distinction it is built around — an ABSENT identity means
+// "unprovisioned, tell them to run bts init", an UNREADABLE one means "the
+// connection failed, say so" — is now the role's promise rather than this
+// function's care. The two markers also arrive as ONE snapshot, so the prefix it
+// adopts and the project id it adopts cannot come from either side of a
+// concurrent write.
+func adoptTeamServerIdentity(ctx context.Context, verifier issueops.InitVerifier, dbName, localPrefix string, prefixIsExplicit bool, localProjectID string) (prefix, projectID string, err error) {
+	identity, readErr := verifier.VerifyIdentity(ctx, issueops.VerifyIdentityRequest{})
+	if _, err := resolveInitIssuePrefix(true, identity.Prefix, dbName, localPrefix, readErr); err != nil {
+		if readErr == nil {
 			return "", "", fmt.Errorf(
 				"database %q has no project identity (config.issue_prefix) — provision it with 'bts init' (or heal an older bts database with 'bts migrate')",
 				dbName)
@@ -297,23 +416,22 @@ func adoptTeamServerIdentity(ctx context.Context, reader teamServerIdentityReade
 	}
 	// An explicit --prefix that disagrees must not be silently ignored; a
 	// merely derived prefix adopts silently.
-	if prefixIsExplicit && dbPrefix != localPrefix {
+	if prefixIsExplicit && identity.Prefix != localPrefix {
 		return "", "", fmt.Errorf(
 			"--prefix %q conflicts with issue_prefix %q provisioned in database %q; omit --prefix to adopt the provisioned one",
-			localPrefix, dbPrefix, dbName)
+			localPrefix, identity.Prefix, dbName)
 	}
 
-	dbProjectID, idReadErr := reader.GetMetadata(ctx, "_project_id")
-	adoptedID, _, err := resolveInitProjectID(true, localProjectID, dbProjectID, dbName, idReadErr)
+	adoptedID, _, err := resolveInitProjectID(true, localProjectID, identity.ProjectID, dbName, readErr)
 	if err != nil {
-		if idReadErr == nil {
+		if readErr == nil {
 			return "", "", fmt.Errorf(
 				"database %q has no project identity (metadata._project_id) — provision it with 'bts init' (or heal an older bts database with 'bts migrate')",
 				dbName)
 		}
 		return "", "", err
 	}
-	return dbPrefix, adoptedID, nil
+	return identity.Prefix, adoptedID, nil
 }
 
 type proxiedMetadataInputs struct {
