@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the seventeen-strong capability surface every storage
+// roleAccessorNames is the eighteen-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -21,6 +21,7 @@ var roleAccessorNames = []string{
 	"IssueReader",
 	"IssueRelations",
 	"EdgeReader",
+	"BlockingAnnotator",
 	"Counter",
 	"WorkspaceConfig",
 	"VersionReconciler",
@@ -60,7 +61,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the seventeen
+// roleAccessorStore is a DoltStorage whose only real methods are the eighteen
 // role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -87,7 +88,10 @@ func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.surface, s.err }
-func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s.surface, s.err }
+func (s *roleAccessorStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
+	return s.surface, s.err
+}
+func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.surface, s.err }
 func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return s.surface, s.err
 }
@@ -106,7 +110,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all seventeen roles at once. Nothing calls its
+// roleAccessorSentinel implements all eighteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -136,6 +140,9 @@ func (*roleAccessorSentinel) Related(context.Context, issueops.RelatedRequest) (
 }
 func (*roleAccessorSentinel) ReadEdges(context.Context, issueops.EdgeReadRequest) (issueops.EdgeReadResult, error) {
 	return issueops.EdgeReadResult{}, nil
+}
+func (*roleAccessorSentinel) AnnotateBlocking(context.Context, issueops.BlockingRequest) (issueops.BlockingResult, error) {
+	return issueops.BlockingResult{}, nil
 }
 func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
 	return issueops.CountResult{}, nil
@@ -208,7 +215,7 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // DoltStorage, and silently drops every span and timing on that role.
 //
 // Unlike the hook decorator, this one has no read-role exemption: telemetry
-// spans reads as well as writes, so ALL FOURTEEN must come back wrapped. Only
+// spans reads as well as writes, so ALL EIGHTEEN must come back wrapped. Only
 // IssueLifecycle and IssueReader had a recursion pin of their own before this
 // test; the rest had no test at all.
 func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
@@ -228,6 +235,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"IssueReader", func() (any, error) { return wrapped.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
+		{"BlockingAnnotator", func() (any, error) { return wrapped.BlockingAnnotator() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"VersionReconciler", func() (any, error) { return wrapped.VersionReconciler() }},
@@ -273,6 +281,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueReader", func() (any, error) { return wrapped.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
+		{"BlockingAnnotator", func() (any, error) { return wrapped.BlockingAnnotator() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"VersionReconciler", func() (any, error) { return wrapped.VersionReconciler() }},

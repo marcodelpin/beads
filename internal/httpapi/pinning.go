@@ -38,6 +38,10 @@ var (
 	_ apigen.Cycle       = issueops.Cycle{}
 	_ apigen.CycleMember = issueops.CycleMember{}
 
+	// Same reason, one role over: BlockingAnnotator's result element IS what
+	// `bd list` renders its decoration from.
+	_ apigen.IssueBlocking = issueops.IssueBlocking{}
+
 	// The envelopes carry the canonical types too — pinning the schema is not
 	// enough if a page's items resolve to something else.
 	_ []types.IssueWithCounts = apigen.ReadyPage{}.Items
@@ -46,6 +50,12 @@ var (
 	_ types.Issue             = apigen.ClaimResponse{}.Issue
 	_ types.Statistics        = apigen.StatsResponse{}.Summary
 	_ []issueops.Cycle        = apigen.CyclesPage{}.Items
+	// BlockingAnnotations is not a page, but its Items resolve the same way and
+	// are pinned for the same reason the batch-create response's are: an
+	// envelope whose items generated as a mirror struct would put a second wire
+	// shape for one fact on this surface, silently. bd-5o3gt is the entry this
+	// list is still missing (DependencyEdges); it is not becoming two.
+	_ []issueops.IssueBlocking = apigen.BlockingAnnotations{}.Items
 
 	// The batch-create response is not a page, but its Items resolve the same
 	// way and are pinned for the same reason: an envelope whose items generated

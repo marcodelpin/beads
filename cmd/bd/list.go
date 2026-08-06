@@ -204,28 +204,16 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return HandleError("--offset is only supported under --proxied-server")
 	}
 
-	// `bd list` builds the filter rather than calling IssueReader(), because
-	// this filter feeds --watch, the hierarchical --parent tree and the text
-	// renderings that want []*types.Issue rather than a counted page — none of
-	// which the Reader role expresses, and routing only the JSON path through
-	// it would fork the command in two.
+	// `bd list`'s PAGE is on issueops.Reader. What is still built here is the
+	// filter --watch and the hierarchical --parent tree consume as a VALUE:
+	// the poll loop re-runs it on a ticker and the tree walk re-parents a copy
+	// of it at every level, neither of which a page can express.
 	//
-	// The --max-rows cap is no longer on that list. It used to be stamped onto
-	// the filter after this builder returned; it now rides on the request, so
-	// the builder is the only writer of the filter's two cap fields and the
-	// role expresses the cap too (issueops.ListRequest.MaxRows).
-	//
-	// It shares CONSTRUCTION with the role unconditionally: the same
-	// issueops.ListRequest through the same builder, pinned by the builder's
-	// golden file.
-	//
-	// It shares EXECUTION — the same workapi.FinishPage, same sort, same trim,
-	// same has-more verdict — in every mode but one. The exception is the
-	// hierarchical --parent tree under pretty output below: it renders the
-	// recursive walk's own result and never reaches the epilogue, on this
-	// route or the proxied one. For the modes that do reach it (JSON, plain
-	// text, --watch, --ready) what differs from the HTTP listing is
-	// presentation and the --max-rows cap. See issueops.Reader's doc comment.
+	// The filter is therefore built unconditionally and used by two modes. That
+	// is one wasted build on the modes that reach the role instead, and it buys
+	// the order below: the page query still runs before the tree branch, so
+	// `--parent --pretty --max-rows N` still refuses on the cap exactly where it
+	// refused before this commit.
 	cfg, err := workapi.LoadStoreListConfig(rootCtx, store)
 	if err != nil {
 		return HandleError("%v", err)
@@ -258,58 +246,60 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// The accessor on the ROUTED store, not on the global one: a contributor
+	// listing is answered from the repository the routing rule picked, and a
+	// reader taken off `store` would read the wrong database. It is also where
+	// each storage decorator adds its layer, which is why no command builds the
+	// shared implementation itself.
+	reader, err := activeStore.IssueReader()
+	if err != nil {
+		return HandleError("%v", err)
+	}
+
+	// FIRST FLIP: --json. The role's List runs the same LoadStoreListConfig,
+	// the same BuildListFilter and the same workapi.FinishPage this branch ran
+	// longhand, over the same request, and the --ready arm is its ReadyFlag —
+	// so the page, its order, its trim and its has-more verdict are unchanged
+	// bytes. The cap still arrives as *ErrTooManyRows, which is why
+	// handleMaxRowsError still wraps the call: it rides the filter the builder
+	// produces, so the role trip does not move it.
 	if jsonOutput {
-		var iwc []*types.IssueWithCounts
-		var err error
-		if in.ReadyFlag {
-			iwc, err = activeStore.GetReadyWorkWithCounts(ctx, workapi.ReadyFilterFromIssueFilter(workapi.WithFetchOneExtra(filter)))
-		} else {
-			iwc, err = activeStore.SearchIssuesWithCounts(ctx, "", workapi.WithFetchOneExtra(filter))
-		}
+		page, err := reader.List(ctx, in.ListRequest)
 		if err != nil {
 			if capErr := handleMaxRowsError(err); capErr != nil {
 				return capErr
 			}
 			return HandleError("%v", err)
 		}
-		iwc, truncated := workapi.FinishPage(iwc, in.SortBy, in.Reverse, in.effectiveLimit, false)
 		if in.SkipLabels {
-			if err := outputJSON(newSkipLabelsListJSONResponse(iwc)); err != nil {
+			if err := outputJSON(newSkipLabelsListJSONResponse(page.Items)); err != nil {
 				return err
 			}
-			printTruncationHint(truncated, in.effectiveLimit)
+			printTruncationHint(page.HasMore, in.effectiveLimit)
 			return nil
 		}
-		if err := outputJSON(iwc); err != nil {
+		if err := outputJSON(page.Items); err != nil {
 			return err
 		}
-		printTruncationHint(truncated, in.effectiveLimit)
+		printTruncationHint(page.HasMore, in.effectiveLimit)
 		return nil
 	}
 
-	var issues []*types.Issue
-	if in.ReadyFlag {
-		wf := workapi.ReadyFilterFromIssueFilter(workapi.WithFetchOneExtra(filter))
-		var err error
-		issues, err = activeStore.GetReadyWork(ctx, wf)
-		if err != nil {
-			if capErr := handleMaxRowsError(err); capErr != nil {
-				return capErr
-			}
-			return HandleError("%v", err)
+	// SECOND FLIP: every text rendering. They print no cardinality, and the
+	// query this branch used to run projected none, so the request carries
+	// SkipCounts — stage 1 added that field for exactly this arrival
+	// (issueops.ListRequest.SkipCounts). Without it the flip would trade a
+	// plain scan for three aggregate joins on the most-run command in the tree.
+	textRequest := in.ListRequest
+	textRequest.SkipCounts = true
+	page, err := reader.List(ctx, textRequest)
+	if err != nil {
+		if capErr := handleMaxRowsError(err); capErr != nil {
+			return capErr
 		}
-	} else {
-		var err error
-		issues, err = activeStore.SearchIssues(ctx, "", workapi.WithFetchOneExtra(filter))
-		if err != nil {
-			if capErr := handleMaxRowsError(err); capErr != nil {
-				return capErr
-			}
-			return HandleError("%v", err)
-		}
+		return HandleError("%v", err)
 	}
-
-	issues, truncated := workapi.FinishPage(issues, in.SortBy, in.Reverse, in.effectiveLimit, false)
+	issues, truncated := listPageIssues(page)
 
 	if in.prettyFormat && !jsonOutput {
 		if in.ParentID != "" && !in.ReadyFlag {
@@ -362,12 +352,20 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	blockedByMap, blocksMap, parentMap, _ := activeStore.GetBlockingInfoForIssues(ctx, issueIDs)
+	// THIRD FLIP: the decoration, onto issueops.BlockingAnnotator. The failure
+	// is still swallowed, and deliberately: this route has always rendered the
+	// page undecorated rather than failing on it. The proxied route fails
+	// instead, which is a difference between the two CALLERS rather than one
+	// between two answers — recorded for the owner in AMBIGUITIES.md (A-blk-1)
+	// rather than converged here, because deciding what a listing does when its
+	// decoration is unavailable is a behavior question this commit was not
+	// given.
+	blocking := annotateListBlocking(ctx, activeStore, issueIDs)
 
 	var buf strings.Builder
 	if ui.IsAgentMode() {
 		for _, issue := range issues {
-			formatAgentIssue(&buf, issue, blockedByMap[issue.ID], blocksMap[issue.ID], parentMap[issue.ID])
+			formatAgentIssue(&buf, issue, blocking.blockedBy[issue.ID], blocking.blocks[issue.ID], blocking.parent[issue.ID])
 		}
 		fmt.Print(buf.String())
 		printTruncationHint(truncated, in.effectiveLimit)
@@ -381,7 +379,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 	} else {
 		for _, issue := range issues {
 			labels := labelsMap[issue.ID]
-			formatIssueCompact(&buf, issue, labels, blockedByMap[issue.ID], blocksMap[issue.ID], parentMap[issue.ID])
+			formatIssueCompact(&buf, issue, labels, blocking.blockedBy[issue.ID], blocking.blocks[issue.ID], blocking.parent[issue.ID])
 		}
 	}
 

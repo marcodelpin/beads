@@ -11,15 +11,16 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the seventeen-strong capability surface every storage
+// roleAccessorNames is the eighteen-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding an eighteenth role to DoltStorage without deciding what each decorator
+// adding a nineteenth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
 	"IssueRelations",
 	"EdgeReader",
+	"BlockingAnnotator",
 	"Counter",
 	"WorkspaceConfig",
 	"VersionReconciler",
@@ -70,7 +71,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the seventeen
+// roleAccessorStore is a DoltStorage whose only real methods are the eighteen
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -79,6 +80,7 @@ type roleAccessorStore struct {
 	reader       issueops.Reader
 	relations    issueops.Relations
 	edges        issueops.EdgeReader
+	blocking     issueops.BlockingAnnotator
 	counter      issueops.Counter
 	settings     issueops.WorkspaceConfig
 	versions     issueops.VersionReconciler
@@ -102,6 +104,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		reader:       sentinel,
 		relations:    sentinel,
 		edges:        sentinel,
+		blocking:     sentinel,
 		counter:      sentinel,
 		settings:     sentinel,
 		versions:     sentinel,
@@ -136,7 +139,10 @@ func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.cycles, s.err
 }
 func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.edges, s.err }
-func (s *roleAccessorStore) Commenter() (issueops.Commenter, error)   { return s.commenter, s.err }
+func (s *roleAccessorStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
+	return s.blocking, s.err
+}
+func (s *roleAccessorStore) Commenter() (issueops.Commenter, error) { return s.commenter, s.err }
 func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return s.readyCounter, s.err
 }
@@ -155,7 +161,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all seventeen roles at once. Nothing calls its
+// roleAccessorSentinel implements all eighteen roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -185,6 +191,9 @@ func (*roleAccessorSentinel) Related(context.Context, issueops.RelatedRequest) (
 }
 func (*roleAccessorSentinel) ReadEdges(context.Context, issueops.EdgeReadRequest) (issueops.EdgeReadResult, error) {
 	return issueops.EdgeReadResult{}, nil
+}
+func (*roleAccessorSentinel) AnnotateBlocking(context.Context, issueops.BlockingRequest) (issueops.BlockingResult, error) {
+	return issueops.BlockingResult{}, nil
 }
 func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
 	return issueops.CountResult{}, nil
@@ -262,7 +271,8 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // ones four wave-2 slices each appended (bd-8ri3m is the same defect in the
 // spec's own comments). Reads fire no completion hooks, so IssueReader,
 // IssueRelations, Counter, StatsReporter, CycleDetector, EdgeReader,
-// ReadyCounter and Querier deliberately return the inner surface unwrapped,
+// BlockingAnnotator, ReadyCounter and Querier deliberately return the inner
+// surface unwrapped,
 // each in its own hook_*.go. WorkspaceConfig and VersionReconciler do too, and
 // those two are the ones that are NOT reads: a settings write changes the
 // workspace rather than a bead and a version marker names no bead at all, so
@@ -289,6 +299,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }, inner.edges, false},
+		{"BlockingAnnotator", func() (any, error) { return store.BlockingAnnotator() }, inner.blocking, false},
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
 		{"VersionReconciler", func() (any, error) { return store.VersionReconciler() }, inner.versions, false},
@@ -340,6 +351,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }},
+		{"BlockingAnnotator", func() (any, error) { return store.BlockingAnnotator() }},
 		{"Counter", func() (any, error) { return store.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
 		{"VersionReconciler", func() (any, error) { return store.VersionReconciler() }},

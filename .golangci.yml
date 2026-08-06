@@ -265,6 +265,12 @@ linters:
       # to name the type to hand the filter back), and --current (which
       # resolves an id from a deliberately BARE filter that must not pick up
       # the default listing's exclusions).
+      #
+      # `bd list`'s PAGE left this hole when issueops.Reader took it on both
+      # routes: cmd/bd/list.go and cmd/bd/list_proxied_server.go were never on
+      # this list and still are not, and the modes above are all that keeps this
+      # file on it. The entry therefore stays and the count is unchanged — a
+      # role commit that could not remove one says so rather than implying it.
       - path: '^cmd/bd/list_show_filter_modes\.go$'
         linters:
           - forbidigo

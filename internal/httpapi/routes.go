@@ -159,6 +159,19 @@ var routeTable = []route{
 		handler:     (*Server).handleListDependencies,
 	},
 	{
+		op:     OpListBlockingAnnotations,
+		method: http.MethodGet,
+		// A literal path under the same collection as the stored-edge read, so
+		// no specPath declaration is needed and no wildcard is involved: the
+		// router registers the documented path itself, and it cannot collide
+		// with /v0/beads/dependencies or /v0/beads/dependencies/cycles, both of
+		// which are literals too.
+		pattern:     "/v0/beads/dependencies/blocking",
+		capability:  "dependencies.blocking",
+		implemented: true,
+		handler:     (*Server).handleBlockingAnnotations,
+	},
+	{
 		op:     OpBatchCreateIssues,
 		method: http.MethodPost,
 		// A collection-level custom method, spelled the way ready:count's is

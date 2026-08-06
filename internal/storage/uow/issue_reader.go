@@ -93,10 +93,11 @@ func (r *issueReader) List(ctx context.Context, req publicops.ListRequest) (publ
 	return RunTxRead(ctx, r.provider, func(ctx context.Context, uw UnitOfWork) (publicops.IssuePage, error) {
 		// The config source comes from the unit of work this call already
 		// holds, so a caller reaching this method through the role has nothing
-		// to supply and no step to skip. (`bd list --proxied-server` opens its
-		// own unit of work and loads the same config directly — see
-		// issueops.Reader's doc comment for why those two paging commands are
-		// still off the role.)
+		// to supply and no step to skip — which is now how `bd list
+		// --proxied-server` gets its page in every mode but --watch and the
+		// hierarchical --parent tree. Those two still open their own unit of
+		// work, because they consume the FILTER rather than a page; see
+		// issueops.Reader's doc comment.
 		cfg, err := workapi.LoadUOWListConfig(ctx, uw)
 		if err != nil {
 			return publicops.IssuePage{}, err

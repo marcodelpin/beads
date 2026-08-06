@@ -199,14 +199,15 @@ type Config struct {
 	// and a nil role would produce it on the first request to that route
 	// instead of at startup. Take them all off the same store, beneath the hook
 	// layer. sourceRoles is the authoritative list.
-	Reader        issueops.Reader
-	Claimer       issueops.Claimer
-	Settings      issueops.WorkspaceConfig
-	Stats         issueops.StatsReporter
-	CycleDetector issueops.CycleDetector
-	EdgeReader    issueops.EdgeReader
-	ReadyCounter  issueops.ReadyCounter
-	Querier       issueops.Querier
+	Reader            issueops.Reader
+	Claimer           issueops.Claimer
+	Settings          issueops.WorkspaceConfig
+	Stats             issueops.StatsReporter
+	CycleDetector     issueops.CycleDetector
+	EdgeReader        issueops.EdgeReader
+	BlockingAnnotator issueops.BlockingAnnotator
+	ReadyCounter      issueops.ReadyCounter
+	Querier           issueops.Querier
 	// Sweeper is the DESTRUCTIVE one, and it is required on the same terms as
 	// every other role rather than opt-in. A Config that could omit it would
 	// be a Config that quietly decides whether this build erases beads, which
@@ -255,6 +256,7 @@ type Server struct {
 	issueStats        issueops.StatsReporter
 	issueCycles       issueops.CycleDetector
 	issueEdges        issueops.EdgeReader
+	issueBlocking     issueops.BlockingAnnotator
 	issueReadyCounter issueops.ReadyCounter
 	issueQuerier      issueops.Querier
 	issueSweeper      issueops.Sweeper
@@ -361,6 +363,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueStats:        cfg.Stats,
 		issueCycles:       cfg.CycleDetector,
 		issueEdges:        cfg.EdgeReader,
+		issueBlocking:     cfg.BlockingAnnotator,
 		issueReadyCounter: cfg.ReadyCounter,
 		issueQuerier:      cfg.Querier,
 		issueSweeper:      cfg.Sweeper,
@@ -468,12 +471,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.BatchCreator}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.BatchCreator}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, ReadyCounter, Querier, Sweeper and BatchCreator"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, ReadyCounter, Querier, Sweeper and BatchCreator"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -692,6 +695,24 @@ func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
 	}
 	var src uow.EdgeReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.EdgeReader()
+}
+
+// blockingAnnotator returns the derived blocking-decoration surface for one
+// request, on the same terms as every role above: the configured role on the
+// roles source, one built per request on the provider source so the unit of
+// work the annotation opens lands in THIS request's uow_ms, and held by
+// INTERFACE so uow.BlockingAnnotatorSource is load-bearing rather than
+// decorative.
+//
+// It goes out UNWRAPPED, for the reason edgeReader's answer does: this role
+// answers with a VALUE, so no handler dereferences a pointer it returned, and
+// checkedReader exists for Get alone.
+func (s *Server) blockingAnnotator(r *http.Request) (issueops.BlockingAnnotator, error) {
+	if s.provider == nil {
+		return s.issueBlocking, nil
+	}
+	var src uow.BlockingAnnotatorSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.BlockingAnnotator()
 }
 
 // readyCounter returns the ready-count surface for one request.

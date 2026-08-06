@@ -41,6 +41,11 @@ func ValidateEdgeReadRequest(request publicops.EdgeReadRequest) error {
 // de-duplication decides the SHAPE of the answer — one entry per distinct id,
 // in first-mention order — and an implementation that skipped it would return a
 // different number of anchors than its sibling for the same request.
+//
+// Every batch-anchored role collapses its ids this way and reaches it here:
+// BlockingAnnotator makes the same promise over the same shape of request
+// (blocking_annotation.go), and the two making it out of one function is what
+// keeps "repeats collapse" from meaning two things.
 func EdgeReadAnchors(ids []string) []string {
 	seen := make(map[string]struct{}, len(ids))
 	out := make([]string, 0, len(ids))

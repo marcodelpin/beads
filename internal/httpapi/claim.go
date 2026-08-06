@@ -354,22 +354,23 @@ type timedProvider struct {
 // provider it holds for the role — the same two-step a CLI command performs on
 // a store — instead of reaching past it to a constructor.
 var (
-	_ uow.IssueReaderSource     = timedProvider{}
-	_ uow.IssueClaimerSource    = timedProvider{}
-	_ uow.WorkspaceConfigSource = timedProvider{}
-	_ uow.StatsReporterSource   = timedProvider{}
-	_ uow.IssueReaderSource     = timedProvider{}
-	_ uow.IssueClaimerSource    = timedProvider{}
-	_ uow.CycleDetectorSource   = timedProvider{}
-	_ uow.IssueReaderSource     = timedProvider{}
-	_ uow.IssueClaimerSource    = timedProvider{}
-	_ uow.EdgeReaderSource      = timedProvider{}
-	_ uow.IssueReaderSource     = timedProvider{}
-	_ uow.IssueClaimerSource    = timedProvider{}
-	_ uow.ReadyCounterSource    = timedProvider{}
-	_ uow.QuerierSource         = timedProvider{}
-	_ uow.SweeperSource         = timedProvider{}
-	_ uow.BatchCreatorSource    = timedProvider{}
+	_ uow.IssueReaderSource       = timedProvider{}
+	_ uow.IssueClaimerSource      = timedProvider{}
+	_ uow.WorkspaceConfigSource   = timedProvider{}
+	_ uow.StatsReporterSource     = timedProvider{}
+	_ uow.IssueReaderSource       = timedProvider{}
+	_ uow.IssueClaimerSource      = timedProvider{}
+	_ uow.CycleDetectorSource     = timedProvider{}
+	_ uow.IssueReaderSource       = timedProvider{}
+	_ uow.IssueClaimerSource      = timedProvider{}
+	_ uow.EdgeReaderSource        = timedProvider{}
+	_ uow.BlockingAnnotatorSource = timedProvider{}
+	_ uow.IssueReaderSource       = timedProvider{}
+	_ uow.IssueClaimerSource      = timedProvider{}
+	_ uow.ReadyCounterSource      = timedProvider{}
+	_ uow.QuerierSource           = timedProvider{}
+	_ uow.SweeperSource           = timedProvider{}
+	_ uow.BatchCreatorSource      = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -433,6 +434,13 @@ func (p timedProvider) CycleDetector() (issueops.CycleDetector, error) {
 // reports uow_ms=0.000.
 func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 	return uow.NewEdgeReader(p)
+}
+
+// BlockingAnnotator builds the blocking-decoration role OVER THIS WRAPPER, for
+// the same reason as the ones above: the annotation opens a unit of work of its
+// own, and it must land in this request's uow_ms rather than in nobody's.
+func (p timedProvider) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
+	return uow.NewBlockingAnnotator(p)
 }
 
 // ReadyCounter builds the ready counter OVER THIS WRAPPER, for the same reason

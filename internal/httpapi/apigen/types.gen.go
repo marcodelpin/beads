@@ -150,6 +150,14 @@ type BatchCreateResponse struct {
 	Items []Issue `json:"items"`
 }
 
+// BlockingAnnotations The blocking decoration of the named issues. It is NOT a page: this operation has no limit and no cursor, because the number of issues asked about is what bounds it.
+type BlockingAnnotations struct {
+	// Items One entry per DISTINCT requested id, in the order the request first named it — so a client can zip this against the ids it sent. Empty array (never null) when the request named none.
+	//
+	// There is no `missing` beside it, unlike `DependencyEdges`: this operation probes no id's existence, so every requested id has an entry and an id that names nothing is simply bare.
+	Items []IssueBlocking `json:"items"`
+}
+
 // BondRef A constituent of a compound molecule.
 type BondRef = types.BondRef
 
@@ -185,7 +193,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -251,6 +259,11 @@ type HealthStatus string
 
 // Issue A tracked work item. Property semantics documented here apply to every schema that repeats them below.
 type Issue = types.Issue
+
+// IssueBlocking One issue's derived blocking decoration.
+//
+// `blocked_by` and `blocks` are ASCENDING BY ID with repeats collapsed, and both are always present — an empty array, never null and never absent, so a client reads "nothing blocks this" from the answer rather than from a missing key. `parent` is absent when the issue has none and when the parent it has is closed.
+type IssueBlocking = issueops.IssueBlocking
 
 // IssueDetails An `Issue` with its labels, dependency edges and cardinalities — the body of `GET /v0/beads/issues/{id}`. `dependencies` and `dependents` carry FULL issue objects plus the edge type, not bare edges. Property semantics are documented on `Issue`.
 type IssueDetails = types.IssueDetails
@@ -491,6 +504,16 @@ type ListDependenciesParams struct {
 	//
 	// The filter narrows EDGES, never the named issues. An issue whose every edge the filter rejects is still not in `missing`.
 	Type *[]string `form:"type,omitempty" json:"type,omitempty"`
+}
+
+// ListBlockingAnnotationsParams defines parameters for ListBlockingAnnotations.
+type ListBlockingAnnotationsParams struct {
+	// IssueId The issues to annotate. Repeat the parameter; at least one is required and at most 100 are accepted, and either bound is a 400 `invalid_argument` with `param: "issue_id"`, `reason: "invalid_value"`.
+	//
+	// Each value must be an EXACT canonical issue id: there is no fuzzy, prefix or substring resolution on this surface, for the reason `GET /v0/beads/issues/{id}` gives. A value that matches nothing gets a bare entry rather than being refused. An empty value is a 400.
+	//
+	// Repeats collapse: an id named twice is one entry, at the position of its first mention.
+	IssueId []string `form:"issue_id" json:"issue_id"`
 }
 
 // ListIssuesParams defines parameters for ListIssues.

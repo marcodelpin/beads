@@ -577,7 +577,8 @@ func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 		got = append(got, c.(string))
 	}
 	want := []string{
-		"config.get", "config.list", "dependencies.cycles", "dependencies.list",
+		"config.get", "config.list", "dependencies.blocking", "dependencies.cycles",
+		"dependencies.list",
 		"issues.batchCreate", "issues.claim", "issues.get", "issues.list",
 		"issues.query", "issues.sweep", "ready.count", "ready.list", "stats.get",
 	}

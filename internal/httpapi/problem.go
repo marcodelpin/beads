@@ -159,8 +159,14 @@ const (
 	// member because it answers per named issue, reports the ids that named
 	// nothing, and returns edges whose target this database holds no row for.
 	OpListDependencies = "listDependencies"
-	OpCountReadyWork   = "countReadyWork"
-	OpQueryIssues      = "queryIssues"
+	// OpListBlockingAnnotations reads the DERIVED blocking decoration for
+	// several issues at once — open blockers, issues blocked, and the parent.
+	// It is a separate operation from listDependencies because it answers a
+	// summary over two edge types with a status rule applied, where that one
+	// returns the stored rows and applies nothing.
+	OpListBlockingAnnotations = "listBlockingAnnotations"
+	OpCountReadyWork          = "countReadyWork"
+	OpQueryIssues             = "queryIssues"
 	// OpSweepIssues is the one DESTRUCTIVE operation on this surface: bulk
 	// clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
@@ -214,6 +220,10 @@ var operationCodes = map[string][]Code{
 	// the response's `missing` member, so a batch keeps the answers for the ids
 	// that were found. A 404 would discard them.
 	OpListDependencies: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The same vocabulary as the stored-edge read beside it, and no not_found
+	// for a stronger version of the same reason: this operation probes no id's
+	// existence at all, so there is nothing it could 404 on.
+	OpListBlockingAnnotations: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The same vocabulary as the listing it sizes: it takes the same filters
 	// and can refuse them the same way. limit=0's mode-dependent refusal has no
 	// analog here because there is no limit to pass — but that was a

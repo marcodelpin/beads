@@ -107,14 +107,14 @@ info:
     same change — a two-way JSON-tag bijection test, covering all eight, fails
     CI otherwise. A
     breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
-    `IssueWithDependencyMetadata`, `Dependency`, `Comment`, `BondRef`, `Cycle`
-    and `CycleMember` are pinned to the canonical Go structs (`x-go-type`), so
-    the CLI's `--json` output and these response bodies are one compatibility
-    domain and cannot drift apart. Changes to them are limited to NEW optional
-    fields, and each addition must land with its entry in this document in the
-    same change — a two-way JSON-tag bijection test, covering all nine, fails CI
-    otherwise. A breaking change to those shapes requires cutting `/v1`, not
-    editing `/v0`.
+    `IssueWithDependencyMetadata`, `Dependency`, `Comment`, `BondRef`, `Cycle`,
+    `CycleMember` and `IssueBlocking` are pinned to the canonical Go structs
+    (`x-go-type`), so the CLI's `--json` output and these response bodies are
+    one compatibility domain and cannot drift apart. Changes to them are limited
+    to NEW optional fields, and each addition must land with its entry in this
+    document in the same change — a two-way JSON-tag bijection test, covering
+    all ten, fails CI otherwise. A breaking change to those shapes requires
+    cutting `/v1`, not editing `/v0`.
 
 
     A member that is absent is not set. When reading a RESPONSE, clients MUST
@@ -1480,6 +1480,92 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/dependencies/blocking:
+    get:
+      operationId: listBlockingAnnotations
+      summary: Read the blocking decoration of several issues
+      description: >-
+        The DERIVED blocking summary `bd list` prints beside each row —
+        `(parent: X, blocked by: Y, blocks: Z)` — for the issues named here.
+
+
+        IT IS DERIVED, NOT STORED, and that is the whole difference from
+        `GET /v0/beads/dependencies` next door. That operation returns the edge
+        ROWS: every edge type, targets spelled exactly as stored, nothing looked
+        up. This one answers a summary over TWO of those types with a rule
+        applied: a `blocks` edge counts only while its blocker is open, and a
+        `parent-child` edge becomes `parent` rather than a blocker. A client
+        that wants the rows asks the other operation; a client that wants the
+        decoration a listing shows asks this one.
+
+
+        A CLOSED BLOCKER IS NOT A BLOCKER, in either direction. An issue whose
+        every blocker is closed comes back with an empty `blocked_by`, and a
+        CLOSED issue blocks nothing — its `blocks` is empty even where the edges
+        still exist. `parent` follows the same rule: a closed parent is absent.
+
+
+        A BLOCKER THIS WORKSPACE HOLDS NO ROW FOR STILL BLOCKS. An `external:`
+        reference, an id in another repository's namespace and an id whose issue
+        was deleted out from under its edges are all statuses this database
+        cannot read, and an unreadable status is not `closed`. Hiding such a
+        blocker would report work as unblocked on the strength of a row that was
+        never found, so it is reported.
+
+
+        THERE IS NO `missing` MEMBER, unlike `GET /v0/beads/dependencies`. This
+        operation runs no existence probe: an id that names nothing and an id
+        with no live blocking edges decorate identically, so the probe would be
+        a read whose answer no client could act on. A client that needs to know
+        whether an id exists calls `GET /v0/beads/issues/{id}`, which answers
+        `404`. Every requested id gets an entry here either way.
+
+
+        THERE IS NO `limit` AND NO CURSOR, for the reason
+        `GET /v0/beads/dependencies` has none: the QUESTION is bounded instead,
+        at 100 `issue_id` values per call, which bounds the answer without
+        truncating it.
+      parameters:
+        - name: issue_id
+          in: query
+          description: >-
+            The issues to annotate. Repeat the parameter; at least one is
+            required and at most 100 are accepted, and either bound is a 400
+            `invalid_argument` with `param: "issue_id"`, `reason:
+            "invalid_value"`.
+
+
+            Each value must be an EXACT canonical issue id: there is no fuzzy,
+            prefix or substring resolution on this surface, for the reason
+            `GET /v0/beads/issues/{id}` gives. A value that matches nothing gets
+            a bare entry rather than being refused. An empty value is a 400.
+
+
+            Repeats collapse: an id named twice is one entry, at the position of
+            its first mention.
+          style: form
+          explode: true
+          required: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+      responses:
+        '200':
+          description: The blocking decoration of the named issues.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockingAnnotations'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
 
   parameters:
@@ -1554,7 +1640,7 @@ components:
     # Pinned schemas.
     #
     # Each of the eight below is `x-go-type`-pinned to the canonical Go struct,
-    # Each of the nine below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the ten below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.
@@ -1566,8 +1652,8 @@ components:
     # added to the Go struct without an entry here fails CI, and an entry here
     # with no Go field fails CI.
     #
-    # Seven of the nine are pinned to `internal/types`; `Cycle` and
-    # `CycleMember`, which appear after `BondRef`, are pinned to the role
+    # Seven of the ten are pinned to `internal/types`; `Cycle`, `CycleMember`
+    # and `IssueBlocking`, which appear after `BondRef`, are pinned to the role
     # package `issueops` instead, because that is where those canonical structs
     # live.
     # ---------------------------------------------------------------------
@@ -2256,6 +2342,52 @@ components:
             `members` is complete either way. This flag says the DESCRIPTIONS
             beside the ids are not.
 
+    # Pinned to `issueops` for the reason the cycle pair is: the role's own
+    # result IS what the CLI renders, so `bd list`'s decoration and this
+    # operation cannot drift apart. TestWireTagBijection covers it on the same
+    # terms and reads this schema's declared import path.
+    IssueBlocking:
+      type: object
+      description: >-
+        One issue's derived blocking decoration.
+
+
+        `blocked_by` and `blocks` are ASCENDING BY ID with repeats collapsed,
+        and both are always present — an empty array, never null and never
+        absent, so a client reads "nothing blocks this" from the answer rather
+        than from a missing key. `parent` is absent when the issue has none and
+        when the parent it has is closed.
+      x-go-type: issueops.IssueBlocking
+      x-go-type-import:
+        name: issueops
+        path: github.com/steveyegge/beads/issueops
+      required: [id, blocked_by, blocks]
+      properties:
+        id:
+          type: string
+          description: The annotated id, spelled exactly as the request spelled it.
+        blocked_by:
+          type: array
+          description: >-
+            The OPEN issues this one is blocked by: the targets of its `blocks`
+            edges whose own status is not closed.
+          items:
+            type: string
+        blocks:
+          type: array
+          description: >-
+            The issues this one blocks. Empty when this issue is itself closed,
+            which is the same rule `blocked_by` applies from the other end.
+          items:
+            type: string
+        parent:
+          type: string
+          description: >-
+            This issue's parent id. AT MOST ONE is reported; where an issue
+            carries several `parent-child` edges, which one appears here is not
+            specified. A client that needs every structural edge reads them from
+            `GET /v0/beads/dependencies`.
+
     # ---------------------------------------------------------------------
     # Envelope schemas. These have no canonical Go type behind them: they are
     # new wire surface, generated normally, and the generated type is the only
@@ -2331,7 +2463,8 @@ components:
             `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
             `issues.sweep`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
-            `dependencies.list`; it grows additively, and an operation never
+            `dependencies.list`, `dependencies.blocking`; it grows additively,
+            and an operation never
             appears here unless it is fully implemented. This is how a client
             checks for an operation — never the version string.
           items:
@@ -2747,6 +2880,28 @@ components:
             nothing is in neither list.
           items:
             type: string
+
+    BlockingAnnotations:
+      type: object
+      description: >-
+        The blocking decoration of the named issues. It is NOT a page: this
+        operation has no limit and no cursor, because the number of issues asked
+        about is what bounds it.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: >-
+            One entry per DISTINCT requested id, in the order the request first
+            named it — so a client can zip this against the ids it sent. Empty
+            array (never null) when the request named none.
+
+
+            There is no `missing` beside it, unlike `DependencyEdges`: this
+            operation probes no id's existence, so every requested id has an
+            entry and an id that names nothing is simply bare.
+          items:
+            $ref: '#/components/schemas/IssueBlocking'
 
     BatchCreateRequest:
       type: object

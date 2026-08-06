@@ -209,6 +209,15 @@ type Storage interface {
 	// refuses a missing anchor outright. Reads fire no hooks, as for
 	// IssueReader.
 	EdgeReader() (issueops.EdgeReader, error)
+	// BlockingAnnotator returns the guarded blocking-decoration surface for this
+	// store: the open blockers, the issues blocked and the parent of a page of
+	// ids, which is what a listing prints beside each row. Its own role rather
+	// than a second EdgeReader method because that one answers with STORED ROWS
+	// of every type, targets spelled as stored and a per-anchor miss, where this
+	// one answers a DERIVED summary of two edge types with closed blockers
+	// dropped and no existence probe at all. Reads fire no hooks, as for
+	// IssueReader.
+	BlockingAnnotator() (issueops.BlockingAnnotator, error)
 	// ReadyCounter returns the guarded ready-count surface for this store: the
 	// size of the ready set, which is the number `bd ready`'s pagination
 	// publishes and which no other role answers. IssueReader.Ready reports

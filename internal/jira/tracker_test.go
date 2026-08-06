@@ -678,6 +678,10 @@ func (s *configStore) EdgeReader() (issueops.EdgeReader, error) {
 	return nil, &storage.ErrUnsupported{Op: "EdgeReader", Backend: "jira-config-stub"}
 }
 
+func (s *configStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
+	return nil, &storage.ErrUnsupported{Op: "BlockingAnnotator", Backend: "jira-config-stub"}
+}
+
 func (s *configStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return nil, &storage.ErrUnsupported{Op: "ReadyCounter", Backend: "jira-config-stub"}
 }

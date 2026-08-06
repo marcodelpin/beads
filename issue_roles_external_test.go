@@ -382,6 +382,37 @@ func TestEdgeReaderExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestBlockingAnnotatorKeepsTelemetryOutermost is the blocking-decoration
+// role's version of the same pin, and the READ answer for the same reason:
+// annotating a page fires no completion hooks, so the hook decorator adds no
+// layer and the outermost surface a caller gets is the instrumented one.
+func TestBlockingAnnotatorKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	annotator, err := storage.NewHookFiringStore(instrumented, nil).BlockingAnnotator()
+	if err != nil {
+		t.Fatalf("BlockingAnnotator() error = %v", err)
+	}
+	if got := reflect.TypeOf(annotator).String(); got != "*telemetry.instrumentedBlockingAnnotator" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestBlockingAnnotatorExposesTypedUnsupportedError(t *testing.T) {
+	annotator, err := (*dolt.DoltStore)(nil).BlockingAnnotator()
+	if annotator != nil {
+		t.Fatalf("BlockingAnnotator() annotator = %T, want nil", annotator)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("BlockingAnnotator() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	counter, err := (*dolt.DoltStore)(nil).Counter()
 	if counter != nil {

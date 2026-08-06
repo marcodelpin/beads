@@ -117,6 +117,34 @@ func (e *roleEdgeReader) edgeRequests() []issueops.EdgeReadRequest {
 	return append([]issueops.EdgeReadRequest(nil), e.reads...)
 }
 
+// roleBlockingAnnotator is the derived-decoration role of the store-shaped
+// source. It is its own fake beside roleEdgeReader rather than a second method
+// on it, because the two are separate interfaces for separate questions and a
+// double answering both would be the shape that seam exists to rule out.
+type roleBlockingAnnotator struct {
+	result issueops.BlockingResult
+	err    error
+
+	mu    sync.Mutex
+	reads []issueops.BlockingRequest
+}
+
+func (a *roleBlockingAnnotator) AnnotateBlocking(_ context.Context, req issueops.BlockingRequest) (issueops.BlockingResult, error) {
+	a.mu.Lock()
+	a.reads = append(a.reads, req)
+	a.mu.Unlock()
+	if a.err != nil {
+		return issueops.BlockingResult{}, a.err
+	}
+	return a.result, nil
+}
+
+func (a *roleBlockingAnnotator) blockingRequests() []issueops.BlockingRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]issueops.BlockingRequest(nil), a.reads...)
+}
+
 // roleReadyCounter is the third role a store-shaped source must supply. It is
 // its own fake rather than a method on roleReader for the reason the roles are
 // separate interfaces: a backend hands out one surface per question, and a test
@@ -343,6 +371,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.EdgeReader == nil {
 		cfg.EdgeReader = &roleEdgeReader{}
+	}
+	if cfg.BlockingAnnotator == nil {
+		cfg.BlockingAnnotator = &roleBlockingAnnotator{}
 	}
 	if cfg.ReadyCounter == nil {
 		cfg.ReadyCounter = &roleReadyCounter{}
