@@ -585,10 +585,9 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
-			// The second destructive role, and the row wave 4 would otherwise
-			// have left out: a Config written against the previous release
-			// binds, advertises issues.delete, and nil-dereferences on the
-			// first request that erases a named bead.
+			// The other destructive role: a Config missing this one binds,
+			// advertises issues.delete, and nil-dereferences on the first
+			// request that erases a named bead.
 			name:    "no deleter",
 			cfg:     rolesConfigWithout(func(c *Config) { c.Deleter = nil }),
 			wantErr: "no database source",
@@ -599,19 +598,14 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
-			// The newest role, and the one a caller written against the
-			// PREVIOUS release leaves out: every set that was complete before
-			// this commit is incomplete now, and the failure a bind would defer
-			// is a nil dereference on the first issues:query request.
 			name:    "no querier",
 			cfg:     rolesConfigWithout(func(c *Config) { c.Querier = nil }),
 			wantErr: "no database source",
 		},
 		{
-			// The newest role, and the one whose absence would be worst: a
-			// Config written against the previous release binds, advertises
-			// issues.sweep in its own capability list, and nil-dereferences on
-			// the first request that deletes beads.
+			// The absence that would cost most: a Config missing this one binds,
+			// advertises issues.sweep in its own capability list, and
+			// nil-dereferences on the first request that deletes beads in bulk.
 			name:    "no sweeper",
 			cfg:     rolesConfigWithout(func(c *Config) { c.Sweeper = nil }),
 			wantErr: "no database source",
@@ -642,10 +636,9 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "exactly one database source",
 		},
 		{
-			// The newest role, and the one a caller written against the
-			// previous release would leave out: the pair alone used to be a
-			// complete source, and a Config that stayed that way would bind and
-			// then nil-dereference on the first ready:count request.
+			// The pair ALONE used to be a complete source, so this is the exact
+			// Config the first release of this arm accepted. It is here as a
+			// regression case rather than as another one-role-missing row.
 			name:    "a reader and a claimer without a ready counter",
 			cfg:     Config{Reader: &roleReader{}, Claimer: &roleClaimer{}},
 			wantErr: "no database source",

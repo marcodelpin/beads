@@ -275,9 +275,9 @@ const (
 	// request, timed into that request's uow_ms and drawn from a pool bd serve
 	// bounds itself. Every Dolt SQL-server topology takes it.
 	serveSourceProvider serveSource = iota
-	// serveSourceStore is the two issue roles, taken off the store the root
-	// command already opened. A registered backend's facade is a store rather
-	// than a unit-of-work provider, so this is the source it has.
+	// serveSourceStore is the role set, taken off the store the root command
+	// already opened. A registered backend's facade is a store rather than a
+	// unit-of-work provider, so this is the source it has.
 	serveSourceStore
 )
 
@@ -393,8 +393,8 @@ func errServeEmbedded() error {
 		&storage.ErrUnsupported{Op: "serve", Backend: "embedded-dolt"})
 }
 
-// serveIssueRoles takes the two issue roles this server answers from off the
-// store the root command already opened.
+// serveIssueRoles takes the roles this server answers from off the store the
+// root command already opened.
 //
 // ONE PEEL, and never storage.UnwrapStore. bd's chain is
 // HookFiringStore -> InstrumentedStorage -> raw, and every decorator publishes
