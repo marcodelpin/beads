@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd delete --cascade` no longer marks LIVE issues as deleted in other
+  issues' text** (bd-x82so). When the deletion named a wisp, the set used to
+  rewrite `[deleted:<id>]` citations was computed differently from the set that
+  was actually deleted: dependents reachable only through a wisp root were left
+  in place, and then their neighbours' `description`, `notes`, `design` and
+  `acceptance_criteria` were rewritten to say those still-present rows had been
+  deleted. `bd wisp gc` ran exactly this path, because it hardcodes cascade.
+
+  **Text already corrupted by earlier builds is NOT repaired.** Those are stored
+  bytes and nothing here scans for them; a `[deleted:<id>]` marker naming a row
+  that still exists is a leftover from a pre-fix build. Searching for markers
+  whose id is still present will find them.
+
+  Three consequences of the same fix, all on the direct and embedded routes and
+  all converging onto what the team-server route already did:
+
+  - `bd delete <wisp> --cascade` now deletes the wisp's dependents in **both**
+    planes, as `--cascade` has always claimed. It previously stopped at the
+    wisp, reported only what it deleted, and gave no sign it had done less than
+    asked. Anyone relying on that under-deletion will see more rows go — and
+    `bd wisp gc` now removes durable rows hanging off abandoned wisps.
+  - `bd delete <wisp>` with a durable dependent, unforced, is now **refused**
+    with `issue <id> has dependents not in deletion set`. It previously
+    succeeded and silently orphaned the dependent.
+  - `bd delete <wisp> --force` now lists that dependent in the orphan report,
+    where it previously reported nothing, and the removed cross-plane edge is
+    counted.
+
+  The two set computations are gone: one `DeletionSet`, resolved once, is handed
+  to the neighbourhood read, the delete and the rewrite, so they cannot drift
+  apart again.
+
 - **`bd query` no longer drops matches from an `OR` or `NOT` query** (bd-pohmh).
   **Your results will change, and they change by getting bigger.** To answer an
   expression the storage filter cannot express, both routes fetched
