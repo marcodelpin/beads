@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3919,16 +3920,11 @@ func (s *DoltStore) RecomputeAllBlocked(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("begin is_blocked recompute: %w", err)
 	}
-	// Refuse to derive and commit is_blocked from a dirty graph: the recompute
-	// reads the current working set and stages only `issues`, so pre-existing
-	// dirty issue/dependency edits would otherwise be swept into — or silently
-	// inform — the repair commit (bd-6dnrw.37). Checked inside this tx so it
-	// sees the same working set the recompute will read.
-	if err := issueops.GuardBlockedRecomputeWorkingSet(ctx, tx); err != nil {
-		_ = tx.Rollback()
-		return 0, err
-	}
-	changed, err := issueops.RecomputeAllIsBlockedInTx(ctx, tx)
+	// One shared body across every mode (guard a dirty graph, then recompute):
+	// the guard refuses to derive and commit is_blocked from uncommitted
+	// issue/dependency edits, and it runs inside THIS tx so it sees exactly the
+	// working set the recompute reads (bd-6dnrw.37).
+	changed, err := versioncontrolops.GuardedRecomputeAllBlockedInTx(ctx, tx)
 	if err != nil {
 		_ = tx.Rollback()
 		return 0, err
@@ -3939,11 +3935,25 @@ func (s *DoltStore) RecomputeAllBlocked(ctx context.Context) (int, error) {
 	if changed > 0 {
 		// Stage only issues — the synced table is_blocked lives on (wisps are
 		// dolt_ignore'd) — so an unrelated dirty working set is not swept in.
-		if err := s.doltAddAndCommit(ctx, []string{"issues"}, "bd: recompute is_blocked (full)"); err != nil {
+		if err := s.doltAddAndCommit(ctx, blockedRecomputeStagedTableList(),
+			versioncontrolops.BlockedRecomputeCommitMsg); err != nil {
 			return int(changed), err
 		}
 	}
 	return int(changed), nil
+}
+
+// blockedRecomputeStagedTableList is versioncontrolops.BlockedRecomputeStagedTables
+// in the ordered form doltAddAndCommit takes, so the staging set of the repair
+// commit is defined in exactly one place for every mode.
+func blockedRecomputeStagedTableList() []string {
+	staged := versioncontrolops.BlockedRecomputeStagedTables()
+	tables := make([]string, 0, len(staged))
+	for table := range staged {
+		tables = append(tables, table)
+	}
+	sort.Strings(tables)
+	return tables
 }
 
 // recomputeBlockedTx runs the post-merge is_blocked recompute in its own
