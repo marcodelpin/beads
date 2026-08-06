@@ -183,6 +183,9 @@ func runServe() error {
 			CycleDetector:    roles.cycles,
 			EdgeReader:       roles.edges,
 			ReadyCounter:     roles.readyCounter,
+			Querier:          roles.querier,
+			Sweeper:          roles.sweeper,
+			BatchCreator:     roles.batchCreator,
 			Workspace:        info,
 			SchemaVersion:    JSONSchemaVersion,
 			Mode:             serveResolvedMode(info, db),
@@ -434,6 +437,9 @@ func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
 		{"cycle detector", func() (err error) { roles.cycles, err = src.CycleDetector(); return }},
 		{"edge reader", func() (err error) { roles.edges, err = src.EdgeReader(); return }},
 		{"ready counter", func() (err error) { roles.readyCounter, err = src.ReadyCounter(); return }},
+		{"querier", func() (err error) { roles.querier, err = src.Querier(); return }},
+		{"sweeper", func() (err error) { roles.sweeper, err = src.Sweeper(); return }},
+		{"batch creator", func() (err error) { roles.batchCreator, err = src.BatchCreator(); return }},
 	} {
 		if err := b.get(); err != nil {
 			return serveRoles{}, fmt.Errorf("%s: %w", b.name, err)
@@ -458,6 +464,9 @@ type serveRoles struct {
 	cycles       issueops.CycleDetector
 	edges        issueops.EdgeReader
 	readyCounter issueops.ReadyCounter
+	querier      issueops.Querier
+	sweeper      issueops.Sweeper
+	batchCreator issueops.BatchCreator
 }
 
 // serveResolvedMode labels the topology for the startup log line. Cosmetic —

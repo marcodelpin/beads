@@ -191,6 +191,11 @@ func (*serveIdentityStore) EdgeReader() (issueops.EdgeReader, error) { return se
 func (*serveIdentityStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return serveIdentityRole{}, nil
 }
+func (*serveIdentityStore) Querier() (issueops.Querier, error) { return serveIdentityRole{}, nil }
+func (*serveIdentityStore) Sweeper() (issueops.Sweeper, error) { return serveIdentityRole{}, nil }
+func (*serveIdentityStore) BatchCreator() (issueops.BatchCreator, error) {
+	return serveIdentityRole{}, nil
+}
 
 type serveIdentityRole struct {
 	issueops.WorkspaceConfig
@@ -198,6 +203,9 @@ type serveIdentityRole struct {
 	issueops.CycleDetector
 	issueops.EdgeReader
 	issueops.ReadyCounter
+	issueops.Querier
+	issueops.Sweeper
+	issueops.BatchCreator
 }
 
 type serveIdentityReader struct{ id string }

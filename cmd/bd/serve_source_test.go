@@ -199,6 +199,9 @@ func (*serveRolesStore) StatsReporter() (issueops.StatsReporter, error)     { re
 func (*serveRolesStore) CycleDetector() (issueops.CycleDetector, error)     { return nil, nil }
 func (*serveRolesStore) EdgeReader() (issueops.EdgeReader, error)           { return nil, nil }
 func (*serveRolesStore) ReadyCounter() (issueops.ReadyCounter, error)       { return nil, nil }
+func (*serveRolesStore) Querier() (issueops.Querier, error)                 { return nil, nil }
+func (*serveRolesStore) Sweeper() (issueops.Sweeper, error)                 { return nil, nil }
+func (*serveRolesStore) BatchCreator() (issueops.BatchCreator, error)       { return nil, nil }
 
 type serveStubReader struct{}
 
