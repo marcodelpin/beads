@@ -408,6 +408,11 @@ func RunDeleterCountsCrossPlaneEdgesItRemoves(t *testing.T, ctx context.Context,
 	wispDependent := deleterSeedWisp(t, ctx, fixture, "xcount", "wispdep")
 	deleterAddEdge(t, ctx, fixture, wispDependent, durable)
 
+	// Both edges are really there before the delete, so a zero count afterwards
+	// is a removal rather than a fixture that never seeded them.
+	deleterAssertEdgeRows(t, ctx, fixture, 1, durableDependent, wisp)
+	deleterAssertWispEdgeRows(t, ctx, fixture, 1, wispDependent, durable)
+
 	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
 		IDs:   []string{wisp, durable},
 		Force: true,

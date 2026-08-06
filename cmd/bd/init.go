@@ -224,6 +224,37 @@ func shouldInitSharedGlobalDB(sharedServer, sharedServerMode, gateway bool) bool
 	return (sharedServer || sharedServerMode) && !gateway
 }
 
+// warnHalfIdentifiedSubstrate reports a substrate carrying one identity marker
+// and not the other.
+//
+// Both halves are named because they fail differently. Without a project id,
+// cross-project verification has nothing to compare and each rig mints its own
+// local one, so the divergence is invisible until something backfills the
+// database. Without a prefix, the substrate cannot name an issue and every
+// later open reports the workspace as uninitialized.
+func warnHalfIdentifiedSubstrate(found issueops.VerifyIdentityResult) {
+	if isQuiet() {
+		return
+	}
+	switch {
+	case found.Prefix != "" && found.ProjectID == "":
+		fmt.Fprintf(os.Stderr, "%s the database has an issue prefix (%s) but no project identity.\n"+
+			"  bd will not complete a half-identified database. This workspace's metadata.json now carries a\n"+
+			"  project id that only THIS clone knows; another clone's init will mint a different one, and the\n"+
+			"  first `bd doctor --fix` will backfill the database from whichever clone ran it — after which the\n"+
+			"  others refuse to open with PROJECT IDENTITY MISMATCH.\n"+
+			"  Settle it deliberately: run `bd doctor --fix` from the clone whose identity should win, then\n"+
+			"  re-init the others.\n",
+			ui.RenderWarn("WARNING:"), found.Prefix)
+	case found.ProjectID != "" && found.Prefix == "":
+		fmt.Fprintf(os.Stderr, "%s the database has a project identity but no issue prefix.\n"+
+			"  bd will not complete a half-identified database, and a substrate with no prefix cannot name an\n"+
+			"  issue: later commands will report this workspace as uninitialized.\n"+
+			"  Set it deliberately with `bd config set issue_prefix <prefix>`.\n",
+			ui.RenderWarn("WARNING:"))
+	}
+}
+
 // seedInitWorkspaceIdentity records the workspace's identity through
 // issueops.Bootstrapper, or adopts the one already on the substrate.
 //
@@ -249,6 +280,18 @@ func seedInitWorkspaceIdentity(
 	if found.Prefix != "" || found.ProjectID != "" {
 		// Adopt. The caller has already reconciled metadata.json against
 		// found.ProjectID; re-stamping the substrate would say nothing new.
+		//
+		// A HALF-IDENTIFIED SUBSTRATE IS SAID OUT LOUD. Bootstrapper refuses to
+		// complete one on purpose — it cannot tell a half-written bootstrap
+		// from a deliberately half-provisioned database, and guessing wrong
+		// destroys the one it did not mean — so init cannot fix this and must
+		// not leave the operator thinking it did. Silence here is what arms the
+		// failure: with no _project_id to adopt, every rig's init mints a
+		// DIFFERENT local one, and the first `bd doctor --fix` backfills the
+		// database from whichever rig ran it, after which every other rig's
+		// open hard-fails PROJECT IDENTITY MISMATCH with advice that
+		// misdiagnoses the cause.
+		warnHalfIdentifiedSubstrate(found)
 		return nil
 	}
 	if projectID == "" {

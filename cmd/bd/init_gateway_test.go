@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // Gateway mode: a configured credential command resolves its token into the
@@ -424,6 +425,53 @@ func TestShouldWriteInitDoltRemote(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("shouldWriteInitDoltRemote(%v, %q, %v, %v, %v, %v) = %v, want %v",
 					tt.gateway, tt.syncURL, tt.syncFromRemote, tt.syncURLFromConfig, tt.syncURLFromGitOrigin, tt.localOnly, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWarnHalfIdentifiedSubstrate pins that init SAYS SO when the database
+// carries one identity marker and not the other.
+//
+// Bootstrapper refuses to complete a half-identified substrate on purpose, so
+// init cannot fix this state — which makes silence the failure. With no
+// _project_id to adopt, every clone's init mints a different local one and the
+// first `bd doctor --fix` turns that divergence into a hard PROJECT IDENTITY
+// MISMATCH for every other clone, with recovery advice that names the wrong
+// cause.
+func TestWarnHalfIdentifiedSubstrate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		found issueops.VerifyIdentityResult
+		want  []string
+	}{
+		{
+			name:  "prefix without a project identity",
+			found: issueops.VerifyIdentityResult{Prefix: "app"},
+			want:  []string{"no project identity", "app", "PROJECT IDENTITY MISMATCH", "bd doctor --fix"},
+		},
+		{
+			name:  "project identity without a prefix",
+			found: issueops.VerifyIdentityResult{ProjectID: "proj-xyz"},
+			want:  []string{"no issue prefix", "uninitialized", "bd config set issue_prefix"},
+		},
+		{
+			name:  "fully identified says nothing",
+			found: issueops.VerifyIdentityResult{Prefix: "app", ProjectID: "proj-xyz"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stderr := captureStderr(t, func() { warnHalfIdentifiedSubstrate(tc.found) })
+			if len(tc.want) == 0 {
+				if strings.TrimSpace(stderr) != "" {
+					t.Fatalf("an identified substrate warned anyway: %s", stderr)
+				}
+				return
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("warning does not mention %q:\n%s", want, stderr)
+				}
 			}
 		})
 	}
