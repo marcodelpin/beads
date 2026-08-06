@@ -594,8 +594,22 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "no database source",
 		},
 		{
+			name:    "no blocking annotator",
+			cfg:     rolesConfigWithout(func(c *Config) { c.BlockingAnnotator = nil }),
+			wantErr: "no database source",
+		},
+		{
 			name:    "no tree walker",
 			cfg:     rolesConfigWithout(func(c *Config) { c.TreeWalker = nil }),
+			wantErr: "no database source",
+		},
+		{
+			// The second destructive role, and the row wave 4 would otherwise
+			// have left out: a Config written against the previous release
+			// binds, advertises issues.delete, and nil-dereferences on the
+			// first request that erases a named bead.
+			name:    "no deleter",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Deleter = nil }),
 			wantErr: "no database source",
 		},
 		{

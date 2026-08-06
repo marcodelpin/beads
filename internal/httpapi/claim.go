@@ -361,6 +361,7 @@ var (
 	_ uow.CycleDetectorSource     = timedProvider{}
 	_ uow.EdgeReaderSource        = timedProvider{}
 	_ uow.BlockingAnnotatorSource = timedProvider{}
+	_ uow.TreeWalkerSource        = timedProvider{}
 	_ uow.ReadyCounterSource      = timedProvider{}
 	_ uow.QuerierSource           = timedProvider{}
 	_ uow.SweeperSource           = timedProvider{}

@@ -12,13 +12,14 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the twenty-two-strong capability surface every storage
+// roleAccessorNames is the twenty-three-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
+	"IssueClaimer",
 	"IssueRelations",
 	"EdgeReader",
 	"BlockingAnnotator",
@@ -65,7 +66,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-two
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-three
 // role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -124,7 +125,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all twenty-two roles at once. Nothing calls its
+// roleAccessorSentinel implements all twenty-three roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 

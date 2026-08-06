@@ -11,13 +11,14 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the twenty-two-strong capability surface every storage
+// roleAccessorNames is the twenty-three-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a twenty-third role to DoltStorage without deciding what each decorator
+// adding a twenty-fourth role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
 	"IssueReader",
+	"IssueClaimer",
 	"IssueRelations",
 	"EdgeReader",
 	"BlockingAnnotator",
@@ -75,7 +76,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-two
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-three
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -182,7 +183,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all twenty-two roles at once. Nothing calls its
+// roleAccessorSentinel implements all twenty-three roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 

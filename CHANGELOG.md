@@ -48,6 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /v0/beads/dependencies/blocking` — the blocking decoration `bd list`
+  prints, over HTTP** (bd-5k21g). `bd serve` now answers
+  `?ids=bd-abc&ids=bd-def` with, per requested id, its open blockers, the beads
+  it blocks and its open parent — the derived summary `bd list` renders as
+  `blocked by:` and `blocks:`, from the same `issueops.BlockingAnnotator` both
+  CLI routes call. `capabilities` gains `dependencies.blocking`.
+
+  It is not a mode of `GET /v0/beads/dependencies`: that one returns stored edge
+  rows and applies nothing, this one applies the status rule and separates the
+  parent edge from the blocking ones. It is also not a page — the number of ids
+  the caller named is what bounds it, so there is no `limit` and no cursor. An
+  id that names nothing is annotated bare rather than reported missing, which is
+  the same answer the CLI gives.
+
 - **`GET /v0/beads/dependencies/tree` — the `bd dep tree` walk over HTTP**
   (bd-lx5iu). `bd serve` now answers a recursive walk from one root —
   `?root_id=bd-abc&direction=both&max_depth=3&status=open` — with the flat
@@ -292,6 +306,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `scoped` boolean so a reclaim log distinguishes a scoped sweep from a global
   one.
 
+- **Every command that had a role now reaches it through the accessor, on both
+  routes** (facade waves 1-4). This is the close of the programme: twenty-three
+  capability accessors on the storage substrate, each answering a role interface
+  in the leaf package `issueops`, each with a backend-independent conformance
+  suite run against the Dolt server store, the embedded Dolt store and the
+  unit-of-work provider, and each reached by the CLI's direct route, the CLI's
+  `--proxied-server` route and — where the capability is published — one HTTP
+  operation, all calling the same role. `bd serve` publishes sixteen operations,
+  ten of them added by the programme, every one written into
+  `internal/httpapi/spec/openapi.v0.yaml` before its handler existed.
+
+  **What did NOT get a role is as deliberate as what did.** `bd show` and
+  `bd close` were already behind `Reader` and `BatchCloser`/`Lifecycle` on both
+  routes, so there was nothing to converge. `bd version` prints build
+  information and a role is an interface onto a substrate — the one part of it
+  that touches state, the recorded-version marker, got `VersionReconciler`
+  instead. Most of `bd init` CREATES the substrate a role would be reached
+  through; only the workspace identity is reachable as a store capability, and
+  that is what `Bootstrapper` and `InitVerifier` are. `bd create --graph` is
+  deferred on the record: it is an UPSERT with caller-supplied symbolic names
+  and `BatchCreator` is create-only with server-assigned ids, so folding them
+  would have meant one role with two incompatible id policies.
+
 - **A shared semantic contract for every issue role** (bd-yby99). Seven of the
   eight role interfaces in `issueops` now have a backend-independent
   conformance suite in `backend/conformance`, run against the Dolt server store,
@@ -378,6 +415,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **A team-server script that relied on the implicit cascade will start leaving
   orphans.** Add `--cascade` to it. The proxied `--json` result gains
   `orphaned_issues` so a script can see them; a cascade leaves it null.
+
+- **Proxied `bd init` ADOPTS an existing project identity instead of
+  overwriting it** (bd-zl3u8). **This one silently corrupted shared databases.**
+  Against a team server whose database another rig had already identified,
+  `bd init --proxied-server` wrote its own locally-derived issue prefix and
+  project id straight over the stored pair — renaming every id the co-tenant was
+  about to mint. It now reads the identity first and prints "Adopted project
+  identity from existing database", which is what the direct route has always
+  done. There is no flag that restores the overwrite.
+
+  Two consequences ride along. `bd init` **no longer fills in a missing project
+  id** on a substrate that already carries an issue prefix: half-identified is
+  now adopted as it stands rather than completed, because the guard that stops
+  the overwrite above cannot tell a half-provisioned workspace from a shared one
+  mid-write. Re-identifying is an explicit act with no command yet; if you have
+  such a workspace, it keeps working and it stays half-identified. And `bd init`
+  **with `BEADS_DIR` pointing outside the repository now records a project id**,
+  taken from that workspace's own `metadata.json`, where it previously recorded
+  none and left exactly the state the new refusal will not complete.
+
+- **`bd list` and `bd children` print blocker ids in ASCENDING ORDER**
+  (bd-5k21g). The `blocked by:` and `blocks:` ids in compact and agent output
+  came out in query order, which is map-iteration and query-plan dependent, so
+  an unchanged workspace could print different bytes on two consecutive runs.
+  They are now sorted ascending with repeats collapsed, on both routes. Only
+  rows with two or more live blockers change; a diff-based script that pinned
+  the old order was pinning an order the database never promised.
 
 - **`bd delete <one-id>` without `--force` now REFUSES when the bead has an
   outside dependent**, instead of printing a preview and exiting 0 (bd-x82so).

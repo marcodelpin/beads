@@ -23,10 +23,12 @@ import (
 // pinning.go proves those three are aliases; only this test proves the document
 // still describes them.
 // The import path is per-entry rather than one constant, because the canonical
-// structs do not all live in one package: seven are internal/types, and the
-// cycle pair is the role package issueops, where issueops.CycleDetector's own
-// result type lives. Asserting the declared path per schema keeps the pin's
-// TARGET checked, which is what a bare x-go-type name would not do.
+// structs do not all live in one package: nine are internal/types, and the
+// three that are not — the cycle pair and IssueBlocking — live in the role
+// package issueops, where the results of issueops.CycleDetector and
+// issueops.BlockingAnnotator are declared. Asserting the declared path per
+// schema keeps the pin's TARGET checked, which is what a bare x-go-type name
+// would not do.
 var pinnedSchemas = []struct {
 	name       string
 	goType     string
@@ -37,12 +39,14 @@ var pinnedSchemas = []struct {
 	{"IssueWithCounts", "types.IssueWithCounts", canonicalTypesImport, types.IssueWithCounts{}},
 	{"IssueDetails", "types.IssueDetails", canonicalTypesImport, types.IssueDetails{}},
 	{"IssueWithDependencyMetadata", "types.IssueWithDependencyMetadata", canonicalTypesImport, types.IssueWithDependencyMetadata{}},
+	{"TreeNode", "types.TreeNode", canonicalTypesImport, types.TreeNode{}},
 	{"Dependency", "types.Dependency", canonicalTypesImport, types.Dependency{}},
 	{"Comment", "types.Comment", canonicalTypesImport, types.Comment{}},
 	{"BondRef", "types.BondRef", canonicalTypesImport, types.BondRef{}},
 	{"Statistics", "types.Statistics", canonicalTypesImport, types.Statistics{}},
 	{"Cycle", "issueops.Cycle", canonicalRolesImport, issueops.Cycle{}},
 	{"CycleMember", "issueops.CycleMember", canonicalRolesImport, issueops.CycleMember{}},
+	{"IssueBlocking", "issueops.IssueBlocking", canonicalRolesImport, issueops.IssueBlocking{}},
 }
 
 const (
