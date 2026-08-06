@@ -587,6 +587,7 @@ var createCmd = &cobra.Command{
 			Dependencies:  createDependencyRequests(depSpecs),
 			WaitsFor:      waitsForRequest(waitsForSpec),
 			ForceIDPrefix: forceCreate,
+			IDPrefix:      createIDPrefixOverride(),
 		})
 		if err != nil {
 			// RULING R1: an occupied --id is a refusal, not a silent full-row
@@ -780,6 +781,22 @@ func mergeCreateLabels(labels, inheritedLabels []string) []string {
 		return nil
 	}
 	return merged
+}
+
+// createIDPrefixOverride is the prefix an explicit --id must match, when the
+// WORKSPACE knows better than the database does.
+//
+// config.yaml's `issue-prefix` wins over the database's, except under --global
+// where the shared database is authoritative (GH#4957, selectCreateIDPrefix).
+// Only a front door can read config.yaml — a shared server's database knows
+// only its own prefix — so both routes resolve it here and hand it to the role
+// as CreateRequest.IDPrefix. Empty means "the substrate's prefix is right",
+// which is the ordinary case.
+func createIDPrefixOverride() string {
+	if globalFlag {
+		return ""
+	}
+	return overlayYAMLPrefix("")
 }
 
 func selectCreateIDPrefix(global bool, yamlPrefix, storePrefix string) string {

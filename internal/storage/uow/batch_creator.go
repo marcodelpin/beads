@@ -57,6 +57,15 @@ func (o *batchCreator) CreateBatch(ctx context.Context, request publicops.Create
 		if err != nil {
 			return publicops.CreateBatchResult{}, "", err
 		}
+		// The plane rule, enforced BEFORE anything is written. This body
+		// creates item by item, so by the time a cross-plane edge is written
+		// its target is an ordinary existing row and the domain layer accepts
+		// it — the store bodies see the batch as a set and refuse. Same
+		// request, opposite outcomes, on a rule the contract states.
+		if err := storageissueops.ValidateCreateBatchPlanes(attempt, createContext.InfraTypes); err != nil {
+			return publicops.CreateBatchResult{}, "", err
+		}
+
 		result := publicops.CreateBatchResult{Issues: make([]*types.Issue, len(attempt.Items))}
 		for i, item := range attempt.Items {
 			issue, err := createBatchItem(ctx, uw, attempt, item, createContext)

@@ -97,9 +97,12 @@ type StatsResult struct {
 //     buckets do not sum to Total. PinnedIssues counts the pinned FLAG and
 //     overlaps every status bucket.
 //   - BlockedIssues counts rows whose transitive is_blocked flag is set,
-//     excluding closed and pinned ones. It is NOT the count of rows whose
-//     status is "blocked", and the two genuinely differ: an open row with an
-//     unfinished blocker is counted here and its status is still "open".
+//     excluding those whose STATUS is "closed" or "pinned". The exclusion is
+//     by status, NOT by the pinned flag the bullet above describes, and the
+//     two are different rows: a flag-pinned OPEN row with an unfinished
+//     blocker IS counted here. It is also not the count of rows whose status
+//     is "blocked" — an open row with an unfinished blocker is counted here
+//     and its status is still "open".
 //   - ReadyIssues is ARITHMETIC, not a query: OpenIssues minus BlockedIssues,
 //     clamped at zero. It is therefore not the cardinality of `bd ready`, which
 //     applies type exclusions, the deferral window, assignee filters and a

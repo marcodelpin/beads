@@ -316,8 +316,7 @@ linters:
       # provider's capability accessor. `gc` stays — it is a different command
       # that still selects its own closed beads, and it now shares only the pure
       # recheck (workapi.FilterSweepCandidates) with the role.
-      
-      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|search|todo|wisp|human)(_proxied_server)?\.go$'
+      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|purge|search|todo|wisp|human)(_proxied_server)?\.go$'
         linters:
           - forbidigo
       # Molecule reporting: each selects the members of one molecule.

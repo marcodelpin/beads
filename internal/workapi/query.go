@@ -97,8 +97,23 @@ func BuildQueryPlan(in issueops.QueryRequest) (QueryPlan, error) {
 	if result.RequiresPredicate {
 		plan.Predicate = result.Predicate
 	} else {
-		// The database answers this one exactly, so it may carry the page.
+		// The database answers this one exactly, so it may carry the page —
+		// and it must carry the ORDER too, for the same reason BuildListFilter
+		// pushes SortBy down.
+		//
+		// Without it the database bounds the page in STORAGE order and the
+		// display sort runs afterwards in Go, so which N rows are in the page
+		// is whatever order the engine happened to return. The store body
+		// over-fetches one row as a has-more probe and sorted that probe INTO
+		// the page; the unit-of-work body trims to N natively and never sees
+		// it. Two bodies, two different pages, for one `--sort ... --limit N`.
+		//
+		// Pushed down, the bound and the order are one decision the engine
+		// makes: the page is the first N in the requested order on every
+		// backend, and the probe row is genuinely last.
 		plan.Filter.Limit = limit
+		plan.Filter.SortBy = in.SortBy
+		plan.Filter.SortDesc = in.Reverse
 	}
 
 	// The default closed exclusion, applied only to an expression that has no
