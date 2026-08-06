@@ -20,20 +20,17 @@ import (
 //
 // THERE ARE TWO BODIES BEHIND THE THREE WIRINGS. dolt and embeddeddolt share
 // internal/storage/issueops.SweepInTx and differ only in how they reach a
-// transaction; the unit-of-work provider reaches the same four questions
-// through the domain use cases and is genuinely separate code. So the wirings
-// are one vote plus an engine check, and a second independent vote — and the
-// selection half of both votes runs through the SAME internal/workapi
-// functions, which is why the cases below spend their assertions on what only
-// a real backend can show: which rows are actually gone, what a dry run left
-// alone, and whether the version-control plane recorded anything.
+// transaction; the unit-of-work provider goes through the domain use cases and
+// is genuinely separate code. So the wirings are one vote plus an engine check,
+// and a second independent vote — and the selection half of both votes runs
+// through the SAME internal/workapi functions. The cases below therefore spend
+// their assertions on what only a real backend can show: which rows are gone,
+// what a dry run left alone, what the version-control plane recorded.
 //
-// EVERY CASE SCOPES ITSELF WITH AN ID PATTERN, and here that is not hygiene
-// but a precondition. A sweep is asked of a whole TIER, so a case that swept
-// without a pattern would delete the rows the next case seeded — and, on the
-// ephemeral tier, would be a legal unfiltered request that the role does not
-// refuse. Each Run therefore seeds under fixture.IssuePrefix + its own tag and
-// passes that tag as SweepRequest.IDPattern.
+// EVERY CASE SCOPES ITSELF WITH AN ID PATTERN, which is a precondition rather
+// than hygiene. A sweep is asked of a whole TIER, so a case that swept without
+// a pattern would delete the rows the next case seeded — and on the ephemeral
+// tier that is a legal unfiltered request the role does not refuse.
 //
 // EVERY CASE PINS closed_at EXPLICITLY. The recheck the role performs is
 // against a cutoff, and a seeded row whose closed_at defaulted to "now" would
@@ -41,8 +38,7 @@ import (
 
 // SweeperFixture supplies adapter-specific storage access for the
 // bulk-clearance assertions. Every field is named and typed exactly like the
-// per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
-// accessor plus prefix with no adapter in between.
+// per-backend roleFixtureKit hook it is filled from.
 type SweeperFixture struct {
 	// IssuePrefix namespaces the ids each assertion seeds, so several of them
 	// can share one database.
@@ -56,8 +52,7 @@ type SweeperFixture struct {
 	// adapters reach the two planes through different verbs.
 	CreateWisp func(context.Context, *types.Issue, string) error
 	// QueryScalar runs a single-row query and scans it. It is how these cases
-	// observe the ONE thing a sweep result cannot be trusted to report about
-	// itself: whether the rows are really gone.
+	// observe whether the rows are really gone.
 	QueryScalar func(context.Context, string, []any, ...any) error
 	// CountHistory reports how many history entries the fixture's branch has.
 	// A nil hook means "this backend cannot observe history", and the case
@@ -71,9 +66,8 @@ type SweeperFixture struct {
 }
 
 // sweeperClosedAt is the stamp every seeded candidate carries, and
-// sweeperCutoff is an instant strictly after it. Fixed values rather than
-// offsets from time.Now so the cutoff cases assert an interval rather than
-// race the clock.
+// sweeperCutoff is an instant strictly after it. Fixed rather than offsets from
+// time.Now so the cutoff cases do not race the clock.
 var (
 	sweeperClosedAt = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	sweeperCutoff   = time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
@@ -81,13 +75,11 @@ var (
 
 // RunSweeperRefusesAnUnfilteredDurableSweep pins the safety invariant the role
 // took off the CLI (issueops/sweeper.go:59-73): a durable sweep with neither a
-// cutoff nor a pattern is ErrValidation, and it is the WHOLE POINT of the
-// guard living below the front doors that this is asserted at the role rather
-// than at a handler.
+// cutoff nor a pattern is ErrValidation, asserted at the role rather than at a
+// handler so a second front door inherits it.
 //
-// It asserts the refusal AND its effect. A guard that returned an error after
-// deleting would satisfy an errors.Is assertion perfectly, and on this
-// operation that is the failure worth spending a seeded row to rule out.
+// It asserts the refusal AND its effect: a guard that returned an error after
+// deleting would satisfy an errors.Is assertion perfectly.
 func RunSweeperRefusesAnUnfilteredDurableSweep(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	id := sweeperSeedClosedIssue(t, ctx, fixture, "gate", false)
@@ -103,8 +95,8 @@ func RunSweeperRefusesAnUnfilteredDurableSweep(t *testing.T, ctx context.Context
 	sweeperAssertIssueRows(t, ctx, fixture, 1, id)
 
 	// The ephemeral tier carries no such gate: an unfiltered sweep of closed
-	// wisps is the ordinary use of `bd purge`. Asked with a pattern that
-	// matches nothing so the case does not clear another case's seeds.
+	// wisps is the ordinary use of `bd purge`. Asked with a pattern that matches
+	// nothing so the case does not clear another case's seeds.
 	if _, err := fixture.Sweeper.Sweep(ctx, publicops.SweepRequest{
 		Tier:      publicops.SweepEphemeral,
 		IDPattern: fixture.IssuePrefix + "-gate-nothing-*",
@@ -117,10 +109,9 @@ func RunSweeperRefusesAnUnfilteredDurableSweep(t *testing.T, ctx context.Context
 // (issueops/sweeper.go): an unset or unrecognized Tier, and an IDPattern that
 // is not a well-formed glob.
 //
-// The pattern case is a DEFECT FIX with teeth. Both front doors used to
-// discard filepath.Match's error, so `--pattern '['` reported "nothing to
-// prune" — indistinguishable from a correct pattern over an empty set, on a
-// command whose entire job is to delete what it matched.
+// The pattern case is a DEFECT FIX: both front doors used to discard
+// filepath.Match's error, so `--pattern '['` reported "nothing to prune",
+// indistinguishable from a correct pattern over an empty set.
 func RunSweeperRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	for _, test := range []struct {
@@ -141,12 +132,9 @@ func RunSweeperRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixtu
 
 // RunSweeperClearsOneTierAndLeavesTheOther pins the disjointness that makes
 // `bd purge` and `bd prune` ONE capability with a tier parameter
-// (issueops/sweeper.go, SweepTier): a sweep of one tier can never touch a row
-// of the other.
-//
-// Both planes are seeded with ids the SAME pattern admits, so a body that
-// forgot the tier — or that let the pattern do the work the filter should do —
-// deletes the wrong rows rather than merely reporting a wrong number.
+// (issueops/sweeper.go, SweepTier). Both planes are seeded with ids the SAME
+// pattern admits, so a body that forgot the tier deletes the wrong rows rather
+// than merely reporting a wrong number.
 func RunSweeperClearsOneTierAndLeavesTheOther(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	issueID := sweeperSeedClosedIssue(t, ctx, fixture, "tier", false)
@@ -199,11 +187,9 @@ func RunSweeperProtectsPinnedRows(t *testing.T, ctx context.Context, fixture Swe
 
 // RunSweeperHonorsTheCutoffAndThePattern pins the two narrowing fields.
 //
-// The CUTOFF is HALF-OPEN, and that is asserted rather than assumed: a row
-// closed exactly at the cutoff is KEPT (issueops.SweepRequest.ClosedBefore,
-// "strictly before"). An off-by-one there deletes a bead closed the instant a
-// scheduled sweep names, which is the one row a caller reasoning about the
-// boundary is thinking of.
+// The CUTOFF is HALF-OPEN: a row closed exactly at the cutoff is KEPT
+// (issueops.SweepRequest.ClosedBefore, "strictly before"). An off-by-one there
+// deletes a bead closed the instant a scheduled sweep names.
 //
 // The PATTERN is matched in Go rather than translated to SQL, so the case
 // includes a character class — the construct a LIKE translation would get
@@ -242,14 +228,11 @@ func RunSweeperHonorsTheCutoffAndThePattern(t *testing.T, ctx context.Context, f
 	sweeperAssertIssueRows(t, ctx, fixture, 1, outOfClass)
 }
 
-// RunSweeperDryRunChangesNothing pins the promise a preview is worth reading
-// for (issueops.Sweeper.Sweep, "A DRY RUN CHANGES NOTHING"): the preview
-// reports the same counts the real sweep goes on to report, and leaves every
-// row where it was.
-//
-// The two are compared against EACH OTHER rather than against a literal,
-// because that is the property a caller relies on — a preview whose number
-// differs from the run it precedes is worse than no preview.
+// RunSweeperDryRunChangesNothing pins issueops.Sweeper.Sweep's "A DRY RUN
+// CHANGES NOTHING": the preview reports the same counts the real sweep goes on
+// to report, and leaves every row where it was. The two are compared against
+// EACH OTHER rather than against a literal, because that is the property a
+// caller relies on.
 func RunSweeperDryRunChangesNothing(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	ids := []string{
@@ -270,8 +253,8 @@ func RunSweeperDryRunChangesNothing(t *testing.T, ctx context.Context, fixture S
 	}
 	sweeperAssertIssueRows(t, ctx, fixture, 2, ids...)
 
-	// A second preview: a dry run that had deleted anything would report a
-	// smaller number here, which is the failure this repetition rules out.
+	// A second preview: a dry run that had deleted anything reports a smaller
+	// number here.
 	if again := sweeperSweep(t, ctx, fixture, sweeperWithDryRun(request, true)); again.Swept != preview.Swept {
 		t.Fatalf("second preview Swept = %d, first = %d: the first preview changed the store", again.Swept, preview.Swept)
 	}
@@ -311,8 +294,8 @@ func RunSweeperProtectsRowsCitedFromAWispComment(t *testing.T, ctx context.Conte
 	witness := sweeperIssue(fixture, "wcx", "live", true)
 	witness.Status = types.StatusOpen
 	witness.ClosedAt = nil
-	sweeperSeedOpen(t, ctx, fixture, witness)
-	if err := fixture.AddComment(ctx, witness.ID, "sweeper-seed",
+	witnessID := sweeperSeedOpen(t, ctx, fixture, witness)
+	if err := fixture.AddComment(ctx, witnessID, "sweeper-seed",
 		fmt.Sprintf("decision trail: see %s", cited)); err != nil {
 		t.Fatalf("commenting on the wisp: %v", err)
 	}
@@ -348,13 +331,11 @@ func RunSweeperProtectsRowsCitedFromAWispComment(t *testing.T, ctx context.Conte
 // not-done bead's description is held back, counted, and named in the bounded
 // sample — and the SAME request without the protection deletes it.
 //
-// The two halves matter together. Asserting only the protection would pass for
-// an implementation that skipped every candidate; asserting only the
-// unprotected sweep would pass for one that never scanned at all.
-//
-// The citation is at a WORD BOUNDARY and there is a near-miss beside it, so an
-// implementation that fell back to a bare substring search protects a row
-// nothing cites.
+// The two halves matter together: asserting only the protection would pass for
+// an implementation that skipped every candidate, and asserting only the
+// unprotected sweep would pass for one that never scanned at all. The citation
+// is at a WORD BOUNDARY with a near-miss beside it, so an implementation that
+// fell back to a bare substring search protects a row nothing cites.
 func RunSweeperProtectsCitedRows(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	cited := sweeperSeed(t, ctx, fixture, sweeperIssue(fixture, "ref", "cited", false), nil)
@@ -363,12 +344,12 @@ func RunSweeperProtectsCitedRows(t *testing.T, ctx context.Context, fixture Swee
 	citing := sweeperIssue(fixture, "ref", "live", false)
 	citing.Status = types.StatusOpen
 	citing.ClosedAt = nil
-	// The near-miss: `<cited>x` must NOT protect anything, and the parenthesised
+	// The near-miss `<free>x` must NOT protect anything; the parenthesised
 	// occurrence must.
 	citing.Description = fmt.Sprintf("superseded by (%s). unrelated: %sx", cited, free)
 	// The citing bead is OPEN, so the pattern below must not admit it as a
-	// candidate — it would be skipped by the closed recheck either way, but a
-	// case that relied on that would be asserting the wrong protection.
+	// candidate: the closed recheck would skip it either way, but a case relying
+	// on that would be asserting the wrong protection.
 	sweeperSeedOpen(t, ctx, fixture, citing)
 
 	request := publicops.SweepRequest{
@@ -392,7 +373,7 @@ func RunSweeperProtectsCitedRows(t *testing.T, ctx context.Context, fixture Swee
 
 	// Without the protection the same candidate goes, and nothing is reported
 	// as protected — a caller reading Referenced=0 without having asked has
-	// learned nothing, which the field doc says out loud.
+	// learned nothing.
 	request.ProtectReferenced = false
 	result = sweeperSweep(t, ctx, fixture, request)
 	if result.Skipped.Referenced != 0 {
@@ -406,8 +387,7 @@ func RunSweeperProtectsCitedRows(t *testing.T, ctx context.Context, fixture Swee
 
 // RunSweeperEmptyMatchIsZeroAndNil pins the not-found story
 // (issueops.Sweeper.Sweep, "A REQUEST THAT MATCHES NOTHING"): a zero result and
-// a nil error, which is the answer a scheduled sweep gets every time it runs
-// after the first.
+// a nil error.
 func RunSweeperEmptyMatchIsZeroAndNil(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	for _, tier := range []publicops.SweepTier{publicops.SweepDurable, publicops.SweepEphemeral} {
@@ -437,8 +417,7 @@ func RunSweeperEmptyMatchIsZeroAndNil(t *testing.T, ctx context.Context, fixture
 // "AT MOST" rather than "exactly" is the honest promise across these backends:
 // the server-backed store records a Dolt commit, the embedded one commits
 // outside the SQL transaction and records none here, and an ephemeral sweep
-// touches only tables the version-control plane ignores. A case demanding
-// exactly one would be asserting a property of one wiring.
+// touches only tables the version-control plane ignores.
 func RunSweeperRecordsAtMostOneHistoryEntry(t *testing.T, ctx context.Context, fixture SweeperFixture) {
 	t.Helper()
 	if fixture.CountHistory == nil {
@@ -509,8 +488,8 @@ func RunSweeperDoesNotMutateTheCallerRequest(t *testing.T, ctx context.Context, 
 
 // --- fixture helpers -------------------------------------------------------
 
-// sweeperPattern is the glob that scopes one case's ids, and the reason every
-// case has one: a sweep is asked of a whole tier.
+// sweeperPattern is the glob that scopes one case's ids: a sweep is asked of a
+// whole tier, so every case needs one.
 func sweeperPattern(fixture SweeperFixture, tag string) string {
 	return fixture.IssuePrefix + "-" + tag + "-*"
 }
@@ -529,8 +508,8 @@ func sweeperIssue(fixture SweeperFixture, tag, name string, ephemeral bool) *typ
 }
 
 // sweeperSeed writes one issue through the plane its Ephemeral flag names and
-// returns its id. mutate runs on the issue before it is written, which is how
-// a case seeds a pinned row or moves a closed_at.
+// returns its id. mutate runs before the write, which is how a case seeds a
+// pinned row or moves a closed_at.
 func sweeperSeed(t *testing.T, ctx context.Context, fixture SweeperFixture, issue *types.Issue, mutate func(*types.Issue)) string {
 	t.Helper()
 	if mutate != nil {
@@ -578,8 +557,7 @@ func sweeperSweep(t *testing.T, ctx context.Context, fixture SweeperFixture, req
 
 // sweeperAssertIssueRows counts the named ids in the ISSUES plane. It is the
 // only assertion in this file that does not trust the result the sweep
-// reported about itself, which on a destructive operation is the assertion
-// that matters.
+// reported about itself.
 func sweeperAssertIssueRows(t *testing.T, ctx context.Context, fixture SweeperFixture, want int, ids ...string) {
 	t.Helper()
 	sweeperAssertRows(t, ctx, fixture, "issues", want, ids...)
