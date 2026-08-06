@@ -2,9 +2,11 @@ package uow
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/steveyegge/beads/backend/conformance"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // TestSweeperContract runs the Sweeper contract against the unit-of-work
@@ -39,6 +41,9 @@ func TestSweeperContract(t *testing.T) {
 	})
 	t.Run("DryRunChangesNothing", func(t *testing.T) {
 		conformance.RunSweeperDryRunChangesNothing(t, ctx, fixture)
+	})
+	t.Run("ProtectsRowsCitedFromAWispComment", func(t *testing.T) {
+		conformance.RunSweeperProtectsRowsCitedFromAWispComment(t, ctx, fixture)
 	})
 	t.Run("ProtectsCitedRows", func(t *testing.T) {
 		conformance.RunSweeperProtectsCitedRows(t, ctx, fixture)
@@ -76,5 +81,22 @@ func newUOWSweeperFixture(t *testing.T, ctx context.Context, prefix string) conf
 		CreateWisp:   kit.CreateWisp,
 		QueryScalar:  kit.QueryScalar,
 		CountHistory: kit.CountHistory,
+		AddComment: func(ctx context.Context, issueID, author, text string) error {
+			// Through the Commenter ROLE, which resolves the plane itself, so
+			// the case can cite from a wisp's comment without knowing how this
+			// backend reaches wisp_comments.
+			cs, ok := provider.(CommenterSource)
+			if !ok {
+				return fmt.Errorf("provider %T does not offer the Commenter accessor", provider)
+			}
+			commenter, err := cs.Commenter()
+			if err != nil {
+				return err
+			}
+			_, err = commenter.AddComment(ctx, issueops.AddCommentRequest{
+				IssueID: issueID, Author: author, Text: text,
+			})
+			return err
+		},
 	}
 }

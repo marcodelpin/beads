@@ -154,9 +154,28 @@ func sweepReferencedInUOW(ctx context.Context, uw UnitOfWork, candidates []*type
 			notDoneIDs = append(notDoneIDs, issue.ID)
 		}
 	}
+	// BOTH PLANES, and this is not an optimization detail. The not-done set
+	// comes from SearchIssues, which merges the durable and wisp planes, so it
+	// contains wisps — and their comments live in wisp_comments, which
+	// GetCommentsForIssues does not read. Scanning only the durable table left
+	// a closed bead cited solely by a comment on an open WISP unprotected, so
+	// `bd prune` deleted it on this route and kept it on the other. The
+	// contract says an implementation that cannot read the full set must fail
+	// the sweep rather than under-scan it.
+	//
+	// The full id list goes to both reads rather than being partitioned by a
+	// plane flag: an id lives in exactly one plane, so at most one side answers
+	// for it, and a mis-partition here would silently under-scan again.
 	comments, err := uw.CommentUseCase().GetCommentsForIssues(ctx, notDoneIDs)
 	if err != nil {
 		return nil, fmt.Errorf("scanning open beads for references: %w", err)
+	}
+	wispComments, err := uw.CommentUseCase().GetCommentsForWisps(ctx, notDoneIDs)
+	if err != nil {
+		return nil, fmt.Errorf("scanning open wisps for references: %w", err)
+	}
+	for id, cs := range wispComments {
+		comments[id] = append(comments[id], cs...)
 	}
 
 	referenced := make(map[string]bool)
