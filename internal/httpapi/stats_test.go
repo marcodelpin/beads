@@ -43,10 +43,24 @@ func TestStatsReportsTheSkippedScanFromTheAnswer(t *testing.T) {
 // A handler that passed the empty string down would get the role's
 // ErrValidation and answer 500, which tells a client nothing it can act on.
 func TestStatsRefusesAnEmptyAssignee(t *testing.T) {
+	for _, raw := range []string{"", "%20", "%20%20", "%09"} {
+		t.Run("assignee="+raw, func(t *testing.T) {
+			statsAssertEmptyAssigneeRefused(t, raw)
+		})
+	}
+}
+
+// statsAssertEmptyAssigneeRefused drives one spelling of "supplied but empty".
+//
+// The whitespace spellings are the ones that regressed: the guard compared the
+// RAW string, so `?assignee=%20` reached the role, came back ErrValidation,
+// and left as a 500 with an operator alert — for a trailing space in a script.
+func statsAssertEmptyAssigneeRefused(t *testing.T, rawAssignee string) {
+	t.Helper()
 	reporter := &roleStats{}
 	ts := newTestServer(t, rolesConfig(Config{Stats: reporter}))
 
-	resp := ts.get(t, "/v0/beads/stats?assignee=")
+	resp := ts.get(t, "/v0/beads/stats?assignee="+rawAssignee)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", resp.StatusCode, readAll(t, resp))
 	}
