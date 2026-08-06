@@ -148,6 +148,69 @@ func RunQuerierPageIsAPrefixAndHasMoreIsExact(t *testing.T, ctx context.Context,
 	}
 }
 
+// RunQuerierSortBoundsThePageInOrder pins the OTHER half of the display-order
+// promise, on the shape the case below cannot reach.
+//
+// A FILTER-EXPRESSIBLE expression is bounded by the database, so the page is
+// the first Limit rows IN THE REQUESTED ORDER — not the first rows the engine
+// happened to return, re-sorted afterwards.
+//
+// It is the quadrant no case reached: the sort case below drives only
+// predicate (OR) expressions, and nothing combined a filter-expressible
+// expression with a sort and a Limit smaller than the match count. The two
+// bodies disagreed there — the store body over-fetches one row as a has-more
+// probe and sorted that probe INTO the page, the unit-of-work body trims to
+// Limit natively and never sees it.
+//
+// THE FIXTURE IS BUILT SO STORAGE ORDER AND SORT ORDER DISAGREE, which is what
+// makes the case able to fail at all. Four rows match, Limit is two, and the
+// two rows that should win on `title` carry the WORST priorities — so the default
+// engine order puts them last, outside the three rows an over-fetch would see.
+// A body that bounds in storage order and sorts afterwards returns neither of
+// them.
+func RunQuerierSortBoundsThePageInOrder(t *testing.T, ctx context.Context, fixture QuerierFixture) {
+	t.Helper()
+	scope := querierLabel(fixture, "pageorder")
+	// Title order is a < b < y < z (querierIssue titles the row with its id);
+	// priority order is the reverse. `title` is SQL-expressible, unlike `id`,
+	// which sqlbuild routes to a Go-side sort where no push-down can apply.
+	first := querierIssue(querierID(fixture, "pageorder", "a"), types.TypeBug, 4, scope)
+	second := querierIssue(querierID(fixture, "pageorder", "b"), types.TypeBug, 3, scope)
+	third := querierIssue(querierID(fixture, "pageorder", "y"), types.TypeBug, 1, scope)
+	fourth := querierIssue(querierID(fixture, "pageorder", "z"), types.TypeBug, 0, scope)
+	for _, issue := range []*types.Issue{first, second, third, fourth} {
+		seedQuerierIssue(t, ctx, fixture, issue)
+	}
+
+	// A conjunction the filter vocabulary expresses exactly, so the database
+	// carries the page rather than the evaluator.
+	expression := fmt.Sprintf("type=bug AND label=%s", scope)
+
+	page, err := fixture.Querier.Query(ctx, publicops.QueryRequest{
+		Expression: expression, SortBy: "title", Limit: querierLimit(2),
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if want := []string{first.ID, second.ID}; !slices.Equal(querierPageIDs(page), want) {
+		t.Errorf("page = %v, want %v: a bounded page is the first Limit rows IN ORDER, not the rows "+
+			"the engine returned in its own order and then sorted", querierPageIDs(page), want)
+	}
+	if !page.HasMore {
+		t.Error("HasMore = false with four matches and a limit of two")
+	}
+
+	reversed, err := fixture.Querier.Query(ctx, publicops.QueryRequest{
+		Expression: expression, SortBy: "title", Reverse: true, Limit: querierLimit(2),
+	})
+	if err != nil {
+		t.Fatalf("Query reversed: %v", err)
+	}
+	if want := []string{fourth.ID, third.ID}; !slices.Equal(querierPageIDs(reversed), want) {
+		t.Errorf("reversed page = %v, want %v", querierPageIDs(reversed), want)
+	}
+}
+
 // RunQuerierSortSeesTheWholeMatchingSet pins the half of the display-order
 // promise that only a predicate query can show (issueops/querier.go:45-53): the
 // order is applied to the rows the QUERY bounded, and a predicate query bounds

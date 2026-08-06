@@ -27,6 +27,9 @@ func TestQuerierContract(t *testing.T) {
 	t.Run("PageIsAPrefixAndHasMoreIsExact", func(t *testing.T) {
 		conformance.RunQuerierPageIsAPrefixAndHasMoreIsExact(t, ctx, fixture)
 	})
+	t.Run("SortBoundsThePageInOrder", func(t *testing.T) {
+		conformance.RunQuerierSortBoundsThePageInOrder(t, ctx, fixture)
+	})
 	t.Run("SortSeesTheWholeMatchingSet", func(t *testing.T) {
 		conformance.RunQuerierSortSeesTheWholeMatchingSet(t, ctx, fixture)
 	})
