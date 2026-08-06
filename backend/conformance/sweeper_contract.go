@@ -294,8 +294,8 @@ func RunSweeperProtectsRowsCitedFromAWispComment(t *testing.T, ctx context.Conte
 	witness := sweeperIssue(fixture, "wcx", "live", true)
 	witness.Status = types.StatusOpen
 	witness.ClosedAt = nil
-	sweeperSeedOpen(t, ctx, fixture, witness)
-	if err := fixture.AddComment(ctx, witness.ID, "sweeper-seed",
+	witnessID := sweeperSeedOpen(t, ctx, fixture, witness)
+	if err := fixture.AddComment(ctx, witnessID, "sweeper-seed",
 		fmt.Sprintf("decision trail: see %s", cited)); err != nil {
 		t.Fatalf("commenting on the wisp: %v", err)
 	}
