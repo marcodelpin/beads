@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the twenty-one-strong capability surface every storage
+// roleAccessorNames is the twenty-two-strong capability surface every storage
 // decorator has to answer for. It is duplicated from the sibling test in
 // internal/storage rather than shared because that package cannot import this
 // one and this one's test helpers cannot be exported back.
@@ -22,6 +22,7 @@ var roleAccessorNames = []string{
 	"IssueRelations",
 	"EdgeReader",
 	"BlockingAnnotator",
+	"TreeWalker",
 	"Counter",
 	"WorkspaceConfig",
 	"VersionReconciler",
@@ -64,7 +65,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-one
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-two
 // role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 type roleAccessorStore struct {
@@ -91,6 +92,7 @@ func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.surface, s.err
 }
 func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.surface, s.err }
+func (s *roleAccessorStore) TreeWalker() (issueops.TreeWalker, error) { return s.surface, s.err }
 func (s *roleAccessorStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return s.surface, s.err
 }
@@ -122,7 +124,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements all twenty-one roles at once. Nothing calls its
+// roleAccessorSentinel implements all twenty-two roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -155,6 +157,10 @@ func (*roleAccessorSentinel) ReadEdges(context.Context, issueops.EdgeReadRequest
 }
 func (*roleAccessorSentinel) AnnotateBlocking(context.Context, issueops.BlockingRequest) (issueops.BlockingResult, error) {
 	return issueops.BlockingResult{}, nil
+}
+
+func (*roleAccessorSentinel) WalkTree(context.Context, issueops.WalkTreeRequest) (issueops.TreeResult, error) {
+	return issueops.TreeResult{}, nil
 }
 func (*roleAccessorSentinel) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
 	return issueops.CountResult{}, nil
@@ -258,6 +264,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"BlockingAnnotator", func() (any, error) { return wrapped.BlockingAnnotator() }},
+		{"TreeWalker", func() (any, error) { return wrapped.TreeWalker() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"VersionReconciler", func() (any, error) { return wrapped.VersionReconciler() }},
@@ -307,6 +314,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueRelations", func() (any, error) { return wrapped.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"BlockingAnnotator", func() (any, error) { return wrapped.BlockingAnnotator() }},
+		{"TreeWalker", func() (any, error) { return wrapped.TreeWalker() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"VersionReconciler", func() (any, error) { return wrapped.VersionReconciler() }},

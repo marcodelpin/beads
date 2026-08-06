@@ -43,6 +43,27 @@ func (e SweepRequestTier) Valid() bool {
 	}
 }
 
+// Defines values for GetDependencyTreeParamsDirection.
+const (
+	Both GetDependencyTreeParamsDirection = "both"
+	Down GetDependencyTreeParamsDirection = "down"
+	Up   GetDependencyTreeParamsDirection = "up"
+)
+
+// Valid indicates whether the value is a known member of the GetDependencyTreeParamsDirection enum.
+func (e GetDependencyTreeParamsDirection) Valid() bool {
+	switch e {
+	case Both:
+		return true
+	case Down:
+		return true
+	case Up:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QueryIssuesParamsSort.
 const (
 	QueryIssuesParamsSortAssignee QueryIssuesParamsSort = "assignee"
@@ -193,7 +214,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -299,6 +320,17 @@ type DependencyEdges struct {
 	//
 	// An id here contributes no `items`, and the absence of an id here is NOT a claim that it has edges — an issue that exists and depends on nothing is in neither list.
 	Missing []string `json:"missing"`
+}
+
+// DependencyTreePage defines model for DependencyTreePage.
+type DependencyTreePage struct {
+	// HasMore Always false in v0: this operation takes no limit, so the walk is bounded by `max_depth` rather than truncated after the fact. Present so that adding a bound later is additive.
+	HasMore bool `json:"has_more"`
+
+	// Items The walked nodes in DEPTH-FIRST PRE-ORDER: a node appears before every node it led to, and a subtree is contiguous. Never null.
+	//
+	// It is empty only when a `status` filter matched nothing — the root is kept in a filtered answer solely as an ancestor of a match, never for its own sake. Without `status` the root is always the first element, which is what lets a client tell "this issue depends on nothing" from "this issue is not there" (a 404).
+	Items []TreeNode `json:"items"`
 }
 
 // Health defines model for Health.
@@ -523,6 +555,11 @@ type SweepSkips struct {
 	Unreadable int `json:"unreadable"`
 }
 
+// TreeNode One node of a walked dependency tree: a full issue plus where the walk reached it. Property semantics for the issue members are documented on `Issue`.
+//
+// The tree is FLAT. A node's place in it is read from `depth` and `parent_id`, not from nesting, and a subtree is contiguous in `items`.
+type TreeNode = types.TreeNode
+
 // IssueID defines model for IssueID.
 type IssueID = string
 
@@ -567,6 +604,34 @@ type ListBlockingAnnotationsParams struct {
 	// Repeats collapse: an id named twice is one entry, at the position of its first mention.
 	IssueId []string `form:"issue_id" json:"issue_id"`
 }
+
+// GetDependencyTreeParams defines parameters for GetDependencyTree.
+type GetDependencyTreeParams struct {
+	// RootId The issue to walk from. It must be an EXACT canonical issue id: there is no fuzzy, prefix or substring resolution on this surface, for the reason `GET /v0/beads/issues/{id}` gives. An empty value is a 400 `invalid_argument`; a value that matches no issue and no wisp is a 404 `not_found`, because there is one anchor here and no other answer to preserve.
+	RootId string `form:"root_id" json:"root_id"`
+
+	// Direction Which way to follow edges. `down` (the default) walks what the root DEPENDS ON; `up` walks what depends ON it; `both` walks each way and returns one list.
+	//
+	// For `both` the two walks are independent and the answer is their concatenation: every up node except the root, then the whole down tree beginning with the root. The root appears once. The two halves may repeat a node between them — an issue that both blocks and is blocked by something in the other half — so a client aggregating `items` must not assume the ids are distinct. Both walks see ONE database state.
+	//
+	// Any other value is a 400 `invalid_argument`: the vocabulary is closed.
+	Direction *GetDependencyTreeParamsDirection `form:"direction,omitempty" json:"direction,omitempty"`
+
+	// MaxDepth How many LEVELS to descend, counting the root as level one: `max_depth=1` is the root alone. A node beyond the bound is ABSENT rather than present and flagged.
+	//
+	// Zero and negative values are a 400 `invalid_argument` rather than "unbounded": the answer to an unbounded recursive walk on a large workspace is the request that takes the database down.
+	MaxDepth *int `form:"max_depth,omitempty" json:"max_depth,omitempty"`
+
+	// Status Prune the walked tree to the nodes carrying this status AND the ancestor chain of each survivor, so the answer is still a tree.
+	//
+	// It is a POST-WALK PRUNE, not a filter on the walk, and the difference is observable: a matching node BEHIND a non-matching one is still reached, and the non-matcher is kept as its ancestor. A prune that matches nothing returns NO items at all, root included.
+	//
+	// The value is not checked against the workspace's status vocabulary; an unrecognized status simply matches nothing.
+	Status *string `form:"status,omitempty" json:"status,omitempty"`
+}
+
+// GetDependencyTreeParamsDirection defines parameters for GetDependencyTree.
+type GetDependencyTreeParamsDirection string
 
 // ListIssuesParams defines parameters for ListIssues.
 type ListIssuesParams struct {

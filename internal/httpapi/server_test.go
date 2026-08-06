@@ -87,6 +87,18 @@ func (emptyDeps) DetectCycleReport(context.Context) (issueops.CycleReport, error
 	return issueops.CycleReport{Cycles: []issueops.Cycle{}}, nil
 }
 
+// WalkDependencyTree answers a one-node tree, for the same reason
+// DetectCycleReport answers an empty report: without it the promoted method on
+// the embedded nil interface panics and the provider-backed tree route 500s
+// through the panic recovery instead of answering.
+//
+// A ONE-NODE tree rather than an empty one, because that is what the role
+// promises for a root with no edges, and a fake that answered nothing would let
+// a handler which dropped the root pass.
+func (emptyDeps) WalkDependencyTree(_ context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error) {
+	return issueops.TreeResult{Nodes: []*types.TreeNode{{Issue: types.Issue{ID: req.RootID}}}}, nil
+}
+
 func (u *fakeUOW) Commit(_ context.Context, message string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -578,10 +590,9 @@ func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 	}
 	want := []string{
 		"config.get", "config.list", "dependencies.blocking", "dependencies.cycles",
-		"dependencies.list",
-		"issues.batchCreate", "issues.claim", "issues.delete", "issues.get",
-		"issues.list", "issues.query", "issues.sweep", "ready.count",
-		"ready.list", "stats.get",
+		"dependencies.list", "dependencies.tree", "issues.batchCreate",
+		"issues.claim", "issues.delete", "issues.get", "issues.list",
+		"issues.query", "issues.sweep", "ready.count", "ready.list", "stats.get",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("capabilities = %v, want %v", got, want)

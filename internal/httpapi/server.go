@@ -206,6 +206,7 @@ type Config struct {
 	CycleDetector     issueops.CycleDetector
 	EdgeReader        issueops.EdgeReader
 	BlockingAnnotator issueops.BlockingAnnotator
+	TreeWalker        issueops.TreeWalker
 	ReadyCounter      issueops.ReadyCounter
 	Querier           issueops.Querier
 	// Sweeper is the DESTRUCTIVE one, and it is required on the same terms as
@@ -262,6 +263,7 @@ type Server struct {
 	issueCycles       issueops.CycleDetector
 	issueEdges        issueops.EdgeReader
 	issueBlocking     issueops.BlockingAnnotator
+	issueTree         issueops.TreeWalker
 	issueReadyCounter issueops.ReadyCounter
 	issueQuerier      issueops.Querier
 	issueSweeper      issueops.Sweeper
@@ -370,6 +372,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueCycles:       cfg.CycleDetector,
 		issueEdges:        cfg.EdgeReader,
 		issueBlocking:     cfg.BlockingAnnotator,
+		issueTree:         cfg.TreeWalker,
 		issueReadyCounter: cfg.ReadyCounter,
 		issueQuerier:      cfg.Querier,
 		issueSweeper:      cfg.Sweeper,
@@ -478,12 +481,12 @@ func Listen(cfg Config) (*Server, error) {
 // as this check is concerned, exactly as it was when the check was a hand-
 // written boolean per role.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, ReadyCounter, Querier, Sweeper, Deleter and BatchCreator"
+const roleSourceNames = "Reader, Claimer, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Querier, Sweeper, Deleter and BatchCreator"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -720,6 +723,24 @@ func (s *Server) blockingAnnotator(r *http.Request) (issueops.BlockingAnnotator,
 	}
 	var src uow.BlockingAnnotatorSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.BlockingAnnotator()
+}
+
+// treeWalker returns the guarded dependency-tree surface for one request.
+//
+// Built the same two ways as its siblings and for the same reasons: the
+// configured role on the roles source, and on the provider source one built per
+// request so its unit of work lands in THIS request's log line, held by
+// INTERFACE so uow.TreeWalkerSource is load-bearing rather than decorative.
+//
+// No checked wrapper, for the reason cycleDetector gives: this role answers with
+// a VALUE whose slice a nil-safe range walks, so there is no pointer for a
+// misbehaving implementation to turn into a panic.
+func (s *Server) treeWalker(r *http.Request) (issueops.TreeWalker, error) {
+	if s.provider == nil {
+		return s.issueTree, nil
+	}
+	var src uow.TreeWalkerSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.TreeWalker()
 }
 
 // readyCounter returns the ready-count surface for one request.

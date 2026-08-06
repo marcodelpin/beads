@@ -155,6 +155,11 @@ type DependencySQLRepository interface {
 	DetectCycleReport(ctx context.Context) (issueops.CycleReport, error)
 
 	GetTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
+	// WalkDependencyTree answers the tree walk in the shape issueops.TreeWalker
+	// publishes: validated, rooted, pruned by status and capped, with both
+	// directions of a `both` request inside ONE transaction. GetTree above is the
+	// unvalidated shape and stays for the callers that still read it.
+	WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error)
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
 	GetWispDependencyRecordsForIDs(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error)
@@ -188,6 +193,9 @@ type DependencyUseCase interface {
 	DetectCycleReport(ctx context.Context) (issueops.CycleReport, error)
 
 	GetDependencyTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error)
+	// WalkDependencyTree is the shape issueops.TreeWalker publishes; see the
+	// repository method of the same name.
+	WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error)
 	// AddDependencies asserts a batch of edges, each landing in the plane its
 	// own SOURCE lives in. There is deliberately no plane-pinned variant:
 	// `bd dep add` takes whatever ids the caller names and one request may
@@ -608,6 +616,17 @@ func (u *dependencyUseCaseImpl) DetectCycleReport(ctx context.Context) (issueops
 		return issueops.CycleReport{}, fmt.Errorf("DetectCycleReport: %w", err)
 	}
 	return out, nil
+}
+
+// WalkDependencyTree passes the request straight through.
+//
+// No pre-check and no error wrapping, unlike GetDependencyTree below: the
+// request's whole vocabulary is validated inside the shared body — one place, so
+// all three backends refuse in the same words — and its refusals are typed
+// sentinels both front doors classify. See the repository method for why the
+// wrap is absent.
+func (u *dependencyUseCaseImpl) WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error) {
+	return u.depRepo.WalkDependencyTree(ctx, req)
 }
 
 func (u *dependencyUseCaseImpl) GetDependencyTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error) {

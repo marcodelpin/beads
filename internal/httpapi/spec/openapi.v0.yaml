@@ -100,22 +100,14 @@ info:
 
 
     `Issue`, `IssueWithCounts`, `IssueDetails`,
-    `IssueWithDependencyMetadata`, `Dependency`, `Comment`, `BondRef` and
-    `Statistics` are pinned to the canonical Go structs (`x-go-type`), so the
-    CLI's `--json` output and these response bodies are one compatibility
-    domain and cannot drift apart. Changes to them are limited to NEW optional
-    fields, and each addition must land with its entry in this document in the
-    same change — a two-way JSON-tag bijection test, covering all eight, fails
-    CI otherwise. A
+    `IssueWithDependencyMetadata`, `TreeNode`, `Dependency`, `Comment`,
+    `BondRef`, `Statistics`, `Cycle`, `CycleMember` and `IssueBlocking` are
+    pinned to the canonical Go structs (`x-go-type`), so the CLI's `--json`
+    output and these response bodies are one compatibility domain and cannot
+    drift apart. Changes to them are limited to NEW optional fields, and each
+    addition must land with its entry in this document in the same change — a
+    two-way JSON-tag bijection test, covering all twelve, fails CI otherwise. A
     breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
-    `IssueWithDependencyMetadata`, `Dependency`, `Comment`, `BondRef`, `Cycle`,
-    `CycleMember` and `IssueBlocking` are pinned to the canonical Go structs
-    (`x-go-type`), so the CLI's `--json` output and these response bodies are
-    one compatibility domain and cannot drift apart. Changes to them are limited
-    to NEW optional fields, and each addition must land with its entry in this
-    document in the same change — a two-way JSON-tag bijection test, covering
-    all ten, fails CI otherwise. A breaking change to those shapes requires
-    cutting `/v1`, not editing `/v0`.
 
 
     A member that is absent is not set. When reading a RESPONSE, clients MUST
@@ -547,6 +539,140 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CyclesPage'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/dependencies/tree:
+    get:
+      operationId: getDependencyTree
+      summary: Walk the dependency tree of one issue
+      description: >-
+        The dependency graph walked recursively from ONE root — the answer
+        `bd dep tree` renders, and the same `TreeNode` elements that command's
+        `--json` emits.
+
+
+        THE ANSWER IS FLAT. Each element carries `depth` and `parent_id`, and a
+        client rebuilds the shape from those two; the elements are in
+        depth-first pre-order, so a subtree is contiguous.
+
+
+        EVERY NODE APPEARS AT MOST ONCE PER WALK, at the depth and parent of the
+        first path that reached it. That single rule is both the cycle policy
+        and the diamond policy: a cycle TERMINATES rather than failing the call
+        or being reported (`GET /v0/beads/dependencies/cycles` is where a cycle
+        is an answer), and a shared subtree is shown under one parent only, with
+        no option to show it twice.
+
+
+        EDGES ARE WIDER THAN THEY ARE ON THE CYCLE REPORT. This walk follows
+        every dependency type except `relates-to`, which is symmetric annotation
+        — following it would make the "tree" the connected component. The cycle
+        report follows `blocks` and `conditional-blocks` only, because it is
+        about scheduling deadlock. Note that `related` and `relates-to` are two
+        different types and only the second is excluded.
+
+
+        Both dependency planes — durable and ephemeral — are one graph here, so
+        an ephemeral step in the middle of a chain does not end the picture.
+
+
+        A NODE THIS DATABASE CANNOT DESCRIBE ENDS THAT BRANCH. A `TreeNode` IS
+        an issue, so there is no shape for "on the tree and undescribable": an
+        edge whose target is an `external:` reference or an id in another
+        repository's namespace contributes no node, and nothing in the answer
+        says a branch stopped for that reason rather than because it ended. That
+        is the one place this operation is less honest than the cycle report,
+        whose `CycleMember` can carry a bare id.
+
+
+        THERE IS NO `limit` AND NO CURSOR. The walk is bounded by `max_depth`
+        instead, which bounds the DESCENT rather than truncating the answer;
+        `has_more` is therefore always false in v0. There is also no `max_rows`:
+        the CLI's defensive cap is a circuit breaker for a caller that would
+        rather fail than wait, and refusing a whole answer is not something this
+        surface offers a remote client.
+      parameters:
+        - name: root_id
+          in: query
+          required: true
+          description: >-
+            The issue to walk from. It must be an EXACT canonical issue id:
+            there is no fuzzy, prefix or substring resolution on this surface,
+            for the reason `GET /v0/beads/issues/{id}` gives. An empty value is a
+            400 `invalid_argument`; a value that matches no issue and no wisp is
+            a 404 `not_found`, because there is one anchor here and no other
+            answer to preserve.
+          schema:
+            type: string
+        - name: direction
+          in: query
+          description: >-
+            Which way to follow edges. `down` (the default) walks what the root
+            DEPENDS ON; `up` walks what depends ON it; `both` walks each way and
+            returns one list.
+
+
+            For `both` the two walks are independent and the answer is their
+            concatenation: every up node except the root, then the whole down
+            tree beginning with the root. The root appears once. The two halves
+            may repeat a node between them — an issue that both blocks and is
+            blocked by something in the other half — so a client aggregating
+            `items` must not assume the ids are distinct. Both walks see ONE
+            database state.
+
+
+            Any other value is a 400 `invalid_argument`: the vocabulary is
+            closed.
+          schema:
+            type: string
+            enum: [down, up, both]
+            default: down
+        - name: max_depth
+          in: query
+          description: >-
+            How many LEVELS to descend, counting the root as level one:
+            `max_depth=1` is the root alone. A node beyond the bound is ABSENT
+            rather than present and flagged.
+
+
+            Zero and negative values are a 400 `invalid_argument` rather than
+            "unbounded": the answer to an unbounded recursive walk on a large
+            workspace is the request that takes the database down.
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+        - name: status
+          in: query
+          description: >-
+            Prune the walked tree to the nodes carrying this status AND the
+            ancestor chain of each survivor, so the answer is still a tree.
+
+
+            It is a POST-WALK PRUNE, not a filter on the walk, and the difference
+            is observable: a matching node BEHIND a non-matching one is still
+            reached, and the non-matcher is kept as its ancestor. A prune that
+            matches nothing returns NO items at all, root included.
+
+
+            The value is not checked against the workspace's status vocabulary;
+            an unrecognized status simply matches nothing.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The walked tree, flat, in depth-first pre-order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencyTreePage'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1764,7 +1890,7 @@ components:
     # added to the Go struct without an entry here fails CI, and an entry here
     # with no Go field fails CI.
     #
-    # Seven of the ten are pinned to `internal/types`; `Cycle`, `CycleMember`
+    # Nine of the twelve are pinned to `internal/types`; `Cycle`, `CycleMember`
     # and `IssueBlocking`, which appear after `BondRef`, are pinned to the role
     # package `issueops` instead, because that is where those canonical structs
     # live.
@@ -2251,6 +2377,116 @@ components:
             The edge type, e.g. `blocks`, `parent-child`, `related`,
             `discovered-from`. Not a closed vocabulary.
 
+    TreeNode:
+      type: object
+      description: >-
+        One node of a walked dependency tree: a full issue plus where the walk
+        reached it. Property semantics for the issue members are documented on
+        `Issue`.
+
+
+        The tree is FLAT. A node's place in it is read from `depth` and
+        `parent_id`, not from nesting, and a subtree is contiguous in `items`.
+      x-go-type: types.TreeNode
+      x-go-type-import:
+        name: types
+        path: github.com/steveyegge/beads/internal/types
+      required: [id, title, priority, created_at, updated_at, depth, parent_id, truncated]
+      properties:
+        # --- repeated from Issue (see the pinned-schema note above) ---
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        design: { type: string }
+        acceptance_criteria: { type: string }
+        notes: { type: string }
+        spec_id: { type: string }
+        status: { type: string }
+        priority: { type: integer }
+        issue_type: { type: string }
+        assignee: { type: string }
+        owner: { type: string }
+        estimated_minutes: { type: integer }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+        close_reason: { type: string }
+        closed_by_session: { type: string }
+        lease_expires_at: { type: string, format: date-time }
+        heartbeat_at: { type: string, format: date-time }
+        lease_granted_node: { type: string }
+        due_at: { type: string, format: date-time }
+        defer_until: { type: string, format: date-time }
+        external_ref: { type: string }
+        source_system: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        compaction_level: { type: integer }
+        compacted_at: { type: string, format: date-time }
+        compacted_at_commit: { type: string }
+        original_size: { type: integer }
+        labels: { type: array, items: { type: string } }
+        dependencies:
+          type: array
+          items: { $ref: '#/components/schemas/Dependency' }
+        comments:
+          type: array
+          items: { $ref: '#/components/schemas/Comment' }
+        sender: { type: string }
+        ephemeral: { type: boolean }
+        no_history: { type: boolean }
+        wisp_type: { type: string }
+        storage_class: { type: string }
+        pinned: { type: boolean }
+        is_template: { type: boolean }
+        bonded_from:
+          type: array
+          items: { $ref: '#/components/schemas/BondRef' }
+        await_type: { type: string }
+        await_id: { type: string }
+        timeout: { type: integer, format: int64 }
+        waiters: { type: array, items: { type: string } }
+        source_formula: { type: string }
+        source_location: { type: string }
+        mol_type: { type: string }
+        work_type: { type: string }
+        event_kind: { type: string }
+        actor: { type: string }
+        target: { type: string }
+        payload: { type: string }
+        # --- added by TreeNode ---
+        depth:
+          type: integer
+          description: >-
+            How far the walk was from the root when it reached this node. The
+            root is 0.
+
+
+            For a `both` walk each half measures its own depth from the root, so
+            a depth does not say which half a node came from and nothing else
+            on the node does either.
+        parent_id:
+          type: string
+          description: >-
+            The node this one was reached FROM, empty on the root. A node is
+            reached ONCE per walk, by the first path that got there, so a shared
+            child of two parents names only the first of them here and the
+            second has no visible edge to it.
+        edge_from_parent:
+          type: string
+          description: >-
+            The dependency type of the edge that led here, e.g. `blocks`,
+            `parent-child`, `discovered-from`. Absent on the root. Not a closed
+            vocabulary.
+        truncated:
+          type: boolean
+          description: >-
+            ALWAYS FALSE. No implementation sets it: a node beyond `max_depth`
+            is ABSENT from the answer rather than present and flagged, so a
+            client cannot tell a tree that ended from one that was cut. It is
+            documented rather than removed because it is on the wire today.
+
     Dependency:
       type: object
       description: A dependency edge between two issues.
@@ -2575,8 +2811,8 @@ components:
             `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
-            `dependencies.list`, `dependencies.blocking`; it grows additively,
-            and an operation never
+            `dependencies.list`, `dependencies.blocking`, `dependencies.tree`;
+            it grows additively, and an operation never
             appears here unless it is fully implemented. This is how a client
             checks for an operation — never the version string.
           items:
@@ -2954,6 +3190,31 @@ components:
           description: >-
             Always false in v0: this operation takes no limit, so the report is
             never truncated. Present so that adding a bound later is additive.
+
+    DependencyTreePage:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          description: >-
+            The walked nodes in DEPTH-FIRST PRE-ORDER: a node appears before
+            every node it led to, and a subtree is contiguous. Never null.
+
+
+            It is empty only when a `status` filter matched nothing — the root
+            is kept in a filtered answer solely as an ancestor of a match, never
+            for its own sake. Without `status` the root is always the first
+            element, which is what lets a client tell "this issue depends on
+            nothing" from "this issue is not there" (a 404).
+          items:
+            $ref: '#/components/schemas/TreeNode'
+        has_more:
+          type: boolean
+          description: >-
+            Always false in v0: this operation takes no limit, so the walk is
+            bounded by `max_depth` rather than truncated after the fact. Present
+            so that adding a bound later is additive.
 
     IssuesPage:
       type: object

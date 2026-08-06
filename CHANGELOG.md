@@ -48,6 +48,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /v0/beads/dependencies/tree` — the `bd dep tree` walk over HTTP**
+  (bd-lx5iu). `bd serve` now answers a recursive walk from one root —
+  `?root_id=bd-abc&direction=both&max_depth=3&status=open` — with the flat
+  `TreeNode` list `bd dep tree --json` emits, from the same
+  `issueops.TreeWalker` both CLI routes call. `capabilities` gains
+  `dependencies.tree`.
+
+  It is a sibling of `GET /v0/beads/dependencies` rather than a mode of it: that
+  one answers raw stored edge rows for many anchors at one hop, this one recurses
+  from a single anchor. A `root_id` that names nothing is a 404 here, where an
+  unknown `issue_id` there is reported in `missing` — one anchor leaves no other
+  answer to preserve. There is no `max_rows`: the defensive cap is a CLI circuit
+  breaker and refusing a whole answer is not something this surface offers a
+  remote client.
+
 - **`GET /v0/beads/issues:query` — the `bd query` expression language over
   HTTP** (bd-pohmh). `bd serve` now answers boolean expressions —
   `?q=type%3Dbug+OR+label%3Durgent` — with the same page shape the ready listing
@@ -389,6 +404,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (bd-x82so), on both routes and under `--dry-run`. The multi-id path already
   did; the guarantee is now the role's, so nothing partial is deleted before the
   typo is reported.
+- **`bd dep tree --direction=both` now sees ONE database state** (bd-lx5iu).
+  Both routes made two independent reads — the dependency walk and the dependent
+  walk — with no transaction spanning them, so an edge added between them could
+  leave the two halves of the picture describing different graphs. The whole
+  walk, both directions, now runs inside one transaction on the new
+  `issueops.TreeWalker` role.
+
+- **`bd dep tree` on a team server resolves partial ids and honors
+  `--max-rows`** (bd-lx5iu). Two things the `--proxied-server` route did not do
+  and the direct route did.
+
+  `bd dep tree a1b2` used to fail there: the argument went to storage verbatim,
+  so the abbreviation that worked on a direct workspace did not work on a shared
+  one. It resolves now, and an id that resolves to nothing reports the same
+  lookup failure the direct route reports.
+
+  `bd dep tree X --max-rows N` used to be refused outright — "not supported in
+  proxied-server mode" — because the unit-of-work path threaded no cap. The cap
+  now rides the role's request, so all three backends enforce it and the flag
+  means the same thing wherever the command runs. It is still POST-HOC: a tree
+  walk has no query filter to thread a cap through, so the full tree is built
+  and then counted.
+
+- **`bd dep tree --show-all-paths` is documented as the no-op it always was**
+  (bd-lx5iu). Nothing has ever read the flag. It was accepted and passed down to
+  a walk that ignored it, so a node reachable by two paths has always been shown
+  once, under the first path that reached it. The flag is still accepted so no
+  script breaks, its help text now says it is ignored, and the one-visit rule is
+  a stated promise of the role rather than an accident of the walk. `TreeNode`'s
+  `truncated` member is dead in the same way: it is always `false`, because a
+  node beyond `--max-depth` is absent from the answer rather than present and
+  flagged.
 
 - **`bd purge` and `bd prune` select and delete in ONE transaction** (bd-pn231).
   The direct route used to search in one transaction and delete in another, so a

@@ -171,6 +171,19 @@ in; 13 is the HTTP surface, which lands with the command rather than after it.
     `CycleDetectorFixture.Exec` is. It belongs on the fixture, documented as
     out-of-band, not in the kit.
 
+    **SAY HOW MANY VOTES THE THREE LEGS ACTUALLY ARE, at the top of the
+    contract file.** dolt and embeddeddolt share step 3, so most roles are two
+    votes; `issueops.TreeWalker` is the first where ALL THREE share one body —
+    the unit of work reaches the same `…InTx` function through the domain
+    repository — so its three-leg run is ONE reading plus an engine check. That
+    is still worth running, because every measured drift in the graph family has
+    lived in a WRAPPER, but the cases have to be written for it: assert
+    SENTINELS rather than message text and assert a typed error's FIELDS, since
+    a wrapper losing a transaction, dropping a request field or breaking
+    `errors.Is` is what a per-leg failure would actually be. And pull as much of
+    the answer's MEANING as will go into pure functions beside the body, so the
+    parts one vote cannot cover are pinned without a database.
+
     Do not add role cases to `backend/conformance`'s older `RunAll` suite: its
     `Factory` hands back a bare `storage.DoltStorage`, which a unit-of-work
     provider can never be, so a case placed there silently never runs on the

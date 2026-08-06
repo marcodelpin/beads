@@ -11,9 +11,9 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// roleAccessorNames is the twenty-one-strong capability surface every storage
+// roleAccessorNames is the twenty-two-strong capability surface every storage
 // decorator has to answer for. It is written out rather than derived so that
-// adding a twenty-second role to DoltStorage without deciding what each decorator
+// adding a twenty-third role to DoltStorage without deciding what each decorator
 // does with it is a compile-or-test failure somewhere, not silence.
 var roleAccessorNames = []string{
 	"IssueLifecycle",
@@ -21,6 +21,7 @@ var roleAccessorNames = []string{
 	"IssueRelations",
 	"EdgeReader",
 	"BlockingAnnotator",
+	"TreeWalker",
 	"Counter",
 	"WorkspaceConfig",
 	"VersionReconciler",
@@ -74,7 +75,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-one
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-two
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -84,6 +85,7 @@ type roleAccessorStore struct {
 	relations    issueops.Relations
 	edges        issueops.EdgeReader
 	blocking     issueops.BlockingAnnotator
+	tree         issueops.TreeWalker
 	counter      issueops.Counter
 	settings     issueops.WorkspaceConfig
 	versions     issueops.VersionReconciler
@@ -148,6 +150,7 @@ func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 	return s.cycles, s.err
 }
 func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.edges, s.err }
+func (s *roleAccessorStore) TreeWalker() (issueops.TreeWalker, error) { return s.tree, s.err }
 func (s *roleAccessorStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return s.blocking, s.err
 }
@@ -179,7 +182,7 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 	return s.editor, s.err
 }
 
-// roleAccessorSentinel implements all twenty-one roles at once. Nothing calls its
+// roleAccessorSentinel implements all twenty-two roles at once. Nothing calls its
 // methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -299,16 +302,17 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 // ones four wave-2 slices each appended (bd-8ri3m is the same defect in the
 // spec's own comments). Reads fire no completion hooks, so IssueReader,
 // IssueRelations, Counter, StatsReporter, CycleDetector, EdgeReader,
-// BlockingAnnotator, ReadyCounter, Querier and InitVerifier deliberately return
-// the inner surface unwrapped, each in its own hook_*.go. The three in that
-// column that are NOT reads are WorkspaceConfig, VersionReconciler and
-// Bootstrapper: a settings write changes the workspace rather than a bead, a
-// version marker names no bead at all, and a bootstrap makes a database into a
-// workspace, so this decorator's issue-shaped hook vocabulary has nothing to
-// hand a hook script (hook_workspace_config.go, hook_version_reconciler.go,
-// hook_bootstrapper.go). Deleter is the fourth, for the reason its own row
-// records. This test pins every one of them as a decision rather than leaving
-// it indistinguishable from the regression above.
+// BlockingAnnotator, TreeWalker, ReadyCounter, Querier and InitVerifier
+// deliberately return the inner surface unwrapped, each in its own hook_*.go.
+// The ones in that column that are NOT reads are WorkspaceConfig,
+// VersionReconciler, Bootstrapper and Deleter: a settings write changes the
+// workspace rather than a bead, a version marker names no bead at all, a
+// bootstrap makes a database into a workspace, and the hook vocabulary has no
+// name for a deletion — so this decorator's issue-shaped hook vocabulary has
+// nothing to hand a hook script (hook_workspace_config.go,
+// hook_version_reconciler.go, hook_bootstrapper.go, hook_deleter.go). This test
+// pins every one of them as a decision rather than leaving it
+// indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
 	inner := newRoleAccessorStore()
 	store := NewHookFiringStore(inner, nil)
@@ -329,6 +333,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }, inner.edges, false},
 		{"BlockingAnnotator", func() (any, error) { return store.BlockingAnnotator() }, inner.blocking, false},
+		{"TreeWalker", func() (any, error) { return store.TreeWalker() }, inner.tree, false},
 		{"Counter", func() (any, error) { return store.Counter() }, inner.counter, false},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }, inner.settings, false},
 		{"VersionReconciler", func() (any, error) { return store.VersionReconciler() }, inner.versions, false},
@@ -389,6 +394,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }},
 		{"BlockingAnnotator", func() (any, error) { return store.BlockingAnnotator() }},
+		{"TreeWalker", func() (any, error) { return store.TreeWalker() }},
 		{"Counter", func() (any, error) { return store.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return store.WorkspaceConfig() }},
 		{"VersionReconciler", func() (any, error) { return store.VersionReconciler() }},

@@ -823,6 +823,19 @@ func (r *dependencySQLRepositoryImpl) DetectCycleReport(ctx context.Context) (pu
 	return out, nil
 }
 
+// WalkDependencyTree runs the SHARED walk body, unwrapped.
+//
+// It does NOT wrap the error the way its siblings above do, and that is the one
+// thing to keep when editing it: the body publishes issueops.ErrValidation,
+// storage.ErrNotFound and *issueops.ErrTooManyRows as the role's own vocabulary,
+// and every one of those is classified by errors.Is/errors.As at both front
+// doors and in the HTTP problem mapping. A `fmt.Errorf("db: ...: %w")` would keep
+// them matchable but would also put this repository's name into the message a
+// user reads, which the direct route never does for the same refusal.
+func (r *dependencySQLRepositoryImpl) WalkDependencyTree(ctx context.Context, req publicops.WalkTreeRequest) (publicops.TreeResult, error) {
+	return issueops.WalkDependencyTreeInTx(ctx, r.runner, req)
+}
+
 func (r *dependencySQLRepositoryImpl) GetTree(ctx context.Context, rootID string, opts domain.DepTreeOpts) ([]*types.TreeNode, error) {
 	if rootID == "" {
 		return nil, errors.New("db: DependencySQLRepository.GetTree: rootID must not be empty")

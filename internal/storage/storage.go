@@ -219,6 +219,14 @@ type Storage interface {
 	// dropped and no existence probe at all. Reads fire no hooks, as for
 	// IssueReader.
 	BlockingAnnotator() (issueops.BlockingAnnotator, error)
+	// TreeWalker returns the guarded dependency-tree surface for this store: the
+	// recursive walk from ONE root that `bd dep tree` renders. Its own role
+	// rather than a mode of IssueRelations or EdgeReader because both of those
+	// exclude it in their own words — a recursive walk has a depth, a cycle
+	// policy and a node shape of its own — and rather than a CycleDetector method
+	// because a cycle has no anchor and a tree is nothing but its anchor. Reads
+	// fire no hooks, as for IssueReader.
+	TreeWalker() (issueops.TreeWalker, error)
 	// ReadyCounter returns the guarded ready-count surface for this store: the
 	// size of the ready set, which is the number `bd ready`'s pagination
 	// publishes and which no other role answers. IssueReader.Ready reports

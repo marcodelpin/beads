@@ -145,6 +145,34 @@ func (a *roleBlockingAnnotator) blockingRequests() []issueops.BlockingRequest {
 	return append([]issueops.BlockingRequest(nil), a.reads...)
 }
 
+// roleTreeWalker is the dependency-tree role of the store-shaped source. Like
+// its siblings it records the request it was handed, because the assertion the
+// tree route is worth making is that the WIRE's parameters reach the role
+// unrewritten — the walk itself belongs to the conformance contract.
+type roleTreeWalker struct {
+	result issueops.TreeResult
+	err    error
+
+	mu    sync.Mutex
+	walks []issueops.WalkTreeRequest
+}
+
+func (w *roleTreeWalker) WalkTree(_ context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error) {
+	w.mu.Lock()
+	w.walks = append(w.walks, req)
+	w.mu.Unlock()
+	if w.err != nil {
+		return issueops.TreeResult{}, w.err
+	}
+	return w.result, nil
+}
+
+func (w *roleTreeWalker) walkRequests() []issueops.WalkTreeRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]issueops.WalkTreeRequest(nil), w.walks...)
+}
+
 // roleReadyCounter is the third role a store-shaped source must supply. It is
 // its own fake rather than a method on roleReader for the reason the roles are
 // separate interfaces: a backend hands out one surface per question, and a test
@@ -375,6 +403,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.BlockingAnnotator == nil {
 		cfg.BlockingAnnotator = &roleBlockingAnnotator{}
 	}
+	if cfg.TreeWalker == nil {
+		cfg.TreeWalker = &roleTreeWalker{}
+	}
 	if cfg.ReadyCounter == nil {
 		cfg.ReadyCounter = &roleReadyCounter{}
 	}
@@ -560,6 +591,11 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 		{
 			name:    "no edge reader",
 			cfg:     rolesConfigWithout(func(c *Config) { c.EdgeReader = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "no tree walker",
+			cfg:     rolesConfigWithout(func(c *Config) { c.TreeWalker = nil }),
 			wantErr: "no database source",
 		},
 		{

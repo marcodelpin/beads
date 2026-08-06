@@ -28,6 +28,7 @@ var (
 	_ apigen.IssueDetails                = types.IssueDetails{}
 	_ apigen.IssueWithDependencyMetadata = types.IssueWithDependencyMetadata{}
 	_ apigen.Dependency                  = types.Dependency{}
+	_ apigen.TreeNode                    = types.TreeNode{}
 	_ apigen.Comment                     = types.Comment{}
 	_ apigen.BondRef                     = types.BondRef{}
 	_ apigen.Statistics                  = types.Statistics{}
@@ -56,6 +57,7 @@ var (
 	// shape for one fact on this surface, silently. bd-5o3gt is the entry this
 	// list is still missing (DependencyEdges); it is not becoming two.
 	_ []issueops.IssueBlocking = apigen.BlockingAnnotations{}.Items
+	_ []types.TreeNode         = apigen.DependencyTreePage{}.Items
 
 	// The batch-create response is not a page, but its Items resolve the same
 	// way and are pinned for the same reason: an envelope whose items generated

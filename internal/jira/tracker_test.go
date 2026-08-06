@@ -690,6 +690,10 @@ func (s *configStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return nil, &storage.ErrUnsupported{Op: "BlockingAnnotator", Backend: "jira-config-stub"}
 }
 
+func (s *configStore) TreeWalker() (issueops.TreeWalker, error) {
+	return nil, &storage.ErrUnsupported{Op: "TreeWalker", Backend: "jira-config-stub"}
+}
+
 func (s *configStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return nil, &storage.ErrUnsupported{Op: "ReadyCounter", Backend: "jira-config-stub"}
 }

@@ -165,8 +165,13 @@ const (
 	// summary over two edge types with a status rule applied, where that one
 	// returns the stored rows and applies nothing.
 	OpListBlockingAnnotations = "listBlockingAnnotations"
-	OpCountReadyWork          = "countReadyWork"
-	OpQueryIssues             = "queryIssues"
+	// OpGetDependencyTree walks the dependency graph from ONE root. It is a
+	// separate operation from listDependencies because that one answers raw
+	// edge rows for many anchors at one hop, and this one recurses from a
+	// single anchor with a depth, a cycle policy and a node shape of its own.
+	OpGetDependencyTree = "getDependencyTree"
+	OpCountReadyWork    = "countReadyWork"
+	OpQueryIssues       = "queryIssues"
 	// OpSweepIssues is the one DESTRUCTIVE operation on this surface: bulk
 	// clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
@@ -229,6 +234,12 @@ var operationCodes = map[string][]Code{
 	// for a stronger version of the same reason: this operation probes no id's
 	// existence at all, so there is nothing it could 404 on.
 	OpListBlockingAnnotations: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The 404 is the difference from the row above, and it is the same
+	// difference: this operation has ONE anchor, so there is no other answer to
+	// preserve by reporting the miss in the body. Its 400 is its own — an empty
+	// root, a direction outside the closed set, a non-positive max_depth — and
+	// all three are the ROLE's ErrValidation reaching the wire.
+	OpGetDependencyTree: {CodeInvalidArgument, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The same vocabulary as the listing it sizes: it takes the same filters
 	// and can refuse them the same way. limit=0's mode-dependent refusal has no
 	// analog here because there is no limit to pass — but that was a

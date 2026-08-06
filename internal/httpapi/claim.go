@@ -438,6 +438,14 @@ func (p timedProvider) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return uow.NewBlockingAnnotator(p)
 }
 
+// TreeWalker builds the dependency-tree walker OVER THIS WRAPPER, for the same
+// reason and with the same hazard as the accessors above: the walk opens one
+// read-only unit of work per call, and it must go through NewUOW below or the
+// tree route reports uow_ms=0.000.
+func (p timedProvider) TreeWalker() (issueops.TreeWalker, error) {
+	return uow.NewTreeWalker(p)
+}
+
 // ReadyCounter builds the ready counter OVER THIS WRAPPER, for the same reason
 // as the two above: the count opens a unit of work of its own, and it must land
 // in this request's uow_ms rather than in nobody's.

@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
-	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/issueops"
@@ -1086,9 +1085,14 @@ Examples:
   bd dep tree gt-0iqq --status=open      # Only show open issues
   bd dep tree gt-0iqq --depth=3          # Limit to 3 levels deep
 
+A node reached by two paths is shown ONCE, under the first path that got
+there, and a cycle simply ends the descent. --show-all-paths is a deprecated
+no-op; use 'bd dep cycles' to find circular dependencies.
+
 --max-rows / BEADS_MAX_ROWS caveat: the tree walk has no query filter to
 thread the cap through, so the full tree is always built first and the
-node count is checked afterward (post-hoc), not during the walk.`,
+node count is checked afterward (post-hoc), not during the walk. The cap is
+honored on the --proxied-server route too, which it was not before.`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -1100,125 +1104,10 @@ node count is checked afterward (post-hoc), not during the walk.`,
 			}
 		}()
 
-		if usesProxiedServer() {
-			if err := rejectMaxRowsUnderProxiedServer(cmd); err != nil {
-				return err
-			}
-			return runDepTreeProxiedServer(cmd, rootCtx, args)
-		}
-
-		ctx := rootCtx
-
-		fullID, treeStore, treeCleanup, err := resolveIDWithRouting(ctx, store, args[0])
-		if err != nil {
-			return HandleErrorRespectJSON("%v", err)
-		}
-		defer treeCleanup()
-
-		showAllPaths, _ := cmd.Flags().GetBool("show-all-paths")
-		maxDepth, _ := cmd.Flags().GetInt("max-depth")
-		reverse, _ := cmd.Flags().GetBool("reverse")
-		direction, _ := cmd.Flags().GetString("direction")
-		statusFilter, _ := cmd.Flags().GetString("status")
-		formatStr, _ := cmd.Flags().GetString("format")
-		if strings.EqualFold(formatStr, "json") {
-			jsonOutput = true
-			formatStr = ""
-		}
-
-		if direction == "" && reverse {
-			direction = "up"
-		} else if direction == "" {
-			direction = "down"
-		}
-
-		if direction != "down" && direction != "up" && direction != "both" {
-			return HandleErrorRespectJSON("--direction must be 'down', 'up', or 'both'")
-		}
-
-		if maxDepth < 1 {
-			return HandleErrorRespectJSON("--max-depth must be >= 1")
-		}
-
-		var tree []*types.TreeNode
-
-		if direction == "both" {
-			downTree, err := treeStore.GetDependencyTree(ctx, fullID, maxDepth, showAllPaths, false)
-			if err != nil {
-				return HandleErrorRespectJSON("%v", err)
-			}
-
-			upTree, err := treeStore.GetDependencyTree(ctx, fullID, maxDepth, showAllPaths, true)
-			if err != nil {
-				return HandleErrorRespectJSON("%v", err)
-			}
-
-			tree = mergeBidirectionalTrees(downTree, upTree, fullID)
-		} else {
-			tree, err = treeStore.GetDependencyTree(ctx, fullID, maxDepth, showAllPaths, direction == "up")
-			if err != nil {
-				return HandleErrorRespectJSON("%v", err)
-			}
-		}
-
-		if statusFilter != "" {
-			tree = filterTreeByStatus(tree, types.Status(statusFilter))
-		}
-
-		// Apply defensive row cap (be-x42v) on the final tree-node count.
-		// Tree walks have no IssueFilter to thread through, so the cap is
-		// enforced at the CLI layer instead of in storage.
-		treeMaxRows, treeMaxRowsSource, err := resolveMaxRows(cmd)
-		if err != nil {
-			return err
-		}
-		if treeMaxRows > 0 && len(tree) > treeMaxRows {
-			if capErr := handleMaxRowsError(&storageissueops.ErrTooManyRows{
-				Found:  len(tree),
-				Cap:    treeMaxRows,
-				Source: treeMaxRowsSource,
-			}); capErr != nil {
-				return capErr
-			}
-		}
-
-		// Handle format presets (json handled earlier, near flag read)
-		if formatStr == "mermaid" {
-			outputMermaidTree(tree, args[0])
-			return nil
-		}
-
-		if jsonOutput {
-			if tree == nil {
-				tree = []*types.TreeNode{}
-			}
-			return outputJSON(tree)
-		}
-
-		if len(tree) == 0 {
-			switch direction {
-			case "up":
-				fmt.Printf("\n%s has no dependents\n", fullID)
-			case "both":
-				fmt.Printf("\n%s has no dependencies or dependents\n", fullID)
-			default:
-				fmt.Printf("\n%s has no dependencies\n", fullID)
-			}
-			return nil
-		}
-
-		switch direction {
-		case "up":
-			fmt.Printf("\n%s Dependent tree for %s:\n\n", ui.RenderAccent("🌲"), fullID)
-		case "both":
-			fmt.Printf("\n%s Full dependency graph for %s:\n\n", ui.RenderAccent("🌲"), fullID)
-		default:
-			fmt.Printf("\n%s Dependency tree for %s:\n\n", ui.RenderAccent("🌲"), fullID)
-		}
-
-		renderTree(tree, maxDepth, direction)
-		fmt.Println()
-		return nil
+		// Both routes, one body: the only differences between them are which
+		// accessor answers and how the root id is resolved, and both are inside
+		// resolveTreeTarget.
+		return runDepTree(cmd, rootCtx, args)
 	},
 }
 
@@ -1466,103 +1355,6 @@ func formatTreeNode(node *types.TreeNode, isBlocked bool) string {
 	return line
 }
 
-// filterTreeByStatus filters the tree to only include nodes with the given status
-// Note: keeps parent chain to maintain tree structure
-func filterTreeByStatus(tree []*types.TreeNode, status types.Status) []*types.TreeNode {
-	if len(tree) == 0 {
-		return tree
-	}
-
-	// First pass: identify which nodes match the status
-	matches := make(map[string]bool)
-	for _, node := range tree {
-		if node.Status == status {
-			matches[node.ID] = true
-		}
-	}
-
-	// If no matches, return empty
-	if len(matches) == 0 {
-		return []*types.TreeNode{}
-	}
-
-	// Second pass: keep matching nodes and their ancestors
-	// Build parent map
-	parentOf := make(map[string]string)
-	for _, node := range tree {
-		if node.ParentID != "" && node.ParentID != node.ID {
-			parentOf[node.ID] = node.ParentID
-		}
-	}
-
-	// Mark all ancestors of matching nodes
-	keep := make(map[string]bool)
-	for id := range matches {
-		keep[id] = true
-		// Walk up to root
-		current := id
-		for {
-			parent, ok := parentOf[current]
-			if !ok || parent == current {
-				break
-			}
-			keep[parent] = true
-			current = parent
-		}
-	}
-
-	// Filter the tree
-	var filtered []*types.TreeNode
-	for _, node := range tree {
-		if keep[node.ID] {
-			filtered = append(filtered, node)
-		}
-	}
-
-	return filtered
-}
-
-// mergeBidirectionalTrees merges up and down trees into a single visualization
-// The root appears once, with dependencies shown below and dependents shown above
-func mergeBidirectionalTrees(downTree, upTree []*types.TreeNode, rootID string) []*types.TreeNode {
-	// For bidirectional display, we show the down tree (dependencies) as the main tree
-	// and add a visual separator with the up tree (dependents)
-	//
-	// For simplicity, we'll just return the down tree for now
-	// A more sophisticated implementation would show both with visual separation
-
-	// Find root in each tree
-	var result []*types.TreeNode
-
-	// Add dependents section if any (excluding root)
-	hasUpNodes := false
-	for _, node := range upTree {
-		if node.ID != rootID {
-			hasUpNodes = true
-			break
-		}
-	}
-
-	if hasUpNodes {
-		// Add a header node for dependents section
-		// We'll mark these with negative depth for visual distinction
-		for _, node := range upTree {
-			if node.ID == rootID {
-				continue // Skip root, we'll add it once from down tree
-			}
-			// Clone node and mark it as "up" direction
-			upNode := *node
-			upNode.Depth = node.Depth // Keep original depth
-			result = append(result, &upNode)
-		}
-	}
-
-	// Add the down tree (dependencies)
-	result = append(result, downTree...)
-
-	return result
-}
-
 // validateExternalRef validates the format of an external dependency reference.
 // Valid format: external:<project>:<capability>
 func validateExternalRef(ref string) error {
@@ -1617,14 +1409,24 @@ func init() {
 	depAddCmd.Flags().String("file", "", "Read dependency edges from JSONL file, or '-' for stdin")
 	depAddCmd.Flags().Bool("no-cycle-check", false, "Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit")
 
-	depTreeCmd.Flags().Bool("show-all-paths", false, "Show all paths to nodes (no deduplication for diamond dependencies)")
+	// DEPRECATED NO-OP, and it always was one: nothing has ever read this flag.
+	// It was accepted and threaded down to the walk, which never looked at it,
+	// so a diamond has always been rendered under one parent only. Implementing
+	// it now would be a feature wearing a refactor's clothes — nobody has
+	// specified what "all paths" means for a DAG with shared subtrees — so the
+	// role's contract states the first-visit rule as a promise
+	// (issueops/treewalker.go, TreeResult.Nodes) and this flag stays accepted so
+	// no script breaks. Same story as TreeNode.Truncated.
+	depTreeCmd.Flags().Bool("show-all-paths", false, "Deprecated no-op: accepted and ignored. A node reached by two paths is shown once, under the first.")
 	depTreeCmd.Flags().IntP("max-depth", "d", 50, "Maximum tree depth to display (safety limit)")
 	depTreeCmd.Flags().Bool("reverse", false, "Show dependent tree (deprecated: use --direction=up)")
 	depTreeCmd.Flags().String("direction", "", "Tree direction: 'down' (dependencies), 'up' (dependents), or 'both'")
 	depTreeCmd.Flags().String("status", "", "Filter to only show issues with this status (open, in_progress, blocked, deferred, closed)")
 	depTreeCmd.Flags().String("format", "", "Output format: 'mermaid' for Mermaid.js flowchart")
-	// Defensive row cap (be-x42v): applied to TreeNode count after the tree is built.
-	addMaxRowsFlag(depTreeCmd)
+	// Defensive row cap (be-x42v): applied to the node count after the walk, by
+	// the role, on BOTH routes — which is why it is the routed variant of the
+	// flag and why depTreeCmd no longer calls rejectMaxRowsUnderProxiedServer.
+	addRoutedMaxRowsFlag(depTreeCmd)
 	// Note: --type flag intentionally omitted from depTreeCmd — TreeNode lacks
 	// dependency type info so filtering is not possible. Use 'bd dep list --type' instead.
 

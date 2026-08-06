@@ -172,6 +172,17 @@ var routeTable = []route{
 		handler:     (*Server).handleBlockingAnnotations,
 	},
 	{
+		op:     OpGetDependencyTree,
+		method: http.MethodGet,
+		// A sibling path under /dependencies rather than a mode of the row
+		// above: ServeMux matches the literal segment exactly, and the two
+		// operations answer different shapes from different roles.
+		pattern:     "/v0/beads/dependencies/tree",
+		capability:  "dependencies.tree",
+		implemented: true,
+		handler:     (*Server).handleDependencyTree,
+	},
+	{
 		op:     OpBatchCreateIssues,
 		method: http.MethodPost,
 		// A collection-level custom method, spelled the way ready:count's is
