@@ -25,11 +25,6 @@ import (
 // New returns the issue-count surface backed by a store handle. *DoltStore and
 // *EmbeddedDoltStore answer identically because the difference between them is
 // below storage.DoltStorage, not above it.
-//
-// The counter supplies its own ConfigSource from the store it already holds,
-// so a caller ON THE ROLE cannot half-perform the "load config, build filter,
-// execute" ritual: it has no way to reach the pieces. That ritual is exactly
-// what both `bd count` routes used to run for themselves, once each.
 func New(store storage.DoltStorage) (issueops.Counter, error) {
 	if store == nil {
 		return nil, &issueops.ErrUnsupported{Op: "storecounter.New", Backend: "nil"}

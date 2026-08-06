@@ -87,15 +87,6 @@ func proxiedIssueLifecycle() (issueops.Lifecycle, error) {
 // applyUpdateProxiedOne applies one issue's update — plain or --claim —
 // through issueops.Lifecycle rather than through a hand-rolled attempt.
 //
-// THE UPDATE IS NOT IMPLEMENTED HERE, and that is the point. The read-merge-write,
-// the merge-shaped metadata and note edits resolved against the row re-read
-// inside the mutation transaction, the assignee fence, the close policy, the
-// conditional-update compare-and-set, the claim's own CAS and eligibility
-// rules, the issue-or-wisp resolve, the whole-attempt conflict retry and the
-// commit all belong to the contract. Every one of them had a second
-// implementation in this file until this commit; the claim already answered to
-// the contract, and now the plain update does too.
-//
 // What stays here is this surface's own protocol: the template guard, the
 // advisory reassign pre-read, the per-id failure taxonomy the multi-id batch
 // needs, the notes-overwrite warning and the completion hooks — none of which

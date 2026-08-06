@@ -16,12 +16,6 @@ import (
 // the same two-step proxiedCounter performs, and for the same reason: the
 // accessor is where each layer is added.
 //
-// This file used to hold a second copy of `bd query`: it parsed the expression
-// again, evaluated it again, applied the default closed exclusion again, and
-// carried its own copy of the limit*3-floor-100 over-fetch. All of that is
-// behind the role now, so the proxied route differs from the direct one by
-// which accessor it asks.
-//
 // TWO --offset REFUSALS LEFT WITH IT, in opposite directions. "--offset is not
 // supported with OR/predicate queries" is GONE: it existed because an offset
 // into a window that had already dropped matches meant nothing, and the window

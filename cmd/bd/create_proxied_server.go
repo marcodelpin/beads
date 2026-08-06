@@ -244,12 +244,6 @@ func buildCreateIssueFromInput(in createInput) *types.Issue {
 
 // runCreateProxiedMarkdown creates every issue in a markdown file as ONE act,
 // through issueops.BatchCreator.
-//
-// It builds the SAME request the direct route builds, from the same shared
-// projection, so the two routes differ only in which accessor answers. The
-// unit of work, the per-item create loop, the custom-type check this handler
-// used to run against a create context it read itself, and the commit are all
-// the contract's.
 func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createInput) error {
 	templates, err := parseMarkdownFile(in.markdownFile)
 	if err != nil {

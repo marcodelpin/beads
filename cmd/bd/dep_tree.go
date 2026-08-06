@@ -17,14 +17,6 @@ import (
 
 // `bd dep tree` on ONE role and ONE body.
 //
-// This file used to be two handlers. The direct route resolved a partial id,
-// opened a routed store and called store.GetDependencyTree; the proxied route
-// took the id verbatim, opened a unit of work and called the use case. Each of
-// them then carried its own copy of the `both`-direction merge, the status
-// prune, the mermaid and human rendering, and the empty-tree wording. The copies
-// agreed, which is the only reason nobody noticed that a `both` walk was two
-// independent reads with no transaction spanning them.
-//
 // What is left here is the front door's own work: flag vocabulary, id
 // resolution, and rendering. The walk, the depth bound, the cycle policy, the
 // prune and the defensive cap are issueops.TreeWalker's.

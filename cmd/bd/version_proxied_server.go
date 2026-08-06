@@ -28,11 +28,6 @@ func proxiedVersionReconciler() (issueops.VersionReconciler, error) {
 // reconcileVersionProxiedServer records this binary's version on the proxied
 // route, and is the twin of autoMigrateOnVersionBump's tail.
 //
-// This file used to open its own unit of work and hold the commit message for
-// a decision made in a use case; the direct route made the SAME decision from a
-// second copy of the comparison in cmd/bd. Both now ask the role, and the
-// difference between the routes is which accessor answers.
-//
 // EVERY FAILURE HERE IS SWALLOWED TO A DEBUG LINE, deliberately, and
 // issueops.VersionReconciler says that this is what its callers do. This runs
 // from PersistentPreRun before every proxied command: a workspace whose markers

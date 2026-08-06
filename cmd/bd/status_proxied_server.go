@@ -13,13 +13,6 @@ import (
 // the same two-step proxiedCounter performs, and for the same reason: the
 // accessor is where each layer is added.
 //
-// This file used to hold a second copy of `bd status`: it opened a unit of
-// work, ran the statistics query, and — under --assigned — built the assignee
-// filter, ran the ready-work query and folded the five status counts itself,
-// beside a direct route doing the same three things again. All of that is
-// behind the role now, so the proxied route differs from the direct one by
-// which accessor it asks and nothing else.
-//
 // The role is asked for at the TOP of the command, before any work: this
 // command resolves no ids, so there is nothing to look up first and no
 // lookup-only provider to trip over.

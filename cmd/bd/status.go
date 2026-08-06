@@ -116,11 +116,6 @@ Examples:
 // openStatsReporter hands back the summary role for whichever route this
 // invocation is on, each through its OWN capability accessor — the store's for
 // the direct route and the provider's for the proxied one.
-//
-// Neither branch builds a filter, folds a summary or opens a unit of work.
-// That is the whole of what moved behind the role: this command used to hold
-// the assignee filter, the ready-work filter and the status fold on the direct
-// route, and a second copy of all three on the proxied one.
 func openStatsReporter() (issueops.StatsReporter, error) {
 	if usesProxiedServer() {
 		return proxiedStatsReporter()

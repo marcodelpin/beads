@@ -16,11 +16,6 @@ import (
 // dimensions are the wisps merge (SkipWisps), template exclusion (IsTemplate),
 // the default gate exclusion (ExcludeTypes), and infra-type routing to the
 // ephemeral tier (Ephemeral).
-//
-// It moved here from cmd/bd when the Counter role took the filter off both
-// front doors. That is a strict improvement in what it guards: it used to
-// compare a CLI helper against the shared list builder, and now it compares
-// the two SHARED builders that every route and every backend goes through.
 func TestBuildCountFilterIncludeInfraMirrorsListFilter(t *testing.T) {
 	cfg := ListConfig{}
 	for _, issueType := range []string{"", "task", "gate", "message"} {

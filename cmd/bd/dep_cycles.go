@@ -13,13 +13,6 @@ import (
 
 // `bd dep cycles`, and the post-add warning every route that wires an edge
 // prints, on ONE role and ONE renderer.
-//
-// This file used to be four places. The direct sweep opened the store and
-// walked [][]*types.Issue; the proxied sweep opened a unit of work and walked
-// the same slice from the use case; and each of them carried its own copy of the
-// arrow-path warning. The two copies agreed, which is the only reason nobody had
-// noticed that the slice they agreed about was map-ordered and silently
-// shortened.
 
 // openCycleDetector hands back the cycle role for whichever route this
 // invocation is on, each through its OWN capability accessor.

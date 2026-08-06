@@ -15,12 +15,6 @@ import (
 // purgeScope is what `bd purge` and `bd prune` still differ by once the
 // operation itself is behind issueops.Sweeper: a tier, a reference policy, and
 // the words each command prints.
-//
-// It used to carry the SEMANTICS too — ephemeralOnly, requireFilter,
-// ignoreReferences — and each route read them and re-derived the same
-// selection, the same pinned protection and the same safety gate from them.
-// All of that is request fields now, so what is left here is presentation plus
-// the two request values a flag chooses.
 type purgeScope struct {
 	// cmdName is the user-visible command name (e.g. "purge", "prune").
 	// Used in messages and the suggested `--force` hint.
@@ -97,11 +91,6 @@ EXAMPLES:
 // openSweeper hands back the bulk-clearance role for whichever route this
 // invocation is on, each through its OWN capability accessor — the store's for
 // the direct route and the provider's for the proxied one.
-//
-// Neither branch builds a filter, matches a glob, rechecks closed_at or scans
-// for citations. That is the whole of what moved behind the role, and it used
-// to be written out twice, once per route, with the selection and the deletion
-// in two DIFFERENT transactions on this one.
 func openSweeper() (issueops.Sweeper, error) {
 	if usesProxiedServer() {
 		return proxiedSweeper()

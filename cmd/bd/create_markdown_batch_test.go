@@ -4,13 +4,6 @@ package main
 // this command's behaviour actually changed when it moved onto
 // issueops.BatchCreator.
 //
-// What the role promises is pinned at all three backends by
-// backend/conformance/batch_creator_contract.go and is not restated here. These
-// tests assert the three things only the front door can show: that the direct
-// route reaches the role at all, that the plan-wide flags it used to accept and
-// ignore now mean something, and that a refused file leaves the workspace as it
-// found it.
-//
 // They run the real bd binary against an isolated embedded-Dolt workspace, the
 // same way create_deps_atomic_test.go does, and reuse that file's hermetic
 // environment and output helpers.
