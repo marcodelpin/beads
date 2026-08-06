@@ -58,6 +58,11 @@ type SweeperFixture struct {
 	// A nil hook means "this backend cannot observe history", and the case
 	// that needs it SKIPS with that reason rather than passing quietly.
 	CountHistory func(context.Context) (int, error)
+	// AddComment attaches a comment to an issue OR a wisp. It is filled from
+	// the backend's Commenter role, which resolves the plane itself, so a case
+	// can cite a candidate from a wisp's comment without knowing how that
+	// backend reaches wisp_comments.
+	AddComment func(ctx context.Context, issueID, author, text string) error
 }
 
 // sweeperClosedAt is the stamp every seeded candidate carries, and
@@ -263,6 +268,62 @@ func RunSweeperDryRunChangesNothing(t *testing.T, ctx context.Context, fixture S
 		t.Error("real.DryRun = true")
 	}
 	sweeperAssertIssueRows(t, ctx, fixture, 0, ids...)
+}
+
+// RunSweeperProtectsRowsCitedFromAWispComment is the quadrant the protection
+// scan was blind in.
+//
+// ProtectReferenced promises the scan covers every not-done row's description,
+// notes AND comments, and the not-done set spans both planes. Three of those
+// four combinations had cases; a citation living in a comment on an open WISP
+// had none, and the two bodies read comments through different code — the
+// store-backed one partitions between `comments` and `wisp_comments`, the
+// unit-of-work one went through a use case that reads the durable table only.
+// So `bd prune` deleted the cited bead on one route and kept it on the other,
+// with all three legs green.
+//
+// The citation is the row's ONLY one, and it is on a wisp that is OPEN, so
+// nothing but a both-planes comment scan can protect it.
+func RunSweeperProtectsRowsCitedFromAWispComment(t *testing.T, ctx context.Context, fixture SweeperFixture) {
+	t.Helper()
+	if fixture.AddComment == nil {
+		t.Skip("fixture cannot attach comments")
+	}
+	cited := sweeperSeed(t, ctx, fixture, sweeperIssue(fixture, "wcx", "cited", false), nil)
+
+	witness := sweeperIssue(fixture, "wcx", "live", true)
+	witness.Status = types.StatusOpen
+	witness.ClosedAt = nil
+	sweeperSeedOpen(t, ctx, fixture, witness)
+	if err := fixture.AddComment(ctx, witness.ID, "sweeper-seed",
+		fmt.Sprintf("decision trail: see %s", cited)); err != nil {
+		t.Fatalf("commenting on the wisp: %v", err)
+	}
+
+	request := publicops.SweepRequest{
+		Tier:              publicops.SweepDurable,
+		IDPattern:         sweeperPattern(fixture, "wcx"),
+		ProtectReferenced: true,
+	}
+	result := sweeperSweep(t, ctx, fixture, request)
+
+	if result.Skipped.Referenced != 1 {
+		t.Errorf("Skipped.Referenced = %d, want 1: the only citation of %s is a comment on an open wisp",
+			result.Skipped.Referenced, cited)
+	}
+	if result.Swept != 0 {
+		t.Errorf("Swept = %d, want 0", result.Swept)
+	}
+	sweeperAssertIssueRows(t, ctx, fixture, 1, cited)
+
+	// And the same request without the protection deletes it, so the case
+	// cannot pass for an implementation that skipped every candidate.
+	request.ProtectReferenced = false
+	unprotected := sweeperSweep(t, ctx, fixture, request)
+	if unprotected.Swept != 1 {
+		t.Errorf("unprotected Swept = %d, want 1", unprotected.Swept)
+	}
+	sweeperAssertIssueRows(t, ctx, fixture, 0, cited)
 }
 
 // RunSweeperProtectsCitedRows pins ProtectReferenced
