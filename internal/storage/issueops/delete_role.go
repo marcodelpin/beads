@@ -73,9 +73,15 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 	// The guard runs only when the request did not already say what to do
 	// about dependents. Under Cascade there is nothing outside the set by
 	// construction, which is why the expansion below is not asked about it.
+	//
+	// IT ASKS ABOUT EVERY NAMED ID, IN BOTH PLANES. It used to ask only about
+	// the durable half, so a wisp named with a durable dependent was neither
+	// refused unforced nor reported as orphaning when forced, and the
+	// cross-plane edge it removed went uncounted. The leaf says "a NAMED ROW
+	// that some row OUTSIDE the request depends on is refused" with no wisp
+	// exemption, and the unit-of-work body has always read it that way.
 	if !req.Cascade {
-		_, regularIDs := partitionByWispSet(ids, wispSet)
-		external, err := ExternalDependentsBySourceInTx(ctx, tx, regularIDs, idSet)
+		external, err := ExternalDependentsBySourceInTx(ctx, tx, ids, idSet)
 		if err != nil {
 			return publicops.DeleteResult{}, fmt.Errorf("delete: check dependents: %w", err)
 		}
@@ -101,31 +107,34 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 		}
 	}
 
+	// THE DELETION SET IS RESOLVED ONCE, HERE, and the same value reaches all
+	// three of the reads and writes that must agree about it: the
+	// neighborhood read, the deletion, and the citation rewrite.
+	//
+	// It used to be resolved twice — once here for the rewrite from ALL ids,
+	// once inside DeleteIssuesInTx for the deletion from the DURABLE ids — and
+	// the two drifted. A cascade rooted at a wisp put the wisp's dependents in
+	// the rewrite set and not in the delete, so those rows survived and their
+	// neighbors' descriptions were rewritten to call them deleted. See
+	// DeletionSet.
+	set, err := ResolveDeletionSetInTx(ctx, tx, ids, req.Cascade)
+	if err != nil {
+		return publicops.DeleteResult{}, fmt.Errorf("delete: %w", err)
+	}
+
 	// The neighborhood is read BEFORE the deletion, because after it the
 	// edges that identify a neighbor are gone. It is read against the whole
 	// deletion set — the cascade closure, not just the named ids — so a row
 	// citing a cascade-deleted id is rewritten too.
-	deletionSet := ids
-	if req.Cascade {
-		closure, err := FindAllDependentsInTx(ctx, tx, ids)
-		if err != nil {
-			return publicops.DeleteResult{}, fmt.Errorf("delete: expand cascade: %w", err)
-		}
-		deletionSet = make([]string, 0, len(closure))
-		for id := range closure {
-			deletionSet = append(deletionSet, id)
-		}
-	}
-	neighbors, err := deleteNeighborsInTx(ctx, tx, deletionSet)
+	neighbors, err := deleteNeighborsInTx(ctx, tx, set.All)
 	if err != nil {
 		return publicops.DeleteResult{}, err
 	}
 
-	// force=true unconditionally: this body has ALREADY answered the guard
-	// question above and holds the orphan list it produced, so letting the
-	// shared batch delete ask it a second time would be one more scan of the
-	// dependency tables on the path that is about to write.
-	deleted, err := DeleteIssuesInTx(ctx, tx, ids, req.Cascade, true, req.DryRun)
+	// No guard argument to pass: this body has ALREADY answered the guard
+	// question above and holds the orphan list it produced, and
+	// DeleteResolvedSetInTx deletes what it is handed without asking again.
+	deleted, err := DeleteResolvedSetInTx(ctx, tx, set, req.DryRun)
 	if err != nil {
 		return publicops.DeleteResult{}, err
 	}
@@ -138,7 +147,10 @@ func DeleteInTx(ctx context.Context, tx *sql.Tx, req publicops.DeleteRequest) (p
 		return result, nil
 	}
 
-	rewritten, err := RewriteDeletedReferencesInTx(ctx, tx, deletionSet, neighbors, req.Actor)
+	// set.All, not a set recomputed here: a `[deleted:<id>]` marker is a claim
+	// that the row is gone, and the only set that can honestly back that claim
+	// is the one DeleteResolvedSetInTx was handed.
+	rewritten, err := RewriteDeletedReferencesInTx(ctx, tx, set.All, neighbors, req.Actor)
 	if err != nil {
 		return publicops.DeleteResult{}, err
 	}

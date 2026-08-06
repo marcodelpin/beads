@@ -70,6 +70,14 @@ type DeleteRequest struct {
 	// gate is: a second front door that inherited the capability without the
 	// guard would orphan a workspace's graph by omission.
 	//
+	// THE GUARD READS BOTH PLANES ON BOTH ENDS OF THE EDGE, and there is no
+	// wisp exemption at either end. A named WISP with a durable dependent is
+	// refused exactly as a named issue is, and a durable row's wisp dependent
+	// counts too. Half of that was an implementation gap for one release: the
+	// store-backed body asked the guard about the durable half of the request
+	// only, so `bd delete <wisp>` orphaned a durable dependent without saying
+	// so and without being refused.
+	//
 	// A dependent INSIDE the request is not a dependent for this purpose — a
 	// batch that names both ends of an edge is deleting the edge too, and
 	// refusing it would make `bd delete a b` fail on exactly the pair a caller

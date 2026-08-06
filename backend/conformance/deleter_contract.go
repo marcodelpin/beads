@@ -258,6 +258,162 @@ func RunDeleterCascadeDeletesTheClosure(t *testing.T, ctx context.Context, fixtu
 	deleterAssertIssueRows(t, ctx, fixture, 1, bystander)
 }
 
+// RunDeleterCascadeFromAWispRootDeletesTheClosure pins the CROSS-PLANE quadrant
+// of the cascade (issueops/deleter.go, DeleteRequest.Cascade: "also deletes the
+// TRANSITIVE CLOSURE of everything that depends on the named rows, IN BOTH
+// PLANES").
+//
+// RunDeleterCascadeDeletesTheClosure above proves the closure over a durable
+// chain and ErasesAcrossBothPlanes proves a mixed request over an EDGE-FREE
+// pair, so between them nothing asserted what a cascade rooted at a WISP does
+// to the durable rows hanging off it. That gap is not academic: `bd wisp gc`
+// deletes wisps with cascade hardcoded, so this is the quadrant routine
+// housekeeping runs through.
+//
+// The chain is two edges deep on purpose, and its second link is durable, so
+// this cannot be satisfied by a body that merely follows one cross-plane edge.
+func RunDeleterCascadeFromAWispRootDeletesTheClosure(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	root := deleterSeedWisp(t, ctx, fixture, "wcasc", "root")
+	dependent := deleterSeedIssue(t, ctx, fixture, "wcasc", "dependent")
+	grandchild := deleterSeedIssue(t, ctx, fixture, "wcasc", "grandchild")
+	bystander := deleterSeedIssue(t, ctx, fixture, "wcasc", "bystander")
+	deleterAddEdge(t, ctx, fixture, dependent, root)
+	deleterAddEdge(t, ctx, fixture, grandchild, dependent)
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:     []string{root},
+		Cascade: true,
+		Force:   true,
+	})
+	if result.Deleted != 3 {
+		t.Errorf("Deleted = %d, want 3 — the wisp, the durable row that depends on it, and ITS dependent", result.Deleted)
+	}
+	deleterAssertWispRows(t, ctx, fixture, 0, root)
+	deleterAssertIssueRows(t, ctx, fixture, 0, dependent, grandchild)
+	deleterAssertIssueRows(t, ctx, fixture, 1, bystander)
+}
+
+// RunDeleterGuardsAWispNamedWithADurableDependent pins that the dependents
+// guard has NO WISP EXEMPTION (issueops/deleter.go, DeleteRequest.Force:
+// "WITHOUT Cascade AND WITHOUT Force, a NAMED ROW that some row OUTSIDE the
+// request depends on is refused" — a named row, not a named durable row).
+//
+// RunDeleterRefusesDependentsOutsideTheRequest and
+// RunDeleterForceOrphansDependents are both durable-only, so a body that
+// partitioned the request and asked the guard only about the durable half
+// passed them while silently orphaning a workspace's graph through the other
+// half. Both halves of the clause are asserted here — the unforced refusal and
+// the forced orphan report — because a body that reported the orphan without
+// refusing, or refused without reporting, is wrong in a different direction
+// and the two share one scan.
+func RunDeleterGuardsAWispNamedWithADurableDependent(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	wisp := deleterSeedWisp(t, ctx, fixture, "wguard", "wisp")
+	dependent := deleterSeedIssue(t, ctx, fixture, "wguard", "dependent")
+	deleterAddEdge(t, ctx, fixture, dependent, wisp)
+
+	for _, dryRun := range []bool{false, true} {
+		result, err := fixture.Deleter.Delete(ctx, publicops.DeleteRequest{
+			IDs:    []string{wisp},
+			DryRun: dryRun,
+		})
+		if !errors.Is(err, publicops.ErrDependentsOutsideRequest) {
+			t.Fatalf("Delete(dryRun=%v) unforced over a wisp with a durable dependent: error = %v, want ErrDependentsOutsideRequest", dryRun, err)
+		}
+		var blocked *publicops.DependentsOutsideRequestError
+		if !errors.As(err, &blocked) {
+			t.Fatalf("Delete(dryRun=%v) error = %v, want *DependentsOutsideRequestError", dryRun, err)
+		}
+		if blocked.IssueID != wisp {
+			t.Errorf("DependentsOutsideRequestError.IssueID = %q, want the named wisp %q", blocked.IssueID, wisp)
+		}
+		if !reflect.DeepEqual(blocked.Dependents, []string{dependent}) {
+			t.Errorf("DependentsOutsideRequestError.Dependents = %v, want [%s]", blocked.Dependents, dependent)
+		}
+		if result.Deleted != 0 {
+			t.Errorf("refused delete reported Deleted = %d, want 0", result.Deleted)
+		}
+		deleterAssertWispRows(t, ctx, fixture, 1, wisp)
+		deleterAssertIssueRows(t, ctx, fixture, 1, dependent)
+	}
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{wisp},
+		Force: true,
+	})
+	if result.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1 — force deletes the NAMED wisp and nothing else", result.Deleted)
+	}
+	if !reflect.DeepEqual(result.Orphaned, []string{dependent}) {
+		t.Errorf("Orphaned = %v, want [%s] — the cross-plane edge orphans a durable row too", result.Orphaned, dependent)
+	}
+	deleterAssertWispRows(t, ctx, fixture, 0, wisp)
+	deleterAssertIssueRows(t, ctx, fixture, 1, dependent)
+	// The orphan loses its cross-plane edge with the wisp it pointed at; a
+	// surviving edge into a deleted wisp would be dangling rather than orphaned.
+	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, wisp)
+}
+
+// RunDeleterNeverCallsALiveRowDeleted pins the invariant that makes the
+// under-deleting cascade impossible to reintroduce quietly: THE SET WHOSE
+// CITATIONS ARE REWRITTEN IS THE SET THAT WAS DELETED. A `[deleted:<id>]`
+// marker in a surviving row is a claim about the workspace, and this case
+// checks the claim against the rows.
+//
+// It is written as a biconditional rather than a count, because the counts
+// cannot see it: an implementation whose rewrite set is a strict SUPERSET of
+// its deletion set reports a perfectly plausible ReferencesUpdated and leaves
+// a neighbor's description saying a LIVE issue is gone. No other case here
+// reads a surviving row's text back and compares it against what is actually
+// stored.
+//
+// The fixture is the cheapest arrangement in which the two sets can differ: a
+// wisp root, a durable row reachable only through it, and a third row that the
+// durable one DEPENDS ON — so the third row is a graph neighbor of the deletion
+// set (its text is in scope for the rewrite) without being a dependent of
+// anything (so it is never in the closure and always survives).
+func RunDeleterNeverCallsALiveRowDeleted(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	root := deleterSeedWisp(t, ctx, fixture, "live", "root")
+	dependent := deleterSeedIssue(t, ctx, fixture, "live", "dependent")
+
+	survivor := deleterIssue(fixture, "live", "survivor", false)
+	survivor.Description = "unblocks " + dependent + ", tracked under " + root
+	deleterSeed(t, ctx, fixture, survivor)
+	deleterAddEdge(t, ctx, fixture, dependent, root)
+	deleterAddEdge(t, ctx, fixture, dependent, survivor.ID)
+
+	deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:     []string{root},
+		Cascade: true,
+		Force:   true,
+		Actor:   "deleter-contract",
+	})
+
+	deleterAssertIssueRows(t, ctx, fixture, 1, survivor.ID)
+	text := deleterText(t, ctx, fixture, survivor.ID, "description")
+	for _, cited := range []struct {
+		id    string
+		table string
+	}{
+		{dependent, "issues"},
+		{root, "wisps"},
+	} {
+		marker := "[deleted:" + cited.id + "]"
+		gone := deleterRowCount(t, ctx, fixture, cited.table, cited.id) == 0
+		switch {
+		case gone && !strings.Contains(text, marker):
+			t.Errorf("%s is gone but the survivor's description still cites it verbatim: %q", cited.id, text)
+		case !gone && strings.Contains(text, marker):
+			t.Errorf("%s STILL EXISTS and the survivor's description calls it deleted: %q — "+
+				"the rewrite set is wider than the deletion set", cited.id, text)
+		case !gone && !strings.Contains(text, cited.id):
+			t.Errorf("%s still exists but the survivor's description no longer names it: %q", cited.id, text)
+		}
+	}
+}
+
 // RunDeleterErasesAcrossBothPlanes pins that one request reaches BOTH tiers
 // (issueops/deleter.go, DeleteRequest.IDs: "in either plane").
 //
@@ -563,6 +719,21 @@ func deleterAssertWispRows(t *testing.T, ctx context.Context, fixture DeleterFix
 	if got != want {
 		t.Errorf("wisp rows for %v = %d, want %d", ids, got, want)
 	}
+}
+
+// deleterRowCount REPORTS how many rows one id has in one plane instead of
+// asserting a number, for the case whose assertion depends on which answer the
+// implementation gave.
+//
+//nolint:gosec // G201: table is chosen by the caller from the two plane tables.
+func deleterRowCount(t *testing.T, ctx context.Context, fixture DeleterFixture, table, id string) int {
+	t.Helper()
+	var got int
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE id = ?", table)
+	if err := fixture.QueryScalar(ctx, query, []any{id}, &got); err != nil {
+		t.Fatalf("counting %s rows for %s: %v", table, id, err)
+	}
+	return got
 }
 
 // deleterAssertEdgeRows counts the stored edges from dependent to blocker.

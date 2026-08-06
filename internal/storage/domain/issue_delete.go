@@ -130,6 +130,17 @@ func (u *issueUseCaseImpl) deleteMany(ctx context.Context, params DeleteIssuesPa
 	if _, err := u.depRepo.DeleteAllForIDs(ctx, wispIDs, DepInsertOpts{UseWispsTable: true}); err != nil {
 		return result, fmt.Errorf("delete: drop wisp deps: %w", err)
 	}
+	// The SYNC-PLANE edges pointing at a deleted wisp, which are not the same
+	// rows as the line above and are not reached by a foreign key: there is no
+	// FK from dependencies to wisps, so `dependencies.depends_on_wisp_id` rows
+	// survive their target unless they are deleted explicitly. Without this a
+	// forced delete of a wisp left its durable dependent holding an edge into
+	// a row that no longer exists — dangling, not orphaned, which is not what
+	// issueops.DeleteRequest.Force promises. The store body has always done
+	// this (issueops.deleteIssueRowInTx -> DeleteWispFromDependenciesInTx).
+	if _, err := u.depRepo.DeleteAllForIDs(ctx, wispIDs, DepInsertOpts{}); err != nil {
+		return result, fmt.Errorf("delete: drop sync-plane edges into deleted wisps: %w", err)
+	}
 	if _, err := u.labelRepo.DeleteAllForIDs(ctx, regularIDs, LabelOpts{}); err != nil {
 		return result, fmt.Errorf("delete: drop labels: %w", err)
 	}

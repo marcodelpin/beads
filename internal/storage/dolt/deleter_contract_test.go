@@ -40,6 +40,15 @@ func TestDeleterContract(t *testing.T) {
 	t.Run("ErasesAcrossBothPlanes", func(t *testing.T) {
 		conformance.RunDeleterErasesAcrossBothPlanes(t, ctx, fixture)
 	})
+	t.Run("CascadeFromAWispRootDeletesTheClosure", func(t *testing.T) {
+		conformance.RunDeleterCascadeFromAWispRootDeletesTheClosure(t, ctx, fixture)
+	})
+	t.Run("GuardsAWispNamedWithADurableDependent", func(t *testing.T) {
+		conformance.RunDeleterGuardsAWispNamedWithADurableDependent(t, ctx, fixture)
+	})
+	t.Run("NeverCallsALiveRowDeleted", func(t *testing.T) {
+		conformance.RunDeleterNeverCallsALiveRowDeleted(t, ctx, fixture)
+	})
 	t.Run("CollapsesDuplicateIDs", func(t *testing.T) {
 		conformance.RunDeleterCollapsesDuplicateIDs(t, ctx, fixture)
 	})
