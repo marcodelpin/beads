@@ -110,13 +110,17 @@ type DeleteIssuesParams struct {
 	UpdateTextReferences bool
 
 	// EnforceCascadePolicy selects embedded-parity dependent handling
-	// (issueops.DeleteIssuesInTx). When false — the legacy default used by the
-	// proxied-server delete command, which always cascades — deletion expands to
-	// all transitive dependents regardless of Cascade/Force. When true,
-	// Cascade/Force choose the behavior:
+	// (issueops.DeleteIssuesInTx). When false — the legacy default kept for the
+	// wisp/mol/gc/purge proxied paths and the single-ID convenience wrappers —
+	// cascade expansion follows params.Cascade alone and Force is ignored. When
+	// true, Cascade/Force choose the behavior:
 	//   Cascade=true               → delete all transitive dependents
 	//   Cascade=false, Force=false → refuse if any external dependent exists
+	//                                (*DeleteBlockedError, naming the blockers)
 	//   Cascade=false, Force=true  → orphan external dependents (delete only IDs)
+	// One deliberate divergence from embedded: a wisp NAMED in IDs counts like
+	// any other issue here and can trip the refusal, where embedded partitions
+	// wisps out before the dependent check. Strictly safer; kept on purpose.
 	EnforceCascadePolicy bool
 	Force                bool
 }
