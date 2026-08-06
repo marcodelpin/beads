@@ -120,35 +120,21 @@ type Config struct {
 	// Provider is where every database-touching handler opens its one unit of
 	// work per request.
 	Provider uow.UnitOfWorkProvider
-	// Reader, Claimer, Settings and Stats are the roles this server answers
-	// from, for a backend whose facade is a STORE rather than a unit-of-work
-	// provider. sourceRoles is the authoritative list.
-	// Reader, Claimer and EdgeReader are the issue roles this server answers
-	// Reader, Claimer and ReadyCounter are the issue roles this server answers
-	// from, for a backend whose facade is a STORE rather than a unit-of-work
-	// provider.
+	// The fields below are the roles this server answers from, for a backend
+	// whose facade is a STORE rather than a unit-of-work provider. sourceRoles
+	// is the authoritative list.
 	//
-	// Set them together, and only when Provider is nil: they are the other
-	// Set them all together, and only when Provider is nil: they are the other
-	// Set all three together, and only when Provider is nil: they are the other
+	// Set them ALL, and only when Provider is nil: together they are the other
 	// complete database source, not an override of one. Listen refuses every
-	// other combination, including a PARTIAL set — a reader without a claimer
-	// other combination, including a partial set — a reader without a claimer
-	// would bind, answer every read, and fail the one write on this surface with
-	// a nil dereference inside a handler, and the same is true of every
-	// operation whose role is missing.
+	// other combination, including a partial set — a server missing one role
+	// would bind, answer every other route, and fail that one with a nil
+	// dereference inside a handler on a live server, which is worse than not
+	// starting.
 	//
 	// The set grows as operations do: each role a new operation reaches becomes
-	// another field here and another one this source must carry, because a
-	// database source that answers some operations and faults on others is not
-	// a source.
-	// other combination, including a partially-set set — a server missing one
-	// role would bind, answer every other route, and fail that one with a nil
-	// dereference inside a handler on a live server. The set grows by one each
-	// time an operation reaches a role this source does not yet carry, and it
-	// grows in the same change as the operation for exactly that reason.
-	// a nil dereference inside a handler, and a pair without a ready counter
-	// would do the same on the one read that is not the reader's.
+	// another field here and another one this source must carry, in the same
+	// change as the operation, because a database source that answers some
+	// operations and faults on others is not a source.
 	//
 	// A caller with a store takes them off the store's own accessors, and WHICH
 	// store value it takes them off is the whole question. Every decorator a
@@ -165,15 +151,10 @@ type Config struct {
 	//	}
 	//	rd, err := src.IssueReader()
 	//	cl, err := src.IssueClaimer()
-	//	wc, err := src.WorkspaceConfig()
-	//	st, err := src.StatsReporter()
-	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Settings: wc, Stats: st, ...})
-	//	ed, err := src.EdgeReader()
-	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, EdgeReader: ed, ...})
-	//	rc, err := src.ReadyCounter()
-	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, ReadyCounter: rc, ...})
-	//	qr, err := src.Querier()
-	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, Querier: qr, ...})
+	//	... one per field below, all off the same src ...
+	//	httpapi.Listen(httpapi.Config{Reader: rd, Claimer: cl, /* and the rest */})
+	//
+	// cmd/bd's serveIssueRoles is that loop, written out.
 	//
 	// Listen refuses a hook-firing role rather than trusting the paragraph
 	// above — see checkDatabaseSource.
@@ -194,12 +175,10 @@ type Config struct {
 	// (see Server.reader) — and a role reached this way opens none through this
 	// server, so a rebuild would buy nothing.
 	//
-	// Every one of these is required for the reason the half-set pair is
-	// refused: a server that binds while unable to answer an operation its own
-	// capability list advertises is the failure this check exists to prevent,
-	// and a nil role would produce it on the first request to that route
-	// instead of at startup. Take them all off the same store, beneath the hook
-	// layer. sourceRoles is the authoritative list.
+	// Every one of these is required for one reason: a server that binds while
+	// unable to answer an operation its own capability list advertises is the
+	// failure this check exists to prevent, and a nil role would produce it on
+	// the first request to that route instead of at startup.
 	Reader            issueops.Reader
 	Claimer           issueops.Claimer
 	Settings          issueops.WorkspaceConfig
@@ -245,18 +224,10 @@ type Server struct {
 	cfg      Config
 	provider uow.UnitOfWorkProvider
 
-	// These are the configured roles, set exactly when provider is nil. They
-	// are what reader(), claimer(), workspaceConfig() and statsReporter() hand
-	// back on the store-shaped source; some names differ from those methods
-	// because a struct cannot carry both.
-	// issueReader, issueClaimer and issueCycles are the configured roles, set
-	// exactly when provider is nil. They are what reader(), claimer() and
-	// cycleDetector() hand back on the store-shaped source; the names differ
-	// from those methods because a struct cannot carry both.
-	// issueReader, issueClaimer and issueEdges are the configured roles, set
-	// exactly when provider is nil. They are what reader(), claimer() and
-	// edgeReader() hand back on the store-shaped source; the names differ from
-	// those methods because a struct cannot carry both.
+	// The configured roles, set exactly when provider is nil. They are what
+	// reader(), claimer(), cycleDetector() and the rest of those accessors hand
+	// back on the store-shaped source; the field names differ from the method
+	// names because a struct cannot carry both.
 	issueReader       issueops.Reader
 	issueClaimer      issueops.Claimer
 	settings          issueops.WorkspaceConfig
@@ -435,21 +406,10 @@ func Listen(cfg Config) (*Server, error) {
 // provider, or the roles this surface answers from (sourceRoles). A PARTIAL
 // set is refused with the same message as none at all, because it is the same
 // mistake and the failure it would otherwise produce is the worst shape
-// available — a reader without a claimer binds, answers every read, and fails
-// the one issue write on this surface with a nil dereference in a handler on a
-// live server. A missing settings or summary role is the same failure on a
-// different route, which is why the set is all-or-nothing rather than a
-// required pair plus optional extras.
-// provider, or the issue roles. A PARTIALLY-SET role set is refused with the
-// same message as none at all, because it is the same mistake and the failure
-// it would otherwise produce is the worst shape available — a config missing
-// one role binds, answers every other route, and fails that one with a nil
-// dereference in a handler on a live server.
-// provider, or the issue roles. A PARTIAL set of roles is refused with the same
-// message as none at all, because it is the same mistake and the failure it
-// would otherwise produce is the worst shape available — a reader without a
-// claimer binds, answers every read, and fails the one write on this surface
-// with a nil dereference in a handler on a live server.
+// available — a Config missing one role binds, answers every other route, and
+// fails that one with a nil dereference in a handler on a live server. That is
+// why the set is all-or-nothing rather than a required pair plus optional
+// extras.
 //
 // The set GROWS as this surface grows, and that is deliberate rather than
 // unfortunate: every operation added here is an operation a roles-backed

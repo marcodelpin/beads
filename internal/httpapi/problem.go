@@ -36,7 +36,6 @@ import (
 // The vocabulary is a one-way door: renaming or removing a documented
 // status+code pair breaks the wire. Adding one does not, which is why clients
 // are told to default-branch on unknown codes within a status class. Keep it
-// at what the seven v0 operations actually need.
 // at what the v0 operations actually need.
 type Code string
 
@@ -194,8 +193,6 @@ const (
 // /healthz — the Host-header middleware, and the unknown-query-parameter
 // refusal every decoder performs — and both are deliberately absent from every
 // row here. They are uniform rules, not per-operation behavior, and the spec
-// documents them once at the document level rather than repeating them on all
-// twelve operations; these rows carry what an operation produces beyond them.
 // documents them once at the document level rather than repeating them on
 // every operation; these rows carry what an operation produces beyond them.
 // Keep the two documents in step: a row here and the document-level prose are

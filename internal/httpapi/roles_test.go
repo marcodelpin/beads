@@ -18,22 +18,9 @@ import (
 )
 
 // These tests cover the OTHER database source: a backend whose facade is a
-// store rather than a unit-of-work provider, served by handing Listen the roles
-// directly.
-// store rather than a unit-of-work provider, served by handing Listen the issue
+// store rather than a unit-of-work provider, served by handing Listen the
 // roles directly.
 //
-// The fakes below implement issueops.Reader, issueops.Claimer,
-// issueops.WorkspaceConfig and issueops.StatsReporter and NOTHING else —
-// deliberately not uow.UnitOfWorkProvider, because "a backend that cannot
-// produce a unit of work is still servable" is the property this whole seam
-// exists for. If any of them ever grows a NewUOW method these tests stop
-// proving it.
-// The fakes below implement issueops.Reader, issueops.Claimer and
-// issueops.EdgeReader and NOTHING else — deliberately not
-// uow.UnitOfWorkProvider, because "a backend that cannot produce a unit of work
-// is still servable" is the property this whole seam exists for. If any of them
-// ever grows a NewUOW method these tests stop proving it.
 // The fakes below implement one issueops role each and NOTHING else —
 // deliberately not uow.UnitOfWorkProvider, because "a backend that cannot
 // produce a unit of work is still servable" is the property this whole seam
@@ -526,18 +513,12 @@ func countedPage() []*types.IssueWithCounts {
 // replaced the old nil-provider check.
 //
 // The two refusals are different mistakes and must stay distinguishable. A
-// HALF-SET set is the dangerous one: a Config carrying a reader and no claimer
-// would bind, answer every read, and fail the one issue write on this surface
-// with a nil dereference — at claim time, in a handler, on a live server.
-// PARTIALLY-SET role set is the dangerous one: a Config carrying a reader and
-// no claimer would bind, answer every read, and fail the one write on this
-// surface with a nil dereference — at claim time, in a handler, on a live
-// server. Each role an operation reaches has a row here for the same reason.
 // PARTIAL set is the dangerous one: a Config carrying a reader and no claimer
 // would bind, answer every read, and fail the one write on this surface with a
-// nil dereference — at claim time, in a handler, on a live server. The set
-// grows with the surface, so the case that matters most is the newest role
-// missing: that is what a caller written against the previous release passes.
+// nil dereference — at claim time, in a handler, on a live server. Each role an
+// operation reaches has a row below for that reason, and the case that matters
+// most is the NEWEST role missing: that is what a caller written against the
+// previous release passes.
 func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -775,11 +756,6 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 	}
 }
 
-// TestConfiguredRolesAnswerEveryDatabaseRoute drives all six
-// TestConfiguredRolesAnswerEveryDatabaseRoute drives all five
-// database-touching operations against a store-shaped source, which is the
-// whole point: none of them can reach a unit of work here, because there is no
-// provider to open one.
 // TestConfiguredRolesAnswerEveryDatabaseRoute drives every database-touching
 // operation against a store-shaped source, which is the whole point: none of
 // them can reach a unit of work here, because there is no provider to open one.
