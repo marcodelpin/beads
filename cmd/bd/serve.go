@@ -163,7 +163,7 @@ func runServe() error {
 		fmt.Fprintf(os.Stderr,
 			"bd serve: WARNING: --allow-non-loopback binds %s beyond loopback. "+
 				"This API has no authentication and no TLS: any peer that can reach it can read every issue, claim work as any actor, "+
-				"and bulk-delete closed beads.\n",
+				"bulk-delete closed beads, and delete any bead it can name.\n",
 			serveAddr)
 	}
 

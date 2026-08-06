@@ -384,6 +384,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.Sweeper == nil {
 		cfg.Sweeper = &roleSweeper{}
 	}
+	if cfg.Deleter == nil {
+		cfg.Deleter = &roleDeleter{}
+	}
 	if cfg.BatchCreator == nil {
 		cfg.BatchCreator = &roleBatchCreator{}
 	}
@@ -449,6 +452,34 @@ func (s *roleSweeper) requests() []issueops.SweepRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]issueops.SweepRequest(nil), s.calls...)
+}
+
+// roleDeleter is the store-shaped source's named-row erasure role, the same
+// shape as roleSweeper and for the same reason: the alternative to a complete
+// source is a server that binds and then nil-dereferences on a request that
+// deletes beads.
+type roleDeleter struct {
+	result issueops.DeleteResult
+	err    error
+
+	mu    sync.Mutex
+	calls []issueops.DeleteRequest
+}
+
+func (d *roleDeleter) Delete(_ context.Context, req issueops.DeleteRequest) (issueops.DeleteResult, error) {
+	d.mu.Lock()
+	d.calls = append(d.calls, req)
+	d.mu.Unlock()
+	if d.err != nil {
+		return issueops.DeleteResult{}, d.err
+	}
+	return d.result, nil
+}
+
+func (d *roleDeleter) requests() []issueops.DeleteRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]issueops.DeleteRequest(nil), d.calls...)
 }
 
 // countedPage is the fixture both database sources answer with, so a body

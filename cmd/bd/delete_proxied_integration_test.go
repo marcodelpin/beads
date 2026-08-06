@@ -11,6 +11,13 @@ import (
 	"testing"
 )
 
+// TestProxiedServerDelete pins the CONVERGED semantics on a team server.
+//
+// This route used to hardcode cascade at both of its call sites and refuse the
+// --cascade flag outright, so `bd delete X --force` deleted X's whole subtree
+// and there was no way to ask for anything else. The three modes below are the
+// direct route's, unchanged, and this test is what says so from the far side
+// of a real Dolt sql-server.
 func TestProxiedServerDelete(t *testing.T) {
 	requireSharedProxiedServer(t)
 	t.Parallel()
@@ -30,7 +37,19 @@ func TestProxiedServerDelete(t *testing.T) {
 		t.Fatalf("read HEAD before preview: %v", err)
 	}
 
-	preview := bdProxiedDeleteJSON(t, bd, p.dir, "--json", target.ID)
+	// MODE 1, and the change: an unqualified delete of a bead with a dependent
+	// is REFUSED here now. It used to preview a cascade.
+	refused := bdProxiedDeleteFail(t, bd, p.dir, target.ID)
+	if !strings.Contains(refused, "dependents not in deletion set") {
+		t.Errorf("unqualified delete: got %q, want the dependents guard", refused)
+	}
+	for _, id := range []string{survivor.ID, target.ID, dependent.ID, descendant.ID} {
+		assertRowExists(t, db, "issues", id)
+	}
+
+	// MODE 2: --cascade previews the closure, which is what this route used to
+	// do without being asked.
+	preview := bdProxiedDeleteJSON(t, bd, p.dir, "--json", "--cascade", target.ID)
 	previewWant := map[string]any{
 		"schema_version":       float64(1),
 		"would_delete":         float64(3),
@@ -56,7 +75,8 @@ func TestProxiedServerDelete(t *testing.T) {
 		t.Errorf("preview advanced HEAD: before=%s after=%s", headBefore, headAfterPreview)
 	}
 
-	deleted := bdProxiedDeleteJSON(t, bd, p.dir, "--json", target.ID, "--force")
+	// MODE 3: --cascade --force is the old `--force`, spelled.
+	deleted := bdProxiedDeleteJSON(t, bd, p.dir, "--json", "--cascade", "--force", target.ID)
 	deletedWant := map[string]any{
 		"schema_version":       float64(1),
 		"deleted":              []any{target.ID},
@@ -65,6 +85,8 @@ func TestProxiedServerDelete(t *testing.T) {
 		"labels_removed":       float64(1),
 		"events_removed":       float64(4),
 		"references_updated":   float64(1),
+		// A cascade leaves nothing outside the set to orphan.
+		"orphaned_issues": nil,
 	}
 	if !deleteJSONEqual(deleted, deletedWant) {
 		t.Errorf("delete JSON: got %#v, want %#v", deleted, deletedWant)
@@ -110,6 +132,41 @@ func TestProxiedServerDelete(t *testing.T) {
 	missingOut := bdProxiedDeleteFail(t, bd, p.dir, missing, "--force")
 	if !strings.Contains(strings.ToLower(missingOut), "not found") || !strings.Contains(missingOut, missing) {
 		t.Errorf("missing-ID error: got %q, want not-found translation naming %q", missingOut, missing)
+	}
+}
+
+// TestProxiedServerDeleteForceOrphans is the mode this route could not express
+// at all before: --force without --cascade deletes the NAMED bead and leaves
+// its dependent standing. A team-server script that relied on the implicit
+// cascade gets orphans here instead of a deleted subtree, which is the
+// user-visible half of the convergence.
+func TestProxiedServerDeleteForceOrphans(t *testing.T) {
+	requireSharedProxiedServer(t)
+	t.Parallel()
+	bd := buildEmbeddedBD(t)
+	p := newSharedProxiedProject(t, bd, "delorph")
+
+	blocker := bdProxiedCreate(t, bd, p.dir, "Blocker", "--type", "task")
+	dependent := bdProxiedCreate(t, bd, p.dir, "Dependent", "--type", "task", "--deps", "depends-on:"+blocker.ID)
+
+	db := openProxiedDB(t, p)
+	deleted := bdProxiedDeleteJSON(t, bd, p.dir, "--json", "--force", blocker.ID)
+	if got := deleted["deleted_count"]; got != float64(1) {
+		t.Errorf("deleted_count = %v, want 1: --force deletes the NAMED bead and orphans the rest", got)
+	}
+	if got := deleted["orphaned_issues"]; !reflect.DeepEqual(got, []any{dependent.ID}) {
+		t.Errorf("orphaned_issues = %#v, want [%s]", got, dependent.ID)
+	}
+	assertRowAbsent(t, db, "issues", blocker.ID)
+	assertRowExists(t, db, "issues", dependent.ID)
+
+	var edges int
+	if err := db.QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM dependencies WHERE issue_id = ?", dependent.ID).Scan(&edges); err != nil {
+		t.Fatalf("count orphan edges: %v", err)
+	}
+	if edges != 0 {
+		t.Errorf("orphan kept %d edge(s) into the deleted bead, want 0", edges)
 	}
 }
 

@@ -690,6 +690,10 @@ func (s *configStore) Querier() (issueops.Querier, error) {
 	return nil, &storage.ErrUnsupported{Op: "Querier", Backend: "jira-config-stub"}
 }
 
+func (s *configStore) Deleter() (issueops.Deleter, error) {
+	return nil, &storage.ErrUnsupported{Op: "Deleter", Backend: "jira-config-stub"}
+}
+
 func (s *configStore) Sweeper() (issueops.Sweeper, error) {
 	return nil, &storage.ErrUnsupported{Op: "Sweeper", Backend: "jira-config-stub"}
 }

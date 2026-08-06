@@ -122,15 +122,23 @@ func TestGatherDeleteInput(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects cascade without accessing a store", func(t *testing.T) {
+	// --cascade used to be REFUSED here ("delete always cascades"), which meant
+	// a team server had no way to delete an issue without taking its
+	// dependents. It is an opt-in now, the same as on the direct route.
+	t.Run("accepts cascade as an opt-in", func(t *testing.T) {
 		cmd := newCommand(t)
 		if err := cmd.Flags().Set("cascade", "true"); err != nil {
 			t.Fatalf("set cascade: %v", err)
 		}
+		jsonOutput, quietFlag = false, false
 
-		_, err := gatherDeleteInput(cmd, []string{"bd-target"})
-		if err == nil || !strings.Contains(err.Error(), "--cascade") {
-			t.Fatalf("gatherDeleteInput() error = %v, want --cascade rejection", err)
+		got, err := gatherDeleteInput(cmd, []string{"bd-target"})
+		if err != nil {
+			t.Fatalf("gatherDeleteInput() error = %v, want nil", err)
+		}
+		want := &deleteInput{ids: []string{"bd-target"}, cascade: true}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("gatherDeleteInput(): got %#v, want %#v", got, want)
 		}
 	})
 }

@@ -29,6 +29,7 @@ var roleAccessorNames = []string{
 	"ReadyCounter",
 	"Querier",
 	"Sweeper",
+	"Deleter",
 	"Commenter",
 	"ReadyClaimer",
 	"BatchCloser",
@@ -94,6 +95,7 @@ type roleAccessorStore struct {
 	readyCounter issueops.ReadyCounter
 	querier      issueops.Querier
 	sweeper      issueops.Sweeper
+	deleter      issueops.Deleter
 	err          error
 }
 
@@ -118,6 +120,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		readyCounter: sentinel,
 		querier:      sentinel,
 		sweeper:      sentinel,
+		deleter:      sentinel,
 	}
 }
 
@@ -149,6 +152,9 @@ func (s *roleAccessorStore) ReadyCounter() (issueops.ReadyCounter, error) {
 func (s *roleAccessorStore) Querier() (issueops.Querier, error) { return s.querier, s.err }
 func (s *roleAccessorStore) Sweeper() (issueops.Sweeper, error) {
 	return s.sweeper, s.err
+}
+func (s *roleAccessorStore) Deleter() (issueops.Deleter, error) {
+	return s.deleter, s.err
 }
 func (s *roleAccessorStore) ReadyClaimer() (issueops.ReadyClaimer, error) {
 	return s.claimer, s.err
@@ -238,6 +244,10 @@ func (*roleAccessorSentinel) Query(context.Context, issueops.QueryRequest) (issu
 	return issueops.IssuePage{}, nil
 }
 
+func (*roleAccessorSentinel) Delete(context.Context, issueops.DeleteRequest) (issueops.DeleteResult, error) {
+	return issueops.DeleteResult{}, nil
+}
+
 func (*roleAccessorSentinel) Sweep(context.Context, issueops.SweepRequest) (issueops.SweepResult, error) {
 	return issueops.SweepResult{}, nil
 }
@@ -312,6 +322,10 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		// fire and a swept row is gone, so hook_sweeper.go recurses. Asserting
 		// it here is what keeps that a decision.
 		{"Sweeper", func() (any, error) { return store.Sweeper() }, inner.sweeper, false},
+		// The other WRITE role in the unwrapped column, for the same reason:
+		// hook_deleter.go recurses because the hook vocabulary has no name for
+		// a deletion, not because the role reads.
+		{"Deleter", func() (any, error) { return store.Deleter() }, inner.deleter, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -360,6 +374,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"ReadyCounter", func() (any, error) { return store.ReadyCounter() }},
 		{"Querier", func() (any, error) { return store.Querier() }},
 		{"Sweeper", func() (any, error) { return store.Sweeper() }},
+		{"Deleter", func() (any, error) { return store.Deleter() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

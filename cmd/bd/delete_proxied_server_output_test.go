@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 func TestOutputDeleteProxiedPreviewIsPayloadBlind(t *testing.T) {
@@ -36,7 +37,7 @@ func TestOutputDeleteProxiedPreviewIsPayloadBlind(t *testing.T) {
 				},
 			},
 		},
-		res: domain.DeleteIssuesResult{DeletedCount: 1, DependenciesCount: 2},
+		res: issueops.DeleteResult{Deleted: 1, Dependencies: 2},
 	}
 	markers := []string{titleMarker, descriptionMarker, notesMarker, payloadMarker}
 
@@ -81,7 +82,7 @@ func TestOutputDeleteProxiedPreviewExactContracts(t *testing.T) {
 				"bd-alpha": {ID: "bd-alpha", Title: "Alpha"},
 			},
 		},
-		res: domain.DeleteIssuesResult{DeletedCount: 3, DependenciesCount: 4, LabelsCount: 2, EventsCount: 5},
+		res: issueops.DeleteResult{Deleted: 3, Dependencies: 4, Labels: 2, Events: 5},
 	}
 
 	t.Run("JSON includes the complete preview contract with sorted connections and takes precedence over quiet", func(t *testing.T) {
@@ -126,7 +127,7 @@ func TestOutputDeleteProxiedPreviewExactContracts(t *testing.T) {
 }
 
 func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
-	res := domain.DeleteIssuesResult{DeletedCount: 3, DependenciesCount: 4, LabelsCount: 2, EventsCount: 5, ReferencesUpdated: 1}
+	res := issueops.DeleteResult{Deleted: 3, Dependencies: 4, Labels: 2, Events: 5, ReferencesUpdated: 1, Orphaned: []string{"bd-orphan"}}
 
 	t.Run("JSON includes the complete final aggregate", func(t *testing.T) {
 		in := &deleteInput{ids: []string{"bd-target", "bd-dependent"}, jsonOutput: true}
@@ -146,6 +147,9 @@ func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
 			"labels_removed":       float64(2),
 			"events_removed":       float64(5),
 			"references_updated":   float64(1),
+			// New on this route with the cascade convergence: `--force` used
+			// to take the dependents, so there was never anything to orphan.
+			"orphaned_issues": []any{"bd-orphan"},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("final JSON: got %#v, want %#v", got, want)
@@ -160,6 +164,7 @@ func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
 		for _, required := range []string{
 			"Deleted 3 issue(s)", "Removed 4 dependency link(s)", "Removed 2 label(s)",
 			"Removed 5 event(s)", "Updated text references in 1 issue(s)",
+			"Orphaned 1 issue(s): bd-orphan",
 		} {
 			if !strings.Contains(out, required) {
 				t.Errorf("final prose missing %q:\n%s", required, out)

@@ -245,6 +245,19 @@ type Storage interface {
 	// update and close), and the rows a sweep would name it with are gone.
 	// See hook_sweeper.go.
 	Sweeper() (issueops.Sweeper, error)
+	// Deleter returns the named-row erasure surface for this store —
+	// `bd delete`. Its own role rather than a Sweeper mode because Sweeper
+	// erases a set the caller DESCRIBED and this one erases rows the caller
+	// NAMED, which is what decides where each one's safety lives: a
+	// description can be accidentally too wide, so Sweeper carries a
+	// require-a-filter gate, while a list of ids cannot, so this one's guard is
+	// about the graph — a named row with a dependent the request did not name
+	// is refused unless the caller says cascade or force.
+	//
+	// Its hook decorator recurses UNWRAPPED for the same reason Sweeper's
+	// does: there is no on_delete hook to fire and the rows are gone. See
+	// hook_deleter.go.
+	Deleter() (issueops.Deleter, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

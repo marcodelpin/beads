@@ -193,7 +193,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -231,6 +231,58 @@ type CyclesPage struct {
 
 	// Items Empty array (never null) when the workspace has no cycles. Its LENGTH is the total: a cycle whose members this workspace cannot describe is still counted here, so the number cannot shrink because a row went missing.
 	Items []Cycle `json:"items"`
+}
+
+// DeleteIssuesRequest Which beads to erase, and what to do about the beads that point at them. There is no predicate here — no status, no cutoff, no glob — and that absence is the reason this operation needs no require-a-filter gate: a caller cannot spell "everything" without typing every id.
+//
+// `additionalProperties: false`, so an unknown member is a `400` naming the member. On this operation a silently ignored member is the difference between orphaning a dependent and deleting it.
+type DeleteIssuesRequest struct {
+	// Actor Caller-asserted attribution, under the same rules as `SweepRequest`'s `actor`: trimmed, refused when empty after trimming, over 256 BYTES, or carrying any control character. Optional — a deleted bead leaves no row to attribute the deletion on — but it does reach the SURVIVING beads whose text this operation rewrites, so a workspace that cares who rewrote a description sends one.
+	Actor *string `json:"actor,omitempty"`
+
+	// Cascade Also delete the transitive closure of everything that depends on the named beads. With `cascade` there is nothing left outside the set to orphan, so it makes `force` moot rather than conflicting with it: a request carrying both behaves as `cascade` and `orphaned` comes back empty.
+	Cascade *bool `json:"cascade,omitempty"`
+
+	// DryRun Report what the deletion WOULD do and change nothing. The counts and BOTH refusals are the ones the real request would produce, computed against the same snapshot, and nothing is recorded in history either.
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// Force Delete the named beads and leave their dependents ORPHANED, reported in `orphaned`. Without it and without `cascade`, a named bead with a dependent the request did not name is refused.
+	//
+	// It defaults FALSE, which is the guarded mode, and the default is the protection: this surface has no authentication, so an omitted member must not silently choose the answer that changes another bead's graph.
+	Force *bool `json:"force,omitempty"`
+
+	// Ids The beads to delete, exact ids, in either plane. DUPLICATES COLLAPSE. An empty array is a `400` rather than a no-op — a caller whose id list came out empty because its own construction broke would read "deleted 0" and conclude the workspace was already clean.
+	//
+	// The cap is on the REQUEST rather than on what a cascade expands to: the whole delete is one transaction, so the practical bound is the backend's write timeout and no number here can promise it.
+	Ids []string `json:"ids"`
+}
+
+// DeleteIssuesResult What one delete did. Every number describes the SAME snapshot, because the guard, the deletion and the reference rewrite ran in one transaction.
+//
+// It is NOT `x-go-type`-pinned, for the reason `SweepResult` is not: there is no canonical Go struct whose JSON encoding is this contract. `bd delete --json` publishes these numbers under its own per-shape keys (`deleted_count`, `dependencies_removed`, and a scalar `deleted` on the single-id form), which are a stdout presentation rather than a wire type, so pinning would weld this body to one of them.
+type DeleteIssuesResult struct {
+	// Deleted How many beads were deleted, or under `dry_run` would be. Under `cascade` this counts the whole closure, so it is normally larger than `ids` and it — not the request length — is the number to show.
+	Deleted int `json:"deleted"`
+
+	// Dependencies Dependency edge rows removed with them, in either direction. Reported because a delete's visible effect is much larger than its bead count.
+	Dependencies int `json:"dependencies"`
+
+	// DryRun Echoes the request, so a result carries whether its numbers describe beads that are gone or beads that would go.
+	DryRun bool `json:"dry_run"`
+
+	// Events Event rows removed with the deleted beads.
+	Events int `json:"events"`
+
+	// Labels Label rows removed with the deleted beads.
+	Labels int `json:"labels"`
+
+	// Orphaned The surviving beads that depended on something this request deleted, in ascending id order. Present exactly when the request carried `force` without `cascade`, which is the only mode in which orphaning is possible; absent otherwise.
+	//
+	// DIRECT dependents only. A bead two edges away lost no edge.
+	Orphaned *[]string `json:"orphaned,omitempty"`
+
+	// ReferencesUpdated How many SURVIVING beads had their text rewritten — beads, not occurrences. Always 0 under `dry_run`, because a preview rewrites nothing.
+	ReferencesUpdated int `json:"references_updated"`
 }
 
 // Dependency A dependency edge between two issues.
@@ -742,6 +794,9 @@ type ClaimIssueJSONRequestBody = ClaimRequest
 
 // BatchCreateIssuesJSONRequestBody defines body for BatchCreateIssues for application/json ContentType.
 type BatchCreateIssuesJSONRequestBody = BatchCreateRequest
+
+// DeleteIssuesJSONRequestBody defines body for DeleteIssues for application/json ContentType.
+type DeleteIssuesJSONRequestBody = DeleteIssuesRequest
 
 // SweepIssuesJSONRequestBody defines body for SweepIssues for application/json ContentType.
 type SweepIssuesJSONRequestBody = SweepRequest

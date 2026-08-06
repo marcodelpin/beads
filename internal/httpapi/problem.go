@@ -170,6 +170,11 @@ const (
 	// OpSweepIssues is the one DESTRUCTIVE operation on this surface: bulk
 	// clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
+	// OpDeleteIssues is the other DESTRUCTIVE operation: erasure of beads the
+	// request NAMES, behind issueops.Deleter. It is the one operation on this
+	// surface whose refusals include a question about the GRAPH — a named bead
+	// with a dependent the request did not name — as well as about the request.
+	OpDeleteIssues = "deleteIssues"
 	// OpBatchCreateIssues creates many issues as one transaction, or none.
 	OpBatchCreateIssues = "batchCreateIssues"
 )
@@ -242,6 +247,10 @@ var operationCodes = map[string][]Code{
 	// this operation names no id — and no 409: a sweep has nothing to conflict
 	// with, since a bead another sweep already took is simply not in the set.
 	OpSweepIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// CodeNotFound is the one this operation has and the sweep does not: a
+	// sweep describes a set that can legitimately be empty, while a delete
+	// names beads and an id that resolves to nothing is a caller mistake.
+	OpDeleteIssues: {CodeInvalidArgument, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,

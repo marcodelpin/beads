@@ -57,7 +57,8 @@ info:
       Operations with no parameters at all (`GET /healthz`,
       `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
       `GET /v0/beads/issues/{id}`, `POST /v0/beads/issues/{id}:claim`,
-      `POST /v0/beads/issues:sweep`, `GET /v0/beads/config`,
+      `POST /v0/beads/issues:sweep`, `POST /v0/beads/issues:delete`,
+      `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`) reject every query key the same way.
 
 
@@ -1221,6 +1222,117 @@ paths:
             `durable` sweep, which the library surface refuses as a safety
             invariant.
           x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/issues:delete:
+    post:
+      operationId: deleteIssues
+      summary: Delete named beads
+      description: >-
+        Erases the beads this request NAMES, and — under `cascade` — everything
+        that depends on them. It is the operation behind `bd delete`, the
+        second DESTRUCTIVE operation on this surface, and nothing it deletes
+        comes back.
+
+
+        It is a different operation from `POST /v0/beads/issues:sweep`, not a
+        narrower spelling of it. A sweep DESCRIBES a set and lets the server
+        resolve it; this one is handed ids. That difference is what decides
+        where each one's safety lives: a description can be accidentally too
+        wide, so the sweep carries a require-a-filter refusal, while a list of
+        ids cannot be, so this one's guard is about the GRAPH instead.
+
+
+        A collection-level custom method rather than `DELETE
+        /v0/beads/issues/{id}`: this acts on a SET, its behaviour turns on
+        three flags, and a `DELETE` carrying those in a query string is the
+        shape where a dropped parameter changes what is erased. Sending a body
+        makes every one of them a member the server refuses by name if it does
+        not know it.
+
+
+        ## The three modes
+
+
+        With neither `cascade` nor `force`, a named bead that some bead OUTSIDE
+        the request depends on is REFUSED with `400` / `invalid_argument`, and
+        nothing is deleted. `force` deletes the named beads and leaves those
+        dependents ORPHANED — they keep their rows, lose their edges, and come
+        back in `orphaned`. `cascade` deletes the transitive closure instead,
+        so nothing is left outside it to orphan; a request carrying both
+        behaves as `cascade`.
+
+
+        The refusal is the LIBRARY's, not this handler's — the same surface
+        `bd delete` calls — which is what makes this endpoint incapable of
+        orphaning a workspace's graph by omission.
+
+
+        ## Every id must resolve
+
+
+        An id naming no stored bead is a `404` and NOTHING is deleted, not even
+        the ids beside it that did resolve. There is no prefix matching here:
+        ids are exact, because resolving an ambiguous prefix to a bead and then
+        deleting it is the one place that convenience is not one.
+
+
+        ## One transaction
+
+
+        The guard, the deletion and the rewrite of surviving beads' text
+        references all share one transaction, so the set the response describes
+        IS the set that was deleted and no bead is left citing an id that no
+        longer exists. The cost is that a delete is all-or-nothing: one whose
+        neighbourhood is large enough to exceed the backend's write timeout
+        fails whole. Split the request rather than expecting progress.
+
+
+        `dry_run: true` answers the same question and changes nothing —
+        including history, and including the two refusals, which a preview
+        reports exactly where the real request would. Ask it first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteIssuesRequest'
+      responses:
+        '200':
+          description: >-
+            The beads were deleted (or, under `dry_run`, costed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteIssuesResult'
+        '400':
+          description: >-
+            Invalid request: an unparseable or oversized body, an unknown body
+            member, an empty or over-long `ids`, a blank id, an `actor` that is
+            empty after trimming or carries control characters — or a named
+            bead with a dependent the request did not name and neither
+            `cascade` nor `force` to say what to do about it, which the library
+            surface refuses as a safety invariant.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: >-
+            At least one id named no stored bead, and nothing was deleted.
+            `detail` is this surface's fixed not-found sentence and does NOT
+            name which ids missed: a client able to tell a well-formed miss
+            from a malformed id would be probing the id space. `bd delete`
+            names them, because it is answering the person who typed them.
+          x-bd-codes: [not_found]
           content:
             application/problem+json:
               schema:
@@ -2461,7 +2573,7 @@ components:
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
-            `issues.sweep`, `issues.batchCreate`,
+            `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`, `dependencies.blocking`; it grows additively,
             and an operation never
@@ -2496,6 +2608,140 @@ components:
         stdout envelope's `pagination` member, which is not a wire type — so
         pinning would weld this body to a CLI presentation type instead of
         preventing a drift.
+
+    DeleteIssuesRequest:
+      type: object
+      additionalProperties: false
+      required: [ids]
+      description: >-
+        Which beads to erase, and what to do about the beads that point at
+        them. There is no predicate here — no status, no cutoff, no glob — and
+        that absence is the reason this operation needs no require-a-filter
+        gate: a caller cannot spell "everything" without typing every id.
+
+
+        `additionalProperties: false`, so an unknown member is a `400` naming
+        the member. On this operation a silently ignored member is the
+        difference between orphaning a dependent and deleting it.
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          description: >-
+            The beads to delete, exact ids, in either plane. DUPLICATES
+            COLLAPSE. An empty array is a `400` rather than a no-op — a caller
+            whose id list came out empty because its own construction broke
+            would read "deleted 0" and conclude the workspace was already
+            clean.
+
+
+            The cap is on the REQUEST rather than on what a cascade expands to:
+            the whole delete is one transaction, so the practical bound is the
+            backend's write timeout and no number here can promise it.
+          items:
+            type: string
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+          description: >-
+            Caller-asserted attribution, under the same rules as
+            `SweepRequest`'s `actor`: trimmed, refused when empty after
+            trimming, over 256 BYTES, or carrying any control character.
+            Optional — a deleted bead leaves no row to attribute the deletion
+            on — but it does reach the SURVIVING beads whose text this
+            operation rewrites, so a workspace that cares who rewrote a
+            description sends one.
+        cascade:
+          type: boolean
+          default: false
+          description: >-
+            Also delete the transitive closure of everything that depends on
+            the named beads. With `cascade` there is nothing left outside the
+            set to orphan, so it makes `force` moot rather than conflicting
+            with it: a request carrying both behaves as `cascade` and
+            `orphaned` comes back empty.
+        force:
+          type: boolean
+          default: false
+          description: >-
+            Delete the named beads and leave their dependents ORPHANED,
+            reported in `orphaned`. Without it and without `cascade`, a named
+            bead with a dependent the request did not name is refused.
+
+
+            It defaults FALSE, which is the guarded mode, and the default is
+            the protection: this surface has no authentication, so an omitted
+            member must not silently choose the answer that changes another
+            bead's graph.
+        dry_run:
+          type: boolean
+          default: false
+          description: >-
+            Report what the deletion WOULD do and change nothing. The counts
+            and BOTH refusals are the ones the real request would produce,
+            computed against the same snapshot, and nothing is recorded in
+            history either.
+
+    DeleteIssuesResult:
+      type: object
+      required: [dry_run, deleted, dependencies, labels, events, references_updated]
+      description: >-
+        What one delete did. Every number describes the SAME snapshot, because
+        the guard, the deletion and the reference rewrite ran in one
+        transaction.
+
+
+        It is NOT `x-go-type`-pinned, for the reason `SweepResult` is not:
+        there is no canonical Go struct whose JSON encoding is this contract.
+        `bd delete --json` publishes these numbers under its own per-shape keys
+        (`deleted_count`, `dependencies_removed`, and a scalar `deleted` on the
+        single-id form), which are a stdout presentation rather than a wire
+        type, so pinning would weld this body to one of them.
+      properties:
+        dry_run:
+          type: boolean
+          description: >-
+            Echoes the request, so a result carries whether its numbers
+            describe beads that are gone or beads that would go.
+        deleted:
+          type: integer
+          description: >-
+            How many beads were deleted, or under `dry_run` would be. Under
+            `cascade` this counts the whole closure, so it is normally larger
+            than `ids` and it — not the request length — is the number to show.
+        dependencies:
+          type: integer
+          description: >-
+            Dependency edge rows removed with them, in either direction.
+            Reported because a delete's visible effect is much larger than its
+            bead count.
+        labels:
+          type: integer
+          description: Label rows removed with the deleted beads.
+        events:
+          type: integer
+          description: Event rows removed with the deleted beads.
+        references_updated:
+          type: integer
+          description: >-
+            How many SURVIVING beads had their text rewritten — beads, not
+            occurrences. Always 0 under `dry_run`, because a preview rewrites
+            nothing.
+        orphaned:
+          type: array
+          description: >-
+            The surviving beads that depended on something this request
+            deleted, in ascending id order. Present exactly when the request
+            carried `force` without `cascade`, which is the only mode in which
+            orphaning is possible; absent otherwise.
+
+
+            DIRECT dependents only. A bead two edges away lost no edge.
+          items:
+            type: string
 
     SweepRequest:
       type: object

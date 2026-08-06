@@ -358,18 +358,13 @@ var (
 	_ uow.IssueClaimerSource      = timedProvider{}
 	_ uow.WorkspaceConfigSource   = timedProvider{}
 	_ uow.StatsReporterSource     = timedProvider{}
-	_ uow.IssueReaderSource       = timedProvider{}
-	_ uow.IssueClaimerSource      = timedProvider{}
 	_ uow.CycleDetectorSource     = timedProvider{}
-	_ uow.IssueReaderSource       = timedProvider{}
-	_ uow.IssueClaimerSource      = timedProvider{}
 	_ uow.EdgeReaderSource        = timedProvider{}
 	_ uow.BlockingAnnotatorSource = timedProvider{}
-	_ uow.IssueReaderSource       = timedProvider{}
-	_ uow.IssueClaimerSource      = timedProvider{}
 	_ uow.ReadyCounterSource      = timedProvider{}
 	_ uow.QuerierSource           = timedProvider{}
 	_ uow.SweeperSource           = timedProvider{}
+	_ uow.DeleterSource           = timedProvider{}
 	_ uow.BatchCreatorSource      = timedProvider{}
 )
 
@@ -464,6 +459,13 @@ func (p timedProvider) Querier() (issueops.Querier, error) {
 // most wants in the log.
 func (p timedProvider) Sweeper() (issueops.Sweeper, error) {
 	return uow.NewSweeper(p)
+}
+
+// Deleter builds the deleter OVER THIS WRAPPER, for the same reason: it opens
+// the request's unit of work, so a deleter bound to the untimed provider would
+// leave the longest transaction on this surface out of uow_ms.
+func (p timedProvider) Deleter() (issueops.Deleter, error) {
+	return uow.NewDeleter(p)
 }
 
 // BatchCreator builds the batch creator OVER THIS WRAPPER, for the same reason

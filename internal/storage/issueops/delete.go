@@ -7,6 +7,8 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/workapi"
+	publicops "github.com/steveyegge/beads/issueops"
 )
 
 // deleteBatchSize controls the maximum number of IDs per IN-clause query
@@ -99,56 +101,31 @@ func DeleteIssuesInTx(ctx context.Context, tx *sql.Tx, ids []string, cascade boo
 		for id := range allToDelete {
 			expandedRegularIDs = append(expandedRegularIDs, id)
 		}
-	} else if !force {
-		for i := 0; i < len(regularIDs); i += deleteBatchSize {
-			end := i + deleteBatchSize
-			if end > len(regularIDs) {
-				end = len(regularIDs)
-			}
-			batch := regularIDs[i:end]
-			inClause, args := buildSQLInClause(batch)
-
-			externalBySource := make(map[string][]string)
-			for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
-				rows, err := tx.QueryContext(ctx,
-					fmt.Sprintf(`SELECT %s AS depends_on_id, issue_id FROM %s WHERE %s`, DepTargetExpr, depTable, depTargetIn("", inClause)),
-					args...)
-				if err != nil {
-					if optionalBlockedTable(depTable) && isTableNotExistError(err) {
-						continue
-					}
-					return nil, fmt.Errorf("check dependents from %s: %w", depTable, err)
-				}
-
-				for rows.Next() {
-					var depOnID, issueID string
-					if err := rows.Scan(&depOnID, &issueID); err != nil {
-						_ = rows.Close()
-						return nil, fmt.Errorf("scan dependent: %w", err)
-					}
-					if !idSet[issueID] {
-						externalBySource[depOnID] = append(externalBySource[depOnID], issueID)
-					}
-				}
-				_ = rows.Close()
-				if err := rows.Err(); err != nil {
-					return nil, fmt.Errorf("iterate dependents from %s: %w", depTable, err)
-				}
-			}
-
-			for _, id := range batch {
-				if deps, ok := externalBySource[id]; ok {
-					result.OrphanedIssues = deps
-					return result, fmt.Errorf("issue %s has dependents not in deletion set; use --cascade to delete them or --force to orphan them", id)
-				}
-			}
-		}
 	} else {
-		orphans, err := findExternalDependentsBatchedInTx(ctx, tx, regularIDs, idSet)
+		// One scan of the dependency planes answers both modes: the guard
+		// needs to know WHICH id is blocked, and the forced path needs the
+		// union of what it orphans. ExternalDependentsBySourceInTx gives the
+		// per-source shape both read.
+		external, err := ExternalDependentsBySourceInTx(ctx, tx, regularIDs, idSet)
 		if err != nil {
 			return nil, fmt.Errorf("get dependents: %w", err)
 		}
-		result.OrphanedIssues = orphans
+		if !force {
+			for _, id := range regularIDs {
+				if deps := external[id]; len(deps) > 0 {
+					result.OrphanedIssues = deps
+					return result, &publicops.DependentsOutsideRequestError{IssueID: id, Dependents: deps}
+				}
+			}
+		} else {
+			orphans := make(map[string]bool)
+			for _, deps := range external {
+				for _, id := range deps {
+					orphans[id] = true
+				}
+			}
+			result.OrphanedIssues = workapi.SortedDeleteIDs(orphans)
+		}
 	}
 
 	cascadeWispIDs, finalRegularIDs, err := PartitionWispIDsInTx(ctx, tx, expandedRegularIDs)
@@ -337,54 +314,6 @@ func FindAllDependentsInTx(ctx context.Context, tx DBTX, ids []string) (map[stri
 		}
 	}
 
-	return result, nil
-}
-
-// findExternalDependentsBatchedInTx finds all dependents of the given IDs
-// that are NOT in the idSet.
-//
-//nolint:gosec // G201: inClause contains only ? placeholders
-func findExternalDependentsBatchedInTx(ctx context.Context, tx *sql.Tx, ids []string, idSet map[string]bool) ([]string, error) {
-	orphanSet := make(map[string]bool)
-	for i := 0; i < len(ids); i += deleteBatchSize {
-		end := i + deleteBatchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batch := ids[i:end]
-		inClause, args := buildSQLInClause(batch)
-
-		for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
-			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf(`SELECT issue_id FROM %s WHERE %s`, depTable, depTargetIn("", inClause)),
-				args...)
-			if err != nil {
-				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
-					continue
-				}
-				return nil, fmt.Errorf("query dependents from %s: %w", depTable, err)
-			}
-			for rows.Next() {
-				var depID string
-				if err := rows.Scan(&depID); err != nil {
-					_ = rows.Close()
-					return nil, fmt.Errorf("scan dependent: %w", err)
-				}
-				if !idSet[depID] {
-					orphanSet[depID] = true
-				}
-			}
-			_ = rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, fmt.Errorf("iterate dependents from %s: %w", depTable, err)
-			}
-		}
-	}
-
-	result := make([]string, 0, len(orphanSet))
-	for id := range orphanSet {
-		result = append(result, id)
-	}
 	return result, nil
 }
 

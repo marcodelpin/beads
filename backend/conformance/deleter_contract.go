@@ -1,0 +1,604 @@
+package conformance
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/steveyegge/beads/internal/types"
+	publicops "github.com/steveyegge/beads/issueops"
+)
+
+// This file holds the semantic contract every implementation of
+// publicops.Deleter must satisfy. Each case asserts what issueops/deleter.go
+// PROMISES, cited by line, rather than what any one backend happens to do; a
+// backend that genuinely disagrees is parked at its own wiring site with
+// skipKnownDivergence so the case still runs on the ones that agree.
+//
+// THERE ARE TWO BODIES BEHIND THE THREE WIRINGS. dolt and embeddeddolt share
+// internal/storage/issueops.DeleteInTx and differ only in how they reach a
+// transaction; the unit-of-work provider reaches the same questions through the
+// domain use cases and is genuinely separate code. So the wirings are one vote
+// plus an engine check, and a second independent vote.
+//
+// WHAT THE AUDIT SUITE ALREADY COVERS, AND WHY THIS IS NOT A SECOND COPY OF IT.
+// backend/conformance/audit_issue-lifecycle.go pins cascade, force, the orphan
+// guard and the dry-run counts at the STORAGE SEAM — `DeleteIssues` on
+// storage.DoltStorage — and it stays the right home for that method, which
+// `bd gc`, `bd wisp` and the sweeper still call directly. It cannot see the
+// role: its Factory hands back a bare storage.DoltStorage, so the unit-of-work
+// provider — the backend where the guard did not exist at all before this
+// commit — never runs a case placed there. The cases below are therefore
+// deliberately NOT that method's cases repeated: they are about the promises
+// the ROLE adds on top of it, which the storage seam has no opinion on —
+// id normalization, the ordered refusals, the typed errors, the reference
+// rewrite inside the transaction, and the history entry.
+//
+// EVERY CASE NAMESPACES ITS SEEDS with fixture.IssuePrefix and its own tag,
+// because the three wirings share one database across the whole role suite and
+// a delete is one of the two operations here that can destroy another case's
+// fixture. Unlike the sweeper's cases they do not need a pattern to scope the
+// OPERATION — a delete only ever touches ids it was handed — so the namespacing
+// is about collisions rather than about blast radius.
+
+// DeleterFixture supplies adapter-specific storage access for the named-row
+// erasure assertions. Every field is named and typed exactly like the
+// per-backend roleFixtureKit hook it is filled from, so a wiring is kit plus
+// accessor plus prefix with no adapter in between.
+type DeleterFixture struct {
+	// IssuePrefix namespaces the ids each assertion seeds, so several of them
+	// can share one database.
+	IssuePrefix string
+	// Deleter is the surface under test.
+	Deleter publicops.Deleter
+	// CreateIssue seeds a durable issue in the issues plane.
+	CreateIssue func(context.Context, *types.Issue, string) error
+	// CreateWisp seeds an ephemeral issue in the wisps plane.
+	CreateWisp func(context.Context, *types.Issue, string) error
+	// AddDependency seeds ONE edge, routed to the plane the edge's SOURCE
+	// lives in. It is what makes a dependent, which is what this role's guard
+	// is about.
+	AddDependency func(context.Context, *types.Dependency, string) error
+	// QueryScalar runs a single-row query and scans it. It is how these cases
+	// observe the ONE thing a delete result cannot be trusted to report about
+	// itself: whether the rows are really gone.
+	QueryScalar func(context.Context, string, []any, ...any) error
+	// CountHistory reports how many history entries the fixture's branch has.
+	// A nil hook means "this backend cannot observe history", and the case that
+	// needs it SKIPS with that reason rather than passing quietly.
+	CountHistory func(context.Context) (int, error)
+}
+
+// RunDeleterRefusesAMalformedRequest pins the request rules that need no
+// database (issueops/deleter.go, DeleteRequest.IDs: "an empty or all-blank
+// slice is ErrValidation rather than a no-op").
+//
+// A no-op would be the dangerous answer here rather than merely a sloppy one:
+// a caller whose id list came out empty because its own construction broke
+// would read "deleted 0" and conclude the workspace was already clean.
+func RunDeleterRefusesAMalformedRequest(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	for _, test := range []struct {
+		name    string
+		request publicops.DeleteRequest
+	}{
+		{"no ids", publicops.DeleteRequest{Force: true}},
+		{"nil ids", publicops.DeleteRequest{IDs: nil, Force: true}},
+		{"blank id", publicops.DeleteRequest{IDs: []string{"   "}, Force: true}},
+		{"blank id beside a real one", publicops.DeleteRequest{IDs: []string{"x", ""}, Force: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := fixture.Deleter.Delete(ctx, test.request)
+			if !errors.Is(err, publicops.ErrValidation) {
+				t.Fatalf("Delete(%s) error = %v, want ErrValidation", test.name, err)
+			}
+			if result.Deleted != 0 {
+				t.Errorf("refused delete reported Deleted = %d, want 0", result.Deleted)
+			}
+		})
+	}
+}
+
+// RunDeleterRefusesAnAbsentID pins the all-or-nothing promise
+// (issueops/deleter.go, DeleteRequest.IDs: "An id that names none is
+// ErrNotFound and NOTHING IS DELETED — not even the ids beside it that did
+// resolve").
+//
+// It is asserted with a REAL id beside the typo, because that is the only
+// arrangement that can fail: an implementation that deleted as it resolved
+// would pass a single-absent-id case perfectly and still have erased the row
+// this one seeds. And it is asserted under DryRun too, because the leaf
+// promises a preview refuses where the real run refuses — a preview that
+// succeeded here would tell a caller to go ahead.
+func RunDeleterRefusesAnAbsentID(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	stored := deleterSeedIssue(t, ctx, fixture, "gone", "real")
+	absent := fixture.IssuePrefix + "-gone-nosuchrow"
+
+	for _, dryRun := range []bool{false, true} {
+		result, err := fixture.Deleter.Delete(ctx, publicops.DeleteRequest{
+			IDs:    []string{stored, absent},
+			Force:  true,
+			DryRun: dryRun,
+		})
+		if !errors.Is(err, publicops.ErrNotFound) {
+			t.Fatalf("Delete(dryRun=%v) with an absent id error = %v, want ErrNotFound", dryRun, err)
+		}
+		var notFound *publicops.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("Delete(dryRun=%v) error = %v, want *NotFoundError", dryRun, err)
+		}
+		if !reflect.DeepEqual(notFound.IDs, []string{absent}) {
+			t.Errorf("NotFoundError.IDs = %v, want [%s] — the id that resolved is not missing", notFound.IDs, absent)
+		}
+		if result.Deleted != 0 {
+			t.Errorf("refused delete reported Deleted = %d, want 0", result.Deleted)
+		}
+		deleterAssertIssueRows(t, ctx, fixture, 1, stored)
+	}
+}
+
+// RunDeleterRefusesDependentsOutsideTheRequest pins the guard this role took
+// off the CLI (issueops/deleter.go, DeleteRequest.Force: "WITHOUT Cascade AND
+// WITHOUT Force, a named row that some row OUTSIDE the request depends on is
+// refused"), and the exception beside it: a dependent the request DID name is
+// not a dependent for this purpose.
+//
+// The refusal is asserted with its EFFECT as well as its type. A guard that
+// returned the error after deleting would satisfy an errors.Is assertion
+// perfectly, and on this operation that is the failure worth spending seeded
+// rows to rule out.
+func RunDeleterRefusesDependentsOutsideTheRequest(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	blocker := deleterSeedIssue(t, ctx, fixture, "guard", "blocker")
+	dependent := deleterSeedIssue(t, ctx, fixture, "guard", "dependent")
+	deleterAddEdge(t, ctx, fixture, dependent, blocker)
+
+	for _, dryRun := range []bool{false, true} {
+		result, err := fixture.Deleter.Delete(ctx, publicops.DeleteRequest{
+			IDs:    []string{blocker},
+			DryRun: dryRun,
+		})
+		if !errors.Is(err, publicops.ErrDependentsOutsideRequest) {
+			t.Fatalf("Delete(dryRun=%v) unforced over a dependent: error = %v, want ErrDependentsOutsideRequest", dryRun, err)
+		}
+		var blocked *publicops.DependentsOutsideRequestError
+		if !errors.As(err, &blocked) {
+			t.Fatalf("Delete(dryRun=%v) error = %v, want *DependentsOutsideRequestError", dryRun, err)
+		}
+		if blocked.IssueID != blocker {
+			t.Errorf("DependentsOutsideRequestError.IssueID = %q, want %q", blocked.IssueID, blocker)
+		}
+		if !reflect.DeepEqual(blocked.Dependents, []string{dependent}) {
+			t.Errorf("DependentsOutsideRequestError.Dependents = %v, want [%s]", blocked.Dependents, dependent)
+		}
+		if result.Deleted != 0 {
+			t.Errorf("refused delete reported Deleted = %d, want 0", result.Deleted)
+		}
+		deleterAssertIssueRows(t, ctx, fixture, 2, blocker, dependent)
+	}
+
+	// Naming BOTH ends is not a guarded case: the request is deleting the edge
+	// too. Refusing it would make `bd delete a b` fail on exactly the pair a
+	// caller took care to list together.
+	result, err := fixture.Deleter.Delete(ctx, publicops.DeleteRequest{IDs: []string{blocker, dependent}})
+	if err != nil {
+		t.Fatalf("Delete() naming both ends of the edge: error = %v, want nil — a dependent INSIDE the request is not a dependent", err)
+	}
+	if result.Deleted != 2 {
+		t.Errorf("Deleted = %d, want 2", result.Deleted)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, blocker, dependent)
+}
+
+// RunDeleterForceOrphansDependents pins what --force MEANS after this commit
+// (issueops/deleter.go, DeleteRequest.Force: "deletes the named rows and leaves
+// rows that depended on them ORPHANED"), and it is the case that would have
+// caught the drift this commit removes: the proxied route used to hardcode
+// cascade, so `--force` there deleted the dependent instead of orphaning it.
+//
+// DeleteResult.Orphaned is asserted alongside the surviving row, because the
+// number a caller acts on and the row that is actually there are two different
+// claims and only one of them was ever true on that route.
+func RunDeleterForceOrphansDependents(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	blocker := deleterSeedIssue(t, ctx, fixture, "force", "blocker")
+	dependent := deleterSeedIssue(t, ctx, fixture, "force", "dependent")
+	deleterAddEdge(t, ctx, fixture, dependent, blocker)
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{blocker},
+		Force: true,
+	})
+	if result.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1 — force deletes the NAMED row and nothing else", result.Deleted)
+	}
+	if !reflect.DeepEqual(result.Orphaned, []string{dependent}) {
+		t.Errorf("Orphaned = %v, want [%s]", result.Orphaned, dependent)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, blocker)
+	deleterAssertIssueRows(t, ctx, fixture, 1, dependent)
+	// The orphan keeps its row and loses its edge; a dependent still pointing
+	// at a deleted id would be a dangling edge rather than an orphan.
+	deleterAssertEdgeRows(t, ctx, fixture, 0, dependent, blocker)
+}
+
+// RunDeleterCascadeDeletesTheClosure pins the other mode (issueops/deleter.go,
+// DeleteRequest.Cascade) over a chain rather than a single edge, because
+// "transitive" is the whole claim and a one-edge fixture cannot tell a
+// transitive expansion from a direct one.
+//
+// It also pins the interaction the leaf spells out: a request carrying BOTH
+// Cascade and Force is legal and behaves as Cascade, with Orphaned empty —
+// there is nothing left outside the closure to orphan.
+func RunDeleterCascadeDeletesTheClosure(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	root := deleterSeedIssue(t, ctx, fixture, "casc", "root")
+	middle := deleterSeedIssue(t, ctx, fixture, "casc", "middle")
+	leaf := deleterSeedIssue(t, ctx, fixture, "casc", "leaf")
+	bystander := deleterSeedIssue(t, ctx, fixture, "casc", "bystander")
+	deleterAddEdge(t, ctx, fixture, middle, root)
+	deleterAddEdge(t, ctx, fixture, leaf, middle)
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:     []string{root},
+		Cascade: true,
+		Force:   true,
+	})
+	if result.Deleted != 3 {
+		t.Errorf("Deleted = %d, want 3 — the closure is root, its dependent and ITS dependent", result.Deleted)
+	}
+	if len(result.Orphaned) != 0 {
+		t.Errorf("Orphaned = %v, want empty: a cascade leaves nothing outside the set to orphan", result.Orphaned)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, root, middle, leaf)
+	deleterAssertIssueRows(t, ctx, fixture, 1, bystander)
+}
+
+// RunDeleterErasesAcrossBothPlanes pins that one request reaches BOTH tiers
+// (issueops/deleter.go, DeleteRequest.IDs: "in either plane").
+//
+// It is the case the storage seam's own suite cannot stand in for, because the
+// role is where a front door's mixed id list arrives: `bd delete` takes
+// whatever ids the caller names and one `--from-file` batch may legitimately
+// mix a wisp with an issue. A body that routed the whole request by one flag
+// would delete the issue and silently report the wisp as gone.
+func RunDeleterErasesAcrossBothPlanes(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	issue := deleterSeedIssue(t, ctx, fixture, "plane", "issue")
+	wisp := deleterSeedWisp(t, ctx, fixture, "plane", "wisp")
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{issue, wisp},
+		Force: true,
+	})
+	if result.Deleted != 2 {
+		t.Errorf("Deleted = %d, want 2 — one row from each plane", result.Deleted)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, issue)
+	deleterAssertWispRows(t, ctx, fixture, 0, wisp)
+}
+
+// RunDeleterCollapsesDuplicateIDs pins the normalization (issueops/deleter.go,
+// DeleteRequest.IDs: "DUPLICATES COLLAPSE"). An id repeated in a `--from-file`
+// list is one row, and an implementation that did not collapse would either
+// double-count the answer or fail its second DELETE.
+func RunDeleterCollapsesDuplicateIDs(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	id := deleterSeedIssue(t, ctx, fixture, "dupe", "target")
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{id, id, "  " + id + "  "},
+		Force: true,
+	})
+	if result.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1 for one id named three times", result.Deleted)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, id)
+}
+
+// RunDeleterRewritesReferencesInNeighbors pins the rewrite
+// (issueops/deleter.go, Deleter.Delete: "WHICH ROWS GET REWRITTEN"): every
+// occurrence of a deleted id in a graph neighbor's four long text fields
+// becomes `[deleted:<id>]`, matched at word boundaries.
+//
+// The NEGATIVE half is the half worth having. A neighbor also cites an id that
+// merely has the deleted one as a PREFIX, and that citation must survive
+// untouched: a rewrite that used a bare substring match would corrupt a
+// bystander's text on every delete, and no count in the result would show it.
+func RunDeleterRewritesReferencesInNeighbors(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	target := deleterSeedIssue(t, ctx, fixture, "refs", "target")
+	// An id the target's id is a strict prefix of, so the word-boundary rule
+	// has something to get wrong.
+	lookalike := deleterSeedIssue(t, ctx, fixture, "refs", "targetx")
+
+	neighbor := deleterIssue(fixture, "refs", "neighbor", false)
+	neighbor.Description = "blocked by " + target + "."
+	neighbor.Notes = "see " + target + " and " + lookalike
+	neighbor.Design = "(" + target + ")"
+	neighbor.AcceptanceCriteria = target + " closes"
+	deleterSeed(t, ctx, fixture, neighbor)
+	deleterAddEdge(t, ctx, fixture, neighbor.ID, target)
+
+	// A row that CITES the target but shares no edge with it. The leaf says
+	// the rewrite is scoped to graph neighbors, so this one is left alone.
+	stranger := deleterIssue(fixture, "refs", "stranger", false)
+	stranger.Description = "also mentions " + target
+	deleterSeed(t, ctx, fixture, stranger)
+
+	result := deleterDelete(t, ctx, fixture, publicops.DeleteRequest{
+		IDs:   []string{target},
+		Force: true,
+		Actor: "deleter-contract",
+	})
+	if result.ReferencesUpdated != 1 {
+		t.Errorf("ReferencesUpdated = %d, want 1 — it counts ROWS, and one row was rewritten", result.ReferencesUpdated)
+	}
+
+	marker := "[deleted:" + target + "]"
+	for _, field := range []string{"description", "notes", "design", "acceptance_criteria"} {
+		got := deleterText(t, ctx, fixture, neighbor.ID, field)
+		if !strings.Contains(got, marker) {
+			t.Errorf("neighbor %s = %q, want it to contain %q", field, got, marker)
+		}
+		if strings.Contains(got, "[deleted:"+lookalike+"]") {
+			t.Errorf("neighbor %s = %q: the lookalike id was rewritten too", field, got)
+		}
+	}
+	if got := deleterText(t, ctx, fixture, neighbor.ID, "notes"); !strings.Contains(got, lookalike) {
+		t.Errorf("neighbor notes = %q, want the lookalike id %q intact", got, lookalike)
+	}
+	if got := deleterText(t, ctx, fixture, fixture.IssuePrefix+"-refs-stranger", "description"); strings.Contains(got, marker) {
+		t.Errorf("a row with no edge to the deleted id was rewritten: %q", got)
+	}
+}
+
+// RunDeleterDryRunChangesNothing pins the preview promise
+// (issueops/deleter.go, Deleter.Delete: "A DRY RUN CHANGES NOTHING"): the
+// preview reports the counts the real deletion goes on to report, rewrites
+// nothing, and leaves every row where it was.
+//
+// The two are compared against EACH OTHER rather than against literals, which
+// is the property a caller actually relies on — a preview whose number differs
+// from the run it precedes is worse than no preview.
+func RunDeleterDryRunChangesNothing(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	first := deleterSeedIssue(t, ctx, fixture, "dry", "1")
+	second := deleterSeedIssue(t, ctx, fixture, "dry", "2")
+	deleterAddEdge(t, ctx, fixture, second, first)
+
+	request := publicops.DeleteRequest{IDs: []string{first, second}, Actor: "deleter-contract"}
+	preview := deleterDelete(t, ctx, fixture, deleterWithDryRun(request, true))
+	if !preview.DryRun {
+		t.Errorf("preview.DryRun = false, want the request echoed")
+	}
+	if preview.Deleted != 2 {
+		t.Errorf("preview.Deleted = %d, want 2", preview.Deleted)
+	}
+	if preview.ReferencesUpdated != 0 {
+		t.Errorf("preview.ReferencesUpdated = %d, want 0: a preview rewrites nothing", preview.ReferencesUpdated)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 2, first, second)
+
+	actual := deleterDelete(t, ctx, fixture, request)
+	if actual.Deleted != preview.Deleted {
+		t.Errorf("Deleted: preview said %d, the run said %d", preview.Deleted, actual.Deleted)
+	}
+	if actual.Dependencies != preview.Dependencies {
+		t.Errorf("Dependencies: preview said %d, the run said %d", preview.Dependencies, actual.Dependencies)
+	}
+	if actual.Labels != preview.Labels || actual.Events != preview.Events {
+		t.Errorf("Labels/Events: preview said %d/%d, the run said %d/%d",
+			preview.Labels, preview.Events, actual.Labels, actual.Events)
+	}
+	deleterAssertIssueRows(t, ctx, fixture, 0, first, second)
+}
+
+// RunDeleterRecordsAtMostOneHistoryEntry pins the versioning clause
+// (issueops/deleter.go, Deleter.Delete: "one call records AT MOST ONE entry").
+//
+// AT MOST, not exactly one: only the server-backed store records an entry at
+// all, so asserting exactly one would be asserting a property of one wiring.
+// The DRY RUN half is the sharp one — a preview that left a commit behind
+// would be a mutation wearing a preview's name.
+func RunDeleterRecordsAtMostOneHistoryEntry(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	if fixture.CountHistory == nil {
+		t.Skip("this backend cannot observe history, so the entry-per-call clause is unobservable here")
+	}
+	first := deleterSeedIssue(t, ctx, fixture, "hist", "1")
+	second := deleterSeedIssue(t, ctx, fixture, "hist", "2")
+	request := publicops.DeleteRequest{IDs: []string{first, second}, Force: true}
+
+	before := deleterHistory(t, ctx, fixture)
+	deleterDelete(t, ctx, fixture, deleterWithDryRun(request, true))
+	if after := deleterHistory(t, ctx, fixture); after != before {
+		t.Errorf("history went %d -> %d across a DRY RUN, want no entry at all", before, after)
+	}
+
+	before = deleterHistory(t, ctx, fixture)
+	deleterDelete(t, ctx, fixture, request)
+	if after := deleterHistory(t, ctx, fixture); after < before || after > before+1 {
+		t.Errorf("history went %d -> %d across one delete of 2 rows, want at most one more entry", before, after)
+	}
+}
+
+// RunDeleterDoesNotMutateTheCallerRequest pins the no-mutation promise
+// (issueops/deleter.go, DeleteRequest: "IDs is read, never written through, and
+// never sorted in place").
+//
+// It matters more here than on the roles whose requests are scalars: every
+// implementation NORMALIZES the id slice, and normalizing in place is the most
+// natural way to write that — it would hand the caller back a shorter, trimmed,
+// reordered version of the list it passed, which is the list a CLI then echoes
+// in its confirmation hint.
+func RunDeleterDoesNotMutateTheCallerRequest(t *testing.T, ctx context.Context, fixture DeleterFixture) {
+	t.Helper()
+	id := deleterSeedIssue(t, ctx, fixture, "immutable", "target")
+	ids := []string{"  " + id + "  ", id, fixture.IssuePrefix + "-immutable-absent"}
+	snapshot := append([]string(nil), ids...)
+
+	request := publicops.DeleteRequest{IDs: ids, Actor: "deleter-contract", Force: true, DryRun: true}
+	requestSnapshot := request
+
+	// The absent id makes this a refusal, which is deliberate: a body that
+	// normalizes in place does it BEFORE it discovers the request is doomed,
+	// so the failing path is where the mutation would survive unnoticed.
+	if _, err := fixture.Deleter.Delete(ctx, request); !errors.Is(err, publicops.ErrNotFound) {
+		t.Fatalf("Delete() error = %v, want ErrNotFound", err)
+	}
+	if !reflect.DeepEqual(ids, snapshot) {
+		t.Errorf("the caller's id slice changed across the call: got %v, want %v", ids, snapshot)
+	}
+	if !reflect.DeepEqual(request.IDs, requestSnapshot.IDs) {
+		t.Errorf("the caller's request changed across the call: got %+v, want %+v", request, requestSnapshot)
+	}
+}
+
+// --- fixture helpers -------------------------------------------------------
+
+func deleterIssue(fixture DeleterFixture, tag, name string, ephemeral bool) *types.Issue {
+	return &types.Issue{
+		ID:        fmt.Sprintf("%s-%s-%s", fixture.IssuePrefix, tag, name),
+		Title:     tag + " " + name,
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Ephemeral: ephemeral,
+	}
+}
+
+// deleterSeed writes one issue through the plane its Ephemeral flag names.
+func deleterSeed(t *testing.T, ctx context.Context, fixture DeleterFixture, issue *types.Issue) string {
+	t.Helper()
+	create := fixture.CreateIssue
+	if issue.Ephemeral {
+		create = fixture.CreateWisp
+	}
+	if err := create(ctx, issue, "deleter-seed"); err != nil {
+		t.Fatalf("seeding %s: %v", issue.ID, err)
+	}
+	return issue.ID
+}
+
+func deleterSeedIssue(t *testing.T, ctx context.Context, fixture DeleterFixture, tag, name string) string {
+	t.Helper()
+	return deleterSeed(t, ctx, fixture, deleterIssue(fixture, tag, name, false))
+}
+
+// deleterSeedWisp is its ephemeral sibling, used by the one case that is
+// about which PLANE a row lives in.
+func deleterSeedWisp(t *testing.T, ctx context.Context, fixture DeleterFixture, tag, name string) string {
+	t.Helper()
+	return deleterSeed(t, ctx, fixture, deleterIssue(fixture, tag, name, true))
+}
+
+// deleterAddEdge makes dependent depend on blocker, which is what makes
+// dependent a DEPENDENT of blocker for this role's guard.
+func deleterAddEdge(t *testing.T, ctx context.Context, fixture DeleterFixture, dependent, blocker string) {
+	t.Helper()
+	err := fixture.AddDependency(ctx, &types.Dependency{
+		IssueID:     dependent,
+		DependsOnID: blocker,
+		Type:        types.DepBlocks,
+	}, "deleter-seed")
+	if err != nil {
+		t.Fatalf("seeding edge %s -> %s: %v", dependent, blocker, err)
+	}
+}
+
+func deleterWithDryRun(request publicops.DeleteRequest, dryRun bool) publicops.DeleteRequest {
+	request.DryRun = dryRun
+	return request
+}
+
+func deleterDelete(t *testing.T, ctx context.Context, fixture DeleterFixture, request publicops.DeleteRequest) publicops.DeleteResult {
+	t.Helper()
+	result, err := fixture.Deleter.Delete(ctx, request)
+	if err != nil {
+		t.Fatalf("Delete(%+v) error = %v", request, err)
+	}
+	return result
+}
+
+// deleterAssertIssueRows counts the named ids in the ISSUES plane. It is the
+// assertion that does not trust the result the delete reported about itself,
+// which on a destructive operation is the one that matters.
+func deleterAssertIssueRows(t *testing.T, ctx context.Context, fixture DeleterFixture, want int, ids ...string) {
+	t.Helper()
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	var got int
+	query := "SELECT COUNT(*) FROM issues WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+	if err := fixture.QueryScalar(ctx, query, args, &got); err != nil {
+		t.Fatalf("counting issue rows for %v: %v", ids, err)
+	}
+	if got != want {
+		t.Errorf("issue rows for %v = %d, want %d", ids, got, want)
+	}
+}
+
+// deleterAssertWispRows is deleterAssertIssueRows for the ephemeral plane.
+func deleterAssertWispRows(t *testing.T, ctx context.Context, fixture DeleterFixture, want int, ids ...string) {
+	t.Helper()
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	var got int
+	query := "SELECT COUNT(*) FROM wisps WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+	if err := fixture.QueryScalar(ctx, query, args, &got); err != nil {
+		t.Fatalf("counting wisp rows for %v: %v", ids, err)
+	}
+	if got != want {
+		t.Errorf("wisp rows for %v = %d, want %d", ids, got, want)
+	}
+}
+
+// deleterAssertEdgeRows counts the stored edges from dependent to blocker.
+func deleterAssertEdgeRows(t *testing.T, ctx context.Context, fixture DeleterFixture, want int, dependent, blocker string) {
+	t.Helper()
+	var got int
+	query := "SELECT COUNT(*) FROM dependencies WHERE issue_id = ? AND " +
+		"COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external) = ?"
+	if err := fixture.QueryScalar(ctx, query, []any{dependent, blocker}, &got); err != nil {
+		t.Fatalf("counting edges %s -> %s: %v", dependent, blocker, err)
+	}
+	if got != want {
+		t.Errorf("edges %s -> %s = %d, want %d", dependent, blocker, got, want)
+	}
+}
+
+// deleterText reads one long text column straight out of the issues table,
+// because the rewrite is a claim about stored bytes rather than about anything
+// the role reports.
+//
+//nolint:gosec // G201: column is chosen by the caller from a fixed set of four.
+func deleterText(t *testing.T, ctx context.Context, fixture DeleterFixture, id, column string) string {
+	t.Helper()
+	var got string
+	query := fmt.Sprintf("SELECT COALESCE(%s, '') FROM issues WHERE id = ?", column)
+	if err := fixture.QueryScalar(ctx, query, []any{id}, &got); err != nil {
+		t.Fatalf("reading %s.%s: %v", id, column, err)
+	}
+	return got
+}
+
+func deleterHistory(t *testing.T, ctx context.Context, fixture DeleterFixture) int {
+	t.Helper()
+	entries, err := fixture.CountHistory(ctx)
+	if err != nil {
+		t.Fatalf("CountHistory(): %v", err)
+	}
+	return entries
+}

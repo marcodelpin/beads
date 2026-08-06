@@ -105,17 +105,6 @@ type DeleteIssuesParams struct {
 	Cascade              bool
 	DryRun               bool
 	UpdateTextReferences bool
-
-	// EnforceCascadePolicy selects embedded-parity dependent handling
-	// (issueops.DeleteIssuesInTx). When false — the legacy default used by the
-	// proxied-server delete command, which always cascades — deletion expands to
-	// all transitive dependents regardless of Cascade/Force. When true,
-	// Cascade/Force choose the behavior:
-	//   Cascade=true               → delete all transitive dependents
-	//   Cascade=false, Force=false → refuse if any external dependent exists
-	//   Cascade=false, Force=true  → orphan external dependents (delete only IDs)
-	EnforceCascadePolicy bool
-	Force                bool
 }
 
 type DeleteIssuesResult struct {
@@ -124,9 +113,15 @@ type DeleteIssuesResult struct {
 	LabelsCount       int
 	EventsCount       int
 	ReferencesUpdated int
-	// OrphanedIssues lists external dependents left behind by a force delete
-	// (Cascade=false, Force=true), or the blocking dependents reported with the
-	// refusal error (Cascade=false, Force=false). Empty on the cascade path.
+	// OrphanedIssues is NOT POPULATED BY ANY PATH TODAY, and is kept only
+	// because `bd wisp gc --json` publishes it (always null) and this commit is
+	// not changing that command's wire shape.
+	//
+	// It once described a force-delete policy this layer never implemented: the
+	// two params that were supposed to select that policy were declared,
+	// documented in detail and never read. The policy now lives in
+	// issueops.Deleter, above the use case, and DeleteResult.Orphaned is where
+	// the answer comes out.
 	OrphanedIssues []string
 }
 

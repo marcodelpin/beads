@@ -232,6 +232,18 @@ var routeTable = []route{
 		implemented: true,
 		handler:     (*Server).handleSweep,
 	},
+	{
+		op:     OpDeleteIssues,
+		method: http.MethodPost,
+		// A literal collection-level custom method, registered and preferred
+		// over the claim's wildcard for exactly the reason the sweep row above
+		// spells out; TestDeletePathReachesItsHandler drives the documented
+		// path.
+		pattern:     "/v0/beads/issues:delete",
+		capability:  "issues.delete",
+		implemented: true,
+		handler:     (*Server).handleDelete,
+	},
 }
 
 // specPathOf is the document path for a route, defaulting to the router

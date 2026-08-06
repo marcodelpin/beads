@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is no cursor and no `offset`: a predicate query's matching set is assembled
   outside the database, so there is no keyset position to encode. `capabilities`
   gains `issues.query`.
+- **`POST /v0/beads/issues:delete` — deleting named beads over HTTP**
+  (bd-x82so). `bd serve` gains the second destructive operation on its surface:
+  a body of `ids` plus `cascade`, `force` and `dry_run`, answering with the
+  counts and the orphan list. It calls the same `issueops.Deleter` `bd delete`
+  calls, so the dependents guard, the all-or-nothing id resolution and the
+  reference rewrite are the library's rather than the handler's — the endpoint
+  cannot orphan a graph by omission. `cascade` and `force` both default false,
+  which is the guarded mode. `capabilities` gains `issues.delete`.
 - **`POST /v0/beads/issues:batchCreate` — creating many issues over HTTP**
   (bd-lu170). `bd serve` gains the second write on its surface and the first
   one that creates rows: a request carrying an `actor` and up to 100 items is
@@ -332,6 +340,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dolt-only in persistence tests.
 
 ### Changed
+
+- **`bd delete --force` on a TEAM SERVER now orphans dependents instead of
+  deleting them** (bd-x82so). **Read this one before you upgrade a team-server
+  script.**
+
+  Against a proxied server, `bd delete X --force` used to delete X *and its
+  whole dependent subtree*, and `--cascade` was refused outright with "not
+  supported in proxied-server mode (delete always cascades)". There was no way
+  to delete one bead on a team server without taking everything that depended on
+  it, and asking for the safer behaviour was an error.
+
+  Both routes now mean the same three things by the same two flags, which are
+  the local database's meanings, unchanged:
+
+  | you type | you get |
+  |---|---|
+  | `bd delete X` | REFUSED if anything outside the request depends on X |
+  | `bd delete X --force` | X is deleted; its dependents survive, ORPHANED |
+  | `bd delete X --cascade --force` | X and its whole dependent subtree are deleted |
+
+  **A team-server script that relied on the implicit cascade will start leaving
+  orphans.** Add `--cascade` to it. The proxied `--json` result gains
+  `orphaned_issues` so a script can see them; a cascade leaves it null.
+
+- **`bd delete <one-id>` without `--force` now REFUSES when the bead has an
+  outside dependent**, instead of printing a preview and exiting 0 (bd-x82so).
+  This is the direct route converging with itself: the multi-id path and
+  `--dry-run` have always refused here, and only the unconfirmed one-id preview
+  did not. The refusal names the bead and says to use `--cascade` or `--force`,
+  which is the same sentence the other two paths already printed.
+
+- **`bd delete` rewrites text references INSIDE the delete transaction**
+  (bd-x82so). The direct route deleted the rows in one transaction and then
+  rewrote `[deleted:ID]` into the neighbouring beads' descriptions afterwards,
+  discarding every update error it got; a failure in the window left a workspace
+  whose beads were gone and whose descriptions still cited them by id. The whole
+  operation — the existence probe, the dependents guard, the cascade expansion,
+  the deletion and the rewrite — is now one transaction on the new
+  `issueops.Deleter` role, shared by both routes and by `bd serve`.
+
+  **The trade, said out loud:** the transaction is now as large as the deletion
+  plus its graph neighbourhood, so a delete whose neighbourhood is big enough to
+  exceed the backend's write timeout fails whole instead of deleting the beads
+  and leaving the text stale. Split a very large `--from-file` batch.
+
+- **`bd delete` refuses the whole request when any id names no bead**
+  (bd-x82so), on both routes and under `--dry-run`. The multi-id path already
+  did; the guarantee is now the role's, so nothing partial is deleted before the
+  typo is reported.
 
 - **`bd purge` and `bd prune` select and delete in ONE transaction** (bd-pn231).
   The direct route used to search in one transaction and delete in another, so a

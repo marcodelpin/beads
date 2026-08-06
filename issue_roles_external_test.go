@@ -518,3 +518,35 @@ func TestSweeperExposesTypedUnsupportedError(t *testing.T) {
 		t.Fatalf("Sweeper() error = %v, want *beads.ErrUnsupported", err)
 	}
 }
+
+// TestDeleterKeepsTelemetryOutermost is the named-row erasure role's version of
+// the same pin, and the SECOND write role to answer the way the reads do: there
+// is no on_delete hook to fire (internal/storage/hook_deleter.go), so the hook
+// decorator adds no layer and the outermost surface a caller gets is the
+// instrumented one.
+func TestDeleterKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	deleter, err := storage.NewHookFiringStore(instrumented, nil).Deleter()
+	if err != nil {
+		t.Fatalf("Deleter() error = %v", err)
+	}
+	if got := reflect.TypeOf(deleter).String(); got != "*telemetry.instrumentedDeleter" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestDeleterExposesTypedUnsupportedError(t *testing.T) {
+	deleter, err := (*dolt.DoltStore)(nil).Deleter()
+	if deleter != nil {
+		t.Fatalf("Deleter() deleter = %T, want nil", deleter)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Deleter() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
