@@ -529,6 +529,7 @@ func cloneIssueForHook(issue *types.Issue) *types.Issue {
 	clone.LeaseExpiresAt = clonePtr(issue.LeaseExpiresAt)
 	clone.HeartbeatAt = clonePtr(issue.HeartbeatAt)
 	clone.ExternalRef = clonePtr(issue.ExternalRef)
+	clone.WispPlaneOverride = clonePtr(issue.WispPlaneOverride)
 	clone.Labels = append([]string(nil), issue.Labels...)
 	clone.Metadata = append([]byte(nil), issue.Metadata...)
 	clone.CompactedAt = clonePtr(issue.CompactedAt)

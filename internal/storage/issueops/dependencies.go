@@ -89,7 +89,7 @@ func IsExternalDepTarget(sourceID, targetID string) bool {
 // an override for callers that already know the answer from a cached prefix
 // set; leaving it false is safe, because IsExternalDepTarget re-derives the
 // same comparison from the edge itself.
-func ClassifyDepTarget(ctx context.Context, tx *sql.Tx, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
+func ClassifyDepTarget(ctx context.Context, tx DBTX, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
 	if isCrossPrefix || IsExternalDepTarget(dep.IssueID, dep.DependsOnID) {
 		return DepTargetExternal
 	}

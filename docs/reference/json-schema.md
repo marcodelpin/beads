@@ -206,6 +206,18 @@ not to the interchange stream. The interchange's own version marker is the
 optional `_schema` header record (`{"_schema":"beads-jsonl/1"}`), which
 readers skip.
 
+Issue records carry an optional `wisp_plane` boolean: the explicit
+wisps-plane marker. Export stamps it on rows that live in the wisps table
+when the row flags alone cannot prove the plane (a `no_history: true` record
+is otherwise ambiguous — an unpromoted no-history wisp and a promoted one
+look identical). Import routes the storage plane by this marker, never by
+`no_history`: marker absent means the durable issues table. The marker is a
+fresh key rather than a reuse of the legacy `wisp` boolean so that older
+readers, which do not know it, degrade to flag routing instead of importing
+marked rows as ephemeral (purge-eligible and export-excluded). The v0.35–
+v0.37 `wisp` key — those streams' spelling of `ephemeral` — is still honored
+as a read-side legacy alias.
+
 ## Consumer Guidelines
 
 1. **Check `schema_version`** on object output. If the version is

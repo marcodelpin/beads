@@ -316,7 +316,8 @@ linters:
       # provider's capability accessor. `gc` stays — it is a different command
       # that still selects its own closed beads, and it now shares only the pure
       # recheck (workapi.FilterSweepCandidates) with the role.
-      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|search|todo|wisp)(_proxied_server)?\.go$'
+      
+      - path: '^cmd/bd/(close|duplicates|find_duplicates|gate|gc|graph|info|label|orphans|search|todo|wisp|human)(_proxied_server)?\.go$'
         linters:
           - forbidigo
       # Molecule reporting: each selects the members of one molecule.
@@ -327,8 +328,11 @@ linters:
       - path: '^cmd/bd/(ado|gitlab|jira|linear)\.go$'
         linters:
           - forbidigo
-      # Bulk movement of issues in, out and across prefixes.
-      - path: '^cmd/bd/(export|export_auto|import|migrate|migrate_issues|migrate_personal|rename|rename_prefix)\.go$'
+      # Bulk movement of issues in, out and across prefixes. export_source is
+      # export's storage seam (classic store vs proxied unit of work): it does
+      # not build a filter, it carries the one export.go builds through to
+      # whichever stack is live.
+      - path: '^cmd/bd/(export|export_auto|export_source|import|migrate|migrate_issues|migrate_personal|rename|rename_prefix)\.go$'
         linters:
           - forbidigo
       # doctor's diagnostics and the fixes that follow them.
@@ -342,7 +346,8 @@ linters:
       # names no filter type, so the hole it needed is closed rather than
       # merely unused. Removing an entry here is how a role commit proves its
       # front door reached the role.
-      - path: '^cmd/bd/(cleanup|completions|gate_discover|human|lint|ping|repo|swarm|template)\.go$'
+      
+      - path: '^cmd/bd/(cleanup|completions|gate_discover|lint|ping|repo|swarm|template)\.go$'
         linters:
           - forbidigo
       # Tests are exempt for the same reason the depguard twin exempts them:
