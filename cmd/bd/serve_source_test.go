@@ -106,10 +106,11 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		t.Fatal("the store's own accessor no longer returns a hook-firing claimer; this test proves nothing")
 	}
 
-	reader, claimer, err := serveIssueRoles(chained)
+	roles, err := serveIssueRoles(chained)
 	if err != nil {
 		t.Fatalf("serveIssueRoles: %v", err)
 	}
+	reader, claimer := roles.reader, roles.claimer
 	// The same predicate httpapi.Listen refuses on, so a regression here is a
 	// server that refuses to boot rather than one that runs hooks silently.
 	if storage.RoleFiresHooks(claimer) {
@@ -126,11 +127,11 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		// BD_NO_HOOKS=1 wires no hook decorator at all, so the roles are the
 		// store's own and the peel must be conditional.
 		bare := wireStorageDecorators(middle, hooks.NewRunner(t.TempDir()), true)
-		reader, claimer, err := serveIssueRoles(bare)
+		roles, err := serveIssueRoles(bare)
 		if err != nil {
 			t.Fatalf("serveIssueRoles: %v", err)
 		}
-		if claimer != issueops.Claimer(middle.claimer) || reader != issueops.Reader(middle.reader) {
+		if roles.claimer != issueops.Claimer(middle.claimer) || roles.reader != issueops.Reader(middle.reader) {
 			t.Error("serveIssueRoles peeled a layer that was not there")
 		}
 	})
@@ -139,7 +140,7 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		// httpapi.Listen refuses a half-set pair, but a nil store reaching it
 		// as two nil roles would report "no database source" — true, and
 		// useless. Name the real condition here.
-		if _, _, err := serveIssueRoles(nil); err == nil {
+		if _, err := serveIssueRoles(nil); err == nil {
 			t.Fatal("serveIssueRoles(nil) = nil error; want a refusal naming the missing store")
 		}
 	})
@@ -188,6 +189,16 @@ type serveRolesStore struct {
 func (s *serveRolesStore) IssueReader() (issueops.Reader, error)   { return s.reader, nil }
 func (s *serveRolesStore) IssueClaimer() (issueops.Claimer, error) { return s.claimer, nil }
 func (s *serveRolesStore) Unwrap() storage.DoltStorage             { return s.inner }
+
+// The rest of the roles. nil is honest here: this store never reaches Listen,
+// and reader+claimer are enough to pin the peel DEPTH, which is the property
+// under test — serveIssueRoles peels once and calls every accessor on that one
+// value.
+func (*serveRolesStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) { return nil, nil }
+func (*serveRolesStore) StatsReporter() (issueops.StatsReporter, error)     { return nil, nil }
+func (*serveRolesStore) CycleDetector() (issueops.CycleDetector, error)     { return nil, nil }
+func (*serveRolesStore) EdgeReader() (issueops.EdgeReader, error)           { return nil, nil }
+func (*serveRolesStore) ReadyCounter() (issueops.ReadyCounter, error)       { return nil, nil }
 
 type serveStubReader struct{}
 
