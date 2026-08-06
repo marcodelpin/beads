@@ -66,15 +66,15 @@ type Issue struct {
 	// granting replica.
 	LeaseGrantedNode string `json:"lease_granted_node,omitempty"`
 
-	// ===== Concurrency (Go-only; never serialized) =====
+	// ===== Concurrency (generic Issue JSON/JSONL omits this field) =====
 	// RowVersion is an opaque optimistic-concurrency token for the library's own
 	// Go call sites: the issues/wisps row_lock cell, a random non-zero value the
 	// engine rewrites on every status/ownership-mutating write. It is
 	// EQUALITY-ONLY — compare it, never order or interpret it — and a change
 	// signals the row was mutated since you read it. It is json:"-" on purpose:
-	// row_lock is random per write, so serializing it would break stable bd
-	// --json goldens and bd export round-trips; a Go consumer reads
-	// issue.RowVersion directly instead.
+	// row_lock is random per write, so generic Issue serialization would break
+	// stable list/export round-trips. The detail-view DTO projects it explicitly
+	// as `revision` for guarded clients; Go consumers read RowVersion directly.
 	//
 	// Coverage is deliberately partial: it changes on claim/close/unclaim and the
 	// generic update path, but NOT on direct-UPDATE paths that rewrite text

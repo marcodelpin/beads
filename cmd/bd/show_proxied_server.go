@@ -468,7 +468,7 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 				return HandleErrorRespectJSON("%v", derr)
 			}
 			foundCount++
-			allDetails = append(allDetails, details)
+			allDetails = append(allDetails, projectShowJSONDetails(details))
 			continue
 		}
 
