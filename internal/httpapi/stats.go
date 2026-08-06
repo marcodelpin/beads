@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/issueops"
@@ -25,6 +27,12 @@ import (
 // (ErrValidation), but a 400 that names the parameter is what a client can act
 // on, and the document says the workspace-wide question is asked by omitting
 // the parameter rather than by emptying it.
+//
+// EMPTY MEANS TRIMMED-EMPTY, because that is what the role means by it
+// (workapi.ValidateStatsAssignee trims). Checking the raw string let
+// `?assignee=%20` past the guard, down to a role refusal this file had no
+// classifier for, and out as a 500 with an operator alert attached — for a
+// trailing space in somebody's script.
 
 // handleStats answers GET /v0/beads/stats.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +45,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// q.str answers "" for both. The refusal goes through the query's own
 	// first-refusal slot so a request that is also malformed elsewhere reports
 	// one parameter rather than depending on read order.
-	if assignee == "" && r.URL.Query().Has("assignee") {
+	if strings.TrimSpace(assignee) == "" && r.URL.Query().Has("assignee") {
 		q.invalid("assignee", "an assignee must not be empty; omit the parameter for the workspace-wide summary")
 	}
 
@@ -62,7 +70,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		result, err = reporter.Stats(r.Context(), issueops.StatsRequest{SkipBlocked: skipBlocked})
 	}
 	if err != nil {
-		s.failErr(w, r, err)
+		s.failStatsErr(w, r, err)
 		return
 	}
 
@@ -74,4 +82,20 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		// skipped while the numbers beside it prove it was not.
 		BlockedCountSkipped: result.Summary.BlockedIssues == nil,
 	})
+}
+
+// failStatsErr answers a failed summary.
+//
+// The role's ErrValidation is a 400 HERE rather than in ClassifyError, the
+// same line delete, tree, edges, blocking and batch-create each draw in their
+// own handler. This surface reaches the role with one caller-supplied value,
+// so a refusal from it is the caller's fault and a 500 would be both wrong and
+// noisy: failErr raises an operator event for every status >= 500.
+func (s *Server) failStatsErr(w http.ResponseWriter, r *http.Request, err error) {
+	if !errors.Is(err, issueops.ErrValidation) {
+		s.failErr(w, r, err)
+		return
+	}
+	requestInfo(r.Context()).refuse("assignee")
+	s.fail(w, r, InvalidArgument("assignee", ReasonInvalidValue, err.Error()))
 }

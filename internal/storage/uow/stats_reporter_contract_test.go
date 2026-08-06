@@ -34,6 +34,9 @@ func TestStatsReporterContract(t *testing.T) {
 	t.Run("BlockedCountsTheGraphNotTheStatus", func(t *testing.T) {
 		conformance.RunStatsReporterBlockedCountsTheGraphNotTheStatus(t, ctx, fixture)
 	})
+	t.Run("BlockedExcludesByStatusNotByThePinnedFlag", func(t *testing.T) {
+		conformance.RunStatsReporterBlockedExcludesByStatusNotByThePinnedFlag(t, ctx, fixture)
+	})
 	t.Run("ReadyIsOpenMinusBlocked", func(t *testing.T) {
 		conformance.RunStatsReporterReadyIsOpenMinusBlocked(t, ctx, fixture)
 	})

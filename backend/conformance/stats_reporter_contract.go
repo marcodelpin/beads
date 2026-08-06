@@ -167,6 +167,50 @@ func RunStatsReporterBlockedCountsTheGraphNotTheStatus(t *testing.T, ctx context
 	assertStatsReporterDelta(t, before, after, statsReporterCounts{total: 2, open: 2, blocked: 1})
 }
 
+// RunStatsReporterBlockedExcludesByStatusNotByThePinnedFlag pins the exclusion
+// half of statsreporter.go's BlockedIssues clause, which had no case at all.
+//
+// The clause reads "excluding those whose STATUS is closed or pinned", and the
+// bullet above it teaches that PinnedIssues counts the pinned FLAG — so the
+// two readings of "pinned" land on different rows and only one is shipped. A
+// blocked row that is flag-pinned but status-open IS counted; a blocked row
+// whose status is "pinned" is not, and neither is a closed one.
+//
+// Without this an implementation that read the clause the other way — or that
+// dropped the exclusion for open rows entirely — goes green on all three legs,
+// and `bd status`'s headline ReadyIssues differs by one per such row with
+// nothing saying which answer is right.
+func RunStatsReporterBlockedExcludesByStatusNotByThePinnedFlag(t *testing.T, ctx context.Context, fixture StatsReporterFixture) {
+	t.Helper()
+	before := statsReporterSummary(t, ctx, fixture, publicops.StatsRequest{})
+
+	blocker := statsReporterSeed(fixture, "excl-blocker", types.StatusOpen)
+	seedStatsReporterIssue(t, ctx, fixture, blocker)
+
+	// Counted: the FLAG is set but the STATUS is open.
+	flagPinned := statsReporterSeed(fixture, "excl-flagpinned", types.StatusOpen)
+	flagPinned.Pinned = true
+	seedStatsReporterIssue(t, ctx, fixture, flagPinned)
+	blockStatsReporterIssue(t, ctx, fixture, flagPinned.ID, blocker.ID)
+
+	// Not counted: status "pinned".
+	statusPinned := statsReporterSeed(fixture, "excl-statuspinned", types.StatusPinned)
+	seedStatsReporterIssue(t, ctx, fixture, statusPinned)
+	blockStatsReporterIssue(t, ctx, fixture, statusPinned.ID, blocker.ID)
+
+	// Not counted: closed.
+	closed := statsReporterSeed(fixture, "excl-closed", types.StatusClosed)
+	seedStatsReporterIssue(t, ctx, fixture, closed)
+	blockStatsReporterIssue(t, ctx, fixture, closed.ID, blocker.ID)
+
+	after := statsReporterSummary(t, ctx, fixture, publicops.StatsRequest{})
+	// Four rows seeded, two of them open (the blocker and the flag-pinned one),
+	// one closed, one status-pinned; exactly one is blocked-and-counted.
+	assertStatsReporterDelta(t, before, after, statsReporterCounts{
+		total: 4, open: 2, closed: 1, pinned: 1, blocked: 1,
+	})
+}
+
 // RunStatsReporterReadyIsOpenMinusBlocked pins statsreporter.go:103-108:
 // ReadyIssues is arithmetic over two numbers in the same answer, not a query.
 //

@@ -699,13 +699,15 @@ type depListAnchor struct {
 // readDepListEdges asks each anchor's OWN store for its stored edges and
 // reassembles the answers into the order the arguments named.
 //
-// The grouping is what keeps the answer on ONE shape. Before the role, a batch
-// whose anchors routed to different stores — and a batch whose single batched
-// read simply failed — fell through to the hydrated neighbor listing, so
+// The grouping is what keeps the answer on ONE shape. Before the role, three
+// conditions fell through to the hydrated neighbor listing, so
 // `bd dep list a b c --json` silently emitted an array of ISSUES where it
-// documents an array of dependency records. Both fall-throughs are gone: a
-// failure is now a failure, and a split batch is N role calls merged back into
-// one answer.
+// documents an array of dependency records: a batch whose anchors routed to
+// different stores, a batch whose single batched read simply failed, and a
+// batch in which enough anchors failed to RESOLVE that only one survived. All
+// three are gone: a failure is now a failure, a split batch is N role calls
+// merged back into one answer, and the caller's argument count picks the shape
+// (see batchMode at the call site).
 func readDepListEdges(ctx context.Context, anchors []depListAnchor, typeFilter string) ([]issueops.AnchorEdges, error) {
 	var depTypes []types.DependencyType
 	if typeFilter != "" {
@@ -882,7 +884,17 @@ Examples:
 		// The accessor is taken PER STORE rather than once for the command,
 		// like the neighbor query below: a routed anchor answers from its own
 		// store, carrying its own decorator stack.
-		if len(resolved) > 1 && direction == "down" {
+		//
+		// The shape is chosen on batchMode — the count the CALLER TYPED — and
+		// not on len(resolved). Those differ exactly when an anchor fails to
+		// resolve, and deciding on the survivors meant
+		// `bd dep list <good> <typo> --json` printed the neighbor shape
+		// (RelatedIssue objects) on this route while the proxied route, which
+		// gates on the argument count, printed the documented flat array of
+		// dependency records. The help text promises the records shape "across
+		// all requested issues", so a skipped anchor must not silently change
+		// what a script is parsing.
+		if batchMode && direction == "down" {
 			anchors, err := readDepListEdges(ctx, resolved, typeFilter)
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)

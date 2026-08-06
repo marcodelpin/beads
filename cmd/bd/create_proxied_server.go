@@ -130,6 +130,11 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		Dependencies:            createDependencyRequests(deps),
 		WaitsFor:                waitsForRequest(waitsFor),
 		ForceIDPrefix:           in.force,
+		// The workspace's config.yaml prefix wins over the server database's,
+		// and only this side can see it. Without this the proxied route mints
+		// ids the workspace's own configuration forbids and the direct route
+		// refuses.
+		IDPrefix: createIDPrefixOverride(),
 	})
 	if err != nil {
 		// RULING R1, reported the same way the direct route reports it: an
