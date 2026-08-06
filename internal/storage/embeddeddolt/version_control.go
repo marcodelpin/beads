@@ -340,14 +340,12 @@ func (s *EmbeddedDoltStore) RecomputeBlockedAfterMerge(ctx context.Context, from
 func (s *EmbeddedDoltStore) RecomputeAllBlocked(ctx context.Context) (int, error) {
 	var changed int64
 	if err := s.withConn(ctx, true, func(tx *sql.Tx) error {
-		// Refuse to derive and commit is_blocked from a dirty graph (see
-		// DoltStore.RecomputeAllBlocked); checked inside the recompute tx so it
-		// sees the same working set the recompute will read (bd-6dnrw.37).
-		if e := issueops.GuardBlockedRecomputeWorkingSet(ctx, tx); e != nil {
-			return e
-		}
+		// One shared body across every mode: refuse to derive and commit
+		// is_blocked from a dirty graph (see DoltStore.RecomputeAllBlocked),
+		// checked inside the recompute tx so it sees the same working set the
+		// recompute will read (bd-6dnrw.37).
 		var e error
-		changed, e = issueops.RecomputeAllIsBlockedInTx(ctx, tx)
+		changed, e = versioncontrolops.GuardedRecomputeAllBlockedInTx(ctx, tx)
 		return e
 	}); err != nil {
 		return 0, err
@@ -357,7 +355,8 @@ func (s *EmbeddedDoltStore) RecomputeAllBlocked(ctx context.Context) (int, error
 		// recompute, so an unrelated dirty working set is not swept in.
 		if err := s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
 			return versioncontrolops.StageAndCommit(ctx, db,
-				map[string]bool{"issues": true}, "bd: recompute is_blocked (full)", commitAuthor)
+				versioncontrolops.BlockedRecomputeStagedTables(),
+				versioncontrolops.BlockedRecomputeCommitMsg, commitAuthor)
 		}); err != nil {
 			return int(changed), err
 		}
