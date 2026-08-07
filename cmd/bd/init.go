@@ -283,7 +283,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		serverUser, _ := cmd.Flags().GetString("server-user")
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
-		promoteExplicitServerConnFlags(cmd)
+		if err := promoteExplicitServerConnFlags(cmd); err != nil {
+			return err
+		}
 
 		// --force is a deprecated alias for --reinit-local. They share
 		// semantics for the local data-safety guard; both refuse remote
@@ -2145,7 +2147,7 @@ func init() {
 	initCmd.Flags().String("server-host", "", "Dolt server host (default: 127.0.0.1)")
 	initCmd.Flags().Bool("server-tls", false, "Require TLS for the init-time Dolt server connection (overrides BEADS_DOLT_SERVER_TLS for this run; not persisted - set the env var or credentials file for later commands)")
 	initCmd.Flags().Int("server-port", 0, "Dolt server port (default: 3307)")
-	initCmd.Flags().String("server-socket", "", "Unix domain socket path (overrides host/port)")
+	initCmd.Flags().String("server-socket", "", "Unix domain socket path (overrides host/port; pass '' to ignore an ambient BEADS_DOLT_SERVER_SOCKET and use TCP)")
 	initCmd.Flags().String("server-user", "", "Dolt server MySQL user (default: root)")
 	initCmd.Flags().Bool("shared-server", false, "Enable shared Dolt server mode (all projects share one server at ~/.beads/shared-server/)")
 	initCmd.Flags().Bool("external", false, "Server is externally managed (skip server startup); use with --shared-server or --server")
@@ -2924,28 +2926,59 @@ func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
 }
 
 // promoteExplicitServerConnFlags makes an explicit --server-host/--server-port/
-// --server-user/--server-tls flag outrank the corresponding BEADS_DOLT_SERVER_*
-// environment variable. Every downstream resolver (configfile getters,
-// doltserver DefaultConfig) consults the environment first, so without
-// promotion a stale shell-profile value silently redirects init to a different
-// server than the one named on the command line. The promotion is scoped to
-// this process's environment only; nothing here is persisted to metadata.json
-// (TLS in particular stays env/credentials-file configured, per bd dolt help).
-func promoteExplicitServerConnFlags(cmd *cobra.Command) {
+// --server-user/--server-socket/--server-tls flag outrank the corresponding
+// BEADS_DOLT_SERVER_* environment variable. Every downstream resolver
+// (configfile getters, doltserver DefaultConfig) consults the environment
+// first, so without promotion a stale shell-profile value silently redirects
+// init to a different server than the one named on the command line.
+//
+// Because a socket outranks host/port everywhere downstream, selecting TCP
+// explicitly (--server-host or --server-port) also clears an ambient
+// BEADS_DOLT_SERVER_SOCKET unless --server-socket was itself given. An
+// explicitly empty --server-socket clears the ambient socket too: empty is
+// the documented "use TCP" value. Changed-but-empty host/user and
+// out-of-range port values fail explicitly rather than being silently
+// ignored.
+//
+// The promotion is scoped to this process's environment only; nothing here
+// is persisted to metadata.json (TLS in particular stays env/credentials-file
+// configured, per bd dolt help).
+func promoteExplicitServerConnFlags(cmd *cobra.Command) error {
 	if cmd.Flags().Changed("server-host") {
-		if v, _ := cmd.Flags().GetString("server-host"); v != "" {
-			os.Setenv("BEADS_DOLT_SERVER_HOST", v)
+		v, _ := cmd.Flags().GetString("server-host")
+		if v == "" {
+			return fmt.Errorf("--server-host cannot be empty; omit the flag to use BEADS_DOLT_SERVER_HOST or the default (%s)", configfile.DefaultDoltServerHost)
 		}
+		os.Setenv("BEADS_DOLT_SERVER_HOST", v)
 	}
 	if cmd.Flags().Changed("server-port") {
-		if v, _ := cmd.Flags().GetInt("server-port"); v > 0 {
-			os.Setenv("BEADS_DOLT_SERVER_PORT", strconv.Itoa(v))
+		v, _ := cmd.Flags().GetInt("server-port")
+		if v < 1 || v > 65535 {
+			return fmt.Errorf("--server-port must be between 1 and 65535, got %d; omit the flag to use BEADS_DOLT_SERVER_PORT or the default (%d)", v, configfile.DefaultDoltServerPort)
 		}
+		os.Setenv("BEADS_DOLT_SERVER_PORT", strconv.Itoa(v))
 	}
 	if cmd.Flags().Changed("server-user") {
-		if v, _ := cmd.Flags().GetString("server-user"); v != "" {
-			os.Setenv("BEADS_DOLT_SERVER_USER", v)
+		v, _ := cmd.Flags().GetString("server-user")
+		if v == "" {
+			return fmt.Errorf("--server-user cannot be empty; omit the flag to use BEADS_DOLT_SERVER_USER or the default (%s)", configfile.DefaultDoltServerUser)
 		}
+		os.Setenv("BEADS_DOLT_SERVER_USER", v)
+	}
+	switch {
+	case cmd.Flags().Changed("server-socket"):
+		v, _ := cmd.Flags().GetString("server-socket")
+		if v == "" {
+			// Empty means TCP (see configfile.GetDoltServerSocket); an
+			// explicit empty flag clears stale socket environment state.
+			os.Unsetenv("BEADS_DOLT_SERVER_SOCKET")
+		} else {
+			os.Setenv("BEADS_DOLT_SERVER_SOCKET", v)
+		}
+	case cmd.Flags().Changed("server-host") || cmd.Flags().Changed("server-port"):
+		// Explicit TCP selection: an ambient socket would silently outrank
+		// the host/port named on the command line.
+		os.Unsetenv("BEADS_DOLT_SERVER_SOCKET")
 	}
 	if cmd.Flags().Changed("server-tls") {
 		v, _ := cmd.Flags().GetBool("server-tls")
@@ -2955,6 +2988,7 @@ func promoteExplicitServerConnFlags(cmd *cobra.Command) {
 			os.Setenv("BEADS_DOLT_SERVER_TLS", "0")
 		}
 	}
+	return nil
 }
 
 func initDoltServerTLSFromEnv() bool {
