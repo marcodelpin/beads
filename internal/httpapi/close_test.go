@@ -426,10 +426,16 @@ func TestCloseErrorsMapThroughTheSharedClassification(t *testing.T) {
 
 // TestCloseIsNotReachableByOtherMethods: the dispatcher is registered for POST
 // alone, so the documented path under any other method is an unrouted path.
+//
+// PATCH is excluded and has its own test below. `PATCH /v0/beads/issues/{id}`
+// is a documented operation on a single-segment wildcard, so it MATCHES this
+// path — as an update of an issue whose id happens to be "bd-1:close". That is
+// the detail path's long-standing behavior (GET has always answered the same
+// way), and what matters is that it never executes as a close.
 func TestCloseIsNotReachableByOtherMethods(t *testing.T) {
 	ts := newCloseServer(t, &roleLifecycle{})
 
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		req, err := http.NewRequest(method, ts.base+closePath, strings.NewReader(`{"actor":"alice"}`))
 		if err != nil {
 			t.Fatalf("new %s request: %v", method, err)

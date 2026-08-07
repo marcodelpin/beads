@@ -1249,6 +1249,130 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+    patch:
+      operationId: updateIssue
+      summary: Edit the fields of one issue
+      description: >-
+        Partial update of one named issue. A plain `PATCH` rather than a custom
+        method, because partial update of one named resource is what `PATCH`
+        already means — exactly as one named resource with no body is what
+        `DELETE` means for `forgetMemory`. The custom-method namespace is left
+        for the operations that are not CRUD.
+
+
+        ## Member presence is the signal
+
+
+        A member PRESENT in `patch` is written; a member ABSENT is left
+        untouched. That is the whole partial-update rule, and it is why an
+        absent member and a member set to its current value are different
+        requests with the same outcome.
+
+
+        Explicit `null` is defined per member. On the four NULLABLE members —
+        `estimated_minutes`, `external_ref`, `due_at`, `defer_until` — it
+        CLEARS the value, because `null` is the only wire spelling a clear has.
+        On every other member it is a `400` naming the member, so a null is
+        never quietly recorded as an empty string.
+
+
+        An EMPTY `patch` object is a `400`: a write that writes nothing is a
+        client bug, the same judgement `issues:batchCreate` makes about an
+        empty `items`.
+
+
+        `labels` is COMPLETE REPLACEMENT. It is the only shape whose result the
+        client already knows without a read-back; an additive
+        `labels_add`/`labels_remove` pair can join the vocabulary later without
+        disturbing it.
+
+
+        `notes` and `append_notes` are mutually exclusive; sending both is a
+        `400`.
+
+
+        ## What this operation deliberately cannot edit
+
+
+        `status` — lifecycle is `{id}:close`, `{id}:reopen` and `{id}:claim`,
+        the operations that carry the policy and conflict vocabulary. A status
+        member here would smuggle close policy into this operation's code set
+        and publish two ways to do one thing.
+
+
+        `assignee` — assignment is the claim's compare-and-set territory, and a
+        raw assignee write would need the claim's conflict vocabulary on this
+        operation too. An unclaim/transfer operation is future surface.
+
+
+        `metadata` — its replace/merge/set/unset algebra deserves its own
+        design pass, not a corner of this one.
+
+
+        Also absent, and additive to publish later: `parent_id` (a set value
+        atomically replaces ALL parents — a graph edit in patch clothing),
+        `persistence` (a plane move is an atomic aggregate migration),
+        `owner` (`assignee`'s argument), `closed_by_session` (written under
+        first-close-wins by `{id}:close`, which a patch write would bypass),
+        and `spec_id`/`await_id` (workflow plumbing this surface publishes
+        nowhere yet). Keeping the first three out is half the reason this
+        operation documents no `409` at all.
+
+
+        ## Planes
+
+
+        The id resolves across BOTH planes, as the close and reopen do. An
+        update whose target is a wisp lands on the unversioned plane and
+        records no durable history entry.
+
+
+        ## Hooks and auto-commit
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only
+        durable effect is the single storage commit the role makes in its own
+        transaction.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIssueRequest'
+      responses:
+        '200':
+          description: >-
+            The update was applied. A same-value patch is a 200 with
+            `changed: false`, not an error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateIssueResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member at either level, an `actor`
+            that is empty after trimming, longer than 256 bytes, or carrying
+            control characters, an empty `patch`, a member carrying the wrong
+            JSON type, an explicit `null` on a member that is not nullable, a
+            value outside its documented bounds, `notes` together with
+            `append_notes` — or a value this workspace's own validation
+            refuses, such as an `issue_type` outside its configured vocabulary.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/issues/{id}:claim:
     post:
       operationId: claimIssue
@@ -3370,7 +3494,7 @@ components:
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
-            `issues.close`, `issues.reopen`,
+            `issues.close`, `issues.reopen`, `issues.update`,
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
@@ -4368,6 +4492,117 @@ components:
             nothing — idempotent, mirroring `CloseIssueResponse.already_closed`
             and `ClaimResponse.already_claimed`. The response still carries the
             row.
+
+    UpdateIssueRequest:
+      type: object
+      additionalProperties: false
+      required: [actor, patch]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
+          description: >-
+            Who is editing the issue. `ClaimRequest.actor`'s rules exactly: the
+            server trims it, then refuses an empty result, anything longer than
+            256 BYTES (the `maxLength` above counts characters — the byte limit
+            is the binding one), and any control character including newline.
+            The value reaches the history entry's attribution and the storage
+            commit message, so an unvalidated newline would forge audit-trail
+            lines.
+        patch:
+          $ref: '#/components/schemas/IssuePatchBody'
+
+    IssuePatchBody:
+      type: object
+      additionalProperties: false
+      description: >-
+        The fields to write. Every member is optional and PRESENCE is the
+        signal: a member present is written, a member absent is untouched. An
+        empty object is a `400` — a write that writes nothing is a client bug.
+
+
+        This is a deliberate SUBSET of the fields an issue carries; the members
+        it does not spell are future surface rather than oversights, and
+        `updateIssue`'s own description says which and why.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The issue's title. Must not be blank after trimming; the length
+            bound is what the column holds.
+        description:
+          type: string
+        design:
+          type: string
+        acceptance_criteria:
+          type: string
+        notes:
+          type: string
+          description: >-
+            Replaces the notes. Mutually exclusive with `append_notes`; sending
+            both is a `400`.
+        append_notes:
+          type: string
+          description: >-
+            Appends to the notes rather than replacing them. Mutually exclusive
+            with `notes`.
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 4
+        issue_type:
+          type: string
+          maxLength: 255
+          description: >-
+            The issue type, from this workspace's own configured vocabulary. A
+            type outside it is refused by the ROLE and reaches the client as a
+            `400` — this server cannot read the vocabulary without a
+            transaction, so it checks only what this schema declares.
+        labels:
+          type: array
+          items:
+            type: string
+            maxLength: 255
+          description: >-
+            COMPLETE REPLACEMENT of the label set. An empty array clears every
+            label. Incremental add/remove is deferred: replacement is the only
+            shape whose result the client already knows without a read-back.
+        estimated_minutes:
+          type: integer
+          nullable: true
+          description: 'Explicit `null` CLEARS the estimate.'
+        external_ref:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: 'Explicit `null` CLEARS the reference.'
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 'RFC 3339. Explicit `null` CLEARS the due date.'
+        defer_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 'RFC 3339. Explicit `null` CLEARS the deferral.'
+
+    UpdateIssueResponse:
+      type: object
+      required: [issue, changed]
+      properties:
+        issue:
+          $ref: '#/components/schemas/Issue'
+        changed:
+          type: boolean
+          description: >-
+            Whether the request persisted a semantic mutation. A same-value
+            patch is a 200 with `changed: false` rather than an error —
+            idempotent, like every replay answer on this surface.
 
     Problem:
       type: object

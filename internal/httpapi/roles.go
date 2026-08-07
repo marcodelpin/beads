@@ -93,11 +93,10 @@ func (c checkedBatchCreator) CreateBatch(ctx context.Context, req issueops.Creat
 
 // checkedLifecycle is the lifecycle role every mutation handler is handed.
 //
-// Close and Reopen are why it exists: both handlers write *result.Issue, which
-// is checkedClaimer's hazard exactly. Create and Update pass through because no
-// handler on this surface reaches them yet; each grows a guard in the change
-// that publishes its operation, rather than one written speculatively against a
-// body nobody marshals.
+// Update, Close and Reopen are why it exists: all three handlers write
+// *result.Issue, which is checkedClaimer's hazard exactly. Create passes
+// through because no handler on this surface reaches it — a single create is
+// unpublished here, and batchCreateIssues goes to issueops.BatchCreator.
 type checkedLifecycle struct{ inner issueops.Lifecycle }
 
 // Create passes the request through unchanged: this surface publishes no
@@ -106,10 +105,14 @@ func (c checkedLifecycle) Create(ctx context.Context, req issueops.CreateRequest
 	return c.inner.Create(ctx, req)
 }
 
-// Update passes the request through unchanged; updateIssue is not published on
-// this surface yet.
+// Update refuses a result that reports success without the row the response
+// body is built from, for Close's reason.
 func (c checkedLifecycle) Update(ctx context.Context, req issueops.UpdateRequest) (issueops.UpdateResult, error) {
-	return c.inner.Update(ctx, req)
+	result, err := c.inner.Update(ctx, req)
+	if err == nil && result.Issue == nil {
+		return issueops.UpdateResult{}, fmt.Errorf("update %q: the lifecycle reported success without an issue", req.IssueID)
+	}
+	return result, err
 }
 
 // Close refuses a result that reports success without the row the response body

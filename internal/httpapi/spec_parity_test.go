@@ -699,6 +699,87 @@ func TestCloseRequestMembersMatchTheHandler(t *testing.T) {
 	}
 }
 
+// TestUpdateRequestMembersMatchTheHandler is the claim's and the close's gate
+// for the update body, at BOTH of its levels.
+//
+// It matters more here than anywhere else on the surface: `patch` is the widest
+// member list published, and the handler's accepted set is a hand-rolled copy
+// of it because presence has to be observable. A spec revision adding an
+// optional patch member would otherwise leave `make api-check` and every other
+// spec test green while the server refused the newly documented member as
+// unknown_parameter — and the reverse, a member the handler honors that the
+// document never promised, is undisclosed write surface on a mutation.
+func TestUpdateRequestMembersMatchTheHandler(t *testing.T) {
+	doc := loadSpec(t)
+	schemas := mapAt(t, mapAt(t, doc, "components"), "schemas")
+
+	for _, tc := range []struct {
+		schema   string
+		accepted []string
+		goType   reflect.Type
+	}{
+		{"UpdateIssueRequest", updateRequestMembers, reflect.TypeOf(apigen.UpdateIssueRequest{})},
+		{"IssuePatchBody", issuePatchMembers, reflect.TypeOf(apigen.IssuePatchBody{})},
+	} {
+		t.Run(tc.schema, func(t *testing.T) {
+			accepted := map[string]bool{}
+			for _, name := range tc.accepted {
+				accepted[name] = true
+			}
+
+			goFields := jsonTagNames(t, tc.goType)
+			if extra := diff(goFields, accepted); len(extra) > 0 {
+				t.Errorf("generated %s declares members the update handler refuses as unknown: %v\n"+
+					"teach the handler to honor them, or the document promises a member the server turns down", tc.schema, extra)
+			}
+			if missing := diff(accepted, goFields); len(missing) > 0 {
+				t.Errorf("the update handler accepts members %s does not declare: %v", tc.schema, missing)
+			}
+
+			specProps := schemaProperties(t, doc, mapAt(t, schemas, tc.schema))
+			if extra := diff(specProps, accepted); len(extra) > 0 {
+				t.Errorf("the %s schema documents members the update handler refuses: %v", tc.schema, extra)
+			}
+			if missing := diff(accepted, specProps); len(missing) > 0 {
+				t.Errorf("the update handler accepts members the %s schema does not document: %v", tc.schema, missing)
+			}
+		})
+	}
+}
+
+// TestNullablePatchMembersAreExactlyTheDocumentsNullableOnes pins the closed set
+// on which explicit `null` CLEARS rather than refuses.
+//
+// The two sides can drift silently and in the worst direction: a member the
+// document marks nullable but the handler does not would refuse a clear the
+// contract promises, and a member the handler treats as nullable but the
+// document does not would let a null through as an unannounced clear on a field
+// nobody agreed could be cleared.
+func TestNullablePatchMembersAreExactlyTheDocumentsNullableOnes(t *testing.T) {
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "IssuePatchBody")
+
+	documented := map[string]bool{}
+	for name, raw := range mapAt(t, schema, "properties") {
+		prop, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("property %q is %T, want a mapping", name, raw)
+		}
+		if nullable, _ := prop["nullable"].(bool); nullable {
+			documented[name] = true
+		}
+	}
+
+	if missing := diff(documented, nullablePatchMembers); len(missing) > 0 {
+		t.Errorf("the document marks these patch members nullable and the handler refuses a null on them: %v\n"+
+			"a clear the contract promises would be answered with a 400", missing)
+	}
+	if extra := diff(nullablePatchMembers, documented); len(extra) > 0 {
+		t.Errorf("the handler clears these patch members on an explicit null and the document does not declare them nullable: %v\n"+
+			"that is an unannounced clear on a field nobody agreed could be cleared", extra)
+	}
+}
+
 // TestCustomMethodRowsDeclareTheirDocumentedPath bounds the routing exception
 // from the side TestSpecRouteParity cannot see. That test compares DECLARED
 // spec paths, so it stays green whatever the customMethod field says; the

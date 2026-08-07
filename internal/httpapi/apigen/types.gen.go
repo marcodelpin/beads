@@ -243,7 +243,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -380,6 +380,43 @@ type IssueBlocking = issueops.IssueBlocking
 
 // IssueDetails An `Issue` with its labels, dependency edges and cardinalities — the body of `GET /v0/beads/issues/{id}`. `dependencies` and `dependents` carry FULL issue objects plus the edge type, not bare edges. Property semantics are documented on `Issue`.
 type IssueDetails = types.IssueDetails
+
+// IssuePatchBody The fields to write. Every member is optional and PRESENCE is the signal: a member present is written, a member absent is untouched. An empty object is a `400` — a write that writes nothing is a client bug.
+//
+// This is a deliberate SUBSET of the fields an issue carries; the members it does not spell are future surface rather than oversights, and `updateIssue`'s own description says which and why.
+type IssuePatchBody struct {
+	AcceptanceCriteria *string `json:"acceptance_criteria,omitempty"`
+
+	// AppendNotes Appends to the notes rather than replacing them. Mutually exclusive with `notes`.
+	AppendNotes *string `json:"append_notes,omitempty"`
+
+	// DeferUntil RFC 3339. Explicit `null` CLEARS the deferral.
+	DeferUntil  *time.Time `json:"defer_until,omitempty"`
+	Description *string    `json:"description,omitempty"`
+	Design      *string    `json:"design,omitempty"`
+
+	// DueAt RFC 3339. Explicit `null` CLEARS the due date.
+	DueAt *time.Time `json:"due_at,omitempty"`
+
+	// EstimatedMinutes Explicit `null` CLEARS the estimate.
+	EstimatedMinutes *int `json:"estimated_minutes,omitempty"`
+
+	// ExternalRef Explicit `null` CLEARS the reference.
+	ExternalRef *string `json:"external_ref,omitempty"`
+
+	// IssueType The issue type, from this workspace's own configured vocabulary. A type outside it is refused by the ROLE and reaches the client as a `400` — this server cannot read the vocabulary without a transaction, so it checks only what this schema declares.
+	IssueType *string `json:"issue_type,omitempty"`
+
+	// Labels COMPLETE REPLACEMENT of the label set. An empty array clears every label. Incremental add/remove is deferred: replacement is the only shape whose result the client already knows without a read-back.
+	Labels *[]string `json:"labels,omitempty"`
+
+	// Notes Replaces the notes. Mutually exclusive with `append_notes`; sending both is a `400`.
+	Notes    *string `json:"notes,omitempty"`
+	Priority *int    `json:"priority,omitempty"`
+
+	// Title The issue's title. Must not be blank after trimming; the length bound is what the column holds.
+	Title *string `json:"title,omitempty"`
+}
 
 // IssueWithCounts An `Issue` plus relationship cardinalities. This is the element type of both `/v0/beads/ready` and `/v0/beads/issues`, matching what `bd ready --json` and `bd list --json` emit. Property semantics are documented on `Issue`.
 type IssueWithCounts = types.IssueWithCounts
@@ -667,6 +704,26 @@ type SweepSkips struct {
 //
 // The tree is FLAT. A node's place in it is read from `depth` and `parent_id`, not from nesting, and a subtree is contiguous in `items`.
 type TreeNode = types.TreeNode
+
+// UpdateIssueRequest defines model for UpdateIssueRequest.
+type UpdateIssueRequest struct {
+	// Actor Who is editing the issue. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value reaches the history entry's attribution and the storage commit message, so an unvalidated newline would forge audit-trail lines.
+	Actor string `json:"actor"`
+
+	// Patch The fields to write. Every member is optional and PRESENCE is the signal: a member present is written, a member absent is untouched. An empty object is a `400` — a write that writes nothing is a client bug.
+	//
+	// This is a deliberate SUBSET of the fields an issue carries; the members it does not spell are future surface rather than oversights, and `updateIssue`'s own description says which and why.
+	Patch IssuePatchBody `json:"patch"`
+}
+
+// UpdateIssueResponse defines model for UpdateIssueResponse.
+type UpdateIssueResponse struct {
+	// Changed Whether the request persisted a semantic mutation. A same-value patch is a 200 with `changed: false` rather than an error — idempotent, like every replay answer on this surface.
+	Changed bool `json:"changed"`
+
+	// Issue A tracked work item. Property semantics documented here apply to every schema that repeats them below.
+	Issue Issue `json:"issue"`
+}
 
 // IssueID defines model for IssueID.
 type IssueID = string
@@ -983,6 +1040,9 @@ type GetStatsParams struct {
 	// IGNORED when `assignee` is set: that answer computes both numbers by a route with no fast path, and it is not an error to ask.
 	SkipBlocked *bool `form:"skip_blocked,omitempty" json:"skip_blocked,omitempty"`
 }
+
+// UpdateIssueJSONRequestBody defines body for UpdateIssue for application/json ContentType.
+type UpdateIssueJSONRequestBody = UpdateIssueRequest
 
 // ClaimIssueJSONRequestBody defines body for ClaimIssue for application/json ContentType.
 type ClaimIssueJSONRequestBody = ClaimRequest
