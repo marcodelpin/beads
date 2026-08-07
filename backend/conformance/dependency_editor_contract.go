@@ -886,10 +886,13 @@ func RunDependencyEditorRoutesWispSourcedRemovalToTheWispPlane(t *testing.T, ctx
 // the target here is deliberately a real seeded issue: the refusal under test
 // is about the source alone.
 //
-// SPEC-GAP bd-yby99.9: the doc now states that the refusal HAPPENS and states
-// that it deliberately names no identity yet, so err != nil is still the whole
-// assertion — pinning a sentinel or a message here would assert more than the
-// leaf says, and the leaf says the anonymity is a gap rather than a promise.
+// The refusal's IDENTITY is asserted in BOTH POSITIONS. Alone in a request it
+// is the only thing that can have failed; mid-batch it competes with the
+// rollback of the edge already written, which is where an implementation that
+// re-raised the refusal as its own wrapper — or as the rollback's error — would
+// lose the type. The mid-batch half therefore reads the graph back at zero
+// edges as well, because a typed refusal that left half a graph behind would
+// still be the wrong answer.
 func RunDependencyEditorRefusesAGhostSource(t *testing.T, ctx context.Context, fixture DependencyEditorFixture) {
 	t.Helper()
 	source := fixture.IssuePrefix + "-ghostsrc-known"
@@ -898,15 +901,20 @@ func RunDependencyEditorRefusesAGhostSource(t *testing.T, ctx context.Context, f
 	seedDependencyEditorIssue(t, ctx, fixture, target)
 	ghost := source[:len(source)-1]
 
-	if _, err := fixture.Editor.AddDependencies(ctx, publicops.AddDependenciesRequest{
+	_, err := fixture.Editor.AddDependencies(ctx, publicops.AddDependenciesRequest{
+		Actor: "writer",
+		Edges: []publicops.DependencyEdge{{IssueID: ghost, DependsOnID: target, Type: publicops.DepBlocks}},
+	})
+	assertDependencyEndpointNotFound(t, err, "the sole edge of a request", publicops.ErrDependencySourceNotFound, ghost, target, ghost)
+
+	_, err = fixture.Editor.AddDependencies(ctx, publicops.AddDependenciesRequest{
 		Actor: "writer",
 		Edges: []publicops.DependencyEdge{
 			{IssueID: source, DependsOnID: target, Type: publicops.DepBlocks},
 			{IssueID: ghost, DependsOnID: target, Type: publicops.DepBlocks},
 		},
-	}); err == nil {
-		t.Fatalf("AddDependencies from the nonexistent source %q = nil error, want a refusal: %q exists but is a different id", ghost, source)
-	}
+	})
+	assertDependencyEndpointNotFound(t, err, "the second edge of a request", publicops.ErrDependencySourceNotFound, ghost, target, ghost)
 	assertDependencyEditorNoEdgesFrom(t, ctx, fixture, source, ghost)
 }
 
@@ -914,28 +922,61 @@ func RunDependencyEditorRefusesAGhostSource(t *testing.T, ctx context.Context, f
 // target-existence clause. Existence is checked "only where the backend can
 // see it", and the two acceptance cases above pin what that therefore does NOT
 // refuse — an "external:" reference and an issue in another repository. The
-// leaf now states the half neither of them covers outright: a target whose
-// absence the backend CAN see — same prefix, no "external:" marker, no row —
-// is refused and nothing is written. Without it the clause reads as a blanket
-// amnesty, which is the opposite of what it says.
+// leaf states the half neither of them covers outright: a target whose absence
+// the backend CAN see — same prefix, no "external:" marker, no row — is refused
+// and nothing is written. Without it the clause reads as a blanket amnesty,
+// which is the opposite of what it says.
 //
-// SPEC-GAP bd-yby99.9: the refusal's IDENTITY is still unnamed, and the leaf
-// now says so deliberately, so err != nil is all this asserts.
+// The refusal is ErrDependencyTargetNotFound and not the source's sentinel,
+// asserted in both positions for the reason the ghost-source case gives. The
+// two are separate answers, so a backend that raised one endpoint's refusal for
+// the other's absence would send a caller to fix the wrong id.
 func RunDependencyEditorRefusesAMissingLocalTarget(t *testing.T, ctx context.Context, fixture DependencyEditorFixture) {
 	t.Helper()
 	source := fixture.IssuePrefix + "-notgt-source"
+	other := fixture.IssuePrefix + "-notgt-other"
 	seedDependencyEditorIssue(t, ctx, fixture, source)
+	seedDependencyEditorIssue(t, ctx, fixture, other)
 	// Same prefix as the source, so it is neither an external reference nor
 	// another repository's id: this database is exactly where it would be.
 	missing := fixture.IssuePrefix + "-notgt-ghost"
 
-	if _, err := fixture.Editor.AddDependencies(ctx, publicops.AddDependenciesRequest{
+	_, err := fixture.Editor.AddDependencies(ctx, publicops.AddDependenciesRequest{
 		Actor: "writer",
 		Edges: []publicops.DependencyEdge{{IssueID: source, DependsOnID: missing, Type: publicops.DepBlocks}},
-	}); err == nil {
-		t.Fatalf("AddDependencies onto the missing local target %q = nil error, want a refusal", missing)
-	}
+	})
+	assertDependencyEndpointNotFound(t, err, "the sole edge of a request", publicops.ErrDependencyTargetNotFound, source, missing, missing)
 	assertDependencyEditorNoEdgesFrom(t, ctx, fixture, source)
+
+	_, err = fixture.Editor.AddDependencies(ctx, publicops.AddDependenciesRequest{
+		Actor: "writer",
+		Edges: []publicops.DependencyEdge{
+			{IssueID: source, DependsOnID: other, Type: publicops.DepBlocks},
+			{IssueID: source, DependsOnID: missing, Type: publicops.DepBlocks},
+		},
+	})
+	assertDependencyEndpointNotFound(t, err, "the second edge of a request", publicops.ErrDependencyTargetNotFound, source, missing, missing)
+	assertDependencyEditorNoEdgesFrom(t, ctx, fixture, source)
+}
+
+// assertDependencyEndpointNotFound is the shared shape of the two
+// endpoint-existence refusals: the sentinel a caller branches on, and the typed
+// value carrying which edge was refused and which of its endpoints was absent.
+// Reading the fields is the point — the message is prose and is not a promise,
+// so a caller that needs the id must be able to take it from the value.
+func assertDependencyEndpointNotFound(t *testing.T, err error, position string, sentinel error, issueID, dependsOnID, missingID string) {
+	t.Helper()
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("%s: error = %v, want errors.Is %v", position, err, sentinel)
+	}
+	var missing *publicops.DependencyEndpointNotFoundError
+	if !errors.As(err, &missing) {
+		t.Fatalf("%s: error = %v, want *DependencyEndpointNotFoundError", position, err)
+	}
+	if missing.IssueID != issueID || missing.DependsOnID != dependsOnID || missing.MissingID != missingID {
+		t.Errorf("%s: refusal = %+v, want the edge %s -> %s with %s missing",
+			position, missing, issueID, dependsOnID, missingID)
+	}
 }
 
 // dependencyEditorUnlistedType is a DependencyType deliberately absent from the

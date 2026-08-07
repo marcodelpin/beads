@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The two dependency-endpoint refusals now carry an identity** (bd-yby99.9).
+  `DependencyEditor.AddDependencies` refuses an edge whose SOURCE names no row,
+  and one whose TARGET names no row this database can see the absence of. Both
+  were "an error" and nothing more — not the same error text on every backend,
+  and impossible to tell apart from an infrastructure failure — which left the
+  role's typed-refusal vocabulary with a hole every other refusal it can raise
+  had already filled. They are now `errors.Is`-matchable as
+  `ErrDependencySourceNotFound` and `ErrDependencyTargetNotFound`, carried by a
+  `*DependencyEndpointNotFoundError` naming the refused edge and which of its
+  endpoints was absent, all three re-exported from the root package beside the
+  conflict types. What is NOT refused is unchanged: an `external:` reference
+  and another repository's id are still accepted as external targets.
+
+  The user-facing message is byte-identical on the embedded and store paths
+  (`issue <id> not found`), and the proxied-server path now renders that
+  message too instead of a raw foreign-key violation — the endpoint is
+  classified from the refusing transaction rather than parsed out of the
+  driver's prose, so the two plumbings agree on the text as well as the type.
+  The shared `DependencyEditor` contract asserts the sentinel and the typed
+  fields for each endpoint, alone in a request and mid-batch, with the
+  mid-batch half reading the graph back at zero edges. `RemoveDependency` is
+  unaffected: a removal that finds no edge is a success, not a refusal.
+
 ### Changed
 
 - **`bd search` now includes closed issues by default** (bd-t5yex). The
