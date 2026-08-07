@@ -357,7 +357,14 @@ func runGateCreateProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 			return out, "", fmt.Errorf("issue not found: %s", in.blocksID)
 		}
 
-		res, err := uw.IssueUseCase().CreateIssue(ctx, domain.CreateIssueParams{Issue: buildGateIssue(in, target.ID)}, actor)
+		gate := buildGateIssue(in, target.ID)
+		metadata, metaErr := repoMetadataForGate(in.gateType, target)
+		if metaErr != nil {
+			return out, "", fmt.Errorf("invalid GitHub repository metadata on %s: %v", target.ID, metaErr)
+		}
+		gate.Metadata = metadata
+
+		res, err := uw.IssueUseCase().CreateIssue(ctx, domain.CreateIssueParams{Issue: gate}, actor)
 		if err != nil {
 			return out, "", fmt.Errorf("creating gate: %w", err)
 		}
