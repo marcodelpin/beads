@@ -111,6 +111,44 @@ func (e *CloseOpenChildrenError) Unwrap() error {
 // already occupied. The issue and wisp tables share one ID space.
 var ErrAlreadyExists = errors.New("issue already exists")
 
+// ErrAlreadyIdentified is returned by Bootstrapper.Bootstrap when the substrate
+// already carries a workspace identity. It is its own sentinel rather than
+// ErrAlreadyExists because that one is about an occupied ISSUE ID in a shared
+// id space, and a caller that classifies the two together would answer a
+// re-init with advice about `bd update`.
+var ErrAlreadyIdentified = errors.New("workspace already identified")
+
+// AlreadyIdentifiedError reports the identity a substrate was found carrying
+// when a bootstrap was refused, read inside the same transaction that would
+// have written over it.
+//
+// It carries the pair rather than formatting it away because the two things a
+// caller does next both need the values: adopting the identity needs them, and
+// telling a COMPLETE identity apart from a half-written one — the state a
+// bootstrap that failed partway leaves on a substrate with no transactions —
+// means looking at which of the two is empty.
+type AlreadyIdentifiedError struct {
+	// Prefix is the issue prefix found, or "" when the substrate carried none.
+	Prefix string
+	// ProjectID is the project identity found, or "" when the substrate
+	// carried none.
+	ProjectID string
+}
+
+func (e *AlreadyIdentifiedError) Error() string {
+	switch {
+	case e.Prefix != "" && e.ProjectID != "":
+		return fmt.Sprintf("workspace already identified as prefix %q, project %s", e.Prefix, e.ProjectID)
+	case e.Prefix != "":
+		return fmt.Sprintf("workspace already identified as prefix %q with no project id", e.Prefix)
+	default:
+		return fmt.Sprintf("workspace already identified as project %s with no issue prefix", e.ProjectID)
+	}
+}
+
+// Unwrap makes AlreadyIdentifiedError match ErrAlreadyIdentified.
+func (e *AlreadyIdentifiedError) Unwrap() error { return ErrAlreadyIdentified }
+
 // ErrVersionMismatch is returned by a *Checked op given an ExpectedVersion that
 // no longer matches the row's current version (row_lock) — an optimistic
 // concurrency failure. Callers errors.Is it to distinguish a lost-update

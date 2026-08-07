@@ -131,9 +131,15 @@ type DeleteIssuesResult struct {
 	LabelsCount       int
 	EventsCount       int
 	ReferencesUpdated int
-	// OrphanedIssues lists external dependents left behind by a force delete
-	// (Cascade=false, Force=true), or the blocking dependents reported with the
-	// refusal error (Cascade=false, Force=false). Empty on the cascade path.
+	// OrphanedIssues is NOT POPULATED BY ANY PATH TODAY, and is kept only
+	// because `bd wisp gc --json` publishes it (always null) and this commit is
+	// not changing that command's wire shape.
+	//
+	// It once described a force-delete policy this layer never implemented: the
+	// two params that were supposed to select that policy were declared,
+	// documented in detail and never read. The policy now lives in
+	// issueops.Deleter, above the use case, and DeleteResult.Orphaned is where
+	// the answer comes out.
 	OrphanedIssues []string
 }
 
