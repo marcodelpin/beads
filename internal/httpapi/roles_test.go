@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -250,6 +251,58 @@ func (c *roleBatchCreator) createRequests() []issueops.CreateBatchRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]issueops.CreateBatchRequest(nil), c.requests...)
+}
+
+// roleDependencyEditor is the store-shaped source's graph-write role.
+//
+// It records the request each method was handed, because what is worth
+// asserting at this seam is that the WIRE's members reach the role unrewritten.
+// The graph rules themselves — the cycle gate, the hierarchy refusal, the type
+// conflict, the endpoint existence checks — belong to the conformance contract
+// over DependencyEditor, and the handler tests drive them by handing this fake
+// the typed error the role would have raised.
+type roleDependencyEditor struct {
+	addErr    error
+	removed   bool
+	removeErr error
+
+	mu      sync.Mutex
+	adds    []issueops.AddDependenciesRequest
+	removes []issueops.RemoveDependencyRequest
+}
+
+func (e *roleDependencyEditor) AddDependencies(_ context.Context, req issueops.AddDependenciesRequest) (issueops.AddDependenciesResult, error) {
+	e.mu.Lock()
+	e.adds = append(e.adds, req)
+	e.mu.Unlock()
+	if e.addErr != nil {
+		return issueops.AddDependenciesResult{}, e.addErr
+	}
+	// The role's own echo: all-or-nothing means it is either every requested
+	// edge or the call failed.
+	return issueops.AddDependenciesResult{Added: slices.Clone(req.Edges)}, nil
+}
+
+func (e *roleDependencyEditor) RemoveDependency(_ context.Context, req issueops.RemoveDependencyRequest) (issueops.RemoveDependencyResult, error) {
+	e.mu.Lock()
+	e.removes = append(e.removes, req)
+	e.mu.Unlock()
+	if e.removeErr != nil {
+		return issueops.RemoveDependencyResult{}, e.removeErr
+	}
+	return issueops.RemoveDependencyResult{Removed: e.removed}, nil
+}
+
+func (e *roleDependencyEditor) addRequests() []issueops.AddDependenciesRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]issueops.AddDependenciesRequest(nil), e.adds...)
+}
+
+func (e *roleDependencyEditor) removeRequests() []issueops.RemoveDependencyRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]issueops.RemoveDependencyRequest(nil), e.removes...)
 }
 
 // roleMemories is the store-shaped source's persistent-memory role — the one
@@ -568,6 +621,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.BatchCreator == nil {
 		cfg.BatchCreator = &roleBatchCreator{}
+	}
+	if cfg.DependencyEditor == nil {
+		cfg.DependencyEditor = &roleDependencyEditor{}
 	}
 	if cfg.Memories == nil {
 		cfg.Memories = &roleMemories{}

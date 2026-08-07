@@ -199,6 +199,10 @@ const (
 	OpGetDependencyTree = "getDependencyTree"
 	OpCountReadyWork    = "countReadyWork"
 	OpQueryIssues       = "queryIssues"
+	// OpRemoveDependency is the first WRITE to the dependency graph on this
+	// surface, behind issueops.DependencyEditor. It names one edge by both its
+	// endpoints, because an edge has two and neither alone identifies it.
+	OpRemoveDependency = "removeDependency"
 	// OpSweepIssues is one of the two DESTRUCTIVE operations on this surface:
 	// bulk clearance of closed beads from one tier, behind issueops.Sweeper.
 	OpSweepIssues = "sweepIssues"
@@ -371,6 +375,13 @@ var operationCodes = map[string][]Code{
 	// one of its values. No 404 — a search matching nothing is an empty page,
 	// because a question about a set has an answer even when the set is empty.
 	OpListMemories: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// NO 404, for a stronger version of the batch create's reason: an edge that
+	// is not there is `removed: false`, and an endpoint id that names nothing
+	// holds no edge either, so this operation probes no id's existence and has
+	// nothing it could report a miss on — listBlockingAnnotations' argument,
+	// applied to a write. No conflict code either: the removal is idempotent, so
+	// another caller having got there first is a success rather than a collision.
+	OpRemoveDependency: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 }
 
 // Result is a problem response ready to be written: the envelope plus the

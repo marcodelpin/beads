@@ -60,7 +60,9 @@ info:
       `POST /v0/beads/issues/{id}:close`,
       `POST /v0/beads/issues/{id}:reopen`, `POST /v0/beads/issues:sweep`,
       `POST /v0/beads/issues:delete`, `GET /v0/beads/config`,
-      `GET /v0/beads/config/{key}`) reject every query key the same way.
+      `GET /v0/beads/config/{key}`,
+      `POST /v0/beads/dependencies:remove`) reject every query key the same
+      way.
 
     * **Request media type.** Every operation that carries a request body
       requires `Content-Type: application/json` and refuses anything else with
@@ -2164,6 +2166,77 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/dependencies:remove:
+    post:
+      operationId: removeDependency
+      summary: Remove one dependency edge
+      description: >-
+        Removes exactly the edge the request names — source, target — and at
+        most that one edge.
+
+
+        IT IS IDEMPOTENT, and `removed: false` is a SUCCESS rather than a
+        refusal. Removing an edge twice leaves the same graph as removing it
+        once, so an agent replaying its own teardown does not have to classify
+        an error to discover it already ran. Nothing is written for it and no
+        event is recorded.
+
+
+        THERE IS NO `404` ON THIS OPERATION, deliberately. An edge that is not
+        there is `removed: false`, and an endpoint id that names nothing holds
+        no edge either, so this operation probes no id's existence and has
+        nothing it could report a miss on.
+
+
+        It is a collection-level custom method rather than a `DELETE`: an edge
+        is named by TWO endpoints, so there is no single-segment resource path
+        for a `DELETE` to address, and a `DELETE` carrying a body is the shape
+        proxies mangle. `DELETE /v0/beads/memories/{key}` is a `DELETE` for the
+        opposite reason — one named resource, no body.
+
+
+        A removal that found its edge records a `dependency_removed` entry on
+        the source's event stream, attributed to `actor`. An edge FOLLOWS ITS
+        SOURCE, so a wisp-sourced edge is removed from the unversioned plane
+        and leaves no durable history entry.
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only
+        durable effect is the single storage commit the role makes in its own
+        transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoveDependencyRequest'
+      responses:
+        '200':
+          description: >-
+            The removal ran. `removed` says whether an edge was there to
+            remove.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoveDependencyResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member, a missing or non-string
+            member, an `actor` that is empty after trimming, longer than 256
+            bytes or carrying control characters, or an endpoint id that is
+            empty or longer than storage holds. Nothing is removed.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/memories:
     get:
       operationId: listMemories
@@ -3498,6 +3571,7 @@ components:
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
+            `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
             `memories.forget`;
             it grows additively, and an operation never
@@ -4347,6 +4421,49 @@ components:
             look for a second page that can never exist.
           items:
             $ref: '#/components/schemas/Issue'
+
+    RemoveDependencyRequest:
+      type: object
+      additionalProperties: false
+      required: [actor, issue_id, depends_on_id]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
+          description: >-
+            Who is removing the edge, under `ClaimRequest.actor`'s rules and
+            for the same reasons: the server trims it, refuses an empty result,
+            anything longer than 256 BYTES, and any control character including
+            newline. It is attributed on the `dependency_removed` event a real
+            removal records, and interpolated into the storage commit message.
+        issue_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge's SOURCE — the issue that depends on the other end. An
+            EXACT canonical id: there is no fuzzy, prefix or substring
+            resolution on this surface.
+        depends_on_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge's TARGET — the issue depended upon. An exact canonical id,
+            under `issue_id`'s rule.
+
+    RemoveDependencyResponse:
+      type: object
+      required: [removed]
+      properties:
+        removed:
+          type: boolean
+          description: >-
+            True when an edge was there and is now gone. FALSE IS A SUCCESS,
+            not a refusal: it says this pair carried no such edge, which is the
+            same graph a second removal leaves. Nothing was written for it.
 
     ClaimRequest:
       type: object

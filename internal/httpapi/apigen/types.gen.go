@@ -243,7 +243,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -553,6 +553,24 @@ type RememberedMemory struct {
 
 	// Value The stored content, echoed verbatim. Always present, and never withheld — this plane has no redaction; see the operation description.
 	Value string `json:"value"`
+}
+
+// RemoveDependencyRequest defines model for RemoveDependencyRequest.
+type RemoveDependencyRequest struct {
+	// Actor Who is removing the edge, under `ClaimRequest.actor`'s rules and for the same reasons: the server trims it, refuses an empty result, anything longer than 256 BYTES, and any control character including newline. It is attributed on the `dependency_removed` event a real removal records, and interpolated into the storage commit message.
+	Actor string `json:"actor"`
+
+	// DependsOnId The edge's TARGET — the issue depended upon. An exact canonical id, under `issue_id`'s rule.
+	DependsOnId string `json:"depends_on_id"`
+
+	// IssueId The edge's SOURCE — the issue that depends on the other end. An EXACT canonical id: there is no fuzzy, prefix or substring resolution on this surface.
+	IssueId string `json:"issue_id"`
+}
+
+// RemoveDependencyResponse defines model for RemoveDependencyResponse.
+type RemoveDependencyResponse struct {
+	// Removed True when an edge was there and is now gone. FALSE IS A SUCCESS, not a refusal: it says this pair carried no such edge, which is the same graph a second removal leaves. Nothing was written for it.
+	Removed bool `json:"removed"`
 }
 
 // ReopenIssueRequest defines model for ReopenIssueRequest.
@@ -1040,6 +1058,9 @@ type GetStatsParams struct {
 	// IGNORED when `assignee` is set: that answer computes both numbers by a route with no fast path, and it is not an error to ask.
 	SkipBlocked *bool `form:"skip_blocked,omitempty" json:"skip_blocked,omitempty"`
 }
+
+// RemoveDependencyJSONRequestBody defines body for RemoveDependency for application/json ContentType.
+type RemoveDependencyJSONRequestBody = RemoveDependencyRequest
 
 // UpdateIssueJSONRequestBody defines body for UpdateIssue for application/json ContentType.
 type UpdateIssueJSONRequestBody = UpdateIssueRequest

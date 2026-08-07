@@ -92,6 +92,12 @@ func RoleFiresHooks(role any) bool {
 	// because it carries four verbs rather than one.
 	case *hookIssueOperations:
 		return true
+	// The dependency editor fires the update hook once per DISTINCT SOURCE
+	// ISSUE it edits (hook_dependency_editor.go), so one batch runs the
+	// workspace's script several times — the same value to refuse, for the same
+	// reason, and the one that multiplies fastest.
+	case *hookDependencyEditor:
+		return true
 	}
 	return false
 }
