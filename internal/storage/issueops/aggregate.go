@@ -138,14 +138,19 @@ func ValidateScalarUpdates(ctx context.Context, tx DBTX, updates map[string]inte
 	return nil
 }
 
-// AuthorizeAssigneeTransfer protects an active assignment from unguarded transfer.
-func AuthorizeAssigneeTransfer(ctx context.Context, tx DBTX, before *types.Issue, request publicops.UpdateRequest) error {
+// AuthorizeAssigneeTransferWithPools is the assignee-transfer fence itself,
+// with the pool aliases supplied rather than read. It is the single source of
+// the predicate: the DBTX path below and the unit-of-work backend, which
+// reaches config through a use case rather than a transaction, both evaluate
+// it, so the two cannot drift into disagreeing about which transfers are
+// fenced.
+//
+// Passing nil pools answers every question except pool membership, so a caller
+// that wants the config read only when it matters calls with nil first and
+// re-evaluates with the loaded aliases on refusal.
+func AuthorizeAssigneeTransferWithPools(before *types.Issue, request publicops.UpdateRequest, pools []string) error {
 	if !request.Patch.Assignee.Set || request.Patch.Assignee.Value == before.Assignee || request.ExpectedAssignee != nil || request.ForceAssigneeTransfer || before.Status != types.StatusInProgress || before.Assignee == "" || before.Assignee == request.Actor {
 		return nil
-	}
-	pools, err := ClaimPoolAliasesInTx(ctx, tx)
-	if err != nil {
-		return err
 	}
 	for _, pool := range pools {
 		if pool == before.Assignee {
@@ -153,6 +158,18 @@ func AuthorizeAssigneeTransfer(ctx context.Context, tx DBTX, before *types.Issue
 		}
 	}
 	return fmt.Errorf("%w: issue %s is assigned to %q", storage.ErrAlreadyClaimed, before.ID, before.Assignee)
+}
+
+// AuthorizeAssigneeTransfer protects an active assignment from unguarded transfer.
+func AuthorizeAssigneeTransfer(ctx context.Context, tx DBTX, before *types.Issue, request publicops.UpdateRequest) error {
+	if err := AuthorizeAssigneeTransferWithPools(before, request, nil); err == nil {
+		return nil
+	}
+	pools, err := ClaimPoolAliasesInTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	return AuthorizeAssigneeTransferWithPools(before, request, pools)
 }
 
 // ApplyMetadataPatch returns the canonical metadata value and whether it changes.
@@ -267,10 +284,30 @@ func ApplyLabelPatch(ctx context.Context, tx DBTX, current *types.Issue, patch p
 			target[label] = struct{}{}
 		}
 	}
+	// An empty-string entry is DROPPED rather than written or refused
+	// (bd-yby99.29). A label row carrying '' is junk that renders as nothing
+	// and matches nothing, so the two useful answers were dropping it and
+	// refusing it; dropping keeps a stray empty entry from failing an
+	// otherwise-good multi-label edit.
+	//
+	// Skipping here rather than at the insert is what makes it a no-op instead
+	// of a silent partial write: an Add of only '' leaves target equal to
+	// existing, so the sameStringSet check below reports Changed false and
+	// writes nothing at all.
+	//
+	// Entries already in existing are deliberately untouched. A legacy '' row
+	// survives an Add/Remove patch and is cleared by a Replace that omits it,
+	// which is the ordinary set semantics rather than a migration.
 	for _, label := range patch.Replace.Value {
+		if label == "" {
+			continue
+		}
 		target[label] = struct{}{}
 	}
 	for _, label := range patch.Add {
+		if label == "" {
+			continue
+		}
 		target[label] = struct{}{}
 	}
 	for _, label := range patch.Remove {

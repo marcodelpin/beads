@@ -31,11 +31,25 @@ func IsAllowedUpdateField(key string) bool {
 	return allowed[key]
 }
 
-// ManageClosedAt auto-sets closed_at when closing or clears it when reopening.
+// ManageClosedAt brings the close-lifecycle columns along with a status
+// transition, so a generic update that crosses into closed lands the same row
+// `bd close` would and a reopen leaves nothing of the old close behind.
+//
+// closeIssueInTx writes closed_at, close_reason and closed_by_session on EVERY
+// close, including the empty reason and session a caller that supplied neither
+// produces. The update funnels write a column only when the caller names its
+// key, so without these defaults a generic close inherits whatever the previous
+// close left: a re-close after a generic reopen keeps the old session and
+// `bd show` reports the new close as the old session's work (ga-kjkv1). Each
+// default is suppressed by its own explicit key, so a caller that names the
+// column still wins — the CLI's own closed_by_session pass-through included.
+//
+// The reopen branch clears all three, mirroring ReopenIssueInTx. Both branches
+// stay keyed on the LITERAL closed status; category-aware reopen keying is
+// ga-ktn9pe.4.15.
 func ManageClosedAt(oldIssue *types.Issue, updates map[string]interface{}, setClauses []string, args []interface{}) ([]string, []interface{}) {
 	statusVal, hasStatus := updates["status"]
-	_, hasExplicitClosedAt := updates["closed_at"]
-	if hasExplicitClosedAt || !hasStatus {
+	if !hasStatus {
 		return setClauses, args
 	}
 
@@ -49,16 +63,99 @@ func ManageClosedAt(oldIssue *types.Issue, updates map[string]interface{}, setCl
 		return setClauses, args
 	}
 
+	// Defaults are SET-clause appends, never inserts into updates: the map
+	// drives no-op detection, the event payload, lease management and the
+	// blocked recompute, none of which should see a column the caller did not
+	// ask for.
+	appendDefault := func(column string, value interface{}) {
+		if _, explicit := updates[column]; explicit {
+			return
+		}
+		setClauses = append(setClauses, column+" = ?")
+		args = append(args, value)
+	}
+
 	if newStatus == string(types.StatusClosed) {
-		now := time.Now().UTC()
-		setClauses = append(setClauses, "closed_at = ?")
-		args = append(args, now)
+		appendDefault("closed_at", time.Now().UTC())
+		appendDefault("close_reason", "")
+		appendDefault("closed_by_session", "")
 	} else if oldIssue.Status == types.StatusClosed {
-		setClauses = append(setClauses, "closed_at = ?", "close_reason = ?")
-		args = append(args, nil, "")
+		appendDefault("closed_at", nil)
+		appendDefault("close_reason", "")
+		appendDefault("closed_by_session", "")
 	}
 
 	return setClauses, args
+}
+
+// ValidateClosedAtCoherence refuses an explicit closed_at write that would
+// leave the row violating the closed-iff-closed_at invariant
+// types.Issue.Validate enforces: a closed issue has a closed_at, a non-closed
+// issue has none. It reads the status the update actually lands — the update's
+// own status when it carries one, otherwise the row's current status, which
+// both funnels read inside the mutation transaction.
+//
+// The key stays allowlisted, so every coherent standalone write still works:
+// stamping closed_at on a row that is already closed is the repair path for
+// rows a pre-invariant close left blank, an external-sync or backfill caller
+// can land status and closed_at together, and clearing closed_at on a row that
+// is or becomes non-closed is the reverse repair. What is refused is the half
+// that mints a row no reader can trust — stamping closed_at on a row that stays
+// open, or clearing it from a row that stays closed.
+//
+// This is a coherence invariant rather than close policy, so the force override
+// that waives the open-children and blocker refusals does not waive it, exactly
+// as force never waives the version CAS.
+//
+// Both funnels must call this BEFORE DiscardNoopIssueUpdates. The guard judges
+// the caller's intent, and a closed_at equal to the stored value is still a
+// request to keep the column; the no-op filter drops it as an unchanged value,
+// which would hide exactly the incoherent halves this refuses and let
+// ManageClosedAt's reopen branch clear the column instead.
+func ValidateClosedAtCoherence(oldIssue *types.Issue, updates map[string]interface{}) error {
+	rawClosedAt, hasClosedAt := updates["closed_at"]
+	if !hasClosedAt {
+		return nil
+	}
+
+	landedStatus := oldIssue.Status
+	if rawStatus, hasStatus := updates["status"]; hasStatus {
+		switch value := rawStatus.(type) {
+		case string:
+			landedStatus = types.Status(value)
+		case types.Status:
+			landedStatus = value
+		default:
+			// A status Go type nobody can read is already CrossesIntoDoneCategoryInTx's
+			// refusal in both funnels; leave that the single message for it.
+			return nil
+		}
+	}
+
+	clearing := clearsClosedAt(rawClosedAt)
+	switch {
+	case landedStatus == types.StatusClosed && clearing:
+		return fmt.Errorf("%w: refusing to clear closed_at on %s: its status stays %q, and a closed issue must keep a closed_at; reopen it with a status update instead",
+			storage.ErrValidation, oldIssue.ID, landedStatus)
+	case landedStatus != types.StatusClosed && !clearing:
+		return fmt.Errorf("%w: refusing to set closed_at on %s: its status stays %q, and only a closed issue may carry a closed_at; set status=closed in the same update to close it",
+			storage.ErrValidation, oldIssue.ID, landedStatus)
+	}
+	return nil
+}
+
+// clearsClosedAt reports whether an allowlisted closed_at value blanks the
+// column. It accepts the same nil shapes matchesTimePointer treats as empty, so
+// the guard and the no-op filter agree on what "no closed_at" means.
+func clearsClosedAt(value interface{}) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case *time.Time:
+		return typed == nil
+	default:
+		return false
+	}
 }
 
 // ManageStartedAt auto-sets started_at when transitioning to in_progress.
@@ -171,6 +268,51 @@ func DetermineEventType(oldIssue *types.Issue, updates map[string]interface{}) t
 	return types.EventStatusChanged
 }
 
+// CrossesIntoDoneCategoryInTx reports whether updates move oldStatus from
+// outside the done category into it. The categories are resolved from the same
+// transaction that will perform the write, so a custom status configured as
+// done counts exactly as the built-in closed status does.
+//
+// It is false without a status update, and for a move that starts in the done
+// category — a done-to-done restatement is not a crossing, and reopening is the
+// operation that leaves.
+//
+// A status value whose Go type cannot carry a status is a validation error, not
+// a false. Both write funnels ask this question to decide whether close policy
+// applies, so answering "no crossing" for a value nobody can read would let an
+// in-process caller that got the transport wrong land status='closed' with the
+// policy gate skipped — on an issue with open children, no less. Refusing here
+// gives a mis-typed status the same fail-loud handling the mis-typed override
+// key already gets (see PopForceClosePolicy).
+func CrossesIntoDoneCategoryInTx(ctx context.Context, tx DBTX, oldStatus types.Status, updates map[string]interface{}) (bool, error) {
+	rawStatus, hasStatus := updates["status"]
+	if !hasStatus {
+		return false, nil
+	}
+	var newStatus types.Status
+	switch value := rawStatus.(type) {
+	case string:
+		newStatus = types.Status(value)
+	case types.Status:
+		newStatus = value
+	default:
+		return false, fmt.Errorf("%w: status value of type %T is neither a string nor a types.Status", storage.ErrValidation, rawStatus)
+	}
+
+	newCategory, err := ReopenCategoryInTx(ctx, tx, newStatus)
+	if err != nil {
+		return false, err
+	}
+	if newCategory != types.CategoryDone {
+		return false, nil
+	}
+	oldCategory, err := ReopenCategoryInTx(ctx, tx, oldStatus)
+	if err != nil {
+		return false, err
+	}
+	return oldCategory != types.CategoryDone, nil
+}
+
 // UpdateResult holds the result of an UpdateIssueInTx call.
 type UpdateResult struct {
 	OldIssue         *types.Issue
@@ -198,6 +340,11 @@ func UpdateIssueWithoutEventInTx(ctx context.Context, tx DBTX, id string, update
 
 func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string]interface{}, actor string, recordEvent bool) (*UpdateResult, error) {
 	updates = cloneUpdateFields(updates)
+	// Pop the override before anything reads the map as a set of columns. It
+	// has to come out ahead of the no-op filter too: the filter keeps every key
+	// it does not recognize, so a surviving override would reach the field
+	// allowlist and be refused by name.
+	forceClosePolicy := PopForceClosePolicy(updates)
 
 	// Route to correct table.
 	isWisp := IsActiveWispInTx(ctx, tx, id)
@@ -217,12 +364,46 @@ func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string
 	if err != nil {
 		return nil, err
 	}
+
+	// An explicit closed_at must agree with the status the update lands. The
+	// guard reads the caller's INTENT, so it runs on the merge-resolved map
+	// BEFORE the no-op filter: a closed_at that happens to equal the stored
+	// value is still a request to keep the column, and letting the filter drop
+	// it first would send that request down ManageClosedAt's reopen branch —
+	// clearing the column instead of refusing the write, and answering two
+	// identical intents differently over a nanosecond of stamp. Merge-op
+	// resolution only ever writes metadata and notes, so the key the guard sees
+	// is always one the caller supplied. It also runs ahead of the close-policy
+	// gate so a refused write never even touches the dependency coordination
+	// cell, and it reads the row the same transaction just read, so no
+	// concurrent status change can slip between.
+	if err := ValidateClosedAtCoherence(oldIssue, updates); err != nil {
+		return nil, err
+	}
+
 	updates, err = DiscardNoopIssueUpdates(oldIssue, updates)
 	if err != nil {
 		return nil, err
 	}
 	if len(updates) == 0 {
 		return &UpdateResult{OldIssue: oldIssue, IsWisp: isWisp, Changed: false}, nil
+	}
+
+	// A status update that crosses into the done category is a close by another
+	// name, so it answers to close policy. Running after the no-op filter keeps
+	// a done-to-done restatement policy-free, and running after the callers'
+	// version and assignee preconditions keeps force away from those: it
+	// bypasses the two close refusals and nothing else, exactly as it does for
+	// `bd close`. A refusal returns here, before any write, and aborts the
+	// caller's transaction.
+	crossing, err := CrossesIntoDoneCategoryInTx(ctx, tx, oldIssue.Status, updates)
+	if err != nil {
+		return nil, err
+	}
+	if crossing {
+		if _, err := EnforceClosePolicyInTx(ctx, tx, id, forceClosePolicy); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := ValidateScalarUpdates(ctx, tx, updates); err != nil {
@@ -377,6 +558,36 @@ const (
 	// (bd update --append-notes). Value: string.
 	OpAppendNotes = "append_notes"
 )
+
+// OpForceClosePolicy carries a close-policy override into a generic update
+// (bd update --force). Value: bool. It is not a merge operation and not a
+// column — the write funnels pop it before validating fields, so it never
+// reaches SQL.
+//
+// It rides the update map, like the merge operations, so adding the override
+// breaks no interface. That choice has a deliberate failure mode: the field
+// allowlists do not name this key, so an occurrence that reaches field
+// validation unpopped is refused by name. A caller that misspells the override,
+// or a write path that forgets to pop it, fails loudly instead of quietly
+// running the update with force read as off.
+const OpForceClosePolicy = "_force_close_policy"
+
+// PopForceClosePolicy removes the close-policy override from updates and
+// reports whether it asked for force. A value that is not a bool is left in
+// place on purpose: it cannot be read as an intent, and leaving it lets the
+// field allowlist refuse it by name.
+func PopForceClosePolicy(updates map[string]interface{}) bool {
+	raw, present := updates[OpForceClosePolicy]
+	if !present {
+		return false
+	}
+	force, isBool := raw.(bool)
+	if !isBool {
+		return false
+	}
+	delete(updates, OpForceClosePolicy)
+	return force
+}
 
 // HasMergeOps reports whether the update map carries any read-merge-write
 // operation key. Updates with merge ops must resolve those ops against the row

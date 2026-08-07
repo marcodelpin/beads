@@ -22,6 +22,13 @@ type issueOperations struct {
 	provider UnitOfWorkProvider
 }
 
+// IssueLifecycleSource is the write-side twin of IssueReaderSource: the
+// accessor a unit-of-work provider offers so a consumer holding a provider by
+// interface asks for the role instead of reaching for a constructor.
+type IssueLifecycleSource interface {
+	IssueLifecycle() (publicops.Lifecycle, error)
+}
+
 // IssueLifecycle returns the guarded issue-lifecycle surface for this
 // provider. A unit of work is not a special case: callers reach the verbs
 // through the same accessor they use on a store.
@@ -95,7 +102,7 @@ func (o *issueOperations) Create(ctx context.Context, request publicops.CreateRe
 		if err != nil {
 			return publicops.CreateResult{}, "", storageissueops.ClassifyPublicCreateError(err)
 		}
-		issue, err := hydrateIssueOperation(ctx, uw, created.Issue, true)
+		issue, err := hydrateIssueOperation(ctx, uw, created.Issue, true, false)
 		if err != nil {
 			return publicops.CreateResult{}, "", err
 		}
@@ -132,11 +139,11 @@ func createParams(request publicops.CreateRequest) (domain.CreateIssueParams, bo
 	return params, issue.Ephemeral || issue.NoHistory, nil
 }
 
-func hydrateIssueOperation(ctx context.Context, uw UnitOfWork, issue *types.Issue, includeComments bool) (*types.Issue, error) {
+func hydrateIssueOperation(ctx context.Context, uw UnitOfWork, issue *types.Issue, includeComments, issuePlaneOnly bool) (*types.Issue, error) {
 	if issue == nil {
 		return nil, fmt.Errorf("hydrate issue operation: created issue is nil")
 	}
-	stored, useWisp, err := operationIssue(ctx, uw, issue.ID)
+	stored, useWisp, err := operationIssue(ctx, uw, issue.ID, issuePlaneOnly)
 	if err != nil {
 		return nil, fmt.Errorf("hydrate issue operation: %w", err)
 	}
@@ -201,25 +208,73 @@ func (o *issueOperations) Update(ctx context.Context, request publicops.UpdateRe
 		if err != nil {
 			return publicops.UpdateResult{}, "", validationError(err)
 		}
-		before, _, err := operationIssue(ctx, uw, attempt.IssueID)
+		before, _, err := operationIssue(ctx, uw, attempt.IssueID, attempt.IssuePlaneOnly)
 		if err != nil {
 			return publicops.UpdateResult{}, "", err
 		}
-		before, err = hydrateIssueOperation(ctx, uw, before, false)
+		before, err = hydrateIssueOperation(ctx, uw, before, false, attempt.IssuePlaneOnly)
 		if err != nil {
 			return publicops.UpdateResult{}, "", err
+		}
+		// The assignee fence belongs here, over the same-transaction row the
+		// update is about to mutate, and not in ApplyUpdate: callers build their
+		// own UpdateSpec, which carries no override, so a fence down there
+		// silently ignores a caller's --force. A stale compare-and-set
+		// precondition outranks the fence on the other backends, which check
+		// version and status before authorizing, so when one is stale the fence
+		// stands down and ApplyUpdate reports the mismatch instead.
+		if updatePreconditionsHold(attempt, before) {
+			if err := authorizeAssigneeTransfer(ctx, uw, before, attempt); err != nil {
+				return publicops.UpdateResult{}, "", err
+			}
 		}
 		claimChanged := attempt.Claim && (before.Status != types.StatusInProgress || before.Assignee != attempt.Actor)
 		updated, err := uw.IssueUseCase().ApplyUpdate(ctx, attempt.IssueID, spec, attempt.Actor)
 		if err != nil {
 			return publicops.UpdateResult{}, "", err
 		}
-		issue, err := hydrateIssueOperation(ctx, uw, updated, false)
+		issue, err := hydrateIssueOperation(ctx, uw, updated, false, attempt.IssuePlaneOnly)
 		if err != nil {
 			return publicops.UpdateResult{}, "", err
 		}
-		return publicops.UpdateResult{Issue: issue, Changed: claimChanged || !semanticIssueEqual(before, issue)}, "update issue", nil
+		changed := claimChanged || !semanticIssueEqual(before, issue)
+		return publicops.UpdateResult{Issue: issue, Changed: changed}, updateHistoryEntry(attempt, changed), nil
 	})
+}
+
+// updatePreconditionsHold reports whether request's compare-and-set
+// preconditions match before — that is, whether ApplyUpdate would get past its
+// own guards, leaving the assignee fence as the operative refusal.
+// ExpectedAssignee needs no entry here: the fence already stands down whenever
+// a caller supplies one.
+func updatePreconditionsHold(request publicops.UpdateRequest, before *types.Issue) bool {
+	if request.ExpectedVersion != nil && *request.ExpectedVersion != before.RowVersion {
+		return false
+	}
+	if request.ExpectedStatus != nil && *request.ExpectedStatus != before.Status {
+		return false
+	}
+	return true
+}
+
+// authorizeAssigneeTransfer applies the shared assignee-transfer fence to an
+// update running in this unit of work. It is the sibling of the
+// issueops.AuthorizeAssigneeTransfer call in ExecuteUpdate — the same predicate
+// and the same refusal — reached through the config use case because a unit of
+// work has no transaction handle to read claim.pools from. The read only
+// happens once the transfer is otherwise fenced, and its failure propagates
+// rather than being read as "no pools configured": treating an unreadable
+// config as an empty alias set would refuse pool work the fence was never meant
+// to touch.
+func authorizeAssigneeTransfer(ctx context.Context, uw UnitOfWork, before *types.Issue, request publicops.UpdateRequest) error {
+	if err := storageissueops.AuthorizeAssigneeTransferWithPools(before, request, nil); err == nil {
+		return nil
+	}
+	raw, err := uw.ConfigUseCase().GetConfig(ctx, "claim.pools")
+	if err != nil {
+		return fmt.Errorf("authorize assignee transfer %s: read claim pools: %w", request.IssueID, err)
+	}
+	return storageissueops.AuthorizeAssigneeTransferWithPools(before, request, storageissueops.ParseClaimPools(raw))
 }
 
 func updateSpec(request publicops.UpdateRequest) (domain.UpdateSpec, error) {
@@ -272,6 +327,11 @@ func updateSpec(request publicops.UpdateRequest) (domain.UpdateSpec, error) {
 		if len(patch.Metadata.Unset) > 0 {
 			fields[storageissueops.OpUnsetMetadata] = patch.Metadata.Unset
 		}
+	}
+	// Spelled only alongside a status change, matching the embedded backend:
+	// without one the funnel has no crossing to judge.
+	if request.ForceClosePolicy && patch.Status.Set {
+		fields[storageissueops.OpForceClosePolicy] = true
 	}
 	var persistence *types.PersistenceMode
 	if patch.Persistence.Set {
@@ -327,7 +387,7 @@ func (o *issueOperations) Close(ctx context.Context, request publicops.CloseRequ
 	}
 	return RunTxResult(ctx, o.provider, func(ctx context.Context, uw UnitOfWork) (publicops.CloseResult, string, error) {
 		attempt := storageissueops.CloneCloseRequest(snapshot)
-		issue, useWisp, err := operationIssue(ctx, uw, attempt.IssueID)
+		issue, useWisp, err := operationIssue(ctx, uw, attempt.IssueID, false)
 		if err != nil {
 			return publicops.CloseResult{}, "", err
 		}
@@ -336,7 +396,7 @@ func (o *issueOperations) Close(ctx context.Context, request publicops.CloseRequ
 				return publicops.CloseResult{}, "", err
 			}
 		}
-		before, err := hydrateIssueOperation(ctx, uw, issue, false)
+		before, err := hydrateIssueOperation(ctx, uw, issue, false, false)
 		if err != nil {
 			return publicops.CloseResult{}, "", err
 		}
@@ -352,11 +412,12 @@ func (o *issueOperations) Close(ctx context.Context, request publicops.CloseRequ
 		if closed.Issue != nil {
 			issue = closed.Issue
 		}
-		hydrated, err := hydrateIssueOperation(ctx, uw, issue, false)
+		hydrated, err := hydrateIssueOperation(ctx, uw, issue, false, false)
 		if err != nil {
 			return publicops.CloseResult{}, "", err
 		}
-		return publicops.CloseResult{Issue: hydrated, Changed: !semanticIssueEqual(before, hydrated), OpenChildren: closed.OpenChildren}, "close issue", nil
+		return publicops.CloseResult{Issue: hydrated, Changed: !semanticIssueEqual(before, hydrated), OpenChildren: closed.OpenChildren},
+			"close issue", nil
 	})
 }
 
@@ -368,7 +429,7 @@ func (o *issueOperations) Reopen(ctx context.Context, request publicops.ReopenRe
 	}
 	return RunTxResult(ctx, o.provider, func(ctx context.Context, uw UnitOfWork) (publicops.ReopenResult, string, error) {
 		attempt := storageissueops.CloneReopenRequest(snapshot)
-		issue, useWisp, err := operationIssue(ctx, uw, attempt.IssueID)
+		issue, useWisp, err := operationIssue(ctx, uw, attempt.IssueID, false)
 		if err != nil {
 			return publicops.ReopenResult{}, "", err
 		}
@@ -377,7 +438,7 @@ func (o *issueOperations) Reopen(ctx context.Context, request publicops.ReopenRe
 				return publicops.ReopenResult{}, "", err
 			}
 		}
-		before, err := hydrateIssueOperation(ctx, uw, issue, false)
+		before, err := hydrateIssueOperation(ctx, uw, issue, false, false)
 		if err != nil {
 			return publicops.ReopenResult{}, "", err
 		}
@@ -393,23 +454,45 @@ func (o *issueOperations) Reopen(ctx context.Context, request publicops.ReopenRe
 		if reopened.Issue != nil {
 			issue = reopened.Issue
 		}
-		hydrated, err := hydrateIssueOperation(ctx, uw, issue, false)
+		hydrated, err := hydrateIssueOperation(ctx, uw, issue, false, false)
 		if err != nil {
 			return publicops.ReopenResult{}, "", err
 		}
-		return publicops.ReopenResult{Issue: hydrated, Changed: !semanticIssueEqual(before, hydrated)}, "reopen issue", nil
+		return publicops.ReopenResult{Issue: hydrated, Changed: !semanticIssueEqual(before, hydrated)},
+			storageissueops.HistoryEntry(attempt.Provenance, "reopen issue"), nil
 	})
 }
 
-func operationIssue(ctx context.Context, uw UnitOfWork, id string) (*types.Issue, bool, error) {
-	issue, err := uw.IssueUseCase().GetWisp(ctx, id)
-	if err == nil && issue != nil {
-		return issue, true, nil
+// updateHistoryEntry names the history entry an update records, or "" for the
+// one update that records none.
+//
+// A request that asks for a CLAIM AND NOTHING ELSE and changed nothing wrote
+// nothing: the compare-and-set matched no row, and the idempotent branch it
+// took grants no lease and records no event. Naming an entry for it would let a
+// polling caller mint one per call. Every other update names one even when its
+// post-state compares equal, because a same-value write still touches the row.
+func updateHistoryEntry(request publicops.UpdateRequest, changed bool) string {
+	if !changed && request.Claim && reflect.DeepEqual(request.Patch, publicops.IssuePatch{}) {
+		return ""
 	}
-	if err != nil && !errors.Is(err, publicops.ErrNotFound) && !dberrors.IsNoRows(err) {
-		return nil, false, fmt.Errorf("read wisp %s: %w", id, err)
+	return storageissueops.HistoryEntry(request.Provenance, "update issue")
+}
+
+// operationIssue resolves id to the row an operation is about. Both planes are
+// searched unless issuePlaneOnly restricts it, in which case a wisp id is a
+// miss rather than an ephemeral row to operate on. Every call runs inside the
+// operation's own transaction.
+func operationIssue(ctx context.Context, uw UnitOfWork, id string, issuePlaneOnly bool) (*types.Issue, bool, error) {
+	if !issuePlaneOnly {
+		issue, err := uw.IssueUseCase().GetWisp(ctx, id)
+		if err == nil && issue != nil {
+			return issue, true, nil
+		}
+		if err != nil && !errors.Is(err, publicops.ErrNotFound) && !dberrors.IsNoRows(err) {
+			return nil, false, fmt.Errorf("read wisp %s: %w", id, err)
+		}
 	}
-	issue, err = uw.IssueUseCase().GetIssue(ctx, id)
+	issue, err := uw.IssueUseCase().GetIssue(ctx, id)
 	if err != nil {
 		if errors.Is(err, publicops.ErrNotFound) || dberrors.IsNoRows(err) {
 			return nil, false, fmt.Errorf("%w: issue %s", publicops.ErrNotFound, id)

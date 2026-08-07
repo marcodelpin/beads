@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,47 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
+// commandIssueUpdater is the lifecycle capability the update command needs.
+// issueops.Lifecycle satisfies it without an adapter.
+type commandIssueUpdater interface {
+	Update(context.Context, issueops.UpdateRequest) (issueops.UpdateResult, error)
+}
+
+// commandUpdateMutation contains the command-derived values for one lifecycle
+// update. Both routes of `bd update` fill it in: the direct one below, and the
+// proxied-server claim path in update_proxied_server.go.
+type commandUpdateMutation struct {
+	actor            string
+	issueID          string
+	patch            issueops.IssuePatch
+	claim            bool
+	force            bool
+	expectedAssignee *string
+	expectedStatus   *issueops.Status
+	// provenance names the history entry the write records. Empty takes the
+	// backend's default, which is what the direct route wants; the proxied
+	// route spells the message it has always written.
+	provenance string
+}
+
+// runCommandUpdateMutation maps a command update into its lifecycle request and
+// returns the lifecycle result unchanged. It is the ONE place the command's
+// flag semantics become a request — in particular the one --force that means
+// two overrides, whose assignee half only applies to an assignee edit.
+func runCommandUpdateMutation(ctx context.Context, updater commandIssueUpdater, mutation commandUpdateMutation) (issueops.UpdateResult, error) {
+	return updater.Update(ctx, issueops.UpdateRequest{
+		Actor:                 mutation.actor,
+		IssueID:               mutation.issueID,
+		Patch:                 mutation.patch,
+		Claim:                 mutation.claim,
+		ForceAssigneeTransfer: mutation.force && mutation.patch.Assignee.Set,
+		ForceClosePolicy:      mutation.force,
+		ExpectedAssignee:      mutation.expectedAssignee,
+		ExpectedStatus:        mutation.expectedStatus,
+		Provenance:            mutation.provenance,
+	})
+}
+
 var updateCmd = &cobra.Command{
 	Use:     "update [id...]",
 	GroupID: "issues",
@@ -29,7 +71,11 @@ var updateCmd = &cobra.Command{
 	Long: `Update one or more issues.
 
 If no issue ID is provided, updates the last touched issue (from most recent
-create, update, show, or close operation).
+create, update, show, or close operation). This fallback only applies in
+interactive sessions (stdin is a terminal); in scripts and agent sessions a
+missing ID is an error, so a command built from an empty variable cannot
+silently mutate an unrelated issue. Set BD_LAST_TOUCHED_FALLBACK=1 to allow
+the fallback anywhere, or =0 to disable it entirely.
 
 Updates are applied per issue ID, not atomically across IDs: when some IDs
 fail, the remaining issues are still updated, every failed ID is reported on
@@ -39,7 +85,17 @@ Exit codes: 1 for general failures; 13 when every failure is a stale
 --if-assignee/--if-status guard (the precondition no longer held, nothing was
 written — another actor won the race, so retrying the same guard is
 pointless).`,
-	Args:          cobra.MinimumNArgs(0),
+	// The non-interactive no-ID refusal lives in argument validation, which
+	// cobra runs before root's PersistentPreRunE — so a scripted `bd update
+	// $ID ...` with an empty $ID fails fast, before the pre-run hooks can
+	// open the store, run a version-bump migration, or auto-import JSONL
+	// (bd-m00pb). The interactive fallback itself is resolved in RunE.
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 && !AllowLastTouchedFallback() {
+			return HandleErrorRespectJSON("no issue ID provided (the last-touched fallback only applies in interactive sessions; pass an explicit issue ID or set BD_LAST_TOUCHED_FALLBACK=1)")
+		}
+		return nil
+	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -56,7 +112,8 @@ pointless).`,
 			return runUpdateProxiedServer(cmd, rootCtx, args)
 		}
 
-		// If no IDs provided, use last touched issue
+		// If no IDs provided, use last touched issue (interactive only;
+		// the non-interactive case was already refused in Args validation)
 		if len(args) == 0 {
 			lastTouched := GetLastTouchedID()
 			if lastTouched == "" {
@@ -240,7 +297,7 @@ pointless).`,
 				inPast := t.Before(time.Now())
 				if inPast && !jsonOutput {
 					fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
-						ui.RenderWarn("!"), t.Format("2006-01-02 15:04"))
+						ui.RenderWarn("!"), t.Local().Format("2006-01-02 15:04"))
 					fmt.Fprintf(os.Stderr, "  Did you mean a future date? Use --defer=+1h or --defer=tomorrow\n")
 				}
 				updates["defer_until"] = t
@@ -467,14 +524,19 @@ pointless).`,
 			// Guards ride the operation itself: a stale assignee/status refuses
 			// atomically with a typed mismatch error and MUST surface as a
 			// non-zero exit — never collapse it to success (finding #10).
-			updateResult, updateErr := ops.Update(opsCtx, issueops.UpdateRequest{
-				Actor:                 actor,
-				IssueID:               result.ResolvedID,
-				Patch:                 patch,
-				Claim:                 claimFlag,
-				ForceAssigneeTransfer: forceFlag,
-				ExpectedAssignee:      ifAssignee,
-				ExpectedStatus:        expectedStatus,
+			// One --force, two overrides. The assignee half only applies to an
+			// assignee edit — asserting it without one is an invalid request,
+			// which is why it is conditioned here rather than passed straight
+			// through: `--force -s closed` is now a legitimate way to ask for
+			// the close-policy half alone.
+			updateResult, updateErr := runCommandUpdateMutation(opsCtx, ops, commandUpdateMutation{
+				actor:            actor,
+				issueID:          result.ResolvedID,
+				patch:            patch,
+				claim:            claimFlag,
+				force:            forceFlag,
+				expectedAssignee: ifAssignee,
+				expectedStatus:   expectedStatus,
 			})
 			if updateErr != nil {
 				fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", id, updateErr)
@@ -901,8 +963,8 @@ func init() {
 	updateCmd.Flags().StringSlice("set-labels", nil, "Set labels, replacing all existing (repeatable)")
 	updateCmd.Flags().String("parent", "", "New parent issue ID (reparents the issue, use empty string to remove parent)")
 	updateCmd.Flags().Bool("claim", false, "Atomically claim the issue (sets assignee to you, status to in_progress; idempotent if already claimed by you; issues assigned to a pool alias listed in the claim.pools config are claimable too)")
-	// Live-claim reassign fence override (bd-98s5c)
-	updateCmd.Flags().Bool("force", false, "Allow -a/--assignee to overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim)")
+	// Overrides the live-claim reassign fence (bd-98s5c) and close policy.
+	updateCmd.Flags().Bool("force", false, "Override two refusals: let -a/--assignee overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim), and let -s/--status move the issue into closed (or a configured done status) despite open children or a live blocker (same as bd close --force)")
 	// Conditional (compare-and-set) update guards (bd-wsqvw)
 	updateCmd.Flags().String("if-assignee", "", "Apply the update only if the current assignee equals this value (--if-assignee '' requires unassigned); a mismatch writes nothing and exits 13 (vs 1 for other failures). Requires a field update; cannot combine with --claim")
 	updateCmd.Flags().String("if-status", "", "Apply the update only if the current status equals this value; a mismatch writes nothing and exits 13 (vs 1 for other failures). Requires a field update; cannot combine with --claim")
@@ -923,7 +985,7 @@ func init() {
 	//   --defer=+1h         Hidden from bd ready for 1 hour
 	//   --defer=""          Clear defer (show in bd ready immediately)
 	updateCmd.Flags().String("due", "", "Due date/time (empty to clear). Formats: +6h, +1d, +2w, tomorrow, next monday, 2025-01-15")
-	updateCmd.Flags().String("defer", "", "Defer until date (empty to clear). Issue hidden from bd ready until then")
+	updateCmd.Flags().String("defer", "", "Defer until date (empty to clear). Issue hidden from bd ready until then, then auto-wakes to open")
 	// Gate fields (bd-z6kw)
 	updateCmd.Flags().String("await-id", "", "Set gate await_id (e.g., GitHub run ID for gh:run gates)")
 	// Ephemeral/persistent flags

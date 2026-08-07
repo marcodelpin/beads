@@ -56,6 +56,21 @@ type Field[T any] struct {
 // LabelPatch describes ordered label replacement and incremental edits.
 // Operations apply Replace, then Add, then Remove, so removal wins when the
 // same label appears in more than one edit.
+//
+// The VALUES an edit carries answer to the same field rules a create's labels
+// do: a label longer than the column is refused with ErrFieldTooLong and the
+// whole update writes nothing. Repetition is free in both directions — the
+// same label named twice in one edit is applied once, and removing a label the
+// issue does not carry is a no-op that reports Changed false.
+//
+// An EMPTY-STRING entry is DROPPED — not written, and not refused. A label
+// row carrying "" renders as nothing and matches nothing, so writing one only
+// stores junk; refusing the whole update would let one stray entry fail an
+// otherwise-good multi-label edit. Dropping is a no-op rather than a partial
+// write: an Add carrying only "" changes nothing and reports Changed false.
+// An empty entry already stored is left alone by Add and Remove and cleared by
+// a Replace that omits it, which is the ordinary set behavior and not a
+// migration.
 type LabelPatch struct {
 	// Add contains labels to add after any replacement.
 	Add []string
@@ -72,6 +87,18 @@ type LabelPatch struct {
 type MetadataPatch struct {
 	// Replace replaces the complete metadata document when Set is true. A nil or
 	// empty Value clears metadata; a nonempty Value must be valid JSON.
+	//
+	// CLEARING STORES THE EMPTY JSON DOCUMENT. An issue's metadata is never
+	// SQL NULL, and it is never NULL at creation either, so "created with no
+	// metadata" and "given metadata and then cleared" are the SAME stored
+	// value rather than two states for one user-visible fact. A consumer
+	// filtering on `metadata IS NULL` therefore matches neither, and one
+	// asking for an empty document matches both.
+	//
+	// Read back through a result or the Reader role, that same empty document
+	// arrives as an EMPTY json.RawMessage rather than the two bytes of an
+	// empty object — so a caller must treat nil, empty and {} as one value on
+	// the way out, exactly as this field treats them on the way in.
 	Replace Field[json.RawMessage]
 	// Merge merges a metadata document into the current value. A nil or empty
 	// Value is invalid; a nonempty Value must be a JSON object.
@@ -94,9 +121,13 @@ type IssuePatch struct {
 	AppendNotes Field[string]
 	SpecID      Field[string]
 	AwaitID     Field[string]
-	// Status sets the issue's status, including across the configured
-	// done/non-done category boundary. Close and Reopen remain the operations
-	// that carry the full lifecycle policy.
+	// Status sets the issue's status. A status that crosses from outside the
+	// configured done category into it answers to close policy: the update
+	// refuses with CloseOpenChildrenError or ErrCloseBlocked unless
+	// UpdateRequest.ForceClosePolicy is set. A done-to-done change and a move
+	// out of the done category are unaffected. Close and Reopen remain the
+	// operations that carry the full lifecycle policy — a crossing update
+	// applies the close policy, not the close semantics.
 	Status           Field[Status]
 	Priority         Field[int]
 	IssueType        Field[IssueType]
@@ -176,6 +207,18 @@ type CreateRequest struct {
 	WaitsFor *WaitsFor
 	// ForceIDPrefix permits an explicit ID outside the configured prefix.
 	ForceIDPrefix bool
+	// IDPrefix is the prefix an explicit Issue.ID is checked against, and it
+	// OVERRIDES the one the substrate has configured. Empty means "use the
+	// substrate's", which is the ordinary case.
+	//
+	// It exists because the workspace's own config.yaml `issue-prefix` wins
+	// over the database's (GH#4957) and no implementation can see config.yaml
+	// — a shared server's database knows only its own prefix. Resolving that
+	// is the front door's job, the same way DeleteRequest.IDs are exact
+	// because resolution belongs to the front door; the role enforces what it
+	// is handed. Without it the two `bd create` routes disagree about which
+	// ids a workspace may mint.
+	IDPrefix string
 }
 
 // UpdateRequest describes an issue update.
@@ -198,8 +241,20 @@ type UpdateRequest struct {
 	// idempotent and needs no force. Assignees configured as claim.pools aliases
 	// are transferable without force. The zero value enforces the fence. It has
 	// no effect with Claim or an omitted Patch.Assignee and must be false with
-	// ExpectedAssignee. It never bypasses other guards.
+	// ExpectedAssignee. It never bypasses other guards — in particular it is
+	// independent of ForceClosePolicy, and a request that sets it without
+	// Patch.Assignee is invalid. A command adapter with a single --force flag
+	// therefore maps that flag to both fields, conditioning this one on an
+	// assignee edit.
 	ForceAssigneeTransfer bool
+	// ForceClosePolicy bypasses only close policy — the open-children refusal
+	// and the live-direct-blocker refusal — for a Patch.Status that crosses into
+	// the done category. The zero value enforces the policy. It has no effect
+	// without such a status change, and never bypasses validation,
+	// ExpectedVersion, ExpectedAssignee, ExpectedStatus, or the assignee fence.
+	// It is the update-side spelling of CloseRequest.Force; a command adapter
+	// that maps one flag to both spells both.
+	ForceClosePolicy bool
 	// ExpectedVersion requires the current row version to match before the claim
 	// and patch. It is an independent precondition and may be combined with Claim.
 	ExpectedVersion *int64
@@ -211,13 +266,46 @@ type UpdateRequest struct {
 	// ExpectedStatus requires the current status to match. It must be nil when
 	// Claim is true.
 	ExpectedStatus *Status
+	// IssuePlaneOnly restricts the update to the issue plane: an ID that names
+	// a wisp is ErrNotFound rather than an ephemeral row to update. The zero
+	// value keeps the both-plane auto-resolve every caller gets today.
+	//
+	// Resolution happens INSIDE the transaction the update runs in, so a
+	// caller cannot be handed the plane an earlier read saw. It exists for the
+	// surface that serves durable issues only — refusing there rather than
+	// carrying a private copy of the resolve is what keeps the two front doors
+	// on one implementation.
+	IssuePlaneOnly bool
+	// Provenance labels the version-control history entry this mutation
+	// records, naming the surface the update came from. Empty selects the
+	// implementation's default label.
+	//
+	// It NEVER changes WHETHER history is recorded — only how the entry reads.
+	// An update that records none records none with it set, one that records
+	// one records one with it empty, and an implementation with no history to
+	// label ignores it. Persistence, not this, is what decides whether an issue
+	// is versioned at all.
+	Provenance string
 }
 
 // CloseRequest describes an issue closure.
 type CloseRequest struct {
 	Actor   string
 	IssueID string
-	Reason  string
+	// Reason records why the issue was closed. It is stored on the issue and
+	// read back on CloseResult.Issue.CloseReason, alongside the ClosedAt the
+	// same close stamps.
+	//
+	// THE FIRST CLOSE WINS. A second Close of an already-closed issue is the
+	// no-op CloseResult.Changed describes, so it writes neither this nor
+	// Session and the stored pair keeps the values the first close gave them
+	// — a replayed close cannot rewrite the record of why the work ended. A
+	// Reopen clears both, because they describe a closure that no longer
+	// holds.
+	Reason string
+	// Session names the working session that closed the issue. It is stored
+	// and read back on CloseResult.Issue.ClosedBySession, under the same
+	// first-close-wins rule as Reason.
 	Session string
 	// Force bypasses only blocker and open-child close policy. It never bypasses
 	// validation, ExpectedVersion, or lifecycle rules.
@@ -233,10 +321,27 @@ type ReopenRequest struct {
 	IssueID string
 	// Reason records why literal closed and configured done statuses move to
 	// open. Non-done statuses are unchanged.
+	//
+	// WHERE it is recorded is the issue's EVENT HISTORY, carried on the
+	// reopened entry the move itself records. It is not stored on a field of
+	// the issue and ReopenResult does not surface it, so a caller that wants
+	// it back reads the issue's events — the same place the Actor attribution
+	// for the reopen lives. A reopen with no reason still records that entry;
+	// it simply carries none.
 	Reason string
 	// ExpectedVersion requires the current row version to match and is checked
 	// before a non-done no-op.
 	ExpectedVersion *int64
+	// Provenance labels the version-control history entry this reopen records,
+	// naming the surface it came from. Empty selects the implementation's
+	// default label, and the implementations do not agree on what that is — the
+	// store-backed ones write "bd: reopen issue" and the unit-of-work one
+	// "reopen issue", neither naming the issue. A caller that wants one entry
+	// no matter which backend served it spells one, exactly as
+	// UpdateRequest.Provenance describes.
+	//
+	// It NEVER changes WHETHER history is recorded — only how the entry reads.
+	Provenance string
 }
 
 // CreateResult reports the created issue as a detached snapshot with labels,
@@ -305,7 +410,13 @@ type Lifecycle interface {
 	// validation error also leaves no partial persistent state.
 	Create(context.Context, CreateRequest) (CreateResult, error)
 	// Update validates guards and commits the complete request as one atomic
-	// mutation. A refusal or validation error leaves persistent state unchanged.
+	// mutation. A Patch.Status that crosses from outside the configured done
+	// category into it answers to close policy: an unforced crossing with open
+	// children returns CloseOpenChildrenError and one with a live direct blocker
+	// returns ErrCloseBlocked, both without mutation. ForceClosePolicy bypasses
+	// those two refusals and nothing else. A Claim that loses its
+	// compare-and-set returns *ClaimConflictError carrying the state that beat
+	// it. A refusal or validation error leaves persistent state unchanged.
 	Update(context.Context, UpdateRequest) (UpdateResult, error)
 	// Close validates guards and commits the complete request as one atomic
 	// mutation. It moves the issue to literal StatusClosed, including from a
