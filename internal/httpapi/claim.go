@@ -149,13 +149,9 @@ func (s *Server) claimTarget(w http.ResponseWriter, r *http.Request) (string, bo
 // header name for exactly this kind of refusal — it is what the Host middleware
 // already does.
 //
-// SPEC GAP, deliberate and to be closed at the next revision window: the frozen
-// document does not mention Content-Type anywhere, so this refusal is the one
-// 400 on this route a client generated from the schema cannot predict. It is
-// unreachable for a conformant client — requestBody already declares
-// application/json — and the status/code/param/reason are all in the documented
-// vocabulary, so the fix is prose describing the CSRF control, not a behavior
-// change.
+// The document states this rule once, at the document level, beside the
+// Host-header and unknown-query-parameter rules, because it holds for every
+// body-carrying operation rather than for this one.
 func (s *Server) requireJSONContent(w http.ResponseWriter, r *http.Request) bool {
 	got := r.Header.Get("Content-Type")
 	if media, _, err := mime.ParseMediaType(got); err == nil && media == claimContentType {

@@ -44,7 +44,7 @@ info:
     one error shape on this surface.
 
 
-    ## Two 400s apply to every route, and are documented here once
+    ## Three 400s cut across operations, and are documented here once
 
 
     * **Host header.** A request whose `Host` header is not in the server's
@@ -61,11 +61,26 @@ info:
       `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`) reject every query key the same way.
 
+    * **Request media type.** Every operation that carries a request body
+      requires `Content-Type: application/json` and refuses anything else with
+      `400` / `code: invalid_argument` / `param: "Content-Type"` /
+      `reason: "invalid_value"`. The refusal is a CSRF control rather than
+      pedantry: a JSON content type is not CORS-simple, so a cross-origin write
+      always triggers a preflight this server never approves, and accepting
+      `text/plain` or a form encoding would let an attacker's page skip that
+      preflight and drive a write from any browser on the host. It is
+      unreachable for a client generated from this document — every
+      `requestBody` here declares `application/json` — and is stated so that
+      the one 400 such a client could not otherwise predict is predictable.
+      `415` is deliberately not used: it is not in this surface's status
+      vocabulary, and adding one for this would be permanent wire surface.
 
-    Both are uniform rules, reachable on EVERY route including `GET /healthz`,
-    and are stated here instead of being repeated on every operation. The
+
+    The first two are uniform rules reachable on EVERY route including
+    `GET /healthz`; the third holds on every body-carrying operation. All three
+    are stated here instead of being repeated on every operation. The
     per-operation `responses` below therefore list what an operation produces
-    BEYOND these two: a generated client must treat `400 invalid_argument` as
+    BEYOND them: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses
     are only `404`/`500`/`503`.
 
