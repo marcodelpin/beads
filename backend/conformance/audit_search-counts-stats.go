@@ -35,6 +35,7 @@ func RunAudit_search_counts_stats(t *testing.T, f Factory) {
 	t.Run("SearchDefaultOrderTieBreak", func(t *testing.T) { testAuditSearchDefaultOrderTieBreak(t, f) })
 	t.Run("SearchIdenticalTimestampIDOrder", func(t *testing.T) { testAuditSearchIdenticalTimestampIDOrder(t, f) })
 	t.Run("SearchSortByClosedNullsLast", func(t *testing.T) { testAuditSearchSortByClosedNullsLast(t, f) })
+	t.Run("SearchSortByTitleCaseFolded", func(t *testing.T) { testAuditSearchSortByTitleCaseFolded(t, f) })
 	t.Run("SearchTextIDBranchExternalRef", func(t *testing.T) { testAuditSearchTextIDBranchExternalRef(t, f) })
 	t.Run("SearchIDPrefixCaseSensitive", func(t *testing.T) { testAuditSearchIDPrefixCaseSensitive(t, f) })
 	t.Run("SearchParentDescendantCaseSensitive", func(t *testing.T) { testAuditSearchParentDescendantCaseSensitive(t, f) })
@@ -398,6 +399,39 @@ func testAuditSearchSortByClosedNullsLast(t *testing.T, f Factory) {
 	want := []string{"cs-closed-new", "cs-closed-old", "cs-open-a", "cs-open-b"}
 	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
 		t.Errorf("closed-sort order = %v, want %v (NULLs last on DESC)", got, want)
+	}
+}
+
+// A search sorted by title and cut to a limit keeps the first N rows under
+// case-folded title order — "apple" before "Zebra" — with case-folded ties broken
+// by id ASC, on every backend and database collation. sqlbuild/sort.go renders
+// LOWER(title) for both the SQL ORDER BY and the Go-side merge, but an engine whose
+// default text collation is byte-wise or linguistic satisfies every other ordering
+// case in this slice while reordering this one, silently changing which rows survive
+// the cut with no error and no other signal.
+func testAuditSearchSortByTitleCaseFolded(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	// Byte order (APPLE2, Apple, Zebra, apple, banana) and priority order both
+	// disagree with the case-folded order asserted below.
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "ti-1", Title: "Zebra", Priority: 0}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "ti-2", Title: "apple", Priority: 3}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "ti-3", Title: "APPLE2", Priority: 2}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "ti-4", Title: "banana", Priority: 1}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "ti-5", Title: "Apple", Priority: 3}), "a"))
+
+	// ti-2/ti-5 fold to the same title, so they pin the id-ASC tie leg.
+	want := []string{"ti-2", "ti-5", "ti-3", "ti-4", "ti-1"}
+	results, err := s.SearchIssues(c, "", types.IssueFilter{SortBy: "title"})
+	must(t, err)
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("title-sort order = %v, want %v (LOWER(title) ASC, id ASC)", got, want)
+	}
+
+	page, err := s.SearchIssues(c, "", types.IssueFilter{SortBy: "title", Limit: 2})
+	must(t, err)
+	if got := orderedIDs(page); !reflect.DeepEqual(got, want[:2]) {
+		t.Errorf("title-sort page = %v, want %v (first 2 rows of the case-folded order)", got, want[:2])
 	}
 }
 
