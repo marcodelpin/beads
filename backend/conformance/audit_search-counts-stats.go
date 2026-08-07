@@ -37,6 +37,7 @@ func RunAudit_search_counts_stats(t *testing.T, f Factory) {
 	t.Run("SearchSortByClosedNullsLast", func(t *testing.T) { testAuditSearchSortByClosedNullsLast(t, f) })
 	t.Run("SearchSortByTitleCaseFolded", func(t *testing.T) { testAuditSearchSortByTitleCaseFolded(t, f) })
 	t.Run("SearchSortTieBreakSurvivesReversal", func(t *testing.T) { testAuditSearchSortTieBreakSurvivesReversal(t, f) })
+	t.Run("SearchSortNullsDirectional", func(t *testing.T) { testAuditSearchSortNullsDirectional(t, f) })
 	t.Run("SearchTextIDBranchExternalRef", func(t *testing.T) { testAuditSearchTextIDBranchExternalRef(t, f) })
 	t.Run("SearchIDPrefixCaseSensitive", func(t *testing.T) { testAuditSearchIDPrefixCaseSensitive(t, f) })
 	t.Run("SearchParentDescendantCaseSensitive", func(t *testing.T) { testAuditSearchParentDescendantCaseSensitive(t, f) })
@@ -477,6 +478,44 @@ func testAuditSearchSortTieBreakSurvivesReversal(t *testing.T, f Factory) {
 	want = []string{"tb-a", "tb-b", "tb-new", "tb-c"}
 	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
 		t.Errorf("reversed status-sort order = %v, want %v (the tied open group is STILL id ASC)", got, want)
+	}
+}
+
+// Rows with no value for a nullable sort key (closed_at, assignee) sort first on
+// ascending order and last on descending order, regardless of the engine's native
+// NULL ordering. sqlbuild/sort.go leads those keys with an explicit (col IS NULL)
+// term precisely "so the contract does not depend on a driver's default NULL
+// ordering", but the slice pins only the closed sort in its default direction.
+// The unassigned rows are created exactly as `bd create` leaves them, so the case
+// pins the observable order without prescribing a NULL-vs-empty-string encoding.
+func testAuditSearchSortNullsDirectional(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	tNew, tOld := auditWholeSec(2022), auditWholeSec(2021)
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "nl-open-a", Title: "oa", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "nl-open-b", Title: "ob", Status: types.StatusOpen}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "nl-closed-new", Title: "cn", Status: types.StatusClosed, ClosedAt: &tNew, Assignee: "alice"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "nl-closed-old", Title: "co", Status: types.StatusClosed, ClosedAt: &tOld, Assignee: "bob"}), "a"))
+
+	results, err := s.SearchIssues(c, "", types.IssueFilter{SortBy: "closed", SortDesc: true})
+	must(t, err)
+	want := []string{"nl-open-a", "nl-open-b", "nl-closed-old", "nl-closed-new"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("reversed closed-sort order = %v, want %v (NULLs first on ASC, then oldest closed)", got, want)
+	}
+
+	results, err = s.SearchIssues(c, "", types.IssueFilter{SortBy: "assignee"})
+	must(t, err)
+	want = []string{"nl-open-a", "nl-open-b", "nl-closed-new", "nl-closed-old"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("assignee-sort order = %v, want %v (unassigned first on ASC, id ASC among them)", got, want)
+	}
+
+	results, err = s.SearchIssues(c, "", types.IssueFilter{SortBy: "assignee", SortDesc: true})
+	must(t, err)
+	want = []string{"nl-closed-old", "nl-closed-new", "nl-open-a", "nl-open-b"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("reversed assignee-sort order = %v, want %v (unassigned last on DESC)", got, want)
 	}
 }
 
