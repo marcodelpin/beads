@@ -146,6 +146,9 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("CountByGroup", func(t *testing.T) { testCountByGroup(t, factory) })
 	t.Run("CountByGroupIsBlockedFilter", func(t *testing.T) { testCountByGroupIsBlockedFilter(t, factory) })
 
+	// Keyset paging and the defensive row cap
+	t.Run("SearchPaging", func(t *testing.T) { RunSearchPaging(t, factory) })
+
 	// Dependencies
 	t.Run("AddAndGetDeps", func(t *testing.T) { testAddAndGetDeps(t, factory) })
 	t.Run("RemoveDep", func(t *testing.T) { testRemoveDep(t, factory) })
