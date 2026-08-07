@@ -156,9 +156,11 @@ func runPruneSweep(t *testing.T, r cascadeRunner) pruneSweepOutcome {
 }
 
 // TestProxiedServerCascadeParity is the delete/prune/purge half of bd-04vav:
-// does a proxied delete reach anything classic mode would have left alone, on
-// the two shapes it actually runs — wh-gate-sweep's gate purge, and the
-// wisp-decay close+purge pair.
+// since bd-paurh, proxied `bd delete` honors the classic cascade policy
+// (default refuse, --cascade sweep, --force orphan), so the question the
+// wheelhouse needs answered is "does a delete reach anything classic mode
+// would have left alone" — on the two shapes it actually runs:
+// wh-gate-sweep's gate purge, and the wisp-decay close+purge pair.
 //
 // It was written while the answer was YES: proxied `bd delete` passed
 // Cascade:true unconditionally and refused the --cascade flag outright.
@@ -173,17 +175,13 @@ func TestProxiedServerCascadeParity(t *testing.T) {
 	t.Parallel()
 	bd := buildEmbeddedBD(t)
 
-	// THE CUTOVER BLOCKER THIS FILE WAS WRITTEN FOR, now closed. Proxied
-	// `bd delete <gate> --force` used to delete the bead the gate was gating and
-	// everything downstream of it. On wh-gate-sweep's fixture that was not a
-	// nuance: the sweep's third step is `bd delete <gate> --force`, and
-	// `bd gate create --blocks <target>` makes the gated bead a DEPENDENT of the
-	// gate, so that step destroyed the work it had just unblocked.
-	//
-	// Both routes now honor the flag the caller typed, so this asserts ONE
-	// outcome. Keep it asserting one: the value of this subtest from here on is
-	// that a proxied delete which starts cascading again fails here, on the
-	// exact fixture where the blast radius was real.
+	// This subtest is the acceptance test for bd-paurh: wh-gate-sweep's third
+	// step is `bd delete <gate> --force`, and `bd gate create --blocks <target>`
+	// makes the gated bead a DEPENDENT of the gate. Under the old proxied
+	// unconditional Cascade:true, that step destroyed the work it had just
+	// unblocked (plus everything downstream). With embedded parity, --force
+	// without --cascade orphans dependents: the gate goes, the gated target and
+	// its sibling stay — identical to classic.
 	t.Run("gate_delivery_ledger", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "cgp")
@@ -194,17 +192,22 @@ func TestProxiedServerCascadeParity(t *testing.T) {
 
 		// One expectation, both modes: an unforced-cascade delete of the gate
 		// removes the gate and leaves everything it was gating alive.
-		want := gateDeliveryLedgerOutcome{
+		wantClassic := gateDeliveryLedgerOutcome{
 			gateGone: true, targetSurvives: true, siblingSurvives: true,
 		}
-		if classic != want {
-			t.Errorf("classic gate delivery-ledger delete: got %#v, want %#v", classic, want)
+		if classic != wantClassic {
+			t.Errorf("classic gate delivery-ledger delete: got %#v, want %#v", classic, wantClassic)
 		}
-		if proxied != want {
+
+		wantProxied := wantClassic
+		if proxied != wantProxied {
 			t.Errorf("proxied gate delivery-ledger delete: got %#v, want %#v "+
-				"(bd-x82so put this route on issueops.Deleter with the caller's --cascade; "+
-				"targetSurvives:false means the unconditional cascade is back, and with it "+
-				"the wh-gate-sweep data loss)", proxied, want)
+				"(bd-paurh parity: `delete <gate> --force` must orphan the gated bead, "+
+				"never cascade into it)", proxied, wantProxied)
+		}
+		if proxied != classic {
+			t.Errorf("gate delivery ledger differs across modes:\n  proxied: %#v\n  classic: %#v",
+				proxied, classic)
 		}
 	})
 

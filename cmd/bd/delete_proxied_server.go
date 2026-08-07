@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,9 +17,9 @@ import (
 
 type deleteInput struct {
 	ids        []string
+	cascade    bool
 	force      bool
 	dryRun     bool
-	cascade    bool
 	jsonOutput bool
 	quiet      bool
 }
@@ -36,13 +37,13 @@ func gatherDeleteInput(cmd *cobra.Command, args []string) (*deleteInput, error) 
 	}
 	in.ids = uniqueStrings(in.ids)
 
-	in.force, _ = cmd.Flags().GetBool("force")
-	in.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	// --cascade IS SUPPORTED HERE NOW. This route used to refuse the flag
 	// outright ("delete always cascades") and hardcode Cascade: true, so on a
 	// team server there was no way to delete an issue without taking its
 	// dependents. Both routes now mean the same three things by the same flags.
 	in.cascade, _ = cmd.Flags().GetBool("cascade")
+	in.force, _ = cmd.Flags().GetBool("force")
+	in.dryRun, _ = cmd.Flags().GetBool("dry-run")
 	in.jsonOutput = jsonOutput
 	in.quiet = isQuiet()
 	return in, nil
@@ -90,19 +91,38 @@ func runDeleteProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		DryRun:  in.dryRun || !in.force,
 	}
 	result, err := deleter.Delete(ctx, request)
-	if err != nil {
+	// THE GUARD REFUSAL IS NOT A BARE ERROR HERE. Classic renders the preview
+	// and THEN the refusal, which is what tells the caller both what would go
+	// and how to proceed; returning early would print the second half only.
+	// Every other error still ends the command where it happened.
+	var blocked *issueops.DependentsOutsideRequestError
+	if err != nil && !errors.As(err, &blocked) {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
 	if request.DryRun {
 		// The role answered WHAT WOULD HAPPEN; this read answers WHICH ROWS,
 		// which is presentation this route has always printed and which no
-		// result carries. It runs only after the role accepted the request.
-		preview, err := runDeleteProxiedPreviewTx(ctx, in)
-		if err != nil {
-			return HandleErrorRespectJSON("%v", err)
+		// result carries.
+		preview, previewErr := runDeleteProxiedPreviewTx(ctx, in)
+		if previewErr != nil {
+			return HandleErrorRespectJSON("%v", previewErr)
 		}
-		return outputDeleteProxiedPreview(in, deletePreviewResult{preview: preview, res: result})
+		if err := outputDeleteProxiedPreview(in, deletePreviewResult{
+			preview: preview, res: result, blocked: blocked,
+		}); err != nil {
+			return err
+		}
+		if blocked != nil {
+			// In JSON mode the payload above already carries the refusal in its
+			// "error" key; emitting a second document on stdout is the bug the
+			// same fix on main had to correct.
+			if in.jsonOutput {
+				return &exitError{Code: 1}
+			}
+			return HandleErrorRespectJSON("%v", blocked)
+		}
+		return nil
 	}
 
 	commandDidWrite.Store(true)
@@ -113,6 +133,9 @@ func runDeleteProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 type deletePreviewResult struct {
 	preview domain.DeletePreview
 	res     issueops.DeleteResult
+	// blocked carries the role's dependents refusal so the preview can render
+	// the way classic does: what would go first, then why it will not.
+	blocked *issueops.DependentsOutsideRequestError
 }
 
 // runDeleteProxiedPreviewTx reads the titles and the neighborhood one preview
@@ -131,7 +154,7 @@ func runDeleteProxiedPreviewTx(ctx context.Context, in *deleteInput) (domain.Del
 // JSON takes precedence over quiet, but neither mode may serialize issue payloads.
 func outputDeleteProxiedPreview(in *deleteInput, result deletePreviewResult) error {
 	if in.jsonOutput {
-		return outputJSON(map[string]any{
+		payload := map[string]any{
 			"would_delete":         result.res.Deleted,
 			"dependencies_removed": result.res.Dependencies,
 			"labels_removed":       result.res.Labels,
@@ -140,16 +163,22 @@ func outputDeleteProxiedPreview(in *deleteInput, result deletePreviewResult) err
 			"not_found":            result.preview.NotFound,
 			"connected":            sortedKeys(result.preview.ConnectedIssues),
 			"dry_run":              in.dryRun,
-		})
+			"cascade":              in.cascade,
+			"would_orphan":         len(result.res.Orphaned),
+		}
+		if result.blocked != nil {
+			payload["error"] = result.blocked.Error()
+		}
+		return outputJSON(payload)
 	}
 	if in.quiet {
 		return nil
 	}
-	renderDeletePreview(in, result.preview, result.res)
+	renderDeletePreview(in, result.preview, result.res, result.blocked)
 	return nil
 }
 
-func renderDeletePreview(in *deleteInput, preview domain.DeletePreview, res issueops.DeleteResult) {
+func renderDeletePreview(in *deleteInput, preview domain.DeletePreview, res issueops.DeleteResult, blocked *issueops.DependentsOutsideRequestError) {
 	fmt.Printf("\n%s\n", ui.RenderFail("⚠️  DELETE PREVIEW"))
 	fmt.Printf("\nIssues to delete (%d):\n", len(in.ids))
 	for _, id := range in.ids {
@@ -160,7 +189,13 @@ func renderDeletePreview(in *deleteInput, preview domain.DeletePreview, res issu
 		fmt.Printf("  %s: %s\n", id, title)
 	}
 	if in.cascade {
-		fmt.Printf("\nCascade mode enabled — dependent issues will be removed.\n")
+		fmt.Printf("\n%s Cascade mode enabled - will also delete all dependent issues\n", ui.RenderWarn("⚠"))
+	}
+	if blocked != nil {
+		// The refusal itself says how to proceed, so the "To proceed, run"
+		// footer below would be a second, weaker version of the same advice.
+		fmt.Printf("\n%s\n", ui.RenderFail(blocked.Error()))
+		return
 	}
 	fmt.Printf("\nWould remove:\n")
 	fmt.Printf("  %d issue(s) total\n", res.Deleted)

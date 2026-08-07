@@ -102,6 +102,8 @@ func TestOutputDeleteProxiedPreviewExactContracts(t *testing.T) {
 			"not_found":            nil,
 			"connected":            []any{"bd-alpha", "bd-zulu"},
 			"dry_run":              true,
+			"cascade":              false,
+			"would_orphan":         float64(0),
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("preview JSON: got %#v, want %#v", got, want)
@@ -122,6 +124,55 @@ func TestOutputDeleteProxiedPreviewExactContracts(t *testing.T) {
 		}
 		if strings.Index(out, "bd-alpha: Alpha") > strings.Index(out, "bd-zulu: Zulu") {
 			t.Errorf("prose connected issue order is not sorted:\n%s", out)
+		}
+		if strings.Contains(out, "Cascade") {
+			t.Errorf("prose preview without --cascade must not mention cascade:\n%s", out)
+		}
+	})
+
+	t.Run("prose warns about cascade only when cascade was requested and proceed hint carries the flag", func(t *testing.T) {
+		in := &deleteInput{ids: []string{"bd-target"}, cascade: true}
+		out := captureStdout(t, func() error { return outputDeleteProxiedPreview(in, result) })
+		for _, required := range []string{
+			"Cascade mode enabled - will also delete all dependent issues",
+			"bd delete bd-target --cascade --force",
+		} {
+			if !strings.Contains(out, required) {
+				t.Errorf("cascade preview missing %q:\n%s", required, out)
+			}
+		}
+	})
+
+	t.Run("refusal renders the blocking error instead of counts, JSON carries it as error", func(t *testing.T) {
+		blockedResult := result
+		blockedResult.res = issueops.DeleteResult{Orphaned: []string{"bd-dependent"}}
+		// The ROLE's refusal, whose message is byte-identical to the domain's
+		// DeleteBlockedError this test was written against — the two were
+		// arrived at independently and say the same thing.
+		blockedResult.blocked = &issueops.DependentsOutsideRequestError{
+			IssueID: "bd-target", Dependents: []string{"bd-dependent"},
+		}
+
+		in := &deleteInput{ids: []string{"bd-target"}}
+		out := captureStdout(t, func() error { return outputDeleteProxiedPreview(in, blockedResult) })
+		if !strings.Contains(out, "has dependents not in deletion set; use --cascade to delete them or --force to orphan them") {
+			t.Errorf("refusal prose missing classic message:\n%s", out)
+		}
+		if strings.Contains(out, "Would remove:") {
+			t.Errorf("refusal prose must not render counts:\n%s", out)
+		}
+
+		in = &deleteInput{ids: []string{"bd-target"}, jsonOutput: true}
+		jsonOut := captureStdout(t, func() error { return outputDeleteProxiedPreview(in, blockedResult) })
+		var got map[string]any
+		if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+			t.Fatalf("parse refusal JSON: %v\nraw: %s", err, jsonOut)
+		}
+		if errMsg, _ := got["error"].(string); !strings.Contains(errMsg, "has dependents not in deletion set") {
+			t.Errorf("refusal JSON error field: got %#v", got["error"])
+		}
+		if got["would_orphan"] != float64(1) {
+			t.Errorf("refusal JSON would_orphan: got %#v, want 1", got["would_orphan"])
 		}
 	})
 }
@@ -147,9 +198,7 @@ func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
 			"labels_removed":       float64(2),
 			"events_removed":       float64(5),
 			"references_updated":   float64(1),
-			// New on this route with the cascade convergence: `--force` used
-			// to take the dependents, so there was never anything to orphan.
-			"orphaned_issues": []any{"bd-orphan"},
+			"orphaned_issues":      nil,
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("final JSON: got %#v, want %#v", got, want)
@@ -169,6 +218,35 @@ func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
 			if !strings.Contains(out, required) {
 				t.Errorf("final prose missing %q:\n%s", required, out)
 			}
+		}
+		if strings.Contains(out, "Orphaned") {
+			t.Errorf("final prose without orphans must not warn about orphans:\n%s", out)
+		}
+	})
+
+	t.Run("orphaned issues surface in JSON and prose (force without cascade)", func(t *testing.T) {
+		orphanRes := res
+		orphanRes.Orphaned = []string{"bd-orphan-a", "bd-orphan-b"}
+
+		in := &deleteInput{ids: []string{"bd-target"}, jsonOutput: true}
+		out := captureStdout(t, func() error {
+			renderDeleteProxiedResult(in, orphanRes)
+			return nil
+		})
+		var got map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("parse orphan JSON: %v\nraw: %s", err, out)
+		}
+		if want := []any{"bd-orphan-a", "bd-orphan-b"}; !reflect.DeepEqual(got["orphaned_issues"], want) {
+			t.Errorf("orphaned_issues: got %#v, want %#v", got["orphaned_issues"], want)
+		}
+
+		prose := captureStdout(t, func() error {
+			renderDeleteProxiedResult(&deleteInput{}, orphanRes)
+			return nil
+		})
+		if !strings.Contains(prose, "Orphaned 2 issue(s): bd-orphan-a, bd-orphan-b") {
+			t.Errorf("orphan prose missing warning:\n%s", prose)
 		}
 	})
 }
