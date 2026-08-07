@@ -44,7 +44,7 @@ info:
     one error shape on this surface.
 
 
-    ## Two 400s apply to every route, and are documented here once
+    ## Three 400s cut across operations, and are documented here once
 
 
     * **Host header.** A request whose `Host` header is not in the server's
@@ -56,16 +56,30 @@ info:
       `reason: "unknown_parameter"` and `param` naming the offending key.
       Operations with no parameters at all (`GET /healthz`,
       `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
-      `GET /v0/beads/issues/{id}`, `POST /v0/beads/issues/{id}:claim`,
-      `POST /v0/beads/issues:sweep`, `POST /v0/beads/issues:delete`,
-      `GET /v0/beads/config`,
+      `POST /v0/beads/issues/{id}:claim`, `POST /v0/beads/issues:sweep`,
+      `POST /v0/beads/issues:delete`, `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`) reject every query key the same way.
 
+    * **Request media type.** Every operation that carries a request body
+      requires `Content-Type: application/json` and refuses anything else with
+      `400` / `code: invalid_argument` / `param: "Content-Type"` /
+      `reason: "invalid_value"`. The refusal is a CSRF control rather than
+      pedantry: a JSON content type is not CORS-simple, so a cross-origin write
+      always triggers a preflight this server never approves, and accepting
+      `text/plain` or a form encoding would let an attacker's page skip that
+      preflight and drive a write from any browser on the host. It is
+      unreachable for a client generated from this document — every
+      `requestBody` here declares `application/json` — and is stated so that
+      the one 400 such a client could not otherwise predict is predictable.
+      `415` is deliberately not used: it is not in this surface's status
+      vocabulary, and adding one for this would be permanent wire surface.
 
-    Both are uniform rules, reachable on EVERY route including `GET /healthz`,
-    and are stated here instead of being repeated on every operation. The
+
+    The first two are uniform rules reachable on EVERY route including
+    `GET /healthz`; the third holds on every body-carrying operation. All three
+    are stated here instead of being repeated on every operation. The
     per-operation `responses` below therefore list what an operation produces
-    BEYOND these two: a generated client must treat `400 invalid_argument` as
+    BEYOND them: a generated client must treat `400 invalid_argument` as
     possible everywhere, including on the operations whose documented statuses
     are only `404`/`500`/`503`.
 
@@ -1189,16 +1203,34 @@ paths:
         fallback when no issue matches.
 
 
-        COMMENT BODIES AND DEPENDENTS ARE NOT REACHABLE OVER v0. This operation
-        takes no query parameters, and every query key is rejected, so there is
-        no way to ask for them: `comments` and `dependents` are always absent,
-        and `comment_count`, `dependent_count` and `comments_omitted` are what
-        this surface reports about them. A workflow that must read comment text
-        keeps using `bd show --json --include-comments` for now. Adding
-        `include_comments` / `include_dependents` parameters later is additive
-        and needs no schema change — the fields are already specified.
+        COMMENT BODIES AND DEPENDENTS ARE ASKED FOR, NEVER VOLUNTEERED. They
+        are the two expensive row lists on this read, so each is absent unless
+        the request sets the parameter that populates it, and a caller that
+        wants only the cardinalities reads `comment_count`, `dependent_count`
+        and `comments_omitted` and pays for neither. A request that sets
+        neither parameter is answered exactly as this operation answered it
+        before the parameters existed.
       parameters:
         - $ref: '#/components/parameters/IssueID'
+        - name: include_comments
+          in: query
+          description: >-
+            Populate `comments` with the issue's full comment bodies. When it
+            is honored `comments_omitted` is false, so a client is never left
+            to guess whether an absent list means "no comments" or "not asked
+            for".
+          schema:
+            type: boolean
+            default: false
+        - name: include_dependents
+          in: query
+          description: >-
+            Populate `dependents` with the issues that depend on this one, each
+            carrying its edge type — the shape `dependencies` already carries.
+            Default false, for `include_comments`'s reason.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: The issue.
@@ -1206,6 +1238,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IssueDetails'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2595,19 +2629,18 @@ components:
         comments:
           type: array
           description: >-
-            NOT POPULATED IN v0 — `getIssue` has no parameter that requests
-            comment bodies and rejects every query key, so this is always
-            absent. Use `comment_count` and `comments_omitted`. Documented
-            because the struct carries the field and a later version may add
-            the parameter that fills it.
+            The issue's comment bodies. Populated only when the request sets
+            `getIssue`'s `include_comments`; absent otherwise, which is what
+            `comment_count` and `comments_omitted` report about.
           items: { $ref: '#/components/schemas/Comment' }
         # --- added by IssueDetails ---
         dependents:
           type: array
           description: >-
-            Issues that depend on this one, each carrying its edge type. NOT
-            POPULATED IN v0, for the same reason as `comments`: use
-            `dependent_count`.
+            Issues that depend on this one, each carrying its edge type.
+            Populated only when the request sets `getIssue`'s
+            `include_dependents`; absent otherwise, where `dependent_count` is
+            the cardinality.
           items: { $ref: '#/components/schemas/IssueWithDependencyMetadata' }
         parent:
           type: string
@@ -2625,10 +2658,9 @@ components:
           type: boolean
           description: >-
             True when `comment_count` is nonzero and `comments` was left out —
-            which over v0 HTTP is every such issue, since bodies cannot be
-            requested. Without it, an absent `comments` key is ambiguous
-            between "no comments" and "comments not included in this
-            response".
+            every such issue on a request that did not set `include_comments`.
+            Without it, an absent `comments` key is ambiguous between "no
+            comments" and "comments not included in this response".
         epic_total_children:
           type: integer
         epic_closed_children:
@@ -3222,7 +3254,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Caller-asserted attribution, under the same rules as
             `SweepRequest`'s `actor`: trimmed, refused when empty after
@@ -3350,7 +3382,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Caller-asserted attribution for wherever the backend records it,
             under the same rules and for the same reasons as `ClaimRequest`'s
@@ -3889,7 +3921,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Who is creating the issues, under `ClaimRequest.actor`'s rules and
             for the same reasons: the server trims it, refuses an empty result,
@@ -4010,14 +4042,22 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Who is claiming the issue. The server trims it, then refuses an
             empty result, anything longer than 256 BYTES (the `maxLength` above
             counts characters — the byte limit is the binding one), and any
-            control character including newline. The value is persisted as the
-            assignee and interpolated into the storage commit message, so an
-            unvalidated newline would forge audit-trail lines.
+            control character including newline: Unicode category Cc — C0, DEL
+            and the C1 block — plus the U+2028/U+2029 line separators, which is
+            the set the `pattern` above spells.
+
+
+            The value is persisted as the assignee and interpolated into the
+            storage commit message, so an unvalidated newline would forge
+            audit-trail lines. C1 is refused for that same reason and not for
+            tidiness: U+0085 is a line break on a VT-conformant terminal, and
+            U+009B is the one-byte CSI introducer, which would make an actor an
+            escape-sequence payload in anything that prints an assignee.
 
     ClaimResponse:
       type: object

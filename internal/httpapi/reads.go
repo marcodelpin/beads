@@ -296,7 +296,19 @@ var querySorts = []string{"priority", "created", "updated", "closed", "status", 
 
 // handleGetIssue answers GET /v0/beads/issues/{id}.
 func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireNoQuery(w, r) {
+	q := newQuery(r.URL.Query())
+
+	// Both default off, so a request that names neither builds the request this
+	// handler built when the operation had no parameters at all.
+	req := issueops.GetRequest{
+		IncludeComments:   q.boolean("include_comments"),
+		IncludeDependents: q.boolean("include_dependents"),
+	}
+
+	// Before the id bound, which is the order this operation had when
+	// requireNoQuery ran first: a refused query string is a 400 that names what
+	// to fix, and deciding the id first would answer it with a 404 instead.
+	if !s.acceptQuery(w, r, q) {
 		return
 	}
 	id := r.PathValue("id")
@@ -314,15 +326,14 @@ func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.ID = id
+
 	rd, err := s.reader(r)
 	if err != nil {
 		s.failErr(w, r, err)
 		return
 	}
-	// IncludeDependents and IncludeComments stay at their zero values: v0
-	// takes no parameter that asks for those rows, so `dependents` and
-	// `comments` are always absent and `comments_omitted` says so.
-	details, err := rd.Get(r.Context(), issueops.GetRequest{ID: id})
+	details, err := rd.Get(r.Context(), req)
 	if err != nil {
 		s.failReadErr(w, r, err)
 		return

@@ -149,13 +149,9 @@ func (s *Server) claimTarget(w http.ResponseWriter, r *http.Request) (string, bo
 // header name for exactly this kind of refusal — it is what the Host middleware
 // already does.
 //
-// SPEC GAP, deliberate and to be closed at the next revision window: the frozen
-// document does not mention Content-Type anywhere, so this refusal is the one
-// 400 on this route a client generated from the schema cannot predict. It is
-// unreachable for a conformant client — requestBody already declares
-// application/json — and the status/code/param/reason are all in the documented
-// vocabulary, so the fix is prose describing the CSRF control, not a behavior
-// change.
+// The document states this rule once, at the document level, beside the
+// Host-header and unknown-query-parameter rules, because it holds for every
+// body-carrying operation rather than for this one.
 func (s *Server) requireJSONContent(w http.ResponseWriter, r *http.Request) bool {
 	got := r.Header.Get("Content-Type")
 	if media, _, err := mime.ParseMediaType(got); err == nil && media == claimContentType {
@@ -298,16 +294,15 @@ func validateActor(actor string) (string, *Result) {
 // control character (category Cc — C0, DEL, and the C1 block) plus the
 // U+2028/U+2029 line separators.
 //
-// This is deliberately WIDER than the schema's pattern, which excludes only C0
-// and DEL. The document's prose is what governs here — it promises refusal of
-// "any control character including newline" — and C1 qualifies: U+0085 is NEL,
-// a line break on a VT-conformant terminal, so "alice<U+0085>bd: claim bd-9
-// by mallory" forges exactly the audit-trail line the C0 check exists to
-// prevent once the actor reaches the storage commit message. U+009B is the
-// one-byte CSI introducer, which makes an unfiltered actor an escape-sequence
-// payload in anything that prints an assignee. Widening refuses more than the
-// pattern advertises and can therefore never persist a value the document
-// forbids; the pattern is what should move at the next spec window.
+// C1 is refused for the reason C0 is, not for tidiness: U+0085 is NEL, a line
+// break on a VT-conformant terminal, so "alice<U+0085>bd: claim bd-9 by
+// mallory" forges exactly the audit-trail line the C0 check exists to prevent
+// once the actor reaches the storage commit message. U+009B is the one-byte CSI
+// introducer, which makes an unfiltered actor an escape-sequence payload in
+// anything that prints an assignee.
+//
+// The schema's `actor` pattern spells this same set, so what the document
+// advertises and what the server refuses are one statement.
 func isControlChar(r rune) bool {
 	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 }
