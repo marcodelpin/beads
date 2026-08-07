@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -147,6 +148,70 @@ func testAuditDeleteConfigLeavesNormalizedTable(t *testing.T, f Factory) {
 	}
 }
 
+// testAuditUnconfiguredVocabulary pins the success path a fresh workspace takes
+// on its very first list-shaped command: with no custom vocabulary configured,
+// GetCustomStatuses, GetCustomStatusesDetailed and GetCustomTypes answer empty
+// with a nil error, and GetInfraTypes answers the default infra set.
+//
+// Every existing vocabulary case configures the vocabulary first, so the
+// unconfigured path had no owning proof and GetInfraTypes had none at all.
+// The consumption is a hard failure edge: internal/workapi/list.go LoadListConfig
+// loads all four up front and wraps any error, so a backend that answers a scan
+// error or a nil-map surprise for an unconfigured workspace bricks `bd list`,
+// `bd ready` and every other list-shaped command rather than degrading.
+//
+// The infra set is spelled out rather than compared against the production
+// constant: this suite is the contract, and reading the answer from the same
+// place the implementation reads it would assert nothing.
+func testAuditUnconfiguredVocabulary(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+
+	names, err := s.GetCustomStatuses(c)
+	must(t, err)
+	if len(names) != 0 {
+		t.Errorf("GetCustomStatuses on an unconfigured workspace = %v, want empty", names)
+	}
+
+	detailed, err := s.GetCustomStatusesDetailed(c)
+	must(t, err)
+	if len(detailed) != 0 {
+		t.Errorf("GetCustomStatusesDetailed on an unconfigured workspace = %v, want empty", auditDetailedPairs(detailed))
+	}
+
+	custom, err := s.GetCustomTypes(c)
+	must(t, err)
+	if len(custom) != 0 {
+		t.Errorf("GetCustomTypes on an unconfigured workspace = %v, want empty", custom)
+	}
+
+	infra := s.GetInfraTypes(c)
+	if !maps.Equal(infra, map[string]bool{"agent": true, "role": true, "message": true}) {
+		t.Errorf("GetInfraTypes on an unconfigured workspace = %v, want the default agent/role/message set", infra)
+	}
+}
+
+// testAuditConfiguredInfraTypes pins the other half: a configured types.infra
+// key replaces the default set outright, and the answer is exactly the
+// configured names. Infra types decide which issue types route to the wisps
+// table instead of the versioned issues table, so a backend that ignores the
+// key silently versions rows the workspace asked to keep ephemeral.
+//
+// Subject: SetConfig. A backend whose allowlist refuses it does not run this
+// case. The assertion is the value, not the cache: invalidation is a per-store
+// concern this suite declines to pin, which is why the read happens on a store
+// that has not read the key before.
+func testAuditConfiguredInfraTypes(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	must(t, s.SetConfig(c, "types.infra", "gate,probe"))
+
+	infra := s.GetInfraTypes(c)
+	if !maps.Equal(infra, map[string]bool{"gate": true, "probe": true}) {
+		t.Errorf("GetInfraTypes after types.infra=gate,probe = %v, want exactly gate/probe", infra)
+	}
+}
+
 // testAuditRepoMtimeClearKeyAsymmetry pins the verbatim-key vs abs-normalized-key
 // asymmetry: SetRepoMtime/GetRepoMtime use the path argument verbatim, but
 // ClearRepoMtime first resolves it to an absolute path before the DELETE. So
@@ -204,6 +269,8 @@ func RunAudit_config_metadata_slots_repomtime(t *testing.T, f Factory) {
 	t.Run("SetConfigInvalidStatusRollsBack", func(t *testing.T) { testAuditSetConfigInvalidStatusRollsBack(t, f) })
 	t.Run("CustomTypesOrder", func(t *testing.T) { testAuditCustomTypesOrder(t, f) })
 	t.Run("DeleteConfigLeavesNormalizedTable", func(t *testing.T) { testAuditDeleteConfigLeavesNormalizedTable(t, f) })
+	t.Run("UnconfiguredVocabulary", func(t *testing.T) { testAuditUnconfiguredVocabulary(t, f) })
+	t.Run("ConfiguredInfraTypes", func(t *testing.T) { testAuditConfiguredInfraTypes(t, f) })
 	t.Run("RepoMtimeClearKeyAsymmetry", func(t *testing.T) { testAuditRepoMtimeClearKeyAsymmetry(t, f) })
 	t.Run("SlotGetNonStringValues", func(t *testing.T) { testAuditSlotGetNonStringValues(t, f) })
 }

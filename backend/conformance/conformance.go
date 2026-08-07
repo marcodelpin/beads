@@ -140,6 +140,8 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("SearchStatusFilter", func(t *testing.T) { testSearchStatusFilter(t, factory) })
 	t.Run("SearchPriorityFilter", func(t *testing.T) { testSearchPriorityFilter(t, factory) })
 	t.Run("SearchLimit", func(t *testing.T) { testSearchLimit(t, factory) })
+	t.Run("SearchByIDsFilter", func(t *testing.T) { testSearchByIDsFilter(t, factory) })
+	t.Run("SearchIssueIDsProjection", func(t *testing.T) { testSearchIssueIDsProjection(t, factory) })
 	t.Run("CountIssues", func(t *testing.T) { testCountIssues(t, factory) })
 	t.Run("CountByGroup", func(t *testing.T) { testCountByGroup(t, factory) })
 	t.Run("CountByGroupIsBlockedFilter", func(t *testing.T) { testCountByGroupIsBlockedFilter(t, factory) })
@@ -490,6 +492,76 @@ func testSearchLimit(t *testing.T, f Factory) {
 	results, _ := s.SearchIssues(ctx(), "", types.IssueFilter{Limit: 2})
 	if len(results) != 2 {
 		t.Errorf("limit=2: len = %d", len(results))
+	}
+}
+
+// testSearchByIDsFilter pins the exact-id read the partial-id resolver takes as
+// its fast path: IssueFilter.IDs answers exactly the named row, and an id nobody
+// holds answers an EMPTY result with a NIL error.
+//
+// The nil-error half is the load-bearing one. internal/utils/id_parser.go
+// branches on `err == nil && len(results) > 0` (GH#942), so a backend that
+// reports a miss as an error silently pushes every user-typed `bd show`,
+// `bd update` and `bd close` argument onto the slow substring path. The pinned
+// testGetByIDs covers the different GetIssuesByIDs method; no case sends
+// IssueFilter.IDs to SearchIssues.
+//
+// Subject: SearchIssues with IssueFilter.IDs. A backend whose allowlist refuses
+// that filter does not run this case.
+func testSearchByIDsFilter(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-idf1", Title: "One"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-idf2", Title: "Two"}), "a"))
+
+	hit, err := s.SearchIssues(c, "", types.IssueFilter{IDs: []string{"test-idf1"}})
+	must(t, err)
+	if !slices.Equal(issueIDs(hit), []string{"test-idf1"}) {
+		t.Errorf("SearchIssues(IDs=[test-idf1]) = %v, want [test-idf1]", issueIDs(hit))
+	}
+
+	miss, err := s.SearchIssues(c, "", types.IssueFilter{IDs: []string{"test-nobody"}})
+	if err != nil {
+		t.Fatalf("SearchIssues(IDs=[test-nobody]) = %v, want a nil error — the resolver's fast path branches on it", err)
+	}
+	if len(miss) != 0 {
+		t.Errorf("SearchIssues(IDs=[test-nobody]) = %v, want no rows", issueIDs(miss))
+	}
+}
+
+// testSearchIssueIDsProjection pins the narrow projection the partial-id
+// resolver walks when the exact-id fast path misses
+// (internal/utils/id_parser.go): SearchIssueIDs answers the bare ids of every
+// issue carrying the hash token, and its Ephemeral leg answers wisp ids so a
+// wisp stays resolvable by partial id.
+//
+// SearchIssueIDs appears nowhere else in this suite, and the id arm of the
+// query is unpinned: the audit's SearchTextIDBranchExternalRef covers the
+// adjacent SearchIssues text branch only. Assert ids, never issues — not
+// hydrating 45 columns to read one is the whole point of the method.
+//
+// Subject: SearchIssueIDs. A backend whose allowlist refuses it does not run
+// this case.
+func testSearchIssueIDsProjection(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-a3f8e9", Title: "One"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-a3f8aa", Title: "Two"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-b111", Title: "Three"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-wisp-b7c2", Title: "Wisp", Ephemeral: true}), "a"))
+
+	ids, err := s.SearchIssueIDs(c, "a3f8", types.IssueFilter{})
+	must(t, err)
+	sort.Strings(ids)
+	if !slices.Equal(ids, []string{"test-a3f8aa", "test-a3f8e9"}) {
+		t.Errorf("SearchIssueIDs(%q) = %v, want [test-a3f8aa test-a3f8e9]", "a3f8", ids)
+	}
+
+	ephemeral := true
+	wispIDs, err := s.SearchIssueIDs(c, "b7c2", types.IssueFilter{Ephemeral: &ephemeral})
+	must(t, err)
+	if !slices.Equal(wispIDs, []string{"test-wisp-b7c2"}) {
+		t.Errorf("SearchIssueIDs(%q, Ephemeral=true) = %v, want [test-wisp-b7c2]", "b7c2", wispIDs)
 	}
 }
 
