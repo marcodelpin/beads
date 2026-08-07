@@ -225,7 +225,11 @@ var operationCodes = map[string][]Code{
 	OpGetContext:    {CodeInternal},
 	OpListReadyWork: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpListIssues:    {CodeInvalidArgument, CodeInvalidCursor, CodeBusy, CodeDBUnavailable, CodeInternal},
-	OpGetIssue:      {CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The 400 is this operation's own, the getStats precedent: a malformed
+	// `include_comments` or `include_dependents` is a bad value on a parameter
+	// this server knows, not the document-level unknown-key rule this table
+	// omits.
+	OpGetIssue: {CodeInvalidArgument, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// No 400 of its own: the operation takes no parameters, so the only
 	// invalid_argument it can raise is the document-level unknown-query-key
 	// rule this table deliberately omits.

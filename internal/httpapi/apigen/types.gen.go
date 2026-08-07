@@ -758,6 +758,15 @@ type ListIssuesParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// GetIssueParams defines parameters for GetIssue.
+type GetIssueParams struct {
+	// IncludeComments Populate `comments` with the issue's full comment bodies. When it is honored `comments_omitted` is false, so a client is never left to guess whether an absent list means "no comments" or "not asked for".
+	IncludeComments *bool `form:"include_comments,omitempty" json:"include_comments,omitempty"`
+
+	// IncludeDependents Populate `dependents` with the issues that depend on this one, each carrying its edge type — the shape `dependencies` already carries. Default false, for `include_comments`'s reason.
+	IncludeDependents *bool `form:"include_dependents,omitempty" json:"include_dependents,omitempty"`
+}
+
 // QueryIssuesParams defines parameters for QueryIssues.
 type QueryIssuesParams struct {
 	// Q The query expression, e.g. `status=open AND priority>1` or `type=bug OR label=urgent`. Blank, unparseable, or naming a field or operator the language does not have is a 400 `invalid_argument` with `param: "q"` and `reason: "invalid_value"`.

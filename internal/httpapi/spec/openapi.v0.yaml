@@ -56,9 +56,8 @@ info:
       `reason: "unknown_parameter"` and `param` naming the offending key.
       Operations with no parameters at all (`GET /healthz`,
       `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
-      `GET /v0/beads/issues/{id}`, `POST /v0/beads/issues/{id}:claim`,
-      `POST /v0/beads/issues:sweep`, `POST /v0/beads/issues:delete`,
-      `GET /v0/beads/config`,
+      `POST /v0/beads/issues/{id}:claim`, `POST /v0/beads/issues:sweep`,
+      `POST /v0/beads/issues:delete`, `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`) reject every query key the same way.
 
     * **Request media type.** Every operation that carries a request body
@@ -1204,16 +1203,34 @@ paths:
         fallback when no issue matches.
 
 
-        COMMENT BODIES AND DEPENDENTS ARE NOT REACHABLE OVER v0. This operation
-        takes no query parameters, and every query key is rejected, so there is
-        no way to ask for them: `comments` and `dependents` are always absent,
-        and `comment_count`, `dependent_count` and `comments_omitted` are what
-        this surface reports about them. A workflow that must read comment text
-        keeps using `bd show --json --include-comments` for now. Adding
-        `include_comments` / `include_dependents` parameters later is additive
-        and needs no schema change — the fields are already specified.
+        COMMENT BODIES AND DEPENDENTS ARE ASKED FOR, NEVER VOLUNTEERED. They
+        are the two expensive row lists on this read, so each is absent unless
+        the request sets the parameter that populates it, and a caller that
+        wants only the cardinalities reads `comment_count`, `dependent_count`
+        and `comments_omitted` and pays for neither. A request that sets
+        neither parameter is answered exactly as this operation answered it
+        before the parameters existed.
       parameters:
         - $ref: '#/components/parameters/IssueID'
+        - name: include_comments
+          in: query
+          description: >-
+            Populate `comments` with the issue's full comment bodies. When it
+            is honored `comments_omitted` is false, so a client is never left
+            to guess whether an absent list means "no comments" or "not asked
+            for".
+          schema:
+            type: boolean
+            default: false
+        - name: include_dependents
+          in: query
+          description: >-
+            Populate `dependents` with the issues that depend on this one, each
+            carrying its edge type — the shape `dependencies` already carries.
+            Default false, for `include_comments`'s reason.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: The issue.
@@ -1221,6 +1238,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IssueDetails'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2610,19 +2629,18 @@ components:
         comments:
           type: array
           description: >-
-            NOT POPULATED IN v0 — `getIssue` has no parameter that requests
-            comment bodies and rejects every query key, so this is always
-            absent. Use `comment_count` and `comments_omitted`. Documented
-            because the struct carries the field and a later version may add
-            the parameter that fills it.
+            The issue's comment bodies. Populated only when the request sets
+            `getIssue`'s `include_comments`; absent otherwise, which is what
+            `comment_count` and `comments_omitted` report about.
           items: { $ref: '#/components/schemas/Comment' }
         # --- added by IssueDetails ---
         dependents:
           type: array
           description: >-
-            Issues that depend on this one, each carrying its edge type. NOT
-            POPULATED IN v0, for the same reason as `comments`: use
-            `dependent_count`.
+            Issues that depend on this one, each carrying its edge type.
+            Populated only when the request sets `getIssue`'s
+            `include_dependents`; absent otherwise, where `dependent_count` is
+            the cardinality.
           items: { $ref: '#/components/schemas/IssueWithDependencyMetadata' }
         parent:
           type: string
@@ -2640,10 +2658,9 @@ components:
           type: boolean
           description: >-
             True when `comment_count` is nonzero and `comments` was left out —
-            which over v0 HTTP is every such issue, since bodies cannot be
-            requested. Without it, an absent `comments` key is ambiguous
-            between "no comments" and "comments not included in this
-            response".
+            every such issue on a request that did not set `include_comments`.
+            Without it, an absent `comments` key is ambiguous between "no
+            comments" and "comments not included in this response".
         epic_total_children:
           type: integer
         epic_closed_children:
