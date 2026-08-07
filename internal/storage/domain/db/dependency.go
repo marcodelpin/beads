@@ -151,6 +151,9 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		depid.New(dep.IssueID, dep.DependsOnID), dep.IssueID, dep.DependsOnID, string(dep.Type),
 		time.Now().UTC(), actor, metadata, dep.ThreadID,
 	); err != nil {
+		if missing := r.classifyMissingEndpoint(ctx, dep, opts.UseWispsTable, targetCol, err); missing != nil {
+			return missing
+		}
 		return fmt.Errorf("db: DependencySQLRepository.Insert: %w", err)
 	}
 	if dep.Type == types.DepParentChild {
@@ -216,6 +219,60 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked (affected): %w", err)
 	}
 	return nil
+}
+
+// classifyMissingEndpoint names the endpoint behind a foreign-key refusal,
+// re-read on the same runner that refused the insert. The driver's message
+// names its constraint, but taking identity out of driver prose is the thing a
+// typed refusal exists to avoid, so the two endpoints are read back instead —
+// only on the refusal path, so a bulk add still pays no probe per edge.
+//
+// The refusal is never downgraded to a probe's failure: anything the reads
+// cannot settle returns nil and the caller keeps the original error.
+func (r *dependencySQLRepositoryImpl) classifyMissingEndpoint(ctx context.Context, dep *types.Dependency, sourceIsWisp bool, targetCol string, insertErr error) error {
+	if !dberrors.IsMissingForeignKeyTarget(insertErr) {
+		return nil
+	}
+	sourceTable := "issues"
+	if sourceIsWisp {
+		sourceTable = "wisps"
+	}
+	sourceExists, probeErr := r.rowExists(ctx, sourceTable, dep.IssueID)
+	if probeErr != nil {
+		return nil
+	}
+	if !sourceExists {
+		return issueops.MissingDependencySource(dep.IssueID, dep.DependsOnID)
+	}
+
+	var targetTable string
+	switch targetCol {
+	case "depends_on_issue_id":
+		targetTable = "issues"
+	case "depends_on_wisp_id":
+		targetTable = "wisps"
+	default:
+		return nil
+	}
+	targetExists, probeErr := r.rowExists(ctx, targetTable, dep.DependsOnID)
+	if probeErr != nil || targetExists {
+		return nil
+	}
+	return issueops.MissingDependencyTarget(dep.IssueID, dep.DependsOnID)
+}
+
+func (r *dependencySQLRepositoryImpl) rowExists(ctx context.Context, table, id string) (bool, error) {
+	var probe int
+	//nolint:gosec // G201: table is one of the two hardcoded plane tables
+	err := r.runner.QueryRowContext(ctx, fmt.Sprintf("SELECT 1 FROM %s WHERE id = ? LIMIT 1", table), id).Scan(&probe)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func (r *dependencySQLRepositoryImpl) ValidateBlockingHierarchy(ctx context.Context, dep *types.Dependency) error {

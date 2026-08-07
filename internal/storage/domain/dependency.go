@@ -17,8 +17,10 @@ import (
 // values, so every domain.ErrX reference and every errors.Is site keeps
 // matching the identical error.
 var (
-	ErrSelfDependency  = issueops.ErrSelfDependency
-	ErrDependencyCycle = issueops.ErrDependencyCycle
+	ErrSelfDependency           = issueops.ErrSelfDependency
+	ErrDependencyCycle          = issueops.ErrDependencyCycle
+	ErrDependencySourceNotFound = issueops.ErrDependencySourceNotFound
+	ErrDependencyTargetNotFound = issueops.ErrDependencyTargetNotFound
 )
 
 // cycleError carries a fully-formatted cycle-rejection message while unwrapping
@@ -58,6 +60,11 @@ type DependencyTypeConflictError = issueops.DependencyTypeConflictError
 // blocking hierarchy impossible to complete. See
 // issueops.DependencyHierarchyConflictError.
 type DependencyHierarchyConflictError = issueops.DependencyHierarchyConflictError
+
+// DependencyEndpointNotFoundError reports which endpoint of a refused edge this
+// database could see the absence of. See
+// issueops.DependencyEndpointNotFoundError.
+type DependencyEndpointNotFoundError = issueops.DependencyEndpointNotFoundError
 
 type DepDirection int
 
@@ -276,13 +283,18 @@ func (u *dependencyUseCaseImpl) add(ctx context.Context, dep *types.Dependency, 
 	if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp, HierarchyValidated: true, CycleValidated: true, EmitEvent: true}); err != nil {
 		// The retype conflict is a user-facing error whose message already
 		// matches embedded verbatim; pass it through unwrapped so the CLI does
-		// not prepend "add dep: insert:" (#4547 F-1).
+		// not prepend "add dep: insert:" (#4547 F-1). The endpoint-existence
+		// refusals are here for the same reason.
 		var conflict *DependencyTypeConflictError
 		if errors.As(err, &conflict) {
 			return err
 		}
 		var hierarchyConflict *DependencyHierarchyConflictError
 		if errors.As(err, &hierarchyConflict) {
+			return err
+		}
+		var missingEndpoint *DependencyEndpointNotFoundError
+		if errors.As(err, &missingEndpoint) {
 			return err
 		}
 		return fmt.Errorf("add dep: insert: %w", err)
@@ -718,6 +730,10 @@ func (u *dependencyUseCaseImpl) AddDependencies(ctx context.Context, deps []*typ
 			}); err != nil {
 				var hierarchyConflict *DependencyHierarchyConflictError
 				if errors.As(err, &hierarchyConflict) {
+					return BulkAddDepsResult{}, err
+				}
+				var missingEndpoint *DependencyEndpointNotFoundError
+				if errors.As(err, &missingEndpoint) {
 					return BulkAddDepsResult{}, err
 				}
 				return BulkAddDepsResult{}, fmt.Errorf("add deps[%d]: insert: %w", i, err)

@@ -191,6 +191,51 @@ func (e *DependencyTypeConflictError) Error() string {
 		e.IssueID, e.DependsOnID, e.ExistingType, e.RequestedType)
 }
 
+// ErrDependencySourceNotFound is returned when an edge's SOURCE names no row
+// this database holds. An edge follows its source, so there is no plane for it
+// to land in and no event stream to record it on.
+var ErrDependencySourceNotFound = errors.New("dependency source not found")
+
+// ErrDependencyTargetNotFound is returned when an edge's TARGET names no row
+// this database holds AND is one whose absence this database can SEE: an id in
+// its own namespace, carrying no "external:" marker. An "external:" reference
+// and an id belonging to another repository are accepted as external targets,
+// so neither raises this.
+//
+// It is a separate sentinel from the source's because the two are separate
+// answers. A ghost source is always a bad id; a target is only refused when
+// this database is the one that would have held it, which is a narrower claim
+// and the one a caller has to reason about before retrying.
+var ErrDependencyTargetNotFound = errors.New("dependency target not found")
+
+// DependencyEndpointNotFoundError reports which endpoint of a refused edge was
+// absent, read inside the transaction that refused it. It wraps the refusal
+// rather than replacing it, so the sentinel still matches, the message stays
+// what it was, and a caller classifies the refusal from typed fields instead of
+// parsing prose — the ClaimConflictError arrangement, applied to the graph.
+//
+// It carries the whole edge rather than only the missing id because the request
+// is all-or-nothing: the refusal is the REQUEST's, so a caller reporting which
+// of its own edges was rejected has to find it by both endpoints.
+type DependencyEndpointNotFoundError struct {
+	// IssueID and DependsOnID name the refused edge.
+	IssueID     string
+	DependsOnID string
+	// MissingID is the endpoint that named no row: IssueID for a ghost source,
+	// DependsOnID for a missing target.
+	MissingID string
+	// Err is the wrapped refusal. It matches ErrDependencySourceNotFound or
+	// ErrDependencyTargetNotFound.
+	Err error
+}
+
+func (e *DependencyEndpointNotFoundError) Error() string {
+	return fmt.Sprintf("issue %s not found", e.MissingID)
+}
+
+// Unwrap makes DependencyEndpointNotFoundError match the refusal it carries.
+func (e *DependencyEndpointNotFoundError) Unwrap() error { return e.Err }
+
 // DependencyHierarchyConflictError is returned when a blocking dependency
 // would gate an issue on one of its own ancestors or descendants. Either shape
 // can never clear under the parent-child close/blocking semantics.

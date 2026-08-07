@@ -971,7 +971,7 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 	// own tx and hand the row to AddDependencyInTx.
 	crossTierTarget := kind != issueops.DepTargetExternal && t.txFor(targetTable) != t.txFor(table)
 	if crossTierTarget {
-		precheck, err := t.readDepTargetForPrecheck(ctx, targetTable, dep.DependsOnID)
+		precheck, err := t.readDepTargetForPrecheck(ctx, dep.IssueID, targetTable, dep.DependsOnID)
 		if err != nil {
 			return err
 		}
@@ -1062,14 +1062,14 @@ func (t *doltTransaction) addWispDepSuspendingIssueTargetFK(ctx context.Context,
 // readDepTargetForPrecheck validates a dependency target on the transaction
 // that owns its table and returns the row fields AddDependencyInTx needs when
 // it cannot read the target itself (cross-tier edges).
-func (t *doltTransaction) readDepTargetForPrecheck(ctx context.Context, targetTable, id string) (*issueops.DepTargetPrecheck, error) {
+func (t *doltTransaction) readDepTargetForPrecheck(ctx context.Context, sourceID, targetTable, id string) (*issueops.DepTargetPrecheck, error) {
 	var p issueops.DepTargetPrecheck
 	//nolint:gosec // G201: targetTable is "issues" or "wisps"
 	err := t.txFor(targetTable).QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT issue_type, status FROM %s WHERE id = ?`, targetTable), id,
 	).Scan(&p.IssueType, &p.Status)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("issue %s not found", id)
+		return nil, issueops.MissingDependencyTarget(sourceID, id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to check target issue existence: %w", err)
