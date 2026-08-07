@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`bd search` now includes closed issues by default** (bd-t5yex). The
+  dominant real-world search query is "was this already found/filed/fixed?" —
+  exactly the query where silently excluding closed issues produced a false
+  "no" (downstream repos grew shell wrappers purely to undo the old default).
+  `bd list` keeps its open-only default. Narrow explicitly with `--status open`
+  (or any status list) where the old behavior is wanted; `--status all` still
+  works and is now redundant. Applies to both the embedded and proxied-server
+  paths.
+
+  Two consequences to know: matches beyond `--limit` (default 50) are dropped
+  under a status-blind sort (priority, then created), so a broad query on a
+  large DB can now fill the page with closed matches and silently drop open
+  ones — use `--status open` or raise `--limit` when hunting live work. And
+  `bd query` (plus the HTTP `q=` endpoint) deliberately keeps its closed-
+  exclusion default with opt-in `--all`; only `bd search` changed.
+
 ### Fixed
 
 - **`bd delete --cascade` no longer marks LIVE issues as deleted in other
