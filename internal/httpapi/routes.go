@@ -361,6 +361,17 @@ var routeTable = []route{
 		handler:     (*Server).handleDelete,
 	},
 	{
+		op:     OpAddDependencies,
+		method: http.MethodPost,
+		// A collection-level custom method beside :remove below, and a LITERAL
+		// for the same reason: pattern and specPath agree, so no declaration is
+		// needed and the router registers the documented path itself.
+		pattern:     "/v0/beads/dependencies:add",
+		capability:  "dependencies.add",
+		implemented: true,
+		handler:     (*Server).handleAddDependencies,
+	},
+	{
 		op:     OpRemoveDependency,
 		method: http.MethodPost,
 		// A collection-level custom method on the dependency collection,

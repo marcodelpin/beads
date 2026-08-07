@@ -78,6 +78,209 @@ func (sp *serveProcess) removeDependency(t *testing.T, issueID, dependsOnID, act
 		fmt.Sprintf(`{"actor":%q,"issue_id":%q,"depends_on_id":%q}`, actor, issueID, dependsOnID))
 }
 
+func (sp *serveProcess) addDependencies(t *testing.T, actor string, edges ...string) (int, map[string]any) {
+	t.Helper()
+	return sp.postJSON(t, "/v0/beads/dependencies:add",
+		fmt.Sprintf(`{"actor":%q,"edges":[%s]}`, actor, strings.Join(edges, ",")))
+}
+
+func edgeJSON(issueID, dependsOnID, edgeType string) string {
+	return fmt.Sprintf(`{"issue_id":%q,"depends_on_id":%q,"type":%q}`, issueID, dependsOnID, edgeType)
+}
+
+func TestProxiedServerServeAddDependencies(t *testing.T) {
+	requireSharedProxiedServer(t)
+	t.Parallel()
+	bd := buildEmbeddedBD(t)
+	p := newSharedProxiedProject(t, bd, "srvdepadd")
+	sp := startServe(t, bd, p.dir, bdProxiedEnv(p.dir))
+
+	// THE ATOMICITY PROOF, and the thing a fake role structurally cannot own.
+	// A batch whose LATER edge closes a cycle is refused, and the earlier edges
+	// — which were individually fine and really were written inside the
+	// transaction — must be gone when the graph is read back. A handler that
+	// forwarded the batch to a role committing per edge would pass every pure
+	// test in internal/httpapi and leave half a graph here.
+	t.Run("a mid-batch refusal leaves zero edges", func(t *testing.T) {
+		a := bdProxiedCreate(t, bd, p.dir, "atomicity a", "-p", "1")
+		b := bdProxiedCreate(t, bd, p.dir, "atomicity b", "-p", "1")
+		c := bdProxiedCreate(t, bd, p.dir, "atomicity c", "-p", "1")
+
+		status, body := sp.addDependencies(t, "http-agent",
+			edgeJSON(a.ID, b.ID, "blocks"),
+			edgeJSON(b.ID, c.ID, "blocks"),
+			// The closing edge. Nothing before it is wrong; the SET is.
+			edgeJSON(c.ID, a.ID, "blocks"),
+		)
+		if status != http.StatusConflict {
+			t.Fatalf("status = %d, want 409: %v", status, body)
+		}
+		if body["code"] != "dependency_cycle" {
+			t.Fatalf("code = %v, want dependency_cycle", body["code"])
+		}
+		if body["request_id"] == nil {
+			t.Error("no request_id on the problem body")
+		}
+
+		for _, id := range []string{a.ID, b.ID, c.ID} {
+			if edges := sp.storedEdges(t, id); len(edges) != 0 {
+				t.Errorf("the refused batch left %d edge(s) on %s: %v — the request is all-or-nothing", len(edges), id, edges)
+			}
+		}
+		// And the CLI reads the same empty graph through its own path.
+		if out := bdProxiedDep(t, bd, p.dir, "list", a.ID); strings.Contains(out, b.ID) {
+			t.Errorf("`bd dep list` shows an edge from the refused batch:\n%s", out)
+		}
+	})
+
+	t.Run("every edge of an accepted batch lands", func(t *testing.T) {
+		a := bdProxiedCreate(t, bd, p.dir, "batch source", "-p", "1")
+		b := bdProxiedCreate(t, bd, p.dir, "batch target", "-p", "1")
+		c := bdProxiedCreate(t, bd, p.dir, "batch other target", "-p", "1")
+
+		status, body := sp.addDependencies(t, "http-agent",
+			edgeJSON(a.ID, b.ID, "blocks"),
+			edgeJSON(a.ID, c.ID, "related"),
+		)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %v", status, body)
+		}
+		added, ok := body["added"].([]any)
+		if !ok || len(added) != 2 {
+			t.Fatalf("added = %#v, want the two requested edges", body["added"])
+		}
+
+		stored := map[string]string{}
+		for _, edge := range sp.storedEdges(t, a.ID) {
+			target, _ := edge["depends_on_id"].(string)
+			edgeType, _ := edge["type"].(string)
+			stored[target] = edgeType
+		}
+		if stored[b.ID] != "blocks" || stored[c.ID] != "related" {
+			t.Errorf("the graph holds %v, want %s->blocks and %s->related", stored, b.ID, c.ID)
+		}
+
+		// A same-type re-add refuses nothing and writes nothing new.
+		status, body = sp.addDependencies(t, "http-agent", edgeJSON(a.ID, b.ID, "blocks"))
+		if status != http.StatusOK {
+			t.Fatalf("idempotent re-add: status = %d, want 200: %v", status, body)
+		}
+		if edges := sp.storedEdges(t, a.ID); len(edges) != 2 {
+			t.Errorf("the re-add changed the edge count: %v", edges)
+		}
+	})
+
+	// The typed 409 the wire tests drive with a fabricated error, produced by
+	// the real role against real Dolt: the members must arrive from the
+	// transaction that refused, not from a fake that was told what to say.
+	t.Run("a retype is dependency_exists carrying both types", func(t *testing.T) {
+		a := bdProxiedCreate(t, bd, p.dir, "retype source", "-p", "1")
+		b := bdProxiedCreate(t, bd, p.dir, "retype target", "-p", "1")
+		if status, body := sp.addDependencies(t, "http-agent", edgeJSON(a.ID, b.ID, "related")); status != http.StatusOK {
+			t.Fatalf("seed: status = %d, want 200: %v", status, body)
+		}
+
+		status, body := sp.addDependencies(t, "http-agent", edgeJSON(a.ID, b.ID, "blocks"))
+		if status != http.StatusConflict {
+			t.Fatalf("status = %d, want 409: %v", status, body)
+		}
+		if body["code"] != "dependency_exists" {
+			t.Fatalf("code = %v, want dependency_exists", body["code"])
+		}
+		if body["existing_type"] != "related" || body["requested_type"] != "blocks" {
+			t.Errorf("existing/requested = %v/%v, want related/blocks — read from the typed error, not the prose",
+				body["existing_type"], body["requested_type"])
+		}
+		// The stored edge is untouched.
+		edges := sp.storedEdges(t, a.ID)
+		if len(edges) != 1 || edges[0]["type"] != "related" {
+			t.Errorf("the refused retype changed the graph: %v", edges)
+		}
+	})
+
+	// The hierarchy refusal, folded into dependency_cycle and distinguished by
+	// the PRESENCE of its three members. Only a real store can build the
+	// parent-child hierarchy the role walks.
+	t.Run("a blocker that is an ancestor carries the hierarchy members", func(t *testing.T) {
+		parent := bdProxiedCreate(t, bd, p.dir, "hierarchy parent", "-p", "1")
+		child := bdProxiedCreate(t, bd, p.dir, "hierarchy child", "-p", "1")
+		bdProxiedDep(t, bd, p.dir, "add", child.ID, parent.ID, "--type", "parent-child")
+
+		status, body := sp.addDependencies(t, "http-agent", edgeJSON(child.ID, parent.ID, "blocks"))
+		if status != http.StatusConflict {
+			t.Fatalf("status = %d, want 409: %v", status, body)
+		}
+		if body["code"] != "dependency_cycle" {
+			t.Fatalf("code = %v, want dependency_cycle", body["code"])
+		}
+		if body["issue_id"] != child.ID || body["blocker_id"] != parent.ID {
+			t.Errorf("issue_id/blocker_id = %v/%v, want %s/%s", body["issue_id"], body["blocker_id"], child.ID, parent.ID)
+		}
+		if body["blocker_is_ancestor"] != true {
+			t.Errorf("blocker_is_ancestor = %v, want true — the blocker is the parent", body["blocker_is_ancestor"])
+		}
+	})
+
+	// The endpoint refusal is NARROW, and only a real database can show where
+	// the line falls: a target this database WOULD have held and does not is a
+	// 400, while an id whose prefix belongs to another repository is a
+	// legitimate external target and is accepted. A blanket unknown-target rule
+	// would break every cross-repo edge, so both halves are pinned together.
+	t.Run("a locally-absent target is a 400 and writes nothing", func(t *testing.T) {
+		a := bdProxiedCreate(t, bd, p.dir, "ghost endpoint source", "-p", "2")
+		b := bdProxiedCreate(t, bd, p.dir, "ghost endpoint target", "-p", "2")
+
+		status, body := sp.addDependencies(t, "http-agent",
+			edgeJSON(a.ID, b.ID, "blocks"),
+			edgeJSON(a.ID, p.prefix+"-nosuchissue", "blocks"),
+		)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %v", status, body)
+		}
+		if body["code"] != "invalid_argument" {
+			t.Errorf("code = %v, want invalid_argument", body["code"])
+		}
+		// The refusal names the edge it is about, found by BOTH endpoints.
+		if body["param"] != "edges[1].depends_on_id" {
+			t.Errorf("param = %v, want edges[1].depends_on_id", body["param"])
+		}
+		if edges := sp.storedEdges(t, a.ID); len(edges) != 0 {
+			t.Errorf("the refused batch left edges behind: %v", edges)
+		}
+	})
+
+	t.Run("a ghost source is a 400 whatever its prefix", func(t *testing.T) {
+		b := bdProxiedCreate(t, bd, p.dir, "ghost source target", "-p", "2")
+
+		status, body := sp.addDependencies(t, "http-agent", edgeJSON(p.prefix+"-nosuchsource", b.ID, "blocks"))
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %v", status, body)
+		}
+		if body["param"] != "edges[0].issue_id" {
+			t.Errorf("param = %v, want edges[0].issue_id — an edge follows its source", body["param"])
+		}
+	})
+
+	t.Run("an external or foreign target is accepted", func(t *testing.T) {
+		a := bdProxiedCreate(t, bd, p.dir, "external target source", "-p", "2")
+
+		status, body := sp.addDependencies(t, "http-agent",
+			edgeJSON(a.ID, "external:JIRA-9", "blocks"),
+			// Another repository's namespace: this database is not the one that
+			// would have held it, so its absence here is not an absence.
+			edgeJSON(a.ID, "otherrepo-9", "related"),
+		)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %v", status, body)
+		}
+		if edges := sp.storedEdges(t, a.ID); len(edges) != 2 {
+			t.Errorf("the open-set targets did not land: %v", edges)
+		}
+	})
+
+	sp.shutdown(t)
+}
+
 func TestProxiedServerServeRemoveDependency(t *testing.T) {
 	requireSharedProxiedServer(t)
 	t.Parallel()
