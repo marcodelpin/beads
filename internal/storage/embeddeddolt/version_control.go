@@ -561,14 +561,18 @@ func (s *EmbeddedDoltStore) PullRemote(ctx context.Context, remote string) error
 }
 
 func (s *EmbeddedDoltStore) Fetch(ctx context.Context, peer string) error {
-	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
-		return versioncontrolops.Fetch(ctx, db, peer, remoteAuthUser())
+	return s.withPeerAuth(ctx, peer, func(user string) error {
+		return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
+			return versioncontrolops.Fetch(ctx, db, peer, user)
+		})
 	})
 }
 
 func (s *EmbeddedDoltStore) PushTo(ctx context.Context, peer string) error {
-	return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
-		return versioncontrolops.Push(ctx, db, peer, s.branch, remoteAuthUser())
+	return s.withPeerAuth(ctx, peer, func(user string) error {
+		return s.withMutatingDBConn(ctx, func(db versioncontrolops.DBConn) error {
+			return versioncontrolops.Push(ctx, db, peer, s.branch, user)
+		})
 	})
 }
 
@@ -581,20 +585,22 @@ func (s *EmbeddedDoltStore) PullFrom(ctx context.Context, peer string) ([]storag
 
 	preHead := s.preMergeHead(ctx)
 	var conflicts []storage.Conflict
-	err := s.withMutatingPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
-		if pullErr := versioncontrolops.Pull(ctx, db, peer, s.branch, remoteAuthUser()); pullErr != nil {
-			// bd-578h9.15: the settle machinery aborts a merge it cannot
-			// auto-resolve before returning, so dolt_conflicts is already
-			// empty here; the conflicts arrive captured pre-abort inside
-			// MergeConflictsError instead.
-			var mce *versioncontrolops.MergeConflictsError
-			if errors.As(pullErr, &mce) {
-				conflicts = mce.Conflicts
-				return nil
+	err := s.withPeerAuth(ctx, peer, func(user string) error {
+		return s.withMutatingPinnedDBConn(ctx, func(db versioncontrolops.DBConn) error {
+			if pullErr := versioncontrolops.Pull(ctx, db, peer, s.branch, user); pullErr != nil {
+				// bd-578h9.15: the settle machinery aborts a merge it cannot
+				// auto-resolve before returning, so dolt_conflicts is already
+				// empty here; the conflicts arrive captured pre-abort inside
+				// MergeConflictsError instead.
+				var mce *versioncontrolops.MergeConflictsError
+				if errors.As(pullErr, &mce) {
+					conflicts = mce.Conflicts
+					return nil
+				}
+				return fmt.Errorf("pull from %s: %w", peer, pullErr)
 			}
-			return fmt.Errorf("pull from %s: %w", peer, pullErr)
-		}
-		return nil
+			return nil
+		})
 	})
 	if err != nil || len(conflicts) > 0 {
 		// Conflicted pulls skip the recompute: the operator resolves first,
