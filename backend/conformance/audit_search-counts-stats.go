@@ -38,6 +38,7 @@ func RunAudit_search_counts_stats(t *testing.T, f Factory) {
 	t.Run("SearchSortByTitleCaseFolded", func(t *testing.T) { testAuditSearchSortByTitleCaseFolded(t, f) })
 	t.Run("SearchSortTieBreakSurvivesReversal", func(t *testing.T) { testAuditSearchSortTieBreakSurvivesReversal(t, f) })
 	t.Run("SearchSortNullsDirectional", func(t *testing.T) { testAuditSearchSortNullsDirectional(t, f) })
+	t.Run("SearchSortByIDCompleteSet", func(t *testing.T) { testAuditSearchSortByIDCompleteSet(t, f) })
 	t.Run("SearchTextIDBranchExternalRef", func(t *testing.T) { testAuditSearchTextIDBranchExternalRef(t, f) })
 	t.Run("SearchIDPrefixCaseSensitive", func(t *testing.T) { testAuditSearchIDPrefixCaseSensitive(t, f) })
 	t.Run("SearchParentDescendantCaseSensitive", func(t *testing.T) { testAuditSearchParentDescendantCaseSensitive(t, f) })
@@ -516,6 +517,29 @@ func testAuditSearchSortNullsDirectional(t *testing.T, f Factory) {
 	want = []string{"nl-closed-old", "nl-closed-new", "nl-open-a", "nl-open-b"}
 	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
 		t.Errorf("reversed assignee-sort order = %v, want %v (unassigned last on DESC)", got, want)
+	}
+}
+
+// A search with SortBy="id" succeeds and answers the complete matching set. "id" is
+// the one key sqlbuild renders no ORDER BY for at all — IsGoSideSort suppresses the
+// clause and "id" is deliberately absent from SortDefs — so a store that validated
+// the key against SortDefs would refuse it, and a store that trimmed the set in its
+// own byte order would break the id sort for every caller. Sequence is not asserted:
+// the natural-numeric display order is owned above the store (internal/workapi/sort.go
+// CompareIssuesBy via utils.NaturalCompareIDs), which is why callers push Limit 0 here.
+func testAuditSearchSortByIDCompleteSet(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	// Natural order (test-2, test-9, test-10) and byte order (test-10, test-2, test-9) differ.
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-9", Title: "nine"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-10", Title: "ten"}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-2", Title: "two"}), "a"))
+
+	results, err := s.SearchIssues(c, "", types.IssueFilter{SortBy: "id", Limit: 0})
+	must(t, err)
+	want := []string{"test-10", "test-2", "test-9"}
+	if got := issueIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("SortBy=id set = %v, want %v (complete matching set)", got, want)
 	}
 }
 
