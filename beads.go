@@ -5,6 +5,11 @@
 // Go-based extensions that want to use bd's storage layer programmatically.
 //
 // For a working extension example, see examples/bd-example-extension-go.
+//
+// This is the CONSUMER surface: it opens and uses bd's own storage. To
+// IMPLEMENT a storage backend out of tree — and prove it with the
+// conformance suite — use github.com/steveyegge/beads/backend and
+// github.com/steveyegge/beads/backend/conformance instead.
 package beads
 
 import (
@@ -25,7 +30,10 @@ import (
 	"github.com/steveyegge/beads/internal/workspacegate"
 )
 
-// Storage is the interface for beads storage operations
+// Storage is the interface for beads storage operations. Its
+// RunInTransaction callback is invoked at most once per public call; callers
+// retry it explicitly after a callback has started when their operation is
+// safe to repeat.
 type Storage = beads.Storage
 
 func configuredBackendUnavailable(backend string) error {
@@ -83,6 +91,12 @@ type UpdateIssueOptions = storage.UpdateIssueOptions
 // starting a walk from the beginning of the thread. Exported so consumers can
 // name it without importing internal/storage.
 type CommentPageCursor = storage.CommentPageCursor
+
+// ErrUnsupported reports that an operation is unavailable for a storage
+// backend — for example Storage.IssueLifecycle on a backend that cannot serve
+// guarded issue mutations. Exported so consumers can match it with errors.As
+// without importing internal/storage.
+type ErrUnsupported = storage.ErrUnsupported
 
 // RemoteStore provides dolt remote management and replication operations.
 // Use type assertion on a Storage value to access these methods:
@@ -182,7 +196,8 @@ func AsDependentQuerier(s Storage) (DependentQuerier, bool) {
 // and ErrNotClaimable — the ones ParseClaimConflict recovers assignee/status
 // detail from — are re-exported with the other error sentinels below.
 var (
-	ErrCircuitOpen = dolt.ErrCircuitOpen
+	ErrCircuitOpen         = dolt.ErrCircuitOpen
+	ErrCommitIndeterminate = storage.ErrCommitIndeterminate
 )
 
 // IssueClaimer is the atomic-claim surface of a Storage. ClaimIssue and
