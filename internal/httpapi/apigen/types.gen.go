@@ -243,7 +243,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -516,6 +516,24 @@ type RememberedMemory struct {
 
 	// Value The stored content, echoed verbatim. Always present, and never withheld — this plane has no redaction; see the operation description.
 	Value string `json:"value"`
+}
+
+// ReopenIssueRequest defines model for ReopenIssueRequest.
+type ReopenIssueRequest struct {
+	// Actor Who is reopening the issue. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value reaches the `reopened` event's attribution and the storage commit message, so an unvalidated newline would forge audit-trail lines.
+	Actor string `json:"actor"`
+
+	// Reason Why the issue is being reopened. Recorded on the `reopened` EVENT this move records — not on a field of the issue, and not carried in the response, so a caller that wants it back reads the issue's events. Refused for control characters, and bounded by what the column holds rather than by the number above.
+	Reason *string `json:"reason,omitempty"`
+}
+
+// ReopenIssueResponse defines model for ReopenIssueResponse.
+type ReopenIssueResponse struct {
+	// AlreadyOpen True when the issue was not in a done status and this call changed nothing — idempotent, mirroring `CloseIssueResponse.already_closed` and `ClaimResponse.already_claimed`. The response still carries the row.
+	AlreadyOpen bool `json:"already_open"`
+
+	// Issue A tracked work item. Property semantics documented here apply to every schema that repeats them below.
+	Issue Issue `json:"issue"`
 }
 
 // Setting One entry of the workspace's stored settings plane.
@@ -971,6 +989,9 @@ type ClaimIssueJSONRequestBody = ClaimRequest
 
 // CloseIssueJSONRequestBody defines body for CloseIssue for application/json ContentType.
 type CloseIssueJSONRequestBody = CloseIssueRequest
+
+// ReopenIssueJSONRequestBody defines body for ReopenIssue for application/json ContentType.
+type ReopenIssueJSONRequestBody = ReopenIssueRequest
 
 // BatchCreateIssuesJSONRequestBody defines body for BatchCreateIssues for application/json ContentType.
 type BatchCreateIssuesJSONRequestBody = BatchCreateRequest

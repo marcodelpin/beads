@@ -168,7 +168,11 @@ const (
 	// status patch because Close carries semantics a patch has nowhere to put —
 	// the reason and session under first-close-wins, the done-status
 	// normalization, and the close policy vocabulary.
-	OpCloseIssue           = "closeIssue"
+	OpCloseIssue = "closeIssue"
+	// OpReopenIssue is the close's mirror, and it completes the lifecycle pair
+	// so a recovery flow works end to end over this surface. It is the one
+	// write here with no conflict code: reopen has no policy guard.
+	OpReopenIssue          = "reopenIssue"
 	OpListSettings         = "listSettings"
 	OpGetSetting           = "getSetting"
 	OpListDependencyCycles = "listDependencyCycles"
@@ -309,6 +313,15 @@ var operationCodes = map[string][]Code{
 	// `already_closed`, the claim's answer to the same question.
 	OpCloseIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeNotClosable,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
+	// NO 409, and the absence is the point. Close has a policy guard — open
+	// children, a live blocker — and reopen is the direction that takes an issue
+	// OUT of the done category rather than putting it in, so there is no state
+	// of the graph that can refuse it and nothing to name. The idempotent case
+	// is a 200 carrying `already_open`, not a conflict.
+	OpReopenIssue: {
+		CodeInvalidArgument, CodeNotFound,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
 	// No not_found. The role refuses an edge whose target names nothing, and

@@ -651,8 +651,10 @@ func TestCustomMethodsNarrowThePOSTSurface(t *testing.T) {
 		"/v0/beads/issues/bd-1:claim-not", // a suffix that merely starts the same
 		"/v0/beads/issues/bd-1:close-not",
 		"/v0/beads/issues/bd-1:unclaim",
-		"/v0/beads/issues/bd-1:reopen", // a verb this build does not serve
-		"/v0/beads/issues/bd-1:delete",
+		"/v0/beads/issues/:reopen",
+		"/v0/beads/issues/bd-1:Reopen",
+		"/v0/beads/issues/bd-1:reopened",
+		"/v0/beads/issues/bd-1:delete", // a verb this build does not serve
 	} {
 		t.Run(path, func(t *testing.T) {
 			issues := &fakeIssues{issue: seededIssue("bd-1", "alice", types.StatusInProgress)}

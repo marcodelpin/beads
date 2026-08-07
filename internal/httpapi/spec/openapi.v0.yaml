@@ -57,7 +57,8 @@ info:
       Operations with no parameters at all (`GET /healthz`,
       `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
       `POST /v0/beads/issues/{id}:claim`,
-      `POST /v0/beads/issues/{id}:close`, `POST /v0/beads/issues:sweep`,
+      `POST /v0/beads/issues/{id}:close`,
+      `POST /v0/beads/issues/{id}:reopen`, `POST /v0/beads/issues:sweep`,
       `POST /v0/beads/issues:delete`, `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`) reject every query key the same way.
 
@@ -1398,6 +1399,98 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/issues/{id}:reopen:
+    post:
+      operationId: reopenIssue
+      summary: Reopen one issue
+      description: >-
+        Moves the literal `closed` status and every configured done status back
+        to `open`. It is `POST /v0/beads/issues/{id}:close`'s mirror, and it
+        completes the lifecycle pair so a recovery flow works end to end over
+        this surface.
+
+
+        A reopen of an issue that is NOT done changes nothing and succeeds —
+        200 with `already_open: true`, the re-claim's and the re-close's answer
+        to the same question. An agent replaying its own recovery should not
+        have to classify an error to learn it already ran.
+
+
+        Reopening CLEARS `close_reason` and `closed_by_session`, because they
+        describe a closure that no longer holds. That is what makes the close's
+        first-close-wins rule survivable: the way to write a new reason is to
+        reopen and close again, not to re-close.
+
+
+        ## Where the reason is recorded
+
+
+        On the `reopened` EVENT this move records, not on a field of the issue,
+        and the response does not carry it. A caller that wants it back reads
+        the issue's events — the same place the actor attribution for the
+        reopen lives. A reopen with no reason still records that entry; it
+        simply carries none.
+
+
+        ## No conflict to name
+
+
+        This operation documents no `409`, and the absence is deliberate:
+        reopen has no policy guard. Close has one — open children, a live
+        blocker — and reopen is the direction that removes an issue from the
+        done category rather than adding it, so there is nothing for a policy
+        to refuse.
+
+
+        ## Planes
+
+
+        The id resolves across BOTH planes, as the close does. A reopen whose
+        target is a wisp lands on the unversioned plane and records no durable
+        history entry.
+
+
+        ## Hooks and auto-commit
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only
+        durable effect is the single storage commit the role makes in its own
+        transaction.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReopenIssueRequest'
+      responses:
+        '200':
+          description: The issue is open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReopenIssueResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member, an `actor` that is empty
+            after trimming, longer than 256 bytes, or carrying control
+            characters — or a `reason` longer than the column holds or carrying
+            control characters.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -3277,7 +3370,7 @@ components:
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.get`, `issues.claim`,
-            `issues.close`,
+            `issues.close`, `issues.reopen`,
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
@@ -4233,6 +4326,48 @@ components:
             close — including an idempotent re-close — because a caller that
             bypassed the guard is exactly the caller that wants the number. An
             unforced close that got this far had none, so it reports 0.
+
+    ReopenIssueRequest:
+      type: object
+      additionalProperties: false
+      required: [actor]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
+          description: >-
+            Who is reopening the issue. `ClaimRequest.actor`'s rules exactly:
+            the server trims it, then refuses an empty result, anything longer
+            than 256 BYTES (the `maxLength` above counts characters — the byte
+            limit is the binding one), and any control character including
+            newline. The value reaches the `reopened` event's attribution and
+            the storage commit message, so an unvalidated newline would forge
+            audit-trail lines.
+        reason:
+          type: string
+          maxLength: 255
+          description: >-
+            Why the issue is being reopened. Recorded on the `reopened` EVENT
+            this move records — not on a field of the issue, and not carried in
+            the response, so a caller that wants it back reads the issue's
+            events. Refused for control characters, and bounded by what the
+            column holds rather than by the number above.
+
+    ReopenIssueResponse:
+      type: object
+      required: [issue, already_open]
+      properties:
+        issue:
+          $ref: '#/components/schemas/Issue'
+        already_open:
+          type: boolean
+          description: >-
+            True when the issue was not in a done status and this call changed
+            nothing — idempotent, mirroring `CloseIssueResponse.already_closed`
+            and `ClaimResponse.already_claimed`. The response still carries the
+            row.
 
     Problem:
       type: object

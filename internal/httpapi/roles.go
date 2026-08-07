@@ -93,11 +93,11 @@ func (c checkedBatchCreator) CreateBatch(ctx context.Context, req issueops.Creat
 
 // checkedLifecycle is the lifecycle role every mutation handler is handed.
 //
-// Close is the whole reason the type exists on this slice: handleClose writes
-// *result.Issue, which is checkedClaimer's hazard exactly. Create, Update and
-// Reopen pass through because no handler on this surface reaches them yet; each
-// grows a guard in the change that publishes its operation, rather than one
-// written speculatively against a body nobody marshals.
+// Close and Reopen are why it exists: both handlers write *result.Issue, which
+// is checkedClaimer's hazard exactly. Create and Update pass through because no
+// handler on this surface reaches them yet; each grows a guard in the change
+// that publishes its operation, rather than one written speculatively against a
+// body nobody marshals.
 type checkedLifecycle struct{ inner issueops.Lifecycle }
 
 // Create passes the request through unchanged: this surface publishes no
@@ -129,10 +129,16 @@ func (c checkedLifecycle) Close(ctx context.Context, req issueops.CloseRequest) 
 	return result, err
 }
 
-// Reopen passes the request through unchanged; reopenIssue is not published on
-// this surface yet.
+// Reopen refuses a result that reports success without the row the response
+// body is built from, for Close's reason: handleReopen dereferences it, and a
+// broken implementation should be the generic 500 with the fault in the log
+// rather than a panic on a live server.
 func (c checkedLifecycle) Reopen(ctx context.Context, req issueops.ReopenRequest) (issueops.ReopenResult, error) {
-	return c.inner.Reopen(ctx, req)
+	result, err := c.inner.Reopen(ctx, req)
+	if err == nil && result.Issue == nil {
+		return issueops.ReopenResult{}, fmt.Errorf("reopen %q: the lifecycle reported success without an issue", req.IssueID)
+	}
+	return result, err
 }
 
 // checkedClaimer is the claimer the claim handler is handed.
