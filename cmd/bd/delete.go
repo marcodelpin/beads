@@ -153,6 +153,25 @@ Force: Delete and orphan dependents
 
 		commandDidWrite.Store(true)
 
+		// THE DELETE IS VERSIONED HERE. issueops.Deleter reaches its transaction
+		// through withConn, which does a SQL commit and no Dolt version commit, so
+		// nothing below the role advances HEAD. Before the role this route ran
+		// transactHonoringAutoCommit with a "bd: delete <id>" message, and that is
+		// what versioned the change; dropping it made embedded deletes unversioned
+		// and left a routed sibling's HEAD standing still.
+		//
+		// It commits the store the rows were actually deleted from, which for a
+		// prefix-routed id is the TARGET repository rather than this workspace.
+		// Batch and off modes are honored inside: maybeAutoCommitStore returns
+		// early unless auto-commit is on.
+		if err := commitPendingIfEmbedded(ctx, activeStore, actor, doltAutoCommitParams{
+			Command:         "delete",
+			IssueIDs:        []string{issueID},
+			MessageOverride: fmt.Sprintf("bd: delete %s", issueID),
+		}); err != nil {
+			WarnError("failed to commit: %v", err)
+		}
+
 		if jsonOutput {
 			// The single-issue keys, unchanged: `deleted` is the id rather than a
 			// list here, which is what every `bd delete <one-id> --json` parses.
@@ -344,6 +363,24 @@ func deleteBatch(_ *cobra.Command, issueIDs []string, force bool, dryRun bool, c
 	}
 
 	commandDidWrite.Store(true)
+
+	// THE DELETE IS VERSIONED HERE. issueops.Deleter reaches its transaction
+	// through withConn, which does a SQL commit and no Dolt version commit, so
+	// nothing below the role advances HEAD. Before the role this route ran
+	// transactHonoringAutoCommit with a "bd: delete <id>" message, and that is
+	// what versioned the change; dropping it made embedded deletes unversioned
+	// and left a routed sibling's HEAD standing still.
+	//
+	// It commits the store the rows were actually deleted from, which for a
+	// prefix-routed id is the TARGET repository rather than this workspace.
+	// Batch and off modes are honored inside: maybeAutoCommitStore returns
+	// early unless auto-commit is on.
+	if err := commitPendingIfEmbedded(ctx, batchStore, actor, doltAutoCommitParams{
+		Command:  "delete",
+		IssueIDs: resolvedIDs,
+	}); err != nil {
+		WarnError("failed to commit: %v", err)
+	}
 
 	if jsonOutput {
 		if err := outputJSON(map[string]interface{}{

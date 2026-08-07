@@ -178,7 +178,9 @@ func TestOutputDeleteProxiedPreviewExactContracts(t *testing.T) {
 }
 
 func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
-	res := issueops.DeleteResult{Deleted: 3, Dependencies: 4, Labels: 2, Events: 5, ReferencesUpdated: 1, Orphaned: []string{"bd-orphan"}}
+	// No orphans on the base result: the subtests below assert the WITHOUT-orphans
+	// contract, and the orphan case copies this and adds its own.
+	res := issueops.DeleteResult{Deleted: 3, Dependencies: 4, Labels: 2, Events: 5, ReferencesUpdated: 1}
 
 	t.Run("JSON includes the complete final aggregate", func(t *testing.T) {
 		in := &deleteInput{ids: []string{"bd-target", "bd-dependent"}, jsonOutput: true}
@@ -213,7 +215,6 @@ func TestRenderDeleteProxiedResultExactContracts(t *testing.T) {
 		for _, required := range []string{
 			"Deleted 3 issue(s)", "Removed 4 dependency link(s)", "Removed 2 label(s)",
 			"Removed 5 event(s)", "Updated text references in 1 issue(s)",
-			"Orphaned 1 issue(s): bd-orphan",
 		} {
 			if !strings.Contains(out, required) {
 				t.Errorf("final prose missing %q:\n%s", required, out)
