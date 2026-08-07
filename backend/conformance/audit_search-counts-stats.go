@@ -36,6 +36,7 @@ func RunAudit_search_counts_stats(t *testing.T, f Factory) {
 	t.Run("SearchIdenticalTimestampIDOrder", func(t *testing.T) { testAuditSearchIdenticalTimestampIDOrder(t, f) })
 	t.Run("SearchSortByClosedNullsLast", func(t *testing.T) { testAuditSearchSortByClosedNullsLast(t, f) })
 	t.Run("SearchSortByTitleCaseFolded", func(t *testing.T) { testAuditSearchSortByTitleCaseFolded(t, f) })
+	t.Run("SearchSortTieBreakSurvivesReversal", func(t *testing.T) { testAuditSearchSortTieBreakSurvivesReversal(t, f) })
 	t.Run("SearchTextIDBranchExternalRef", func(t *testing.T) { testAuditSearchTextIDBranchExternalRef(t, f) })
 	t.Run("SearchIDPrefixCaseSensitive", func(t *testing.T) { testAuditSearchIDPrefixCaseSensitive(t, f) })
 	t.Run("SearchParentDescendantCaseSensitive", func(t *testing.T) { testAuditSearchParentDescendantCaseSensitive(t, f) })
@@ -432,6 +433,50 @@ func testAuditSearchSortByTitleCaseFolded(t *testing.T, f Factory) {
 	must(t, err)
 	if got := orderedIDs(page); !reflect.DeepEqual(got, want[:2]) {
 		t.Errorf("title-sort page = %v, want %v (first 2 rows of the case-folded order)", got, want[:2])
+	}
+}
+
+// Every non-default sort breaks exact ties by id ASC, and reversing the sort flips
+// the primary key only — the id tie-break never flips. sqlbuild/sort.go emits
+// ORDER BY <col> <dir>, id ASC for every non-default key and runs flipDir over the
+// primary direction alone, so a tied group's internal order is identical in both
+// directions. The slice pins tie-breaking for the default and closed sorts only;
+// this case covers a timestamp key and a vocabulary key below the same seam.
+func testAuditSearchSortTieBreakSurvivesReversal(t *testing.T, f Factory) {
+	s := f(t)
+	c := ctx()
+	tied, newer := auditWholeSec(2020), auditWholeSec(2022)
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "tb-a", Title: "a", Status: types.StatusOpen, CreatedAt: tied, UpdatedAt: tied}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "tb-b", Title: "b", Status: types.StatusOpen, CreatedAt: tied, UpdatedAt: tied}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "tb-c", Title: "c", Status: types.StatusClosed, CreatedAt: tied, UpdatedAt: tied}), "a"))
+	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "tb-new", Title: "n", Status: types.StatusInProgress, CreatedAt: newer, UpdatedAt: newer}), "a"))
+
+	results, err := s.SearchIssues(c, "", types.IssueFilter{SortBy: "updated"})
+	must(t, err)
+	want := []string{"tb-new", "tb-a", "tb-b", "tb-c"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("updated-sort order = %v, want %v (updated_at DESC, id ASC)", got, want)
+	}
+
+	results, err = s.SearchIssues(c, "", types.IssueFilter{SortBy: "updated", SortDesc: true})
+	must(t, err)
+	want = []string{"tb-a", "tb-b", "tb-c", "tb-new"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("reversed updated-sort order = %v, want %v (oldest first; the tied group is STILL id ASC)", got, want)
+	}
+
+	results, err = s.SearchIssues(c, "", types.IssueFilter{SortBy: "status"})
+	must(t, err)
+	want = []string{"tb-c", "tb-new", "tb-a", "tb-b"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("status-sort order = %v, want %v (status ASC, id ASC)", got, want)
+	}
+
+	results, err = s.SearchIssues(c, "", types.IssueFilter{SortBy: "status", SortDesc: true})
+	must(t, err)
+	want = []string{"tb-a", "tb-b", "tb-new", "tb-c"}
+	if got := orderedIDs(results); !reflect.DeepEqual(got, want) {
+		t.Errorf("reversed status-sort order = %v, want %v (the tied open group is STILL id ASC)", got, want)
 	}
 }
 
