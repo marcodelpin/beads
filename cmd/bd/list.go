@@ -307,7 +307,8 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 			if depErr != nil && in.depsMode != "" {
 				return HandleError("loading dependencies for --deps: %v", depErr)
 			}
-			displayPrettyListWithDepsMode(treeIssues, false, allDeps, in.depsMode)
+			// Hierarchical --parent walks use an unlimited per-level query, so the tree is never page-truncated.
+			displayPrettyListWithDepsMode(treeIssues, false, allDeps, in.depsMode, false)
 			printSkipLabelsFooter(in.SkipLabels)
 			return nil
 		}
@@ -316,7 +317,7 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		if depErr != nil && in.depsMode != "" {
 			return HandleError("loading dependencies for --deps: %v", depErr)
 		}
-		displayPrettyListWithDepsMode(issues, false, allDeps, in.depsMode)
+		displayPrettyListWithDepsMode(issues, false, allDeps, in.depsMode, truncated)
 		printTruncationHint(truncated, in.effectiveLimit)
 		printSkipLabelsFooter(in.SkipLabels)
 		return nil
