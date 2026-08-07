@@ -4,9 +4,61 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/types"
 )
+
+func TestAddDependencyCreatedAtUsesUTC(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := store.db.ExecContext(ctx, "SET @@session.time_zone = '-06:00'"); err != nil {
+		t.Fatalf("set session time zone: %v", err)
+	}
+
+	for _, issue := range []*types.Issue{
+		{ID: "dep-utc-source", Title: "Source", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask},
+		{ID: "dep-utc-target", Title: "Target", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask},
+	} {
+		if err := store.CreateIssue(ctx, issue, "tester"); err != nil {
+			t.Fatalf("create issue %s: %v", issue.ID, err)
+		}
+	}
+
+	var utcBefore time.Time
+	if err := store.db.QueryRowContext(ctx, "SELECT UTC_TIMESTAMP()").Scan(&utcBefore); err != nil {
+		t.Fatalf("read UTC time before dependency creation: %v", err)
+	}
+
+	dep := &types.Dependency{IssueID: "dep-utc-source", DependsOnID: "dep-utc-target", Type: types.DepBlocks}
+	if err := store.AddDependency(ctx, dep, "tester"); err != nil {
+		t.Fatalf("add dependency: %v", err)
+	}
+
+	var createdAt, sessionNow, utcAfter time.Time
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT created_at, NOW(), UTC_TIMESTAMP()
+		FROM dependencies
+		WHERE issue_id = ? AND depends_on_issue_id = ?
+	`, dep.IssueID, dep.DependsOnID).Scan(&createdAt, &sessionNow, &utcAfter); err != nil {
+		t.Fatalf("read dependency timestamp: %v", err)
+	}
+
+	if offset := utcAfter.Truncate(time.Second).Sub(sessionNow); offset != 6*time.Hour {
+		t.Fatalf("session time zone offset = %v, want 6h", offset)
+	}
+	// created_at is stored in a second-precision DATETIME column, so the
+	// stored value may round to the nearest second of the true insert time.
+	// Allow a one-second slack on each side of the observed window while
+	// still failing if the value lands near session-local time (the bug).
+	if createdAt.Before(utcBefore.Add(-time.Second)) || createdAt.After(utcAfter.Add(time.Second)) {
+		t.Errorf("dependency created_at = %v, want UTC time near %v between %v and %v", createdAt, utcBefore, utcBefore, utcAfter)
+	}
+}
 
 // =============================================================================
 // GetDependenciesWithMetadata Tests
