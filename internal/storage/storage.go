@@ -67,7 +67,7 @@ var ErrCommitIndeterminate = errors.New("write commit result indeterminate")
 // before wrapping it in an issueops.ClaimConflictError. That type's Error() is
 // a PASSTHROUGH, so the fragments must be in the wrapped error; a caller
 // reading the type's FIELDS needs none of this. These stay for the parser, and
-// TestClaimConflictFormatRoundTrip (internal/storage/dolt) plus the
+// the conformance suite's RunClaimRefusalMessagesCarryTheirFragments plus the
 // root-package ParseClaimConflict tests are the tripwires that producer and
 // consumer still agree character for character.
 //

@@ -175,6 +175,9 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("UnclaimIfAssigneeMatch", func(t *testing.T) { testUnclaimIfAssigneeMatch(t, factory) })
 	t.Run("UnclaimIfAssigneeStale", func(t *testing.T) { testUnclaimIfAssigneeStale(t, factory) })
 
+	// Claim role (issueops.Claimer, through the store's own accessor)
+	t.Run("ClaimerRole", func(t *testing.T) { RunClaimerRole(t, factory) })
+
 	// Labels
 	t.Run("Labels", func(t *testing.T) { testLabels(t, factory) })
 	t.Run("LabelIdempotent", func(t *testing.T) { testLabelIdempotent(t, factory) })
