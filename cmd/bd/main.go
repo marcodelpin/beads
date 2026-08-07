@@ -460,9 +460,9 @@ func loadServerModeFromBeadsDir(beadsDir string) error {
 	if beadsDir == "" {
 		return nil
 	}
-	cfg, err := configfile.Load(beadsDir)
+	cfg, err := configfile.LoadForDiscovery(beadsDir)
 	if err != nil {
-		return fmt.Errorf("load %s: %w (storage mode unknown; data commands will refuse to run rather than fall back to the embedded store)", configfile.ConfigPath(beadsDir), err)
+		return fmt.Errorf("load %s: %w; no storage database was opened or modified (storage mode unknown; data commands refuse to fall back to the embedded store)", configfile.ConfigPath(beadsDir), err)
 	}
 	// Absent metadata.json keeps the fresh-repo embedded default unless
 	// env/config.yaml supply a remote host (GH#3545) — inference must not
@@ -842,6 +842,30 @@ func restoreChangeDirSelection() {
 	changeDirEnvSnapshot = nil
 }
 
+func guardLegacyNoStoreCommand(cmd *cobra.Command, beadsDir string) error {
+	if cmd == nil || !cmd.Runnable() || cmd.Parent() == nil || cmd == versionCmd ||
+		cmd == doctorCmd || cmd == initCmd || cmd == bootstrapCmd ||
+		cmd == legacySQLiteCmd {
+		return nil
+	}
+	if cmd == schemaCmd && cmd.Parent() != nil && cmd.Parent().Parent() == nil {
+		return nil
+	}
+	for current := cmd; current != nil; current = current.Parent() {
+		if current == metricsCmd {
+			return nil
+		}
+	}
+	switch cmd.Name() {
+	case "__complete", "__completeNoDesc", "bash", "completion", "fish", "help", "powershell", "zsh":
+		return nil
+	}
+	if beadsDir == "" {
+		return guardUndiscoveredLegacyWorkspace()
+	}
+	return guardLegacyUpgradeWorkspace(beadsDir)
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "bd",
 	Short: "bd - Dependency-aware issue tracker",
@@ -1128,9 +1152,10 @@ var rootCmd = &cobra.Command{
 		// Rebind them to the selected workspace so explicit --db / BEADS_DB
 		// targets behave consistently across doctor/bootstrap/context/dolt.
 		if skipsStoreInit {
-			prepareSelectedNoDBContext(selectedNoDBBeadsDir(cmd))
+			beadsDir := selectedNoDBBeadsDir(cmd)
+			prepareSelectedNoDBContext(beadsDir)
 			refreshBoundCommandConfig(cmd)
-			if beadsDir := os.Getenv("BEADS_DIR"); beadsDir == "" {
+			if os.Getenv("BEADS_DIR") == "" {
 				loadEnvironment()
 				if err := loadServerModeFromConfig(); err != nil {
 					// Warn, don't fatal: skipsStoreInit commands (doctor,
@@ -1139,6 +1164,12 @@ var rootCmd = &cobra.Command{
 					// corruption being reported.
 					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 				}
+			}
+			if beadsDir == "" {
+				beadsDir = beads.FindBeadsDir()
+			}
+			if err := guardLegacyNoStoreCommand(cmd, beadsDir); err != nil {
+				return HandleError("%v", err)
 			}
 			if _, err := getDoltAutoCommitMode(); err != nil {
 				return HandleError("%v", err)
@@ -1180,7 +1211,16 @@ var rootCmd = &cobra.Command{
 
 		if dbPath == "" {
 			if bd := beads.FindBeadsDir(); bd != "" {
-				cfg, cfgErr := configfile.Load(bd)
+				// Bind the discovered target before admission so the legacy guard
+				// honors its config.yaml (including dolt.shared-server), not the
+				// caller's. This setup is read-only: metadata discovery below still
+				// uses LoadForDiscovery and cannot migrate config.json.
+				prepareSelectedCommandContext(bd, true)
+				refreshBoundCommandConfig(cmd)
+				if guardErr := guardLegacyUpgradeWorkspace(bd); guardErr != nil {
+					return HandleError("%v", guardErr)
+				}
+				cfg, cfgErr := configfile.LoadForDiscovery(bd)
 				if cfgErr != nil || cfg != nil && (cfg.IsDoltProxiedServerMode() ||
 					registeredBackendWorkspaceIsBeadsDir(cfg) ||
 					!configfile.IsSupportedBackend(cfg.Backend)) {
@@ -1198,6 +1238,8 @@ var rootCmd = &cobra.Command{
 					// a server workspace instead of "no database found".
 					dbPath = bd
 				}
+			} else if guardErr := guardUndiscoveredLegacyWorkspace(); guardErr != nil {
+				return HandleError("%v", guardErr)
 			}
 		}
 
@@ -1273,6 +1315,9 @@ var rootCmd = &cobra.Command{
 		beadsDir := resolveCommandBeadsDir(dbPath)
 		prepareSelectedCommandContext(beadsDir, true)
 		refreshBoundCommandConfig(cmd)
+		if guardErr := guardLegacyUpgradeWorkspace(beadsDir); guardErr != nil {
+			return HandleError("%v", guardErr)
+		}
 
 		// Workspace operation gate: every command that reaches this point
 		// will open the store (the skipsStoreInit early return is above),
@@ -1296,7 +1341,6 @@ var rootCmd = &cobra.Command{
 				releaseWorkspaceGates()
 			}
 		}()
-
 		if _, err := getDoltAutoCommitMode(); err != nil {
 			return HandleError("%v", err)
 		}
