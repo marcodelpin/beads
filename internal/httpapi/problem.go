@@ -172,7 +172,12 @@ const (
 	// OpReopenIssue is the close's mirror, and it completes the lifecycle pair
 	// so a recovery flow works end to end over this surface. It is the one
 	// write here with no conflict code: reopen has no policy guard.
-	OpReopenIssue          = "reopenIssue"
+	OpReopenIssue = "reopenIssue"
+	// OpUpdateIssue edits the FIELDS of one issue. Lifecycle is deliberately not
+	// among them: status belongs to close/reopen/claim, which carry the policy
+	// and conflict vocabulary, and assignee belongs to the claim's
+	// compare-and-set. Keeping both out is why this operation has no 409.
+	OpUpdateIssue          = "updateIssue"
 	OpListSettings         = "listSettings"
 	OpGetSetting           = "getSetting"
 	OpListDependencyCycles = "listDependencyCycles"
@@ -321,6 +326,15 @@ var operationCodes = map[string][]Code{
 	// of the graph that can refuse it and nothing to name. The idempotent case
 	// is a 200 carrying `already_open`, not a conflict.
 	OpReopenIssue: {
+		CodeInvalidArgument, CodeNotFound,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
+	// No conflict code, and the excluded members are exactly where one would
+	// have entered: `status` would drag in close policy, `assignee` the claim
+	// fence, `parent_id` the graph vocabulary. The 400 is the body vocabulary
+	// plus the ROLE's ErrValidation — a workspace-vocabulary issue_type, a
+	// field-length refusal that slipped the edge check — through failUpdate.
+	OpUpdateIssue: {
 		CodeInvalidArgument, CodeNotFound,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},

@@ -204,6 +204,22 @@ var routeTable = []route{
 		handler:     (*Server).handleGetIssue,
 	},
 	{
+		op:     OpUpdateIssue,
+		method: http.MethodPatch,
+		// A PLAIN METHOD on the issue-detail path, not a custom method: partial
+		// update of one named resource is what PATCH already means, exactly as
+		// one named resource with no body is what DELETE means for forgetMemory.
+		//
+		// It therefore registers directly and keeps pattern == specPath. It
+		// cannot collide with the POST dispatcher above — ServeMux registers
+		// method and pattern together — and it leaves the custom-method
+		// namespace for the operations that are not CRUD.
+		pattern:     "/v0/beads/issues/{id}",
+		capability:  "issues.update",
+		implemented: true,
+		handler:     (*Server).handleUpdate,
+	},
+	{
 		op:          OpListSettings,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/config",
@@ -280,11 +296,12 @@ var routeTable = []route{
 		// drives the documented path.
 		//
 		// The wildcard therefore matches every POST under /v0/beads/issues/,
-		// including the issue-detail path the document declares GET-only.
-		// The dispatcher answers 404 — the same answer the catch-all gives any
-		// other unrouted path — for a segment that ends in no registered
-		// suffix, so the wide pattern stays a routing detail rather than
-		// undocumented surface. TestCustomMethodsNarrowThePOSTSurface pins it.
+		// including the issue-detail path, which this document publishes under
+		// GET and PATCH and under no other method. The dispatcher answers 404 —
+		// the same answer the catch-all gives any other unrouted path — for a
+		// segment that ends in no registered suffix, so the wide pattern stays a
+		// routing detail rather than undocumented surface.
+		// TestCustomMethodsNarrowThePOSTSurface pins it.
 		specPath:     "/v0/beads/issues/{id}:claim",
 		customMethod: ":claim",
 		capability:   "issues.claim",

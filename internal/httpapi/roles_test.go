@@ -372,18 +372,35 @@ type roleLifecycle struct {
 	closeErr     error
 	reopenResult issueops.ReopenResult
 	reopenErr    error
+	updateResult issueops.UpdateResult
+	updateErr    error
 
 	mu      sync.Mutex
 	closes  []issueops.CloseRequest
 	reopens []issueops.ReopenRequest
+	updates []issueops.UpdateRequest
 }
 
 func (l *roleLifecycle) Create(_ context.Context, _ issueops.CreateRequest) (issueops.CreateResult, error) {
 	return issueops.CreateResult{}, errors.New("create is not published on this surface")
 }
 
-func (l *roleLifecycle) Update(_ context.Context, _ issueops.UpdateRequest) (issueops.UpdateResult, error) {
-	return issueops.UpdateResult{}, errors.New("update is not published on this surface")
+func (l *roleLifecycle) Update(_ context.Context, req issueops.UpdateRequest) (issueops.UpdateResult, error) {
+	l.mu.Lock()
+	l.updates = append(l.updates, req)
+	l.mu.Unlock()
+	if l.updateErr != nil {
+		return issueops.UpdateResult{}, l.updateErr
+	}
+	return l.updateResult, nil
+}
+
+// updateRequests is closeRequests' twin, and the one the patch tests read the
+// whole projection off: an empty list means nothing reached the role.
+func (l *roleLifecycle) updateRequests() []issueops.UpdateRequest {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]issueops.UpdateRequest(nil), l.updates...)
 }
 
 func (l *roleLifecycle) Close(_ context.Context, req issueops.CloseRequest) (issueops.CloseResult, error) {
