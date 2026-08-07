@@ -1286,7 +1286,21 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					return err
 				}
 				if bootstrap {
-					syncFromRemote = true
+					if probeErr != nil {
+						// The fail-closed UNKNOWN kept the refusal gate shut
+						// above, but reaching here means no override flag was
+						// passed and there is no local history to protect —
+						// and the bootstrap clone would run against the same
+						// origin the probe could not reach, turning every
+						// credential-less clone of a private repo into a hard
+						// init failure. Fall back to a fresh local database,
+						// which is what init did here before the probe existed.
+						if !quiet {
+							fmt.Printf("  %s Could not verify the git origin's Dolt history; initialized a fresh local database\n", ui.RenderWarn("!"))
+						}
+					} else {
+						syncFromRemote = true
+					}
 				}
 			}
 		}

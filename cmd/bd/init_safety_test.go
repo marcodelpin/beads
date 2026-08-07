@@ -69,6 +69,48 @@ func TestInitReinitLocalConfiguredRemoteWithoutDoltDataSucceeds(t *testing.T) {
 	}
 }
 
+// TestInitFreshWithUnreachableGitOriginSucceeds pins the plain-init arm of
+// the tri-state probe: a git origin the probe cannot reach at all (exit 128 —
+// the credential-less private-remote shape every CI container has) resolves
+// to UNKNOWN, which fails closed for the refusal gate but must NOT convert a
+// plain `bd init` into a bootstrap clone against that same unreachable
+// origin. There is no local history to protect here, and the clone can only
+// fail the same way the probe did, so init falls back to a fresh local
+// database — the behavior this path always had before the probe existed.
+// Regression: #5136 broke TestE2E_InitDoltMetadataRoundtrip (Main-lane only,
+// so its PR ran green) exactly this way.
+func TestInitFreshWithUnreachableGitOriginSucceeds(t *testing.T) {
+	bdBin := buildBDForInitTests(t)
+
+	workDir := t.TempDir()
+	runGitForBootstrapTest(t, workDir, "init", "-b", "main")
+	runGitForBootstrapTest(t, workDir, "config", "core.hooksPath", ".git/hooks")
+	// An origin whose probe errors (missing path -> git ls-remote exit 128),
+	// not one that answers "no refs/dolt/data".
+	runGitForBootstrapTest(t, workDir, "remote", "add", "origin",
+		filepath.Join(t.TempDir(), "does-not-exist.git"))
+
+	homeDir := t.TempDir() // must differ from workDir: metrics.go caches to $HOME/.beads
+
+	cmd := exec.Command(bdBin, "init", "--backend", "dolt", "--prefix", "org", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents")
+	cmd.Dir = workDir
+	cmd.Env = hermeticInitEnv(homeDir)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		lower := strings.ToLower(out.String())
+		if strings.Contains(lower, "dolt") && (strings.Contains(lower, "not supported") || strings.Contains(lower, "not available") || strings.Contains(lower, "unknown")) {
+			t.Skipf("dolt backend not available: %s", out.String())
+		}
+		t.Fatalf("bd init with an unreachable git origin failed: %v\noutput:\n%s", err, out.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, ".beads")); err != nil {
+		t.Fatalf(".beads should have been created by a successful init: %v", err)
+	}
+}
+
 // TestInitReinitLocalConfiguredRemoteWithDoltDataRefuses is the sibling case:
 // sync.remote (again via BD_SYNC_REMOTE, not --remote) points at a bare repo
 // that DOES have refs/dolt/data pushed to it. `bd init --reinit-local` must
