@@ -184,7 +184,9 @@ type BondRef = types.BondRef
 
 // ClaimRequest defines model for ClaimRequest.
 type ClaimRequest struct {
-	// Actor Who is claiming the issue. The server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value is persisted as the assignee and interpolated into the storage commit message, so an unvalidated newline would forge audit-trail lines.
+	// Actor Who is claiming the issue. The server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline: Unicode category Cc — C0, DEL and the C1 block — plus the U+2028/U+2029 line separators, which is the set the `pattern` above spells.
+	//
+	// The value is persisted as the assignee and interpolated into the storage commit message, so an unvalidated newline would forge audit-trail lines. C1 is refused for that same reason and not for tidiness: U+0085 is a line break on a VT-conformant terminal, and U+009B is the one-byte CSI introducer, which would make an actor an escape-sequence payload in anything that prints an assignee.
 	Actor string `json:"actor"`
 }
 

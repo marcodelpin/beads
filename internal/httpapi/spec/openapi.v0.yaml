@@ -3237,7 +3237,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Caller-asserted attribution, under the same rules as
             `SweepRequest`'s `actor`: trimmed, refused when empty after
@@ -3365,7 +3365,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Caller-asserted attribution for wherever the backend records it,
             under the same rules and for the same reasons as `ClaimRequest`'s
@@ -3904,7 +3904,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Who is creating the issues, under `ClaimRequest.actor`'s rules and
             for the same reasons: the server trims it, refuses an empty result,
@@ -4025,14 +4025,22 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[^\u0000-\u001F\u007F]+$'
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
           description: >-
             Who is claiming the issue. The server trims it, then refuses an
             empty result, anything longer than 256 BYTES (the `maxLength` above
             counts characters — the byte limit is the binding one), and any
-            control character including newline. The value is persisted as the
-            assignee and interpolated into the storage commit message, so an
-            unvalidated newline would forge audit-trail lines.
+            control character including newline: Unicode category Cc — C0, DEL
+            and the C1 block — plus the U+2028/U+2029 line separators, which is
+            the set the `pattern` above spells.
+
+
+            The value is persisted as the assignee and interpolated into the
+            storage commit message, so an unvalidated newline would forge
+            audit-trail lines. C1 is refused for that same reason and not for
+            tidiness: U+0085 is a line break on a VT-conformant terminal, and
+            U+009B is the one-byte CSI introducer, which would make an actor an
+            escape-sequence payload in anything that prints an assignee.
 
     ClaimResponse:
       type: object
