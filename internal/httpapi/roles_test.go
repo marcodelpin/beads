@@ -368,11 +368,14 @@ func (c *roleClaimer) claimRequests() []issueops.ClaimRequest {
 // rules and the problem shapes, with the transaction and the policy left to the
 // integration test against real Dolt.
 type roleLifecycle struct {
-	closeResult issueops.CloseResult
-	closeErr    error
+	closeResult  issueops.CloseResult
+	closeErr     error
+	reopenResult issueops.ReopenResult
+	reopenErr    error
 
-	mu     sync.Mutex
-	closes []issueops.CloseRequest
+	mu      sync.Mutex
+	closes  []issueops.CloseRequest
+	reopens []issueops.ReopenRequest
 }
 
 func (l *roleLifecycle) Create(_ context.Context, _ issueops.CreateRequest) (issueops.CreateResult, error) {
@@ -393,8 +396,22 @@ func (l *roleLifecycle) Close(_ context.Context, req issueops.CloseRequest) (iss
 	return l.closeResult, nil
 }
 
-func (l *roleLifecycle) Reopen(_ context.Context, _ issueops.ReopenRequest) (issueops.ReopenResult, error) {
-	return issueops.ReopenResult{}, errors.New("reopen is not published on this surface")
+func (l *roleLifecycle) Reopen(_ context.Context, req issueops.ReopenRequest) (issueops.ReopenResult, error) {
+	l.mu.Lock()
+	l.reopens = append(l.reopens, req)
+	l.mu.Unlock()
+	if l.reopenErr != nil {
+		return issueops.ReopenResult{}, l.reopenErr
+	}
+	return l.reopenResult, nil
+}
+
+// reopenRequests is closeRequests' twin: an empty list means nothing reached
+// the role.
+func (l *roleLifecycle) reopenRequests() []issueops.ReopenRequest {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]issueops.ReopenRequest(nil), l.reopens...)
 }
 
 // closeRequests is how a case asserts that a refusal happened at the wire edge:

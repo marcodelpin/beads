@@ -305,6 +305,18 @@ var routeTable = []route{
 		handler:      (*Server).handleClose,
 	},
 	{
+		op:     OpReopenIssue,
+		method: http.MethodPost,
+		// The close's mirror, on the dispatcher the close built. Nothing new is
+		// needed here: a third row on this pattern is a row.
+		pattern:      customMethodPattern,
+		specPath:     "/v0/beads/issues/{id}:reopen",
+		customMethod: ":reopen",
+		capability:   "issues.reopen",
+		implemented:  true,
+		handler:      (*Server).handleReopen,
+	},
+	{
 		op:     OpSweepIssues,
 		method: http.MethodPost,
 		// A collection-level custom method, spelled the way countReadyWork's is.
