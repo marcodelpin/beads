@@ -331,6 +331,27 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 			return fmt.Errorf("dolt add %s: %w", table, err)
 		}
 	}
+
+	// Skip the commit when nothing was actually staged. A caller can reach here
+	// after an idempotent no-op write (e.g. re-adding an existing dependency via
+	// INSERT IGNORE, or removing a non-existent one), in which case the DOLT_ADDs
+	// above stage nothing and DOLT_COMMIT('-m') fails with a server-side "nothing
+	// to commit" warning that floods the Dolt log at reconcile cadence.
+	//
+	// Unlike StageAndCommit's fast-path (a global HasPendingChanges check), this
+	// helper stages only a FIXED table list. Other tables may be dirty
+	// concurrently, so the guard must test the STAGED set, not the whole working
+	// set — otherwise we would still fire an empty `-m` commit whenever an
+	// unrelated table is dirty. issueops.HasStagedChanges checks exactly what
+	// '-m' will commit; *sql.Tx satisfies issueops.SQLQuerier.
+	staged, err := issueops.HasStagedChanges(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("check staged changes before commit: %w", err)
+	}
+	if !staged {
+		return nil
+	}
+
 	if err := schema.DrainCall(ctx, tx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
 		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
 		return wrapSQLCommitError("dolt commit", err)
