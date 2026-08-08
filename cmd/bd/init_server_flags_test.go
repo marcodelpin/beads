@@ -25,11 +25,21 @@ func mustSetFlag(t *testing.T, c *cobra.Command, name, value string) {
 	}
 }
 
+// mustPromote applies the promotion and registers its restore for the end of
+// the subtest, so the cases below assert promoted state without leaking it.
 func mustPromote(t *testing.T, c *cobra.Command) {
 	t.Helper()
-	if err := promoteExplicitServerConnFlags(c); err != nil {
+	restore := mustPromoteWithRestore(t, c)
+	t.Cleanup(restore)
+}
+
+func mustPromoteWithRestore(t *testing.T, c *cobra.Command) func() {
+	t.Helper()
+	restore, err := promoteExplicitServerConnFlags(c)
+	if err != nil {
 		t.Fatalf("promoteExplicitServerConnFlags: %v", err)
 	}
+	return restore
 }
 
 func TestPromoteExplicitServerConnFlags(t *testing.T) {
@@ -192,10 +202,14 @@ func TestPromoteExplicitServerConnFlags(t *testing.T) {
 				c := newServerFlagsCmd()
 				mustSetFlag(t, c, tc.flag, tc.value)
 
-				err := promoteExplicitServerConnFlags(c)
+				restore, err := promoteExplicitServerConnFlags(c)
 				if err == nil {
 					t.Fatalf("promoteExplicitServerConnFlags = nil, want error containing %q", tc.wantSub)
 				}
+				if restore == nil {
+					t.Fatal("restore func is nil on error; callers defer it unconditionally")
+				}
+				restore()
 				if !strings.Contains(err.Error(), tc.wantSub) {
 					t.Errorf("error = %q, want substring %q", err, tc.wantSub)
 				}
@@ -209,6 +223,135 @@ func TestPromoteExplicitServerConnFlags(t *testing.T) {
 					t.Errorf("BEADS_DOLT_SERVER_USER = %q, want profile-user (untouched on error)", got)
 				}
 			})
+		}
+	})
+}
+
+// The promotion mutates process-global state. One CLI process runs one init,
+// but the test binary (and any embedding host) runs many in the same process,
+// so every override must be reversible. These cases pin the restore contract
+// that keeps main's suites passing unmodified.
+func TestPromoteExplicitServerConnFlagsRestoresEnv(t *testing.T) {
+	t.Run("restores previous values after a successful promotion", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "profile-host")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "3307")
+		t.Setenv("BEADS_DOLT_SERVER_USER", "profile-user")
+		t.Setenv("BEADS_DOLT_SERVER_TLS", "1")
+
+		c := newServerFlagsCmd()
+		mustSetFlag(t, c, "server-host", "db.example.com")
+		mustSetFlag(t, c, "server-port", "3306")
+		mustSetFlag(t, c, "server-user", "app_rw")
+		mustSetFlag(t, c, "server-tls", "false")
+
+		restore := mustPromoteWithRestore(t, c)
+
+		if got := os.Getenv("BEADS_DOLT_SERVER_HOST"); got != "db.example.com" {
+			t.Fatalf("BEADS_DOLT_SERVER_HOST = %q, want db.example.com while promoted", got)
+		}
+
+		restore()
+
+		for key, want := range map[string]string{
+			"BEADS_DOLT_SERVER_HOST": "profile-host",
+			"BEADS_DOLT_SERVER_PORT": "3307",
+			"BEADS_DOLT_SERVER_USER": "profile-user",
+			"BEADS_DOLT_SERVER_TLS":  "1",
+		} {
+			if got := os.Getenv(key); got != want {
+				t.Errorf("after restore %s = %q, want %q", key, got, want)
+			}
+		}
+	})
+
+	t.Run("restores absent variables to absent", func(t *testing.T) {
+		for _, key := range []string{"BEADS_DOLT_SERVER_HOST", "BEADS_DOLT_SERVER_PORT", "BEADS_DOLT_SERVER_SOCKET"} {
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		c := newServerFlagsCmd()
+		mustSetFlag(t, c, "server-host", "db.example.com")
+		mustSetFlag(t, c, "server-port", "3306")
+
+		restore := mustPromoteWithRestore(t, c)
+		if got := os.Getenv("BEADS_DOLT_SERVER_PORT"); got != "3306" {
+			t.Fatalf("BEADS_DOLT_SERVER_PORT = %q, want 3306 while promoted", got)
+		}
+
+		restore()
+
+		for _, key := range []string{"BEADS_DOLT_SERVER_HOST", "BEADS_DOLT_SERVER_PORT"} {
+			if got, ok := os.LookupEnv(key); ok {
+				t.Errorf("after restore %s = %q, want absent", key, got)
+			}
+		}
+	})
+
+	t.Run("restores a socket cleared by explicit TCP selection", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_SOCKET", "/tmp/profile.sock")
+
+		c := newServerFlagsCmd()
+		mustSetFlag(t, c, "server-host", "db.example.com")
+
+		restore := mustPromoteWithRestore(t, c)
+		if got, ok := os.LookupEnv("BEADS_DOLT_SERVER_SOCKET"); ok {
+			t.Fatalf("BEADS_DOLT_SERVER_SOCKET = %q, want absent while promoted", got)
+		}
+
+		restore()
+
+		if got := os.Getenv("BEADS_DOLT_SERVER_SOCKET"); got != "/tmp/profile.sock" {
+			t.Errorf("after restore BEADS_DOLT_SERVER_SOCKET = %q, want /tmp/profile.sock", got)
+		}
+	})
+
+	t.Run("a rejected flag leaves earlier valid flags unapplied", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "profile-host")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "3307")
+
+		// Host is valid and resolves first; the port is not. Validation runs
+		// to completion before any variable is written, so the host must not
+		// survive the rejection.
+		c := newServerFlagsCmd()
+		mustSetFlag(t, c, "server-host", "db.example.com")
+		mustSetFlag(t, c, "server-port", "0")
+
+		restore, err := promoteExplicitServerConnFlags(c)
+		if err == nil {
+			t.Fatal("promoteExplicitServerConnFlags = nil, want an out-of-range port error")
+		}
+		restore()
+
+		if got := os.Getenv("BEADS_DOLT_SERVER_HOST"); got != "profile-host" {
+			t.Errorf("BEADS_DOLT_SERVER_HOST = %q, want profile-host (unapplied)", got)
+		}
+		if got := os.Getenv("BEADS_DOLT_SERVER_PORT"); got != "3307" {
+			t.Errorf("BEADS_DOLT_SERVER_PORT = %q, want 3307 (unapplied)", got)
+		}
+	})
+
+	t.Run("sequential in-process promotions do not accumulate", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "profile-host")
+		t.Setenv("BEADS_DOLT_SERVER_SOCKET", "/tmp/profile.sock")
+
+		// First invocation promotes, as a server-mode init would.
+		first := newServerFlagsCmd()
+		mustSetFlag(t, first, "server-host", "db.example.com")
+		mustPromoteWithRestore(t, first)()
+
+		// Second invocation passes no connection flags, as an embedded-mode
+		// init would. It must see the ambient environment, not the first
+		// invocation's overrides.
+		mustPromoteWithRestore(t, newServerFlagsCmd())()
+
+		if got := os.Getenv("BEADS_DOLT_SERVER_HOST"); got != "profile-host" {
+			t.Errorf("BEADS_DOLT_SERVER_HOST = %q, want profile-host (first promotion leaked)", got)
+		}
+		if got := os.Getenv("BEADS_DOLT_SERVER_SOCKET"); got != "/tmp/profile.sock" {
+			t.Errorf("BEADS_DOLT_SERVER_SOCKET = %q, want /tmp/profile.sock (first promotion leaked)", got)
 		}
 	})
 }
