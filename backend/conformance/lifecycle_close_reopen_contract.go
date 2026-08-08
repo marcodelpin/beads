@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/types"
 	publicops "github.com/steveyegge/beads/issueops"
@@ -601,6 +602,89 @@ func RunLifecycleCloseIsIdempotentAndKeepsTheFirstClose(t *testing.T, ctx contex
 	}
 }
 
+// RunLifecycleCloseAndReopenKeepTheClaimHolder pins the second half of the
+// agent loop against the state the first half leaves: an in_progress row a named
+// actor holds is CLOSEABLE, and the holder survives both the close and a later
+// reopen.
+//
+// Every other close target in this package — here, in claim.go, in the audit
+// files, in issue_operations_contract.go's close-policy seeds and in
+// batch_closer_contract.go — is seeded OPEN and unassigned, so nothing pins the
+// only close a working agent actually performs: the one on the row it is
+// currently holding. Two divergences pass the whole suite today. A backend whose
+// close admits open rows only refuses every claimed issue, so `bd claim` and
+// `bd close` stop composing. A backend that clears assignee as part of the
+// close — a defensible reading of "the work is over" — silently drops the
+// attribution `bd show` renders and `bd list --assignee` filters on, and the
+// reopen half loses it again for a caller handing the work back to the same
+// holder.
+//
+// The reopen leg asserts the holder for a second reason: Reopen already clears
+// the close attribution (CloseRequest.Reason "A Reopen clears both, because they
+// describe a closure that no longer holds"), and assignee is the neighboring
+// column that is NOT part of that closure record. An implementation sweeping the
+// closure fields is exactly the one likely to take assignee with them.
+func RunLifecycleCloseAndReopenKeepTheClaimHolder(t *testing.T, ctx context.Context, fixture LifecycleCloseReopenFixture) {
+	t.Helper()
+
+	const holder = "worker-1"
+	id := fixture.IssuePrefix + "-lcr-held"
+	lifecycleCloseReopenSeedClaimedIssue(t, ctx, fixture, id, holder)
+
+	seeded := lifecycleCloseReopenReadRow(t, ctx, fixture, id)
+	if types.Status(seeded.Status) != types.StatusInProgress || seeded.Assignee != holder {
+		t.Fatalf("seeded %s as {status %q assignee %q}, want {%q %q} — the case has nothing to prove otherwise",
+			id, seeded.Status, seeded.Assignee, types.StatusInProgress, holder)
+	}
+
+	closed, err := fixture.Lifecycle.Close(ctx, publicops.CloseRequest{
+		Actor: holder, IssueID: id, Reason: "work finished", Session: "session-held",
+	})
+	if err != nil {
+		t.Fatalf("close %s while %s holds it: %v — an in_progress row is the one an agent actually closes", id, holder, err)
+	}
+	if !closed.Changed {
+		t.Errorf("close of in_progress %s reported Changed = false, want a committed close", id)
+	}
+	if closed.Issue == nil {
+		t.Fatalf("close of %s answered a nil Issue, want a post-state snapshot", id)
+	}
+	if closed.Issue.Status != types.StatusClosed {
+		t.Errorf("CloseResult.Issue.Status = %q, want %q", closed.Issue.Status, types.StatusClosed)
+	}
+	if closed.Issue.Assignee != holder {
+		t.Errorf("CloseResult.Issue.Assignee = %q, want %q — closing the work does not un-assign it", closed.Issue.Assignee, holder)
+	}
+	closedRow := lifecycleCloseReopenReadRow(t, ctx, fixture, id)
+	if types.Status(closedRow.Status) != types.StatusClosed || closedRow.Assignee != holder {
+		t.Errorf("stored row after the close = {status %q assignee %q}, want {%q %q}",
+			closedRow.Status, closedRow.Assignee, types.StatusClosed, holder)
+	}
+
+	reopened, err := fixture.Lifecycle.Reopen(ctx, publicops.ReopenRequest{Actor: holder, IssueID: id, Reason: "regressed"})
+	if err != nil {
+		t.Fatalf("reopen %s: %v", id, err)
+	}
+	if !reopened.Changed {
+		t.Errorf("reopen of closed %s reported Changed = false, want a committed reopen", id)
+	}
+	if reopened.Issue == nil {
+		t.Fatalf("reopen of %s answered a nil Issue, want a post-state snapshot", id)
+	}
+	if reopened.Issue.Assignee != holder {
+		t.Errorf("ReopenResult.Issue.Assignee = %q, want %q — the reopen clears the closure record, not the holder", reopened.Issue.Assignee, holder)
+	}
+	reopenedRow := lifecycleCloseReopenReadRow(t, ctx, fixture, id)
+	if types.Status(reopenedRow.Status) != types.StatusOpen || reopenedRow.Assignee != holder {
+		t.Errorf("stored row after the reopen = {status %q assignee %q}, want {%q %q}",
+			reopenedRow.Status, reopenedRow.Assignee, types.StatusOpen, holder)
+	}
+	if reopenedRow.CloseReason != "" || reopenedRow.ClosedBySession != "" {
+		t.Errorf("close attribution after reopening %s = (%q, %q), want both cleared — only the closure record goes",
+			id, reopenedRow.CloseReason, reopenedRow.ClosedBySession)
+	}
+}
+
 // RunLifecycleReopenLeavesNonDoneStatusesUnchanged pins the Reopen no-op.
 // issueops/issueops.go:429-432 promises Reopen "moves literal StatusClosed and
 // configured done statuses to StatusOpen; non-done statuses unchanged", and
@@ -634,16 +718,25 @@ func RunLifecycleReopenLeavesNonDoneStatusesUnchanged(t *testing.T, ctx context.
 		t.Fatalf("installed status.custom = %q, want %q", installed, lifecycleCloseReopenCustomStatuses)
 	}
 
+	// The wip leg carries a HOLDER, because that is the state a live claim
+	// leaves and the one a no-op reopen must not sweep: the whole row is
+	// compared before and after, so an implementation that cleared assignee on
+	// the way through fails here rather than passing on an empty column.
 	cases := []struct {
-		name   string
-		id     string
-		status types.Status
+		name     string
+		id       string
+		status   types.Status
+		assignee string
 	}{
 		{name: "already open", id: fixture.IssuePrefix + "-lcr-noop-open", status: types.StatusOpen},
-		{name: "built-in wip", id: fixture.IssuePrefix + "-lcr-noop-wip", status: types.StatusInProgress},
+		{name: "built-in wip", id: fixture.IssuePrefix + "-lcr-noop-wip", status: types.StatusInProgress, assignee: "worker-noop"},
 		{name: "configured active", id: fixture.IssuePrefix + "-lcr-noop-custom", status: lifecycleCloseReopenActiveStatus},
 	}
 	for _, tc := range cases {
+		if tc.assignee != "" {
+			lifecycleCloseReopenSeedClaimedIssue(t, ctx, fixture, tc.id, tc.assignee)
+			continue
+		}
 		lifecycleCloseReopenSeedIssue(t, ctx, fixture, tc.id, tc.status, nil)
 	}
 	for _, tc := range cases {
@@ -1026,8 +1119,15 @@ func lifecycleCloseReopenCountHistory(t *testing.T, ctx context.Context, fixture
 // lifecycleCloseReopenRow is the stored close-lifecycle state one assertion
 // compares before and after. row_lock is read as an int64 rather than a string
 // because the version cases hand it straight back as an ExpectedVersion.
+//
+// assignee is part of the row rather than a separate read because every refusal
+// and no-op leg in this file asserts against the whole struct: a close that
+// dropped the holder on a path that changed nothing else would otherwise be
+// invisible here, and `bd show` and `bd list --assignee` would lose the holder
+// after every replayed close.
 type lifecycleCloseReopenRow struct {
 	Status          string
+	Assignee        string
 	RowLock         int64
 	ClosedAt        string
 	CloseReason     string
@@ -1038,8 +1138,8 @@ func lifecycleCloseReopenReadRow(t *testing.T, ctx context.Context, fixture Life
 	t.Helper()
 	var row lifecycleCloseReopenRow
 	if err := fixture.QueryScalar(ctx,
-		"SELECT status, row_lock, COALESCE(CAST(closed_at AS CHAR), ''), COALESCE(close_reason, ''), COALESCE(closed_by_session, '') FROM issues WHERE id = ?",
-		[]any{id}, &row.Status, &row.RowLock, &row.ClosedAt, &row.CloseReason, &row.ClosedBySession); err != nil {
+		"SELECT status, COALESCE(assignee, ''), row_lock, COALESCE(CAST(closed_at AS CHAR), ''), COALESCE(close_reason, ''), COALESCE(closed_by_session, '') FROM issues WHERE id = ?",
+		[]any{id}, &row.Status, &row.Assignee, &row.RowLock, &row.ClosedAt, &row.CloseReason, &row.ClosedBySession); err != nil {
 		t.Fatalf("read close-lifecycle row for %s: %v", id, err)
 	}
 	return row
@@ -1086,6 +1186,22 @@ func lifecycleCloseReopenSeedIssue(t *testing.T, ctx context.Context, fixture Li
 		ID: id, Title: id, Status: status, Priority: 2, IssueType: types.TypeTask, Labels: labels,
 	}, "seed"); err != nil {
 		t.Fatalf("seed %s at status %q: %v", id, status, err)
+	}
+}
+
+// lifecycleCloseReopenSeedClaimedIssue seeds the state a won claim leaves
+// behind: an in_progress row a named actor holds. It seeds directly rather than
+// claiming through the role because the close/reopen assertions answer to the
+// STATE, and a fixture that had to reach it through a Claim would need the
+// claim seam this file otherwise does not use.
+func lifecycleCloseReopenSeedClaimedIssue(t *testing.T, ctx context.Context, fixture LifecycleCloseReopenFixture, id, assignee string) {
+	t.Helper()
+	started := time.Now().UTC()
+	if err := fixture.CreateIssue(ctx, &types.Issue{
+		ID: id, Title: id, Status: types.StatusInProgress, Priority: 2, IssueType: types.TypeTask,
+		Assignee: assignee, StartedAt: &started,
+	}, "seed"); err != nil {
+		t.Fatalf("seed %s as claimed by %s: %v", id, assignee, err)
 	}
 }
 
