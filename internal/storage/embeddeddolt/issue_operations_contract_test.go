@@ -164,6 +164,34 @@ func TestEmbeddedIssueOperationsUpdatePersistentPreservesUnversionedClass(t *tes
 	conformance.RunIssueOperationsUpdatePersistentPreservesUnversionedClass(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "unversioned"))
 }
 
+func TestEmbeddedIssueOperationsCreateWritesEveryScalarField(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "createsurface")
+	ctx := t.Context()
+	conformance.RunIssueOperationsCreateWritesEveryScalarField(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "createsurface"))
+}
+
+func TestEmbeddedIssueOperationsUpdateWritesEveryScalarPatchField(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "scalarsurface")
+	ctx := t.Context()
+	conformance.RunIssueOperationsUpdateWritesEveryScalarPatchField(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "scalarsurface"))
+}
+
+func TestEmbeddedIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "typevocab")
+	ctx := t.Context()
+	conformance.RunIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "typevocab"))
+}
+
+func TestEmbeddedIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "claimrestore")
+	ctx := t.Context()
+	conformance.RunIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow(t, ctx, newEmbeddedIssueOperationsFixture(t, ctx, te, "claimrestore"))
+}
+
 func newEmbeddedIssueOperationsFixture(t *testing.T, ctx context.Context, te *testEnv, prefix string) conformance.IssueOperationsStagingFixture {
 	t.Helper()
 	operations, err := embeddeddolt.NewIssueOperations(te.store)

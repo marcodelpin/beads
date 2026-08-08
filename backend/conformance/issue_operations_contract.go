@@ -784,6 +784,55 @@ func RunIssueOperationsUpdateClosedFieldsMatchClose(t *testing.T, ctx context.Co
 		t.Fatalf("reopening %s with an explicit closed_at clear: %v", guardID, err)
 	}
 	assertClosedFields(t, ctx, fixture, guardID, "reopen with explicit closed_at clear", "", "", false)
+
+	// CLOSE PROVENANCE SURVIVES A PERSISTENCE MOVE, which is the same columns
+	// asked a harder question. Everything above keeps a row in the issues
+	// plane; a persistence move DELETES the row from one plane and re-inserts it
+	// into the other (issueops.MoveIssuePersistenceInTx), so the close columns
+	// only survive if the copy carries them and the insert lists them. A move
+	// that dropped one would blank attribution nobody asked it to touch, and
+	// `bd show` would render a closed issue with no record of who closed it.
+	//
+	// It is asserted against the plane that now HOLDS the row, not through the
+	// result issue: a result hydrated from the pre-move struct reports a session
+	// that is no longer in any table.
+	moveID := fixture.IssuePrefix + "-closedfields-move"
+	seedClosePolicyIssue(t, ctx, fixture, moveID, publicops.CreateRequest{})
+	if _, err := fixture.Operations.Close(ctx, publicops.CloseRequest{
+		Actor: "writer", IssueID: moveID, Reason: "moved", Session: "move-session",
+	}); err != nil {
+		t.Fatalf("close %s: %v", moveID, err)
+	}
+	assertClosedFieldsInTable(t, ctx, fixture, "issues", moveID, "after close", "moved", "move-session", true)
+
+	// Every directed pair of the three modes is covered by walking them in this
+	// order: persistent -> ephemeral -> persistent -> no_history -> ephemeral ->
+	// no_history -> persistent. The ephemeral and no_history modes share the
+	// wisps plane, so the pair between them is a same-plane move and the rest
+	// cross.
+	for _, move := range []struct {
+		mode    publicops.PersistenceMode
+		holds   string
+		vacates string
+	}{
+		{publicops.PersistenceModeEphemeral, "wisps", "issues"},
+		{publicops.PersistenceModePersistent, "issues", "wisps"},
+		{publicops.PersistenceModeNoHistory, "wisps", "issues"},
+		{publicops.PersistenceModeEphemeral, "wisps", "issues"},
+		{publicops.PersistenceModeNoHistory, "wisps", "issues"},
+		{publicops.PersistenceModePersistent, "issues", "wisps"},
+	} {
+		if _, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{
+			Actor: "writer", IssueID: moveID,
+			Patch: publicops.IssuePatch{Persistence: publicops.Field[publicops.PersistenceMode]{Set: true, Value: move.mode}},
+		}); err != nil {
+			t.Fatalf("move %s to %s: %v", moveID, move.mode, err)
+		}
+		label := "after moving to " + string(move.mode)
+		assertIssueOperationsRowCount(t, ctx, fixture, move.holds, moveID, 1)
+		assertIssueOperationsRowCount(t, ctx, fixture, move.vacates, moveID, 0)
+		assertClosedFieldsInTable(t, ctx, fixture, move.holds, moveID, label, "moved", "move-session", true)
+	}
 }
 
 // assertClosedAtRefusal checks that a coherence refusal is typed as a
@@ -804,16 +853,25 @@ func assertClosedAtRefusal(t *testing.T, err error, label, id string) {
 	}
 }
 
-// assertClosedFields reads the close-lifecycle columns back from storage. The
-// stored empty string and SQL NULL are the same "nothing recorded" state to
-// every reader, so both collapse to "" here.
+// assertClosedFields reads the close-lifecycle columns back from the issues
+// plane, where every durable case in this file leaves its row.
 func assertClosedFields(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id, label, wantReason, wantSession string, wantClosedAt bool) {
 	t.Helper()
+	assertClosedFieldsInTable(t, ctx, fixture, "issues", id, label, wantReason, wantSession, wantClosedAt)
+}
+
+// assertClosedFieldsInTable reads the close-lifecycle columns back from the
+// plane the row currently lives in. The stored empty string and SQL NULL are
+// the same "nothing recorded" state to every reader, so both collapse to ""
+// here.
+func assertClosedFieldsInTable(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, table, id, label, wantReason, wantSession string, wantClosedAt bool) {
+	t.Helper()
 	var reason, session, closedAt string
+	//nolint:gosec // G201: table is one of the contract's hardcoded table names
 	if err := fixture.QueryScalar(ctx,
-		"SELECT COALESCE(close_reason, ''), COALESCE(closed_by_session, ''), COALESCE(CAST(closed_at AS CHAR), '') FROM issues WHERE id = ?",
+		"SELECT COALESCE(close_reason, ''), COALESCE(closed_by_session, ''), COALESCE(CAST(closed_at AS CHAR), '') FROM "+table+" WHERE id = ?",
 		[]any{id}, &reason, &session, &closedAt); err != nil {
-		t.Fatalf("read close fields for %s (%s): %v", id, label, err)
+		t.Fatalf("read close fields for %s in %s (%s): %v", id, table, label, err)
 	}
 	if reason != wantReason {
 		t.Errorf("%s %s close_reason = %q, want %q", id, label, reason, wantReason)
@@ -2008,6 +2066,583 @@ func RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T, ct
 	}
 	assertPriority("priority after a stale guard behind a holding one", 0)
 	maskedEvents.assert(t, "guard masked by the one before it", 0, nil)
+}
+
+// RunIssueOperationsCreateWritesEveryScalarField is the create-side twin of the
+// case below, over the same seventeen fields. Lifecycle.Create takes a whole
+// issue rather than a patch, and each backend copies that issue into its own
+// create shape — the two stores through issueops.PreparePublicCreateRequest into
+// CreateIssuesInTxWithResult, the unit-of-work backend through its own
+// createParams — so a field dropped on the way in is a column the caller asked
+// for and did not get, reported as a success.
+//
+// THE UPDATE CASE CANNOT ANSWER THIS, and the reason is its FIXTURE rather than
+// its assertions. It seeds through the fixture's raw hook, which is the
+// backend's own CreateIssue and not the guarded Create, and every seeded value
+// is overwritten by the patch before anything is read back. A guarded create
+// that blanked a field would leave all of it green. Seeding it through Create
+// instead is not the fix: Create refuses a closed_at on an open row, so the
+// close-lifecycle end of the surface cannot be seeded that way at all.
+//
+// EVERY VALUE IS DISTINCT AND NON-ZERO, which is what makes a dropped field
+// observable — a field the body never copied arrives at its zero value, and a
+// seed that agreed with that zero value could not tell the two apart. The status
+// is in_progress rather than open for exactly that reason: open is what an empty
+// status defaults to.
+//
+// The ROW is the subject, because a result hydrated from the request would echo
+// what the caller just handed in. The result is then held to the same
+// expectation table, because it is what a front door renders: a create that
+// stored every column and hydrated one of them away is a field the caller still
+// cannot see.
+func RunIssueOperationsCreateWritesEveryScalarField(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	id := fixture.IssuePrefix + "-createsurface"
+	minutes := 33
+	externalRef := "created-ref"
+	dueAt := time.Date(2033, 5, 6, 7, 8, 9, 0, time.UTC)
+	deferUntil := time.Date(2033, 4, 5, 6, 7, 8, 0, time.UTC)
+	created, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		Issue: &types.Issue{
+			ID: id, Title: "created title", Description: "created description", Design: "created design",
+			AcceptanceCriteria: "created acceptance", Notes: "created notes",
+			SpecID: "created-spec", AwaitID: "created-await",
+			Status: types.StatusInProgress, Priority: 1, IssueType: types.TypeBug,
+			Assignee: "created-assignee", Owner: "created-owner", ClosedBySession: "created-session",
+			EstimatedMinutes: &minutes, ExternalRef: &externalRef,
+			DueAt: &dueAt, DeferUntil: &deferUntil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("full scalar create of %s: %v", id, err)
+	}
+	if created.Issue == nil {
+		t.Fatalf("full scalar create of %s returned no issue", id)
+	}
+
+	stored := []issueOperationsColumnValue{
+		{"title", "created title"},
+		{"description", "created description"},
+		{"design", "created design"},
+		{"acceptance_criteria", "created acceptance"},
+		{"notes", "created notes"},
+		{"spec_id", "created-spec"},
+		{"await_id", "created-await"},
+		{"status", string(types.StatusInProgress)},
+		{"priority", "1"},
+		{"issue_type", string(types.TypeBug)},
+		{"assignee", "created-assignee"},
+		{"owner", "created-owner"},
+		{"closed_by_session", "created-session"},
+		{"estimated_minutes", "33"},
+		{"external_ref", "created-ref"},
+		{"due_at", dueAt.Format(issueOperationsStoredTimeLayout)},
+		{"defer_until", deferUntil.Format(issueOperationsStoredTimeLayout)},
+	}
+	assertIssueOperationsStoredColumns(t, ctx, fixture, id, "after the full scalar create", stored)
+	assertIssueOperationsColumnValues(t, id, "in the create result", issueOperationsIssueScalars(created.Issue), stored)
+}
+
+// RunIssueOperationsUpdateWritesEveryScalarPatchField pins the whole scalar and
+// pointer surface of issueops.IssuePatch — seventeen fields — against the
+// columns each one maps to, and then pins the other half of that mapping:
+// restating what is already stored is a no-op that leaves the row alone.
+//
+// Each backend builds the map itself. The two stores go through
+// issueops.UpdateFields; the unit-of-work backend builds its own spec in
+// internal/storage/uow updateSpec. The contract named only a handful of the
+// fields, so one dropped from either map was invisible here.
+// issueops.IssuePatch.Owner was the live example: the string "Owner" appeared
+// nowhere in this file, and the field's only pin anywhere was a single
+// unit-of-work test.
+//
+// NEITHER HALF STANDS ALONE, which is why they are one case.
+//
+// A restatement-only case passes against a body that DROPS a field: the stored
+// value never moves, so Changed comes out false for the wrong reason. That is
+// what the write pass rules out, and it reads the RAW ROW to do it — a result
+// issue hydrated from the patch rather than from storage answers with the value
+// the caller just handed in, so it cannot say whether anything reached the
+// column.
+//
+// A write-only case passes against a body that treats a field as always
+// changed, rewriting the row on every idempotent update and advancing row_lock
+// under a caller's compare-and-set. That is what the restatement pass rules
+// out, and row_lock is the mark with teeth there: updated_at is a second-
+// granularity column with ON UPDATE CURRENT_TIMESTAMP, so two writes inside one
+// second leave it identical whether or not the row moved.
+func RunIssueOperationsUpdateWritesEveryScalarPatchField(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	id := fixture.IssuePrefix + "-scalarsurface"
+	seededMinutes := 11
+	seededRef := "seeded-ref"
+	seededDue := time.Date(2031, 5, 6, 7, 8, 9, 0, time.UTC)
+	seededDefer := time.Date(2031, 4, 5, 6, 7, 8, 0, time.UTC)
+	if err := fixture.CreateIssue(ctx, &types.Issue{
+		ID: id, Title: "seeded title", Description: "seeded description", Design: "seeded design",
+		AcceptanceCriteria: "seeded acceptance", Notes: "seeded notes",
+		SpecID: "seeded-spec", AwaitID: "seeded-await",
+		Status: types.StatusOpen, Priority: 3, IssueType: types.TypeTask,
+		Assignee: "seeded-assignee", Owner: "seeded-owner", ClosedBySession: "seeded-session",
+		EstimatedMinutes: &seededMinutes, ExternalRef: &seededRef,
+		DueAt: &seededDue, DeferUntil: &seededDefer,
+	}, "seed"); err != nil {
+		t.Fatalf("seed %s: %v", id, err)
+	}
+
+	patchedMinutes := 22
+	patchedRef := "patched-ref"
+	patchedDue := time.Date(2032, 5, 6, 7, 8, 9, 0, time.UTC)
+	patchedDefer := time.Date(2032, 4, 5, 6, 7, 8, 0, time.UTC)
+	// EVERY value below differs from the seeded one. A field whose seeded and
+	// patched values agreed could not witness its own mapping: the column would
+	// read correctly whether the update carried the field or dropped it.
+	//
+	// The status move is open -> in_progress, which stays out of the done
+	// category so close policy never sees it, and the assignee edit rides a row
+	// that is not yet in progress, so the transfer fence stands down. Both are
+	// pinned by their own cases; this one is about the mapping.
+	patch := publicops.IssuePatch{
+		Title:              publicops.Field[string]{Set: true, Value: "patched title"},
+		Description:        publicops.Field[string]{Set: true, Value: "patched description"},
+		Design:             publicops.Field[string]{Set: true, Value: "patched design"},
+		AcceptanceCriteria: publicops.Field[string]{Set: true, Value: "patched acceptance"},
+		Notes:              publicops.Field[string]{Set: true, Value: "patched notes"},
+		SpecID:             publicops.Field[string]{Set: true, Value: "patched-spec"},
+		AwaitID:            publicops.Field[string]{Set: true, Value: "patched-await"},
+		Status:             publicops.Field[publicops.Status]{Set: true, Value: types.StatusInProgress},
+		Priority:           publicops.Field[int]{Set: true, Value: 1},
+		IssueType:          publicops.Field[publicops.IssueType]{Set: true, Value: types.TypeBug},
+		Assignee:           publicops.Field[string]{Set: true, Value: "patched-assignee"},
+		Owner:              publicops.Field[string]{Set: true, Value: "patched-owner"},
+		ClosedBySession:    publicops.Field[string]{Set: true, Value: "patched-session"},
+		EstimatedMinutes:   publicops.Field[*int]{Set: true, Value: &patchedMinutes},
+		ExternalRef:        publicops.Field[*string]{Set: true, Value: &patchedRef},
+		DueAt:              publicops.Field[*time.Time]{Set: true, Value: &patchedDue},
+		DeferUntil:         publicops.Field[*time.Time]{Set: true, Value: &patchedDefer},
+	}
+	stored := []issueOperationsColumnValue{
+		{"title", "patched title"},
+		{"description", "patched description"},
+		{"design", "patched design"},
+		{"acceptance_criteria", "patched acceptance"},
+		{"notes", "patched notes"},
+		{"spec_id", "patched-spec"},
+		{"await_id", "patched-await"},
+		{"status", string(types.StatusInProgress)},
+		{"priority", "1"},
+		{"issue_type", string(types.TypeBug)},
+		{"assignee", "patched-assignee"},
+		{"owner", "patched-owner"},
+		{"closed_by_session", "patched-session"},
+		{"estimated_minutes", "22"},
+		{"external_ref", "patched-ref"},
+		{"due_at", patchedDue.Format(issueOperationsStoredTimeLayout)},
+		{"defer_until", patchedDefer.Format(issueOperationsStoredTimeLayout)},
+	}
+
+	written, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{Actor: "writer", IssueID: id, Patch: patch})
+	if err != nil {
+		t.Fatalf("full scalar patch on %s: %v", id, err)
+	}
+	if !written.Changed {
+		t.Errorf("full scalar patch on %s reported Changed = false, want a committed edit", id)
+	}
+	// The one field with no other assertion anywhere in this file, read off the
+	// result as well as the row: a caller renders what the result carries.
+	if written.Issue.Owner != "patched-owner" {
+		t.Errorf("full scalar patch result Owner = %q, want %q", written.Issue.Owner, "patched-owner")
+	}
+	assertIssueOperationsStoredColumns(t, ctx, fixture, id, "after the full scalar patch", stored)
+
+	// The restatement. Same patch, same values, and now they are what the row
+	// already holds.
+	before := readIssueOperationsRowMarks(t, ctx, fixture, id)
+	events := newIssueOperationsEventCounter(t, ctx, fixture, id)
+	restated, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{Actor: "writer", IssueID: id, Patch: patch})
+	if err != nil {
+		t.Fatalf("restated scalar patch on %s: %v", id, err)
+	}
+	if restated.Changed {
+		t.Errorf("restating every scalar field of %s reported Changed = true, want a no-op", id)
+	}
+	assertIssueOperationsStoredColumns(t, ctx, fixture, id, "after the restated scalar patch", stored)
+	if after := readIssueOperationsRowMarks(t, ctx, fixture, id); after != before {
+		t.Errorf("restating every scalar field of %s rewrote the row: %+v, want it unchanged at %+v", id, after, before)
+	}
+	events.assert(t, "restated scalar patch", 0, nil)
+}
+
+// RunIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary pins the
+// WRITE side of the issue-type vocabulary. The read side is pinned by
+// RunReaderListRejectsATypeOutsideTheWorkspaceVocabulary; on the write side each
+// backend has its own guard — issueops.ValidateScalarUpdates for the two stores
+// and validateIssueTypeUpdate in internal/storage/domain for the unit-of-work
+// one — and neither had a test outside one ad-hoc unit-of-work case.
+//
+// The refusal is typed (issueops.ErrValidation) and leaves the row alone, under
+// Lifecycle.Update's standing promise that a refusal "leaves persistent state
+// unchanged". A stored issue_type nothing in the workspace defines is worse
+// than a rejected update: `bd list --type` stops matching the row and the
+// renderers have no rule for it.
+//
+// THE SECOND HALF IS WHAT GIVES THE FIRST ONE TEETH. A body that refused every
+// type outside the built-in set — dropping the configured-types read entirely —
+// would satisfy the refusal above. Configuring the type and landing the same
+// update is the only thing that tells a guard reading the workspace vocabulary
+// from one hardcoding the built-ins.
+func RunIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	id := fixture.IssuePrefix + "-typevocab"
+	seedClosePolicyIssue(t, ctx, fixture, id, publicops.CreateRequest{})
+
+	before := readIssueOperationsRowMarks(t, ctx, fixture, id)
+	events := newIssueOperationsEventCounter(t, ctx, fixture, id)
+	if _, err := fixture.Operations.Update(ctx, issueOperationsTypeRequest(id, "not-configured")); !errors.Is(err, publicops.ErrValidation) {
+		t.Fatalf("update %s to an issue type the workspace does not define: err = %v, want ErrValidation", id, err)
+	}
+	assertIssueOperationsScalarValue(t, ctx, fixture, "issue type after the refused update", string(types.TypeTask),
+		"SELECT issue_type FROM issues WHERE id = ?", []any{id})
+	if after := readIssueOperationsRowMarks(t, ctx, fixture, id); after != before {
+		t.Errorf("the refused issue-type update rewrote %s: %+v, want it unchanged at %+v", id, after, before)
+	}
+	events.assert(t, "refused issue-type update", 0, nil)
+
+	if err := fixture.SetConfig(ctx, "types.custom", "research"); err != nil {
+		t.Fatalf("SetConfig(types.custom): %v", err)
+	}
+	accepted, err := fixture.Operations.Update(ctx, issueOperationsTypeRequest(id, "research"))
+	if err != nil {
+		t.Fatalf("update %s to a configured custom issue type: %v", id, err)
+	}
+	if !accepted.Changed || accepted.Issue.IssueType != types.IssueType("research") {
+		t.Fatalf("update of %s to a configured custom type = %#v, want a committed edit to research", id, accepted.Issue)
+	}
+	assertIssueOperationsScalarValue(t, ctx, fixture, "issue type after the configured update", "research",
+		"SELECT issue_type FROM issues WHERE id = ?", []any{id})
+}
+
+// issueOperationsTypeRequest builds the bare issue-type edit whose vocabulary
+// check the case above pins.
+func issueOperationsTypeRequest(id string, issueType publicops.IssueType) publicops.UpdateRequest {
+	return publicops.UpdateRequest{
+		Actor:   "writer",
+		IssueID: id,
+		Patch:   publicops.IssuePatch{IssueType: publicops.Field[publicops.IssueType]{Set: true, Value: issueType}},
+	}
+}
+
+// RunIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow pins what
+// UpdateResult.Changed counts when a claim rides an update: the claim ITSELF is
+// the mutation, so a request that grants a lease reports Changed even though
+// the patch beside it puts every public field back where it was.
+//
+// Every other claim case in this file claims an unclaimed row with no patch, so
+// the field diff alone already reports true and nothing distinguishes "the
+// claim is the mutation" from "the fields happened to differ". A backend that
+// derived Changed purely from a before/after comparison of the public issue —
+// which is exactly how the unit-of-work backend derives it — would answer false
+// here and tell a polling caller its claim did nothing.
+//
+// Both edges are asserted, because a flag with only one is a flag that cannot
+// fail on its own claim:
+//
+//   - The CONTROL runs the same restoring patch WITHOUT the claim and must
+//     report false. Without it, a body that hardcoded Changed = true would pass.
+//   - The IDEMPOTENT RE-CLAIM by the holder must report false. Without it, a
+//     body that reported Changed for any request carrying Claim would pass, and
+//     a caller polling for work would see a fresh grant on every call.
+//
+// It is a different line from the history promise in
+// RunIssueOperationsUpdateProvenanceLabelsHistory: that one decides whether an
+// entry is recorded, this one decides what the result says.
+//
+// THE TWO BACKEND SHAPES NEED OPPOSITE PATCHES, which is why this case carries
+// both. The two stores claim FIRST and then diff the patch against the row the
+// claim left, so a patch that RESTORES the pre-claim state is a genuine write
+// there and would report Changed with the claim accounting removed entirely.
+// The unit-of-work backend applies one spec and compares the post-state to the
+// PRE-claim snapshot, so a patch that RESTATES the post-claim state is the one
+// it would report Changed for anyway. Each patch isolates the claim on the
+// backends the other one masks.
+//
+// Both rows are seeded WITH a started_at. A claim stamps that column on the
+// first transition into in_progress, and a stamp landing on an empty column is
+// a field difference of its own — enough to report Changed on every backend
+// with the claim accounting gone. The precondition is read back from the raw
+// row rather than assumed, because a seed hook that dropped it would leave this
+// case unable to fail on its own claim.
+//
+// THE OTHER HALF IS THE CLAIM'S FOOTPRINT: assignee and status are the only
+// public columns it may write. Changed alone cannot say so — a claim that also
+// grabbed, say, ownership would report the same true — and neither can a
+// three-column assertion, which never looks at the rest of the row. So every
+// column outside the claim's own two is snapshotted and held.
+//
+// The snapshot is taken ONCE, before any claim, and asserted after each of
+// them. Re-reading it between claims would re-anchor it to whatever the last
+// claim wrote, and a body writing the same derived value on every claim would
+// then read as writing nothing at all. The seeded values are all distinct from
+// the actor name and from the empty column a claim would otherwise be
+// indistinguishable against, so a claim writing anything it derives from the
+// request lands a value that differs from the snapshot.
+func RunIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	startedAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	seededMinutes := 7
+	seededRef := "claim-ref"
+	seededDue := time.Date(2033, 9, 8, 7, 6, 5, 0, time.UTC)
+	seededDefer := time.Date(2033, 8, 7, 6, 5, 4, 0, time.UTC)
+	restoringID := fixture.IssuePrefix + "-claimrestore"
+	restatingID := fixture.IssuePrefix + "-claimrestate"
+	for _, id := range []string{restoringID, restatingID} {
+		if err := fixture.CreateIssue(ctx, &types.Issue{
+			ID: id, Title: id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+			StartedAt: &startedAt,
+			// The bystanders. None of them is a value a claim could write by
+			// coincidence: not the actor, not a status, not empty.
+			Description: "claim description", Design: "claim design",
+			AcceptanceCriteria: "claim acceptance", Notes: "claim notes",
+			SpecID: "claim-spec", AwaitID: "claim-await",
+			Owner: "claim-owner", ClosedBySession: "claim-session",
+			EstimatedMinutes: &seededMinutes, ExternalRef: &seededRef,
+			DueAt: &seededDue, DeferUntil: &seededDefer,
+		}, "seed"); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		assertIssueOperationsScalarValue(t, ctx, fixture, "seeded started_at for "+id,
+			startedAt.Format(issueOperationsStoredTimeLayout),
+			"SELECT COALESCE(CAST(started_at AS CHAR), '') FROM issues WHERE id = ?", []any{id})
+	}
+	restoringBystanders := readIssueOperationsStoredColumns(t, ctx, fixture, restoringID,
+		"before any claim", issueOperationsClaimBystanderColumns)
+	restatingBystanders := readIssueOperationsStoredColumns(t, ctx, fixture, restatingID,
+		"before any claim", issueOperationsClaimBystanderColumns)
+
+	// Open and unassigned is the seeded state, so this patch restores it.
+	restoring := publicops.IssuePatch{
+		Status:   publicops.Field[publicops.Status]{Set: true, Value: types.StatusOpen},
+		Assignee: publicops.Field[string]{Set: true, Value: ""},
+	}
+
+	control, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{Actor: "claimant", IssueID: restoringID, Patch: restoring})
+	if err != nil {
+		t.Fatalf("restating %s's status and assignee: %v", restoringID, err)
+	}
+	if control.Changed {
+		t.Fatalf("restating %s's status and assignee reported Changed = true, want a no-op: the claim below has to be the only difference", restoringID)
+	}
+
+	claiming, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{
+		Actor: "claimant", IssueID: restoringID, Claim: true, Patch: restoring,
+	})
+	if err != nil {
+		t.Fatalf("claiming update of %s with a restoring patch: %v", restoringID, err)
+	}
+	if !claiming.Changed {
+		t.Errorf("claiming update of %s reported Changed = false, want true: the claim is the mutation", restoringID)
+	}
+	if claiming.Issue.Status != types.StatusOpen || claiming.Issue.Assignee != "" {
+		t.Errorf("claiming update of %s = status %q assignee %q, want the restored open/unassigned state",
+			restoringID, claiming.Issue.Status, claiming.Issue.Assignee)
+	}
+	// The row says the same thing, which is what makes Changed above an answer
+	// about the claim rather than about a field the patch failed to restore.
+	assertIssueOperationsAssigneeAndStatus(t, ctx, fixture, restoringID, "", types.StatusOpen)
+	assertIssueOperationsScalarValue(t, ctx, fixture, "started_at after the restoring claim",
+		startedAt.Format(issueOperationsStoredTimeLayout),
+		"SELECT COALESCE(CAST(started_at AS CHAR), '') FROM issues WHERE id = ?", []any{restoringID})
+	assertIssueOperationsStoredColumns(t, ctx, fixture, restoringID, "after the restoring claim", restoringBystanders)
+
+	// The mirror shape. There is no control for it — the same patch without a
+	// claim moves an unclaimed row for real — so it leans on the control above
+	// for the "reports Changed for everything" direction and carries only the
+	// claim's own arm.
+	restating := publicops.IssuePatch{
+		Status:   publicops.Field[publicops.Status]{Set: true, Value: types.StatusInProgress},
+		Assignee: publicops.Field[string]{Set: true, Value: "claimant"},
+	}
+	restated, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{
+		Actor: "claimant", IssueID: restatingID, Claim: true, Patch: restating,
+	})
+	if err != nil {
+		t.Fatalf("claiming update of %s with a restating patch: %v", restatingID, err)
+	}
+	if !restated.Changed {
+		t.Errorf("claiming update of %s reported Changed = false, want true: the claim is the mutation", restatingID)
+	}
+	assertIssueOperationsAssigneeAndStatus(t, ctx, fixture, restatingID, "claimant", types.StatusInProgress)
+	assertIssueOperationsStoredColumns(t, ctx, fixture, restatingID, "after the restating claim", restatingBystanders)
+
+	// The other edge, on the row the first shape left open and unassigned. A
+	// first claim grants the lease and counts.
+	granted, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{Actor: "claimant", IssueID: restoringID, Claim: true})
+	if err != nil {
+		t.Fatalf("claim %s: %v", restoringID, err)
+	}
+	if !granted.Changed {
+		t.Errorf("claiming unclaimed %s reported Changed = false, want a committed claim", restoringID)
+	}
+	assertLiveAssignee(t, ctx, fixture, restoringID, "claimant")
+
+	// The same actor re-claiming its own live claim grants nothing, so it does
+	// not count.
+	regranted, err := fixture.Operations.Update(ctx, publicops.UpdateRequest{Actor: "claimant", IssueID: restoringID, Claim: true})
+	if err != nil {
+		t.Fatalf("re-claim %s: %v", restoringID, err)
+	}
+	if regranted.Changed {
+		t.Errorf("re-claiming %s as its own holder reported Changed = true, want a no-op", restoringID)
+	}
+	assertLiveAssignee(t, ctx, fixture, restoringID, "claimant")
+	// Still the pre-claim snapshot, three claims later.
+	assertIssueOperationsStoredColumns(t, ctx, fixture, restoringID, "after the bare claim and re-claim", restoringBystanders)
+}
+
+// issueOperationsClaimBystanderColumns are the stored columns a claim must
+// leave alone: everything the public issue carries except the assignee and
+// status it grants, the started_at it stamps, and the row marks every write
+// moves.
+var issueOperationsClaimBystanderColumns = []string{
+	"title", "description", "design", "acceptance_criteria", "notes",
+	"spec_id", "await_id", "priority", "issue_type", "owner",
+	"closed_by_session", "estimated_minutes", "external_ref",
+	"due_at", "defer_until", "metadata",
+}
+
+// issueOperationsStoredTimeLayout is how Dolt renders a DATETIME cast to CHAR.
+// The columns carry no fractional seconds, so this round-trips exactly.
+const issueOperationsStoredTimeLayout = "2006-01-02 15:04:05"
+
+// issueOperationsColumnValue names one stored column and the value it holds, so
+// a field-surface assertion reports WHICH column disagreed.
+type issueOperationsColumnValue struct {
+	column string
+	value  string
+}
+
+// readIssueOperationsStoredColumns reads a set of columns back in one query as
+// text. Everything is COALESCEd and cast, because the three fixtures scan into
+// different destination sets and only *string is common to all of them.
+//
+// The result is the same pair list an assertion takes, so a case can snapshot
+// the columns an operation must NOT touch and hand the snapshot straight back
+// as the expectation afterwards.
+func readIssueOperationsStoredColumns(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id, label string, columns []string) []issueOperationsColumnValue {
+	t.Helper()
+	selected := make([]string, len(columns))
+	dest := make([]any, len(columns))
+	got := make([]issueOperationsColumnValue, len(columns))
+	for i, column := range columns {
+		selected[i] = "COALESCE(CAST(" + column + " AS CHAR), '')"
+		got[i].column = column
+		dest[i] = &got[i].value
+	}
+	//nolint:gosec // G201: the column names are this file's own literals
+	query := "SELECT " + strings.Join(selected, ", ") + " FROM issues WHERE id = ?"
+	if err := fixture.QueryScalar(ctx, query, []any{id}, dest...); err != nil {
+		t.Fatalf("read stored columns for %s (%s): %v", id, label, err)
+	}
+	return got
+}
+
+// assertIssueOperationsStoredColumns reads the named columns back and compares
+// each as text.
+func assertIssueOperationsStoredColumns(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id, label string, want []issueOperationsColumnValue) {
+	t.Helper()
+	columns := make([]string, len(want))
+	for i, field := range want {
+		columns[i] = field.column
+	}
+	assertIssueOperationsColumnValues(t, id, label, readIssueOperationsStoredColumns(t, ctx, fixture, id, label, columns), want)
+}
+
+// assertIssueOperationsColumnValues compares two column-value lists position by
+// position, for the reads that do not come from a query.
+func assertIssueOperationsColumnValues(t *testing.T, id, label string, got, want []issueOperationsColumnValue) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s %s reported %d columns, want %d", id, label, len(got), len(want))
+	}
+	for i, field := range want {
+		if got[i].value != field.value {
+			t.Errorf("%s %s %s = %q, want %q", id, label, field.column, got[i].value, field.value)
+		}
+	}
+}
+
+// issueOperationsIssueScalars renders the seventeen-field scalar surface off a
+// returned issue, in the column vocabulary the stored-row assertions use, so a
+// case can hold the row and the result to ONE expectation table.
+func issueOperationsIssueScalars(issue *types.Issue) []issueOperationsColumnValue {
+	return []issueOperationsColumnValue{
+		{"title", issue.Title},
+		{"description", issue.Description},
+		{"design", issue.Design},
+		{"acceptance_criteria", issue.AcceptanceCriteria},
+		{"notes", issue.Notes},
+		{"spec_id", issue.SpecID},
+		{"await_id", issue.AwaitID},
+		{"status", string(issue.Status)},
+		{"priority", strconv.Itoa(issue.Priority)},
+		{"issue_type", string(issue.IssueType)},
+		{"assignee", issue.Assignee},
+		{"owner", issue.Owner},
+		{"closed_by_session", issue.ClosedBySession},
+		{"estimated_minutes", issueOperationsIntText(issue.EstimatedMinutes)},
+		{"external_ref", issueOperationsStringText(issue.ExternalRef)},
+		{"due_at", issueOperationsTimeText(issue.DueAt)},
+		{"defer_until", issueOperationsTimeText(issue.DeferUntil)},
+	}
+}
+
+// The three renderers below spell an unset pointer as the empty string, which
+// is how COALESCE reports the NULL it stores as.
+func issueOperationsIntText(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.Itoa(*value)
+}
+
+func issueOperationsStringText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func issueOperationsTimeText(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(issueOperationsStoredTimeLayout)
+}
+
+// issueOperationsRowMarks are the two columns that record THAT a row was
+// written, whatever the values came out as. row_lock is the one with teeth:
+// updated_at has second granularity, so a rewrite inside the same second leaves
+// it alone.
+type issueOperationsRowMarks struct {
+	RowLock   string
+	UpdatedAt string
+}
+
+func readIssueOperationsRowMarks(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id string) issueOperationsRowMarks {
+	t.Helper()
+	var marks issueOperationsRowMarks
+	if err := fixture.QueryScalar(ctx,
+		"SELECT CAST(row_lock AS CHAR), CAST(updated_at AS CHAR) FROM issues WHERE id = ?",
+		[]any{id}, &marks.RowLock, &marks.UpdatedAt); err != nil {
+		t.Fatalf("read row marks for %s: %v", id, err)
+	}
+	return marks
 }
 
 // seedIssueOperationsLabeledIssue creates one open task at an explicit ID
