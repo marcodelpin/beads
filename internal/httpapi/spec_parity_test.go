@@ -747,6 +747,87 @@ func TestUpdateRequestMembersMatchTheHandler(t *testing.T) {
 	}
 }
 
+// TestReopenRequestMembersMatchTheHandler is the claim's and the close's gate
+// for the reopen body. The reopen decodes raw members for the same reason its
+// mirror does — so a refusal can name the offending one, which is what makes
+// the schema's additionalProperties: false enforceable by a client that has
+// stopped parsing prose — and pays the same price: a hand-rolled copy of the
+// member list with nothing tying it to the document.
+func TestReopenRequestMembersMatchTheHandler(t *testing.T) {
+	accepted := map[string]bool{}
+	for _, name := range reopenRequestMembers {
+		accepted[name] = true
+	}
+
+	goFields := jsonTagNames(t, reflect.TypeOf(apigen.ReopenIssueRequest{}))
+	if extra := diff(goFields, accepted); len(extra) > 0 {
+		t.Errorf("generated ReopenIssueRequest declares members the reopen handler refuses as unknown: %v\n"+
+			"teach reopenRequest to honor them, or the document promises a member the server turns down", extra)
+	}
+	if missing := diff(accepted, goFields); len(missing) > 0 {
+		t.Errorf("the reopen handler accepts members ReopenIssueRequest does not declare: %v", missing)
+	}
+
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "ReopenIssueRequest")
+	specProps := schemaProperties(t, doc, schema)
+	if extra := diff(specProps, accepted); len(extra) > 0 {
+		t.Errorf("the ReopenIssueRequest schema documents members the reopen handler refuses: %v", extra)
+	}
+	if missing := diff(accepted, specProps); len(missing) > 0 {
+		t.Errorf("the reopen handler accepts members the ReopenIssueRequest schema does not document: %v", missing)
+	}
+}
+
+// TestDependencyRequestMembersMatchTheHandlers is the same gate for the two
+// dependency bodies, and for the add's NESTED level — the update's table-driven
+// form because, exactly as there, the body has a level below it.
+//
+// `edges[i]` is where this matters most on the graph side. It is the only
+// member list on the surface checked inside a loop, its refusals are reported
+// as `edges[i].member` rather than by bare name, and a member the document grew
+// there would be refused per edge with an index attached — a failure that reads
+// like a data problem in one row rather than like version skew, which is the
+// slowest possible way to discover a spec revision.
+func TestDependencyRequestMembersMatchTheHandlers(t *testing.T) {
+	doc := loadSpec(t)
+	schemas := mapAt(t, mapAt(t, doc, "components"), "schemas")
+
+	for _, tc := range []struct {
+		schema   string
+		accepted []string
+		goType   reflect.Type
+	}{
+		{"AddDependenciesRequest", addDependenciesMembers, reflect.TypeOf(apigen.AddDependenciesRequest{})},
+		{"DependencyEdge", dependencyEdgeMembers, reflect.TypeOf(apigen.DependencyEdge{})},
+		{"RemoveDependencyRequest", removeDependencyMembers, reflect.TypeOf(apigen.RemoveDependencyRequest{})},
+	} {
+		t.Run(tc.schema, func(t *testing.T) {
+			accepted := map[string]bool{}
+			for _, name := range tc.accepted {
+				accepted[name] = true
+			}
+
+			goFields := jsonTagNames(t, tc.goType)
+			if extra := diff(goFields, accepted); len(extra) > 0 {
+				t.Errorf("generated %s declares members the handler refuses as unknown: %v\n"+
+					"teach the handler to honor them, or the document promises a member the server turns down", tc.schema, extra)
+			}
+			if missing := diff(accepted, goFields); len(missing) > 0 {
+				t.Errorf("the handler accepts members %s does not declare: %v", tc.schema, missing)
+			}
+
+			specProps := schemaProperties(t, doc, mapAt(t, schemas, tc.schema))
+			if extra := diff(specProps, accepted); len(extra) > 0 {
+				t.Errorf("the %s schema documents members the handler refuses: %v", tc.schema, extra)
+			}
+			if missing := diff(accepted, specProps); len(missing) > 0 {
+				t.Errorf("the handler accepts members the %s schema does not document: %v", tc.schema, missing)
+			}
+		})
+	}
+}
+
 // TestNullablePatchMembersAreExactlyTheDocumentsNullableOnes pins the closed set
 // on which explicit `null` CLEARS rather than refuses.
 //

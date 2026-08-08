@@ -26,6 +26,48 @@ import (
 // backend/conformance/reader_contract.go holds the real implementations to. It
 // models that and nothing else, because that is exactly what these parameters
 // select.
+//
+// Both lists carry TWO rows, and they differ on every member the wire schema
+// says a row has. One row cannot show order, and rows that agree on a member
+// cannot show that member survived: a handler that re-marshalled comments
+// through a struct without Author, or stamped one edge type onto every
+// dependent, would answer a single-row fixture indistinguishably from a
+// correct one.
+func seededComments(issueID string) []*types.Comment {
+	return []*types.Comment{
+		{
+			ID:        "c-1",
+			IssueID:   issueID,
+			Author:    "alice",
+			Text:      "the first comment body",
+			CreatedAt: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:        "c-2",
+			IssueID:   issueID,
+			Author:    "bob",
+			Text:      "the second comment body",
+			CreatedAt: time.Date(2026, 7, 31, 12, 0, 5, 0, time.UTC),
+		},
+	}
+}
+
+// seededDependents carries two DIFFERENT edge types because the type is what
+// `bd show` groups its dependents by: a surface that flattened every edge to
+// one type would still render, into the wrong section.
+func seededDependents() []*types.IssueWithDependencyMetadata {
+	return []*types.IssueWithDependencyMetadata{
+		{
+			Issue:          *seededIssue("bd-2", "", types.StatusOpen),
+			DependencyType: types.DepBlocks,
+		},
+		{
+			Issue:          *seededIssue("bd-3", "", types.StatusOpen),
+			DependencyType: types.DepParentChild,
+		},
+	}
+}
+
 type includeAwareReader struct {
 	roleReader
 }
@@ -34,32 +76,23 @@ func (r *includeAwareReader) Get(ctx context.Context, req issueops.GetRequest) (
 	if _, err := r.roleReader.Get(ctx, req); err != nil {
 		return nil, err
 	}
-	one := int64(1)
+	two := int64(2)
 	omitted := true
 	details := &issueops.IssueDetails{
 		Issue:           *seededIssue(req.ID, "", types.StatusOpen),
-		CommentCount:    &one,
-		DependentCount:  &one,
+		CommentCount:    &two,
+		DependentCount:  &two,
 		CommentsOmitted: &omitted,
 	}
 	if req.IncludeComments {
-		details.Comments = []*types.Comment{{
-			ID:        "c-1",
-			IssueID:   req.ID,
-			Author:    "alice",
-			Text:      "the comment body",
-			CreatedAt: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
-		}}
+		details.Comments = seededComments(req.ID)
 		// Never set alongside a populated list: the flag exists to tell "no
 		// comments" from "not asked for", and a caller that asked has neither
 		// question.
 		details.CommentsOmitted = nil
 	}
 	if req.IncludeDependents {
-		details.Dependents = []*types.IssueWithDependencyMetadata{{
-			Issue:          *seededIssue("bd-2", "", types.StatusOpen),
-			DependencyType: types.DepBlocks,
-		}}
+		details.Dependents = seededDependents()
 	}
 	return details, nil
 }
@@ -169,6 +202,117 @@ func TestGetIssueIncludeParametersReachTheRole(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGetIssueIncludeLegsCarryTheWireShape is the half the presence checks
+// above cannot reach: what is IN the two lists once a caller has paid for them.
+//
+// Presence is the cheap property. The row CONTENT is the expensive one and the
+// one clients read — `bd show` prints each comment's author and time in the
+// order it received them, and GROUPS dependents by edge type — so a surface
+// that answered the rows in a different order, dropped Author, or flattened
+// every dependent onto one edge type would satisfy every other test in this
+// file and still render wrong. Both lists are asserted row by row, by index,
+// because the index IS the order promise: the handler is a projection of the
+// role's answer and may not sort, filter or reshape it.
+//
+// The required-member sweep is deliberately DERIVED from the document rather
+// than listed here. A member added to `Comment` or
+// `IssueWithDependencyMetadata` tomorrow is covered the moment the schema
+// declares it, without an edit to this test — which is the only version of this
+// check that cannot go stale.
+func TestGetIssueIncludeLegsCarryTheWireShape(t *testing.T) {
+	ts, _ := newGetIssueServer(t)
+
+	resp := ts.get(t, "/v0/beads/issues/bd-1?include_comments=true&include_dependents=true")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readAll(t, resp))
+	}
+	body := decodeBody(t, resp)
+
+	comments := objectRows(t, body, "comments")
+	wantComments := seededComments("bd-1")
+	if len(comments) != len(wantComments) {
+		t.Fatalf("%d comments, want %d — the handler answers the role's rows, all of them", len(comments), len(wantComments))
+	}
+	for i, got := range comments {
+		want := wantComments[i]
+		if got["id"] != want.ID {
+			t.Errorf("comments[%d].id = %v, want %q — the rows are answered in the role's order", i, got["id"], want.ID)
+		}
+		if got["issue_id"] != want.IssueID {
+			t.Errorf("comments[%d].issue_id = %v, want %q", i, got["issue_id"], want.IssueID)
+		}
+		if got["author"] != want.Author {
+			t.Errorf("comments[%d].author = %v, want %q", i, got["author"], want.Author)
+		}
+		if got["text"] != want.Text {
+			t.Errorf("comments[%d].text = %v, want %q", i, got["text"], want.Text)
+		}
+		if stamp := want.CreatedAt.Format(time.RFC3339); got["created_at"] != stamp {
+			t.Errorf("comments[%d].created_at = %v, want %q", i, got["created_at"], stamp)
+		}
+	}
+	requireDocumentedMembers(t, "Comment", comments)
+
+	dependents := objectRows(t, body, "dependents")
+	wantDependents := seededDependents()
+	if len(dependents) != len(wantDependents) {
+		t.Fatalf("%d dependents, want %d", len(dependents), len(wantDependents))
+	}
+	for i, got := range dependents {
+		want := wantDependents[i]
+		if got["id"] != want.ID {
+			t.Errorf("dependents[%d].id = %v, want %q — the rows are answered in the role's order", i, got["id"], want.ID)
+		}
+		if got["dependency_type"] != string(want.DependencyType) {
+			t.Errorf("dependents[%d].dependency_type = %v, want %q — the edge type is what `bd show` groups this row by",
+				i, got["dependency_type"], want.DependencyType)
+		}
+	}
+	requireDocumentedMembers(t, "IssueWithDependencyMetadata", dependents)
+}
+
+// objectRows reads one array-of-objects member out of a decoded body.
+func objectRows(t *testing.T, body map[string]any, member string) []map[string]any {
+	t.Helper()
+	raw, ok := body[member].([]any)
+	if !ok {
+		t.Fatalf("`%s` is %T, want an array of objects: %v", member, body[member], body[member])
+	}
+	rows := make([]map[string]any, 0, len(raw))
+	for i, item := range raw {
+		row, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("`%s[%d]` is %T, want an object", member, i, item)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// requireDocumentedMembers asserts that every row carries every member the
+// document marks REQUIRED on its schema. Read from the spec, so a schema that
+// grows a required member the serve path cannot fill fails here rather than at
+// a client.
+func requireDocumentedMembers(t *testing.T, schema string, rows []map[string]any) {
+	t.Helper()
+	doc := loadSpec(t)
+	node := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), schema)
+	required := toStrings(t, node["required"])
+	if len(required) == 0 {
+		t.Fatalf("the %s schema declares no required members; re-point this guard at the document's row shape", schema)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("no %s rows to check", schema)
+	}
+	for i, row := range rows {
+		for _, member := range required {
+			if value, ok := row[member]; !ok || value == nil {
+				t.Errorf("%s[%d] omits `%s`, which the document marks required: %v", schema, i, member, row)
+			}
+		}
 	}
 }
 

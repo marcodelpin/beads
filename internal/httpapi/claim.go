@@ -31,17 +31,18 @@ const (
 	// documented one is a handful of short members, so this is pure refusal of
 	// the absurd.
 	maxJSONBodyBytes = 1 << 20
-	// claimContentType is the one media type this operation accepts, and
-	// refusing anything else is a CSRF control, not pedantry: a JSON content
-	// type is not CORS-"simple", so a cross-origin claim always triggers a
-	// preflight this server never approves. Accepting text/plain or a form
-	// encoding would let an attacker's page skip the preflight and drive the
-	// one write on this surface from any browser on the host.
+	// claimContentType is the one media type this surface accepts on a body —
+	// requireJSONContent enforces it for every body-carrying operation, not
+	// only the claim — and refusing anything else is a CSRF control, not
+	// pedantry: a JSON content type is not CORS-"simple", so a cross-origin
+	// write always triggers a preflight this server never approves. Accepting
+	// text/plain or a form encoding would let an attacker's page skip the
+	// preflight and drive a write from any browser on the host.
 	claimContentType = "application/json"
 )
 
-// handleClaim is the one write in v0: a compare-and-set claim of a single issue
-// for a caller-named actor.
+// handleClaim is v0's compare-and-set claim of a single issue for a
+// caller-named actor, and the write whose posture every later one adopted.
 //
 // ACTOR SEMANTICS, stated because adopting this endpoint depends on them. The
 // actor is caller-ASSERTED provenance for the audit trail, not authenticated
@@ -355,7 +356,7 @@ func (p timedProvider) IssueReader() (issueops.Reader, error) {
 
 // IssueClaimer builds the claimer OVER THIS WRAPPER, for the same reason and
 // with the same hazard as IssueReader above: the role's units of work must go
-// through NewUOW below or the one write on this surface reports uow_ms=0.000.
+// through NewUOW below or every claim reports uow_ms=0.000.
 // TestAClaimTimesTheUnitsOfWorkItsClaimerOpens is the assertion that fails
 // instead of the recursion looking correct.
 func (p timedProvider) IssueClaimer() (issueops.Claimer, error) {

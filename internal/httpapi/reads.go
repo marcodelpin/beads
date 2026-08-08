@@ -9,8 +9,12 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The three read operations. Each one decodes its parameters, hands the whole
-// request to the reader role, and shapes the answer onto the wire.
+// The issue-collection reads. Each one decodes its parameters, hands the whole
+// request to a role, and shapes the answer onto the wire. Three are on
+// issueops.Reader (ready, list, detail); the count and the query are on
+// ReadyCounter and Querier, siblings reached the same way through the same
+// provider accessors. What follows is about the Reader three, and holds for
+// the other two in every respect but which role they name.
 //
 // WHAT IS NOT HERE IS THE POINT. No filter is built, no ConfigSource is wired,
 // no default limit is applied, no status exclusion is chosen, no wisp fallback
