@@ -361,6 +361,34 @@ var routeTable = []route{
 		handler:     (*Server).handleDelete,
 	},
 	{
+		op:     OpAddDependencies,
+		method: http.MethodPost,
+		// A collection-level custom method beside :remove below, and a LITERAL
+		// for the same reason: pattern and specPath agree, so no declaration is
+		// needed and the router registers the documented path itself.
+		pattern:     "/v0/beads/dependencies:add",
+		capability:  "dependencies.add",
+		implemented: true,
+		handler:     (*Server).handleAddDependencies,
+	},
+	{
+		op:     OpRemoveDependency,
+		method: http.MethodPost,
+		// A collection-level custom method on the dependency collection,
+		// spelled the way ready:count's is. Both segments are LITERAL, so
+		// pattern and specPath agree and the router registers the documented
+		// path itself — no wildcard is involved and nothing here needs the
+		// claim row's declaration.
+		//
+		// It cannot collide with the three literal paths UNDER
+		// /v0/beads/dependencies (cycles, blocking, tree): ServeMux requires the
+		// separating slash, and this path has none.
+		pattern:     "/v0/beads/dependencies:remove",
+		capability:  "dependencies.remove",
+		implemented: true,
+		handler:     (*Server).handleRemoveDependency,
+	},
+	{
 		op:          OpListMemories,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/memories",

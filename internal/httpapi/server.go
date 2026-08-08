@@ -194,6 +194,11 @@ type Config struct {
 	// Deleter is the OTHER destructive one, required for the same reason.
 	Deleter      issueops.Deleter
 	BatchCreator issueops.BatchCreator
+	// DependencyEditor is the graph's write side. Required on the same terms as
+	// the two destructive roles above: whether this build can rewire the
+	// dependency graph is a decision for the operator who chose to run bd serve,
+	// not a consequence of whether a caller remembered a field.
+	DependencyEditor issueops.DependencyEditor
 	// Memories is the workspace's persistent memory plane, and the one field
 	// here that is not an issueops role: memories are user data riding in the
 	// config table under their own merge class, not settings, so they have
@@ -242,6 +247,7 @@ type Server struct {
 	issueSweeper      issueops.Sweeper
 	issueDeleter      issueops.Deleter
 	issueBatchCreator issueops.BatchCreator
+	issueDependencies issueops.DependencyEditor
 	workspaceMemories memoryops.Memories
 
 	listener net.Listener
@@ -353,6 +359,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueSweeper:      cfg.Sweeper,
 		issueDeleter:      cfg.Deleter,
 		issueBatchCreator: cfg.BatchCreator,
+		issueDependencies: cfg.DependencyEditor,
 		workspaceMemories: cfg.Memories,
 
 		sem:        make(chan struct{}, maxInflight),
@@ -443,12 +450,12 @@ func Listen(cfg Config) (*Server, error) {
 // actually sets; a typed nil stored in one of these fields is a value as far as
 // this check is concerned.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Lifecycle, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.Memories}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Lifecycle, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.Memories}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Lifecycle, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Querier, Sweeper, Deleter, BatchCreator and Memories"
+const roleSourceNames = "Reader, Claimer, Lifecycle, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor and Memories"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -780,6 +787,25 @@ func (s *Server) batchCreator(r *http.Request) (issueops.BatchCreator, error) {
 		return nil, err
 	}
 	return checkedBatchCreator{inner: creator}, nil
+}
+
+// dependencyEditor returns the guarded dependency-graph write surface for one
+// request, on the same terms as every role above and held by INTERFACE so
+// uow.DependencyEditorSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED, like the sweeper and the deleter: both of this role's
+// results are VALUES, so no handler dereferences a pointer it returned.
+//
+// The role this returns owns every refusal the graph can raise — the cycle
+// gate, the hierarchy rule, the type conflict and the endpoint existence checks
+// — which is why the Config field it comes from is required rather than
+// optional.
+func (s *Server) dependencyEditor(r *http.Request) (issueops.DependencyEditor, error) {
+	if s.provider == nil {
+		return s.issueDependencies, nil
+	}
+	var src uow.DependencyEditorSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.DependencyEditor()
 }
 
 // memories returns the persistent-memory surface for one request, on the same

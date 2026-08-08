@@ -60,7 +60,9 @@ info:
       `POST /v0/beads/issues/{id}:close`,
       `POST /v0/beads/issues/{id}:reopen`, `POST /v0/beads/issues:sweep`,
       `POST /v0/beads/issues:delete`, `GET /v0/beads/config`,
-      `GET /v0/beads/config/{key}`) reject every query key the same way.
+      `GET /v0/beads/config/{key}`, `POST /v0/beads/dependencies:add`,
+      `POST /v0/beads/dependencies:remove`) reject every query key the same
+      way.
 
     * **Request media type.** Every operation that carries a request body
       requires `Content-Type: application/json` and refuses anything else with
@@ -2164,6 +2166,197 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/dependencies:add:
+    post:
+      operationId: addDependencies
+      summary: Assert dependency edges as one act
+      description: >-
+        Asserts every edge in the request, or none of them.
+
+
+        IT IS ALL-OR-NOTHING, and unlike a batch close that is not a policy
+        choice but the shape of the question. Edges asserted together describe a
+        GRAPH, and half a graph is a graph nobody asked for — the cycle a caller
+        was refused for is exactly the state a partial commit would leave
+        behind. A client that gets a 4xx knows nothing was written, and can fix
+        its payload and resend it unchanged. There is no per-edge outcome
+        because there is no outcome but the request's.
+
+
+        AN EDGE IS IDEMPOTENT AT ITS OWN TYPE. A pair that already carries an
+        edge of the requested type refuses nothing and is still echoed in
+        `added`; a pair that carries a DIFFERENT type is a `409`
+        `dependency_exists`, whichever of the two types was stored first.
+        Repetition WITHIN one request answers the same way: the second
+        occurrence of a pair finds the first already written, and two different
+        types for one pair in one request is the same `409`.
+
+
+        A TARGET NEED NOT BE AN ISSUE THIS DATABASE HOLDS. An `external:`
+        reference and an id belonging to another repository are legitimate
+        targets — the vocabulary is open — so only an absence this database can
+        SEE is refused. A SOURCE has no such latitude: an edge follows its
+        source, so a source this database holds no row for has no plane to land
+        in.
+
+
+        Edges are applied parent-child first regardless of request order, so the
+        complete planned hierarchy is visible before any blocking edge is
+        validated against it, and a whole-graph gate runs once at the end. Both
+        hold ACROSS the durable and ephemeral planes: a request may mix them,
+        and it is still one transaction.
+
+
+        A request that wrote no genuinely new durable edge records no history
+        entry, and a request made entirely of wisp-sourced edges records none
+        either — an edge follows its source, and the wisp plane is not
+        versioned. Each genuinely new edge records a `dependency_added` entry on
+        its source's event stream, attributed to `actor`.
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only durable
+        effect is the single storage commit the role makes in its own
+        transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddDependenciesRequest'
+      responses:
+        '200':
+          description: >-
+            Every edge landed. `added` echoes the request's edges in request
+            order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddDependenciesResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member at any level, an `actor` that
+            is empty after trimming, longer than 256 bytes or carrying control
+            characters, an empty or over-long `edges` array, a blank or
+            over-long endpoint id, an unstorable `type`, an edge that points an
+            issue at ITSELF, or an edge endpoint that names nothing this
+            database can see. Nothing is written in any of these cases.
+
+
+            A self-dependency is a `400` rather than a `409` because it is
+            request-intrinsic: it is invalid whatever the graph holds, so it is
+            a refusal of a VALUE and not a statement about state. An endpoint
+            that names nothing is a `400` rather than a `404` for
+            `POST /v0/beads/issues:batchCreate`'s reason: the refusal is about
+            the request BODY, and there is no id in the path to have missed.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >-
+            The graph refuses the requested edge set, and NOTHING WAS WRITTEN.
+
+
+            `dependency_cycle` means the set can never make progress: a
+            scheduling cycle, or a blocking edge against the issue's own
+            ancestor or descendant. The hierarchy case — and ONLY the hierarchy
+            case — additionally carries `issue_id`, `blocker_id` and
+            `blocker_is_ancestor`. Member PRESENCE is the discriminator: absent
+            means the plain cycle refusal, present means the hierarchy one, and
+            the three together are enough to rebuild the refusal whole rather
+            than parse it out of prose.
+
+
+            `dependency_exists` means the pair already carries an edge of a
+            DIFFERENT type; `existing_type` and `requested_type` carry both.
+
+
+            Neither has a force bypass. The recovery for both is to rethink the
+            edge, which is why they are one status and not a retry.
+          x-bd-codes: [dependency_cycle, dependency_exists]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/dependencies:remove:
+    post:
+      operationId: removeDependency
+      summary: Remove one dependency edge
+      description: >-
+        Removes exactly the edge the request names — source, target — and at
+        most that one edge.
+
+
+        IT IS IDEMPOTENT, and `removed: false` is a SUCCESS rather than a
+        refusal. Removing an edge twice leaves the same graph as removing it
+        once, so an agent replaying its own teardown does not have to classify
+        an error to discover it already ran. Nothing is written for it and no
+        event is recorded.
+
+
+        THERE IS NO `404` ON THIS OPERATION, deliberately. An edge that is not
+        there is `removed: false`, and an endpoint id that names nothing holds
+        no edge either, so this operation probes no id's existence and has
+        nothing it could report a miss on.
+
+
+        It is a collection-level custom method rather than a `DELETE`: an edge
+        is named by TWO endpoints, so there is no single-segment resource path
+        for a `DELETE` to address, and a `DELETE` carrying a body is the shape
+        proxies mangle. `DELETE /v0/beads/memories/{key}` is a `DELETE` for the
+        opposite reason — one named resource, no body.
+
+
+        A removal that found its edge records a `dependency_removed` entry on
+        the source's event stream, attributed to `actor`. An edge FOLLOWS ITS
+        SOURCE, so a wisp-sourced edge is removed from the unversioned plane
+        and leaves no durable history entry.
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only
+        durable effect is the single storage commit the role makes in its own
+        transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoveDependencyRequest'
+      responses:
+        '200':
+          description: >-
+            The removal ran. `removed` says whether an edge was there to
+            remove.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoveDependencyResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member, a missing or non-string
+            member, an `actor` that is empty after trimming, longer than 256
+            bytes or carrying control characters, or an endpoint id that is
+            empty or longer than storage holds. Nothing is removed.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/memories:
     get:
       operationId: listMemories
@@ -3498,6 +3691,7 @@ components:
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
             `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
+            `dependencies.add`, `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
             `memories.forget`;
             it grows additively, and an operation never
@@ -4348,6 +4542,144 @@ components:
           items:
             $ref: '#/components/schemas/Issue'
 
+    AddDependenciesRequest:
+      type: object
+      additionalProperties: false
+      required: [actor, edges]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
+          description: >-
+            Who is asserting the edges, under `ClaimRequest.actor`'s rules and
+            for the same reasons: the server trims it, refuses an empty result,
+            anything longer than 256 BYTES, and any control character including
+            newline. It is attributed on each `dependency_added` event a
+            genuinely new edge records, and interpolated into the storage commit
+            message.
+        edges:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: >-
+            The edges to assert, in the caller's order. An empty array is a
+            `400` rather than a successful no-op: a write request that writes
+            nothing is a client bug, and answering it cheerfully is how a client
+            whose own list filtered to nothing silently stops wiring anything.
+
+
+            The 100-edge cap is a bound on how long one request may hold a write
+            transaction, not a statement about batch semantics. Split a larger
+            graph; each request is atomic on its own — but note that splitting
+            it changes what the cycle gate can see, since the gate runs over one
+            request at a time.
+
+
+            A per-edge refusal names its offender as `edges[i].member`.
+          items:
+            $ref: '#/components/schemas/DependencyEdge'
+
+    DependencyEdge:
+      type: object
+      additionalProperties: false
+      required: [issue_id, depends_on_id, type]
+      description: >-
+        One directed edge, as a REQUEST names it. It is not `Dependency`, which
+        is the stored row `GET /v0/beads/dependencies` returns and carries the
+        columns storage assigned; this is the three members a caller supplies.
+      properties:
+        issue_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge's SOURCE — the issue that depends on the other end. An
+            EXACT canonical id, and one this database holds: an edge follows its
+            source, so a source that names nothing is a `400`.
+        depends_on_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge's TARGET — the issue depended upon. An exact canonical id,
+            an `external:` reference, or an id belonging to another repository.
+            Only an absence this database can SEE is refused. It must differ
+            from `issue_id`.
+        type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge type, from the same OPEN vocabulary `Dependency.type`
+            carries: checked for being a storable value, never for membership of
+            a known-types list, so a workspace's own type passes.
+
+    AddDependenciesResponse:
+      type: object
+      required: [added]
+      properties:
+        added:
+          type: array
+          description: >-
+            The request's edges, in REQUEST ORDER. It echoes the request because
+            all-or-nothing means it is either every edge or the call failed, so
+            a caller reporting what landed reads the result and never has to
+            know which of the two it is safe to read. An idempotent same-type
+            re-add is echoed like any other edge; the response does not say
+            which edges were genuinely new, because nothing a client does
+            depends on that.
+
+
+            Never null and never shorter than the request: a partial outcome
+            does not exist on this operation.
+          items:
+            $ref: '#/components/schemas/DependencyEdge'
+
+    RemoveDependencyRequest:
+      type: object
+      additionalProperties: false
+      required: [actor, issue_id, depends_on_id]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
+          description: >-
+            Who is removing the edge, under `ClaimRequest.actor`'s rules and
+            for the same reasons: the server trims it, refuses an empty result,
+            anything longer than 256 BYTES, and any control character including
+            newline. It is attributed on the `dependency_removed` event a real
+            removal records, and interpolated into the storage commit message.
+        issue_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge's SOURCE — the issue that depends on the other end. An
+            EXACT canonical id: there is no fuzzy, prefix or substring
+            resolution on this surface.
+        depends_on_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            The edge's TARGET — the issue depended upon. An exact canonical id,
+            under `issue_id`'s rule.
+
+    RemoveDependencyResponse:
+      type: object
+      required: [removed]
+      properties:
+        removed:
+          type: boolean
+          description: >-
+            True when an edge was there and is now gone. FALSE IS A SUCCESS,
+            not a refusal: it says this pair carried no such edge, which is the
+            same graph a second removal leaves. Nothing was written for it.
+
     ClaimRequest:
       type: object
       additionalProperties: false
@@ -4635,7 +4967,8 @@ components:
             may dispatch on. v0's vocabulary: `invalid_argument` (400, also
             emitted by the Host-header middleware on any route),
             `invalid_cursor` (400), `not_found` (404), `already_claimed` (409),
-            `not_claimable` (409), `not_closable` (409), `busy` (503),
+            `not_claimable` (409), `not_closable` (409),
+            `dependency_cycle` (409), `dependency_exists` (409), `busy` (503),
             `db_unavailable` (503),
             `internal` (500). Renaming or removing a status+code pair is a
             breaking change; ADDING one is not, so clients MUST default-branch
@@ -4688,6 +5021,43 @@ components:
             `not_closable` refusal is a live blocker and carries no such
             member, so member presence — not prose — is how a client tells the
             two apart. Both are bypassed by `force`.
+        existing_type:
+          type: string
+          description: >-
+            With `dependency_exists`: the type of the edge the pair already
+            carries, read inside the refusing transaction.
+        requested_type:
+          type: string
+          description: >-
+            With `dependency_exists`: the type the request asked for. Together
+            with `existing_type` it is the whole refusal, so a client never
+            parses either out of `detail`.
+        issue_id:
+          type: string
+          description: >-
+            With `dependency_cycle`, and ONLY on the hierarchy refusal: the
+            issue the requested blocking edge would have gated. Its PRESENCE is
+            the discriminator — absent means a plain scheduling cycle, present
+            means the edge pointed at the issue's own ancestor or descendant.
+
+
+            The conflicting hierarchy may exist only inside the rolled-back
+            batch, so no read after the fact can recover it: the refusing
+            transaction is the only place this member can come from.
+        blocker_id:
+          type: string
+          description: >-
+            With `dependency_cycle`, hierarchy refusal only: the ancestor or
+            descendant the edge named as blocker. See `issue_id`.
+        blocker_is_ancestor:
+          type: boolean
+          description: >-
+            With `dependency_cycle`, hierarchy refusal only: true when
+            `blocker_id` is an ANCESTOR of `issue_id` (which cannot close until
+            its descendants finish, so the gate would never clear), false when
+            it is a DESCENDANT (blocked status cascades, so it would inherit the
+            block and never close). Both polarities are reported; this member is
+            never omitted to mean false. See `issue_id`.
         request_id:
           type: string
           description: >-

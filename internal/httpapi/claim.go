@@ -321,6 +321,7 @@ var (
 	_ uow.SweeperSource           = timedProvider{}
 	_ uow.DeleterSource           = timedProvider{}
 	_ uow.BatchCreatorSource      = timedProvider{}
+	_ uow.DependencyEditorSource  = timedProvider{}
 	_ uow.MemoriesSource          = timedProvider{}
 )
 
@@ -434,6 +435,13 @@ func (p timedProvider) Deleter() (issueops.Deleter, error) {
 // per call.
 func (p timedProvider) BatchCreator() (issueops.BatchCreator, error) {
 	return uow.NewBatchCreator(p)
+}
+
+// DependencyEditor builds the graph's write role OVER THIS WRAPPER, for the
+// same reason as the roles above. Like BatchCreator and the lifecycle it opens
+// a WRITE unit of work per call.
+func (p timedProvider) DependencyEditor() (issueops.DependencyEditor, error) {
+	return uow.NewDependencyEditor(p)
 }
 
 // Memories builds the persistent-memory role OVER THIS WRAPPER, for the same

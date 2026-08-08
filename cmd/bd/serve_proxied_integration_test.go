@@ -144,7 +144,8 @@ func (sp *serveProcess) url(path string) string { return "http://" + sp.addr + p
 // package's own gates cannot catch an expectation stored as data outside it.
 var servedCapabilities = []any{
 	"config.get", "config.list",
-	"dependencies.blocking", "dependencies.cycles", "dependencies.list", "dependencies.tree",
+	"dependencies.add", "dependencies.blocking", "dependencies.cycles",
+	"dependencies.list", "dependencies.remove", "dependencies.tree",
 	"issues.batchCreate", "issues.claim", "issues.close", "issues.delete",
 	"issues.get", "issues.list", "issues.query", "issues.reopen", "issues.sweep",
 	"issues.update",

@@ -192,6 +192,7 @@ func runServe() error {
 			Sweeper:           roles.sweeper,
 			Deleter:           roles.deleter,
 			BatchCreator:      roles.batchCreator,
+			DependencyEditor:  roles.dependencyEditor,
 			Memories:          roles.memories,
 			Workspace:         info,
 			SchemaVersion:     JSONSchemaVersion,
@@ -447,6 +448,7 @@ func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
 		{"sweeper", func() (err error) { roles.sweeper, err = src.Sweeper(); return }},
 		{"deleter", func() (err error) { roles.deleter, err = src.Deleter(); return }},
 		{"batch creator", func() (err error) { roles.batchCreator, err = src.BatchCreator(); return }},
+		{"dependency editor", func() (err error) { roles.dependencyEditor, err = src.DependencyEditor(); return }},
 		{"memories", func() (err error) { roles.memories, err = src.Memories(); return }},
 	} {
 		if err := b.get(); err != nil {
@@ -475,6 +477,11 @@ type serveRoles struct {
 	sweeper      issueops.Sweeper
 	deleter      issueops.Deleter
 	batchCreator issueops.BatchCreator
+	// dependencyEditor is the second role here whose accessor recurses through
+	// the hook decorator, so taking it off the peeled store is not optional:
+	// HookFiringStore.DependencyEditor fires the workspace's update hook per
+	// edited source issue, and this server documents that hooks do not fire.
+	dependencyEditor issueops.DependencyEditor
 	// memories is the one role here that is not an issueops role: the memory
 	// plane is user data riding in the config table under its own merge class,
 	// so it has its own leaf package.
