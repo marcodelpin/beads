@@ -1555,7 +1555,18 @@ var rootCmd = &cobra.Command{
 			if err != nil {
 				return HandleError("failed to open uow provider: %v", err)
 			}
-			uowProvider = p
+			// Fire the workspace's script hooks after commits on the
+			// unit-of-work plumbing, which notified no one: hooks now fire on
+			// both write plumbings, from the plumbing rather than from each
+			// command. This is the proxied twin of the wireStorageDecorators
+			// call below. With hooks disabled the sinks are empty and the
+			// provider comes back unwrapped.
+			var uowSinks uow.Sinks
+			if beadsDir != "" && !config.GetBool("no-hooks") {
+				hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
+				uowSinks.Hook = hookRunner
+			}
+			uowProvider = uow.NewNotifyingProvider(p, uowSinks)
 
 			if !previewMode {
 				reconcileVersionProxiedServer(rootCtx)
@@ -1724,6 +1735,24 @@ var rootCmd = &cobra.Command{
 			setRootContext(nil, nil)
 		}()
 		defer restoreChangeDirSelection()
+		// Give the hooks this command fired their moment before the process
+		// exits. Both plumbings run them fire-and-forget on their own
+		// goroutines, and a bd command is short enough that returning from main
+		// can kill one that has not reached exec yet — a hook that silently did
+		// not fire, which is the failure this whole seam exists to stop.
+		// Bounded by the runner's own per-hook budget: a script that outlives it
+		// is being killed anyway, so waiting longer buys nothing.
+		//
+		// Deferred order is load-bearing on both sides. It runs AFTER the
+		// close-and-release below, because a hook script commonly shells out to
+		// bd and an EMBEDDED workspace's Dolt lock is held until this process
+		// closes its store — the child would fail to open it. (The workspace
+		// gates are not the reason: a normal command holds them SHARED, and the
+		// child takes them shared too, so those never contend.) It runs BEFORE
+		// restoreChangeDirSelection above, because under `-C` the child inherits
+		// this process's environment and must see the workspace the command
+		// actually ran against.
+		defer waitForCommandHooks()
 		// Release the workspace/physical-root gates on EVERY exit from
 		// PostRunE — deferred so the early error returns below cannot leak
 		// the handle past the function. Ordering is enforced, not assumed:
@@ -2090,6 +2119,14 @@ func main() {
 	registerHelpAllFlag()
 
 	executedCmd, err := rootCmd.ExecuteC()
+
+	// Let this command's fire-and-forget hooks finish, for the same
+	// every-exit-path reason the metrics flush below is here rather than in
+	// PersistentPostRunE: cobra SKIPS PostRunE when RunE returns an error, so a
+	// partial batch — `bd close A B` where A commits and B refuses — would exit
+	// with A's committed mutation never reaching its hook script. Idempotent, so
+	// the PostRunE call on the clean path makes this one free.
+	waitForCommandHooks()
 
 	// Finalize queued metrics and detach the uploader. Shared with the os.Exit
 	// guards (CheckReadonly and the pre-run gates) so every exit path flushes the

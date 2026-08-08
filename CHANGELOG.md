@@ -122,6 +122,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Script hooks now fire on both write plumbings** (bd-opisf). bd has two write
+  plumbings and only one of them ran the workspace's hook scripts. The
+  DoltStorage decorator chain fires `on_create`/`on_update`/`on_close` after
+  every mutation it lands; the unit-of-work plumbing — the one **proxied-server
+  mode** writes through — fired nothing from the plumbing, so an integration
+  wired to `.beads/hooks/` silently missed every mutation that went through it.
+  Four commands (`update`, `close`, `reopen`, `gate`) had grown hand-wired hook
+  calls of their own to paper over the gap; every other write — `create`, batch
+  create and close, claim, `comment`, label edits, dependency edits — ran no
+  hook at all. A notifying wrapper now fires them from the plumbing, buffered
+  during the transaction and drained only after the commit succeeds, so a
+  rolled-back or retried write reports nothing.
+
+  Six changes are visible in proxied mode, and all six move it toward what the
+  embedded path has always done (a seventh, below, applies to both):
+
+  - **One firing site per plumbing.** The four per-command hook calls are gone.
+  - **`bd update -s closed` fires `on_update` only.** It used to fire `on_close`
+    as well. `bd close` is what fires `on_close`, on both plumbings.
+  - **`bd close` no longer fires an `on_update` ahead of its `on_close`.**
+  - **Hooks run fire-and-forget, after the write commits**, rather than
+    synchronously inside the command.
+  - **`no-hooks` is honored.** The per-command calls ignored it, so hooks fired
+    in proxied mode even when they were switched off.
+  - **An idempotent re-close fires `on_close`**, and a double `bd gate resolve`
+    fires it too. The per-command calls suppressed both; the embedded path has
+    always fired for a close that succeeded, changed row or not, so a script
+    reconciling on "it is closed" is told every time rather than only the first.
+
+  And one change every workspace sees, embedded and proxied alike: **a command
+  now waits for its own fire-and-forget hooks before exiting**, bounded by the
+  per-hook timeout (10s). Both plumbings run hook scripts on background
+  goroutines, and a short command could return from `main` before one had even
+  started — a hook that silently never fired. The wait happens after the store
+  closes, so a hook script's own `bd` can open the workspace, and it runs on the
+  error exit paths too, so a partial batch still delivers the hook for what it
+  did commit. A command that fires no hooks waits on nothing.
+
+  `bd serve` still runs no hooks, and `bd import` still fires none on either
+  plumbing (both import through the batch-upsert engine rather than the
+  per-issue verbs).
+
 - **`--dolt-auto-commit batch`/`off` now actually defer version commits in
   SQL-server mode** (bd-4wamg). The mode was silently inert there: the CLI's
   auto-commit policy was embedded-only, and the storage layer minted one Dolt
