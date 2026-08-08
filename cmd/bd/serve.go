@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/backends"
 	"github.com/steveyegge/beads/internal/storage/contextinfo"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/issueops"
 	"github.com/steveyegge/beads/memoryops"
 )
@@ -200,7 +201,13 @@ func runServe() error {
 		})
 	}
 
-	provider := uowProvider
+	// Serve from the provider BENEATH the hook layer. `bd serve` documents that
+	// it runs no hooks — a user-controlled subprocess per mutation is an
+	// unbounded latency multiplier and an orphaned child at shutdown — while
+	// proxied mode wires a notifying provider so the CLI's own writes keep
+	// firing them. This is the unit-of-work twin of the
+	// (*storage.HookFiringStore).Unwrap the store-shaped source takes.
+	provider := uow.UnwrapProvider(uowProvider)
 	if provider == nil {
 		// Server, external-server and shared-server workspaces: PersistentPreRunE
 		// builds a DoltStore for those and no unit-of-work provider, so serve
