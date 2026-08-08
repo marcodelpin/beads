@@ -155,7 +155,7 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 	if err != nil {
 		return fmt.Errorf("initial query: %w", err)
 	}
-	displayPrettyListWithDeps(issues, true, deps)
+	displayPrettyListWithDeps(issues, true, deps, hasMore)
 	printTruncationHint(hasMore, in.effectiveLimit)
 	lastSnapshot := issueSnapshot(issues)
 
@@ -182,7 +182,7 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 			snap := issueSnapshot(issues)
 			if snap != lastSnapshot {
 				lastSnapshot = snap
-				displayPrettyListWithDeps(issues, true, deps)
+				displayPrettyListWithDeps(issues, true, deps, hasMore)
 				printTruncationHint(hasMore, in.effectiveLimit)
 				fmt.Fprintf(os.Stderr, "\nWatching for changes... (Press Ctrl+C to exit)\n")
 			}
@@ -238,7 +238,7 @@ func renderProxiedListText(ctx context.Context, issues []*types.Issue, in listIn
 			printTruncationHint(truncated, in.effectiveLimit)
 			return nil
 		}
-		displayPrettyListWithDepsMode(issues, false, depsByIssueID, in.depsMode)
+		displayPrettyListWithDepsMode(issues, false, depsByIssueID, in.depsMode, truncated)
 		printTruncationHint(truncated, in.effectiveLimit)
 		printSkipLabelsFooter(in.SkipLabels)
 		return nil
