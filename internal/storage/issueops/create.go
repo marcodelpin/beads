@@ -838,7 +838,7 @@ func PersistComments(ctx context.Context, tx DBTX, issue *types.Issue) (CreateIs
 			if !existed {
 				result.markChanged(commentTable)
 				result.persistedComments = append(result.persistedComments, EventComment{
-					ID: id, Author: comment.Author, Text: comment.Text, CreatedAt: createdAt, Source: "structured",
+					ID: id, Author: comment.Author, Text: comment.Text, CreatedAt: createdAt, Source: CommentSourceStructured,
 				})
 			}
 			continue
@@ -866,7 +866,7 @@ func PersistComments(ctx context.Context, tx DBTX, issue *types.Issue) (CreateIs
 		}
 		result.markChanged(commentTable)
 		result.persistedComments = append(result.persistedComments, EventComment{
-			ID: comment.ID, Author: comment.Author, Text: comment.Text, CreatedAt: createdAt, Source: "structured",
+			ID: comment.ID, Author: comment.Author, Text: comment.Text, CreatedAt: createdAt, Source: CommentSourceStructured,
 		})
 	}
 	return result, nil

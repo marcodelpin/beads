@@ -174,7 +174,7 @@ func (r *commentSQLRepositoryImpl) InsertRecord(ctx context.Context, comment *ty
 	copy.CreatedAt = createdAt
 
 	if err := issueops.RecordCommentEventInTx(ctx, r.runner, copy.IssueID, &issueops.EventComment{
-		ID: copy.ID, Author: copy.Author, Text: copy.Text, CreatedAt: copy.CreatedAt, Source: "structured",
+		ID: copy.ID, Author: copy.Author, Text: copy.Text, CreatedAt: copy.CreatedAt, Source: issueops.CommentSourceStructured,
 	}); err != nil {
 		return nil, err
 	}

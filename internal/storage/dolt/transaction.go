@@ -1359,7 +1359,7 @@ func (t *doltTransaction) ImportIssueComment(ctx context.Context, issueID, autho
 	// issueops.ImportIssueCommentInTx, so it must journal the comment op itself
 	// — the create/comment entry points cover their own writes, not this one.
 	if err := issueops.RecordCommentEventInTx(ctx, t.txFor(table), issueID, &issueops.EventComment{
-		ID: id, Author: author, Text: text, CreatedAt: stored, Source: "structured",
+		ID: id, Author: author, Text: text, CreatedAt: stored, Source: issueops.CommentSourceStructured,
 	}); err != nil {
 		return nil, wrapExecError("journal import comment in tx", err)
 	}
@@ -1422,7 +1422,7 @@ func (t *doltTransaction) AddComment(ctx context.Context, issueID, actor, commen
 	// The text is replayable content, so it carries the same payload as a
 	// structured comment, distinguished by Source.
 	if err := issueops.RecordCommentEventInTx(ctx, t.txFor(table), issueID, &issueops.EventComment{
-		ID: id, Author: actor, Text: comment, CreatedAt: stored, Source: "audit",
+		ID: id, Author: actor, Text: comment, CreatedAt: stored, Source: issueops.CommentSourceAudit,
 	}); err != nil {
 		return wrapExecError("journal comment in tx", err)
 	}

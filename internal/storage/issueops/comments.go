@@ -283,7 +283,7 @@ func addIssueCommentInTx(ctx context.Context, tx *sql.Tx, issueID, author, text 
 		CreatedAt: stored,
 	}
 	if err := RecordCommentEventInTx(ctx, tx, issueID, &EventComment{
-		ID: id, Author: author, Text: text, CreatedAt: stored, Source: "structured",
+		ID: id, Author: author, Text: text, CreatedAt: stored, Source: CommentSourceStructured,
 	}); err != nil {
 		return nil, err
 	}
@@ -317,6 +317,6 @@ func AddCommentEventInTx(ctx context.Context, tx DBTX, issueID, actor, comment s
 	// reproduce, so it carries the same payload as a structured comment,
 	// distinguished by Source.
 	return RecordCommentEventInTx(ctx, tx, issueID, &EventComment{
-		ID: id, Author: actor, Text: comment, CreatedAt: stored, Source: "audit",
+		ID: id, Author: actor, Text: comment, CreatedAt: stored, Source: CommentSourceAudit,
 	})
 }
