@@ -437,8 +437,9 @@ func TestUpdateRefusesAQueryParameter(t *testing.T) {
 }
 
 // TestUpdateRefusesUnrowableIDsBeforeAnyDatabaseWork: the dispatcher's id bound
-// applied here, because this route is NOT on the dispatcher's pattern and would
-// otherwise be the one write on the surface without one.
+// applied here, because this route is NOT on the dispatcher's pattern — it is
+// the one write that takes an issue id from the PATH without going through
+// customMethodTarget, so it would otherwise have no id bound at all.
 func TestUpdateRefusesUnrowableIDsBeforeAnyDatabaseWork(t *testing.T) {
 	for _, tc := range []struct{ name, id string }{
 		{"longer than the column", strings.Repeat("b", types.MaxFieldLen+1)},

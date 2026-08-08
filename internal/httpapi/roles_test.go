@@ -729,9 +729,9 @@ func countedPage() []*types.IssueWithCounts {
 //
 // The two refusals are different mistakes and must stay distinguishable. A
 // PARTIAL set is the dangerous one: a Config carrying a reader and no claimer
-// would bind, answer every read, and fail the one write on this surface with a
-// nil dereference — at claim time, in a handler, on a live server. Each role an
-// operation reaches has a row below for that reason.
+// would bind, answer every read, and fail every claim with a nil dereference —
+// at claim time, in a handler, on a live server. Each role an operation reaches
+// has a row below for that reason.
 func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

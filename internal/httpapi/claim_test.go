@@ -707,9 +707,10 @@ func TestClaimRetriesOnWriteContention(t *testing.T) {
 	}
 }
 
-// TestClaimTakesADatabaseSlot: the one write on this surface is not exempt from
-// the in-flight limit. An exempt write would keep opening connections while
-// every reader is already queued — the saturation case the semaphore exists for.
+// TestClaimTakesADatabaseSlot: the claim is not exempt from the in-flight
+// limit. An exempt write would keep opening connections while every reader is
+// already queued — the saturation case the semaphore exists for. Each later
+// write carries the same assertion against its own row.
 func TestClaimTakesADatabaseSlot(t *testing.T) {
 	for _, rt := range routeTable {
 		if rt.op != OpClaimIssue {
@@ -756,8 +757,8 @@ func TestClaimNeverReachesTheWispPlane(t *testing.T) {
 // tempting edit: `p.inner.IssueClaimer()` — "add the layer by recursion, like
 // every other decorator". This decorator's layer is on NewUOW, which only a
 // claimer holding THIS wrapper can reach, so recursion hands back a claimer
-// bound to the untimed provider. It compiles, and the one write on this
-// surface reports uow_ms=0.000 forever.
+// bound to the untimed provider. It compiles, and every claim reports
+// uow_ms=0.000 forever.
 func TestAClaimTimesTheUnitsOfWorkItsClaimerOpens(t *testing.T) {
 	issues := &fakeIssues{issue: seededIssue("bd-1", "alice", types.StatusInProgress)}
 	provider := &fakeProvider{issues: issues, delay: 5 * time.Millisecond}
