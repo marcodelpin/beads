@@ -66,6 +66,24 @@ func IsAccessDenied(err error) bool {
 	return strings.Contains(s, "access denied") || strings.Contains(s, "command denied")
 }
 
+// IsDuplicateKey reports whether err is a uniqueness violation: MySQL 1062
+// (ER_DUP_ENTRY) and its multi-row sibling 1586 (ER_DUP_ENTRY_WITH_KEY_NAME).
+// Dolt reports both through the same codes.
+func IsDuplicateKey(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1062 || mysqlErr.Number == 1586
+	}
+
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "error 1062") || strings.Contains(s, "error 1586") ||
+		strings.Contains(s, "duplicate primary key") || strings.Contains(s, "duplicate entry")
+}
+
 // IsMissingForeignKeyTarget reports whether err is the integrity-constraint
 // violation a write hits when it references a row that does not exist: MySQL
 // 1452 (ER_NO_REFERENCED_ROW_2) and its older 1216 (ER_NO_REFERENCED_ROW).

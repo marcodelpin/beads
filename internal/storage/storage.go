@@ -696,6 +696,16 @@ type StateHasher interface {
 	GetStateHash(ctx context.Context) (string, error)
 }
 
+// EventsJournalConfigurer controls durable events journal activation on ONE
+// storage instance. Implementations must never use process-global state: a
+// process can hold several stores at once (multiple projects, a test binary's
+// parallel fixtures), and opening one with the journal enabled must not turn it
+// on for any other. Callers type-assert; a store that does not implement it
+// simply cannot journal.
+type EventsJournalConfigurer interface {
+	SetEventsJournalEnabled(enabled bool)
+}
+
 // LifecycleManager provides lifecycle inspection beyond Close().
 type LifecycleManager interface {
 	IsClosed() bool
