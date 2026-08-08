@@ -41,6 +41,9 @@ func TestLifecycleCloseReopenContract(t *testing.T) {
 	t.Run("CloseIsIdempotentAndKeepsTheFirstClose", func(t *testing.T) {
 		conformance.RunLifecycleCloseIsIdempotentAndKeepsTheFirstClose(t, ctx, fixture)
 	})
+	t.Run("CloseAndReopenKeepTheClaimHolder", func(t *testing.T) {
+		conformance.RunLifecycleCloseAndReopenKeepTheClaimHolder(t, ctx, fixture)
+	})
 	t.Run("ReopenLeavesNonDoneStatusesUnchanged", func(t *testing.T) {
 		conformance.RunLifecycleReopenLeavesNonDoneStatusesUnchanged(t, ctx, fixture)
 	})
@@ -61,6 +64,15 @@ func TestLifecycleCloseReopenContract(t *testing.T) {
 	})
 	t.Run("CloseAndReopenRequireActorAndIssueID", func(t *testing.T) {
 		conformance.RunLifecycleCloseAndReopenRequireActorAndIssueID(t, ctx, fixture)
+	})
+	t.Run("CloseSettlesItsTransitiveAndCrossPlaneDependers", func(t *testing.T) {
+		conformance.RunLifecycleCloseSettlesItsTransitiveAndCrossPlaneDependers(t, ctx, fixture)
+	})
+	t.Run("CloseSettlesTheClosedRowItselfAndItsChild", func(t *testing.T) {
+		conformance.RunLifecycleCloseSettlesTheClosedRowItselfAndItsChild(t, ctx, fixture)
+	})
+	t.Run("ReopenReblocksItsDependers", func(t *testing.T) {
+		conformance.RunLifecycleReopenReblocksItsDependers(t, ctx, fixture)
 	})
 }
 
