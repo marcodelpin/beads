@@ -42,6 +42,9 @@ func TestLifecycleCloseReopenContract(t *testing.T) {
 	t.Run("CloseIsIdempotentAndKeepsTheFirstClose", func(t *testing.T) {
 		conformance.RunLifecycleCloseIsIdempotentAndKeepsTheFirstClose(t, ctx, fixture)
 	})
+	t.Run("CloseAndReopenKeepTheClaimHolder", func(t *testing.T) {
+		conformance.RunLifecycleCloseAndReopenKeepTheClaimHolder(t, ctx, fixture)
+	})
 	t.Run("ReopenLeavesNonDoneStatusesUnchanged", func(t *testing.T) {
 		conformance.RunLifecycleReopenLeavesNonDoneStatusesUnchanged(t, ctx, fixture)
 	})
