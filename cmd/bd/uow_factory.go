@@ -95,6 +95,12 @@ func openProxiedServerUOWProvider(ctx context.Context, beadsDir, databaseOverrid
 	return newSQLServerUOWProvider(ctx, beadsDir, topology, opts...)
 }
 
+// newSQLServerUOWProvider is the single funnel every unit-of-work provider bd
+// builds passes through — the proxied CLI path AND `bd serve`'s own provider
+// for server-mode workspaces. Activation is applied by the two constructors it
+// dispatches to, each alongside its own open; doing it at the CALL SITES
+// instead is what left `bd serve` writing mutations into an empty journal while
+// reporting success. See the note at the top of events_journal.go.
 func newSQLServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (uow.UnitOfWorkProvider, error) {
 	if topology.external != nil {
 		return newExternalProxiedServerUOWProvider(ctx, beadsDir, topology, opts...)
@@ -323,7 +329,8 @@ func resolveServerModeUOWTopologyWithTransportResolver(ctx context.Context, bead
 // the workspace mode: since bd-emv a server-mode workspace lands here too, and
 // the paths it resolves (root, log) are the same ones proxied mode uses because
 // both modes root their server at the same directory.
-func newExternalProxiedServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (uow.UnitOfWorkProvider, error) {
+func newExternalProxiedServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (p uow.UnitOfWorkProvider, err error) {
+	defer func() { p, err = activateEventsJournalProvider(ctx, beadsDir, p, err) }()
 	rootPath, err := resolveProxiedServerRootPath(beadsDir)
 	if err != nil {
 		return nil, fmt.Errorf("newExternalProxiedServerUOWProvider: resolve root path: %w", err)
@@ -362,7 +369,8 @@ func newExternalProxiedServerUOWProvider(ctx context.Context, beadsDir string, t
 	)
 }
 
-func newManagedProxiedServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (uow.UnitOfWorkProvider, error) {
+func newManagedProxiedServerUOWProvider(ctx context.Context, beadsDir string, topology sqlServerUOWTopology, opts ...uow.ProviderOption) (p uow.UnitOfWorkProvider, err error) {
+	defer func() { p, err = activateEventsJournalProvider(ctx, beadsDir, p, err) }()
 	doltBin, err := exec.LookPath("dolt")
 	if err != nil {
 		return nil, fmt.Errorf("newProxiedServerUOWProvider: dolt is not installed (not found in PATH); install from https://docs.dolthub.com/introduction/installation: %w", err)

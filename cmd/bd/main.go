@@ -1585,12 +1585,8 @@ var rootCmd = &cobra.Command{
 		// Removing them WILL cause unrecoverable data corruption and data loss.
 		// Dolt manages these files itself; external interference is never safe.
 
-		if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
-			if useReadOnly {
-				store, err = backend.OpenReadOnly(rootCtx, beadsDir)
-			} else {
-				store, err = backend.Open(rootCtx, beadsDir)
-			}
+		if _, ok := backends.Lookup(cfg.GetBackend()); ok {
+			store, err = newRegisteredBackendStore(rootCtx, cfg.GetBackend(), beadsDir, useReadOnly)
 		} else {
 			store, err = newDoltStore(rootCtx, doltCfg)
 		}
