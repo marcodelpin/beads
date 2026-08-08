@@ -59,7 +59,8 @@ func TestEmbeddedIgnoredSeriesConvergesWithFreshInitShape(t *testing.T) {
 	for _, table := range []string{
 		"wisp_dependencies", "wisp_events", "wisp_comments", "wisp_labels",
 		"wisp_child_counters", "wisps", "events", "leases", "repo_mtimes",
-		"local_metadata", "ignored_schema_migrations",
+		"local_metadata", "bd_events_journal", "bd_events_seq",
+		"ignored_schema_migrations",
 	} {
 		execFrozenGuard(t, ctx, cloneConn, "DROP TABLE IF EXISTS "+table)
 	}
@@ -81,7 +82,7 @@ func TestEmbeddedIgnoredSeriesConvergesWithFreshInitShape(t *testing.T) {
 	for _, table := range []string{
 		"wisps", "wisp_labels", "wisp_dependencies", "wisp_events",
 		"wisp_comments", "wisp_child_counters", "events", "leases",
-		"repo_mtimes", "local_metadata",
+		"repo_mtimes", "local_metadata", "bd_events_journal", "bd_events_seq",
 	} {
 		initShape := clonePlaneTableShape(t, ctx, initConn, table)
 		cloneShape := clonePlaneTableShape(t, ctx, cloneConn, table)
