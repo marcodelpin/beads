@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A durable events journal, and `bd events` to read it** (bd-opisf). External
+  tooling that wants to stay in step with a workspace had two options and
+  neither was a feed: a fire-and-forget script hook that may not run, or polling
+  whole snapshots and diffing them — which still misses anything that changed
+  twice between two reads. The journal is the third. Every committed issue
+  mutation writes one ordered record, in the same transaction as the mutation
+  itself, and a consumer replays those records from a checkpoint it can resume.
+  Each record carries the operation, the mutated id, and the issue's full
+  post-mutation snapshot (including `is_blocked`), so a mirror stays correct
+  without re-querying the graph.
+
+  **It is off by default and opt-in per workspace**: `bd config set
+  events-journal true`, or `BD_EVENTS_JOURNAL=1`. Nothing is recorded while it
+  is off, so a workspace that never enables it pays nothing. Two retention
+  floors bound what a prune may delete — `events-journal-retain-days`
+  (default 7) and `events-journal-retain-rows` (default 100000), each disabled
+  by setting it to 0. All three are `config.yaml` keys with `BD_EVENTS_JOURNAL*`
+  environment equivalents.
+
+  `bd events tail --since <seq>` prints records as JSON lines and `--follow`
+  keeps printing them as writes commit; `bd events export` prints the journal
+  from the beginning; `bd events prune --before <seq>` deletes a consumed
+  prefix. Pruning is manual — nothing deletes journal records on your behalf,
+  and the floors are a recent-window guarantee, not a consumer watermark.
+
+  **A read that cannot resume fails instead of lying.** When `--since` falls
+  below the oldest retained record, the read neither skips ahead to the
+  surviving suffix nor returns an empty success: both are silent record loss
+  that a cursor cannot detect. It exits 1 with a typed
+  `events_journal_truncated` error carrying `since`, `floor` and `head`, so a
+  consumer can choose between resuming at `floor - 1` with a known gap and
+  re-baselining. Under `--json` that is the error payload; mid-`--follow` it is
+  one compact JSON object on a line of the JSONL stream it interrupts, because
+  the consumer on the other end is a line reader. An interior gap — which
+  nothing in bd can produce, since a prune only ever removes a prefix — refuses
+  the same way.
+
+  The journal is clone-local working-set state (`dolt_ignore`d): never
+  versioned, never pushed or federated, per branch, and per replica — each
+  clone counts its own seq space, so a checkpoint from one replica is
+  meaningless against another. `bd dolt pull` and merge-settled changes, raw
+  `bd sql` DML, store-open migrations, and compaction rewrites are not
+  journaled. The record contract and every boundary are documented in
+  [docs/reference/events-journal.md](docs/reference/events-journal.md).
+
+- **`is_blocked` is a documented optional member of the /v0 OpenAPI issue
+  schemas** (bd-opisf) — `Issue`, `IssueWithCounts`, `IssueDetails`,
+  `IssueWithDependencyMetadata` and `TreeNode`, the five welded to the
+  canonical Go struct. It is the persisted readiness projection: true when an
+  open blocking dependency keeps an issue out of the ready set, derived from
+  the dependency graph and maintained by the server, never set by a client. It
+  is omitted when false, so absence means false. Journal snapshots are what set
+  it; readiness itself is computed exactly as before.
+
 - **`bd serve` grows the write half of the agent loop** (v0 wire surface,
   [#5410](https://github.com/gastownhall/beads/pull/5410),
   [#5417](https://github.com/gastownhall/beads/pull/5417),
