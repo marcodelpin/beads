@@ -82,7 +82,7 @@ const (
 	//
 	// THE TWO CONDITIONS ARE FULLY DISTINGUISHABLE HERE. ErrNotClaimed and
 	// ErrNotReleasable are two distinct typed sentinels, and failRelease holds
-	// both in one case arm — so a future split needs no archaeology and no
+	// both in one case arm — so a future split needs no excavation and no
 	// prose-scraping: it is a mapping change in that arm plus a code in this
 	// block and a line in the document. What IS unavailable typed is the
 	// OBSERVATION either refusal made — the status it saw, the emptiness of the
@@ -311,6 +311,25 @@ const (
 	OpListIssues    = "listIssues"
 	OpGetIssue      = "getIssue"
 	OpClaimIssue    = "claimIssue"
+	// OpBatchCloseIssues closes many issues as one transaction, behind
+	// issueops.BatchCloser. It is the surface's ONLY operation whose 200 body
+	// carries refusals: the role is deliberately not all-or-nothing, so an id
+	// it turns down is skipped and the survivors commit.
+	//
+	// Its problem vocabulary is therefore narrow rather than wide — everything
+	// an ITEM can earn lives in that item's outcome, and a problem document
+	// from this operation means the batch NEVER RAN.
+	OpBatchCloseIssues = "batchCloseIssues"
+	// OpClaimNextIssue takes ONE ready issue and hands it back claimed, behind
+	// issueops.ReadyClaimer. It is the surface's first operation that names no
+	// row at all: the caller sends a QUESTION — the ready listing's own filter
+	// vocabulary — and the role picks the answer.
+	//
+	// It exists to retire a RACE rather than a round trip. The listing-then-claim
+	// composition it replaces reads a row another agent claims before the second
+	// request arrives, so a fleet polling one queue earns 409s for rows it was
+	// correctly offered.
+	OpClaimNextIssue = "claimNextIssue"
 	// OpReleaseIssue gives a claim back — the claim's inverse, and what
 	// `bd unclaim` spells. It is a named lifecycle action rather than a status
 	// patch for OpCloseIssue's reason: an update spells the release three
@@ -539,6 +558,24 @@ var operationCodes = map[string][]Code{
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
+	// The NARROWEST write vocabulary on this surface, and the narrowness is the
+	// contract rather than an oversight. A problem document from this operation
+	// means the batch never ran; every refusal an ITEM can earn — not_found for
+	// an id naming no row, not_closable for close policy — travels in that
+	// item's outcome inside a 200. A 404 here would say the operation went to
+	// the wrong place, and a 409 would say the whole batch was refused, and
+	// neither is ever true of a per-item refusal.
+	OpBatchCloseIssues: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// NO 409 AND NO 404, and both absences are this operation's contract rather
+	// than an omission. There is no id to have missed, and a row a racing agent
+	// took is simply not in the set this claim scanned — the role walks past it
+	// inside the transaction, which is the whole reason the operation exists.
+	// An empty ready front is a 200 with the row absent, not a refusal.
+	//
+	// The 400 is the ready listing's filter vocabulary plus this operation's own
+	// `limit` refusal plus the body rules, and the ROLE's ErrValidation behind
+	// them, which is defensively unreachable.
+	OpClaimNextIssue: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// THREE conflict codes, and only one of them is new. `already_claimed` is
 	// the ownership fence, inherited from updateIssue's assignee arm: the same
 	// situation — a live foreign owner refusing a write — with the same two
@@ -551,7 +588,7 @@ var operationCodes = map[string][]Code{
 	//
 	// The 404 is the path id's, on the terms updateIssue states. There is no
 	// `not_claimable` here even though the claim's status refusal is the nearest
-	// neighbour — see CodeNotReleasable for why that reuse was refused.
+	// neighbor — see CodeNotReleasable for why that reuse was refused.
 	OpReleaseIssue: {
 		CodeInvalidArgument, CodeNotFound,
 		CodeAlreadyClaimed, CodeNotReleasable, CodePreconditionFailed,

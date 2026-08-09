@@ -410,6 +410,33 @@ var routeTable = []route{
 		handler:      (*Server).handleReopen,
 	},
 	{
+		op:     OpBatchCloseIssues,
+		method: http.MethodPost,
+		// A collection-level custom method, spelled the way issues:batchCreate
+		// is — and this operation is that one's deliberate opposite: it is not
+		// all-or-nothing, so its 200 carries per-item refusals.
+		pattern:     "/v0/beads/issues:batchClose",
+		capability:  "issues.batchClose",
+		implemented: true,
+		handler:     (*Server).handleBatchClose,
+	},
+	{
+		op:     OpClaimNextIssue,
+		method: http.MethodPost,
+		// A collection-level custom method, spelled the way issues:sweep is,
+		// and preferred over the claim's wildcard for that row's reason: the
+		// segment is a LITERAL, so the router registers the documented path
+		// itself and ServeMux prefers it over the wildcard for this exact path.
+		//
+		// It names no id BECAUSE IT NAMES NO ROW. The caller asks a question and
+		// the role picks the answer, which is what makes this a sibling of
+		// issues/{id}:claim rather than a mode of it.
+		pattern:     "/v0/beads/issues:claimNext",
+		capability:  "issues.claimNext",
+		implemented: true,
+		handler:     (*Server).handleClaimNext,
+	},
+	{
 		op:     OpSweepIssues,
 		method: http.MethodPost,
 		// A collection-level custom method, spelled the way countReadyWork's is.

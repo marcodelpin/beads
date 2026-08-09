@@ -184,6 +184,8 @@ func runServe() error {
 			AllowNonLoopback:  serveAllowNonLoopback,
 			Reader:            roles.reader,
 			Claimer:           roles.claimer,
+			BatchCloser:       roles.batchCloser,
+			ReadyClaimer:      roles.readyClaimer,
 			Releaser:          roles.releaser,
 			Lifecycle:         roles.lifecycle,
 			Settings:          roles.settings,
@@ -501,6 +503,8 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 	for _, b := range []binding{
 		{"issue reader", func() (err error) { roles.reader, err = src.IssueReader(); return }},
 		{"issue claimer", func() (err error) { roles.claimer, err = src.IssueClaimer(); return }},
+		{"batch closer", func() (err error) { roles.batchCloser, err = src.BatchCloser(); return }},
+		{"ready claimer", func() (err error) { roles.readyClaimer, err = src.ReadyClaimer(); return }},
 		{"issue releaser", func() (err error) { roles.releaser, err = src.Releaser(); return }},
 		{"issue lifecycle", func() (err error) { roles.lifecycle, err = src.IssueLifecycle(); return }},
 		{"workspace config", func() (err error) { roles.settings, err = src.WorkspaceConfig(); return }},
@@ -557,6 +561,16 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 type serveRoles struct {
 	reader  issueops.Reader
 	claimer issueops.Claimer
+	// batchCloser closes many issues as one transaction, behind
+	// POST /v0/beads/issues:batchClose. Its accessor does NOT recurse through
+	// the hook decorator today, so it is taken off the peeled store with the
+	// rest for uniformity rather than out of necessity.
+	batchCloser issueops.BatchCloser
+	// readyClaimer is the atomic take of ready work, behind
+	// POST /v0/beads/issues:claimNext. Its accessor does NOT recurse through
+	// the hook decorator today, so it is taken off the peeled store with the
+	// rest for uniformity rather than out of necessity.
+	readyClaimer issueops.ReadyClaimer
 	// releaser is the claim's inverse, behind
 	// POST /v0/beads/issues/{id}:release. Its accessor recurses through the
 	// hook decorator like the two below it — a release is an update, so

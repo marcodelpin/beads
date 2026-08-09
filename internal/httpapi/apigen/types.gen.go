@@ -114,6 +114,27 @@ func (e GetDependencyTreeParamsDirection) Valid() bool {
 	}
 }
 
+// Defines values for ClaimNextIssueParamsSort.
+const (
+	ClaimNextIssueParamsSortHybrid   ClaimNextIssueParamsSort = "hybrid"
+	ClaimNextIssueParamsSortOldest   ClaimNextIssueParamsSort = "oldest"
+	ClaimNextIssueParamsSortPriority ClaimNextIssueParamsSort = "priority"
+)
+
+// Valid indicates whether the value is a known member of the ClaimNextIssueParamsSort enum.
+func (e ClaimNextIssueParamsSort) Valid() bool {
+	switch e {
+	case ClaimNextIssueParamsSortHybrid:
+		return true
+	case ClaimNextIssueParamsSortOldest:
+		return true
+	case ClaimNextIssueParamsSortPriority:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QueryIssuesParamsSort.
 const (
 	QueryIssuesParamsSortAssignee QueryIssuesParamsSort = "assignee"
@@ -155,19 +176,19 @@ func (e QueryIssuesParamsSort) Valid() bool {
 
 // Defines values for ListReadyWorkParamsSort.
 const (
-	ListReadyWorkParamsSortHybrid   ListReadyWorkParamsSort = "hybrid"
-	ListReadyWorkParamsSortOldest   ListReadyWorkParamsSort = "oldest"
-	ListReadyWorkParamsSortPriority ListReadyWorkParamsSort = "priority"
+	Hybrid   ListReadyWorkParamsSort = "hybrid"
+	Oldest   ListReadyWorkParamsSort = "oldest"
+	Priority ListReadyWorkParamsSort = "priority"
 )
 
 // Valid indicates whether the value is a known member of the ListReadyWorkParamsSort enum.
 func (e ListReadyWorkParamsSort) Valid() bool {
 	switch e {
-	case ListReadyWorkParamsSortHybrid:
+	case Hybrid:
 		return true
-	case ListReadyWorkParamsSortOldest:
+	case Oldest:
 		return true
-	case ListReadyWorkParamsSortPriority:
+	case Priority:
 		return true
 	default:
 		return false
@@ -579,6 +600,40 @@ type ApplyUpdateItem struct {
 	Target Ref `json:"target"`
 }
 
+// BatchCloseItem defines model for BatchCloseItem.
+type BatchCloseItem struct {
+	// Id Exact canonical issue id, resolved across BOTH planes. No fuzzy, prefix or substring resolution — `IssueID`'s rule.
+	//
+	// A DUPLICATE is admissible; see the operation description.
+	Id string `json:"id"`
+
+	// Reason Why THIS issue is closed. It is per item rather than per request because `bd close a b c --reason x --reason y --reason z` has always mapped them positionally, and one request-wide reason could not express it. `CloseIssueRequest.reason`'s rules and first-close-wins.
+	Reason *string `json:"reason,omitempty"`
+}
+
+// BatchCloseRequest defines model for BatchCloseRequest.
+type BatchCloseRequest struct {
+	// Actor Who is closing. `ClaimRequest.actor`'s rules exactly, and the value is recorded against every item.
+	Actor string `json:"actor"`
+
+	// Force Bypass close policy — the open-children refusal and the live-blocker refusal — for EVERY item, and nothing else. It never bypasses validation and it never bypasses existence: an id that names nothing refuses whether or not this is set. It is request-wide because the flag that spells it is.
+	Force *bool `json:"force,omitempty"`
+
+	// Items The issues to close, in the order the caller asked for them. Every item appears in `outcomes` at the same index.
+	//
+	// An EMPTY array is a `400` rather than an empty answer, and the cap is `batchCreateIssues`' cap for its reason: it bounds how long one request may hold a write transaction.
+	Items []BatchCloseItem `json:"items"`
+
+	// Session The working session, recorded against every item that closes, under `CloseIssueRequest.session`'s first-close-wins rule and bounds.
+	Session *string `json:"session,omitempty"`
+}
+
+// BatchCloseResponse defines model for BatchCloseResponse.
+type BatchCloseResponse struct {
+	// Outcomes Exactly one entry per requested item, in REQUEST ORDER — including for items that refused, so a client walks this against its own argument list without matching ids back up.
+	Outcomes []CloseOutcome `json:"outcomes"`
+}
+
 // BatchCreateDependency defines model for BatchCreateDependency.
 type BatchCreateDependency struct {
 	// TargetId The far end of the edge: an issue this workspace holds, an `external:` reference, or an id whose prefix belongs to another repository. Anything else is a `400` and nothing is created.
@@ -639,6 +694,26 @@ type BlockingAnnotations struct {
 // BondRef A constituent of a compound molecule.
 type BondRef = types.BondRef
 
+// ClaimNextRequest defines model for ClaimNextRequest.
+type ClaimNextRequest struct {
+	// Actor Who is claiming. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value is persisted as the assignee and interpolated into the storage commit message, so an unvalidated newline would forge audit-trail lines.
+	//
+	// IT IS THE ONLY BODY MEMBER, and the FILTER travels in the query string instead. That split is deliberate: the filter vocabulary is `GET /v0/beads/ready`'s and is decoded by the same function, so re-spelling it as a body object would create a second expression of one predicate — and two spellings of one predicate eventually disagree. The actor cannot go the same way: it is provenance that lands in a column, and this surface has always carried that in a body.
+	Actor string `json:"actor"`
+}
+
+// ClaimNextResponse The outcome of one atomic take of ready work.
+//
+// `claimed` IS ABSENT WHEN NOTHING WAS ELIGIBLE, and its absence is the whole signal — there is no boolean beside it, because a second member carrying the same fact is a second member that can disagree with the first. A polling client branches on presence.
+//
+// IT IS ALSO THE ONLY MEMBER, deliberately. A count of what was scanned, or how many rows a racing agent had already taken, would describe a moment inside a transaction that has committed and is not a fact about the claim.
+//
+// The row is `IssueWithCounts` — the element type `GET /v0/beads/ready` returns and `bd ready --json` emits — hydrated INSIDE the transaction that committed the claim, so its counts describe the state the claim produced rather than a later one. It is not an `Issue` because the listing this replaces answers with counts, and a client swapping the composed pair for this operation should not lose a field doing it.
+type ClaimNextResponse struct {
+	// Claimed An `Issue` plus relationship cardinalities. This is the element type of both `/v0/beads/ready` and `/v0/beads/issues`, matching what `bd ready --json` and `bd list --json` emit. Property semantics are documented on `Issue`.
+	Claimed *IssueWithCounts `json:"claimed,omitempty"`
+}
+
 // ClaimRequest defines model for ClaimRequest.
 type ClaimRequest struct {
 	// Actor Who is claiming the issue. The server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline: Unicode category Cc — C0, DEL and the C1 block — plus the U+2028/U+2029 line separators, which is the set the `pattern` above spells.
@@ -681,6 +756,35 @@ type CloseIssueResponse struct {
 
 	// OpenChildren How many open children the close observed. Reported by a FORCED close — including an idempotent re-close — because a caller that bypassed the guard is exactly the caller that wants the number. An unforced close that got this far had none, so it reports 0.
 	OpenChildren int `json:"open_children"`
+}
+
+// CloseOutcome What happened to ONE requested item.
+//
+// `code` IS THE DISCRIMINATOR. Present means the item REFUSED and nothing was written for it; absent means it succeeded, and `issue`, `already_closed` and `open_children` are all present. A client branches on `code` first and reads nothing else until it has.
+type CloseOutcome struct {
+	// AlreadyClosed True when the issue was already closed and this item changed nothing — the idempotent re-close, spelled the way `CloseIssueResponse.already_closed` spells it. Present only on a successful item.
+	//
+	// A BATCH WHOSE ITEMS ARE ALL `true` LANDED NOTHING, and records no history entry: a per-item success that changed nothing is not work the caller did.
+	AlreadyClosed *bool `json:"already_closed,omitempty"`
+
+	// Code This item's refusal, from `Problem.code`'s vocabulary and restricted to `not_found` (the id names no row in either plane) and `not_closable` (close policy refused it: open children, or a live blocker — see `open_children`). ABSENT means the item succeeded.
+	//
+	// It is the problem vocabulary rather than a second one because an item refusal and a request refusal are the same question asked at two scopes, and a client that had to learn two vocabularies to classify one condition would be classifying the SCOPE rather than the condition.
+	Code *string `json:"code,omitempty"`
+
+	// Detail Prose for a refusal, never load-bearing and present only with `code`. It reflects the request and this server's own words rather than the role's message, for the reason `Problem.detail` gives.
+	Detail *string `json:"detail,omitempty"`
+
+	// Issue A tracked work item. Property semantics documented here apply to every schema that repeats them below.
+	Issue *Issue `json:"issue,omitempty"`
+
+	// IssueId The id the caller asked for, echoed verbatim so an outcome can be read without indexing back into the request.
+	IssueId string `json:"issue_id"`
+
+	// OpenChildren How many open children the transaction observed for this item.
+	//
+	// ITS MEANING FOLLOWS `code`, and both readings are the ones the single close already publishes. On a SUCCESSFUL item it is always present and is `CloseIssueResponse.open_children` — the number a forced close bypassed, reported even for an idempotent re-close, and `0` for an unforced close that got that far. On a REFUSED item its PRESENCE is the discriminator between the two `not_closable` refusals, exactly as it is on a problem document: present means open children, absent means a live blocker.
+	OpenChildren *int `json:"open_children,omitempty"`
 }
 
 // Comment defines model for Comment.
@@ -734,7 +838,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.create`, `issues.claim`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	//
 	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
@@ -1032,6 +1136,15 @@ type IssueDetails = types.IssueDetails
 type IssuePatchBody struct {
 	AcceptanceCriteria *string `json:"acceptance_criteria,omitempty"`
 
+	// AddLabels Labels to add, applied AFTER any `labels` replacement.
+	//
+	// IT IS NOT MUTUALLY EXCLUSIVE WITH `labels`, and that is the difference from `append_notes`, which is. The role defines an order over all three label edits, so sending a replacement and an addition together has a defined result; notes have no such algebra, so there the two are a contradiction and are refused.
+	//
+	// IT IS WHY THIS PAIR EXISTS. A caller that reads a row, adds one label and writes the whole set back silently drops any label another writer added in between — and `bd label add` and every agent that tags work concurrently are exactly that caller. A replacement can only be composed safely by a writer that knows it is alone.
+	//
+	// Repetition is free: a label named twice is applied once, and adding one the issue already carries changes no labels. (Whether the RESPONSE reports `changed: false` is a fact about the whole patch — see `remove_labels`.) An EMPTY-STRING entry is DROPPED rather than refused — a label row carrying `""` renders as nothing and matches nothing, so writing one would only store junk, and refusing the whole update would let one stray entry fail an otherwise-good edit.
+	AddLabels *[]string `json:"add_labels,omitempty"`
+
 	// AppendNotes Appends to the notes rather than replacing them. Mutually exclusive with `notes`.
 	AppendNotes *string `json:"append_notes,omitempty"`
 
@@ -1057,9 +1170,11 @@ type IssuePatchBody struct {
 	// IssueType The issue type, from this workspace's own configured vocabulary. A type outside it is refused by the ROLE and reaches the client as a `400` — this server cannot read the vocabulary without a transaction, so it checks only what this schema declares.
 	IssueType *string `json:"issue_type,omitempty"`
 
-	// Labels COMPLETE REPLACEMENT of the label set. An empty array clears every label. Incremental add/remove is deferred: replacement is the only shape whose result the client already knows without a read-back.
+	// Labels COMPLETE REPLACEMENT of the label set. An empty array clears every label.
 	//
-	// This is the ONE member whose shape differs from `ApplyPatchBody`'s, and the difference is that operation's rather than this one's: a plan edits a set it did not compose, so it needs an ordered add/remove/replace patch, while a caller patching one row it just read already knows the set.
+	// It is the REPLACE half of the same ordered edit `ApplyPatchBody` spells as `labels.replace`, and `add_labels`/`remove_labels` are the other two. All three may travel together and are applied in that order — replace, then add, then remove — so REMOVAL WINS when one label appears in more than one of them. That is the role's own algebra, not this operation's arrangement of it.
+	//
+	// THE SHAPE DIFFERS FROM `ApplyPatchBody`'s, which nests the three under one `labels` object, and the difference is historical rather than meaningful. This member shipped as a bare array; nesting it now would RE-TYPE a published member, which is the one kind of change this document has no additive route for. Two flat siblings is the shape that could be added — and it is the shape `notes` and `append_notes` already use for the same replace/increment pair.
 	Labels *[]string `json:"labels,omitempty"`
 
 	// Metadata A metadata edit. `replace` is mutually exclusive with the other three; without it the edits apply as `merge`, then `set` in key order, then `unset`, so UNSETTING A KEY WINS over setting or merging it. Sending `replace` beside any of the others is a `400`.
@@ -1075,6 +1190,11 @@ type IssuePatchBody struct {
 	// IT IS A GRAPH EDIT, and it earns the graph's refusals: a new parent this workspace holds no row for is a `400`, a pair that already carries an edge of another type is `409 dependency_exists`, and a move under the issue's own descendant is `409 dependency_cycle` — the PLAIN one, carrying no `issue_id`/`blocker_id`/ `blocker_is_ancestor`, because the hierarchy refusal answers only to blocking edges and this member writes a `parent-child` edge. Naming the issue itself is a `400`. One call rather than a remove-then-add pair, which is the whole reason it is here: the two-call spelling leaves the issue parentless if the second call fails.
 	ParentId *string `json:"parent_id,omitempty"`
 	Priority *int    `json:"priority,omitempty"`
+
+	// RemoveLabels Labels to remove, applied AFTER `labels` and `add_labels`, so REMOVAL WINS over both.
+	//
+	// Removing a label the issue does not carry CHANGES NO LABELS; it is not a `404` and not a conflict. Whether the RESPONSE reports `changed: false` is a fact about the whole patch, not about this member — a request that also moved a title changed the row. The same repetition and empty-string rules as `add_labels` apply, and a value longer than the column is refused here as it is there — the length rule is about what a label may BE, not about whether this particular row happens to carry one.
+	RemoveLabels *[]string `json:"remove_labels,omitempty"`
 
 	// Status The issue's status, from this workspace's own configured vocabulary.
 	//
@@ -1765,6 +1885,66 @@ type GetIssueParams struct {
 	IncludeDependents *bool `form:"include_dependents,omitempty" json:"include_dependents,omitempty"`
 }
 
+// ClaimNextIssueParams defines parameters for ClaimNextIssue.
+type ClaimNextIssueParams struct {
+	// Assignee Only issues assigned to this actor.
+	Assignee *string `form:"assignee,omitempty" json:"assignee,omitempty"`
+
+	// Unassigned Only issues with no assignee.
+	Unassigned *bool `form:"unassigned,omitempty" json:"unassigned,omitempty"`
+
+	// Type Issue type. The only normalization is shorthand ALIAS expansion, exactly what `bd ready --type` does: `mr` → `merge-request`, `feat` → `feature`, `mol` → `molecule`, `enhancement` → `feature`, `dec`/`adr` → `decision`. Every other value is used as written — there is NO plural folding, so `bugs` is not `bug`.
+	//
+	// An unrecognized type is not an error here: the type vocabulary is workspace-configurable, and `bd ready` does not validate it either, so it simply matches nothing and `items` comes back empty. (The list operation differs — `bd list` DOES validate the type, so `GET /v0/beads/issues?type=bugs` is a 400.)
+	//
+	// When set, `exclude_type` is ignored, and so are the default type exclusions described above.
+	Type *string `form:"type,omitempty" json:"type,omitempty"`
+
+	// ExcludeType Issue types to exclude. Repeat the parameter, or pass a comma-separated list. Ignored when `type` is set.
+	ExcludeType *[]string `form:"exclude_type,omitempty" json:"exclude_type,omitempty"`
+
+	// Label Labels that must ALL be present (AND).
+	Label *[]string `form:"label,omitempty" json:"label,omitempty"`
+
+	// LabelAny Labels of which at least one must be present (OR).
+	LabelAny *[]string `form:"label_any,omitempty" json:"label_any,omitempty"`
+
+	// ExcludeLabel Labels that must not be present.
+	ExcludeLabel *[]string `form:"exclude_label,omitempty" json:"exclude_label,omitempty"`
+
+	// LabelPattern Glob matched against labels.
+	LabelPattern *string `form:"label_pattern,omitempty" json:"label_pattern,omitempty"`
+
+	// LabelRegex Regular expression matched against labels.
+	LabelRegex *string `form:"label_regex,omitempty" json:"label_regex,omitempty"`
+
+	// Priority Exact priority (0 is a real value, not "unset").
+	Priority *int `form:"priority,omitempty" json:"priority,omitempty"`
+
+	// Parent Restrict to recursive descendants of this issue.
+	Parent *string `form:"parent,omitempty" json:"parent,omitempty"`
+
+	// MetadataField Top-level metadata equality filter as `key=value`, split on the first `=`. Repeatable. An invalid key is a 400.
+	MetadataField *[]string `form:"metadata_field,omitempty" json:"metadata_field,omitempty"`
+
+	// HasMetadataKey Only issues carrying this top-level metadata key.
+	HasMetadataKey *string `form:"has_metadata_key,omitempty" json:"has_metadata_key,omitempty"`
+
+	// IncludeEphemeral Include ephemeral (non-synced) rows.
+	IncludeEphemeral *bool `form:"include_ephemeral,omitempty" json:"include_ephemeral,omitempty"`
+
+	// IncludeDeferred Include issues whose `defer_until` is still in the future.
+	IncludeDeferred *bool `form:"include_deferred,omitempty" json:"include_deferred,omitempty"`
+
+	// Sort Ready-work ordering. `priority` is priority-first; `hybrid` orders recent issues by priority and older ones by age; `oldest` is creation order. An unrecognized value is a 400.
+	//
+	// The default is the one `bd ready --sort` registers, so a client swapping `bd ready --json` for this operation gets the same items in the same order. The storage layer treats an EMPTY policy as `hybrid`, but that fallback is unreachable from the CLI and is NOT this parameter's default: `hybrid` demotes older high-priority work, so defaulting to it would change the item SET as soon as `limit` truncates — silently, and only for the clients this API exists to migrate.
+	Sort *ClaimNextIssueParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
+}
+
+// ClaimNextIssueParamsSort defines parameters for ClaimNextIssue.
+type ClaimNextIssueParamsSort string
+
 // QueryIssuesParams defines parameters for QueryIssues.
 type QueryIssuesParams struct {
 	// Q The query expression, e.g. `status=open AND priority>1` or `type=bug OR label=urgent`. Blank, unparseable, or naming a field or operator the language does not have is a 400 `invalid_argument` with `param: "q"` and `reason: "invalid_value"`.
@@ -1962,8 +2142,14 @@ type ReopenIssueJSONRequestBody = ReopenIssueRequest
 // ApplyBatchJSONRequestBody defines body for ApplyBatch for application/json ContentType.
 type ApplyBatchJSONRequestBody = ApplyBatchRequest
 
+// BatchCloseIssuesJSONRequestBody defines body for BatchCloseIssues for application/json ContentType.
+type BatchCloseIssuesJSONRequestBody = BatchCloseRequest
+
 // BatchCreateIssuesJSONRequestBody defines body for BatchCreateIssues for application/json ContentType.
 type BatchCreateIssuesJSONRequestBody = BatchCreateRequest
+
+// ClaimNextIssueJSONRequestBody defines body for ClaimNextIssue for application/json ContentType.
+type ClaimNextIssueJSONRequestBody = ClaimNextRequest
 
 // DeleteIssuesJSONRequestBody defines body for DeleteIssues for application/json ContentType.
 type DeleteIssuesJSONRequestBody = DeleteIssuesRequest
