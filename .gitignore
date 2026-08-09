@@ -260,5 +260,17 @@ tmp/docs/CLI_REFERENCE.md
 *.gate.lock*
 
 # bd pointer: must survive a clone (sys-9b1x4l)
+# metadata.json alone is enough, and it is the only file that belongs here.
+# dolt-server.port was un-ignored by the original sys-9b1x4l commit and is now removed (bda-0zui):
+#   - the codebase forbids tracking it - doltserver.go "Gitignored, local-only ... prevent
+#     git-tracked values from causing cross-project data leakage (GH#2372)" - and
+#     doctor/tracked_runtime.go flags it, so `bd doctor --fix` untracks it for you
+#   - it is non-authoritative bookkeeping that EnsurePortFile rewrites, so tracking it leaves a
+#     permanently dirty tree in every clone
+#   - it carried no information anyway: our server is REMOTE, and for a remote server with no
+#     configured port bd already defaults to DefaultSharedServerPort = 3308 (doltserver.go:95,
+#     store.go:1344), which is exactly our port. Measured: a scratch dir holding only
+#     metadata.json resolves the server and lists the backlog.
+# Do NOT "fix" this by pinning dolt.port in a tracked .beads/config.yaml either - that would
+# restate the default and add a tracked file for no gain.
 !.beads/metadata.json
-!.beads/dolt-server.port
