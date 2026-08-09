@@ -98,10 +98,24 @@ type route struct {
 	// ContextResponse.capabilities, or "" for operations outside that
 	// vocabulary. A stub contributes nothing whatever this says.
 	capability string
-	// bypassSemaphore exempts an operation from the database slot limit. Only
-	// legitimate for handlers that touch no database: liveness and identity
-	// must stay answerable while every slot is held by a long scan.
+	// bypassSemaphore exempts an operation from the request-wide database slot.
+	// Legitimate for handlers that touch no database — liveness and identity
+	// must stay answerable while every slot is held by a long scan — and for a
+	// streaming row, which takes a slot around each of its reads instead. It is
+	// never a way to skip the limit while touching the database.
 	bypassSemaphore bool
+	// streaming marks an operation whose response is held open indefinitely
+	// rather than written and finished. Such a row is exempt from
+	// requestDeadline, which for every other operation is the backstop that
+	// stops a request from holding resources forever and here would simply cut
+	// the stream off mid-flight; the handler bounds its own reads and exits on
+	// client disconnect or shutdown (see streamEvents).
+	//
+	// A streaming row must also set bypassSemaphore: holding one of the sixteen
+	// database slots for the life of a connection is the starvation the deadline
+	// used to prevent, so the slot moves to the individual reads.
+	// TestStreamingRowsAreTheDocumentsStreamingOps pins the pair.
+	streaming bool
 	// implemented gates the capability list, so a release between slices never
 	// advertises an operation that does not work. Every v0 operation is
 	// implemented as of the read-endpoints slice; the flag stays because the
@@ -432,6 +446,28 @@ var routeTable = []route{
 		capability:  "events.list",
 		implemented: true,
 		handler:     (*Server).handleListEvents,
+	},
+	{
+		op:     OpWatchEvents,
+		method: http.MethodGet,
+		// A collection-level custom method on the journal, spelled the way
+		// ready:count is: both segments are LITERAL, so pattern and specPath
+		// agree and the router registers the documented path itself.
+		//
+		// It cannot collide with the paged read above — ServeMux matches the
+		// whole path and these two differ — and it is a SIBLING of it rather
+		// than a mode of it deliberately: the two answer different media types
+		// with different lifetimes and different limits, and a `follow=true`
+		// parameter would have made one operation that is two contracts.
+		pattern:    "/v0/beads/events:watch",
+		capability: "events.watch",
+		// The stream lives until the client leaves, so the request deadline
+		// does not apply and the database slot moves to the individual reads.
+		// See the field comments above; readWatchBatch is the other half.
+		streaming:       true,
+		bypassSemaphore: true,
+		implemented:     true,
+		handler:         (*Server).handleWatchEvents,
 	},
 	{
 		op:     OpForgetMemory,

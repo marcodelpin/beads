@@ -265,9 +265,9 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	//
-	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but one that is the whole answer. `events.list` is the exception: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises `events.list` may still refuse every request to it with 409 `events_journal_disabled` — correctly, because the operation exists and the workspace has no journal. A consumer of that operation MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
+	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -531,7 +531,7 @@ type Problem struct {
 	// BlockerIsAncestor With `dependency_cycle`, hierarchy refusal only: true when `blocker_id` is an ANCESTOR of `issue_id` (which cannot close until its descendants finish, so the gate would never clear), false when it is a DESCENDANT (blocked status cascades, so it would inherit the block and never close). Both polarities are reported; this member is never omitted to mean false. See `issue_id`.
 	BlockerIsAncestor *bool `json:"blocker_is_ancestor,omitempty"`
 
-	// Code The stable machine-readable reason, and the ONLY member a client may dispatch on. v0's vocabulary: `invalid_argument` (400, also emitted by the Host-header middleware on any route), `invalid_cursor` (400), `not_found` (404), `already_claimed` (409), `not_claimable` (409), `not_closable` (409), `dependency_cycle` (409), `dependency_exists` (409), `events_journal_disabled` (409), `events_journal_truncated` (410), `busy` (503), `db_unavailable` (503), `internal` (500). Renaming or removing a status+code pair is a breaking change; ADDING one is not, so clients MUST default-branch on unknown values and fall back to the status class (unknown 4xx → client bug, fail loud; unknown 503 → retry per `Retry-After`; other unknown 5xx → server fault).
+	// Code The stable machine-readable reason, and the ONLY member a client may dispatch on. v0's vocabulary: `invalid_argument` (400, also emitted by the Host-header middleware on any route), `invalid_cursor` (400), `not_found` (404), `already_claimed` (409), `not_claimable` (409), `not_closable` (409), `dependency_cycle` (409), `dependency_exists` (409), `events_journal_disabled` (409), `events_journal_truncated` (410), `busy` (503), `db_unavailable` (503), `events_watch_saturated` (503), `internal` (500). Renaming or removing a status+code pair is a breaking change; ADDING one is not, so clients MUST default-branch on unknown values and fall back to the status class (unknown 4xx → client bug, fail loud; unknown 503 → retry per `Retry-After`; other unknown 5xx → server fault).
 	Code string `json:"code"`
 
 	// Detail Optional prose, never load-bearing. For 5xx codes it is a FIXED string per code and carries nothing about the underlying failure: driver and dial errors routinely embed the DSN, database user and host:port, and this API supports binding beyond loopback. 4xx details reflect the caller's own input back and are specific.
@@ -922,6 +922,23 @@ type ListEventsParams struct {
 	//
 	// A FULL PAGE DOES NOT MEAN THERE IS MORE, and a short one does not mean there is not. Compare the last record's `seq` against `head`; that is the only correct test, and it is why this envelope carries no `has_more`.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// WatchEventsParams defines parameters for WatchEvents.
+type WatchEventsParams struct {
+	// Since Emit records with `seq` strictly greater than this value. Pass `0` to stream from the beginning of the retained journal.
+	//
+	// REQUIRED on every connect, including a reconnect that also carries `Last-Event-ID`, and refused when negative — both for the reasons `listEvents` gives. When the header is present this value is ignored, but it is still validated: one rule, one spelling, whether or not the client is a browser.
+	Since int64 `form:"since" json:"since"`
+
+	// LastEventID The last `seq` this client processed, as emitted in the `id:` field of a previous event. Present, it REPLACES `since` as the resume point.
+	//
+	// This is the standard SSE reconnection header and browsers attach it automatically, which is the whole reason it outranks the query parameter: an `EventSource` reconnects to the URL it was built with, so honoring `since` there would re-deliver every record since the consumer started on every reconnect.
+	//
+	// A NONEMPTY value that is not a non-negative 64-bit integer is a 400 `invalid_argument` naming this header, rather than a silent fallback to `since`: a client that invented its own id has a broken checkpoint, and a stream that quietly started somewhere else would look correct and lose records.
+	//
+	// An EMPTY value is treated exactly as an absent one — `since` decides — because it says the same thing: no id yet. A client or intermediary that always sets the header sends it empty on the first connect, and refusing that would break the one request this header exists to make work.
+	LastEventID *int64 `json:"Last-Event-ID,omitempty"`
 }
 
 // ListIssuesParams defines parameters for ListIssues.

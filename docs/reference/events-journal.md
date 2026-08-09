@@ -107,8 +107,6 @@ same [record contract](#the-record-contract) — so an HTTP mirror and a
 - `head` is the highest sequence number ever assigned, so a consumer knows
   whether to keep reading or back off. When the last record's `seq` equals
   `head` you are caught up — a full page proves nothing on its own.
-- **Poll; there is no streaming or `--follow` equivalent.** Read with your
-  checkpoint on your own interval.
 - The journal is read-only over HTTP. Pruning stays a workspace decision made
   with `bd events prune` and the retention floors.
 
@@ -142,6 +140,88 @@ gives.)
 The journal is per replica, which matters more over HTTP than on the command
 line: a checkpoint is meaningful only against the server URL that issued it.
 Track one per server, and re-baseline rather than carry one across.
+
+### Streaming instead of polling
+
+`GET /v0/beads/events:watch` is the same journal, pushed. It answers
+`text/event-stream` and holds the connection open, emitting each mutation as it
+commits — the HTTP form of `bd events tail --follow`:
+
+```bash
+curl -N 'http://127.0.0.1:8080/v0/beads/events:watch?since=4211'
+```
+
+```
+retry: 3000
+
+id: 4212
+data: {"seq":4212,"ts":"2026-01-02T03:04:05Z","op":"create","issue_id":"bd-100","issue":{"id":"bd-100","title":"wire the seam","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T03:00:00Z","updated_at":"2026-01-02T03:04:05Z"}}
+
+: heartbeat
+```
+
+Each event's `data` is one line carrying exactly the record the paged read
+returns, and `id` is that record's `seq` — the same number `since` takes. The
+comment lines are heartbeats, sent every 20 seconds of silence so idle
+connections survive intermediaries that drop them; clients ignore comments
+automatically.
+
+**Watch or poll?** Poll unless the delay is the point. A poller holds nothing
+between requests and can never be refused for capacity; a stream costs a
+connection for as long as it is open, and this server holds at most **48** of
+them before answering `503` with `events_watch_saturated` and pointing you back
+at `GET /v0/beads/events`. That cap sits deliberately below the server's
+64-connection limit, so a workspace saturated with streams still has room to
+answer polls, mutations and health checks — and room to deliver the `503`
+itself. Stream when something is waiting on the mutation — a live mirror, an
+agent watching a gate — and poll for anything that can afford an interval.
+Neither is faster at draining a backlog.
+
+**Delivery is at-least-once against your own checkpoint.** Within a single
+stream each record is sent once, in `seq` order, with no gaps. Duplicates are
+possible only across a reconnect — if you resume from an id whose records you
+had already applied — so make your consumer idempotent on `seq` and advance
+your checkpoint only after your own write lands, exactly as when polling.
+
+**Reconnecting is the normal case, and it is free.** When a stream drops,
+reconnect with the standard `Last-Event-ID` header carrying the last `seq` you
+processed; it **overrides** `since`. That is what makes a browser's
+`EventSource` correct with no extra code — it re-sends the original URL, whose
+`since` is as old as your process:
+
+```js
+const es = new EventSource('/v0/beads/events:watch?since=0');
+es.onmessage = (e) => apply(JSON.parse(e.data));   // e.lastEventId is the seq
+es.addEventListener('truncated', (e) => { es.close(); rebaseline(JSON.parse(e.data)); });
+```
+
+`since` is still required on every connect — the header is absent on the first
+one — and a `Last-Event-ID` that is not a sequence number is a `400` rather than
+a silent fall back to `since`, which would start the stream somewhere you did
+not ask for.
+
+**Every refusal happens before the stream opens.** The `409` and the `410` above
+are the same responses on this route as on the paged read, decided before the
+first byte, so a client that got its `200` knows its checkpoint was servable.
+
+<Warning>
+There is exactly one failure that can arrive *after* that: a **`truncated`
+event**, sent when a prune removes the records the open stream was about to
+send. Its `data` is the same `410` body — `events_journal_truncated` with
+`since` / `floor` / `head` — and the stream closes immediately after it.
+
+**Treat it as stop-and-re-baseline**, with [the same ways
+forward](#resuming-and-the-truncation-error) as the `410`. A consumer that
+ignores it does not lose records silently, but it does stall loudly: a bare
+`EventSource` will reconnect with the same dead id and earn a connect-time
+`410` on every attempt from then on. The stream raises the reconnection delay to
+60 seconds first so that loop is slow rather than hot.
+</Warning>
+
+The exposure warning above applies identically — a stream is the same history
+over the same unauthenticated address, held open — and so does the capability
+rule: `events.watch` appears in `/v0/beads/context`'s capabilities on every
+build, and says nothing about whether this workspace has a journal.
 
 ## The record contract
 

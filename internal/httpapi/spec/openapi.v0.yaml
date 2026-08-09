@@ -38,10 +38,18 @@ info:
     ## Media types
 
 
-    Success bodies are `application/json; charset=utf-8`. EVERY non-2xx body,
-    from every route and from the middleware in front of them, is
-    `application/problem+json` carrying the `Problem` schema — there is exactly
-    one error shape on this surface.
+    Success bodies are `application/json; charset=utf-8`, with ONE exception:
+    `watchEvents` answers `text/event-stream; charset=utf-8`, because its
+    response is a stream held open for the life of a connection rather than a
+    document. It is the only streaming operation here and the only non-JSON
+    success body; its individual events carry JSON, and the schemas they carry
+    are the ones the paged read already publishes.
+
+
+    EVERY non-2xx body, from every route and from the middleware in front of
+    them, is `application/problem+json` carrying the `Problem` schema — there is
+    exactly one error shape on this surface, and `watchEvents` is no exception:
+    it decides every refusal before opening its stream.
 
 
     ## Three 400s cut across operations, and are documented here once
@@ -2702,11 +2710,20 @@ paths:
         redeliver.
 
 
-        POLL; THERE IS NO STREAMING, no long poll and no `follow` in v0. `head`
-        is what makes polling cheap to pace: when the last record's `seq`
+        THIS OPERATION POLLS; there is no long poll and no `follow` parameter.
+        `head` is what makes polling cheap to pace: when the last record's `seq`
         equals `head` you are caught up and can back off until your next
         interval. A caught-up read is a 200 with an EMPTY `records` array, never
         a 404 — "nothing new yet" is an ordinary answer about a log.
+
+
+        FOR A PUSH FEED USE `watchEvents`, the sibling operation at
+        `GET /v0/beads/events:watch`, which streams the same records from the
+        same `since` as `text/event-stream`. It is a separate operation rather
+        than a mode of this one because the two differ in media type, lifetime
+        and capacity; a client that streams still needs this operation, because
+        this is the one that is never refused for capacity and the one a stream
+        falls back to.
 
 
         SCOPE IS PER REPLICA AND PER BRANCH, and this is the part that most
@@ -2909,6 +2926,229 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/events:watch:
+    get:
+      operationId: watchEvents
+      summary: Stream the durable events journal
+      description: >-
+        The same journal as `listEvents`, PUSHED: a held-open
+        `text/event-stream` response that emits each committed mutation as it
+        lands, so a consumer learns about a write when it happens rather than
+        on its next interval.
+
+
+        THE CURSOR IS STILL THE CONTRACT. This is not a subscription — the
+        server keeps no per-consumer state, remembers nothing between
+        connections and cannot redeliver. A stream is the reads you would have
+        performed yourself, performed on your behalf, and every event carries
+        `id:` set to the record's `seq`: the same number `since` takes, the same
+        number `bd events tail --since` takes. Advance your own checkpoint only
+        after your write lands, exactly as on the paged read.
+
+
+        RECONNECTION IS THE NORMAL CASE and it is free. When a stream drops, a
+        client re-requests this operation with the standard `Last-Event-ID`
+        header carrying the last `seq` it processed; that header WINS over the
+        `since` query parameter, which is what makes a browser's `EventSource`
+        correct without any code — it re-sends the original URL, and its
+        original `since` would otherwise replay everything since the consumer
+        started. `since` is still required on every connect, because the header
+        is absent on the first one.
+
+
+        WATCH OR POLL is a real choice and the answer is usually poll. A stream
+        costs a connection and a goroutine for its whole life, and this server
+        holds a bounded number of them; a poller holds nothing between requests
+        and can never be refused for capacity. Stream when the delay between a
+        mutation and your reaction is the point — a live mirror, an agent
+        waiting on a gate — and poll for anything that can afford its interval.
+        A backlog is drained at read speed either way, so a stream is not a
+        faster way to catch up, only a shorter wait once you have.
+
+
+        THE STREAM ONLY OPENS ON A SERVABLE CURSOR. Every refusal below is an
+        ordinary `application/problem+json` response with its documented status,
+        decided BEFORE any stream byte — including the 410 for a checkpoint that
+        has been pruned past, which is the same body `listEvents` returns for
+        the same condition. There is exactly one failure a client can meet after
+        the status is spent: see the `truncated` event.
+
+
+        EVERYTHING THE PAGED READ SAYS ABOUT THE RECORDS APPLIES UNCHANGED —
+        they are the same `EventRecord` objects from the same projection; scope
+        is per replica and per branch, so a checkpoint is meaningful only
+        against the server that issued it; merges and `bd sql` are not
+        journaled; and `events.watch` in `ContextResponse.capabilities` says
+        this BUILD serves the operation, not that this workspace has a journal.
+      parameters:
+        - name: since
+          in: query
+          required: true
+          description: >-
+            Emit records with `seq` strictly greater than this value. Pass `0`
+            to stream from the beginning of the retained journal.
+
+
+            REQUIRED on every connect, including a reconnect that also carries
+            `Last-Event-ID`, and refused when negative — both for the reasons
+            `listEvents` gives. When the header is present this value is
+            ignored, but it is still validated: one rule, one spelling, whether
+            or not the client is a browser.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: >-
+            The last `seq` this client processed, as emitted in the `id:` field
+            of a previous event. Present, it REPLACES `since` as the resume
+            point.
+
+
+            This is the standard SSE reconnection header and browsers attach it
+            automatically, which is the whole reason it outranks the query
+            parameter: an `EventSource` reconnects to the URL it was built with,
+            so honoring `since` there would re-deliver every record since the
+            consumer started on every reconnect.
+
+
+            A NONEMPTY value that is not a non-negative 64-bit integer is a 400
+            `invalid_argument` naming this header, rather than a silent fallback
+            to `since`: a client that invented its own id has a broken
+            checkpoint, and a stream that quietly started somewhere else would
+            look correct and lose records.
+
+
+            An EMPTY value is treated exactly as an absent one — `since`
+            decides — because it says the same thing: no id yet. A client or
+            intermediary that always sets the header sends it empty on the first
+            connect, and refusing that would break the one request this header
+            exists to make work.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: >-
+            An open event stream. It ends when the client disconnects, when the
+            server shuts down, or with the `truncated` event below; there is no
+            end-of-stream marker otherwise, and a client is expected to
+            reconnect.
+
+
+            FRAMES, in the order a client meets them:
+
+
+            `retry: 3000` — the reconnection delay, stated once at the top so it
+            does not depend on the client's default.
+
+
+            `id: <seq>` + `data: <EventRecord>` — one record, as an UNNAMED
+            (default `message`) event, so a bare `onmessage` receives it. The
+            `data` payload is exactly one line: a single JSON object identical
+            to an element of `listEvents`'s `records` array
+            (`#/components/schemas/EventRecord`).
+
+
+            `: heartbeat` — a comment line every ~20 seconds of silence. It
+            carries no information and exists to keep idle connections alive
+            through intermediaries; clients ignore comments by construction.
+
+
+            `event: truncated` + `data: <Problem>` — the ONE in-band failure,
+            emitted when a prune removes the records this stream was about to
+            send. Its data is a `#/components/schemas/Problem` object with code
+            `events_journal_truncated`, carrying the same `since` / `floor` /
+            `head` window and the same `detail` a 410 for that condition
+            carries. It is the 410's body in the same encoding, on one line
+            (an SSE `data:` field cannot contain the newline an HTTP body ends
+            with); `request_id` is this STREAM's id, not a reconnect's, since no
+            second request has happened. Whatever parses the 410 parses this
+            unchanged. The stream closes immediately after it, behind a raised
+            `retry`.
+
+
+            TREAT `truncated` AS STOP-AND-RE-BASELINE. The recovery is the
+            410's: resume from `floor - 1` and accept a known gap, or rebuild
+            from a full export. It is deliberately a NAMED event, so a client
+            that registered only `onmessage` never mistakes it for a record —
+            but such a client will simply reconnect and then meet a
+            connect-time 410 on every attempt, which is why the delay is raised
+            to a minute first. A consumer that ignores this event does not lose
+            records silently; it stalls loudly.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: >-
+            Invalid request: `since` absent, negative or unparseable, a
+            `Last-Event-ID` header that is not a non-negative sequence number,
+            or an unknown query parameter.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >-
+            The durable events journal is NOT ENABLED on this workspace, so
+            there is nothing to stream and never will be until an operator turns
+            it on (`events-journal true`, or `BD_EVENTS_JOURNAL=1` in the
+            server's environment) and restarts the server. Identical in every
+            respect to `listEvents`'s 409, and refused before the stream opens.
+          x-bd-codes: [events_journal_disabled]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '410':
+          description: >-
+            The resume point — `Last-Event-ID` if present, otherwise `since` —
+            has fallen BELOW the retained window, so the records that came next
+            were pruned and this server cannot serve them. The body is
+            `listEvents`'s 410 exactly, carrying the same `since` / `floor` /
+            `head` window and the same recoveries, and no stream is opened.
+
+
+            A CLIENT THAT RECONNECTS BLINDLY LOOPS HERE. This is the status a
+            consumer earns after ignoring a `truncated` event, and retrying with
+            the same id can never succeed; re-baseline instead.
+          x-bd-codes: [events_journal_truncated]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: >-
+            The stream could not be opened right now and may be retried:
+            `events_watch_saturated` (this server is already holding as many
+            concurrent streams as it will), `db_unavailable`, or `busy`.
+
+
+            `events_watch_saturated` is the one code here that is about
+            CONNECTIONS rather than data, and the one with a recovery that is
+            not waiting: `GET /v0/beads/events` answers the same records from
+            the same checkpoint and is never refused for this reason. The cap
+            exists because a stream is the only request on this server that can
+            last hours, and streams are held until their consumers leave — so
+            `Retry-After` here is a human-scale hint, not a request-scale one.
+          x-bd-codes: [busy, db_unavailable, events_watch_saturated]
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
 components:
 
@@ -3950,22 +4190,22 @@ components:
             `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
             `dependencies.add`, `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
-            `memories.forget`, `events.list`;
+            `memories.forget`, `events.list`, `events.watch`;
             it grows additively, and an operation never
             appears here unless it is fully implemented. This is how a client
             checks for an operation — never the version string.
 
 
             THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which
-            operations this binary serves, and for every entry but one that is
-            the whole answer. `events.list` is the exception: the durable events
-            journal is a per-workspace setting that is OFF by default, so a
-            server that advertises `events.list` may still refuse every request
-            to it with 409 `events_journal_disabled` — correctly, because the
-            operation exists and the workspace has no journal. A consumer of that
-            operation MUST treat the capability as "this server speaks it" and
-            the 409 as "not on this workspace", and must not read the capability
-            as a promise that records will arrive.
+            operations this binary serves, and for every entry but two that is
+            the whole answer. `events.list` and `events.watch` are the
+            exceptions: the durable events journal is a per-workspace setting
+            that is OFF by default, so a server that advertises them may still
+            refuse every request to both with 409 `events_journal_disabled` —
+            correctly, because the operations exist and the workspace has no
+            journal. A consumer of either MUST treat the capability as "this
+            server speaks it" and the 409 as "not on this workspace", and must
+            not read the capability as a promise that records will arrive.
           items:
             type: string
 
@@ -5364,7 +5604,7 @@ components:
             `dependency_cycle` (409), `dependency_exists` (409),
             `events_journal_disabled` (409), `events_journal_truncated` (410),
             `busy` (503),
-            `db_unavailable` (503),
+            `db_unavailable` (503), `events_watch_saturated` (503),
             `internal` (500). Renaming or removing a status+code pair is a
             breaking change; ADDING one is not, so clients MUST default-branch
             on unknown values and fall back to the status class (unknown 4xx →

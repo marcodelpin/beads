@@ -30,15 +30,18 @@ import (
 // contract, and the failure mode of getting it wrong is silent record loss —
 // which is the one thing this feature exists to prevent.
 //
-// NO FOLLOW, NO STREAM, NO LONG POLL in v0. A consumer polls with the highest
-// seq it has durably processed. That is a real constraint on the design and not
-// an omission: a held-open response would have to survive the write-stall
-// deadline, hold a database slot for its whole life out of a pool of sixteen,
-// and still leave the consumer needing the polling path for the reconnect —
-// so v0 ships the path that is always needed and nothing else. `head` is what
-// makes polling cheap to pace: a consumer that sees its last seq equal to
-// `head` knows it is caught up and can back off, instead of inferring it from
-// a short page.
+// NO FOLLOW MODE ON THIS OPERATION, and adding one is not the way to get a
+// push feed: `follow=true` would give one operationId two contracts — two media
+// types, two lifetimes, two limit rules — and a client generated from the
+// document could not describe either. The push feed is a SIBLING operation,
+// events_watch.go, which consumes this same read path. `head` is what makes
+// polling cheap to pace: a consumer that sees its last seq equal to `head`
+// knows it is caught up and can back off, instead of inferring it from a short
+// page.
+//
+// A poller is still the path that is always needed — it is what a dropped
+// stream reconnects through, and it holds nothing between requests — which is
+// why it landed first and why the stream's saturation refusal points back here.
 
 // Journal paging bounds. There is no unlimited read here, unlike the issue
 // listings: a caller resuming from an old checkpoint would otherwise ask one
