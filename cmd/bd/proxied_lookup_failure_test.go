@@ -81,6 +81,19 @@ func withStubbedProxiedLookup(t *testing.T, hardErr error) {
 	})
 }
 
+// inProxiedRoute selects the proxied route for one call.
+//
+// The label commands no longer have a run…ProxiedServer entry point to call
+// directly: their route fork moved into resolveLabelTarget and the role
+// accessor, which is the point of the change, so the route has to be selected
+// the way a real invocation selects it.
+func inProxiedRoute(run func() error) error {
+	old := proxiedServerMode
+	proxiedServerMode = true
+	defer func() { proxiedServerMode = old }()
+	return run()
+}
+
 const (
 	stubMissingID    = "bd-missing"
 	stubRawNoRows    = "sql: no rows in result set"
@@ -161,7 +174,7 @@ var proxiedLookupCommands = []struct {
 	{
 		name: "label list",
 		run: func(ctx context.Context) error {
-			return runLabelListProxiedServer(ctx, []string{stubMissingID})
+			return inProxiedRoute(func() error { return runLabelList(ctx, []string{stubMissingID}) })
 		},
 		wantNotFound: "Error: resolving bd-missing: not found",
 		wantHardErr:  "Error: resolving bd-missing: connection reset by peer",
@@ -265,12 +278,27 @@ var proxiedLookupCommands = []struct {
 		exitsZero:    true,
 	},
 	{
+		// The two routes now share one body, so this reports the DIRECT route's
+		// resolution message. It lost the "label added: " prefix the proxied
+		// route used to add, because that prefix named a write this command
+		// never attempted: resolution now happens before the role is even
+		// asked for.
 		name: "label add",
 		run: func(ctx context.Context) error {
-			return runLabelAddProxiedServer(ctx, []string{stubMissingID, "urgent"})
+			return inProxiedRoute(func() error { return runLabelAdd(ctx, []string{stubMissingID, "urgent"}) })
 		},
-		wantNotFound: `Error: label added: resolving issue ID "bd-missing": not found`,
-		wantHardErr:  `Error: label added: resolving issue ID "bd-missing": connection reset by peer`,
+		wantNotFound: `Error: resolving issue ID "bd-missing": not found`,
+		wantHardErr:  `Error: resolving issue ID "bd-missing": connection reset by peer`,
+	},
+	{
+		// The remove half of the same body, which had no row here before
+		// because it had no separately-callable proxied entry point to name.
+		name: "label remove",
+		run: func(ctx context.Context) error {
+			return inProxiedRoute(func() error { return runLabelRemove(ctx, []string{stubMissingID, "urgent"}) })
+		},
+		wantNotFound: `Error: resolving issue ID "bd-missing": not found`,
+		wantHardErr:  `Error: resolving issue ID "bd-missing": connection reset by peer`,
 	},
 	{
 		name: "label propagate",
