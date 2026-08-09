@@ -217,6 +217,18 @@ func TestEmbeddedReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicat
 	conformance.RunReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates(t, ctx, newEmbeddedReaderFixture(t, "rdr"))
 }
 
+func TestEmbeddedReaderListIncludeEphemeralMergesThePlanesIntoOneOrder(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	ctx := t.Context()
+	conformance.RunReaderListIncludeEphemeralMergesThePlanesIntoOneOrder(t, ctx, newEmbeddedReaderFixture(t, "rdr"))
+}
+
+func TestEmbeddedReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	ctx := t.Context()
+	conformance.RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt(t, ctx, newEmbeddedReaderFixture(t, "rdr"))
+}
+
 // newEmbeddedReaderFixture composes the shared role kit with the reader
 // accessor. One environment per case: newTestEnv clones a pristine template
 // into the test's own temp dir, which costs a fraction of a second once the

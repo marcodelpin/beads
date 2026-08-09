@@ -144,6 +144,15 @@ func TestReaderContract(t *testing.T) {
 	t.Run("ListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates", func(t *testing.T) {
 		conformance.RunReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates(t, ctx, fixture)
 	})
+	// The other merge arrangement: one UNION ALL ordered in SQL, where the
+	// store-backed seam merge-sorts two legs in Go. The bounded and cursored
+	// arms are where the two can start answering differently.
+	t.Run("ListIncludeEphemeralMergesThePlanesIntoOneOrder", func(t *testing.T) {
+		conformance.RunReaderListIncludeEphemeralMergesThePlanesIntoOneOrder(t, ctx, fixture)
+	})
+	t.Run("ListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt", func(t *testing.T) {
+		conformance.RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt(t, ctx, fixture)
+	})
 	// Last on purpose: the backend-failure half runs a request on a dead
 	// context, and this backend's provider is shared by every case above it.
 	t.Run("GetMissIsNotFoundAndBackendFailureDoesNotDecay", func(t *testing.T) {

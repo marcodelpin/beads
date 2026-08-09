@@ -449,6 +449,8 @@ var roleContractCases = []roleContract{
 		RunReaderListParentReachesEveryDescendantAndOnlyItsOwn,
 		RunReaderListKeysetWalkOverAnOversizedGroupLosesNothingAndRepeatsNothing,
 		RunReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates,
+		RunReaderListIncludeEphemeralMergesThePlanesIntoOneOrder,
+		RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt,
 	),
 
 	roleCases("ReadyClaimer", "ReadyClaimer() and IssueReader()", oncePerRole,

@@ -426,6 +426,7 @@ func RunReaderListDefaultExclusionsAndTheirOverrides(t *testing.T, ctx context.C
 	gate := readerID(fixture, "lsdef", "gate")
 	template := readerID(fixture, "lsdef", "template")
 	wisp := readerID(fixture, "lsdef", "wisp")
+	infraWisp := readerID(fixture, "lsdef", "infrawisp")
 	flagOnly := readerID(fixture, "lsdef", "flagonly")
 	statusOnly := readerID(fixture, "lsdef", "statusonly")
 	flagAndStatus := readerID(fixture, "lsdef", "flagandstatus")
@@ -437,6 +438,14 @@ func RunReaderListDefaultExclusionsAndTheirOverrides(t *testing.T, ctx context.C
 	templateIssue.IsTemplate = true
 	wispIssue := readerIssue(wisp, types.TypeTask, "")
 	wispIssue.Ephemeral = true
+	// The SAME plane, an EXCLUDED TYPE. `message` is one of the built-in infra
+	// types, so this row is hidden twice over — once by the plane and once by
+	// the type — and it is the only row that can tell the two knobs apart. The
+	// wisp above is a task: it comes back under either one, so a body that
+	// wired the plane knob to the type branch answers every other row here
+	// correctly.
+	infraWispIssue := readerIssue(infraWisp, types.TypeMessage, "")
+	infraWispIssue.Ephemeral = true
 	// Open, pinned only by the FLAG: no status exclusion can hide it, so it
 	// isolates the flag predicate.
 	flagOnlyIssue := readerIssue(flagOnly, types.TypeTask, "")
@@ -462,12 +471,13 @@ func RunReaderListDefaultExclusionsAndTheirOverrides(t *testing.T, ctx context.C
 	seedReaderIssue(t, ctx, fixture, readerIssue(gate, types.TypeGate, ""))
 	seedReaderIssue(t, ctx, fixture, templateIssue)
 	seedReaderWisp(t, ctx, fixture, wispIssue)
+	seedReaderWisp(t, ctx, fixture, infraWispIssue)
 	seedReaderIssue(t, ctx, fixture, flagOnlyIssue)
 	seedReaderIssue(t, ctx, fixture, statusOnlyIssue)
 	seedReaderIssue(t, ctx, fixture, flagAndStatusIssue)
 	seedReaderIssue(t, ctx, fixture, flagAndClosedIssue)
 
-	scope := readerIDFilter(open, closed, gate, template, wisp, flagOnly, statusOnly, flagAndStatus, flagAndClosed)
+	scope := readerIDFilter(open, closed, gate, template, wisp, infraWisp, flagOnly, statusOnly, flagAndStatus, flagAndClosed)
 	for _, test := range []struct {
 		name string
 		req  publicops.ListRequest
@@ -482,7 +492,18 @@ func RunReaderListDefaultExclusionsAndTheirOverrides(t *testing.T, ctx context.C
 		{"NoPinnedFlag holds the flag predicate under AllFlag", publicops.ListRequest{IDFilter: scope, AllFlag: true, NoPinnedFlag: true}, []string{open, closed, statusOnly}},
 		{"IncludeGates", publicops.ListRequest{IDFilter: scope, IncludeGates: true}, []string{open, gate}},
 		{"IncludeTemplates", publicops.ListRequest{IDFilter: scope, IncludeTemplates: true}, []string{open, template}},
-		{"IncludeInfra reaches the ephemeral plane", publicops.ListRequest{IDFilter: scope, IncludeInfra: true}, []string{open, wisp}},
+		// IncludeInfra is BOTH knobs at once: it admits the plane and takes the
+		// infra-type exclusion off, so it is the only request here that reaches
+		// the infra-typed wisp.
+		{"IncludeInfra reaches the ephemeral plane and the infra types", publicops.ListRequest{IDFilter: scope, IncludeInfra: true}, []string{open, wisp, infraWisp}},
+		// The plane knob alone. It admits the plane and takes NO exclusion off
+		// with it: the gate and the template stay hidden, and so does the
+		// infra-typed wisp in the very plane it just admitted. That last row is
+		// the one that makes this an observation — a field wired to
+		// IncludeInfra's branch answers with it.
+		{"IncludeEphemeral reaches the plane and takes no type exclusion off", publicops.ListRequest{IDFilter: scope, IncludeEphemeral: true}, []string{open, wisp}},
+		// And they compose rather than fight: the union of the two answers.
+		{"IncludeEphemeral with IncludeInfra", publicops.ListRequest{IDFilter: scope, IncludeEphemeral: true, IncludeInfra: true}, []string{open, wisp, infraWisp}},
 	} {
 		page, err := fixture.Reader.List(ctx, test.req)
 		if err != nil {
@@ -2402,6 +2423,200 @@ func RunReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates(t *tes
 		t.Fatalf("List resumed from the cursor under CreatedBefore: %v", err)
 	}
 	assertReaderPageIDs(t, "List resumed from the cursor under CreatedBefore", narrowed, []string{older, oldest})
+}
+
+// RunReaderListIncludeEphemeralMergesThePlanesIntoOneOrder pins what
+// ListRequest.IncludeEphemeral ANSWERS WITH, which is the half of that promise
+// an admission assertion cannot see: not the durable page with the ephemeral
+// rows appended to it, but ONE page ordered across both planes as if they were
+// a single table. That is what makes Limit and the keyset position mean the
+// same thing under the flag that they mean without it.
+//
+// WHAT THIS FIXTURE MAKES OBSERVABLE that the admission row in
+// RunReaderListDefaultExclusionsAndTheirOverrides does not. That row asks only
+// WHICH rows the flag admits and reads the answer as a SET, so a body that
+// concatenated one plane after the other passes it. Here the planes ALTERNATE
+// in the created order, so a concatenation is a different SEQUENCE; a Limit
+// that lands inside the interleaving keeps a different SET; and the keyset walk
+// resumes from positions that fall on both sides of the merge.
+//
+// It is a genuine two-body case. The store-backed seam runs the search once per
+// table family and merge-sorts the two independently ordered legs in Go before
+// trimming (issueops.searchInTx, sortMergedResults); the unit-of-work seam
+// renders one UNION ALL and lets SQL order it (domain/db.searchUnion). A trim
+// applied before the merge, or an order applied after it, is a different page
+// on exactly this fixture.
+//
+// WHAT IT DEPENDS ON FROM OUTSIDE ITSELF: the id set that scopes it and the
+// named sort. The rows are seeded on alternating seconds, so the interleaving
+// is a property of the fixture rather than of whichever plane an implementation
+// happens to read first.
+func RunReaderListIncludeEphemeralMergesThePlanesIntoOneOrder(t *testing.T, ctx context.Context, fixture ReaderFixture) {
+	t.Helper()
+	id := func(name string) string { return readerID(fixture, "lseph", name) }
+	seeds := []struct {
+		id        string
+		ephemeral bool
+	}{
+		{id("i1"), false}, {id("w1"), true}, {id("i2"), false},
+		{id("w2"), true}, {id("i3"), false}, {id("w3"), true},
+	}
+
+	firstSecond := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
+	var merged, durableOnly []string
+	for i, seed := range seeds {
+		issue := readerIssue(seed.id, types.TypeTask, "")
+		at := firstSecond.Add(time.Duration(i) * time.Second)
+		issue.CreatedAt = at
+		issue.UpdatedAt = at
+		if seed.ephemeral {
+			issue.Ephemeral = true
+			seedReaderWisp(t, ctx, fixture, issue)
+		} else {
+			seedReaderIssue(t, ctx, fixture, issue)
+			durableOnly = append(durableOnly, seed.id)
+		}
+		merged = append(merged, seed.id)
+	}
+	// The answer is (created_at DESC, id ASC), so both expectations run
+	// youngest first — the reverse of the seeding order.
+	slices.Reverse(merged)
+	slices.Reverse(durableOnly)
+
+	scoped := publicops.ListRequest{IDFilter: readerIDFilter(merged...), SortBy: "created"}
+	durable, err := fixture.Reader.List(ctx, scoped)
+	if err != nil {
+		t.Fatalf("List over both planes' ids without the flag: %v", err)
+	}
+	assertReaderPageIDs(t, "List without IncludeEphemeral", durable, durableOnly)
+
+	admitted := scoped
+	admitted.IncludeEphemeral = true
+	all, err := fixture.Reader.List(ctx, admitted)
+	if err != nil {
+		t.Fatalf("List --include-ephemeral: %v", err)
+	}
+	assertReaderPageIDs(t, "List --include-ephemeral", all, merged)
+
+	// Every bound from inside the first plane's run to past the end. The
+	// interesting ones are the cuts that land between a wisp and the durable
+	// row next to it, which is where a body that trimmed one plane before
+	// merging keeps the wrong row.
+	for limit := 1; limit <= len(merged)+1; limit++ {
+		bounded := admitted
+		bounded.Limit = readerLimit(limit)
+		page, pageErr := fixture.Reader.List(ctx, bounded)
+		if pageErr != nil {
+			t.Errorf("List --include-ephemeral --limit %d: %v", limit, pageErr)
+			continue
+		}
+		assertReaderPageIDs(t, fmt.Sprintf("List --include-ephemeral --limit %d", limit), page, merged[:min(limit, len(merged))])
+		if want := limit < len(merged); page.HasMore != want {
+			t.Errorf("List --include-ephemeral --limit %d reported HasMore = %v, want %v", limit, page.HasMore, want)
+		}
+	}
+
+	// The keyset walk across the merge. The position is a created-order pair
+	// and neither half of it names a plane, so a walk that resumes correctly on
+	// one plane and skips the other is the failure this looks for: every page
+	// but the first resumes from a row of the plane the previous page ended on.
+	const pageSize = 2
+	var walked []string
+	seen := make(map[string]bool, len(merged))
+	var afterCreatedAt *time.Time
+	afterID := ""
+	for page := 0; page <= len(merged); page++ {
+		req := admitted
+		req.Limit = readerLimit(pageSize)
+		req.AfterCreatedAt = afterCreatedAt
+		req.AfterID = afterID
+		got, pageErr := fixture.Reader.List(ctx, req)
+		if pageErr != nil {
+			t.Fatalf("List --include-ephemeral page %d: %v", page, pageErr)
+		}
+		if len(got.Items) == 0 {
+			if got.HasMore {
+				t.Errorf("List --include-ephemeral page %d came back empty with HasMore set", page)
+			}
+			break
+		}
+		if len(got.Items) > pageSize {
+			t.Fatalf("List --include-ephemeral page %d answered %d rows over a Limit of %d", page, len(got.Items), pageSize)
+		}
+		for _, item := range got.Items {
+			if item == nil || item.Issue == nil {
+				t.Fatalf("List --include-ephemeral page %d returned a nil row", page)
+			}
+			if seen[item.ID] {
+				t.Fatalf("List --include-ephemeral page %d repeated %s: a position that crossed the plane boundary re-delivered a row it had already handed out",
+					page, item.ID)
+			}
+			seen[item.ID] = true
+			walked = append(walked, item.ID)
+		}
+		last := got.Items[len(got.Items)-1]
+		at := last.CreatedAt.UTC()
+		afterCreatedAt = &at
+		afterID = last.ID
+	}
+	if !slices.Equal(walked, merged) {
+		t.Errorf("the keyset walk over the merged planes delivered %v, want the one-shot sequence %v with nothing dropped and nothing repeated", walked, merged)
+	}
+}
+
+// RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt pins
+// ListRequest.WispType's interaction with the plane knob beside it.
+//
+// wisp_type is a COLUMN BOTH TABLES CARRY, so the field is a predicate and not
+// a plane selector: it narrows whatever the rest of the request admitted. On a
+// default listing that is the durable rows, which carry no classification, so
+// the answer is EMPTY rather than "the wisps of that type" — the reading a
+// caller is most likely to assume, and the one that would make the field a
+// second, undocumented way to reach the ephemeral plane.
+//
+// The combination is LAWFUL rather than refused, and this asserts it composes
+// as an ordinary AND: admit the plane, then narrow it to one classification.
+// The second wisp carries a different type so the narrowing is visible as an
+// exclusion rather than as a limit, and the durable row is inside the scope
+// throughout so a body that dropped the predicate on the durable leg — the leg
+// where matching it is pointless — fails on a row it let through.
+func RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt(t *testing.T, ctx context.Context, fixture ReaderFixture) {
+	t.Helper()
+	id := func(name string) string { return readerID(fixture, "lswtyp", name) }
+	durable, heartbeat, patrol := id("i1"), id("w-heartbeat"), id("w-patrol")
+
+	seedReaderIssue(t, ctx, fixture, readerIssue(durable, types.TypeTask, ""))
+	for _, seed := range []struct {
+		id       string
+		wispType types.WispType
+	}{
+		{heartbeat, types.WispTypeHeartbeat},
+		{patrol, types.WispTypePatrol},
+	} {
+		wisp := readerIssue(seed.id, types.TypeTask, "")
+		wisp.Ephemeral = true
+		wisp.WispType = seed.wispType
+		seedReaderWisp(t, ctx, fixture, wisp)
+	}
+
+	scope := readerIDFilter(durable, heartbeat, patrol)
+	wispType := func(w types.WispType) *publicops.WispType { return &w }
+	for _, test := range []struct {
+		name string
+		req  publicops.ListRequest
+		want []string
+	}{
+		{"WispType alone admits no plane", publicops.ListRequest{IDFilter: scope, WispType: wispType(types.WispTypeHeartbeat)}, nil},
+		{"IncludeEphemeral alone admits every classification", publicops.ListRequest{IDFilter: scope, IncludeEphemeral: true}, []string{durable, heartbeat, patrol}},
+		{"the two compose as an AND", publicops.ListRequest{IDFilter: scope, IncludeEphemeral: true, WispType: wispType(types.WispTypeHeartbeat)}, []string{heartbeat}},
+		{"and the other classification is reachable the same way", publicops.ListRequest{IDFilter: scope, IncludeEphemeral: true, WispType: wispType(types.WispTypePatrol)}, []string{patrol}},
+	} {
+		page, err := fixture.Reader.List(ctx, test.req)
+		if err != nil {
+			t.Fatalf("List (%s): %v", test.name, err)
+		}
+		assertReaderPageIDSet(t, "List ("+test.name+")", page, test.want)
+	}
 }
 
 // readerIssue builds the seed every case starts from: an open, unassigned,

@@ -224,6 +224,22 @@ func TestReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates(t *te
 	conformance.RunReaderListKeysetPositionNarrowsWithoutReplacingTheOtherPredicates(t, ctx, fixture)
 }
 
+// The merge arrangement this body actually uses: two independently ordered
+// legs, re-sorted in Go and then trimmed. The bounded arm is where that order
+// has to be applied BEFORE the trim, and the walk is where the probe-row
+// over-fetch has to stay off the next position on both planes at once.
+func TestReaderListIncludeEphemeralMergesThePlanesIntoOneOrder(t *testing.T) {
+	fixture, ctx, cleanup := newDoltReaderFixture(t, "rdr")
+	defer cleanup()
+	conformance.RunReaderListIncludeEphemeralMergesThePlanesIntoOneOrder(t, ctx, fixture)
+}
+
+func TestReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt(t *testing.T) {
+	fixture, ctx, cleanup := newDoltReaderFixture(t, "rdr")
+	defer cleanup()
+	conformance.RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt(t, ctx, fixture)
+}
+
 // newDoltReaderFixture composes the shared role kit with the reader accessor.
 // One store per case here rather than one per suite: setupTestStore gives each
 // test its own copy-on-write branch and costs a fraction of a second, so the
