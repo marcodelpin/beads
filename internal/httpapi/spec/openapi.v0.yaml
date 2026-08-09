@@ -52,7 +52,7 @@ info:
     it decides every refusal before opening its stream.
 
 
-    ## Three 400s cut across operations, and are documented here once
+    ## Four 400s cut across operations, and are documented here once
 
 
     * **Host header.** A request whose `Host` header is not in the server's
@@ -90,14 +90,35 @@ info:
       `415` is deliberately not used: it is not in this surface's status
       vocabulary, and adding one for this would be permanent wire surface.
 
+    * **Project-id stamp.** A request MAY carry a `Bd-Project-Id` header naming
+      the workspace the client means to address. When the header is present and
+      its value is not the project this server serves, the request is refused
+      with `400` / `code: invalid_argument` / `param: "Bd-Project-Id"` /
+      `reason: "project_mismatch"`, and that refusal — alone on this surface —
+      carries the server's own project id in the `server_project_id` member so a
+      stamped client can tell a wrong-server refusal from a malformed one. The
+      comparison is LITERAL: a server whose own `project_id` is empty refuses
+      every non-empty stamp, because it cannot assert it is the workspace the
+      client named. An ABSENT header is the backward-compatible path — a client
+      that never sends it is served exactly as before, and enforcement triggers
+      only when the header arrives — so this is additive wire surface, not a new
+      precondition on requests already in the field. The refusal is raised after
+      the Host gate and before any database work, so a misdirected request
+      mutates nothing. It is skipped on `GET /healthz` and `GET /v0/beads/context`
+      alone: liveness must answer whatever workspace a caller believed it
+      reached, and the identity handshake is where a client LEARNS the project
+      id to stamp with. A client detects that a server performs this check by
+      the `project.enforce` capability (see `ContextResponse`).
+
 
     The first two are uniform rules reachable on EVERY route including
-    `GET /healthz`; the third holds on every body-carrying operation. All three
-    are stated here instead of being repeated on every operation. The
-    per-operation `responses` below therefore list what an operation produces
-    BEYOND them: a generated client must treat `400 invalid_argument` as
-    possible everywhere, including on the operations whose documented statuses
-    are only `404`/`500`/`503`.
+    `GET /healthz`; the third holds on every body-carrying operation; the fourth
+    holds on every route EXCEPT the two exempt reads named above. All four are
+    stated here instead of being repeated on every operation. The per-operation
+    `responses` below therefore list what an operation produces BEYOND them: a
+    generated client must treat `400 invalid_argument` as possible everywhere,
+    including on the operations whose documented statuses are only
+    `404`/`500`/`503`.
 
 
     ## Authentication is a deployment posture
@@ -148,8 +169,10 @@ info:
     ## Version skew: what a client may gate on
 
 
-    * `capabilities` gates OPERATION presence. It is derived from the server's
-      implemented handlers; check the list, never the version string.
+    * `capabilities` gates OPERATION presence, and also advertises server-wide
+      BEHAVIOR tokens such as `project.enforce` (per-request `Bd-Project-Id`
+      enforcement). It is derived from the server's implemented handlers plus the
+      behaviors this build enforces; check the list, never the version string.
     * `bd_version` gates BEHAVIORAL changes tied to a release, and is the only
       field a client may compare as a version.
     * `api_version` gates the path major, and changes only when `/v1` is cut.
@@ -6264,8 +6287,9 @@ components:
         capabilities:
           type: array
           description: >-
-            The operations this server actually implements, derived from its
-            route table. v0's vocabulary is `ready.list`, `ready.count`,
+            The tokens this server advertises: the OPERATIONS it implements,
+            derived from its route table, and the server-wide BEHAVIORS it
+            enforces. v0's operation vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.count`, `issues.get`,
             `issues.create`,
             `issues.batchClose`,
@@ -6278,10 +6302,12 @@ components:
             `dependencies.add`, `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
             `memories.forget`, `events.list`, `events.watch`,
-            `issues.casMetadata`;
-            it grows additively, and an operation never
-            appears here unless it is fully implemented. This is how a client
-            checks for an operation — never the version string.
+            `issues.casMetadata`; the one behavior token is `project.enforce`,
+            which announces that a `Bd-Project-Id` stamp for the wrong workspace
+            is refused here rather than silently ignored. The list grows
+            additively, and an operation never appears here unless it is fully
+            implemented. This is how a client checks for an operation or a
+            behavior — never the version string.
 
 
             THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which
@@ -9634,13 +9660,17 @@ components:
           type: string
           description: >-
             With `invalid_argument`: `unknown_parameter` (this server does not
-            know that parameter — version skew; degrade or fall back) or
+            know that parameter — version skew; degrade or fall back),
             `invalid_value` (the value is not one this server will act on:
             malformed, out of vocabulary, or — for `limit=0` under
             `--allow-non-loopback` — legal but refused in this server's
-            configuration; `detail` says which). Either way `invalid_value`
-            means send something different, never retry the same request. The
-            set may grow; default-branch on unknown values.
+            configuration; `detail` says which), or `project_mismatch` (the
+            `Bd-Project-Id` header named a project this server does not serve —
+            a document-level refusal like the Host-header 400, raised on every
+            enforced route, and the one that carries `server_project_id`; see
+            the document-level rule). Either way the recovery is to send
+            something different, never to retry the same request. The set may
+            grow; default-branch on unknown values.
         assignee:
           type: string
           description: >-
@@ -9834,3 +9864,13 @@ components:
             (This server mints per-process ids that do not survive a restart;
             a deployment may substitute any identifier with the same
             log-correlation property, such as an edge trace id.)
+        server_project_id:
+          type: string
+          description: >-
+            With `invalid_argument` / `reason: "project_mismatch"` ONLY: the
+            project id this server actually serves, so a client that stamped a
+            `Bd-Project-Id` can tell a wrong-server refusal from a malformed one
+            without parsing `detail`. It is set on that refusal and on no other,
+            and never on a refusal raised before the stamp is checked — the Host
+            gate, or a deployment's authentication layer — so its PRESENCE is the
+            signal that this specific check fired.

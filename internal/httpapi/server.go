@@ -1444,14 +1444,21 @@ func (s *Server) closeStreams() {
 }
 
 // route wraps one operation with the limits that apply to it: the per-request
-// deadline, the bearer credential unless the operation is exempt, and — unless
-// the operation is exempt — a database slot.
+// deadline, the bearer credential unless the operation is exempt, the
+// Bd-Project-Id stamp check unless the operation is exempt, and — unless the
+// operation is exempt — a database slot.
 //
 // The credential check runs BEFORE the semaphore, which is the load-bearing
 // ordering: a storm of refused requests then costs one SHA-256 each and can
 // never occupy the slots, or the SQL connections pinned to them, that
 // authenticated clients are waiting for. It runs inside withRequestContext, so
 // a 401 gets a request id and a request log line like every other refusal.
+//
+// The stamp check runs AFTER the credential and before the semaphore: the
+// project-mismatch refusal is the one that discloses this server's own project
+// id (server_project_id), so it must sit behind the authentication gate — an
+// unauthenticated caller is turned away by the 401 before the stamp is ever
+// compared, and so learns nothing about the workspace's identity.
 func (s *Server) route(rt route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := requestInfo(r.Context())
@@ -1470,6 +1477,19 @@ func (s *Server) route(rt route) http.Handler {
 
 		if !rt.authExempt && s.auth != nil && !s.authorize(w, r, rec) {
 			return
+		}
+
+		// Identity before resources: a stamp for the wrong workspace is turned
+		// away before it can buy a database slot or open a unit of work, so a
+		// misdirected read or write costs nothing and mutates nothing. The two
+		// exempt routes (liveness, identity handshake) skip it. It runs after
+		// the credential check so the server_project_id it discloses stays
+		// behind the authentication gate.
+		if !rt.projectExempt {
+			if res := s.checkProjectStamp(r); res != nil {
+				s.fail(w, r, *res)
+				return
+			}
 		}
 
 		if !rt.bypassSemaphore {
@@ -1547,6 +1567,39 @@ func (s *Server) authLabel() string {
 		return "none"
 	}
 	return "bearer (" + s.auth.path + ")"
+}
+
+// checkProjectStamp enforces per-request workspace identity. A client that
+// stamps a request with its intended workspace's project id in the
+// Bd-Project-Id header is asserting "I mean to be talking to THIS workspace"; if
+// the id it names is not the one this server serves, the request is refused
+// before it can read or write the wrong workspace. It returns nil when the
+// request may proceed, or the 400 to write.
+//
+// The comparison is LITERAL, and a server whose own project id is empty refuses
+// any non-empty stamp: it cannot prove it is the workspace the client named, so
+// it does not answer as if it were. That mirrors the identity handshake — a
+// server advertises the id it can assert, and asserts nothing when it has none.
+//
+// Two paths return nil. An ABSENT header is the backward-compatible one: an
+// older client never sends it, and enforcement triggers only when the header
+// arrives, so this adds no precondition to any request already in the field. A
+// stamp equal to the server's own project id is a match.
+//
+// The refusal is recorded on the request line like every other middleware
+// refusal, so a client persistently addressing the wrong server is attributable
+// on loopback down to the local process.
+func (s *Server) checkProjectStamp(r *http.Request) *Result {
+	stamp := r.Header.Get(ProjectIDHeader)
+	if stamp == "" {
+		return nil
+	}
+	if stamp == s.ctxBody.ProjectId {
+		return nil
+	}
+	requestInfo(r.Context()).refuse(stamp)
+	res := ProjectMismatch(stamp, s.ctxBody.ProjectId)
+	return &res
 }
 
 // fail writes a problem response and records what it was for the log line.

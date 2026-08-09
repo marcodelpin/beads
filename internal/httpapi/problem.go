@@ -271,6 +271,13 @@ const (
 	// recovery is always to send something different, never to retry; the
 	// detail says which case it was.
 	ReasonInvalidValue Reason = "invalid_value"
+	// ReasonProjectMismatch means the request stamped a Bd-Project-Id that is
+	// not the project this server serves. Like the Host-header refusal it is a
+	// document-level 400 reachable on every enforced route rather than
+	// per-operation behavior, and it is the one refusal that carries
+	// `server_project_id`. The recovery is to stop stamping this server with
+	// another workspace's id, never to retry the same request.
+	ReasonProjectMismatch Reason = "project_mismatch"
 )
 
 // staticDetail is the set of codes whose `detail` is FIXED, whatever the
@@ -1104,6 +1111,25 @@ func InvalidArgument(param string, reason Reason, detail string) Result {
 	}
 	r := string(reason)
 	res.Problem.Reason = &r
+	return res
+}
+
+// ProjectMismatch builds the 400 for a request whose Bd-Project-Id header names
+// a workspace this server does not serve. got is the id the client stamped; own
+// is this server's own project id, disclosed in the `server_project_id`
+// extension member so a stamped client can tell a wrong-server refusal from a
+// malformed one without parsing `detail`.
+//
+// This is the ONLY refusal on the surface that sets `server_project_id`, and it
+// is raised only after the request has cleared the Host gate (and, in a
+// deployment that adds one, its authentication layer): a request turned away by
+// an earlier gate is answered before the stamp is ever compared, so it never
+// discloses the server's identity. Presence of the member is therefore the
+// signal that this specific check — and nothing earlier — fired.
+func ProjectMismatch(got, own string) Result {
+	res := InvalidArgument(ProjectIDHeader, ReasonProjectMismatch,
+		"the "+ProjectIDHeader+" header names project "+strconv.Quote(got)+", which this server does not serve")
+	res.Problem.ServerProjectId = &own
 	return res
 }
 

@@ -628,11 +628,15 @@ func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 			want = append(want, rt.capability)
 		}
 	}
-	slices.Sort(want)
-
 	if len(want) == 0 {
 		t.Fatal("the route table contributed no capabilities; this case would pass against a server that advertises nothing")
 	}
+	// The behavior tokens name no route, so the table walk above cannot reach
+	// them; project.enforce is advertised in the same list. It is spelled
+	// literally here to keep this an independent oracle rather than a second
+	// call to the code under test.
+	want = append(want, "project.enforce")
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("capabilities = %v, want %v", got, want)
 	}
@@ -686,20 +690,28 @@ func TestClaimPathReachesItsHandler(t *testing.T) {
 	}
 }
 
+// TestCapabilitiesListImplementedOperationsOnly: the advertised set is exactly
+// the implemented operation tokens UNION the server-wide behavior tokens, and
+// nothing else — a token here that backs neither an implemented handler nor a
+// declared behavior is a capability a client would check for and never find
+// anything behind.
 func TestCapabilitiesListImplementedOperationsOnly(t *testing.T) {
-	implemented := map[string]bool{}
+	advertised := map[string]bool{}
 	for _, rt := range routeTable {
 		if rt.implemented && rt.capability != "" {
-			implemented[rt.capability] = true
+			advertised[rt.capability] = true
 		}
+	}
+	for _, c := range behaviorCapabilities {
+		advertised[c] = true
 	}
 	for _, got := range Capabilities() {
-		if !implemented[got] {
-			t.Errorf("Capabilities() lists %q, whose handler is not implemented", got)
+		if !advertised[got] {
+			t.Errorf("Capabilities() lists %q, which is neither an implemented operation nor a behavior capability", got)
 		}
 	}
-	if len(Capabilities()) != len(implemented) {
-		t.Errorf("Capabilities() = %v, want exactly %v", Capabilities(), implemented)
+	if len(Capabilities()) != len(advertised) {
+		t.Errorf("Capabilities() = %v, want exactly %v", Capabilities(), advertised)
 	}
 }
 
