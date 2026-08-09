@@ -173,7 +173,8 @@ func runServe() error {
 		// runs after this function returns, which is after the server has
 		// fully drained, so no request can reach a closed store. runServe must
 		// not close it.
-		roles, err := serveIssueRoles(store)
+		journalEnabled := eventsjournal.EnabledFor(info.BeadsDir)
+		roles, err := serveIssueRoles(store, journalEnabled)
 		if err != nil {
 			return HandleError("bd serve: %v", err)
 		}
@@ -197,9 +198,19 @@ func runServe() error {
 			BatchCreator:      roles.batchCreator,
 			DependencyEditor:  roles.dependencyEditor,
 			Memories:          roles.memories,
-			Workspace:         info,
-			SchemaVersion:     JSONSchemaVersion,
-			Mode:              serveResolvedMode(info, db),
+			// Nil when this backend has no journal seam and the workspace never
+			// asked for one; Listen requires it exactly when the flag below is
+			// set, and serveIssueRoles has already refused the enabled case.
+			EventsJournal: roles.eventsJournal,
+			// GET /v0/beads/events refuses outright on a workspace that records
+			// nothing, because a disabled journal and an empty one are one
+			// answer at the data level. Resolved ONCE above, so the role
+			// extraction, this flag and the maintenance ticker cannot disagree
+			// about whether this workspace journals.
+			EventsJournalEnabled: journalEnabled,
+			Workspace:            info,
+			SchemaVersion:        JSONSchemaVersion,
+			Mode:                 serveResolvedMode(info, db),
 		})
 	}
 
@@ -256,9 +267,16 @@ func runServe() error {
 		Addr:             serveAddr,
 		AllowNonLoopback: serveAllowNonLoopback,
 		Provider:         provider,
-		Workspace:        info,
-		SchemaVersion:    JSONSchemaVersion,
-		Mode:             serveResolvedMode(info, db),
+		// No EventsJournal field on this arm: the provider carries the journal
+		// read as one of its own capability accessors, exactly as it carries
+		// every other role Listen would otherwise need spelled out. Activation
+		// is still the workspace's answer and still has to be handed in — the
+		// provider knows how to READ the journal, not whether this workspace has
+		// one.
+		EventsJournalEnabled: eventsjournal.EnabledFor(info.BeadsDir),
+		Workspace:            info,
+		SchemaVersion:        JSONSchemaVersion,
+		Mode:                 serveResolvedMode(info, db),
 	})
 }
 
@@ -460,7 +478,7 @@ func errServeEmbedded() error {
 // It returns the WHOLE set httpapi.Config requires; Listen refuses a partial
 // set (see checkDatabaseSource), so a role missing here is a startup failure
 // rather than a nil dereference on the first request that reaches it.
-func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
+func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, error) {
 	var roles serveRoles
 	if src == nil {
 		// A set of nil roles would reach Listen as "no database source" —
@@ -494,6 +512,30 @@ func serveIssueRoles(src storage.DoltStorage) (serveRoles, error) {
 		{"batch creator", func() (err error) { roles.batchCreator, err = src.BatchCreator(); return }},
 		{"dependency editor", func() (err error) { roles.dependencyEditor, err = src.DependencyEditor(); return }},
 		{"memories", func() (err error) { roles.memories, err = src.Memories(); return }},
+		{"events journal", func() error {
+			// storage.UnwrapStore rather than the ONE peel above, and that is not
+			// an exception to this function's rule — it is the rule applied to a
+			// capability that no decorator publishes. The hook and telemetry
+			// layers wrap ROLES; neither implements the journal seam, so the
+			// assertion has to reach the concrete store or it finds nothing at
+			// all. Nothing is skipped by going the whole way: there is no
+			// journal decorator to peel past.
+			cursor, ok := storage.UnwrapStore(src).(storage.EventsJournalCursor)
+			if ok {
+				roles.eventsJournal = cursor
+				return nil
+			}
+			// A backend that cannot read the journal is an ordinary backend
+			// while the workspace records nothing — the journal is off by
+			// default, and eventsjournal.Apply takes exactly this deal when it
+			// binds activation at open time. Only an ENABLED workspace has
+			// asked for something this backend cannot do, and the message is
+			// the one `bd events` prints for the same condition.
+			if journalEnabled {
+				return fmt.Errorf("storage backend does not support the events journal")
+			}
+			return nil
+		}},
 	} {
 		if err := b.get(); err != nil {
 			return serveRoles{}, fmt.Errorf("%s: %w", b.name, err)
@@ -530,6 +572,13 @@ type serveRoles struct {
 	// plane is user data riding in the config table under its own merge class,
 	// so it has its own leaf package.
 	memories memoryops.Memories
+	// eventsJournal is the only role here that comes from a TYPE ASSERTION
+	// rather than an accessor, because the journal is not part of DoltStorage's
+	// published surface: it is engine state on a dolt_ignored table that the two
+	// concrete stores implement and a backend may not. Missing it is a startup
+	// error rather than a route that 500s, which is the same deal every other
+	// role here takes.
+	eventsJournal storage.EventsJournalCursor
 }
 
 // serveResolvedMode labels the topology for the startup log line. Cosmetic —

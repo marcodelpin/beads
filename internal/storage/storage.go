@@ -762,11 +762,48 @@ func (e *EventsJournalTruncatedError) Error() string {
 		e.Since, e.Floor, e.Head, e.Since+1, e.Floor-1)
 }
 
+// EventsJournalPage is one journal read that also reports how far behind the
+// caller is: the rows it asked for, and the head of the journal's history at
+// the moment they were read.
+//
+// The two travel together because they are only meaningful together. Rows alone
+// cannot answer "poll again now, or wait?" — a full page might be the end of
+// the journal or the first thousand of a hundred thousand — and a head read
+// separately could be taken from a different instant and land BELOW the last
+// row served, which a consumer reads as "past the end" and stalls on.
+//
+// Head is the highest seq the counter has ever assigned. It never decreases
+// under a prune (see EventsJournalTruncatedError), so it is the journal's
+// history rather than its contents: a fully pruned journal reports its rows
+// gone and its head unchanged.
+type EventsJournalPage struct {
+	Rows []EventsJournalRow
+	Head int64
+}
+
+// EventsJournalCursor is the READ-ONLY half of the journal seam, for a consumer
+// that pages through the journal with a checkpoint.
+//
+// It is separate from EventsJournalAccessor rather than a method on it because
+// of who holds it. Retention is an operator decision made by the workspace
+// (`bd events prune` and the automatic bounding); a surface that only PUBLISHES
+// the journal — bd serve's GET /v0/beads/events — must not be handed a delete.
+// Narrowing the interface is what makes "this surface cannot prune" a fact
+// about the type rather than a promise about the handler.
+type EventsJournalCursor interface {
+	// ReadEventsJournalPage returns rows with seq greater than since, ordered
+	// by seq ascending and capped by limit (0 = no cap), together with the
+	// journal head read in the same transaction. It returns
+	// *EventsJournalTruncatedError on the same terms ReadEventsJournal does.
+	ReadEventsJournalPage(ctx context.Context, since int64, limit int) (EventsJournalPage, error)
+}
+
 // EventsJournalAccessor reads and prunes the durable events journal
 // (bd_events_journal) through the store's own transaction machinery. Unlike
 // RawDBAccessor — which only the server-mode store provides — this works on the
 // embedded store too, which owns its connections and exposes no stable *sql.DB.
-// Callers that need the journal should type-assert to this interface.
+// Callers that need the journal should type-assert to this interface; a caller
+// that only reads should ask for EventsJournalCursor instead.
 type EventsJournalAccessor interface {
 	// ReadEventsJournal returns rows with seq greater than since, ordered by
 	// seq ascending, optionally capped by limit (0 = no cap). It returns

@@ -77,6 +77,72 @@ Output is JSON Lines, one record per line, in sequence order:
 A consumer advances its checkpoint to the highest `seq` it has durably
 processed, and passes that as the next `--since`.
 
+### Over HTTP
+
+A consumer that already talks to a workspace over `bd serve` reads the same
+journal at `GET /v0/beads/events` instead of shelling out:
+
+```bash
+curl 'http://127.0.0.1:8080/v0/beads/events?since=4211&limit=500'
+```
+
+```json
+{
+  "records": [
+    {"seq":4212,"ts":"2026-01-02T03:04:05Z","op":"create","issue_id":"bd-100","issue":{"id":"bd-100","title":"wire the seam","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T03:00:00Z","updated_at":"2026-01-02T03:04:05Z"}}
+  ],
+  "head": 4980
+}
+```
+
+The `records` are the records above — the same fields, the same encoding, the
+same [record contract](#the-record-contract) — so an HTTP mirror and a
+`bd events export` on the same workspace can be reconciled directly.
+
+- `since` is **required**, and it is the same checkpoint `--since` takes. A
+  missing or negative value is a `400`, never a read from the beginning.
+- `limit` runs from 1 to 10000 and defaults to 1000. There is no unlimited
+  read here: `limit=0` is refused rather than meaning "everything" as it does
+  on `GET /v0/beads/issues`.
+- `head` is the highest sequence number ever assigned, so a consumer knows
+  whether to keep reading or back off. When the last record's `seq` equals
+  `head` you are caught up — a full page proves nothing on its own.
+- **Poll; there is no streaming or `--follow` equivalent.** Read with your
+  checkpoint on your own interval.
+- The journal is read-only over HTTP. Pruning stays a workspace decision made
+  with `bd events prune` and the retention floors.
+
+<Warning>
+Publishing the journal publishes the workspace's **history**, not its current
+state: every retained record carries the full issue snapshot as it was at that
+mutation, including titles and descriptions since edited and issues since
+deleted. Pruning and the retention floors are the only thing that removes a
+record — editing or deleting a bead does not redact it from the journal. And
+because this is an HTTP read, any process that can reach the address gets that
+history without the filesystem permissions on `.beads/` that `bd events tail`
+requires. Weigh both before binding a journal-enabled workspace with
+`--allow-non-loopback`; `bd serve` has no authentication.
+</Warning>
+
+Two refusals are worth wiring into a consumer before it ships. A checkpoint
+below the retained window is a `410 Gone` carrying the same
+`events_journal_truncated` code and the same `since` / `floor` / `head` window
+[the CLI reports](#resuming-and-the-truncation-error) — with the same ways
+forward. And a workspace whose journal is **off** answers `409` with
+`events_journal_disabled` rather than an empty page, because a disabled journal
+and an empty one look identical in the data and a consumer given the empty page
+would poll a workspace that will never produce a record. That 409 is workspace
+state, not a missing feature: `events.list` appears in `/v0/beads/context`'s
+capabilities on every build, so treat the capability as "this server speaks it"
+and the 409 as "not on this workspace". (A workspace that has enabled the
+journal on a storage backend with no journal support never gets this far —
+`bd serve` refuses to start, the same refusal opening that workspace already
+gives.)
+
+The journal is per replica, which matters more over HTTP than on the command
+line: a checkpoint is meaningful only against the server URL that issued it.
+Track one per server, and re-baseline rather than carry one across.
+
 ## The record contract
 
 | Field | Type | Meaning |
@@ -199,6 +265,21 @@ A hole in the *middle* of the retained window refuses the same way, with
 from your checkpoint. Nothing bd does produces such a hole — pruning only ever
 removes a prefix — but a restored, hand-edited, or half-copied journal table
 can, and a consumer must never be handed one silently.
+
+That case has a **third way forward**, and it is worth taking before the other
+two: everything between your checkpoint and the reported `since` is intact and
+servable, and the refusal did not hand it over. Drain it explicitly by asking
+for exactly that span — the same `--since` you already passed, with `--limit`
+set to `response.since - your since` — which stops the batch at the hole and
+succeeds:
+
+```bash
+# refused with since 40 (your checkpoint was 12), floor 61
+bd events tail --since 12 --limit 28   # records 13..40, the intact stretch
+bd events tail --since 60              # then take the gap, or re-baseline
+```
+
+Skipping straight to `floor - 1` loses records you could have had.
 
 ## Retention and pruning
 

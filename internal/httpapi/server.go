@@ -206,6 +206,38 @@ type Config struct {
 	// a partial set is refused, so the field and the operations that reach it
 	// land together.
 	Memories memoryops.Memories
+	// EventsJournal is the durable mutation journal's READ side, and the ONE
+	// role here that is required CONDITIONALLY — which is why it is absent from
+	// sourceRoles and checked on its own. Like Memories it is not an issueops
+	// role: the journal is engine state on a dolt_ignored table, not a bead
+	// query, so its seam lives in internal/storage beside the rows it yields.
+	//
+	// Required exactly when EventsJournalEnabled. A workspace that records
+	// nothing needs no reader, and a storage backend that cannot read the
+	// journal at all is a perfectly ordinary backend as long as nobody asked it
+	// to journal — the same deal eventsjournal.Apply takes when it binds
+	// activation to a store. Demanding it unconditionally would make a
+	// capability nothing uses a precondition for running the server.
+	//
+	// It is a storage.EventsJournalCursor and deliberately NOT the wider
+	// storage.EventsJournalAccessor the CLI takes. That interface also prunes,
+	// and a server that is documented to publish the journal and never retain
+	// it should not be holding a delete it merely promises not to call.
+	EventsJournal storage.EventsJournalCursor
+	// EventsJournalEnabled is whether the served workspace actually records
+	// mutations, resolved by the caller through eventsjournal.EnabledFor.
+	//
+	// It is a resolved BOOLEAN rather than something this package works out,
+	// for the reason Config gives at the top: activation reads the target
+	// workspace's own config.yaml and the BD_EVENTS_JOURNAL environment
+	// override, which is workspace state, and this package resolves none.
+	//
+	// It cannot be inferred from the data either, which is the whole reason the
+	// field exists. A disabled journal presents as zero rows and a head of
+	// zero — byte-identical to an enabled journal nothing has written yet — so
+	// a server without this flag would answer "you are caught up" to a consumer
+	// polling a workspace that will never emit a record.
+	EventsJournalEnabled bool
 	// Workspace is the startup snapshot GET /v0/beads/context answers from.
 	// Only the allowlisted fields are ever serialized — see contextResponse,
 	// which names the whole set and the reasons for the exclusions.
@@ -249,6 +281,7 @@ type Server struct {
 	issueBatchCreator issueops.BatchCreator
 	issueDependencies issueops.DependencyEditor
 	workspaceMemories memoryops.Memories
+	eventsJournal     storage.EventsJournalCursor
 
 	listener net.Listener
 	http     *http.Server
@@ -361,6 +394,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueBatchCreator: cfg.BatchCreator,
 		issueDependencies: cfg.DependencyEditor,
 		workspaceMemories: cfg.Memories,
+		eventsJournal:     cfg.EventsJournal,
 
 		sem:        make(chan struct{}, maxInflight),
 		semTimeout: semAcquireTimeout,
@@ -449,6 +483,12 @@ func Listen(cfg Config) (*Server, error) {
 // A role is compared against nil as an INTERFACE, which is what the caller
 // actually sets; a typed nil stored in one of these fields is a value as far as
 // this check is concerned.
+//
+// It carries only the roles every deployment must have. EventsJournal is
+// deliberately NOT here: it is required only when the workspace's journal is
+// enabled, and folding a conditional field into a set whose whole value is
+// "all or nothing" would turn an honest condition into a special case inside
+// three functions. It is checked once, on its own, below.
 func sourceRoles(cfg Config) []any {
 	return []any{cfg.Reader, cfg.Claimer, cfg.Lifecycle, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.Memories}
 }
@@ -471,10 +511,19 @@ func anyRoleFiresHooks(cfg Config) bool {
 
 func checkDatabaseSource(cfg Config) error {
 	switch {
-	case cfg.Provider != nil && anyRoleSet(cfg):
+	case cfg.Provider != nil && (anyRoleSet(cfg) || cfg.EventsJournal != nil):
 		return errors.New("httpapi: both a unit-of-work provider and issue roles were set; pass exactly one database source")
 	case cfg.Provider == nil && !everyRoleSet(cfg):
 		return errors.New("httpapi: no database source: set Provider, or " + roleSourceNames + " together")
+	// The conditional role, checked where every other configuration mistake is.
+	// A workspace that HAS a journal and a server that cannot read it is the
+	// one combination that would bind, answer every other route, and fail this
+	// one — with a nil dereference, which is the shape checkDatabaseSource
+	// exists to prevent. A workspace with the journal off needs no reader and
+	// this says nothing about it.
+	case cfg.Provider == nil && cfg.EventsJournalEnabled && cfg.EventsJournal == nil:
+		return errors.New("httpapi: this workspace's events journal is enabled but no EventsJournal reader was configured; " +
+			"take one off the store (storage.EventsJournalCursor), or serve a workspace with the journal off")
 	case anyRoleFiresHooks(cfg):
 		return errors.New("httpapi: a configured role fires this workspace's hooks; " +
 			"this server does not run hooks, so take the roles from the store beneath the hook decorator " +
@@ -828,6 +877,34 @@ func (s *Server) memories(r *http.Request) (memoryops.Memories, error) {
 	}
 	var src uow.MemoriesSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.Memories()
+}
+
+// eventsJournalCursor returns the journal read surface for one request, on the
+// same terms as every role above and held by INTERFACE so
+// uow.EventsJournalCursorSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED: a page is a value carrying a slice, so there is
+// nothing for a checked wrapper to make safe — the querier's argument.
+//
+// The narrow type is the point of this accessor rather than an accident of it.
+// The provider can also hand out uw.EventsJournalUseCase(), which PRUNES; going
+// through a source that only publishes storage.EventsJournalCursor is what
+// keeps the read-only promise a fact about what the handler is holding.
+func (s *Server) eventsJournalCursor(r *http.Request) (storage.EventsJournalCursor, error) {
+	if s.provider == nil {
+		if s.eventsJournal == nil {
+			// Unreachable through the handler, which refuses a disabled
+			// workspace before asking for a reader, and Listen refuses an
+			// enabled one with no reader. Said out loud rather than returned as
+			// a nil interface for the reason WithUOW says its own: a 500 naming
+			// the condition beats a panic on a live server if either of those
+			// two gates is ever moved.
+			return nil, errors.New("httpapi: this server has no events-journal reader; it was configured for a workspace with the journal off")
+		}
+		return s.eventsJournal, nil
+	}
+	var src uow.EventsJournalCursorSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.EventsJournalCursor()
 }
 
 // WithUOW runs fn inside one unit of work and guarantees the rollback.

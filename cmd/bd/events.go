@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/eventsjournal"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/uow"
 )
@@ -199,18 +200,6 @@ func init() {
 	rootCmd.AddCommand(eventsCmd)
 }
 
-// eventRecord is one journal line rendered to callers. Issue, Dep and Comment
-// are raw JSON so the stored payloads are not re-encoded.
-type eventRecord struct {
-	Seq     int64           `json:"seq"`
-	TS      string          `json:"ts"`
-	Op      string          `json:"op"`
-	IssueID string          `json:"issue_id"`
-	Issue   json.RawMessage `json:"issue"`
-	Dep     json.RawMessage `json:"dep,omitempty"`
-	Comment json.RawMessage `json:"comment,omitempty"`
-}
-
 // reportEventsTruncated renders a pruned-past checkpoint as a machine-readable
 // failure. A consumer must be able to branch on this without parsing prose, so
 // JSON mode carries the code and the window it can still serve; the caller then
@@ -328,7 +317,11 @@ func journalAccessor() (storage.EventsJournalAccessor, error) {
 // readJournal reads records with seq greater than since from the active
 // storage seam. Proxied-server mode uses its transaction-bound UOW journal
 // capability; direct stores use EventsJournalAccessor.
-func readJournal(ctx context.Context, since int64, limit int) ([]eventRecord, error) {
+//
+// The projection onto the published envelope is eventsjournal.Records, the same
+// one GET /v0/beads/events serves from — see the note on eventsjournal.Record
+// for why there is exactly one.
+func readJournal(ctx context.Context, since int64, limit int) ([]eventsjournal.Record, error) {
 	var rows []storage.EventsJournalRow
 	if usesProxiedServer() {
 		if uowProvider == nil {
@@ -353,11 +346,7 @@ func readJournal(ctx context.Context, since int64, limit int) ([]eventRecord, er
 			return nil, err
 		}
 	}
-	out := make([]eventRecord, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, buildRecord(r.Seq, r.TS, r.Op, r.IssueID, r.IssueJSON, r.DepJSON, r.CommentJSON))
-	}
-	return out, nil
+	return eventsjournal.Records(rows), nil
 }
 
 // pruneJournal deletes records below before honoring the retain floors.
@@ -378,18 +367,4 @@ func pruneJournal(ctx context.Context, before int64, retainDays, retainRows int)
 		return 0, err
 	}
 	return acc.PruneEventsJournal(ctx, before, retainDays, retainRows)
-}
-
-func buildRecord(seq int64, ts, op, issueID, issueJS, depJS, commentJS string) eventRecord {
-	rec := eventRecord{Seq: seq, TS: ts, Op: op, IssueID: issueID, Issue: json.RawMessage("null")}
-	if issueJS != "" {
-		rec.Issue = json.RawMessage(issueJS)
-	}
-	if depJS != "" {
-		rec.Dep = json.RawMessage(depJS)
-	}
-	if commentJS != "" {
-		rec.Comment = json.RawMessage(commentJS)
-	}
-	return rec
 }

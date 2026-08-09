@@ -366,6 +366,41 @@ func (m *roleMemories) List(_ context.Context, req memoryops.ListRequest) (memor
 	return m.listed, nil
 }
 
+// roleEventsJournal is the journal read of the store-shaped source, the same
+// shape as its siblings so a case can hand Listen a complete source without
+// deciding what its journal answer should be.
+type roleEventsJournal struct {
+	page storage.EventsJournalPage
+	err  error
+
+	mu    sync.Mutex
+	calls []journalRead
+}
+
+// journalRead is one recorded (since, limit) pair. The pair is what the
+// handler's defaults and bounds are asserted on, so it is recorded rather than
+// only the count.
+type journalRead struct {
+	since int64
+	limit int
+}
+
+func (j *roleEventsJournal) ReadEventsJournalPage(_ context.Context, since int64, limit int) (storage.EventsJournalPage, error) {
+	j.mu.Lock()
+	j.calls = append(j.calls, journalRead{since: since, limit: limit})
+	j.mu.Unlock()
+	if j.err != nil {
+		return storage.EventsJournalPage{}, j.err
+	}
+	return j.page, nil
+}
+
+func (j *roleEventsJournal) reads() []journalRead {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]journalRead(nil), j.calls...)
+}
+
 func (m *roleMemories) rememberRequests() []memoryops.RememberRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -627,6 +662,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.Memories == nil {
 		cfg.Memories = &roleMemories{}
+	}
+	if cfg.EventsJournal == nil {
+		cfg.EventsJournal = &roleEventsJournal{}
 	}
 	return cfg
 }
