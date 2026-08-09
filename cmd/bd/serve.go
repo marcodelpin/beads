@@ -197,6 +197,7 @@ func runServe() error {
 			Deleter:           roles.deleter,
 			BatchCreator:      roles.batchCreator,
 			DependencyEditor:  roles.dependencyEditor,
+			MetadataCAS:       roles.metadataCAS,
 			Memories:          roles.memories,
 			// Nil when this backend has no journal seam and the workspace never
 			// asked for one; Listen requires it exactly when the flag below is
@@ -511,6 +512,7 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 		{"deleter", func() (err error) { roles.deleter, err = src.Deleter(); return }},
 		{"batch creator", func() (err error) { roles.batchCreator, err = src.BatchCreator(); return }},
 		{"dependency editor", func() (err error) { roles.dependencyEditor, err = src.DependencyEditor(); return }},
+		{"metadata cas", func() (err error) { roles.metadataCAS, err = src.MetadataCAS(); return }},
 		{"memories", func() (err error) { roles.memories, err = src.Memories(); return }},
 		{"events journal", func() error {
 			// storage.UnwrapStore rather than the ONE peel above, and that is not
@@ -568,6 +570,10 @@ type serveRoles struct {
 	// HookFiringStore.DependencyEditor fires the workspace's update hook per
 	// edited source issue, and this server documents that hooks do not fire.
 	dependencyEditor issueops.DependencyEditor
+	// metadataCAS is the conditional single-key metadata write. Its accessor
+	// recurses through the hook decorator, so the ONE peel above is what keeps
+	// this server from running the workspace's on_update script per swap.
+	metadataCAS issueops.MetadataCAS
 	// memories is the one role here that is not an issueops role: the memory
 	// plane is user data riding in the config table under its own merge class,
 	// so it has its own leaf package.

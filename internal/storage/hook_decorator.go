@@ -98,6 +98,12 @@ func RoleFiresHooks(role any) bool {
 	// reason, and the one that multiplies fastest.
 	case *hookDependencyEditor:
 		return true
+	// The compare-and-set fires the update hook for every swap that MOVED a
+	// key, which is a coordination write a loop makes repeatedly — so a server
+	// handed an unpeeled one runs the workspace's script once per contended
+	// retry round.
+	case *hookMetadataCAS:
+		return true
 	}
 	return false
 }
@@ -373,6 +379,14 @@ func (h *HookFiringStore) CompleteIssueOperationDependency(ctx context.Context, 
 // event, and a comment is a change to the issue as far as a script is
 // concerned.
 func (h *HookFiringStore) CompleteIssueOperationComment(ctx context.Context, issueID string) {
+	h.fireHookByID(ctx, hooks.EventUpdate, issueID)
+}
+
+// CompleteIssueOperationMetadata fires the update hook for a committed
+// compare-and-set that moved a metadata key, which is the event the generic
+// update path fires for the same write. It re-reads the row rather than taking
+// the caller's, so a script sees the metadata the swap produced.
+func (h *HookFiringStore) CompleteIssueOperationMetadata(ctx context.Context, issueID string) {
 	h.fireHookByID(ctx, hooks.EventUpdate, issueID)
 }
 

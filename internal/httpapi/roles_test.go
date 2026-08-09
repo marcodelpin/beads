@@ -660,6 +660,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.DependencyEditor == nil {
 		cfg.DependencyEditor = &roleDependencyEditor{}
 	}
+	if cfg.MetadataCAS == nil {
+		cfg.MetadataCAS = &roleMetadataCAS{}
+	}
 	if cfg.Memories == nil {
 		cfg.Memories = &roleMemories{}
 	}
@@ -703,6 +706,32 @@ func (d *roleCycleDetector) DetectCycles(_ context.Context, req issueops.DetectC
 // hands Listen a COMPLETE source for a reason that bites hardest here: the
 // alternative is a server that binds and then nil-dereferences on the one
 // request that deletes beads.
+// roleMetadataCAS is the store-shaped source's conditional metadata write, the
+// same shape as roleSweeper and for the same reason.
+type roleMetadataCAS struct {
+	result issueops.CompareAndSetKeyResult
+	err    error
+
+	mu    sync.Mutex
+	calls []issueops.CompareAndSetKeyRequest
+}
+
+func (c *roleMetadataCAS) CompareAndSetKey(_ context.Context, req issueops.CompareAndSetKeyRequest) (issueops.CompareAndSetKeyResult, error) {
+	c.mu.Lock()
+	c.calls = append(c.calls, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.CompareAndSetKeyResult{}, c.err
+	}
+	return c.result, nil
+}
+
+func (c *roleMetadataCAS) requests() []issueops.CompareAndSetKeyRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.CompareAndSetKeyRequest(nil), c.calls...)
+}
+
 type roleSweeper struct {
 	result issueops.SweepResult
 	err    error
@@ -912,6 +941,21 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "exactly one database source",
 		},
 		{
+			name:    "no metadata cas role",
+			cfg:     rolesConfigWithout(func(c *Config) { c.MetadataCAS = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "a metadata cas role alone",
+			cfg:     Config{MetadataCAS: &roleMetadataCAS{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a provider and a metadata cas role",
+			cfg:     Config{Provider: &fakeProvider{}, MetadataCAS: &roleMetadataCAS{}},
+			wantErr: "exactly one database source",
+		},
+		{
 			// The role that is not an issueops role. It is in the same
 			// all-or-nothing set for the same reason: without it the server
 			// binds, advertises the memory operations, and nil-dereferences on
@@ -1021,13 +1065,13 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 // work here, because there is no provider to open one.
 //
 // NOT ALL OF THEM, despite the name: the subtests below drive ten of the
-// sixteen capability-bearing operations in routes.go. The other six —
+// seventeen capability-bearing operations in routes.go. The other seven —
 // dependencies/cycles, dependencies/blocking, dependencies/tree,
-// issues:batchCreate, issues:sweep and issues:delete — are exercised against a
-// roles source in their own files (cycles_test.go, blocking_test.go,
-// tree_test.go, batch_create_test.go, sweep_test.go, delete_test.go). Either
-// add the six here or keep this paragraph accurate; do not generalize the
-// sentence again.
+// issues:batchCreate, issues:sweep, issues:delete and issues/{id}:casMetadata —
+// are exercised against a roles source in their own files (cycles_test.go,
+// blocking_test.go, tree_test.go, batch_create_test.go, sweep_test.go,
+// delete_test.go, metadata_cas_test.go). Either add the seven here or keep this
+// paragraph accurate; do not generalize the sentence again.
 func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	details := &issueops.IssueDetails{Issue: *seededIssue("bd-1", "alice", types.StatusOpen)}
 	reader := &roleReader{page: issueops.IssuePage{Items: countedPage(), HasMore: true}, details: details}

@@ -336,6 +336,18 @@ var routeTable = []route{
 		handler:      (*Server).handleClose,
 	},
 	{
+		op:     OpCompareAndSetMetadata,
+		method: http.MethodPost,
+		// A fourth row on the shared single-resource dispatcher, spelled the way
+		// the reopen's is.
+		pattern:      customMethodPattern,
+		specPath:     "/v0/beads/issues/{id}:casMetadata",
+		customMethod: ":casMetadata",
+		capability:   "issues.casMetadata",
+		implemented:  true,
+		handler:      (*Server).handleCompareAndSetMetadata,
+	},
+	{
 		op:     OpReopenIssue,
 		method: http.MethodPost,
 		// The close's mirror, on the dispatcher the close built. Nothing new is

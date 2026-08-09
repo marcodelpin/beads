@@ -41,6 +41,15 @@ type IssueSQLRepository interface {
 	MovePersistence(ctx context.Context, id string, mode types.PersistenceMode) (changed bool, err error)
 	PromoteFromEphemeral(ctx context.Context, id, actor string) error
 	Update(ctx context.Context, id string, updates map[string]any, actor string, opts IssueTableOpts) error
+	// CompareAndSetMetadataKey runs the SHARED compare-and-set body on this
+	// repository's transaction, which is how the unit-of-work provider reaches
+	// the same function the two store backends wrap. It takes no table option:
+	// the body routes both planes itself, the way the metadata merge does.
+	//
+	// The bool reports whether a row change actually LANDED, which the caller
+	// needs and the result does not carry — a swap can hold its precondition
+	// and write nothing (see issueops.MetadataCAS.CompareAndSetKey).
+	CompareAndSetMetadataKey(ctx context.Context, plan storage.CompareAndSetKeyPlan) (publicops.CompareAndSetKeyResult, bool, error)
 	Claim(ctx context.Context, id, actor string, opts IssueTableOpts) (ClaimRowResult, error)
 	Get(ctx context.Context, id string, opts IssueTableOpts) (*types.Issue, error)
 	AsOf(ctx context.Context, id, ref string) (*types.Issue, error)
@@ -304,6 +313,9 @@ type IssueUseCase interface {
 	CreateIssue(ctx context.Context, params CreateIssueParams, actor string) (CreateIssueResult, error)
 	CreateIssues(ctx context.Context, params []CreateIssueParams, actor string) (CreateIssuesResult, error)
 	UpdateIssue(ctx context.Context, id string, updates map[string]any, actor string) error
+	// CompareAndSetMetadataKey is the shape issueops.MetadataCAS publishes; see
+	// IssueSQLRepository.CompareAndSetMetadataKey for what the bool carries.
+	CompareAndSetMetadataKey(ctx context.Context, plan storage.CompareAndSetKeyPlan) (publicops.CompareAndSetKeyResult, bool, error)
 	ClaimIssue(ctx context.Context, id, actor string) (ClaimResult, error)
 	ClaimIssueIfOpen(ctx context.Context, id, actor string) (ClaimResult, error)
 	CloseIssue(ctx context.Context, id string, params CloseIssueParams, actor string) (CloseIssueResult, error)
@@ -455,6 +467,16 @@ func (u *issueUseCaseImpl) UpdateIssue(ctx context.Context, id string, updates m
 
 func (u *issueUseCaseImpl) UpdateWisp(ctx context.Context, id string, updates map[string]any, actor string) error {
 	return u.update(ctx, id, updates, actor, true)
+}
+
+// CompareAndSetMetadataKey passes the plan straight through.
+//
+// No pre-check and no error wrapping, for the reason WalkDependencyTree gives:
+// the request's whole vocabulary was validated before the transaction opened,
+// and the refusals the body raises — storage.ErrNotFound for an id on neither
+// plane — are typed sentinels both front doors classify.
+func (u *issueUseCaseImpl) CompareAndSetMetadataKey(ctx context.Context, plan storage.CompareAndSetKeyPlan) (publicops.CompareAndSetKeyResult, bool, error) {
+	return u.issueRepo.CompareAndSetMetadataKey(ctx, plan)
 }
 
 func (u *issueUseCaseImpl) update(ctx context.Context, id string, updates map[string]any, actor string, useWisp bool) error {

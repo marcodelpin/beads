@@ -16,6 +16,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
+	publicops "github.com/steveyegge/beads/issueops"
 )
 
 func NewIssueSQLRepository(runner Runner) domain.IssueSQLRepository {
@@ -327,6 +328,23 @@ func (r *issueSQLRepositoryImpl) Update(ctx context.Context, id string, updates 
 	// Snapshot only after all derived blocked-state maintenance has completed.
 	// The no-op early returns above wrote nothing and journal nothing.
 	return issueops.RecordEventInTx(ctx, r.runner, issueops.EventUpdate, id)
+}
+
+// CompareAndSetMetadataKey runs the SHARED compare-and-set body, unwrapped.
+//
+// It is the whole of this leg's implementation, and that is the point: the two
+// store backends wrap the same function in their own transaction, so the third
+// leg is a wrapper check rather than an independent vote — which is what the
+// conformance contract's header says.
+//
+// It does NOT wrap the error the way its siblings above do, for the reason
+// WalkDependencyTree gives: the body publishes storage.ErrNotFound and
+// storage.ErrValidation as the role's own vocabulary, both classified by
+// errors.Is at every front door, and a "db: ..." prefix would put this
+// repository's name into a message the direct route never shows a user.
+func (r *issueSQLRepositoryImpl) CompareAndSetMetadataKey(ctx context.Context, plan storage.CompareAndSetKeyPlan) (publicops.CompareAndSetKeyResult, bool, error) {
+	result, write, err := issueops.CompareAndSetMetadataKeyInTx(ctx, r.runner, plan)
+	return result, write.Wrote, err
 }
 
 func cloneUpdateFields(updates map[string]any) map[string]any {

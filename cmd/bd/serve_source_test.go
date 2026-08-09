@@ -303,6 +303,7 @@ func (*serveRolesStore) Sweeper() (issueops.Sweeper, error)                     
 func (*serveRolesStore) Deleter() (issueops.Deleter, error)                     { return nil, nil }
 func (*serveRolesStore) BatchCreator() (issueops.BatchCreator, error)           { return nil, nil }
 func (*serveRolesStore) Memories() (memoryops.Memories, error)                  { return nil, nil }
+func (*serveRolesStore) MetadataCAS() (issueops.MetadataCAS, error)             { return nil, nil }
 
 type serveStubReader struct{}
 

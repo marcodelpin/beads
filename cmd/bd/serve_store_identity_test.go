@@ -214,6 +214,9 @@ func (*serveIdentityStore) DependencyEditor() (issueops.DependencyEditor, error)
 func (*serveIdentityStore) Memories() (memoryops.Memories, error) {
 	return serveIdentityRole{}, nil
 }
+func (*serveIdentityStore) MetadataCAS() (issueops.MetadataCAS, error) {
+	return serveIdentityRole{}, nil
+}
 
 // serveIdentityRole satisfies every one of them at once, which it can because no
 // two of those interfaces declare a method of the same name. If a future role
@@ -221,6 +224,7 @@ func (*serveIdentityStore) Memories() (memoryops.Memories, error) {
 // being promoted and the build would say so.
 type serveIdentityRole struct {
 	issueops.Lifecycle
+	issueops.MetadataCAS
 	issueops.WorkspaceConfig
 	issueops.StatsReporter
 	issueops.CycleDetector

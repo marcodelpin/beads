@@ -294,6 +294,17 @@ type Storage interface {
 	//
 	// Reads fire no hooks, as for IssueReader.
 	InitVerifier() (issueops.InitVerifier, error)
+	// MetadataCAS returns the conditional single-key metadata write for this
+	// store: set metadata[key] only if it currently holds the value the caller
+	// expected. It is its own role rather than another Lifecycle guard because
+	// Lifecycle's ExpectedVersion/Assignee/Status gate an ordinary edit on the
+	// row's LIFECYCLE, and coordination state that is not a claim lives on keys
+	// the caller invented, which no lifecycle guard can name.
+	//
+	// It is a WRITE role and its hook decorator WRAPS: a swap that lands is an
+	// update to an issue, which is a hook the vocabulary publishes. See
+	// hook_metadata_cas.go.
+	MetadataCAS() (issueops.MetadataCAS, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

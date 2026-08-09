@@ -141,6 +141,39 @@ func TestCommenterLayersHooksOutsideTelemetry(t *testing.T) {
 	}
 }
 
+// TestMetadataCASLayersHooksOutsideTelemetry is the same pin for the
+// conditional metadata write, and it is the answer the OTHER destructive-ish
+// write roles do not give: a swap that lands names a bead and moves a column,
+// which is on_update — a hook the vocabulary publishes and a row a script can
+// still read back — so this decorator wraps rather than recursing the way
+// Sweeper and Deleter do.
+func TestMetadataCASLayersHooksOutsideTelemetry(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	cas, err := storage.NewHookFiringStore(instrumented, nil).MetadataCAS()
+	if err != nil {
+		t.Fatalf("MetadataCAS() error = %v", err)
+	}
+	if got := reflect.TypeOf(cas).String(); got != "*storage.hookMetadataCAS" {
+		t.Fatalf("outer layer = %s, want the hook wrapper", got)
+	}
+}
+
+func TestMetadataCASExposesTypedUnsupportedError(t *testing.T) {
+	cas, err := (*dolt.DoltStore)(nil).MetadataCAS()
+	if cas != nil {
+		t.Fatalf("MetadataCAS() surface = %T, want nil", cas)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("MetadataCAS() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 // TestIssueRelationsKeepsTelemetryOutermost is the READ role's version of the
 // pin, and it is deliberately the other answer: the hook decorator adds no
 // layer to a read, so the outermost thing a caller gets is the instrumented

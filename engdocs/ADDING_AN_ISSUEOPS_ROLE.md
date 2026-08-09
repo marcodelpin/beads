@@ -418,6 +418,101 @@ now carry a per-row `inner` comparand naming the surface each one must not be
 fixture a new namespace cannot satisfy is a signal: the row you add beside it
 may be a row that cannot fail.**
 
+## When all three legs share one body
+
+`issueops.TreeWalker` was the first, and `issueops.MetadataCAS` is the second:
+the two stores wrap the `…InTx` function and the unit of work reaches the SAME
+function through the domain repository. Two things about that arrangement are
+not obvious the first time, and both cost a debugging session here.
+
+**The domain seam pulls the meaning layer DOWN, past step 2's address.** The
+unit-of-work leg reaches the body through `internal/storage/domain`, so
+`domain` has to name whatever request type the body takes — and `internal/workapi`
+already imports `domain`. So step 2's package cannot be workapi for this shape:
+the plan type and the equality rule live in `internal/storage` instead
+(`metadata_cas.go`, beside `ValidateMetadataKey`). Check the direction before
+picking step 2's address; the compiler tells you late and the fix is a move.
+
+**"Nothing to VERSION" and "nothing was WRITTEN" are different facts, and the
+unit-of-work leg is where conflating them bites.** A tx body naturally returns
+the durable tables it changed, for the store legs to stage. An EPHEMERAL write
+changes none of them — `ChangedTables.Add` drops the wisp tables on purpose —
+so an empty set arrives for a swap that really did write a row. The store legs
+survive that: their SQL transaction commits either way and only the Dolt commit
+is skipped. The unit of work does not, because its COMMIT MESSAGE is what
+commits the SQL transaction as well as what versions it, so an empty message
+rolls the write back. Here the wisp case went green on both stores and red on
+the unit of work with the row simply absent. Return the two facts separately
+(`issueops.MetadataCASWrite`), and make sure a wisp case exists on all three
+legs — it is the only case that can tell them apart.
+
+**And one measurement worth copying rather than the conclusion.** Two of this
+role's promises turned out to be held one layer down rather than by the code
+that reads as if it holds them: the metadata column is a Dolt JSON column that
+normalizes on write, so canonicalizing the STORED side is unfalsifiable on every
+in-tree backend, and `DiscardNoopIssueUpdates` already suppresses a metadata
+write that matches the row, so the body's own no-op short-circuit is
+unfalsifiable too. Neither was guessed — each was mutated and watched to stay
+green. One of them cost a case that had already been written, wired into three
+legs and the bundle, and then deleted, because a green case named for a promise
+is worse than no case. Say which mechanism actually holds a promise in the
+contract's coverage paragraph, and name the substrate that would make it
+observable.
+
+## When the role's answer carries a JSON value
+
+Two traps, both found in review of `issueops.MetadataCAS` and both invisible to
+every test that asserts on wire BYTES.
+
+**A `*json.RawMessage` wire member cannot READ a present `null`.** `encoding/json`
+answers a JSON null against a pointer by setting the pointer to nil, before any
+`UnmarshalJSON` runs — so a generated client decoding `{"current":null}` gets
+exactly what it gets for a response with no `current` member at all. If those
+two mean different things on your operation, the generated client cannot tell
+them apart and no round-trip test on the server notices, because the server's
+own handler reads raw members. The fix is
+`x-go-type-skip-optional-pointer: true` beside the `x-go-type`, which makes the
+member a bare `json.RawMessage` — an `Unmarshaler` in its own right, so it
+receives the literal, while an omitted member still leaves it nil and
+`omitempty` still omits it on the way out. **The wire does not change in either
+direction**, which is why nothing else catches the regression: add a test that
+decodes a present null INTO the generated struct, or the next `make api-gen`
+takes the fix away. Add `nullable: true` too — the document is OpenAPI 3.0.3 and
+a validating gateway is entitled to reject a legitimate null without it.
+
+**Do not justify a rule with a precision the SUBSTRATE does not keep.** This
+role shipped with a comparison rule defended, in three places, as protecting
+int64s past 2^53 from a float64 round-trip. The metadata column is a
+go-mysql-server JSON column that decodes numbers through float64 itself:
+measured, `9007199254740993` stores as `...992`, `1.0` as `1`, `-0.0` as `0`,
+and `1e300` as three hundred and one digits. The defense was against a loss that
+had already happened one layer down. Two consequences worth generalizing:
+
+- **Measure the column before writing the promise.** One throwaway probe that
+  seeds a row and reads the raw bytes back settles it in a minute, and the same
+  probe is what tells you whether a canonicalization is observable at all.
+- **A result value the caller feeds back must be READ, not echoed.** Answering
+  with the request's own bytes made the "what you get is what a later read sees"
+  promise false and left the documented retry loop unable to converge on any
+  value the store renormalizes. Re-read it inside the deciding transaction — one
+  extra SELECT — and say in the leaf that the caller composes its next
+  expectation from that value and not from its own spelling.
+
+**And the step with no number: every surface that EMBEDS the store or a use
+case.** A new accessor arrives on each of them PROMOTED rather than declared, so
+the build stays green and the first symptom is a nil dereference in somebody
+else's stub. `issueops.MetadataCAS` was caught by CI in four such places after
+passing every package test its own slice ran: `storage.RoleFiresHooks` (a role
+whose hook decorator WRAPS must gain a case, or `checkDatabaseSource` cannot
+refuse a hook-firing one — missing it is a `bd serve` that runs a user
+subprocess per call); `uow`'s notifying wrapper, in BOTH halves — the recording
+use case, which silently records nothing for an inherited method, and the
+notifying provider, whose missing accessor makes a caller's type assertion stop
+matching; and two `cmd/bd` stub stores that embed `storage.DoltStorage`. Grep
+for the embed, not for the interface. And note that `internal/storage/uow`'s own
+package run is nine minutes — the parity guards live there, so a role slice that
+runs only its contract on the three legs has not run them.
+
 ## Retiring a test against a contract
 
 Once a role has a contract, the ad-hoc tests that predate it start to look

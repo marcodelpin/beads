@@ -324,6 +324,7 @@ var (
 	_ uow.DeleterSource             = timedProvider{}
 	_ uow.BatchCreatorSource        = timedProvider{}
 	_ uow.DependencyEditorSource    = timedProvider{}
+	_ uow.MetadataCASSource         = timedProvider{}
 	_ uow.MemoriesSource            = timedProvider{}
 	_ uow.EventsJournalCursorSource = timedProvider{}
 )
@@ -445,6 +446,12 @@ func (p timedProvider) BatchCreator() (issueops.BatchCreator, error) {
 // a WRITE unit of work per call.
 func (p timedProvider) DependencyEditor() (issueops.DependencyEditor, error) {
 	return uow.NewDependencyEditor(p)
+}
+
+// MetadataCAS builds the conditional metadata write OVER THIS WRAPPER, for the
+// same reason and with the same hazard as IssueReader.
+func (p timedProvider) MetadataCAS() (issueops.MetadataCAS, error) {
+	return uow.NewMetadataCAS(p)
 }
 
 // Memories builds the persistent-memory role OVER THIS WRAPPER, for the same

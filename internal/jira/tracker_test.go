@@ -713,6 +713,10 @@ func (s *configStore) Deleter() (issueops.Deleter, error) {
 func (s *configStore) Sweeper() (issueops.Sweeper, error) {
 	return nil, &storage.ErrUnsupported{Op: "Sweeper", Backend: "jira-config-stub"}
 }
+
+func (s *configStore) MetadataCAS() (issueops.MetadataCAS, error) {
+	return nil, &storage.ErrUnsupported{Op: "MetadataCAS", Backend: "jira-config-stub"}
+}
 func (s *configStore) SetConfig(_ context.Context, _, _ string) error        { return nil }
 func (s *configStore) SetLocalMetadata(_ context.Context, _, _ string) error { return nil }
 func (s *configStore) GetLocalMetadata(_ context.Context, _ string) (string, error) {

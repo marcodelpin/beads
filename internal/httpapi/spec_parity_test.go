@@ -836,6 +836,37 @@ func TestReopenRequestMembersMatchTheHandler(t *testing.T) {
 	}
 }
 
+// TestCompareAndSetMetadataRequestMembersMatchTheHandler is the reopen's gate
+// for the compare-and-set body, and it earns its place twice over: this handler
+// reads raw members not only to name an offending one but because the OMISSION
+// of `expected` and `value` is meaningful, so it can never decode into the
+// generated struct and let the compiler hold the two lists together.
+func TestCompareAndSetMetadataRequestMembersMatchTheHandler(t *testing.T) {
+	accepted := map[string]bool{}
+	for _, name := range metadataCASRequestMembers {
+		accepted[name] = true
+	}
+
+	goFields := jsonTagNames(t, reflect.TypeOf(apigen.CompareAndSetMetadataRequest{}))
+	if extra := diff(goFields, accepted); len(extra) > 0 {
+		t.Errorf("generated CompareAndSetMetadataRequest declares members the handler refuses as unknown: %v\n"+
+			"teach compareAndSetMetadataRequest to honor them, or the document promises a member the server turns down", extra)
+	}
+	if missing := diff(accepted, goFields); len(missing) > 0 {
+		t.Errorf("the compare-and-set handler accepts members CompareAndSetMetadataRequest does not declare: %v", missing)
+	}
+
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "CompareAndSetMetadataRequest")
+	specProps := schemaProperties(t, doc, schema)
+	if extra := diff(specProps, accepted); len(extra) > 0 {
+		t.Errorf("the CompareAndSetMetadataRequest schema documents members the handler refuses: %v", extra)
+	}
+	if missing := diff(accepted, specProps); len(missing) > 0 {
+		t.Errorf("the compare-and-set handler accepts members the CompareAndSetMetadataRequest schema does not document: %v", missing)
+	}
+}
+
 // TestDependencyRequestMembersMatchTheHandlers is the same gate for the two
 // dependency bodies, and for the add's NESTED level — the update's table-driven
 // form because, exactly as there, the body has a level below it.

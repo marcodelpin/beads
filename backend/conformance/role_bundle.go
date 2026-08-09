@@ -93,6 +93,7 @@ type RoleContractBundle struct {
 	LifecycleCloseReopen func(t *testing.T) *LifecycleCloseReopenFixture
 	LifecycleUpdate      func(t *testing.T) *LifecycleUpdateFixture
 	Memories             func(t *testing.T) *MemoriesFixture
+	MetadataCAS          func(t *testing.T) *MetadataCASFixture
 	Querier              func(t *testing.T) *QuerierFixture
 	Reader               func(t *testing.T) *ReaderFixture
 	ReadyClaimer         func(t *testing.T) *ReadyClaimerFixture

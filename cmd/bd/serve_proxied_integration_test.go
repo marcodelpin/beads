@@ -147,7 +147,7 @@ var servedCapabilities = []any{
 	"dependencies.add", "dependencies.blocking", "dependencies.cycles",
 	"dependencies.list", "dependencies.remove", "dependencies.tree",
 	"events.list", "events.watch",
-	"issues.batchCreate", "issues.claim", "issues.close", "issues.delete",
+	"issues.batchCreate", "issues.casMetadata", "issues.claim", "issues.close", "issues.delete",
 	"issues.get", "issues.list", "issues.query", "issues.reopen", "issues.sweep",
 	"issues.update",
 	"memories.forget", "memories.get", "memories.list", "memories.remember",

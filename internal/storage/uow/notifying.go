@@ -288,6 +288,8 @@ func (p *notifyingProvider) VersionReconciler() (publicops.VersionReconciler, er
 	return NewVersionReconciler(p)
 }
 
+func (p *notifyingProvider) MetadataCAS() (publicops.MetadataCAS, error) { return NewMetadataCAS(p) }
+
 func (p *notifyingProvider) Memories() (memoryops.Memories, error) { return NewMemories(p) }
 
 // EventsJournalCursor builds on THIS provider, like every role above it, so a
@@ -879,6 +881,26 @@ func (u *recordingIssueUC) UpdateIssue(ctx context.Context, id string, updates m
 	}
 	u.rec.record(opUpdate, u.snap.issue(ctx, id))
 	return nil
+}
+
+// CompareAndSetMetadataKey records an update for a swap that MOVED the value,
+// and nothing for one that did not — the same line hookMetadataCAS draws on the
+// DoltStorage chain, which fires on_update only when the row changed.
+//
+// It reads the fact rather than inferring it. The use case reports whether a
+// row write landed, which is strictly better than the decorator's comparison of
+// the request's two ends, and it is the only caller of this method that has it.
+//
+// THE SNAPSHOT IS anyPlane, because this role resolves the id across both
+// planes itself: a swap on a wisp is an update to a wisp, and reading only the
+// issues table would record a nil for it.
+func (u *recordingIssueUC) CompareAndSetMetadataKey(ctx context.Context, plan storage.CompareAndSetKeyPlan) (publicops.CompareAndSetKeyResult, bool, error) {
+	result, wrote, err := u.IssueUseCase.CompareAndSetMetadataKey(ctx, plan)
+	if err != nil || !wrote {
+		return result, wrote, err
+	}
+	u.rec.record(opUpdate, u.snap.anyPlane(ctx, plan.IssueID))
+	return result, wrote, nil
 }
 
 func (u *recordingIssueUC) UpdateWisp(ctx context.Context, id string, updates map[string]any, actor string) error {

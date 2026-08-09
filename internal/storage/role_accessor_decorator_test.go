@@ -68,7 +68,7 @@ func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
 }
 
 // TestEveryStoreRoleAccessorIsClassified fails when DoltStorage hands out an
-// interface the census cannot place. Every one of the twenty-four today is a
+// interface the census cannot place. Every one of the twenty-five today is a
 // facade role, so this costs nothing and closes the path where a role surface
 // grows a package and the census quietly stops covering it.
 func TestEveryStoreRoleAccessorIsClassified(t *testing.T) {
@@ -83,7 +83,7 @@ func TestEveryStoreRoleAccessorIsClassified(t *testing.T) {
 // role accessor and two methods that are not accessors at all.
 type rehearsalSurface interface {
 	DoltStorage
-	// Rehearser is the twenty-fifth accessor the census must find on its own.
+	// Rehearser is the one more accessor the census must find on its own.
 	Rehearser() (issueops.Reader, error)
 	// Rehearse returns no role, and RehearsalName returns no error: neither is
 	// an accessor, and neither may reach the census.
@@ -92,7 +92,7 @@ type rehearsalSurface interface {
 }
 
 // TestRoleAccessorCensusGrowsWithTheStoreSurface is the test the old
-// hand-written list could not have passed. It fabricates a twenty-fifth role
+// hand-written list could not have passed. It fabricates one more role
 // accessor and asserts the census finds it without being told, which is the
 // whole reason the list is derived: a new accessor is promoted onto every
 // decorator by the embedded interface, so nothing else in the build says a
@@ -148,7 +148,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-four
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-five
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -176,6 +176,7 @@ type roleAccessorStore struct {
 	deleter      issueops.Deleter
 	bootstrapper issueops.Bootstrapper
 	verifier     issueops.InitVerifier
+	metadataCAS  issueops.MetadataCAS
 	err          error
 }
 
@@ -204,6 +205,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		deleter:      sentinel,
 		bootstrapper: sentinel,
 		verifier:     sentinel,
+		metadataCAS:  sentinel,
 	}
 }
 
@@ -259,8 +261,11 @@ func (s *roleAccessorStore) BatchCreator() (issueops.BatchCreator, error) {
 func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error) {
 	return s.editor, s.err
 }
+func (s *roleAccessorStore) MetadataCAS() (issueops.MetadataCAS, error) {
+	return s.metadataCAS, s.err
+}
 
-// roleAccessorSentinel implements twenty-three of the twenty-four roles at once.
+// roleAccessorSentinel implements twenty-four of the twenty-five roles at once.
 // Nothing calls its methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -368,8 +373,11 @@ func (*roleAccessorSentinel) AddDependencies(context.Context, issueops.AddDepend
 func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDependencyRequest) (issueops.RemoveDependencyResult, error) {
 	return issueops.RemoveDependencyResult{}, nil
 }
+func (*roleAccessorSentinel) CompareAndSetKey(context.Context, issueops.CompareAndSetKeyRequest) (issueops.CompareAndSetKeyResult, error) {
+	return issueops.CompareAndSetKeyResult{}, nil
+}
 
-// memoryRoleSentinel is the twenty-fourth role's sentinel, and the one role
+// memoryRoleSentinel is the memory role's sentinel, and the one role
 // that cannot share the struct above: memoryops.Memories.List and
 // issueops.Reader.List are the same method name with different signatures, so
 // no single Go type can satisfy both. A second sentinel value is all the split
@@ -425,6 +433,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"BatchCloser", func() (any, error) { return store.BatchCloser() }, inner.closer, true},
 		{"BatchCreator", func() (any, error) { return store.BatchCreator() }, inner.creator, true},
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }, inner.editor, true},
+		{"MetadataCAS", func() (any, error) { return store.MetadataCAS() }, inner.metadataCAS, true},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }, inner.edges, false},
@@ -478,6 +487,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"BatchCloser", func() (any, error) { return store.BatchCloser() }},
 		{"BatchCreator", func() (any, error) { return store.BatchCreator() }},
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }},
+		{"MetadataCAS", func() (any, error) { return store.MetadataCAS() }},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }},

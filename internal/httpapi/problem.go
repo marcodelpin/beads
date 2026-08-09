@@ -322,6 +322,11 @@ const (
 	// races an open stream arrives as a named event rather than as the 410 the
 	// same condition earns at connect.
 	OpWatchEvents = "watchEvents"
+	// OpCompareAndSetMetadata conditionally sets one metadata key on an issue.
+	// It is the only WRITE on this surface whose ordinary refusal is a 200: a
+	// lost race is the answer to the question the caller asked, and the value
+	// that refused the swap is what its retry needs next.
+	OpCompareAndSetMetadata = "compareAndSetMetadata"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -501,6 +506,16 @@ var operationCodes = map[string][]Code{
 	// nothing it could report a miss on — listBlockingAnnotations' argument,
 	// applied to a write. No conflict code either: the removal is idempotent, so
 	// another caller having got there first is a success rather than a collision.
+	// NO CONFLICT CODE, and the absence is this operation's whole posture. A
+	// lost compare-and-set is a 200 carrying `swapped: false` and the current
+	// value, because a retry loop is the DESIGNED caller and a 409 would put its
+	// ordinary path in the error channel — and would have to smuggle the value
+	// that loop needs next into a problem extension member. The 404 is here for
+	// the id, which is the one refusal a caller cannot converge on.
+	OpCompareAndSetMetadata: {
+		CodeInvalidArgument, CodeNotFound,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
 	OpRemoveDependency: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The two conflict codes are this operation's alone, and both say the same
 	// kind of thing: the request is fine as a request and the GRAPH refuses it,
