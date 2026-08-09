@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -289,13 +290,30 @@ type Server struct {
 	// sem bounds handlers that touch the database. Buffered channel rather
 	// than sync.Semaphore so the acquisition can select on a timer.
 	sem chan struct{}
-	// semTimeout, semWarn and writeStall default to the constants above. They
-	// are fields rather than constants at the point of use so the queueing and
-	// stalled-write behavior can be exercised in milliseconds instead of tens of
-	// seconds.
+	// semTimeout, semWarn, writeStall, watchPoll and watchBeat default to the
+	// constants above. They are fields rather than constants at the point of use
+	// so the queueing, stalled-write and streaming behavior can be exercised in
+	// milliseconds instead of tens of seconds.
 	semTimeout time.Duration
 	semWarn    time.Duration
 	writeStall time.Duration
+	watchPoll  time.Duration
+	watchBeat  time.Duration
+
+	// closing is closed when a graceful shutdown begins, and it is the ONLY
+	// notice a streaming handler gets: http.Server.Shutdown waits for active
+	// requests without canceling their contexts, so a stream that watched only
+	// for a client disconnect would hold every shutdown open for the whole drain
+	// timeout and then be killed anyway. Registered on the http.Server (which
+	// calls it exactly once) and guarded so a second call cannot close twice.
+	closing     chan struct{}
+	closingOnce sync.Once
+
+	// watchStreams is the live count of open events:watch streams and
+	// maxWatchStreams mirrors the constant, so a test can saturate the cap
+	// without opening sixty-four of them.
+	watchStreams    atomic.Int64
+	maxWatchStreams int
 
 	log     *log.Logger
 	stdout  io.Writer
@@ -400,6 +418,9 @@ func Listen(cfg Config) (*Server, error) {
 		semTimeout: semAcquireTimeout,
 		semWarn:    saturationWarn,
 
+		closing:         make(chan struct{}),
+		maxWatchStreams: maxWatchStreams,
+
 		log:      log.New(cfg.Stderr, "bd serve: ", log.LstdFlags|log.LUTC),
 		stdout:   cfg.Stdout,
 		ctxBody:  contextResponse(cfg.Workspace, cfg.SchemaVersion, Capabilities()),
@@ -423,6 +444,11 @@ func Listen(cfg Config) (*Server, error) {
 		ErrorLog:          log.New(cfg.Stderr, "bd serve: http: ", log.LstdFlags|log.LUTC),
 		ConnState:         s.connState,
 	}
+	// Tell the streams to wind up as soon as a drain starts. Without it a
+	// graceful shutdown waits out the whole drain timeout on any open stream and
+	// then reports itself forced, which is the one shutdown signal an operator
+	// is meant to be able to trust.
+	s.http.RegisterOnShutdown(s.closeStreams)
 
 	// Bound what a burst of requests can open on the database. The knob is
 	// optional on the interface, so say so out loud when a provider does not
@@ -1222,6 +1248,13 @@ func (s *Server) dispatchCustomMethod(rows []route) http.Handler {
 	})
 }
 
+// closeStreams signals every streaming handler that this server is shutting
+// down. Idempotent: http.Server calls its registered hooks once per Shutdown,
+// and a second Shutdown must not panic on an already-closed channel.
+func (s *Server) closeStreams() {
+	s.closingOnce.Do(func() { close(s.closing) })
+}
+
 // route wraps one operation with the limits that apply to it: the per-request
 // deadline, and — unless the operation is exempt — a database slot.
 func (s *Server) route(rt route) http.Handler {
@@ -1229,12 +1262,19 @@ func (s *Server) route(rt route) http.Handler {
 		rec := requestInfo(r.Context())
 		rec.op = rt.op
 
-		ctx, cancel := context.WithTimeout(r.Context(), requestDeadline)
-		defer cancel()
-		r = r.WithContext(ctx)
+		// A STREAMING OPERATION GETS NO DEADLINE. For every other row this is
+		// the backstop that stops a request from holding resources forever; on a
+		// held-open response it would do nothing but sever the stream at sixty
+		// seconds. What replaces it is per-read: streamEvents holds no slot
+		// between passes and bounds each read on its own.
+		if !rt.streaming {
+			ctx, cancel := context.WithTimeout(r.Context(), requestDeadline)
+			defer cancel()
+			r = r.WithContext(ctx)
+		}
 
 		if !rt.bypassSemaphore {
-			release, err := s.acquire(ctx, rec)
+			release, err := s.acquire(r.Context(), rec)
 			if err != nil {
 				s.failErr(w, r, err)
 				return

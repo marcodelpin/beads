@@ -111,6 +111,15 @@ const (
 	// still serve, so the recovery (resume from `floor - 1` and accept the gap,
 	// or re-baseline) is a decision the client makes from data rather than prose.
 	CodeEventsJournalTruncated Code = Code(storage.EventsJournalTruncatedCode)
+	// CodeEventsWatchSaturated is this server already holding as many open
+	// journal streams as it will. It is not CodeBusy, even though both are a
+	// 503 with a Retry-After, because the two carry different recoveries: busy
+	// says the database is congested and the same request will work shortly,
+	// while this says a bounded resource is fully subscribed by connections that
+	// may last hours — and the caller has a second recovery available that busy
+	// does not offer, namely the paged read, which holds nothing between
+	// requests and is never refused for this reason.
+	CodeEventsWatchSaturated Code = "events_watch_saturated"
 	// CodeBusy is retryable contention: the transaction retry budget was
 	// exhausted, or the in-flight request limit was saturated.
 	CodeBusy Code = "busy"
@@ -141,6 +150,7 @@ var codeStatus = map[Code]int{
 
 	CodeEventsJournalDisabled:  http.StatusConflict,
 	CodeEventsJournalTruncated: http.StatusGone,
+	CodeEventsWatchSaturated:   http.StatusServiceUnavailable,
 
 	CodeBusy:          http.StatusServiceUnavailable,
 	CodeDBUnavailable: http.StatusServiceUnavailable,
@@ -194,6 +204,12 @@ const (
 	// retryAfterSaturation follows an in-flight-limit wait timeout. Slot
 	// pressure clears quickly.
 	retryAfterSaturation = 1
+	// retryAfterWatchSaturation follows a refused journal stream. Streams are
+	// held for as long as their consumers stay connected — minutes to hours —
+	// so a slot opens on a human timescale rather than a request one, and the
+	// one-second comeback the slot limiter offers would be a busy loop against a
+	// condition that has not changed.
+	retryAfterWatchSaturation = 30
 )
 
 // ErrBusy reports that the in-flight request limiter refused to admit the
@@ -290,11 +306,22 @@ const (
 	// itself assigned, so a consumer's position survives a restart on either
 	// side and is meaningful to `bd events tail` as well.
 	//
-	// It is a READ of a log, not a subscription: v0 has no streaming, no
-	// long-poll and no follow. The retention contract is what makes that safe to
+	// It is a READ of a log, not a subscription: the paged form has no follow
+	// mode and never will. The retention contract is what makes that safe to
 	// publish — a consumer that falls too far behind is told so with
 	// `events_journal_truncated` rather than served a silently shortened history.
 	OpListEvents = "listEvents"
+	// OpWatchEvents pushes the same journal over a held-open text/event-stream
+	// response, resuming from the same checkpoint. It is a sibling of the paged
+	// read rather than a mode of it: the contracts differ in media type,
+	// lifetime, limits and capacity, and one operation carrying both would have
+	// documented two of everything under one operationId.
+	//
+	// It is the surface's ONLY streaming operation, and the only one whose
+	// response can report a failure after its status is written — a prune that
+	// races an open stream arrives as a named event rather than as the 410 the
+	// same condition earns at connect.
+	OpWatchEvents = "watchEvents"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -452,6 +479,21 @@ var operationCodes = map[string][]Code{
 	OpListEvents: {
 		CodeInvalidArgument, CodeEventsJournalDisabled, CodeEventsJournalTruncated,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
+	// THE PAGED READ'S VOCABULARY PLUS ONE, and the shared part is the point:
+	// every connect-time refusal a poller can earn, a stream earns identically,
+	// because the stream only opens once the same first read has succeeded. The
+	// 410 in particular is a real 410 here and not an in-band event — that
+	// mapping applies to a prune that races an ALREADY OPEN stream, where no
+	// status is left to send.
+	//
+	// events_watch_saturated is the addition, and it is the only code on this
+	// surface that describes a limit on connections rather than on data. Its 503
+	// therefore documents three codes where every other operation's documents
+	// two.
+	OpWatchEvents: {
+		CodeInvalidArgument, CodeEventsJournalDisabled, CodeEventsJournalTruncated,
+		CodeEventsWatchSaturated, CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
 	// NO 404, for a stronger version of the batch create's reason: an edge that
 	// is not there is `removed: false`, and an endpoint id that names nothing
@@ -651,6 +693,18 @@ func EventsJournalDisabled() Result {
 func EventsJournalTruncated(err *storage.EventsJournalTruncatedError) Result {
 	return newResult(CodeEventsJournalTruncated, err.Error()).
 		WithJournalWindow(err.Since, err.Floor, err.Head)
+}
+
+// EventsWatchSaturated builds the 503 for a stream this server will not hold.
+//
+// The detail names the alternative rather than the limit, because unlike every
+// other 503 here this one has a recovery that is not "wait": the paged read
+// answers the same records from the same checkpoint and is not capped this way.
+func EventsWatchSaturated() Result {
+	res := newResult(CodeEventsWatchSaturated,
+		"this server is already holding as many journal streams as it will; retry later, or read the same records from the same checkpoint with GET /v0/beads/events")
+	res.RetryAfterSeconds = retryAfterWatchSaturation
+	return res
 }
 
 // MemoryNotFound builds the 404 for a key this workspace holds no memory under.

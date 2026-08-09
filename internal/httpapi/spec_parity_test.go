@@ -29,6 +29,18 @@ var httpVerbs = map[string]bool{
 	"head": true, "options": true, "trace": true,
 }
 
+// streamingOps are the operations whose success body is a stream rather than a
+// document, and therefore the only ones exempt from the application/json rule.
+//
+// It is a literal here and a `streaming` column in the route table, which is
+// the drift this pairing catches: TestStreamingRowsAreTheDocumentsStreamingOps
+// requires the two to name the same operations, so a row that starts streaming
+// without saying so in the document — or a document that promises a stream no
+// row holds open — fails.
+var streamingOps = map[string]bool{
+	OpWatchEvents: true,
+}
+
 type specOp struct {
 	path   string
 	method string
@@ -164,6 +176,19 @@ func TestSpecGovernance(t *testing.T) {
 				t.Errorf("%s %s: %d media types, want exactly 1", id, status, len(content))
 			}
 			if strings.HasPrefix(status, "2") {
+				if streamingOps[id] {
+					// The one carve-out, and it is an allowlist rather than a
+					// relaxed rule: a response held open for the life of a
+					// connection cannot be a JSON document, but every OTHER
+					// operation must still fail here if it grows a second media
+					// type or drifts off application/json. A new streaming
+					// operation costs a line in this map and a paragraph in the
+					// document's Media types section, which is the point.
+					if _, ok := content["text/event-stream"]; !ok {
+						t.Errorf("%s %s: a streaming operation's success body is text/event-stream", id, status)
+					}
+					continue
+				}
 				if _, ok := content["application/json"]; !ok {
 					t.Errorf("%s %s: success bodies are application/json", id, status)
 				}
@@ -269,6 +294,38 @@ func TestSpecRouteParity(t *testing.T) {
 	// request after a deploy.
 	if h := (&Server{}).handler(); h == nil {
 		t.Fatal("handler() returned nil")
+	}
+}
+
+// TestStreamingRowsAreTheDocumentsStreamingOps ties the route table's
+// `streaming` column to the media-type carve-out above.
+//
+// The two describe one property of an operation from opposite ends: the column
+// decides that the request gets no deadline and takes its database slot per
+// read, and the document decides that clients are told to expect a stream. An
+// operation that gained one without the other is either a JSON handler running
+// without the backstop that bounds every other request, or a documented stream
+// that the router will cut off at sixty seconds — and neither has any other
+// test that can see it.
+func TestStreamingRowsAreTheDocumentsStreamingOps(t *testing.T) {
+	routed := map[string]bool{}
+	for _, rt := range routeTable {
+		if rt.streaming {
+			routed[rt.op] = true
+		}
+		// A streaming row that still queued for the request-wide slot would hold
+		// one of sixteen for the life of a connection. The pairing is stated on
+		// the field and enforced here.
+		if rt.streaming && !rt.bypassSemaphore {
+			t.Errorf("%s streams but holds the request-wide database slot; a stream must take its slot per read", rt.op)
+		}
+	}
+
+	if missing := diff(routed, streamingOps); len(missing) > 0 {
+		t.Errorf("route table streams %v, the document does not describe them as streaming operations", missing)
+	}
+	if extra := diff(streamingOps, routed); len(extra) > 0 {
+		t.Errorf("the document treats %v as streaming, but no route row is marked streaming", extra)
 	}
 }
 
