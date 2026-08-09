@@ -299,6 +299,8 @@ func (p *notifyingProvider) VersionReconciler() (publicops.VersionReconciler, er
 
 func (p *notifyingProvider) MetadataCAS() (publicops.MetadataCAS, error) { return NewMetadataCAS(p) }
 
+func (p *notifyingProvider) Releaser() (publicops.Releaser, error) { return NewReleaser(p) }
+
 func (p *notifyingProvider) Memories() (memoryops.Memories, error) { return NewMemories(p) }
 
 // EventsJournalCursor builds on THIS provider, like every role above it, so a
@@ -909,6 +911,30 @@ func (u *recordingIssueUC) CompareAndSetMetadataKey(ctx context.Context, plan st
 		return result, wrote, err
 	}
 	u.rec.record(opUpdate, u.snap.anyPlane(ctx, plan.IssueID))
+	return result, wrote, nil
+}
+
+// ReleaseIssue records an update for a release that landed.
+//
+// It is DECLARED rather than inherited, which is the whole reason this method
+// exists: an accessor promoted onto an embedder compiles perfectly and records
+// nothing, so a release through a notifying unit of work would silently lose
+// the hook the DoltStorage chain fires for the same write.
+//
+// It reads the ROLE'S OWN verdict — ReleaseResult.Changed — which is the same
+// fact the bool beside it carries and the one a notification is about. An
+// ephemeral release changes a wisp and versions nothing, and it is still an
+// update somebody asked to be notified about.
+//
+// THE SNAPSHOT IS anyPlane, because this role resolves the id across both
+// planes itself: releasing a wisp is an update to a wisp, and reading only the
+// issues table would record a nil for it.
+func (u *recordingIssueUC) ReleaseIssue(ctx context.Context, req publicops.ReleaseRequest) (publicops.ReleaseResult, bool, error) {
+	result, wrote, err := u.IssueUseCase.ReleaseIssue(ctx, req)
+	if err != nil || !result.Changed {
+		return result, wrote, err
+	}
+	u.rec.record(opUpdate, u.snap.anyPlane(ctx, req.IssueID))
 	return result, wrote, nil
 }
 

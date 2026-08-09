@@ -347,6 +347,29 @@ func (r *issueSQLRepositoryImpl) CompareAndSetMetadataKey(ctx context.Context, p
 	return result, write.Wrote, err
 }
 
+// ReleaseIssue runs the SHARED claim-release body, unwrapped.
+//
+// It is the whole of this leg's implementation, and that is the point: the two
+// store backends wrap the same function in their own transaction, so the third
+// leg is a wrapper check rather than an independent vote — which is what the
+// conformance contract's header says.
+//
+// It reports the body's Wrote — "a row was written" — and NOT the durable table
+// set beside it, which is the half of ReleaseWrite the two STORE legs want. The
+// difference is load-bearing on this leg and it cost a red test to find: an
+// ephemeral release writes a wisp row and changes no versioned table, and this
+// leg's commit message is what commits the SQL transaction as well as what
+// versions it, so reporting the table set here composes no message and rolls the
+// release back — the wisp comes out still claimed. The version-control layer
+// below already demotes a commit with nothing pending to a plain SQL COMMIT, so
+// answering the row fact costs no spurious history entry.
+//
+// It does NOT wrap the error, for the reason CompareAndSetMetadataKey gives.
+func (r *issueSQLRepositoryImpl) ReleaseIssue(ctx context.Context, req publicops.ReleaseRequest) (publicops.ReleaseResult, bool, error) {
+	result, write, err := issueops.ReleaseIssueInTx(ctx, r.runner, req)
+	return result, write.Wrote, err
+}
+
 func cloneUpdateFields(updates map[string]any) map[string]any {
 	cloned := make(map[string]any, len(updates))
 	for key, value := range updates {

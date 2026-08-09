@@ -45,7 +45,12 @@ type CloseOpenChildrenError = issueops.CloseOpenChildrenError
 // ErrNotOwner is returned when an actor tries to unclaim an issue that is claimed
 // by a different actor. Releasing another actor's claim requires the force
 // escape hatch (bd unclaim --force), reserved for admin/reaper use.
-var ErrNotOwner = errors.New("issue claimed by a different actor")
+//
+// It is an ALIAS of issueops.ErrNotOwner, which now declares it: a refusal the
+// public Releaser role raises has to be classifiable by a caller that cannot
+// import this package. The identity is preserved, so every errors.Is site in
+// the tree keeps matching the same value.
+var ErrNotOwner = issueops.ErrNotOwner
 
 // ErrCommitIndeterminate marks a write error whose durable outcome may be
 // unknown. Such errors must not be replayed because the write may already have
@@ -316,6 +321,17 @@ type Storage interface {
 	// It is a WRITE role and its hook decorator WRAPS: every landed item is an
 	// event the hook vocabulary publishes. See hook_batch_applier.go.
 	BatchApplier() (issueops.BatchApplier, error)
+	// Releaser returns the claim-release surface for this store: give up the
+	// claim on one issue, optionally only while a named holder still has it.
+	// It is its own role beside IssueClaimer rather than a method on it,
+	// because a caller entitled to release its own work is often not entitled
+	// to take new work, and a surface carrying both hands it a capability it
+	// should not be able to reach.
+	//
+	// It is a WRITE role and its hook decorator WRAPS: a release changes
+	// assignee and status, which is on_update — the same event the journal
+	// already records for it. See hook_releaser.go.
+	Releaser() (issueops.Releaser, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

@@ -92,7 +92,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-six
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-seven
 // role accessors, each answering with a distinguishable sentinel so a test can tell
 // an instrumented surface from a passed-through one.
 //
@@ -165,8 +165,11 @@ func (s *roleAccessorStore) MetadataCAS() (issueops.MetadataCAS, error) {
 func (s *roleAccessorStore) BatchApplier() (issueops.BatchApplier, error) {
 	return s.surface, s.err
 }
+func (s *roleAccessorStore) Releaser() (issueops.Releaser, error) {
+	return s.surface, s.err
+}
 
-// roleAccessorSentinel implements twenty-five of the twenty-six roles at once.
+// roleAccessorSentinel implements twenty-six of the twenty-seven roles at once.
 // Nothing calls its methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -284,6 +287,9 @@ func (*roleAccessorSentinel) RemoveDependency(context.Context, issueops.RemoveDe
 func (*roleAccessorSentinel) CompareAndSetKey(context.Context, issueops.CompareAndSetKeyRequest) (issueops.CompareAndSetKeyResult, error) {
 	return issueops.CompareAndSetKeyResult{}, nil
 }
+func (*roleAccessorSentinel) Release(context.Context, issueops.ReleaseRequest) (issueops.ReleaseResult, error) {
+	return issueops.ReleaseResult{}, nil
+}
 
 // memoryRoleSentinel is the memory role's sentinel — see
 // memoryRoleSentinel is the remaining role's sentinel — see
@@ -357,6 +363,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"DependencyEditor", func() (any, error) { return wrapped.DependencyEditor() }, sentinel},
 		{"MetadataCAS", func() (any, error) { return wrapped.MetadataCAS() }, sentinel},
 		{"BatchApplier", func() (any, error) { return wrapped.BatchApplier() }, sentinel},
+		{"Releaser", func() (any, error) { return wrapped.Releaser() }, sentinel},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -410,6 +417,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"DependencyEditor", func() (any, error) { return wrapped.DependencyEditor() }},
 		{"MetadataCAS", func() (any, error) { return wrapped.MetadataCAS() }},
 		{"BatchApplier", func() (any, error) { return wrapped.BatchApplier() }},
+		{"Releaser", func() (any, error) { return wrapped.Releaser() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()

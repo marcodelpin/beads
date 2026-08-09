@@ -206,6 +206,38 @@ func TestMetadataCASExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestReleaserLayersHooksOutsideTelemetry is the same pin for the claim
+// release. It gives the same answer the metadata swap does and for the same
+// reason: a release moves assignee and status, which is on_update — a hook the
+// vocabulary publishes and a row a script can still read back — so this
+// decorator wraps rather than recursing the way Sweeper and Deleter do.
+func TestReleaserLayersHooksOutsideTelemetry(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	releaser, err := storage.NewHookFiringStore(instrumented, nil).Releaser()
+	if err != nil {
+		t.Fatalf("Releaser() error = %v", err)
+	}
+	if got := reflect.TypeOf(releaser).String(); got != "*storage.hookReleaser" {
+		t.Fatalf("outer layer = %s, want the hook wrapper", got)
+	}
+}
+
+func TestReleaserExposesTypedUnsupportedError(t *testing.T) {
+	releaser, err := (*dolt.DoltStore)(nil).Releaser()
+	if releaser != nil {
+		t.Fatalf("Releaser() surface = %T, want nil", releaser)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Releaser() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 // TestIssueRelationsKeepsTelemetryOutermost is the READ role's version of the
 // pin, and it is deliberately the other answer: the hook decorator adds no
 // layer to a read, so the outermost thing a caller gets is the instrumented
