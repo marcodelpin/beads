@@ -85,7 +85,15 @@ var roleContractCases = []roleContract{
 		RunBootstrapperRefusesASubstrateCarryingOnlyAProjectID,
 		RunBootstrapperRefusesAnInvalidRequestWithoutWriting,
 		RunBootstrapperLeavesTheSubstrateUntouchedWhenItCannotComplete,
-		RunBootstrapperRecordsAtMostOneHistoryEntry,
+		// The bootstrap history pair is a ratified per-leg split (#5455): the
+		// store legs record no entry of their own because `bd init` commits the
+		// identity itself, and the proxied route records exactly one because it
+		// has no other commit point. Both halves are listed because every case
+		// in this package must be dispatched exactly once; a supplier that can
+		// observe history answers one of them and leaves CountHistory nil if it
+		// cannot state which side it is on, which skips both loudly.
+		RunBootstrapperRecordsNoHistoryEntryOfItsOwn,
+		RunBootstrapperRecordsExactlyOneHistoryEntry,
 		RunInitVerifierAnswersEmptyForAnUnidentifiedSubstrate,
 		RunInitVerifierReportsAPartialIdentityAsItStands,
 		RunInitVerifierReportsAFailedReadAsAnError,
@@ -111,11 +119,12 @@ var roleContractCases = []roleContract{
 		func(b RoleContractBundle) func(t *testing.T) *CommenterFixture { return b.Commenter },
 		RunCommenterStoresTextVerbatim,
 		RunCommenterResultMirrorsTheStoredRow,
+		RunCommenterAdvancesALiveStampPastTheThreadsNewestComment,
 		RunCommenterCommentOnAWispLandsOnTheWispThread,
 		RunCommenterRefusesAnIDOnNeitherPlane,
 		RunCommenterRefusesAnEmptyIssueID,
 		RunCommenterDoesNotResolvePrefixes,
-		RunCommenterRecordsAtMostOneHistoryEntry,
+		RunCommenterRecordsExactlyOneHistoryEntry,
 		RunCommenterLeavesTheAnchorIssueUntouched,
 		RunCommenterRefusesBlankText,
 		RunCommenterRefusesAnEmptyAuthor,
@@ -169,7 +178,7 @@ var roleContractCases = []roleContract{
 		RunDeleterCollapsesDuplicateIDs,
 		RunDeleterRewritesReferencesInNeighbors,
 		RunDeleterDryRunChangesNothing,
-		RunDeleterRecordsAtMostOneHistoryEntry,
+		RunDeleterRecordsExactlyOneHistoryEntry,
 		RunDeleterDoesNotMutateTheCallerRequest,
 		RunDeleterSettlesTheSurvivorsOfADeletedBlocker,
 		RunDeleterSettlesTheChildrenOfADeletedParent,
@@ -457,7 +466,7 @@ var roleContractCases = []roleContract{
 		RunSweeperProtectsRowsCitedFromAWispComment,
 		RunSweeperProtectsCitedRows,
 		RunSweeperEmptyMatchIsZeroAndNil,
-		RunSweeperRecordsAtMostOneHistoryEntry,
+		RunSweeperRecordsExactlyOneHistoryEntry,
 		RunSweeperDoesNotMutateTheCallerRequest,
 	),
 
