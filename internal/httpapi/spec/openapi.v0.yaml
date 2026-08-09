@@ -2816,6 +2816,21 @@ components:
           description: >-
             `bug`, `feature`, `task`, `epic`, `chore`, `gate`, and workspace
             configured types. Not a closed vocabulary.
+        is_blocked:
+          type: boolean
+          description: >-
+            The persisted readiness projection — true when an open blocking
+            dependency keeps this issue out of the ready set. Derived from the
+            dependency graph; never set by a client.
+
+
+            NOT POPULATED by the /v0 read endpoints today: they hydrate issues
+            without it, so the field is absent from their responses and its
+            absence says nothing about whether an issue is blocked. Use
+            `/v0/beads/ready` or the dependency endpoints to answer that. The
+            field is carried by events-journal snapshots, which is where it is
+            read back, and it is documented here because those snapshots
+            serialize the same type this schema is pinned to.
         assignee:
           type: string
           description: The actor currently holding the issue, if any.
@@ -2993,6 +3008,7 @@ components:
         status: { type: string }
         priority: { type: integer }
         issue_type: { type: string }
+        is_blocked: { type: boolean }
         assignee: { type: string }
         owner: { type: string }
         estimated_minutes: { type: integer }
@@ -3081,6 +3097,7 @@ components:
         status: { type: string }
         priority: { type: integer }
         issue_type: { type: string }
+        is_blocked: { type: boolean }
         assignee: { type: string }
         owner: { type: string }
         estimated_minutes: { type: integer }
@@ -3197,6 +3214,7 @@ components:
         status: { type: string }
         priority: { type: integer }
         issue_type: { type: string }
+        is_blocked: { type: boolean }
         assignee: { type: string }
         owner: { type: string }
         estimated_minutes: { type: integer }
@@ -3282,6 +3300,7 @@ components:
         status: { type: string }
         priority: { type: integer }
         issue_type: { type: string }
+        is_blocked: { type: boolean }
         assignee: { type: string }
         owner: { type: string }
         estimated_minutes: { type: integer }

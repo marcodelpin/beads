@@ -33,6 +33,11 @@ type Issue struct {
 	Status    Status    `json:"status,omitempty"`
 	Priority  int       `json:"priority"` // No omitempty: 0 is valid (P0/critical)
 	IssueType IssueType `json:"issue_type,omitempty"`
+	// IsBlocked is the persisted readiness projection. It is included in journal
+	// snapshots so graph deltas can be replayed without recomputing readiness.
+	// omitempty keeps it out of every other serialization (export JSONL, --json
+	// output): only journal snapshots, which set it explicitly, carry it.
+	IsBlocked bool `json:"is_blocked,omitempty"`
 
 	// ===== Assignment =====
 	Assignee         string `json:"assignee,omitempty"`

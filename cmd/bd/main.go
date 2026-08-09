@@ -168,6 +168,7 @@ var readOnlyCommands = map[string]bool{
 	"ping":       true,
 	"backup":     true, // reads from Dolt, writes only to .beads/backup/
 	"export":     true, // reads from Dolt, writes JSONL to file/stdout
+	"tail":       true, // bd events tail: reads bd_events_journal, writes nothing
 }
 
 // isReadOnlyCommand returns true if the command only reads from the database.
@@ -1596,12 +1597,8 @@ var rootCmd = &cobra.Command{
 		// Removing them WILL cause unrecoverable data corruption and data loss.
 		// Dolt manages these files itself; external interference is never safe.
 
-		if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
-			if useReadOnly {
-				store, err = backend.OpenReadOnly(rootCtx, beadsDir)
-			} else {
-				store, err = backend.Open(rootCtx, beadsDir)
-			}
+		if _, ok := backends.Lookup(cfg.GetBackend()); ok {
+			store, err = newRegisteredBackendStore(rootCtx, cfg.GetBackend(), beadsDir, useReadOnly)
 		} else {
 			store, err = newDoltStore(rootCtx, doltCfg)
 		}
@@ -1766,6 +1763,13 @@ var rootCmd = &cobra.Command{
 		}()
 
 		if proxiedServerMode {
+			// Retention maintenance before the provider closes: the journal
+			// this workspace just wrote to is reached through it. In the body
+			// rather than beside the deferred hook wait, for the reason spelled
+			// out at the other trigger site below.
+			if shouldAutoPruneEventsJournal(cmd) {
+				maybeAutoPruneEventsJournal(rootCtx, beads.FindBeadsDir())
+			}
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
 				uowProvider = nil
@@ -1843,6 +1847,32 @@ var rootCmd = &cobra.Command{
 				// and metadata writes on commands like bd list/show/ready (GH#2191).
 				if !isReadOnlyCommand(cmd.Name()) {
 					runPostRunAutoPush(rootCtx)
+				}
+
+				// Events-journal retention, LAST in the maintenance net. It is
+				// the only step here that serves nobody but the database
+				// itself, so everything the user can observe — the commit, the
+				// backup, the export, the push — is already done and durable
+				// before a maintenance transaction opens. Its failures are
+				// logged, never returned.
+				//
+				// COMBINED ORDERING with the hook teardown above, since both
+				// land in this function and each has its own reason:
+				// maintenance runs in the BODY, so it is finished before the
+				// first defer; the defers then run close-and-release, then
+				// waitForCommandHooks, then restoreChangeDirSelection, then the
+				// context cancel. That is the only order in which both hold.
+				// Auto-prune needs an OPEN store, which the body still has and
+				// the hook wait deliberately does not (it is sequenced after
+				// the close so a hook that shells out to bd can take the
+				// embedded Dolt lock). And it must not be deferred alongside
+				// them: it would then either run after the store closed, or
+				// delay the close the hook children are waiting on. Its cost is
+				// bounded — one indexed query when nothing is due, a 30s pass
+				// budget at worst — so the hook wait it precedes starts
+				// essentially on time.
+				if shouldAutoPruneEventsJournal(cmd) {
+					maybeAutoPruneEventsJournal(rootCtx, beads.FindBeadsDir())
 				}
 			}
 

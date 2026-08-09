@@ -72,6 +72,10 @@ type CreateIssueResult struct {
 	// persisted by later batch stages either (bd-578h9.8).
 	StaleRejected         bool
 	persistedDependencies []persistedDependency
+	// persistedComments are the comments this create actually inserted, carried
+	// up to the entry point so their journal rows land AFTER the create's. A
+	// consumer must never see a comment for a bead it has not been told about.
+	persistedComments []EventComment
 }
 
 type persistedDependency struct {
@@ -173,6 +177,7 @@ func CreateIssueInTxWithResult(ctx context.Context, tx DBTX, bc *BatchContext, i
 		return result, err
 	}
 	result.ChangedTables = mergeChangedTables(result.ChangedTables, commentResult.ChangedTables)
+	result.persistedComments = append(result.persistedComments, commentResult.persistedComments...)
 
 	// Advance child_counters when a singular create materializes a hierarchical
 	// ID (e.g. bd create --id P.8). The batch path already calls
@@ -186,6 +191,24 @@ func CreateIssueInTxWithResult(ctx context.Context, tx DBTX, bc *BatchContext, i
 				return result, err
 			}
 			result.ChangedTables = mergeChangedTables(result.ChangedTables, changedCounters)
+		}
+	}
+	// Journal the create once, after labels and comments are in the row's
+	// transaction, so the snapshot is the complete bead. The early returns above
+	// (collision skip, orphan skip, stale reject) wrote nothing and journal
+	// nothing.
+	if err := RecordEventInTx(ctx, tx, EventCreate, issue.ID); err != nil {
+		return result, err
+	}
+	// Creation-time comments (import/interchange carries them inline) are
+	// replayable content the create snapshot does NOT contain — issue hydration
+	// joins labels but not comments — so each inserted comment gets its own op,
+	// emitted after the create so a consumer is never told about a comment on a
+	// bead it has not seen created. Dedup hits above inserted nothing and emit
+	// nothing.
+	for i := range result.persistedComments {
+		if err := RecordCommentEventInTx(ctx, tx, issue.ID, &result.persistedComments[i]); err != nil {
+			return result, err
 		}
 	}
 	return result, nil
@@ -814,6 +837,9 @@ func PersistComments(ctx context.Context, tx DBTX, issue *types.Issue) (CreateIs
 			comment.ID = id
 			if !existed {
 				result.markChanged(commentTable)
+				result.persistedComments = append(result.persistedComments, EventComment{
+					ID: id, Author: comment.Author, Text: comment.Text, CreatedAt: createdAt, Source: CommentSourceStructured,
+				})
 			}
 			continue
 		}
@@ -839,6 +865,9 @@ func PersistComments(ctx context.Context, tx DBTX, issue *types.Issue) (CreateIs
 			return result, fmt.Errorf("failed to insert comment for %s: %w", issue.ID, err)
 		}
 		result.markChanged(commentTable)
+		result.persistedComments = append(result.persistedComments, EventComment{
+			ID: comment.ID, Author: comment.Author, Text: comment.Text, CreatedAt: createdAt, Source: CommentSourceStructured,
+		})
 	}
 	return result, nil
 }
@@ -963,6 +992,11 @@ func PersistDependenciesWithOptionsResult(ctx context.Context, tx DBTX, issues [
 					if err := TouchDependencyCoordinationTableInTx(ctx, tx, dep.DependsOnID, item.depTable); err != nil {
 						return result, err
 					}
+				}
+				// Creation-time edges are independently replayable operations; do
+				// not rely on the issue create payload's inline dependencies.
+				if err := RecordDepEventInTx(ctx, tx, EventDepAdd, dep.IssueID, string(dep.Type), dep.DependsOnID, metadata); err != nil {
+					return result, err
 				}
 			}
 		}

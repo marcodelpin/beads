@@ -271,7 +271,10 @@ func addDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 				metadata, dep.IssueID, dep.DependsOnID); err != nil {
 				return false, fmt.Errorf("failed to update dependency metadata: %w", err)
 			}
-			return false, nil
+			// A same-type add refreshes edge metadata. It is an observable graph
+			// mutation, so emit the complete replacement edge for replay even
+			// though no audit event is written.
+			return false, RecordDepEventInTx(ctx, tx, EventDepAdd, dep.IssueID, string(dep.Type), dep.DependsOnID, metadata)
 		}
 		return false, &domain.DependencyTypeConflictError{
 			IssueID:       dep.IssueID,
@@ -343,12 +346,16 @@ func addDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 			return false, fmt.Errorf("recompute is_blocked after add dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
 		}
 		mergeRecomputeIsBlockedResult(recomputeResult, recomputed)
-		return eventWritten, nil
+		// Snapshot only after all derived blocked-state maintenance has completed.
+		return eventWritten, RecordDepEventInTx(ctx, tx, EventDepAdd, dep.IssueID, string(dep.Type), dep.DependsOnID, metadata)
 	}
 	if err := MarkIsBlockedInTx(ctx, tx, affectedIssues, affectedWisps); err != nil {
 		return false, fmt.Errorf("mark is_blocked after add dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
 	}
-	return eventWritten, nil
+	// Snapshot only after all derived blocked-state maintenance has completed.
+	// The journal is never gated on opts.EmitEvent: a structurally-wired edge is
+	// as real to a replaying consumer as one added by an explicit dep verb.
+	return eventWritten, RecordDepEventInTx(ctx, tx, EventDepAdd, dep.IssueID, string(dep.Type), dep.DependsOnID, metadata)
 }
 
 // RemoveSourceFromAffected drops the dep source from the affected-ID sets
@@ -932,11 +939,11 @@ func removeDependencyInTx(ctx context.Context, tx *sql.Tx, issueID, dependsOnID,
 
 	// Capture the row's type before deleting so we can dispatch the right
 	// affected-set helper. If no row matches, treat as a no-op.
-	var depType string
+	var depType, depMetadata string
 	row := tx.QueryRowContext(ctx, fmt.Sprintf(
-		`SELECT type FROM %s WHERE issue_id = ? AND %s = ?`, depTable, DepTargetExpr),
+		`SELECT type, metadata FROM %s WHERE issue_id = ? AND %s = ?`, depTable, DepTargetExpr),
 		issueID, dependsOnID)
-	if err := row.Scan(&depType); err != nil {
+	if err := row.Scan(&depType, &depMetadata); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -978,7 +985,10 @@ func removeDependencyInTx(ctx context.Context, tx *sql.Tx, issueID, dependsOnID,
 		return false, fmt.Errorf("recompute is_blocked after remove dependency %s -> %s: %w", issueID, dependsOnID, err)
 	}
 	mergeRecomputeIsBlockedResult(recomputeResult, recomputed)
-	return eventWritten, nil
+	// Snapshot only after all derived blocked-state maintenance has completed.
+	// Never gated on emitEvent — a structural removal is as real to a replaying
+	// consumer as one from an explicit dep verb.
+	return eventWritten, RecordDepEventInTx(ctx, tx, EventDepRemove, issueID, depType, dependsOnID, depMetadata)
 }
 
 func mergeRecomputeIsBlockedResult(target *RecomputeIsBlockedResult, source RecomputeIsBlockedResult) {

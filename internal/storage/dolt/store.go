@@ -304,19 +304,23 @@ var _ storage.Flattener = (*DoltStore)(nil)
 var _ storage.Compactor = (*DoltStore)(nil)
 var _ storage.SchemaMigrator = (*DoltStore)(nil)
 var _ storage.ExternalRefHistoryQuerier = (*DoltStore)(nil)
+var _ storage.EventsJournalConfigurer = (*DoltStore)(nil)
 
 // DoltStore implements the Storage interface using Dolt
 type DoltStore struct {
-	db             *sql.DB
-	dbPath         string       // Path to Dolt data directory (server root, e.g. .beads/dolt/)
-	beadsDir       string       // Path to .beads directory (parent of dbPath)
-	database       string       // Database name (subdirectory under dbPath)
-	closed         atomic.Bool  // Tracks whether Close() has been called
-	connStr        string       // Connection string for reconnection
-	serverEndpoint string       // Exact endpoint bound to bootstrap reset authority
-	mu             sync.RWMutex // Protects concurrent access
-	readOnly       bool         // True if opened in read-only mode
-	credentialKey  []byte       // Random encryption key for federation credentials
+	db       *sql.DB
+	dbPath   string      // Path to Dolt data directory (server root, e.g. .beads/dolt/)
+	beadsDir string      // Path to .beads directory (parent of dbPath)
+	database string      // Database name (subdirectory under dbPath)
+	closed   atomic.Bool // Tracks whether Close() has been called
+	// eventsJournalEnabled activates the durable events journal for THIS store
+	// instance only (storage.EventsJournalConfigurer); never process-global.
+	eventsJournalEnabled atomic.Bool
+	connStr              string       // Connection string for reconnection
+	serverEndpoint       string       // Exact endpoint bound to bootstrap reset authority
+	mu                   sync.RWMutex // Protects concurrent access
+	readOnly             bool         // True if opened in read-only mode
+	credentialKey        []byte       // Random encryption key for federation credentials
 
 	// localActiveDatabaseDir is the exact active database directory when this
 	// store instance has authoritative local filesystem access. It is resolved
@@ -1148,6 +1152,8 @@ func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 	if err != nil {
 		return fmt.Errorf("begin write tx: %w", err)
 	}
+	clearJournalScope := s.scopeEventsJournalTransaction(tx)
+	defer clearJournalScope()
 	if err := fn(tx); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}
@@ -1155,6 +1161,15 @@ func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 		return wrapSQLCommitError("commit write tx", err)
 	}
 	return nil
+}
+
+// SetEventsJournalEnabled activates the journal for this store instance only.
+func (s *DoltStore) SetEventsJournalEnabled(enabled bool) {
+	s.eventsJournalEnabled.Store(enabled)
+}
+
+func (s *DoltStore) scopeEventsJournalTransaction(tx *sql.Tx) func() {
+	return issueops.ScopeEventsJournalTransaction(tx, s.eventsJournalEnabled.Load())
 }
 
 func (s *DoltStore) commitSQLTx(ctx context.Context, op string, tx *sql.Tx) error {

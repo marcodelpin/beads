@@ -24,6 +24,14 @@ var YamlOnlyKeys = map[string]bool{
 	// Bootstrap flags (affect how bd starts)
 	"no-db": true,
 	"json":  true,
+	// Events journal: read through viper during root pre-run, before the store
+	// is open, so a DB-backed write would be silently unread — the GH#536 class
+	// this map exists to prevent. Without these four entries
+	// `bd config set events-journal true` reports success and changes nothing.
+	"events-journal":             true,
+	"events-journal-retain-days": true,
+	"events-journal-retain-rows": true,
+	"events-journal-auto-prune":  true,
 
 	// Database and identity
 	"db":       true,
@@ -331,8 +339,27 @@ func IsUserGlobalKey(key string) bool {
 // never re-enable metrics for a user who opted out, nor redirect where metrics
 // are sent. See MetricsDisabledByUserConfig / UserMetricsEndpoint.
 func readUserGlobalYamlValue(key string) (string, bool) {
-	path := UserConfigYamlPath()
-	data, err := os.ReadFile(path) //nolint:gosec // path is the user-global config path from UserConfigYamlPath
+	return readYamlValueAtPath(UserConfigYamlPath(), key)
+}
+
+// WorkspaceYamlValue reads a single dotted key out of ONE workspace's
+// config.yaml, named by its .beads directory, returning ("", false) when the
+// file or the key is absent.
+//
+// It exists for the cross-workspace opens — routed creates, remote-cache
+// hydration, `bd serve` against another workspace — where the process-wide
+// merged config answers for the directory bd was LAUNCHED from, not for the
+// workspace about to be written. A setting that governs what gets recorded in a
+// target workspace has to be read from that target.
+func WorkspaceYamlValue(beadsDir, key string) (string, bool) {
+	if beadsDir == "" {
+		return "", false
+	}
+	return readYamlValueAtPath(filepath.Join(beadsDir, "config.yaml"), key)
+}
+
+func readYamlValueAtPath(path, key string) (string, bool) {
+	data, err := os.ReadFile(path) //nolint:gosec // path is a resolved config.yaml path, not user input
 	if err != nil {
 		return "", false
 	}

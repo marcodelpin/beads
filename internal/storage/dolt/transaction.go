@@ -36,6 +36,10 @@ type doltTransaction struct {
 	wroteRegularDep bool
 	wroteWispDep    bool
 	lifecycle       bool
+	// journalPinned records that ignoredTx IS regularTx because the events
+	// journal collapsed the two planes into one transaction, so the finish path
+	// must not commit or roll it back a second time.
+	journalPinned bool
 }
 
 func (t *doltTransaction) txFor(table string) *sql.Tx {
@@ -192,31 +196,54 @@ func (s *DoltStore) runDoltTransaction(ctx context.Context, commitMsg string, fn
 		return fmt.Errorf("failed to begin regular tx: %w", err)
 	}
 
-	// NOTE (GH#3140 metrics skew): the pool-wait bracket above measures only the
-	// FIRST acquisition (the regular conn). A borrow inside beginIgnoredTxOnBranch
-	// that has to wait increments the pool's global WaitCount, which the NEXT
-	// transaction's delta then misattributes. Rare given the InUse pre-check in
-	// borrowConnForIgnoredTx; not worth restructuring the metrics for.
-	ignoredCleanup, ignoredTx, err := s.beginIgnoredTxOnBranch(ctx, currentBranch)
-	if err != nil {
-		_ = regularTx.Rollback()
-		return err
+	// The journal counter and rows must commit in the SAME SQL transaction as
+	// every mutation they describe. bd_events_journal and bd_events_seq are
+	// dolt_ignored, so on the default split-transaction shape they would land in
+	// the ignored transaction while the mutation lands in the regular one: a
+	// mixed durable+wisp callback would then make the two transactions contend
+	// with each other on the single bd_events_seq row, and the ignored commit
+	// can fail AFTER the regular side has already committed — a mutation with no
+	// journal record, which is exactly the state the same-transaction guarantee
+	// exists to make impossible. In journal mode both planes therefore share the
+	// pinned regular transaction. The default journal-off path keeps the
+	// established split transactions untouched.
+	journalEnabled := s.eventsJournalEnabled.Load()
+	ignoredTx := regularTx
+	if !journalEnabled {
+		// NOTE (GH#3140 metrics skew): the pool-wait bracket above measures only
+		// the FIRST acquisition (the regular conn). A borrow inside
+		// beginIgnoredTxOnBranch that has to wait increments the pool's global
+		// WaitCount, which the NEXT transaction's delta then misattributes. Rare
+		// given the InUse pre-check in borrowConnForIgnoredTx; not worth
+		// restructuring the metrics for.
+		var ignoredCleanup func()
+		ignoredCleanup, ignoredTx, err = s.beginIgnoredTxOnBranch(ctx, currentBranch)
+		if err != nil {
+			_ = regularTx.Rollback()
+			return err
+		}
+		defer ignoredCleanup()
 	}
-	defer ignoredCleanup()
+	clearJournalScope := issueops.ScopeEventsJournalTransaction(regularTx, journalEnabled)
+	defer clearJournalScope()
 
-	tx := &doltTransaction{regularTx: regularTx, ignoredTx: ignoredTx, store: s}
+	tx := &doltTransaction{regularTx: regularTx, ignoredTx: ignoredTx, store: s, journalPinned: journalEnabled}
 
 	defer func() {
 		if r := recover(); r != nil {
 			_ = regularTx.Rollback()
-			_ = ignoredTx.Rollback()
+			if !journalEnabled {
+				_ = ignoredTx.Rollback()
+			}
 			panic(r)
 		}
 	}()
 
 	if err := fn(tx); err != nil {
 		_ = regularTx.Rollback()
-		_ = ignoredTx.Rollback()
+		if !journalEnabled {
+			_ = ignoredTx.Rollback()
+		}
 		return err
 	}
 
@@ -226,17 +253,29 @@ func (s *DoltStore) runDoltTransaction(ctx context.Context, commitMsg string, fn
 // finishDoltTransaction commits the regular SQL transaction, its associated
 // Dolt revision, and then the ignored-table transaction. Once the regular SQL
 // transaction succeeds, later failures have an indeterminate durable outcome.
+// When the journal pinned both planes into the regular transaction, that single
+// commit already carried the ignored tables and there is no second transaction
+// to roll back or commit.
 func (s *DoltStore) finishDoltTransaction(ctx context.Context, conn *sql.Conn, tx *doltTransaction, commitMsg string) error {
+	rollbackIgnored := func() {
+		if !tx.journalPinned {
+			_ = tx.ignoredTx.Rollback()
+		}
+	}
+
 	if err := tx.regularTx.Commit(); err != nil {
-		_ = tx.ignoredTx.Rollback()
+		rollbackIgnored()
 		return wrapSQLCommitError("sql commit (regular)", err)
 	}
 
 	if err := versioncontrolops.StageAndCommit(ctx, conn, tx.dirty.DirtyTables(), commitMsg, s.commitAuthorString()); err != nil {
-		_ = tx.ignoredTx.Rollback()
+		rollbackIgnored()
 		return fmt.Errorf("stage and commit after regular SQL commit: %w: %w", err, ErrCommitIndeterminate)
 	}
 
+	if tx.journalPinned {
+		return nil
+	}
 	if err := tx.ignoredTx.Commit(); err != nil {
 		return fmt.Errorf("sql commit (ignored, regular already committed): %w: %w", err, ErrCommitIndeterminate)
 	}
@@ -1316,6 +1355,14 @@ func (t *doltTransaction) ImportIssueComment(ctx context.Context, issueID, autho
 	if err != nil {
 		return nil, fmt.Errorf("failed to add comment: %w", err)
 	}
+	// This path writes the comment row directly rather than through
+	// issueops.ImportIssueCommentInTx, so it must journal the comment op itself
+	// — the create/comment entry points cover their own writes, not this one.
+	if err := issueops.RecordCommentEventInTx(ctx, t.txFor(table), issueID, &issueops.EventComment{
+		ID: id, Author: author, Text: text, CreatedAt: stored, Source: issueops.CommentSourceStructured,
+	}); err != nil {
+		return nil, wrapExecError("journal import comment in tx", err)
+	}
 	return &types.Comment{ID: id, IssueID: issueID, Author: author, Text: text, CreatedAt: stored}, nil
 }
 
@@ -1354,16 +1401,32 @@ func (t *doltTransaction) AddComment(ctx context.Context, issueID, actor, commen
 		table = "wisp_events"
 	}
 
-	err := issueops.InsertDerivedEvent(ctx, t.txFor(table), table, issueops.AuxEvent{
+	createdAt := issueops.NowAuxTime()
+	id, err := issueops.InsertDerivedEventReturningID(ctx, t.txFor(table), table, issueops.AuxEvent{
 		IssueID:   issueID,
 		EventType: types.EventCommented,
 		Actor:     actor,
 		Comment:   sql.NullString{String: comment, Valid: true},
+		CreatedAt: createdAt,
 	})
-	if err == nil {
-		t.dirty.MarkDirty(table)
+	if err != nil {
+		return wrapExecError("add comment in tx", err)
 	}
-	return wrapExecError("add comment in tx", err)
+	t.dirty.MarkDirty(table)
+	stored, err := issueops.ParseAuxTime(createdAt)
+	if err != nil {
+		return wrapExecError("add comment in tx", err)
+	}
+	// This path writes the audit comment row directly rather than through
+	// issueops.AddCommentEventInTx, so it must journal the comment op itself.
+	// The text is replayable content, so it carries the same payload as a
+	// structured comment, distinguished by Source.
+	if err := issueops.RecordCommentEventInTx(ctx, t.txFor(table), issueID, &issueops.EventComment{
+		ID: id, Author: actor, Text: comment, CreatedAt: stored, Source: issueops.CommentSourceAudit,
+	}); err != nil {
+		return wrapExecError("journal comment in tx", err)
+	}
+	return nil
 }
 
 // GetIssueCommentsPage returns one keyset page of an issue's comments within the
