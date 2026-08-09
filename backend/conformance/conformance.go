@@ -48,6 +48,13 @@
 // required, while CountHistory, CountHistoryMatching, Exec and the seed hooks
 // are optional and degrade LOUDLY when nil (see history_matching.go).
 //
+// That tier is EXHAUSTIVE over the facade, and role_coverage_gate_test.go is
+// what makes it a fact rather than a wish: it censuses every method of every
+// interface issueops and memoryops declare, resolves which of them the contract
+// cases here actually call, and fails on any method nothing calls. A role
+// method with no contract is admissible only as a waiver naming its reason, and
+// that waiver list can only shrink.
+//
 // # Usage from a backend test file
 //
 //	func TestConformance(t *testing.T) {
