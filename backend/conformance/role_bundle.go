@@ -78,6 +78,7 @@ import (
 // A fixture per role per workspace contains every one of them.
 type RoleContractBundle struct {
 	// Called ONCE; the whole contract runs against the one fixture.
+	BatchApply           func(t *testing.T) *BatchApplyFixture
 	BatchCloser          func(t *testing.T) *BatchCloserFixture
 	BatchCreator         func(t *testing.T) *BatchCreatorFixture
 	BlockingAnnotator    func(t *testing.T) *BlockingAnnotatorFixture

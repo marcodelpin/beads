@@ -111,6 +111,38 @@ in; 13 is the HTTP surface, which lands with the command rather than after it.
    — the shared function takes a transaction, so no front door can call it at
    all.
 
+   **CHECK WHETHER THE UNIT OF WORK CAN REACH THE BODY BEFORE PROMISING THAT IT
+   WILL.** `MetadataCAS` and `TreeWalker` collapse all three legs onto one
+   `…InTx` function, and it is tempting to read that as the rule for tx-level
+   bodies. It is not. Those two take a `DBTX`, which is exactly the method set
+   `domain/db.Runner` publishes, so the unit-of-work leg reaches them through
+   the domain repository. `issueops.BatchApplier` cannot: its body COMPOSES
+   `ExecuteCreate`, `ExecuteUpdate` and `ExecuteClose`, every one of which takes
+   a `*sql.Tx`, and a unit of work's runner is a `*sql.Conn` with a transaction
+   open on it. No interface between the two publishes the other, and widening
+   three of the oldest write paths in the tree to take an interface is not a
+   role slice's change.
+
+   So that role has TWO bodies, and its contract says so at the top rather than
+   claiming three legs and one reading. **The test is mechanical: does every
+   function your body calls take an interface `Runner` satisfies?** Ask it
+   before you write the contract header, because the header's vote count is
+   what tells the next reader how much a three-leg run is worth.
+
+   **THEN SHARE EVERYTHING THE FORK DOES NOT FORCE YOU TO DUPLICATE, and be
+   precise about which half that is.** `BatchApplier`'s two bodies share their
+   request VALIDATION and their commit-message rule outright — one function
+   each, called from both. Its end gate is the interesting case, because it is
+   shared at the LEAF and forked at the ORCHESTRATION: both legs reach the same
+   `issueops.CheckBlockingHierarchyInTx` and the same
+   `AppendSchedulingGraphInTx`/`CycleThroughEdgesInGraph` walk (the unit-of-work
+   leg through two repository methods that delegate to them), so the two cannot
+   disagree about what a conflict or a cycle IS — but which edges get collected,
+   in what order, and how the refusal is wrapped are written twice. That is the
+   shape to aim for and the shape to describe honestly: "the legs share their
+   end gate" would be a claim the code does not support, and the next reader
+   would trust it.
+
 4. **The unit-of-work body and its source interface.**
    `internal/storage/uow/<role>.go`, declaring `type <Role>Source interface {
    <Role>() (publicops.<Role>, error) }` and implementing the accessor on
@@ -344,6 +376,13 @@ no front door holds (`internal/storage/memoryops/memories.go:15-18`). Step 3's
 address is what decides the entry, so a namespace of tx-level bodies has no
 entries at all, and the absence has to be readable as a decision rather than as
 a step someone skipped.
+
+`issueops.BatchApplier` is the second role with no entry, for the same reason
+and one more: its step-3 body is an `…InTx` function AND it has no `cmd/bd`
+front door at all in the slice that introduced it — it landed with the HTTP
+half only. An absent CLI is a decision too, and the place to write it down is
+the leaf doc beside the promises, exactly as `VersionReconciler` writes down
+its absent HTTP half.
 
 The test: **does step 3 have an exported constructor returning the role
 interface, in a package a `cmd/bd` file can import?**

@@ -68,7 +68,7 @@ func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
 }
 
 // TestEveryStoreRoleAccessorIsClassified fails when DoltStorage hands out an
-// interface the census cannot place. Every one of the twenty-five today is a
+// interface the census cannot place. Every one of the twenty-six today is a
 // facade role, so this costs nothing and closes the path where a role surface
 // grows a package and the census quietly stops covering it.
 func TestEveryStoreRoleAccessorIsClassified(t *testing.T) {
@@ -148,7 +148,7 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-five
+// roleAccessorStore is a DoltStorage whose only real methods are the twenty-six
 // role accessors, each answering with a distinguishable sentinel so a test can
 // tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
@@ -170,6 +170,7 @@ type roleAccessorStore struct {
 	closer       issueops.BatchCloser
 	creator      issueops.BatchCreator
 	editor       issueops.DependencyEditor
+	applier      issueops.BatchApplier
 	readyCounter issueops.ReadyCounter
 	querier      issueops.Querier
 	sweeper      issueops.Sweeper
@@ -199,6 +200,7 @@ func newRoleAccessorStore() *roleAccessorStore {
 		closer:       sentinel,
 		creator:      sentinel,
 		editor:       sentinel,
+		applier:      sentinel,
 		readyCounter: sentinel,
 		querier:      sentinel,
 		sweeper:      sentinel,
@@ -264,8 +266,11 @@ func (s *roleAccessorStore) DependencyEditor() (issueops.DependencyEditor, error
 func (s *roleAccessorStore) MetadataCAS() (issueops.MetadataCAS, error) {
 	return s.metadataCAS, s.err
 }
+func (s *roleAccessorStore) BatchApplier() (issueops.BatchApplier, error) {
+	return s.applier, s.err
+}
 
-// roleAccessorSentinel implements twenty-four of the twenty-five roles at once.
+// roleAccessorSentinel implements twenty-five of the twenty-six roles at once.
 // Nothing calls its methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 
@@ -333,6 +338,9 @@ func (*roleAccessorSentinel) AssigneeStats(context.Context, issueops.AssigneeSta
 func (*roleAccessorSentinel) DetectCycles(context.Context, issueops.DetectCyclesRequest) (issueops.CycleReport, error) {
 	return issueops.CycleReport{}, nil
 }
+func (*roleAccessorSentinel) ApplyBatch(context.Context, issueops.ApplyBatchRequest) (issueops.ApplyBatchResult, error) {
+	return issueops.ApplyBatchResult{}, nil
+}
 
 func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) (issueops.ReadyCountResult, error) {
 	return issueops.ReadyCountResult{}, nil
@@ -378,6 +386,7 @@ func (*roleAccessorSentinel) CompareAndSetKey(context.Context, issueops.CompareA
 }
 
 // memoryRoleSentinel is the memory role's sentinel, and the one role
+// memoryRoleSentinel is the remaining role's sentinel, and the one role
 // that cannot share the struct above: memoryops.Memories.List and
 // issueops.Reader.List are the same method name with different signatures, so
 // no single Go type can satisfy both. A second sentinel value is all the split
@@ -434,6 +443,7 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"BatchCreator", func() (any, error) { return store.BatchCreator() }, inner.creator, true},
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }, inner.editor, true},
 		{"MetadataCAS", func() (any, error) { return store.MetadataCAS() }, inner.metadataCAS, true},
+		{"BatchApplier", func() (any, error) { return store.BatchApplier() }, inner.applier, true},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }, inner.reader, false},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }, inner.relations, false},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }, inner.edges, false},
@@ -488,6 +498,7 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"BatchCreator", func() (any, error) { return store.BatchCreator() }},
 		{"DependencyEditor", func() (any, error) { return store.DependencyEditor() }},
 		{"MetadataCAS", func() (any, error) { return store.MetadataCAS() }},
+		{"BatchApplier", func() (any, error) { return store.BatchApplier() }},
 		{"IssueReader", func() (any, error) { return store.IssueReader() }},
 		{"IssueRelations", func() (any, error) { return store.IssueRelations() }},
 		{"EdgeReader", func() (any, error) { return store.EdgeReader() }},

@@ -198,6 +198,7 @@ func runServe() error {
 			BatchCreator:      roles.batchCreator,
 			DependencyEditor:  roles.dependencyEditor,
 			MetadataCAS:       roles.metadataCAS,
+			BatchApplier:      roles.batchApplier,
 			Memories:          roles.memories,
 			// Nil when this backend has no journal seam and the workspace never
 			// asked for one; Listen requires it exactly when the flag below is
@@ -513,6 +514,7 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 		{"batch creator", func() (err error) { roles.batchCreator, err = src.BatchCreator(); return }},
 		{"dependency editor", func() (err error) { roles.dependencyEditor, err = src.DependencyEditor(); return }},
 		{"metadata cas", func() (err error) { roles.metadataCAS, err = src.MetadataCAS(); return }},
+		{"batch applier", func() (err error) { roles.batchApplier, err = src.BatchApplier(); return }},
 		{"memories", func() (err error) { roles.memories, err = src.Memories(); return }},
 		{"events journal", func() error {
 			// storage.UnwrapStore rather than the ONE peel above, and that is not
@@ -574,6 +576,16 @@ type serveRoles struct {
 	// recurses through the hook decorator, so the ONE peel above is what keeps
 	// this server from running the workspace's on_update script per swap.
 	metadataCAS issueops.MetadataCAS
+	// batchApplier is the role that makes the ONE peel above matter most, and
+	// the arithmetic is what makes it worth its own sentence. Its hook wrapper
+	// fires FOUR vocabularies from one call — on_create for every created item,
+	// on_update for every changed update AND once per distinct edge source, and
+	// the close hooks for every close that landed — so one hundred-item plan
+	// served from an unpeeled applier is up to a hundred of the workspace's own
+	// subprocesses spawned inside a single HTTP request, holding a write
+	// transaction open while they run. Every other role here costs at most one
+	// per mutation.
+	batchApplier issueops.BatchApplier
 	// memories is the one role here that is not an issueops role: the memory
 	// plane is user data riding in the config table under its own merge class,
 	// so it has its own leaf package.

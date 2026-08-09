@@ -123,6 +123,38 @@ func TestDependencyEditorLayersHooksOutsideTelemetry(t *testing.T) {
 	}
 }
 
+// TestBatchApplierLayersHooksOutsideTelemetry is the same pin for the
+// apply-many role, and it has more to lose than its siblings: this decorator is
+// the one place four hook vocabularies fire from one call, so an accessor that
+// stopped wrapping would silently drop on_create, on_update AND on_close for
+// every plan a caller applies.
+func TestBatchApplierLayersHooksOutsideTelemetry(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	applier, err := storage.NewHookFiringStore(instrumented, nil).BatchApplier()
+	if err != nil {
+		t.Fatalf("BatchApplier() error = %v", err)
+	}
+	if got := reflect.TypeOf(applier).String(); got != "*storage.hookBatchApplier" {
+		t.Fatalf("outer layer = %s, want the hook wrapper", got)
+	}
+}
+
+func TestBatchApplierExposesTypedUnsupportedError(t *testing.T) {
+	applier, err := (*dolt.DoltStore)(nil).BatchApplier()
+	if applier != nil {
+		t.Fatalf("BatchApplier() applier = %T, want nil", applier)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("BatchApplier() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 // TestCommenterLayersHooksOutsideTelemetry is the same pin for the comment
 // role.
 func TestCommenterLayersHooksOutsideTelemetry(t *testing.T) {

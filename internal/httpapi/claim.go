@@ -325,6 +325,7 @@ var (
 	_ uow.BatchCreatorSource        = timedProvider{}
 	_ uow.DependencyEditorSource    = timedProvider{}
 	_ uow.MetadataCASSource         = timedProvider{}
+	_ uow.BatchApplierSource        = timedProvider{}
 	_ uow.MemoriesSource            = timedProvider{}
 	_ uow.EventsJournalCursorSource = timedProvider{}
 )
@@ -452,6 +453,14 @@ func (p timedProvider) DependencyEditor() (issueops.DependencyEditor, error) {
 // same reason and with the same hazard as IssueReader.
 func (p timedProvider) MetadataCAS() (issueops.MetadataCAS, error) {
 	return uow.NewMetadataCAS(p)
+}
+
+// BatchApplier builds the ordered-plan write role OVER THIS WRAPPER, for the
+// same reason as the roles above. It opens the LONGEST write unit of work on
+// this surface — up to a hundred items in one transaction — so a recursion here
+// would report uow_ms=0.000 for exactly the requests whose timing matters most.
+func (p timedProvider) BatchApplier() (issueops.BatchApplier, error) {
+	return uow.NewBatchApplier(p)
 }
 
 // Memories builds the persistent-memory role OVER THIS WRAPPER, for the same

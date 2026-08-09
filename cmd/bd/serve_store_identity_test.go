@@ -211,6 +211,9 @@ func (*serveIdentityStore) BatchCreator() (issueops.BatchCreator, error) {
 func (*serveIdentityStore) DependencyEditor() (issueops.DependencyEditor, error) {
 	return serveIdentityRole{}, nil
 }
+func (*serveIdentityStore) BatchApplier() (issueops.BatchApplier, error) {
+	return serveIdentityRole{}, nil
+}
 func (*serveIdentityStore) Memories() (memoryops.Memories, error) {
 	return serveIdentityRole{}, nil
 }
@@ -237,6 +240,7 @@ type serveIdentityRole struct {
 	issueops.Deleter
 	issueops.BatchCreator
 	issueops.DependencyEditor
+	issueops.BatchApplier
 	memoryops.Memories
 }
 

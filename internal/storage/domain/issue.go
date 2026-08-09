@@ -1230,7 +1230,7 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 			if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d (%s -> %s): %w", i, fromID, toID, err)
 			}
-			if isSchedulingDep(depType) {
+			if types.IsSchedulingEdge(depType) {
 				newSchedulingEdges = append(newSchedulingEdges, [2]string{fromID, toID})
 			}
 		}
@@ -1249,7 +1249,7 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 				if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 					return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: adding dep to %q: %w", node.Key, nd.Target, err)
 				}
-				if isSchedulingDep(dep.Type) {
+				if types.IsSchedulingEdge(dep.Type) {
 					newSchedulingEdges = append(newSchedulingEdges, [2]string{dep.IssueID, dep.DependsOnID})
 				}
 			}

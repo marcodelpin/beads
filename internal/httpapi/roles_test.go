@@ -663,6 +663,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.MetadataCAS == nil {
 		cfg.MetadataCAS = &roleMetadataCAS{}
 	}
+	if cfg.BatchApplier == nil {
+		cfg.BatchApplier = &roleBatchApplier{}
+	}
 	if cfg.Memories == nil {
 		cfg.Memories = &roleMemories{}
 	}
@@ -730,6 +733,34 @@ func (c *roleMetadataCAS) requests() []issueops.CompareAndSetKeyRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]issueops.CompareAndSetKeyRequest(nil), c.calls...)
+}
+
+// roleBatchApplier is the store-shaped source's ordered-plan write, the same
+// shape as roleSweeper and for the same reason. It records the whole request
+// because this operation's wire edge is a four-level projection and a case
+// asserting on one member of it has to be able to reach every other.
+type roleBatchApplier struct {
+	result issueops.ApplyBatchResult
+	err    error
+
+	mu    sync.Mutex
+	calls []issueops.ApplyBatchRequest
+}
+
+func (a *roleBatchApplier) ApplyBatch(_ context.Context, req issueops.ApplyBatchRequest) (issueops.ApplyBatchResult, error) {
+	a.mu.Lock()
+	a.calls = append(a.calls, req)
+	a.mu.Unlock()
+	if a.err != nil {
+		return issueops.ApplyBatchResult{}, a.err
+	}
+	return a.result, nil
+}
+
+func (a *roleBatchApplier) requests() []issueops.ApplyBatchRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]issueops.ApplyBatchRequest(nil), a.calls...)
 }
 
 type roleSweeper struct {
@@ -956,6 +987,21 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 			wantErr: "exactly one database source",
 		},
 		{
+			name:    "no batch applier",
+			cfg:     rolesConfigWithout(func(c *Config) { c.BatchApplier = nil }),
+			wantErr: "no database source",
+		},
+		{
+			name:    "a batch applier alone",
+			cfg:     Config{BatchApplier: &roleBatchApplier{}},
+			wantErr: "no database source",
+		},
+		{
+			name:    "a provider and a batch applier",
+			cfg:     Config{Provider: &fakeProvider{}, BatchApplier: &roleBatchApplier{}},
+			wantErr: "exactly one database source",
+		},
+		{
 			// The role that is not an issueops role. It is in the same
 			// all-or-nothing set for the same reason: without it the server
 			// binds, advertises the memory operations, and nil-dereferences on
@@ -1067,10 +1113,11 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 // NOT ALL OF THEM, despite the name: the subtests below drive ten of the
 // seventeen capability-bearing operations in routes.go. The other seven —
 // dependencies/cycles, dependencies/blocking, dependencies/tree,
-// issues:batchCreate, issues:sweep, issues:delete and issues/{id}:casMetadata —
-// are exercised against a roles source in their own files (cycles_test.go,
-// blocking_test.go, tree_test.go, batch_create_test.go, sweep_test.go,
-// delete_test.go, metadata_cas_test.go). Either add the seven here or keep this
+// issues:batchCreate, issues:sweep, issues:delete, issues/{id}:casMetadata and
+// issues:batchApply — are exercised against a roles source in their own files
+// (cycles_test.go, blocking_test.go, tree_test.go, batch_create_test.go,
+// sweep_test.go, delete_test.go, metadata_cas_test.go, batch_apply_test.go).
+// Either add the eight here or keep this
 // paragraph accurate; do not generalize the sentence again.
 func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	details := &issueops.IssueDetails{Issue: *seededIssue("bd-1", "alice", types.StatusOpen)}

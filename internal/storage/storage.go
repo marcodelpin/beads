@@ -305,6 +305,17 @@ type Storage interface {
 	// update to an issue, which is a hook the vocabulary publishes. See
 	// hook_metadata_cas.go.
 	MetadataCAS() (issueops.MetadataCAS, error)
+	// BatchApplier returns the guarded apply-many surface for this store:
+	// a HETEROGENEOUS list of creates, updates, closes and edges applied in
+	// declaration order as one durable act. It is its own role rather than a
+	// fifth batch verb because its unit is a PLAN — create these, wire them,
+	// close the step that spawned them — and each of BatchCreator, BatchCloser
+	// and DependencyEditor is one verb repeated, so composing two of them means
+	// two transactions with a window in between.
+	//
+	// It is a WRITE role and its hook decorator WRAPS: every landed item is an
+	// event the hook vocabulary publishes. See hook_batch_applier.go.
+	BatchApplier() (issueops.BatchApplier, error)
 
 	// Issue CRUD
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error

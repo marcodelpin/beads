@@ -266,6 +266,15 @@ func (p *notifyingProvider) DependencyEditor() (publicops.DependencyEditor, erro
 	return NewDependencyEditor(p)
 }
 
+// BatchApplier builds on THIS provider, like every role above it, so the
+// notifications its items produce are the ones the recording use cases already
+// emit for a create, an update, a close and an edge. It needs no recorder of
+// its own for that reason: the role composes those use cases rather than
+// reaching past them.
+func (p *notifyingProvider) BatchApplier() (publicops.BatchApplier, error) {
+	return NewBatchApplier(p)
+}
+
 func (p *notifyingProvider) Deleter() (publicops.Deleter, error) { return NewDeleter(p) }
 
 func (p *notifyingProvider) Sweeper() (publicops.Sweeper, error) { return NewSweeper(p) }
