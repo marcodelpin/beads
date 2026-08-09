@@ -152,7 +152,7 @@ func loadWatchedIssues(ctx context.Context, store storage.DoltStorage, filter ty
 	return issues, nil
 }
 
-func displayWatchedIssueList(ctx context.Context, store watchListDependencyStore, issues []*types.Issue) {
+func displayWatchedIssueList(ctx context.Context, store watchListDependencyStore, issues []*types.Issue, truncated bool) {
 	var allDeps map[string][]*types.Dependency
 	if store != nil {
 		deps, err := store.GetAllDependencyRecords(ctx)
@@ -160,7 +160,7 @@ func displayWatchedIssueList(ctx context.Context, store watchListDependencyStore
 			allDeps = deps
 		}
 	}
-	displayPrettyListWithDeps(issues, true, allDeps)
+	displayPrettyListWithDeps(issues, true, allDeps, truncated)
 }
 
 // watchIssues returns an error only for the initial query — a failure there
@@ -180,7 +180,7 @@ func watchIssues(ctx context.Context, store storage.DoltStorage, filter types.Is
 	// below depends on; what is left is the cut and its verdict, and those are
 	// the shared epilogue's on every other listing this command has.
 	issues, truncated := workapi.FinishPage(issues, "", false, effectiveLimit, false)
-	displayWatchedIssueList(ctx, store, issues)
+	displayWatchedIssueList(ctx, store, issues, truncated)
 	printTruncationHint(truncated, effectiveLimit)
 	lastSnapshot := issueSnapshot(issues)
 
@@ -210,7 +210,7 @@ func watchIssues(ctx context.Context, store storage.DoltStorage, filter types.Is
 			snap := issueSnapshot(issues)
 			if snap != lastSnapshot {
 				lastSnapshot = snap
-				displayWatchedIssueList(ctx, store, issues)
+				displayWatchedIssueList(ctx, store, issues, truncated)
 				printTruncationHint(truncated, effectiveLimit)
 				fmt.Fprintf(os.Stderr, "\nWatching for changes... (Press Ctrl+C to exit)\n")
 			}
@@ -251,7 +251,8 @@ func runListProxiedHierarchicalParent(ctx context.Context, uw uow.UnitOfWork, in
 		return err
 	}
 
-	displayPrettyListWithDepsMode(treeIssues, false, depsByIssueID, in.depsMode)
+	// Hierarchical --parent walks use an unlimited per-level query; never page-truncated.
+	displayPrettyListWithDepsMode(treeIssues, false, depsByIssueID, in.depsMode, false)
 	printSkipLabelsFooter(in.SkipLabels)
 	return nil
 }

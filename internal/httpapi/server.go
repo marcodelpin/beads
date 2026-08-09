@@ -479,6 +479,13 @@ func checkDatabaseSource(cfg Config) error {
 		return errors.New("httpapi: a configured role fires this workspace's hooks; " +
 			"this server does not run hooks, so take the roles from the store beneath the hook decorator " +
 			"((*storage.HookFiringStore).Unwrap)")
+	case uow.ProviderFiresHooks(cfg.Provider):
+		// The same refusal for the other database source. A provider's roles
+		// carry whatever the provider carries, so a hook-firing one would run a
+		// user's subprocess per served mutation just as a hook-firing role does.
+		return errors.New("httpapi: the configured provider fires this workspace's hooks; " +
+			"this server does not run hooks, so pass the provider beneath the hook layer " +
+			"(uow.UnwrapProvider)")
 	}
 	return nil
 }

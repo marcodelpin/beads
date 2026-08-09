@@ -1455,11 +1455,9 @@ func (s hookableStore) IssueClaimer() (issueops.Claimer, error) { return s.claim
 
 // TestListenRefusesARoleThatFiresTheWorkspaceHooks.
 //
-// `bd serve` documents that hooks do not fire, and until roles became
-// configuration nothing could make them: the provider seam builds its claimer
-// from a unit of work, which carries no hook layer at all. A store is the
-// opposite — its accessors hand out its decorators, deliberately, so that a CLI
-// claim keeps its on_update — and bd's own chain is
+// `bd serve` documents that hooks do not fire, and a store is the surface that
+// most easily makes them: its accessors hand out its decorators, deliberately,
+// so that a CLI claim keeps its on_update — and bd's own chain is
 // caller -> HookFiringStore -> InstrumentedStorage -> raw. So the one line a
 // caller with a store would obviously write, store.IssueClaimer(), returns
 // exactly the claimer this server may not serve.
@@ -1506,6 +1504,47 @@ func TestListenRefusesARoleThatFiresTheWorkspaceHooks(t *testing.T) {
 	srv, err := listen(fromBeneath)
 	if err != nil {
 		t.Fatalf("Listen: %v, want a bound server for the claimer beneath the hook layer", err)
+	}
+	t.Cleanup(func() { _ = srv.http.Close() })
+}
+
+// serveHookRunner stands in for the workspace's script runner. The refusal is
+// about the provider's TYPE, so this never has to run.
+type serveHookRunner struct{}
+
+func (serveHookRunner) Run(string, *types.Issue) {}
+
+// TestListenRefusesAProviderThatFiresTheWorkspaceHooks is the same refusal for
+// the other database source.
+//
+// The unit-of-work seam used to carry no hook layer, so the provider arm could
+// not break the no-hooks contract. It can now: proxied mode wraps its provider
+// so the CLI's writes fire hooks on both plumbings, and that provider is the
+// one `bd serve` finds already open. Serving it would run a user's subprocess
+// per landed mutation, for as long as the server is up.
+func TestListenRefusesAProviderThatFiresTheWorkspaceHooks(t *testing.T) {
+	inner := &fakeProvider{}
+	notifying := uow.NewNotifyingProvider(inner, uow.Sinks{Hook: serveHookRunner{}})
+	if !uow.ProviderFiresHooks(notifying) {
+		t.Fatal("the notifying provider no longer reports that it fires hooks; this test proves nothing")
+	}
+
+	listen := func(p uow.UnitOfWorkProvider) (*Server, error) {
+		cfg := Config{Provider: p, Addr: "127.0.0.1:0", Stdout: io.Discard, Stderr: io.Discard}
+		return Listen(cfg)
+	}
+
+	if _, err := listen(notifying); err == nil {
+		t.Error("Listen bound a server whose every mutation runs the workspace's hook scripts")
+	} else if !strings.Contains(err.Error(), "hooks") {
+		t.Errorf("refusal %q does not say what is wrong with the provider", err)
+	}
+
+	// And the provider BENEATH the hook layer — the value the refusal sends a
+	// caller to, and what cmd/bd hands Listen — has to be servable.
+	srv, err := listen(uow.UnwrapProvider(notifying))
+	if err != nil {
+		t.Fatalf("Listen: %v, want a bound server for the provider beneath the hook layer", err)
 	}
 	t.Cleanup(func() { _ = srv.http.Close() })
 }
