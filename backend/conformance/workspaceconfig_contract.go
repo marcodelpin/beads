@@ -3,10 +3,13 @@ package conformance
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/storage/kvkeys"
+	"github.com/steveyegge/beads/internal/types"
 	publicops "github.com/steveyegge/beads/issueops"
 )
 
@@ -62,6 +65,104 @@ type WorkspaceConfigFixture struct {
 	// A nil hook means "this backend cannot observe history", and the case that
 	// needs it SKIPS with that reason rather than passing quietly.
 	CountHistory func(context.Context) (int, error)
+	// Vocabulary reads the workspace vocabulary back. A nil hook means "this
+	// backend cannot read the vocabulary its own writes configure", and the
+	// cases that need it SKIP with that reason rather than passing quietly.
+	Vocabulary *WorkspaceVocabularyReader
+}
+
+// WorkspaceVocabularyReader is the READ half of the two projected keys, which
+// this role deliberately has no verb for: SetSetting rewrites custom_statuses
+// and custom_types and nothing on publicops.WorkspaceConfig reads them back.
+//
+// IT IS SHAPED LIKE THE CONSUMER, NOT LIKE ANY ONE BACKEND. The three methods
+// are workapi.ConfigSource method for method, because that is the seam
+// workapi.LoadListConfig reads through, and what LoadListConfig does with an
+// error is the whole reason these cases exist: it loads all three UP FRONT and
+// wraps ANY failure, with no degraded path. `bd list`, `bd ready` and every
+// other list-shaped command call it before they can render a single row, so a
+// vocabulary read that answers an ERROR where the workspace has simply not
+// configured anything does not degrade — it takes out the entire family of
+// commands, on the first one a fresh workspace runs.
+//
+// THE THREE LEGS FILL IT FROM GENUINELY DIFFERENT BODIES. The two stores answer
+// from GetCustomStatusesDetailed / GetCustomTypes / GetInfraTypes, which read
+// through a per-store cache that SetConfig drops by key; the unit-of-work
+// backend answers from its ConfigUseCase, which has no cache, unions custom
+// types with the workspace YAML and resolves the infra DEFAULT in its own code
+// (internal/storage/domain/config.go) rather than in
+// issueops.ResolveInfraTypesInTx. So these cases are two votes on the value and
+// three on the shape of the answer.
+//
+// DoltStorage.GetCustomStatuses — the names-only spelling — is deliberately
+// absent. It is types.CustomStatusNames of the detailed slice off the same
+// cached load, so its order cannot differ, and the unit-of-work role has no
+// counterpart to it at all.
+type WorkspaceVocabularyReader struct {
+	// CustomStatuses reads the statuses status.custom projects, WITH their
+	// categories. Store legs: GetCustomStatusesDetailed.
+	CustomStatuses func(context.Context) ([]types.CustomStatus, error)
+	// CustomTypes reads the types types.custom projects.
+	CustomTypes func(context.Context) ([]string, error)
+	// InfraTypes reads the resolved infrastructure-type set — the types whose
+	// issues route to the wisps plane instead of the versioned one.
+	InfraTypes func(context.Context) (map[string]bool, error)
+}
+
+// workspaceConfigDefaultInfraTypes is the infra set a workspace that has
+// configured none resolves to.
+//
+// SPELLED OUT rather than read from the production constant: this suite is the
+// contract, and asserting the answer against the same place the implementation
+// reads it from would assert nothing.
+var workspaceConfigDefaultInfraTypes = map[string]bool{"agent": true, "role": true, "message": true}
+
+// workspaceConfigVocabulary returns the vocabulary reader or skips loudly.
+func workspaceConfigVocabulary(t *testing.T, fixture WorkspaceConfigFixture) *WorkspaceVocabularyReader {
+	t.Helper()
+	if fixture.Vocabulary == nil {
+		t.Skip("fixture.Vocabulary is nil: this backend cannot read the vocabulary its own writes project, " +
+			"so the three reads workapi.LoadListConfig makes before any list-shaped command renders a row are unobservable here")
+	}
+	return fixture.Vocabulary
+}
+
+func readWorkspaceConfigCustomStatuses(t *testing.T, ctx context.Context, vocabulary *WorkspaceVocabularyReader, when string) []types.CustomStatus {
+	t.Helper()
+	statuses, err := vocabulary.CustomStatuses(ctx)
+	if err != nil {
+		t.Fatalf("read the custom statuses %s: %v — LoadListConfig wraps this error and every list-shaped command fails with it", when, err)
+	}
+	return statuses
+}
+
+func readWorkspaceConfigCustomTypes(t *testing.T, ctx context.Context, vocabulary *WorkspaceVocabularyReader, when string) []string {
+	t.Helper()
+	custom, err := vocabulary.CustomTypes(ctx)
+	if err != nil {
+		t.Fatalf("read the custom types %s: %v — LoadListConfig wraps this error and every list-shaped command fails with it", when, err)
+	}
+	return custom
+}
+
+func readWorkspaceConfigInfraTypes(t *testing.T, ctx context.Context, vocabulary *WorkspaceVocabularyReader, when string) map[string]bool {
+	t.Helper()
+	infra, err := vocabulary.InfraTypes(ctx)
+	if err != nil {
+		t.Fatalf("read the infra types %s: %v — LoadListConfig wraps this error and every list-shaped command fails with it", when, err)
+	}
+	return infra
+}
+
+// workspaceConfigStatusPairs renders statuses as "name:category" IN ORDER, for
+// a failure message that reads. It does NOT sort: order is what two of these
+// cases are about.
+func workspaceConfigStatusPairs(statuses []types.CustomStatus) []string {
+	out := make([]string, len(statuses))
+	for i, status := range statuses {
+		out[i] = status.Name + ":" + string(status.Category)
+	}
+	return out
 }
 
 // RunWorkspaceConfigStoresAValueVerbatim pins workspaceconfig.go:93-100: a
@@ -408,6 +509,237 @@ func RunWorkspaceConfigARefusedWriteRecordsNoHistory(t *testing.T, ctx context.C
 	}
 	if after != before {
 		t.Fatalf("history entries went %d -> %d across three refused writes, want no change", before, after)
+	}
+}
+
+// RunWorkspaceConfigKeysAreCaseSensitive pins the collation of the key column
+// this plane stores under: two keys differing only in case are two SETTINGS,
+// each holding its own value, and both are enumerated.
+//
+// GetSettingRequest.Key states it from the other end — a key is used
+// "verbatim: there is no namespace completion, no case folding" — and until now
+// nothing held any backend to it. The stake is silent data loss in one
+// direction and a wrong answer in the other: under a case-insensitive
+// collation the second write REPLACES the first (the store bodies write with
+// REPLACE INTO / an upsert on the key), so `bd config set myKey` would quietly
+// destroy `mykey`, and every reader of either would get whichever row survived.
+//
+// BOTH READ PATHS ARE ASSERTED, because they are different SQL: GetSetting
+// matches one key with `WHERE key = ?` and ListSettings enumerates the table.
+// A collation that folded would break them differently — one answers the wrong
+// row, the other returns one row where two were written — and the raw count
+// below is what says which.
+func RunWorkspaceConfigKeysAreCaseSensitive(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
+	t.Helper()
+	lower := workspaceConfigKey(fixture, "casefold")
+	upper := workspaceConfigKey(fixture, "CaseFold")
+	if !strings.EqualFold(lower, upper) || lower == upper {
+		t.Fatalf("the two probe keys %q and %q must differ, and differ ONLY in case; this case tests nothing otherwise", lower, upper)
+	}
+
+	setWorkspaceConfigSetting(t, ctx, fixture, lower, "lower")
+	setWorkspaceConfigSetting(t, ctx, fixture, upper, "upper")
+
+	// The lowercase write went FIRST, so a folding collation leaves "upper"
+	// under both spellings and this is the assertion that names it.
+	assertWorkspaceConfigValue(t, ctx, fixture, lower, "lower")
+	assertWorkspaceConfigValue(t, ctx, fixture, upper, "upper")
+
+	settings := listWorkspaceConfigSettings(t, ctx, fixture)
+	folded := 0
+	for key := range settings {
+		if strings.EqualFold(key, lower) {
+			folded++
+		}
+	}
+	if folded != 2 {
+		t.Fatalf("ListSettings carries %d keys case-folding to %q, want 2 — the two spellings are two settings", folded, lower)
+	}
+
+	// And the row count itself, because the role's two answers are both derived
+	// from the table and a body that de-duplicated in Go would satisfy neither
+	// half above for the right reason.
+	var rows int
+	if err := fixture.QueryScalar(ctx, "SELECT COUNT(*) FROM config WHERE LOWER(`key`) = ?", []any{strings.ToLower(lower)}, &rows); err != nil {
+		t.Fatalf("count the config rows case-folding to %q: %v", lower, err)
+	}
+	if rows != 2 {
+		t.Fatalf("the config table holds %d rows case-folding to %q, want 2: the second write replaced the first", rows, lower)
+	}
+}
+
+// RunWorkspaceConfigCustomStatusReadsAreOrderedByName pins the READ side of the
+// projection RunWorkspaceConfigProjectsCustomStatuses pins the write side of:
+// the statuses come back ORDERED BY NAME, alphabetically, independent of the
+// order the config string listed them, each carrying its own category.
+//
+// The order is not cosmetic. It is the order `bd list`'s status vocabulary is
+// built in (internal/workapi/list.go LoadListConfig), so it is the order every
+// list-shaped command renders and groups by.
+//
+// THE FIXTURE IS WRITTEN OUT OF ORDER ON BOTH AXES — "zebra" before "alpha",
+// and the alphabetically-first entry carrying the category that sorts LAST — so
+// neither a body that preserved the config string's order nor one that ordered
+// by category passes. The audit-tier ancestor of this case compared the
+// detailed read as a SORTED set, which made its ordering half unobservable;
+// this one compares the slice.
+//
+// It leaves the vocabulary CLEARED, which is the only direction a shared
+// workspace can safely be left in: status.custom is workspace-global and a bare
+// status installed here is claim-eligibility vocabulary a sibling never asked
+// for.
+func RunWorkspaceConfigCustomStatusReadsAreOrderedByName(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
+	t.Helper()
+	vocabulary := workspaceConfigVocabulary(t, fixture)
+
+	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyStatusCustom, "zebra:wip,alpha:done")
+	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_statuses", 2)
+
+	statuses := readWorkspaceConfigCustomStatuses(t, ctx, vocabulary, "after configuring two of them out of alphabetical order")
+	want := []types.CustomStatus{
+		{Name: "alpha", Category: types.CategoryDone},
+		{Name: "zebra", Category: types.CategoryWIP},
+	}
+	if !slices.Equal(statuses, want) {
+		t.Fatalf("the custom statuses read back as %v, want %v — ordered by NAME, and each carrying the category it was configured with",
+			workspaceConfigStatusPairs(statuses), workspaceConfigStatusPairs(want))
+	}
+
+	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyStatusCustom, "")
+	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_statuses", 0)
+}
+
+// RunWorkspaceConfigCustomTypeReadsAreOrderedByName is the same pin for
+// types.custom, and it is a separate case rather than an arm of the one above
+// because the two projections are two tables written by two syncs and read by
+// two queries — a failure has to name which.
+//
+// The value is a JSON array in the order a caller would naturally write it, so
+// the alphabetical answer cannot be the array's own order.
+func RunWorkspaceConfigCustomTypeReadsAreOrderedByName(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
+	t.Helper()
+	vocabulary := workspaceConfigVocabulary(t, fixture)
+
+	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyTypesCustom, `["zebra","alpha"]`)
+	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_types", 2)
+
+	custom := readWorkspaceConfigCustomTypes(t, ctx, vocabulary, "after configuring two of them out of alphabetical order")
+	if want := []string{"alpha", "zebra"}; !slices.Equal(custom, want) {
+		t.Fatalf("the custom types read back as %v, want %v — ordered by NAME, not by the order the value listed them", custom, want)
+	}
+
+	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyTypesCustom, "")
+	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_types", 0)
+}
+
+// RunWorkspaceConfigConfiguredInfraTypesReplaceTheDefaultSet pins that a
+// configured types.infra REPLACES the default infrastructure set outright
+// rather than adding to it.
+//
+// Infra types decide which issue types route to the wisps plane instead of the
+// versioned issues one, so a body that unioned the configured names with the
+// built-in agent/role/message would keep versioning rows a workspace asked to
+// keep ephemeral, and one that ignored the key would keep routing away rows it
+// asked to version. The configured names are deliberately DISJOINT from the
+// defaults, which is what makes "replaced" and "unioned" different answers; the
+// case that reaches this key elsewhere in this package configures a name that
+// is already in the default set, so it cannot tell them apart.
+//
+// THE PRE-VALUE IS READ AND ASSERTED, so the case cannot pass against a reader
+// that answers the same thing however the key is set — and on the store legs it
+// is what drives the CACHE: GetInfraTypes memoizes per store handle and only
+// SetConfig drops it, so reading before and after is the only shape that
+// exercises the invalidation. Restored to the default set on the way out.
+func RunWorkspaceConfigConfiguredInfraTypesReplaceTheDefaultSet(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
+	t.Helper()
+	vocabulary := workspaceConfigVocabulary(t, fixture)
+	const key = "types.infra"
+
+	before := readWorkspaceConfigInfraTypes(t, ctx, vocabulary, "before anything configures the key")
+	if !maps.Equal(before, workspaceConfigDefaultInfraTypes) {
+		t.Fatalf("the infra types read %v before this case configured any, want the default %v: "+
+			"the replacement below is only observable against a known starting set", before, workspaceConfigDefaultInfraTypes)
+	}
+
+	setWorkspaceConfigSetting(t, ctx, fixture, key, "gate,probe")
+	configured := readWorkspaceConfigInfraTypes(t, ctx, vocabulary, "after configuring gate,probe")
+	if want := map[string]bool{"gate": true, "probe": true}; !maps.Equal(configured, want) {
+		t.Fatalf("the infra types read %v after configuring %q, want exactly %v — a configured set REPLACES the default one",
+			configured, "gate,probe", want)
+	}
+
+	setWorkspaceConfigSetting(t, ctx, fixture, key, "")
+	restored := readWorkspaceConfigInfraTypes(t, ctx, vocabulary, "after clearing the key again")
+	if !maps.Equal(restored, workspaceConfigDefaultInfraTypes) {
+		t.Fatalf("the infra types read %v after the key was cleared, want the default %v back", restored, workspaceConfigDefaultInfraTypes)
+	}
+}
+
+// RunWorkspaceConfigUnconfiguredVocabularyReadsAreEmptyNotErrors pins the
+// success path a workspace takes on its very first list-shaped command.
+//
+// THIS IS THE EDGE THAT BRICKS `bd list`. internal/workapi/list.go's
+// LoadListConfig loads all three of these reads UP FRONT and wraps any error —
+// "load custom statuses: %w" and its two siblings — with no degraded path, and
+// every list-shaped front door calls it before it can render a row. So on a
+// workspace that has configured no vocabulary the answer has to be a VALUE:
+// empty with a nil error for the two projections, and the DEFAULT infra set for
+// the third. A backend that answers a scan error, a table-missing error or a
+// nil-map surprise for the state a workspace is in the moment it is created
+// does not degrade — it takes out `bd list`, `bd ready` and the rest at once,
+// and every existing vocabulary case configures the vocabulary first, so none
+// of them would notice.
+//
+// IT INSTALLS ITS OWN PRECONDITION AND THEN CLEARS IT, rather than assuming the
+// workspace arrives unconfigured. Two things follow, and both are the point:
+// the case depends on NOTHING a sibling left behind, and the emptiness it
+// asserts is a value the reads MOVED to — asserted non-empty first — instead of
+// one they were already sitting on, which is how a hook wired to a constant
+// empty answer would pass.
+//
+// IT CLEARS BY WRITING THE EMPTY VALUE, NOT BY UNSETTING, and that is forced:
+// removing one of these keys deliberately leaves its projection standing
+// (bd-yby99.33, pinned by RunWorkspaceConfigUnsetLeavesTheProjectionBehind), so
+// an unset workspace is not an unconfigured one. An empty value and an absent
+// row are the same state to every reader here —
+// RunWorkspaceConfigConflatesAnUnsetKeyWithAnEmptyValue pins that at the role —
+// and the raw table counts below are what say the projections really are empty
+// before the reads are asked.
+func RunWorkspaceConfigUnconfiguredVocabularyReadsAreEmptyNotErrors(t *testing.T, ctx context.Context, fixture WorkspaceConfigFixture) {
+	t.Helper()
+	vocabulary := workspaceConfigVocabulary(t, fixture)
+
+	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyStatusCustom, "awaiting_review:active")
+	setWorkspaceConfigSetting(t, ctx, fixture, publicops.SettingKeyTypesCustom, "research")
+	setWorkspaceConfigSetting(t, ctx, fixture, "types.infra", "gate")
+	if got := readWorkspaceConfigCustomStatuses(t, ctx, vocabulary, "while one is configured"); len(got) != 1 {
+		t.Fatalf("the custom statuses read %v with one configured, want exactly it: the emptiness below is only meaningful as a change",
+			workspaceConfigStatusPairs(got))
+	}
+	if got := readWorkspaceConfigCustomTypes(t, ctx, vocabulary, "while one is configured"); len(got) != 1 {
+		t.Fatalf("the custom types read %v with one configured, want exactly it: the emptiness below is only meaningful as a change", got)
+	}
+	if got := readWorkspaceConfigInfraTypes(t, ctx, vocabulary, "while the key is configured"); !maps.Equal(got, map[string]bool{"gate": true}) {
+		t.Fatalf("the infra types read %v with gate configured, want exactly it: the default below is only meaningful as a change", got)
+	}
+
+	for _, key := range []string{publicops.SettingKeyStatusCustom, publicops.SettingKeyTypesCustom, "types.infra"} {
+		setWorkspaceConfigSetting(t, ctx, fixture, key, "")
+	}
+	// The projections are EMPTY, read raw, so the answers below are earned by
+	// the state rather than by a reader that never consulted it.
+	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_statuses", 0)
+	assertWorkspaceConfigTableCount(t, ctx, fixture, "custom_types", 0)
+
+	if got := readWorkspaceConfigCustomStatuses(t, ctx, vocabulary, "on an unconfigured workspace"); len(got) != 0 {
+		t.Errorf("the custom statuses read %v on an unconfigured workspace, want empty", workspaceConfigStatusPairs(got))
+	}
+	if got := readWorkspaceConfigCustomTypes(t, ctx, vocabulary, "on an unconfigured workspace"); len(got) != 0 {
+		t.Errorf("the custom types read %v on an unconfigured workspace, want empty", got)
+	}
+	if got := readWorkspaceConfigInfraTypes(t, ctx, vocabulary, "on an unconfigured workspace"); !maps.Equal(got, workspaceConfigDefaultInfraTypes) {
+		t.Errorf("the infra types read %v on an unconfigured workspace, want the default %v — an empty answer here silently un-routes every ephemeral type",
+			got, workspaceConfigDefaultInfraTypes)
 	}
 }
 

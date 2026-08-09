@@ -222,6 +222,10 @@ var roleContractCases = []roleContract{
 		RunDependencyEditorRemoveUnmarksItsSourceAndDescendants,
 		RunDependencyEditorMaintainsBlockedStateAcrossPlanes,
 		RunDependencyEditorClosedChildAddSatisfiesAnAnyChildrenGate,
+		RunDependencyEditorRelatesToAddLeavesItsSourceUnblocked,
+		RunDependencyEditorAcceptsADiamond,
+		RunDependencyEditorGateScopeFollowsTheEdgeType,
+		RunDependencyEditorAcceptsBlockingAcrossIssueTypes,
 	),
 
 	roleCases("EdgeReader", "EdgeReader()", oncePerRole,
@@ -522,5 +526,10 @@ var roleContractCases = []roleContract{
 		RunWorkspaceConfigProjectsCustomTypes,
 		RunWorkspaceConfigUnsetLeavesTheProjectionBehind,
 		RunWorkspaceConfigARefusedWriteRecordsNoHistory,
+		RunWorkspaceConfigKeysAreCaseSensitive,
+		RunWorkspaceConfigCustomStatusReadsAreOrderedByName,
+		RunWorkspaceConfigCustomTypeReadsAreOrderedByName,
+		RunWorkspaceConfigConfiguredInfraTypesReplaceTheDefaultSet,
+		RunWorkspaceConfigUnconfiguredVocabularyReadsAreEmptyNotErrors,
 	),
 }
