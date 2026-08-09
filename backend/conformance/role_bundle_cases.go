@@ -44,6 +44,8 @@ var roleContractCases = []roleContract{
 		RunBatchCreatorRejectsAnUnusableRequest,
 		RunBatchCreatorRefusesACrossPlaneInBatchEdge,
 		RunBatchCreatorLinksAnEarlierItemOfTheSameBatch,
+		RunBatchCreatorLinksAnEarlierItemOnTheEphemeralPlane,
+		RunBatchCreatorKeepsAnEphemeralItemsLabelsOffTheDurablePlane,
 		RunBatchCreatorRefusesAnAbsentEdgeTarget,
 		RunBatchCreatorAcceptsAForeignEdgeTarget,
 		RunBatchCreatorRecordsOneHistoryEntry,
@@ -120,6 +122,7 @@ var roleContractCases = []roleContract{
 		RunCommenterStoresTextVerbatim,
 		RunCommenterResultMirrorsTheStoredRow,
 		RunCommenterAdvancesALiveStampPastTheThreadsNewestComment,
+		RunCommenterTakesTheClockWhenTheThreadIsBehindIt,
 		RunCommenterCommentOnAWispLandsOnTheWispThread,
 		RunCommenterRefusesAnIDOnNeitherPlane,
 		RunCommenterRefusesAnEmptyIssueID,
@@ -244,6 +247,18 @@ var roleContractCases = []roleContract{
 		RunEdgeReaderRefusesAnUnusableType,
 		RunEdgeReaderLeavesTheRequestAlone,
 		RunEdgeReaderWritesNothing,
+	),
+
+	// The accessor named here is NOT a storage.DoltStorage one, alone among
+	// these rows: Importer is served only by uow.ImporterSource, so a backend
+	// built on the store interface has nothing to fill this field with and
+	// leaves it nil. See importer_contract.go's header.
+	roleCases("Importer", "Importer()", oncePerRole,
+		func(b RoleContractBundle) func(t *testing.T) *ImporterFixture { return b.Importer },
+		RunImporterRejectsAStaleRowAndNamesIt,
+		RunImporterReportsTheAbsentTargetItDroppedOnce,
+		RunImporterReportsTheCrossPlaneEdgeItDropped,
+		RunImporterReportsTheCycleEdgeItDropped,
 	),
 
 	// Per case, not per role: see RoleContractBundle.IssueOperations.
