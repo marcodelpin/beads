@@ -119,13 +119,14 @@ info:
 
     `Issue`, `IssueWithCounts`, `IssueDetails`,
     `IssueWithDependencyMetadata`, `TreeNode`, `Dependency`, `Comment`,
-    `BondRef`, `Statistics`, `Cycle`, `CycleMember` and `IssueBlocking` are
+    `BondRef`, `Statistics`, `Cycle`, `CycleMember`, `IssueBlocking` and
+    `EventRecord` are
     pinned to the canonical Go structs (`x-go-type`), so the CLI's `--json`
     output and these response bodies are one compatibility domain and cannot
     drift apart. Changes to them are limited to NEW optional fields, and each
     addition must land with its entry in this document in the same change — a
-    two-way JSON-tag bijection test, covering all twelve, fails CI otherwise. A
-    breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
+    two-way JSON-tag bijection test, covering all thirteen, fails CI otherwise.
+    A breaking change to those shapes requires cutting `/v1`, not editing `/v0`.
 
 
     A member that is absent is not set. When reading a RESPONSE, clients MUST
@@ -2672,6 +2673,243 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/events:
+    get:
+      operationId: listEvents
+      summary: Read the durable events journal
+      description: >-
+        The workspace's append-only record of every committed issue mutation,
+        paged from a caller-held checkpoint. It is the HTTP form of
+        `bd events tail --since`, and it exists so a hosted consumer can mirror
+        or replay a workspace without shelling out to the CLI.
+
+
+        THE RECORDS ARE THE CLI'S RECORDS, byte for byte. `records[]` elements
+        are the same `EventRecord` objects `bd events tail` and
+        `bd events export` print one per line, produced by the same projection
+        and covered by the same committed golden fixture. A consumer may
+        reconcile an HTTP mirror against a CLI export without a translation
+        layer.
+
+
+        `since` IS THE CURSOR, and it is not one this server minted. It is a
+        sequence number the journal itself assigned, gapless and strictly
+        increasing in commit order, so a consumer's position is durable across
+        restarts on both sides and means the same thing to the CLI. Read with
+        `since` set to the highest `seq` you have DURABLY PROCESSED — not the
+        highest you have received — and advance it only after your own write
+        lands, because this server keeps no per-consumer state and cannot
+        redeliver.
+
+
+        POLL; THERE IS NO STREAMING, no long poll and no `follow` in v0. `head`
+        is what makes polling cheap to pace: when the last record's `seq`
+        equals `head` you are caught up and can back off until your next
+        interval. A caught-up read is a 200 with an EMPTY `records` array, never
+        a 404 — "nothing new yet" is an ordinary answer about a log.
+
+
+        SCOPE IS PER REPLICA AND PER BRANCH, and this is the part that most
+        often surprises. The journal records what THIS clone mutated on the
+        branch its writer commits to. Rows arrive by direct write, never by
+        merge, so `bd dolt pull` and the changes a merge settles into this
+        workspace are NOT journaled — they arrived as data, and nothing here
+        wrote them through the mutation seam. Each replica also has its OWN seq
+        space, counted from its own first mutation: a checkpoint taken against
+        one server is meaningless against another, where the same number names a
+        different record and a number above that replica's head reads as
+        "caught up" and stalls forever. Track a checkpoint per server URL, and
+        re-baseline (a fresh export or full re-read) after a sync rather than
+        carrying one across.
+
+
+        NOT EVERY MUTATION IS COVERED. Raw DML through `bd sql` bypasses the
+        mutation seam and is not journaled; nor are the schema migrations and
+        version reconciliation that run while a store is being opened, which
+        touch no bead. Dependency records are not symmetric either: `dep_add` is
+        emitted for an idempotent same-type re-add that only refreshes edge
+        metadata, so treat it as an upsert of the edge rather than proof the
+        edge is new, and a `dep_remove` naming an edge that is already gone
+        emits nothing at all.
+
+
+        THIS OPERATION NEVER DELETES. Retention is the workspace's decision,
+        made by `bd events prune` and by the automatic bounding that keeps an
+        enabled journal inside its floors; no prune is reachable over HTTP, and
+        reading a record does not acknowledge or release it.
+
+
+        IT ALSO DEPENDS ON WORKSPACE STATE, alone among the operations here.
+        `events.list` in `ContextResponse.capabilities` says this BUILD serves
+        the operation; it does not say this workspace has a journal, because the
+        journal is a per-workspace setting that is off by default. A server that
+        advertises the capability and answers 409 `events_journal_disabled` to
+        every request is behaving correctly. Handle that 409 as "not on this
+        workspace" rather than as a fault, and do not read the capability as a
+        promise that records will arrive.
+
+
+        A workspace that HAS enabled the journal on a storage backend with no
+        journal seam does not reach this operation at all: `bd serve` refuses to
+        start, matching the refusal that opening such a workspace already
+        produces. Either the server is running and this operation can answer, or
+        the operator saw the failure at startup.
+      parameters:
+        - name: since
+          in: query
+          required: true
+          description: >-
+            Return records with `seq` strictly greater than this value. Pass `0`
+            to read from the beginning of the retained journal.
+
+
+            REQUIRED, and deliberately not defaulted to zero. A consumer that
+            omitted its checkpoint by mistake would be served the whole retained
+            window, which reads as a flood of duplicate records rather than as
+            an error. A negative value is a 400 `invalid_argument` for the same
+            reason `bd events tail --since` refuses one: it is almost always
+            arithmetic on an empty cursor, and `seq > -5` would quietly serve
+            everything as though it were a legitimate resume.
+
+
+            A value at or above `head` is not an error — it is the caught-up
+            case, a 200 with an empty `records` array.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: limit
+          in: query
+          description: >-
+            Maximum number of records to return, from 1 to 10000. A value
+            outside that range — `0` included — is a 400 `invalid_argument`.
+
+
+            THERE IS NO UNLIMITED READ HERE, and `0` does NOT mean unlimited as
+            it does on `GET /v0/beads/issues`. A caller resuming from an old
+            checkpoint would otherwise ask one process to buffer the entire
+            retained window — a hundred thousand records under the shipped
+            `events-journal-retain-rows` floor — and encode it into a single
+            response. The ceiling is unconditional and does not depend on the
+            bind mode.
+
+
+            The default of 1000 is deliberately much larger than the issue
+            listings' 50: a journal consumer is a machine draining a backlog in
+            order rather than a person reading a page, and the number that
+            matters to it is round trips to catch up.
+
+
+            A FULL PAGE DOES NOT MEAN THERE IS MORE, and a short one does not
+            mean there is not. Compare the last record's `seq` against `head`;
+            that is the only correct test, and it is why this envelope carries
+            no `has_more`.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1000
+      responses:
+        '200':
+          description: >-
+            A page of journal records in ascending `seq` order, with the
+            journal head.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsPage'
+        '400':
+          description: >-
+            Invalid request: `since` absent, negative or unparseable, a `limit`
+            outside 1..10000, or an unknown query parameter.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >-
+            The durable events journal is NOT ENABLED on this workspace, so it
+            records nothing and never will until an operator turns it on
+            (`events-journal true`, or `BD_EVENTS_JOURNAL=1` in the server's
+            environment) and restarts the server.
+
+
+            This refusal exists because the honest alternative does not: a
+            disabled journal presents as zero rows and a head of zero, which is
+            byte-identical to an enabled journal nothing has written to yet. A
+            consumer given that answer would poll a workspace that will never
+            produce a record and report itself caught up indefinitely. An EMPTY
+            journal is the 200 — `records: []` with `head: 0` — and the two are
+            distinguishable only here.
+
+
+            A 409 rather than a 404 because the operation and the resource both
+            exist: this is a statement about the workspace's current
+            configuration, which the same request stops earning the moment it
+            changes. It is a server-side fix, never a retry and never a
+            client-side one.
+          x-bd-codes: [events_journal_disabled]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '410':
+          description: >-
+            The checkpoint in `since` has fallen BELOW the retained window: the
+            records that came next were pruned, and this server cannot serve
+            them. Retrying the same `since` can never succeed.
+
+
+            The read FAILS rather than returning an empty success or silently
+            skipping ahead, and that is the whole point of the code. `WHERE seq
+            > since` cannot itself distinguish "nothing new" from "your prefix
+            is gone", so a consumer resuming past a prune would either stall
+            forever or jump to the current floor and lose every record in
+            between — both silent data loss.
+
+
+            The response carries `since`, `floor` and `head`: `floor` is the
+            lowest seq still retained, `head` the highest ever assigned. The
+            recovery is a decision the CONSUMER makes and this server will not
+            make for it — resume from `floor - 1` and accept a known gap, or
+            rebuild from a full export.
+
+
+            `since` IN THE RESPONSE IS NOT ALWAYS THE VALUE YOU SENT, and the
+            case where it differs has a third recovery. On an interior hole in
+            the retained window — a restored, hand-edited or half-copied journal
+            table; nothing bd does produces one — the response `since` is the
+            last seq that could be served CONTIGUOUSLY from your checkpoint, and
+            everything between your checkpoint and it is intact and servable.
+            This refusal does not hand it over, because a read that returned rows
+            and a gap would be the silent loss the code exists to prevent. Drain
+            it explicitly first: re-request with the SAME `since` you sent and
+            `limit` set to `response.since - request.since`, which stops the page
+            exactly at the hole and succeeds. Then resume from `floor - 1` and
+            take the gap, or re-baseline. A consumer that skips straight to
+            `floor - 1` loses records it could have had.
+
+
+            `since` is never BELOW what you sent in any of these cases, so
+            echoing it back can never re-deliver records you already have.
+
+
+            Sizing the floors — `events-journal-retain-days` and
+            `events-journal-retain-rows` — is how an operator decides the
+            longest consumer outage the workspace can survive. They are time and
+            count based and are NOT a consumer watermark: nothing here knows how
+            far any consumer has got.
+          x-bd-codes: [events_journal_truncated]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
 components:
 
   parameters:
@@ -3712,10 +3950,22 @@ components:
             `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
             `dependencies.add`, `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
-            `memories.forget`;
+            `memories.forget`, `events.list`;
             it grows additively, and an operation never
             appears here unless it is fully implemented. This is how a client
             checks for an operation — never the version string.
+
+
+            THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which
+            operations this binary serves, and for every entry but one that is
+            the whole answer. `events.list` is the exception: the durable events
+            journal is a per-workspace setting that is OFF by default, so a
+            server that advertises `events.list` may still refuse every request
+            to it with 409 `events_journal_disabled` — correctly, because the
+            operation exists and the workspace has no journal. A consumer of that
+            operation MUST treat the capability as "this server speaks it" and
+            the 409 as "not on this workspace", and must not read the capability
+            as a promise that records will arrive.
           items:
             type: string
 
@@ -4133,6 +4383,130 @@ components:
           description: >-
             Present if and only if `has_more` is true. Pass it back verbatim as
             `cursor` to fetch the next page. Opaque and server-private.
+
+    EventRecord:
+      type: object
+      description: >-
+        One record of the durable events journal: a single committed issue
+        mutation, as a replaying consumer receives it.
+
+
+        THIS IS THE CLI'S RECORD. It is pinned to the same Go struct
+        `bd events tail` and `bd events export` marshal one per line, so the
+        JSONL a consumer reads from stdout and the elements of an
+        `EventsPage.records` array are the same bytes for the same row. A
+        committed golden fixture pins that encoding field by field.
+
+
+        `issue` is the full issue state AFTER the mutation and is ALWAYS
+        PRESENT, carrying the literal `null` on a delete — where there is no
+        surviving row to describe. That is the one place this document's general
+        "treat null as absent" rule does not apply to a member's meaning: a
+        consumer must be able to tell a delete from a payload the server failed
+        to record, so the member is emitted rather than omitted. `dep` and
+        `comment` are the opposite: they are ABSENT on the ops that have no such
+        half, because their absence says the op has none, not that one was
+        empty.
+      x-go-type: eventsjournal.Record
+      x-go-type-import:
+        name: eventsjournal
+        path: github.com/steveyegge/beads/internal/eventsjournal
+      required: [seq, ts, op, issue_id, issue]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: >-
+            Counter-assigned inside the mutation's own transaction: gapless,
+            strictly increasing in commit order, never reused and never reset.
+            This is the value to pass back as `since`. It is scoped to ONE
+            replica — see the operation description.
+        ts:
+          type: string
+          description: >-
+            UTC insert time, stamped inside the committing transaction and
+            normalized to RFC 3339. It is NOT monotone in `seq`: two writers
+            against one SQL server, or a clock stepped back by NTP, can commit
+            an earlier `seq` with a later timestamp. Order by `seq`, never by
+            this.
+        op:
+          type: string
+          description: >-
+            What was done: `create`, `update`, `close`, `delete`, `dep_add`,
+            `dep_remove` or `comment`. The set is closed in v0; a client MUST
+            default-branch on an unknown value rather than fail, so that adding
+            one stays additive.
+        issue_id:
+          type: string
+          description: The mutated issue's canonical id.
+        issue:
+          type: object
+          nullable: true
+          description: >-
+            The full issue state after the mutation — the same object shape
+            `Issue` describes — or `null` on a delete. Always present.
+        dep:
+          type: object
+          description: >-
+            On `dep_add` and `dep_remove` only: `{"kind","target","metadata"}`
+            for the edge. Absent on every other op.
+
+
+            `metadata` differs in PROVENANCE between the two: on `dep_add` it is
+            the value being written as the caller supplied it, on `dep_remove`
+            it is the stored column read back just before the delete. The two
+            can differ byte for byte while meaning the same thing, so compare
+            parsed values rather than strings.
+        comment:
+          type: object
+          description: >-
+            On `comment` only: `{"id","author","text","created_at","source"}`.
+            Absent on every other op.
+
+    EventsPage:
+      type: object
+      required: [records, head]
+      description: >-
+        One page of the journal plus the position of its end.
+
+
+        THERE IS NO `has_more`, and that is deliberate rather than an omission.
+        Every other page on this surface reports truncation with a boolean
+        because its ordering is a query's; here the answer is a number the
+        client already needs for its next request. Compare the last record's
+        `seq` with `head`: equal means caught up, lower means keep reading. A
+        full page proves nothing either way, and a `has_more` computed from the
+        limit would be a second, weaker way to ask the same question.
+      properties:
+        records:
+          type: array
+          description: >-
+            Records with `seq` strictly greater than the requested `since`, in
+            ASCENDING `seq` order and contiguous — a gap in the retained window
+            is a 410, never a quietly shortened list. Empty array (never null)
+            when the caller is caught up.
+          items:
+            $ref: '#/components/schemas/EventRecord'
+        head:
+          type: integer
+          format: int64
+          description: >-
+            The highest `seq` this journal has ever assigned, read in the same
+            transaction as the records above.
+
+
+            It is the journal's HISTORY, not its contents: pruning deletes rows
+            and never touches the counter, so a fully pruned journal still
+            reports the head it reached. `0` means no mutation has ever been
+            journaled here — which, given that a disabled journal is refused
+            with 409 rather than answered, means an enabled journal on a
+            workspace that has not been written to yet.
+
+
+            Because it is read after the rows within one transaction, it is
+            always greater than or equal to the last record's `seq`; it may be
+            greater simply because a mutation committed while the page was being
+            read, which is the ordinary signal to poll again.
 
     QueryPage:
       type: object
@@ -4987,7 +5361,9 @@ components:
             emitted by the Host-header middleware on any route),
             `invalid_cursor` (400), `not_found` (404), `already_claimed` (409),
             `not_claimable` (409), `not_closable` (409),
-            `dependency_cycle` (409), `dependency_exists` (409), `busy` (503),
+            `dependency_cycle` (409), `dependency_exists` (409),
+            `events_journal_disabled` (409), `events_journal_truncated` (410),
+            `busy` (503),
             `db_unavailable` (503),
             `internal` (500). Renaming or removing a status+code pair is a
             breaking change; ADDING one is not, so clients MUST default-branch
@@ -5077,6 +5453,36 @@ components:
             it is a DESCENDANT (blocked status cascades, so it would inherit the
             block and never close). Both polarities are reported; this member is
             never omitted to mean false. See `issue_id`.
+        since:
+          type: integer
+          format: int64
+          description: >-
+            With `events_journal_truncated`: the checkpoint the reported window
+            begins after.
+
+
+            It is NOT always the value the request sent. In the ordinary case —
+            the prefix you asked for was pruned — it IS your checkpoint. When
+            the prefix is intact but the retained window has an interior hole,
+            it is instead the last seq the server could serve contiguously from
+            your checkpoint, and `floor` is where the next intact stretch
+            begins. It never reports a value BELOW what you sent, so echoing it
+            back can never re-deliver records you already hold.
+        floor:
+          type: integer
+          format: int64
+          description: >-
+            With `events_journal_truncated`: the lowest seq still retained, or
+            `head + 1` when the journal retains nothing at all. Resuming from
+            `floor - 1` continues with a known, explicit gap.
+        head:
+          type: integer
+          format: int64
+          description: >-
+            With `events_journal_truncated`: the highest seq this journal has
+            ever assigned. It never decreases under a prune, so `floor > head`
+            means the journal was pruned empty and the caller is at the end of
+            its history. Emitted even when zero.
         request_id:
           type: string
           description: >-

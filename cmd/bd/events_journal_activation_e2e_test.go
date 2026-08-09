@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/eventsjournal"
 )
 
 // The two plumbings the root pre-run never reached. Both are end-to-end on
@@ -149,7 +151,7 @@ func TestRoutedCreateHonorsTheEnvOverrideOverTheTargetsConfig(t *testing.T) {
 	}
 }
 
-func hasEventOp(records []eventRecord, op string) bool {
+func hasEventOp(records []eventsjournal.Record, op string) bool {
 	for _, r := range records {
 		if r.Op == op {
 			return true

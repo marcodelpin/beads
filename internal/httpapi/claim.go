@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/issueops"
@@ -308,22 +309,23 @@ type timedProvider struct {
 // provider it holds for the role — the same two-step a CLI command performs on
 // a store — instead of reaching past it to a constructor.
 var (
-	_ uow.IssueReaderSource       = timedProvider{}
-	_ uow.IssueClaimerSource      = timedProvider{}
-	_ uow.IssueLifecycleSource    = timedProvider{}
-	_ uow.WorkspaceConfigSource   = timedProvider{}
-	_ uow.StatsReporterSource     = timedProvider{}
-	_ uow.CycleDetectorSource     = timedProvider{}
-	_ uow.EdgeReaderSource        = timedProvider{}
-	_ uow.BlockingAnnotatorSource = timedProvider{}
-	_ uow.TreeWalkerSource        = timedProvider{}
-	_ uow.ReadyCounterSource      = timedProvider{}
-	_ uow.QuerierSource           = timedProvider{}
-	_ uow.SweeperSource           = timedProvider{}
-	_ uow.DeleterSource           = timedProvider{}
-	_ uow.BatchCreatorSource      = timedProvider{}
-	_ uow.DependencyEditorSource  = timedProvider{}
-	_ uow.MemoriesSource          = timedProvider{}
+	_ uow.IssueReaderSource         = timedProvider{}
+	_ uow.IssueClaimerSource        = timedProvider{}
+	_ uow.IssueLifecycleSource      = timedProvider{}
+	_ uow.WorkspaceConfigSource     = timedProvider{}
+	_ uow.StatsReporterSource       = timedProvider{}
+	_ uow.CycleDetectorSource       = timedProvider{}
+	_ uow.EdgeReaderSource          = timedProvider{}
+	_ uow.BlockingAnnotatorSource   = timedProvider{}
+	_ uow.TreeWalkerSource          = timedProvider{}
+	_ uow.ReadyCounterSource        = timedProvider{}
+	_ uow.QuerierSource             = timedProvider{}
+	_ uow.SweeperSource             = timedProvider{}
+	_ uow.DeleterSource             = timedProvider{}
+	_ uow.BatchCreatorSource        = timedProvider{}
+	_ uow.DependencyEditorSource    = timedProvider{}
+	_ uow.MemoriesSource            = timedProvider{}
+	_ uow.EventsJournalCursorSource = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -450,6 +452,10 @@ func (p timedProvider) DependencyEditor() (issueops.DependencyEditor, error) {
 // whose role is not an issueops role; the binding rule is the same.
 func (p timedProvider) Memories() (memoryops.Memories, error) {
 	return uow.NewMemories(p)
+}
+
+func (p timedProvider) EventsJournalCursor() (storage.EventsJournalCursor, error) {
+	return uow.NewEventsJournalCursor(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {

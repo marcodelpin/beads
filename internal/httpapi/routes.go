@@ -421,6 +421,19 @@ var routeTable = []route{
 		handler:     (*Server).handleGetMemory,
 	},
 	{
+		op:     OpListEvents,
+		method: http.MethodGet,
+		// A plain collection read, not a custom method and not a sub-resource of
+		// issues: the journal is its own collection whose members happen to
+		// describe issue mutations. `since` and `limit` are ordinary query
+		// parameters, exactly as they are on /v0/beads/issues, so pattern and
+		// specPath agree and no declaration is needed.
+		pattern:     "/v0/beads/events",
+		capability:  "events.list",
+		implemented: true,
+		handler:     (*Server).handleListEvents,
+	},
+	{
 		op:     OpForgetMemory,
 		method: http.MethodDelete,
 		// The surface's first DELETE. It shares a pattern with the read above

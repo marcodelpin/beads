@@ -105,6 +105,44 @@ func ReadEventsInTx(ctx context.Context, tx DBTX, since int64, limit int) ([]sto
 	return out, nil
 }
 
+// ReadEventsPageInTx is ReadEventsInTx plus the journal HEAD, for a consumer
+// that has to know how far behind it is rather than merely what came next.
+// `bd events tail` does not: it prints what it is given and polls again. A
+// polling HTTP consumer does, because the answer to "keep asking, or wait?"
+// is not in the rows.
+//
+// The head read is UNCONDITIONAL here, where ReadEventsInTx pays for one only
+// in the ambiguous cases. That is the deliberate cost of the extra member:
+// tail --follow runs this decision every second and must stay free, so the two
+// entry points differ in exactly this and share everything else — the row
+// query, the normalization, and ComputeEventsTruncation's verdict.
+//
+// The head is read AFTER the rows and inside the SAME transaction, which is
+// what keeps the pair coherent. Reading it first would let a mutation commit in
+// between and hand back a head BELOW the last row served — a consumer would
+// read that as "you are past the end" and stall. This order can only report a
+// head that is equal to or ahead of the last row, which is the truth a poller
+// acts on correctly either way.
+func ReadEventsPageInTx(ctx context.Context, tx DBTX, since int64, limit int) (storage.EventsJournalPage, error) {
+	rows, err := readEventsRowsInTx(ctx, tx, since, limit)
+	if err != nil {
+		return storage.EventsJournalPage{}, err
+	}
+	head, err := readEventsHeadInTx(ctx, tx)
+	if err != nil {
+		return storage.EventsJournalPage{}, err
+	}
+	// The SAME verdict the CLI read reaches, from the head already in hand: a
+	// truncation this path reported differently would be a second retention
+	// contract.
+	if err := ComputeEventsTruncation(since, rows, func() (int64, error) {
+		return head, nil
+	}); err != nil {
+		return storage.EventsJournalPage{}, err
+	}
+	return storage.EventsJournalPage{Rows: rows, Head: head}, nil
+}
+
 // ComputeEventsTruncation decides whether the rows a read returned are the
 // caller's contiguous continuation from since, or the remains of a window whose
 // prefix a prune already deleted. It returns *storage.EventsJournalTruncatedError

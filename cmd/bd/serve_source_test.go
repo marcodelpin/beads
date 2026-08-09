@@ -137,7 +137,7 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		t.Fatal("the store's own accessor no longer returns a hook-firing dependency editor; this test proves nothing")
 	}
 
-	roles, err := serveIssueRoles(chained)
+	roles, err := serveIssueRoles(chained, false)
 	if err != nil {
 		t.Fatalf("serveIssueRoles: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		// BD_NO_HOOKS=1 wires no hook decorator at all, so the roles are the
 		// store's own and the peel must be conditional.
 		bare := wireStorageDecorators(middle, hooks.NewRunner(t.TempDir()), true)
-		roles, err := serveIssueRoles(bare)
+		roles, err := serveIssueRoles(bare, false)
 		if err != nil {
 			t.Fatalf("serveIssueRoles: %v", err)
 		}
@@ -192,8 +192,35 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 		// httpapi.Listen refuses a partial role set, but a nil store reaching
 		// it as an all-nil set would report "no database source" — true, and
 		// useless. Name the real condition here.
-		if _, err := serveIssueRoles(nil); err == nil {
+		if _, err := serveIssueRoles(nil, false); err == nil {
 			t.Fatal("serveIssueRoles(nil) = nil error; want a refusal naming the missing store")
+		}
+	})
+
+	// The events journal is the one CONDITIONAL role, and both polarities
+	// matter. A backend that cannot read the journal is an ordinary backend —
+	// the journal is off by default, and a registered third-party backend has
+	// no obligation to implement a Dolt-shaped seam — so requiring it
+	// unconditionally would refuse to start servers that have no use for it.
+	// Requiring it for a workspace that DID enable one is the other half: a
+	// server that bound anyway would answer that route with a nil dereference.
+	t.Run("the journal role is required only when the workspace has one", func(t *testing.T) {
+		// serveRolesStore implements no journal seam, which is the case under
+		// test: assert that rather than assume it.
+		if _, ok := storage.UnwrapStore(chained).(storage.EventsJournalCursor); ok {
+			t.Fatal("the fixture store reads the journal; this test proves nothing")
+		}
+
+		roles, err := serveIssueRoles(chained, false)
+		if err != nil {
+			t.Fatalf("serveIssueRoles with the journal off: %v", err)
+		}
+		if roles.eventsJournal != nil {
+			t.Error("a store that cannot read the journal produced a reader")
+		}
+
+		if _, err := serveIssueRoles(chained, true); err == nil {
+			t.Fatal("serveIssueRoles accepted a journal-enabled workspace on a backend that cannot read the journal")
 		}
 	})
 }

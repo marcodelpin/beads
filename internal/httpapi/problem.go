@@ -82,6 +82,35 @@ const (
 	// CodeDependencyExists is the pair that already carries an edge of a
 	// DIFFERENT type, with both types in `existing_type`/`requested_type`.
 	CodeDependencyExists Code = "dependency_exists"
+	// CodeEventsJournalDisabled is the events journal being OFF on the served
+	// workspace. It exists because the alternative answer is a lie: a disabled
+	// journal reads as zero rows and a head of zero, which is byte-identical to
+	// an enabled journal nothing has written to yet — so a consumer would poll a
+	// workspace that will never produce a record and call it "caught up"
+	// forever. This is the one refusal on this surface that a client cannot
+	// discover any other way.
+	//
+	// A 409 for the reason CodeNotClosable gives: it is a statement about the
+	// current state of the workspace, which the same request stops earning the
+	// moment an operator sets `events-journal true` and restarts the server.
+	// Not a 404 — the operation and the resource both exist — and not a 501,
+	// which this surface reserves for an operation this BUILD does not
+	// implement, whereas every build implements this one.
+	CodeEventsJournalDisabled Code = "events_journal_disabled"
+	// CodeEventsJournalTruncated is a journal read whose checkpoint has fallen
+	// below the retained window. The value is storage's own constant, so the
+	// code a `bd events tail --json` failure carries and the code this surface
+	// emits cannot drift to two spellings of one condition.
+	//
+	// A 410 Gone, and the only one in the vocabulary: the records the caller
+	// asked for existed, were addressable by exactly this request, and have been
+	// deliberately deleted. That is what 410 means and what 404 does not — a 404
+	// would say the resource never existed and invite a retry, and the whole
+	// point of this refusal is that retrying the same `since` can never succeed.
+	// The `since`, `floor` and `head` members carry the window the server can
+	// still serve, so the recovery (resume from `floor - 1` and accept the gap,
+	// or re-baseline) is a decision the client makes from data rather than prose.
+	CodeEventsJournalTruncated Code = Code(storage.EventsJournalTruncatedCode)
 	// CodeBusy is retryable contention: the transaction retry budget was
 	// exhausted, or the in-flight request limit was saturated.
 	CodeBusy Code = "busy"
@@ -109,9 +138,13 @@ var codeStatus = map[Code]int{
 	CodeNotClosable:      http.StatusConflict,
 	CodeDependencyCycle:  http.StatusConflict,
 	CodeDependencyExists: http.StatusConflict,
-	CodeBusy:             http.StatusServiceUnavailable,
-	CodeDBUnavailable:    http.StatusServiceUnavailable,
-	CodeInternal:         http.StatusInternalServerError,
+
+	CodeEventsJournalDisabled:  http.StatusConflict,
+	CodeEventsJournalTruncated: http.StatusGone,
+
+	CodeBusy:          http.StatusServiceUnavailable,
+	CodeDBUnavailable: http.StatusServiceUnavailable,
+	CodeInternal:      http.StatusInternalServerError,
 }
 
 // Status returns the HTTP status frozen to c, or 0 if c is not in the v0
@@ -251,6 +284,17 @@ const (
 	// It is the operation that makes stored memories DISCOVERABLE rather than
 	// merely readable by a caller who already knows a key.
 	OpListMemories = "listMemories"
+	// OpListEvents pages the durable mutation journal from a caller-held
+	// checkpoint. It is the first operation on this surface whose paging is not
+	// a cursor this server minted: `since` is a sequence number the journal
+	// itself assigned, so a consumer's position survives a restart on either
+	// side and is meaningful to `bd events tail` as well.
+	//
+	// It is a READ of a log, not a subscription: v0 has no streaming, no
+	// long-poll and no follow. The retention contract is what makes that safe to
+	// publish — a consumer that falls too far behind is told so with
+	// `events_journal_truncated` rather than served a silently shortened history.
+	OpListEvents = "listEvents"
 )
 
 // operationCodes is the per-operation problem vocabulary: exactly the codes
@@ -394,6 +438,21 @@ var operationCodes = map[string][]Code{
 	// one of its values. No 404 — a search matching nothing is an empty page,
 	// because a question about a set has an answer even when the set is empty.
 	OpListMemories: {CodeInvalidArgument, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The two journal codes are this operation's alone and neither has a
+	// precedent elsewhere on this surface, because no other operation reads a
+	// LOG. The 400 is its own too: `since` is required, and a negative or
+	// unparseable checkpoint is refused rather than treated as zero — `seq > -5`
+	// would quietly serve the whole journal as if it were a legitimate resume,
+	// which is the same refusal `bd events tail --since` makes.
+	//
+	// No 404. A checkpoint at or past the head is a caught-up 200 with an empty
+	// list, because "nothing new yet" is an answer about a log rather than a
+	// missing resource, and a poller that got a 404 for being up to date would
+	// have to treat the surface's miss vocabulary as a normal steady state.
+	OpListEvents: {
+		CodeInvalidArgument, CodeEventsJournalDisabled, CodeEventsJournalTruncated,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
 	// NO 404, for a stronger version of the batch create's reason: an edge that
 	// is not there is `removed: false`, and an endpoint id that names nothing
 	// holds no edge either, so this operation probes no id's existence and has
@@ -485,6 +544,28 @@ func (r Result) WithHierarchyConflict(issueID, blockerID string, blockerIsAncest
 	return r
 }
 
+// WithJournalWindow attaches the three `events_journal_truncated` extension
+// members: the checkpoint the reported window begins after, the lowest seq
+// still retained, and the highest seq ever assigned.
+//
+// They come from *storage.EventsJournalTruncatedError's own fields — computed
+// inside the transaction that saw the gap — for the reason every other typed
+// member on this envelope does, and one more: `since` is NOT always the value
+// the caller sent. On an interior hole it is the last seq the server could
+// serve contiguously from the caller's checkpoint, which is strictly the more
+// useful number and cannot be recovered by a client that assumed it was
+// echoing its own input back.
+//
+// All three are emitted together and none is omitted to mean zero: a head of 0
+// is a real journal state (nothing has ever been written), and a client
+// computing `floor - 1` needs the value rather than an absence to interpret.
+func (r Result) WithJournalWindow(since, floor, head int64) Result {
+	r.Problem.Since = &since
+	r.Problem.Floor = &floor
+	r.Problem.Head = &head
+	return r
+}
+
 // WithRequestID sets the `request_id` member, the correlation id echoed in the
 // request log line. It is what makes a 5xx actionable: the body carries a fixed
 // static detail by design, so the id is the client's only handle on the one log
@@ -550,6 +631,28 @@ func NotFound() Result {
 	return newResult(CodeNotFound, "no issue or wisp with that id")
 }
 
+// EventsJournalDisabled builds the 409 for a workspace whose journal is off.
+//
+// The detail names the setting rather than describing the state, because the
+// recovery is entirely on the SERVER side — a client can do nothing about it —
+// and the human reading this response is the operator who has to go turn it on.
+func EventsJournalDisabled() Result {
+	return newResult(CodeEventsJournalDisabled,
+		"the durable events journal is not enabled on this workspace; set `events-journal true` and restart the server")
+}
+
+// EventsJournalTruncated builds the 410 for a checkpoint below the retained
+// window, carrying the window the server can still serve.
+//
+// The detail is the storage error's OWN sentence, which is the one `bd events
+// tail` prints. A consumer that reads both surfaces sees one description of one
+// condition, and this is a 4xx, so reflecting the server's own state here is
+// within what staticDetail allows.
+func EventsJournalTruncated(err *storage.EventsJournalTruncatedError) Result {
+	return newResult(CodeEventsJournalTruncated, err.Error()).
+		WithJournalWindow(err.Since, err.Floor, err.Head)
+}
+
 // MemoryNotFound builds the 404 for a key this workspace holds no memory under.
 //
 // A separate constructor rather than a detail argument on NotFound, because the
@@ -566,9 +669,20 @@ func MemoryNotFound() Result {
 // is responsible for logging err: everything mapped to a 5xx deliberately
 // drops the error text on the floor (see staticDetail).
 func ClassifyError(err error) Result {
+	// The one row that carries data out of the error rather than only a code.
+	// It lives HERE, in the shared mapping, rather than in the events handler:
+	// the journal read is reached from two database sources through two
+	// different plumbings, and a mapping a handler applied itself would be one
+	// `if` away from a pruned-past checkpoint arriving as a generic 500 on
+	// whichever arm forgot it.
+	var truncated *storage.EventsJournalTruncatedError
+
 	switch {
 	case err == nil:
 		return newResult(CodeInternal, "")
+
+	case errors.As(err, &truncated):
+		return EventsJournalTruncated(truncated)
 
 	// Not-found normalization belongs in the shared read path, which folds the
 	// two miss shapes (a wrapped sql.ErrNoRows, and a nil issue with a nil

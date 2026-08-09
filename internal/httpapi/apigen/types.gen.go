@@ -6,6 +6,7 @@ package apigen
 import (
 	"time"
 
+	eventsjournal "github.com/steveyegge/beads/internal/eventsjournal"
 	types "github.com/steveyegge/beads/internal/types"
 	issueops "github.com/steveyegge/beads/issueops"
 )
@@ -264,7 +265,9 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	//
+	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but one that is the whole answer. `events.list` is the exception: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises `events.list` may still refuse every request to it with 409 `events_journal_disabled` — correctly, because the operation exists and the workspace has no journal. A consumer of that operation MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
 
 	// Database Logical database name (not a host or a DSN).
@@ -395,6 +398,28 @@ type DependencyTreePage struct {
 	Items []TreeNode `json:"items"`
 }
 
+// EventRecord One record of the durable events journal: a single committed issue mutation, as a replaying consumer receives it.
+//
+// THIS IS THE CLI'S RECORD. It is pinned to the same Go struct `bd events tail` and `bd events export` marshal one per line, so the JSONL a consumer reads from stdout and the elements of an `EventsPage.records` array are the same bytes for the same row. A committed golden fixture pins that encoding field by field.
+//
+// `issue` is the full issue state AFTER the mutation and is ALWAYS PRESENT, carrying the literal `null` on a delete — where there is no surviving row to describe. That is the one place this document's general "treat null as absent" rule does not apply to a member's meaning: a consumer must be able to tell a delete from a payload the server failed to record, so the member is emitted rather than omitted. `dep` and `comment` are the opposite: they are ABSENT on the ops that have no such half, because their absence says the op has none, not that one was empty.
+type EventRecord = eventsjournal.Record
+
+// EventsPage One page of the journal plus the position of its end.
+//
+// THERE IS NO `has_more`, and that is deliberate rather than an omission. Every other page on this surface reports truncation with a boolean because its ordering is a query's; here the answer is a number the client already needs for its next request. Compare the last record's `seq` with `head`: equal means caught up, lower means keep reading. A full page proves nothing either way, and a `has_more` computed from the limit would be a second, weaker way to ask the same question.
+type EventsPage struct {
+	// Head The highest `seq` this journal has ever assigned, read in the same transaction as the records above.
+	//
+	// It is the journal's HISTORY, not its contents: pruning deletes rows and never touches the counter, so a fully pruned journal still reports the head it reached. `0` means no mutation has ever been journaled here — which, given that a disabled journal is refused with 409 rather than answered, means an enabled journal on a workspace that has not been written to yet.
+	//
+	// Because it is read after the rows within one transaction, it is always greater than or equal to the last record's `seq`; it may be greater simply because a mutation committed while the page was being read, which is the ordinary signal to poll again.
+	Head int64 `json:"head"`
+
+	// Records Records with `seq` strictly greater than the requested `since`, in ASCENDING `seq` order and contiguous — a gap in the retained window is a 410, never a quietly shortened list. Empty array (never null) when the caller is caught up.
+	Records []EventRecord `json:"records"`
+}
+
 // Health defines model for Health.
 type Health struct {
 	Status HealthStatus `json:"status"`
@@ -506,7 +531,7 @@ type Problem struct {
 	// BlockerIsAncestor With `dependency_cycle`, hierarchy refusal only: true when `blocker_id` is an ANCESTOR of `issue_id` (which cannot close until its descendants finish, so the gate would never clear), false when it is a DESCENDANT (blocked status cascades, so it would inherit the block and never close). Both polarities are reported; this member is never omitted to mean false. See `issue_id`.
 	BlockerIsAncestor *bool `json:"blocker_is_ancestor,omitempty"`
 
-	// Code The stable machine-readable reason, and the ONLY member a client may dispatch on. v0's vocabulary: `invalid_argument` (400, also emitted by the Host-header middleware on any route), `invalid_cursor` (400), `not_found` (404), `already_claimed` (409), `not_claimable` (409), `not_closable` (409), `dependency_cycle` (409), `dependency_exists` (409), `busy` (503), `db_unavailable` (503), `internal` (500). Renaming or removing a status+code pair is a breaking change; ADDING one is not, so clients MUST default-branch on unknown values and fall back to the status class (unknown 4xx → client bug, fail loud; unknown 503 → retry per `Retry-After`; other unknown 5xx → server fault).
+	// Code The stable machine-readable reason, and the ONLY member a client may dispatch on. v0's vocabulary: `invalid_argument` (400, also emitted by the Host-header middleware on any route), `invalid_cursor` (400), `not_found` (404), `already_claimed` (409), `not_claimable` (409), `not_closable` (409), `dependency_cycle` (409), `dependency_exists` (409), `events_journal_disabled` (409), `events_journal_truncated` (410), `busy` (503), `db_unavailable` (503), `internal` (500). Renaming or removing a status+code pair is a breaking change; ADDING one is not, so clients MUST default-branch on unknown values and fall back to the status class (unknown 4xx → client bug, fail loud; unknown 503 → retry per `Retry-After`; other unknown 5xx → server fault).
 	Code string `json:"code"`
 
 	// Detail Optional prose, never load-bearing. For 5xx codes it is a FIXED string per code and carries nothing about the underlying failure: driver and dial errors routinely embed the DSN, database user and host:port, and this API supports binding beyond loopback. 4xx details reflect the caller's own input back and are specific.
@@ -514,6 +539,12 @@ type Problem struct {
 
 	// ExistingType With `dependency_exists`: the type of the edge the pair already carries, read inside the refusing transaction.
 	ExistingType *string `json:"existing_type,omitempty"`
+
+	// Floor With `events_journal_truncated`: the lowest seq still retained, or `head + 1` when the journal retains nothing at all. Resuming from `floor - 1` continues with a known, explicit gap.
+	Floor *int64 `json:"floor,omitempty"`
+
+	// Head With `events_journal_truncated`: the highest seq this journal has ever assigned. It never decreases under a prune, so `floor > head` means the journal was pruned empty and the caller is at the end of its history. Emitted even when zero.
+	Head *int64 `json:"head,omitempty"`
 
 	// IssueId With `dependency_cycle`, and ONLY on the hierarchy refusal: the issue the requested blocking edge would have gated. Its PRESENCE is the discriminator — absent means a plain scheduling cycle, present means the edge pointed at the issue's own ancestor or descendant.
 	//
@@ -539,6 +570,11 @@ type Problem struct {
 
 	// RequestedType With `dependency_exists`: the type the request asked for. Together with `existing_type` it is the whole refusal, so a client never parses either out of `detail`.
 	RequestedType *string `json:"requested_type,omitempty"`
+
+	// Since With `events_journal_truncated`: the checkpoint the reported window begins after.
+	//
+	// It is NOT always the value the request sent. In the ordinary case — the prefix you asked for was pruned — it IS your checkpoint. When the prefix is intact but the retained window has an interior hole, it is instead the last seq the server could serve contiguously from your checkpoint, and `floor` is where the next intact stretch begins. It never reports a value BELOW what you sent, so echoing it back can never re-deliver records you already hold.
+	Since *int64 `json:"since,omitempty"`
 
 	// Status The HTTP status code, repeated in the body.
 	Status int `json:"status"`
@@ -868,6 +904,25 @@ type GetDependencyTreeParams struct {
 
 // GetDependencyTreeParamsDirection defines parameters for GetDependencyTree.
 type GetDependencyTreeParamsDirection string
+
+// ListEventsParams defines parameters for ListEvents.
+type ListEventsParams struct {
+	// Since Return records with `seq` strictly greater than this value. Pass `0` to read from the beginning of the retained journal.
+	//
+	// REQUIRED, and deliberately not defaulted to zero. A consumer that omitted its checkpoint by mistake would be served the whole retained window, which reads as a flood of duplicate records rather than as an error. A negative value is a 400 `invalid_argument` for the same reason `bd events tail --since` refuses one: it is almost always arithmetic on an empty cursor, and `seq > -5` would quietly serve everything as though it were a legitimate resume.
+	//
+	// A value at or above `head` is not an error — it is the caught-up case, a 200 with an empty `records` array.
+	Since int64 `form:"since" json:"since"`
+
+	// Limit Maximum number of records to return, from 1 to 10000. A value outside that range — `0` included — is a 400 `invalid_argument`.
+	//
+	// THERE IS NO UNLIMITED READ HERE, and `0` does NOT mean unlimited as it does on `GET /v0/beads/issues`. A caller resuming from an old checkpoint would otherwise ask one process to buffer the entire retained window — a hundred thousand records under the shipped `events-journal-retain-rows` floor — and encode it into a single response. The ceiling is unconditional and does not depend on the bind mode.
+	//
+	// The default of 1000 is deliberately much larger than the issue listings' 50: a journal consumer is a machine draining a backlog in order rather than a person reading a page, and the number that matters to it is round trips to catch up.
+	//
+	// A FULL PAGE DOES NOT MEAN THERE IS MORE, and a short one does not mean there is not. Compare the last record's `seq` against `head`; that is the only correct test, and it is why this envelope carries no `has_more`.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
 
 // ListIssuesParams defines parameters for ListIssues.
 type ListIssuesParams struct {
