@@ -59,6 +59,45 @@ const (
 	// sentinel's message text.
 	CodeAlreadyClaimed Code = "already_claimed"
 	CodeNotClaimable   Code = "not_claimable"
+	// CodeNotReleasable is a row refusing to give up a claim, and it covers
+	// the two conditions releaseIssue's role reports for that: the row holds
+	// no claim, or its status is neither open nor in_progress.
+	//
+	// A 409 for CodeNotClosable's reason: the body is well-formed and STATE
+	// refuses it, so the same request succeeds or fails on something the client
+	// cannot see without reading it.
+	//
+	// IT IS MINTED RATHER THAN FOLDED INTO CodeNotClaimable, which is the
+	// nearest existing code and covers a superset of the same statuses today.
+	// The coincidence is not a contract: the release transition is pinned to
+	// {open, in_progress} by releasableStatus and the claim's eligibility is a
+	// separate predicate, so the two sets are free to diverge and would then be
+	// one code meaning two things. Worse, the unheld half would be an outright
+	// lie — an open, unassigned row is the MOST claimable row a workspace has,
+	// and answering `not_claimable` about it would send a client somewhere
+	// there is nothing to find.
+	//
+	// IT COVERS BOTH CONDITIONS UNDER ONE CODE, and that is a deliberate
+	// start-narrow CHOICE rather than a consequence of missing information.
+	//
+	// THE TWO CONDITIONS ARE FULLY DISTINGUISHABLE HERE. ErrNotClaimed and
+	// ErrNotReleasable are two distinct typed sentinels, and failRelease holds
+	// both in one case arm — so a future split needs no archaeology and no
+	// prose-scraping: it is a mapping change in that arm plus a code in this
+	// block and a line in the document. What IS unavailable typed is the
+	// OBSERVATION either refusal made — the status it saw, the emptiness of the
+	// assignee — because both format those into their messages and this surface
+	// does not scrape its own prose. That is why the code carries no extension
+	// member, and it is a narrower statement than "the refusals are
+	// indistinguishable", which they are not.
+	//
+	// The split is deferred rather than refused because one code is the
+	// reversible direction: splitting later is an ADDITION, which the document
+	// already tells clients to tolerate, while merging two published codes into
+	// one is the removal that breaks the wire. A client that needs the
+	// distinction before then reads the row, which the operation description
+	// tells it to do for a safety reason rather than a taste one.
+	CodeNotReleasable Code = "not_releasable"
 	// CodeNotClosable is close policy refusing an unforced close: open
 	// children, or a live blocker. The open-children refusal carries the count
 	// in the `open_children` extension member, read inside the refusing
@@ -187,6 +226,7 @@ var codeStatus = map[Code]int{
 	CodeAlreadyClaimed:   http.StatusConflict,
 	CodeNotClaimable:     http.StatusConflict,
 	CodeNotClosable:      http.StatusConflict,
+	CodeNotReleasable:    http.StatusConflict,
 	CodeDependencyCycle:  http.StatusConflict,
 	CodeDependencyExists: http.StatusConflict,
 	CodeAlreadyExists:    http.StatusConflict,
@@ -271,6 +311,21 @@ const (
 	OpListIssues    = "listIssues"
 	OpGetIssue      = "getIssue"
 	OpClaimIssue    = "claimIssue"
+	// OpReleaseIssue gives a claim back — the claim's inverse, and what
+	// `bd unclaim` spells. It is a named lifecycle action rather than a status
+	// patch for OpCloseIssue's reason: an update spells the release three
+	// fields at a time, which puts the transition's definition in the caller,
+	// and the lease it drops is the part a patch cannot express at all.
+	//
+	// It is the one write on this surface that is NOT idempotent, and the
+	// asymmetry with the claim is a fact about the two post-states rather than
+	// a preference: a claim's post-state names the claimant, so a re-claim is
+	// recognizable and can answer 200. A release leaves an anonymous row, so
+	// "I released this twice", "a reaper beat me to it" and "nothing ever
+	// claimed it" are one row — and one 200 for three situations that want
+	// different things from a caller. It answers 409 instead and lets the
+	// caller decide which of them it can live with.
+	OpReleaseIssue = "releaseIssue"
 	// OpCloseIssue is the second half of the agent loop this surface exists to
 	// serve: claim, work, close. It is a named lifecycle action rather than a
 	// status patch because Close carries semantics a patch has nowhere to put —
@@ -482,6 +537,24 @@ var operationCodes = map[string][]Code{
 	OpDeleteIssues: {CodeInvalidArgument, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	OpClaimIssue: {
 		CodeInvalidArgument, CodeNotFound, CodeAlreadyClaimed, CodeNotClaimable,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
+	// THREE conflict codes, and only one of them is new. `already_claimed` is
+	// the ownership fence, inherited from updateIssue's assignee arm: the same
+	// situation — a live foreign owner refusing a write — with the same two
+	// bypasses, spelled `force` and `expected_assignee` here. `precondition_failed`
+	// is the `expected_assignee` guard, inherited from the same operation and
+	// carrying the same members for the same reason: the request's expectation,
+	// never an observation.
+	//
+	// `not_releasable` is the mint, and its own doc carries the analysis.
+	//
+	// The 404 is the path id's, on the terms updateIssue states. There is no
+	// `not_claimable` here even though the claim's status refusal is the nearest
+	// neighbour — see CodeNotReleasable for why that reuse was refused.
+	OpReleaseIssue: {
+		CodeInvalidArgument, CodeNotFound,
+		CodeAlreadyClaimed, CodeNotReleasable, CodePreconditionFailed,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
 	// The 409 is close POLICY, and it is the only conflict this operation has:

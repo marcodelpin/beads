@@ -756,6 +756,37 @@ func TestCloseRequestMembersMatchTheHandler(t *testing.T) {
 	}
 }
 
+// TestReleaseRequestMembersMatchTheHandler is the close's gate for the release
+// body, and it exists for the same reason. It matters a little more here than
+// there because two of the three members are GUARDS: a documented guard the
+// server refuses as unknown, or an undocumented one it honors, both change who
+// is allowed to release whose claim.
+func TestReleaseRequestMembersMatchTheHandler(t *testing.T) {
+	accepted := map[string]bool{}
+	for _, name := range releaseRequestMembers {
+		accepted[name] = true
+	}
+
+	goFields := jsonTagNames(t, reflect.TypeOf(apigen.ReleaseIssueRequest{}))
+	if extra := diff(goFields, accepted); len(extra) > 0 {
+		t.Errorf("generated ReleaseIssueRequest declares members the release handler refuses as unknown: %v\n"+
+			"teach releaseRequest to honor them, or the document promises a member the server turns down", extra)
+	}
+	if missing := diff(accepted, goFields); len(missing) > 0 {
+		t.Errorf("the release handler accepts members ReleaseIssueRequest does not declare: %v", missing)
+	}
+
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "ReleaseIssueRequest")
+	specProps := schemaProperties(t, doc, schema)
+	if extra := diff(specProps, accepted); len(extra) > 0 {
+		t.Errorf("the ReleaseIssueRequest schema documents members the release handler refuses: %v", extra)
+	}
+	if missing := diff(accepted, specProps); len(missing) > 0 {
+		t.Errorf("the release handler accepts members the ReleaseIssueRequest schema does not document: %v", missing)
+	}
+}
+
 // TestUpdateRequestMembersMatchTheHandler is the claim's and the close's gate
 // for the update body, at BOTH of its levels.
 //

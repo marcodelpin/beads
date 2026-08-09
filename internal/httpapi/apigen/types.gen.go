@@ -734,7 +734,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.create`, `issues.claim`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.create`, `issues.claim`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	//
 	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
@@ -1158,7 +1158,7 @@ type Problem struct {
 	// BlockerIsAncestor With `dependency_cycle`, hierarchy refusal only: true when `blocker_id` is an ANCESTOR of `issue_id` (which cannot close until its descendants finish, so the gate would never clear), false when it is a DESCENDANT (blocked status cascades, so it would inherit the block and never close). Both polarities are reported; this member is never omitted to mean false. See `issue_id`.
 	BlockerIsAncestor *bool `json:"blocker_is_ancestor,omitempty"`
 
-	// Code The stable machine-readable reason, and the ONLY member a client may dispatch on. v0's vocabulary: `invalid_argument` (400, also emitted by the Host-header middleware on any route), `invalid_cursor` (400), `not_found` (404), `already_claimed` (409), `not_claimable` (409), `not_closable` (409), `dependency_cycle` (409), `dependency_exists` (409), `already_exists` (409), `precondition_failed` (409), `events_journal_disabled` (409), `events_journal_truncated` (410), `busy` (503), `db_unavailable` (503), `events_watch_saturated` (503), `internal` (500). Renaming or removing a status+code pair is a breaking change; ADDING one is not, so clients MUST default-branch on unknown values and fall back to the status class (unknown 4xx → client bug, fail loud; unknown 503 → retry per `Retry-After`; other unknown 5xx → server fault).
+	// Code The stable machine-readable reason, and the ONLY member a client may dispatch on. v0's vocabulary: `invalid_argument` (400, also emitted by the Host-header middleware on any route), `invalid_cursor` (400), `not_found` (404), `already_claimed` (409), `not_claimable` (409), `not_closable` (409), `not_releasable` (409), `dependency_cycle` (409), `dependency_exists` (409), `already_exists` (409), `precondition_failed` (409), `events_journal_disabled` (409), `events_journal_truncated` (410), `busy` (503), `db_unavailable` (503), `events_watch_saturated` (503), `internal` (500). Renaming or removing a status+code pair is a breaking change; ADDING one is not, so clients MUST default-branch on unknown values and fall back to the status class (unknown 4xx → client bug, fail loud; unknown 503 → retry per `Retry-After`; other unknown 5xx → server fault).
 	Code string `json:"code"`
 
 	// DeclaredLater With `invalid_argument` on a batch operation whose items may name each other: whether the unresolvable key IS declared by the request, at a LATER index.
@@ -1284,6 +1284,48 @@ type Ref struct {
 
 	// Key The `key` a create item in THIS REQUEST gave itself. It is not an id, it is not stored anywhere, and it is resolved to the id the request minted — which the response's `keys` member reports.
 	Key *string `json:"key,omitempty"`
+}
+
+// ReleaseIssueRequest defines model for ReleaseIssueRequest.
+type ReleaseIssueRequest struct {
+	// Actor Who is releasing the claim. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value reaches the event the release records and the storage commit message, so an unvalidated newline would forge audit-trail lines.
+	//
+	// It is REQUIRED, and for one reason beyond the audit trail: a release is the moment work stops being owned, and the one question asked of its history entry afterwards is who let it go. On the unconditional path it is ALSO the ownership fence's subject — see the operation description.
+	Actor string `json:"actor"`
+
+	// ExpectedAssignee Compare-and-set on the holder: the release proceeds only while the issue is still assigned to this actor, and otherwise refuses with `409` / `precondition_failed` naming this value, having written nothing.
+	//
+	// A MATCH REPLACES THE OWNERSHIP FENCE, so `actor` need not be the holder. Sending it beside `force` is a 400: the two are answers to the same question and they disagree.
+	//
+	// THE COMPARISON IS SEPARATOR-INSENSITIVE AND NOTHING ELSE. A run of `.`, `_` or `-` matches any other such run, so `agent-a`, `agent_a` and `agent.a` are one holder — that is deliberate, so a caller naming the holder under a different layer's spelling is a match rather than a mismatch. NOTHING ELSE IS FORGIVEN: the value is not trimmed and not case-folded, so `" agent-a"` and `Agent-a` are both refusals. The server trims only far enough to tell a blank expectation from a real one and never sends the trimmed form on, so a caller that pads its expectation loses EVERY time rather than intermittently. Compose it from a holder a read gave you.
+	//
+	// THE EMPTY STRING IS A 400, and this is the one place this member disagrees with `UpdateIssueRequest.expected_assignee`, where an empty string is a real guard meaning "expected unassigned". Here "release a row nobody holds" describes no release at all; a caller that wants to assert a row is unheld is asking a READER a question, not asking this operation to do nothing. Absent, and only absent, selects the unconditional path.
+	//
+	// IT IS NOT LENGTH- OR PATTERN-BOUNDED the way `actor` is, and the asymmetry is deliberate: this value is COMPARED and never stored, so a value no assignee column could hold simply cannot match, and refusing it at the edge would be a refusal the role does not have.
+	ExpectedAssignee *string `json:"expected_assignee,omitempty"`
+
+	// Force Bypass the ownership fence, so an actor that is not the holder may release the claim. It is the escape hatch `bd unclaim --force` spells, for an abandoned claim whose holder crashed.
+	//
+	// IT BYPASSES THE FENCE AND NOTHING ELSE. It does not make an unheld row releasable, it does not make a closed one releasable, and it never bypasses a precondition — sending it beside `expected_assignee` is a 400 rather than a silent win for either.
+	Force *bool `json:"force,omitempty"`
+}
+
+// ReleaseIssueResponse defines model for ReleaseIssueResponse.
+type ReleaseIssueResponse struct {
+	// Changed Whether the release WROTE the row. It is TRUE on every 200 this operation returns, because every shape that would not write is refused above it — an unheld row is a 409, not an idempotent no-op. DO NOT WRITE A `changed: false` BRANCH: no request reaches one.
+	//
+	// It is published rather than omitted because `claimIssue` and `updateIssue` publish the same fact, and a caller holding all three should not have to read them two ways. It is also the negative space that answers "where is the `already_released` member" — there is none, and the operation description says why.
+	Changed bool `json:"changed"`
+
+	// Issue A tracked work item. Property semantics documented here apply to every schema that repeats them below.
+	Issue Issue `json:"issue"`
+
+	// Revision The row's optimistic-concurrency token AFTER the release, spelled the way `UpdateIssueResponse.revision` spells it and carrying the same promise: a read-modify-write loop composes its next `expected_version` from THIS value, never from a number it incremented itself.
+	//
+	// A release REMINTS the token by design, so a caller that guarded a following write on a version it read BEFORE the release will miss. That is the point — a concurrent reclaim or close conflicts rather than silently merging — and this member is how the caller stays in step.
+	//
+	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double parser corrupts it silently, and the corruption only shows up as a `precondition_failed` on the NEXT request.
+	Revision int64 `json:"revision"`
 }
 
 // RememberRequest What to remember, and optionally under what key.
@@ -1910,6 +1952,9 @@ type ClaimIssueJSONRequestBody = ClaimRequest
 
 // CloseIssueJSONRequestBody defines body for CloseIssue for application/json ContentType.
 type CloseIssueJSONRequestBody = CloseIssueRequest
+
+// ReleaseIssueJSONRequestBody defines body for ReleaseIssue for application/json ContentType.
+type ReleaseIssueJSONRequestBody = ReleaseIssueRequest
 
 // ReopenIssueJSONRequestBody defines body for ReopenIssue for application/json ContentType.
 type ReopenIssueJSONRequestBody = ReopenIssueRequest

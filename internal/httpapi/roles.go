@@ -170,3 +170,25 @@ func (c checkedClaimer) Claim(ctx context.Context, req issueops.ClaimRequest) (i
 	}
 	return result, err
 }
+
+// checkedReleaser is the releaser the release handler is handed.
+//
+// It exists for checkedClaimer's reason exactly: handleRelease writes
+// *result.Issue and reads its RowVersion, so a role that reported success
+// without the row would panic on a live server.
+type checkedReleaser struct{ inner issueops.Releaser }
+
+// Release refuses a result that reports success without the row the response
+// body is built from.
+//
+// The generic 500, for checkedClaimer's reason and one of its own: there is no
+// wire code that fits and there must not be. A 409 would say the row refused
+// the release when the role said it did not, and a 404 would say the issue does
+// not exist when nothing here knows that. It is a broken implementation.
+func (c checkedReleaser) Release(ctx context.Context, req issueops.ReleaseRequest) (issueops.ReleaseResult, error) {
+	result, err := c.inner.Release(ctx, req)
+	if err == nil && result.Issue == nil {
+		return issueops.ReleaseResult{}, fmt.Errorf("release %q: the releaser reported success without an issue", req.IssueID)
+	}
+	return result, err
+}

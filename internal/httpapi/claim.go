@@ -311,6 +311,7 @@ type timedProvider struct {
 var (
 	_ uow.IssueReaderSource         = timedProvider{}
 	_ uow.IssueClaimerSource        = timedProvider{}
+	_ uow.ReleaserSource            = timedProvider{}
 	_ uow.IssueLifecycleSource      = timedProvider{}
 	_ uow.WorkspaceConfigSource     = timedProvider{}
 	_ uow.StatsReporterSource       = timedProvider{}
@@ -365,6 +366,14 @@ func (p timedProvider) IssueReader() (issueops.Reader, error) {
 // instead of the recursion looking correct.
 func (p timedProvider) IssueClaimer() (issueops.Claimer, error) {
 	return uow.NewIssueClaimer(p)
+}
+
+// Releaser builds the claim-release role OVER THIS WRAPPER, for the same reason
+// and with the same hazard as IssueClaimer: a release opens a write transaction
+// per call, so a recursion here would report uow_ms=0.000 for every one of
+// them.
+func (p timedProvider) Releaser() (issueops.Releaser, error) {
+	return uow.NewReleaser(p)
 }
 
 // IssueLifecycle builds the guarded-mutation role OVER THIS WRAPPER, for the

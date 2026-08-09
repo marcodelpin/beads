@@ -360,6 +360,19 @@ var routeTable = []route{
 		handler:      (*Server).handleClaim,
 	},
 	{
+		op:     OpReleaseIssue,
+		method: http.MethodPost,
+		// The claim's inverse, on the dispatcher the close built. A fifth row on
+		// this pattern is a row; everything the claim row says about the
+		// wildcard's width holds here unchanged.
+		pattern:      customMethodPattern,
+		specPath:     "/v0/beads/issues/{id}:release",
+		customMethod: ":release",
+		capability:   "issues.release",
+		implemented:  true,
+		handler:      (*Server).handleRelease,
+	},
+	{
 		op:     OpCloseIssue,
 		method: http.MethodPost,
 		// The second row on the shared wildcard, and the reason the dispatcher

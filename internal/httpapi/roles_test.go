@@ -449,6 +449,34 @@ func (c *roleClaimer) claimRequests() []issueops.ClaimRequest {
 	return append([]issueops.ClaimRequest(nil), c.claims...)
 }
 
+// roleReleaser is the store-shaped source's claim-release role. The release
+// tests drive it directly, for the reason roleLifecycle exists: the wire edge —
+// the body vocabulary, the guard pair, the refusal mapping — is provable
+// against a fake, and the transition itself belongs to the role's own contract.
+type roleReleaser struct {
+	result issueops.ReleaseResult
+	err    error
+
+	mu       sync.Mutex
+	releases []issueops.ReleaseRequest
+}
+
+func (c *roleReleaser) Release(_ context.Context, req issueops.ReleaseRequest) (issueops.ReleaseResult, error) {
+	c.mu.Lock()
+	c.releases = append(c.releases, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.ReleaseResult{}, c.err
+	}
+	return c.result, nil
+}
+
+func (c *roleReleaser) releaseRequests() []issueops.ReleaseRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.ReleaseRequest(nil), c.releases...)
+}
+
 // roleLifecycle is the store-shaped source's guarded-mutation role. Every case
 // hands Listen a COMPLETE source, so this exists partly to be a placeholder —
 // but the close tests drive it directly, which is what the claim precedent
@@ -637,6 +665,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.Claimer == nil {
 		cfg.Claimer = &roleClaimer{}
+	}
+	if cfg.Releaser == nil {
+		cfg.Releaser = &roleReleaser{}
 	}
 	if cfg.Lifecycle == nil {
 		cfg.Lifecycle = &roleLifecycle{}

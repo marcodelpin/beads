@@ -184,6 +184,7 @@ func runServe() error {
 			AllowNonLoopback:  serveAllowNonLoopback,
 			Reader:            roles.reader,
 			Claimer:           roles.claimer,
+			Releaser:          roles.releaser,
 			Lifecycle:         roles.lifecycle,
 			Settings:          roles.settings,
 			Stats:             roles.stats,
@@ -500,6 +501,7 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 	for _, b := range []binding{
 		{"issue reader", func() (err error) { roles.reader, err = src.IssueReader(); return }},
 		{"issue claimer", func() (err error) { roles.claimer, err = src.IssueClaimer(); return }},
+		{"issue releaser", func() (err error) { roles.releaser, err = src.Releaser(); return }},
 		{"issue lifecycle", func() (err error) { roles.lifecycle, err = src.IssueLifecycle(); return }},
 		{"workspace config", func() (err error) { roles.settings, err = src.WorkspaceConfig(); return }},
 		{"stats reporter", func() (err error) { roles.stats, err = src.StatsReporter(); return }},
@@ -553,8 +555,14 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 // requires every httpapi.Config literal in this package to sit in a function
 // that consulted serveDatabaseSource.
 type serveRoles struct {
-	reader       issueops.Reader
-	claimer      issueops.Claimer
+	reader  issueops.Reader
+	claimer issueops.Claimer
+	// releaser is the claim's inverse, behind
+	// POST /v0/beads/issues/{id}:release. Its accessor recurses through the
+	// hook decorator like the two below it — a release is an update, so
+	// HookFiringStore.Releaser fires the workspace's on_update script — which
+	// is why it comes off the PEELED store with the rest.
+	releaser     issueops.Releaser
 	lifecycle    issueops.Lifecycle
 	settings     issueops.WorkspaceConfig
 	stats        issueops.StatsReporter

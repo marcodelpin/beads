@@ -173,6 +173,13 @@ type Config struct {
 	// server, so a rebuild would buy nothing.
 	Reader  issueops.Reader
 	Claimer issueops.Claimer
+	// Releaser is the claim's inverse, behind
+	// POST /v0/beads/issues/{id}:release. It is its own field rather than a
+	// method on Claimer for the reason the role is its own interface: a caller
+	// entitled to give its own work back is very often not entitled to take
+	// new work, so a surface carrying both hands out a capability it should not
+	// be able to reach.
+	Releaser issueops.Releaser
 	// Lifecycle is the guarded-mutation role behind the issue lifecycle
 	// operations. Required on the same terms as every field here, and the
 	// hook-firing refusal below bites hardest on it: a store's own
@@ -284,6 +291,7 @@ type Server struct {
 	// names because a struct cannot carry both.
 	issueReader       issueops.Reader
 	issueClaimer      issueops.Claimer
+	issueReleaser     issueops.Releaser
 	issueLifecycle    issueops.Lifecycle
 	settings          issueops.WorkspaceConfig
 	issueStats        issueops.StatsReporter
@@ -416,6 +424,7 @@ func Listen(cfg Config) (*Server, error) {
 		provider:          cfg.Provider,
 		issueReader:       cfg.Reader,
 		issueClaimer:      cfg.Claimer,
+		issueReleaser:     cfg.Releaser,
 		issueLifecycle:    cfg.Lifecycle,
 		settings:          cfg.Settings,
 		issueStats:        cfg.Stats,
@@ -536,12 +545,12 @@ func Listen(cfg Config) (*Server, error) {
 // "all or nothing" would turn an honest condition into a special case inside
 // three functions. It is checked once, on its own, below.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.Lifecycle, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
+	return []any{cfg.Reader, cfg.Claimer, cfg.Releaser, cfg.Lifecycle, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, Lifecycle, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
+const roleSourceNames = "Reader, Claimer, Releaser, Lifecycle, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -731,6 +740,26 @@ func (s *Server) claimer(r *http.Request) (issueops.Claimer, error) {
 		return nil, err
 	}
 	return checkedClaimer{inner: cl}, nil
+}
+
+// releaser returns the claim-release surface for one request.
+//
+// Built the same two ways as claimer above and for the same reasons: the
+// configured role on the roles source, and on the provider source one built per
+// request so its units of work are timed into THIS request's log line, held by
+// INTERFACE so uow.ReleaserSource is load-bearing rather than decorative — and,
+// from either source, wrapped in checkedReleaser, because the handler
+// dereferences the pointer the result carries.
+func (s *Server) releaser(r *http.Request) (issueops.Releaser, error) {
+	if s.provider == nil {
+		return checkedReleaser{inner: s.issueReleaser}, nil
+	}
+	var src uow.ReleaserSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	rel, err := src.Releaser()
+	if err != nil {
+		return nil, err
+	}
+	return checkedReleaser{inner: rel}, nil
 }
 
 // lifecycle returns the guarded issue-mutation surface for one request.

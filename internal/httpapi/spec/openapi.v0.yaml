@@ -65,6 +65,7 @@ info:
       Operations with no parameters at all (`GET /healthz`,
       `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
       `POST /v0/beads/issues/{id}:claim`,
+      `POST /v0/beads/issues/{id}:release`,
       `POST /v0/beads/issues/{id}:close`,
       `POST /v0/beads/issues/{id}:reopen`,
       `POST /v0/beads/issues/{id}:casMetadata`, `POST /v0/beads/issues:sweep`,
@@ -1730,6 +1731,240 @@ paths:
             `assignee` extension member) or is not in a claimable state
             (`not_claimable`, with the `issue_status` extension member).
           x-bd-codes: [already_claimed, not_claimable]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/issues/{id}:release:
+    post:
+      operationId: releaseIssue
+      summary: Give back the claim on an issue
+      description: >-
+        The claim's inverse, and what `bd unclaim` spells. It ends the
+        OWNERSHIP and leaves the work open for the next taker: assignee
+        cleared, status the literal `open`, `started_at` cleared, the lease
+        dropped, and `revision` reminted so a concurrent reclaim or close
+        conflicts rather than silently merging.
+
+
+        It is a named lifecycle action rather than a `patch`, for
+        `POST /v0/beads/issues/{id}:close`'s reason: an update spells a release
+        as three fields at a time, which puts the transition's definition in
+        the CALLER, and the lease it drops is the part a patch cannot express
+        at all.
+
+
+        The caller always names the actor, for
+        `POST /v0/beads/issues/{id}:claim`'s reason. HERE IT IS ALSO THE
+        OWNERSHIP FENCE'S SUBJECT: a release carrying neither
+        `expected_assignee` nor `force` succeeds only while `actor` is the
+        current holder. That is not authentication — this surface has none, and
+        `actor` is caller-asserted provenance exactly as it is on the claim —
+        it is the same anti-yank guard the claim gets from refusing a foreign
+        holder, pointed the other way.
+
+
+        ## NOT IDEMPOTENT, which is the one thing to read before adopting it
+
+
+        A release over a row that holds NO claim is `409` / `not_releasable`,
+        never a 200. There is no `already_released` member here and there must
+        not be one, because the post-state is ANONYMOUS: "I released this
+        twice", "a reaper beat me to it" and "nothing ever claimed it" leave
+        the identical row — assignee cleared, status open, `started_at` gone —
+        so one 200 would report one answer for three situations that want
+        different things from a caller. `claimIssue` can afford
+        `already_claimed: true` because a claim's post-state NAMES the
+        claimant, and this operation has nothing left on the row to name.
+
+
+        ON `not_releasable`, READ THE ROW. Do NOT treat the code as "already
+        released", however ordinary that case is for you — it is the one
+        shortcut this operation's taxonomy makes unsafe, and it is unsafe in
+        the direction that strands work.
+
+
+        The code covers TWO conditions and publishes no member telling them
+        apart (see the `409` below). One of them is "nothing holds this". The
+        other is "the status will not accept a release", which is true of a row
+        that is CLOSED and equally true of a row parked in a status this
+        workspace configured — and such a row can still be ASSIGNED. A reaper
+        that read this code as success would book a claim as dropped while it
+        is still held, by an agent that is already gone, with nothing left to
+        free it. That is exactly the stranding this operation resolves ids
+        across both planes to prevent, reintroduced through the refusal
+        vocabulary instead of through the id.
+
+
+        So the recovery is a read: the row tells you which of the two you got —
+        an assignee, or none. That is one extra request on an uncommon path,
+        and it is the honest price of one code rather than two. A caller that
+        wants the distinction without the read should say so, and it arrives as
+        an ADDITION, which the `Problem.code` rules already tell clients to
+        tolerate.
+
+
+        ## The two ways to release a claim you do not hold
+
+
+        `expected_assignee` is a compare-and-set on the holder and REPLACES the
+        ownership fence: a caller that can name the current holder has
+        demonstrated the view the fence exists to protect, so `actor` need not
+        be that holder. It cannot release a claim that has since moved, which
+        is what makes it the safer of the two for a supervisor reaping one
+        named agent's abandoned work.
+
+
+        `force` ignores the holder entirely, and ignores NOTHING ELSE. It does
+        not make an unheld row releasable, it does not make a closed one
+        releasable, and it may not accompany `expected_assignee` — the two are
+        answers to the same question and they disagree, so sending both is a
+        400.
+
+
+        ## Planes
+
+
+        The id resolves across BOTH planes, unlike
+        `POST /v0/beads/issues/{id}:claim` and like
+        `POST /v0/beads/issues/{id}:close`. The asymmetry is about which
+        direction strands work: a wisp can hold a claim, so an operation that
+        refused to release one would leave an ephemeral row owned by an agent
+        that is gone with no verb able to free it. A release whose target is a
+        wisp records no durable history entry.
+
+
+        ## Hooks and auto-commit
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for `POST /v0/beads/issues/{id}:claim`. The only
+        durable effect is the single storage commit the role makes inside its
+        own transaction, which is what a proxied CLI write does today.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseIssueRequest'
+      responses:
+        '200':
+          description: >-
+            The claim is released. The issue is open and unassigned, and the
+            body carries the row the release produced.
+
+
+            THE SET THIS SUCCEEDS OVER IS WIDER THAN `in_progress`, and a
+            client porting a guard needs to know it before it ports one. The
+            transition is defined over `open` AND `in_progress` alike, so a row
+            already in `open` that STILL HOLDS AN ASSIGNEE — the state a
+            partial write or an out-of-band status edit leaves behind — is
+            released here. A caller whose own release-if-current guarded on
+            `in_progress` did nothing for that row and reported no error; this
+            operation writes it. That is a genuine widening rather than a
+            restatement, and a client mapping "no error" to "I released it"
+            will now be right about rows it was previously never right about —
+            which is the point, and which is also why the mapping below is
+            written in terms of the CODES rather than in terms of success.
+
+
+            THE CODE-TO-OUTCOME MAPPING a release-if-current client wants,
+            stated here so it is written against a documented fact rather than
+            against a reading of the refusals. Four answers mean "no release
+            happened, and that is not an error": `not_releasable`,
+            `precondition_failed`, `already_claimed`, and `404`. A client
+            spelling that as a `(released, err)` pair returns
+            `(false, nil)` for all four.
+
+
+            `(false, nil)` MEANS "NO RELEASE HAPPENED". It does not mean the
+            claim is gone, and nothing here licenses that reading — see the
+            `not_releasable` paragraph in the operation description, which is
+            the one place the two readings come apart and the place a reaper
+            gets it wrong. A client that needs "is this row still held" asks a
+            READER; this operation answers whether IT released anything.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseIssueResponse'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, an unparseable or
+            oversized body, an unknown body member, an `actor` refused by the
+            rules `ClaimRequest.actor` states, an `expected_assignee` that is
+            empty after trimming, or `force` sent beside `expected_assignee`.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            THE ORDER THESE ARE DECIDED IN IS PART OF THE ANSWER, because one
+            request can fail several ways at once. Request validation runs
+            before anything is read; then existence (the 404); then the row's
+            STATUS, because a closed issue is not a claim question at all; then
+            whether a claim exists; then the precondition or the fence,
+            whichever the request selected. So a CLOSED row guarded on a stale
+            `expected_assignee` is `not_releasable`, not
+            `precondition_failed` — do not read one refusal as evidence about
+            the checks that never ran.
+
+
+            `not_releasable` is the row refusing to produce a release at all,
+            and it covers two conditions: it holds no claim, or its status is
+            neither `open` nor `in_progress` — a closed issue, or one parked in
+            a status this workspace configured, which plainly can still hold a
+            claim. Neither has a bypass: `force` answers "may I release someone
+            else's claim" and has no opinion about whether there is a claim
+            here to release.
+
+
+            IT CARRIES NO MEMBER DISTINGUISHING THOSE TWO, and a client must
+            not look for one. The OBSERVATIONS the two refusals made — the
+            status one saw, the emptiness of the assignee the other saw — travel
+            in their messages, and this surface does not scrape its own prose to
+            manufacture a typed member. If the distinction ever earns one, it
+            arrives as an ADDITION (a new member, or a second code), which the
+            `Problem.code` rules already tell clients to tolerate; going the
+            other way, merging two codes back into one, is the change that
+            could not be made.
+
+
+            SO THE RECOVERY IS A READ, and it is a correctness rule rather than
+            a convenience: one of these two conditions leaves the row STILL
+            ASSIGNED, so a client that read this code as "already released"
+            books a claim as dropped while it stands. The operation description
+            says why that direction strands work. Read the row.
+
+
+            `already_claimed` is the ownership fence: an unforced, unguarded
+            release by an actor that is not the holder. It is `updateIssue`'s
+            assignee-fence code unchanged — the same situation, and the same
+            two bypasses, spelled `force` and `expected_assignee` here instead
+            of `force_assignee_transfer` and `expected_assignee` there. As
+            there, the `assignee` extension member is NOT attached: the fence
+            refuses without naming the holder, so a client re-reads the row.
+
+
+            `precondition_failed` is `expected_assignee` missing, INCLUDING
+            against a row that holds no claim — that is a mismatch rather than
+            `not_releasable`, because the caller asked about a specific holder
+            and the answer is that it is not the holder. It carries
+            `expected_assignee` (the value the REQUEST sent) and `param`, and
+            NO `actual_assignee`: the refusal rolled its transaction back, and
+            the role carries the holder it observed in prose only. That is
+            `updateIssue`'s rule for the same guard, unchanged.
+          x-bd-codes: [already_claimed, not_releasable, precondition_failed]
           content:
             application/problem+json:
               schema:
@@ -4896,7 +5131,7 @@ components:
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.get`, `issues.create`,
-            `issues.claim`,
+            `issues.claim`, `issues.release`,
             `issues.close`, `issues.reopen`, `issues.update`,
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `issues.batchApply`,
@@ -6861,6 +7096,127 @@ components:
             nothing — the idempotent re-claim. A claim held by a DIFFERENT
             actor is a 409, not a 200 with this flag.
 
+    ReleaseIssueRequest:
+      type: object
+      additionalProperties: false
+      required: [actor]
+      properties:
+        actor:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]+$'
+          description: >-
+            Who is releasing the claim. `ClaimRequest.actor`'s rules exactly:
+            the server trims it, then refuses an empty result, anything longer
+            than 256 BYTES (the `maxLength` above counts characters — the byte
+            limit is the binding one), and any control character including
+            newline. The value reaches the event the release records and the
+            storage commit message, so an unvalidated newline would forge
+            audit-trail lines.
+
+
+            It is REQUIRED, and for one reason beyond the audit trail: a
+            release is the moment work stops being owned, and the one question
+            asked of its history entry afterwards is who let it go. On the
+            unconditional path it is ALSO the ownership fence's subject — see
+            the operation description.
+        expected_assignee:
+          type: string
+          description: >-
+            Compare-and-set on the holder: the release proceeds only while the
+            issue is still assigned to this actor, and otherwise refuses with
+            `409` / `precondition_failed` naming this value, having written
+            nothing.
+
+
+            A MATCH REPLACES THE OWNERSHIP FENCE, so `actor` need not be the
+            holder. Sending it beside `force` is a 400: the two are answers to
+            the same question and they disagree.
+
+
+            THE COMPARISON IS SEPARATOR-INSENSITIVE AND NOTHING ELSE.
+            A run of `.`, `_` or `-` matches any other such run, so `agent-a`,
+            `agent_a` and `agent.a` are one holder — that is deliberate, so a
+            caller naming the holder under a different layer's spelling is a
+            match rather than a mismatch. NOTHING ELSE IS FORGIVEN: the value
+            is not trimmed and not case-folded, so `" agent-a"` and `Agent-a`
+            are both refusals. The server trims only far enough to tell a blank
+            expectation from a real one and never sends the trimmed form on, so
+            a caller that pads its expectation loses EVERY time rather than
+            intermittently. Compose it from a holder a read gave you.
+
+
+            THE EMPTY STRING IS A 400, and this is the one place this member
+            disagrees with `UpdateIssueRequest.expected_assignee`, where an
+            empty string is a real guard meaning "expected unassigned". Here
+            "release a row nobody holds" describes no release at all; a caller
+            that wants to assert a row is unheld is asking a READER a question,
+            not asking this operation to do nothing. Absent, and only absent,
+            selects the unconditional path.
+
+
+            IT IS NOT LENGTH- OR PATTERN-BOUNDED the way `actor` is, and the
+            asymmetry is deliberate: this value is COMPARED and never stored,
+            so a value no assignee column could hold simply cannot match, and
+            refusing it at the edge would be a refusal the role does not have.
+        force:
+          type: boolean
+          default: false
+          description: >-
+            Bypass the ownership fence, so an actor that is not the holder may
+            release the claim. It is the escape hatch `bd unclaim --force`
+            spells, for an abandoned claim whose holder crashed.
+
+
+            IT BYPASSES THE FENCE AND NOTHING ELSE. It does not make an unheld
+            row releasable, it does not make a closed one releasable, and it
+            never bypasses a precondition — sending it beside
+            `expected_assignee` is a 400 rather than a silent win for either.
+
+    ReleaseIssueResponse:
+      type: object
+      required: [issue, changed, revision]
+      properties:
+        issue:
+          $ref: '#/components/schemas/Issue'
+        changed:
+          type: boolean
+          description: >-
+            Whether the release WROTE the row. It is TRUE on every 200 this
+            operation returns, because every shape that would not write is
+            refused above it — an unheld row is a 409, not an idempotent no-op.
+            DO NOT WRITE A `changed: false` BRANCH: no request reaches one.
+
+
+            It is published rather than omitted because `claimIssue` and
+            `updateIssue` publish the same fact, and a caller holding all three
+            should not have to read them two ways. It is also the negative
+            space that answers "where is the `already_released` member" —
+            there is none, and the operation description says why.
+        revision:
+          type: integer
+          format: int64
+          description: >-
+            The row's optimistic-concurrency token AFTER the release, spelled
+            the way `UpdateIssueResponse.revision` spells it and carrying the
+            same promise: a read-modify-write loop composes its next
+            `expected_version` from THIS value, never from a number it
+            incremented itself.
+
+
+            A release REMINTS the token by design, so a caller that guarded a
+            following write on a version it read BEFORE the release will miss.
+            That is the point — a concurrent reclaim or close conflicts rather
+            than silently merging — and this member is how the caller stays in
+            step.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double
+            parser corrupts it silently, and the corruption only shows up as a
+            `precondition_failed` on the NEXT request.
+
     CloseIssueRequest:
       type: object
       additionalProperties: false
@@ -7627,6 +7983,7 @@ components:
             emitted by the Host-header middleware on any route),
             `invalid_cursor` (400), `not_found` (404), `already_claimed` (409),
             `not_claimable` (409), `not_closable` (409),
+            `not_releasable` (409),
             `dependency_cycle` (409), `dependency_exists` (409),
             `already_exists` (409), `precondition_failed` (409),
             `events_journal_disabled` (409), `events_journal_truncated` (410),
