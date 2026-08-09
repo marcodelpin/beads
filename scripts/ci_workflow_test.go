@@ -11,6 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const linuxPrivilegedWorkflowShell = "/usr/bin/env -u BASH_ENV -u ENV -u BASHOPTS -u SHELLOPTS /usr/bin/bash --noprofile --norc -p -euo pipefail {0}"
+
 func TestCIWorkflowArtifactOwnership(t *testing.T) {
 	for _, workflowName := range []string{"pr.yml", "main.yml"} {
 		t.Run(workflowName, func(t *testing.T) {
@@ -57,6 +59,109 @@ func TestPRCIGateRequiresPolicyAndLintWrappers(t *testing.T) {
 		if !strings.Contains(gateEnv["CI_GATE_REQUIRED"], required) {
 			t.Errorf("ci-gate CI_GATE_REQUIRED does not include %q", required)
 		}
+	}
+}
+
+func TestPRCIGateRequiresJSWasmHookExecution(t *testing.T) {
+	workflow := readCIWorkflow(t, "pr.yml")
+	job := workflow.job(t, "check-cmd-bd-puregeo-tests")
+	if job.RunsOn != "ubuntu-latest" {
+		t.Errorf("js/wasm hook job runs-on = %q, want ubuntu-latest", job.RunsOn)
+	}
+	if job.If != "" {
+		t.Errorf("js/wasm hook job is conditional: %q", job.If)
+	}
+
+	setupGo := job.step(t, "Set up Go")
+	if setupGo.Uses != setupGoActionFamily+"@"+setupGoSHA {
+		t.Errorf("setup-go action = %q", setupGo.Uses)
+	}
+	if setupGo.With["go-version-file"] != "go.mod" || setupGo.With["cache"] != "false" {
+		t.Errorf("setup-go inputs = %v", setupGo.With)
+	}
+
+	setupNode := job.step(t, "Set up Node.js")
+	if setupNode.Uses != setupNodeActionFamily+"@"+setupNodeSHA {
+		t.Errorf("setup-node action = %q", setupNode.Uses)
+	}
+	if setupNode.With["node-version"] != "24" {
+		t.Errorf("setup-node version = %q, want 24", setupNode.With["node-version"])
+	}
+
+	execute := job.step(t, "Run js/wasm hook boundary")
+	if execute.If != "" {
+		t.Errorf("js/wasm hook step is conditional: %q", execute.If)
+	}
+	if execute.Shell != linuxPrivilegedWorkflowShell {
+		t.Errorf("js/wasm hook shell = %q, want %q", execute.Shell, linuxPrivilegedWorkflowShell)
+	}
+	for key, want := range map[string]string{
+		"BASH_ENV":     "",
+		"ENV":          "",
+		"CGO_ENABLED":  "0",
+		"GOARCH":       "wasm",
+		"GOENV":        "off",
+		"GOFLAGS":      "",
+		"GOOS":         "js",
+		"GOTOOLCHAIN":  "local",
+		"GOWORK":       "off",
+		"NODE_OPTIONS": "",
+	} {
+		got, ok := execute.Env[key]
+		if !ok || got != want {
+			t.Errorf("js/wasm hook env %s = %q (present=%v), want %q", key, got, ok, want)
+		}
+	}
+	for _, required := range []string{
+		`[[ "${BASH:-}" == "/usr/bin/bash" ]]`,
+		`[[ /bin/bash -ef /usr/bin/bash ]]`,
+		`[[ "$-" == *p* ]]`,
+		`[[ ! -v BASH_ENV && ! -v ENV ]]`,
+		`IFS= read -r kernel_family < /proc/sys/kernel/ostype`,
+		`type -P go`,
+		`type -P node`,
+		`require("node:fs").realpathSync(process.argv[1])`,
+		`env GOVERSION`,
+		`WebAssembly.instantiate`,
+		`[[ -x "$go_root/bin/go" && "$go_bin" -ef "$go_root/bin/go" ]]`,
+		`lib/wasm/wasm_exec_node.js`,
+		`test -tags gms_pure_go -c`,
+		`-test.run '^TestRunHookReportsUnsupportedExecution$'`,
+		`test_output="$("$node_bin"`,
+		`|| test_status=$?`,
+		`while IFS= read -r line`,
+		`=== RUN   TestRunHookReportsUnsupportedExecution`,
+		`^--- PASS: TestRunHookReportsUnsupportedExecution`,
+		`--- FAIL: TestRunHookReportsUnsupportedExecution`,
+		`--- SKIP: TestRunHookReportsUnsupportedExecution`,
+	} {
+		if !strings.Contains(execute.Run, required) {
+			t.Errorf("js/wasm hook command does not contain %q", required)
+		}
+	}
+	if regexp.MustCompile(`\bgo1\.[0-9]`).MatchString(execute.Run) {
+		t.Errorf("js/wasm hook command duplicates the Go version owned by go.mod")
+	}
+	for _, tool := range []string{"uname", "realpath", "tee", "grep"} {
+		pattern := regexp.MustCompile(`(?m)(^|[|;&[:space:]'"])([^|;&[:space:]'"]*/)?` + regexp.QuoteMeta(tool) + `([[:space:]'"]|$)`)
+		if pattern.MatchString(execute.Run) {
+			t.Errorf("js/wasm hook command delegates proof authority to external %s", tool)
+		}
+	}
+	if strings.Contains(execute.Run, "command -v ") {
+		t.Errorf("js/wasm hook command performs ambient command lookup after startup")
+	}
+
+	gate := workflow.job(t, "ci-gate")
+	gateEnv := gate.step(t, "Evaluate CI gate").Env
+	if !contains(gate.Needs, "check-cmd-bd-puregeo-tests") {
+		t.Errorf("ci-gate does not require js/wasm hook job: %v", gate.Needs)
+	}
+	if got := gateEnv["CHECK_CMD_BD_PUREGEO_TESTS"]; got != "${{ needs.check-cmd-bd-puregeo-tests.result }}" {
+		t.Errorf("ci-gate js/wasm hook result = %q", got)
+	}
+	if !strings.Contains(gateEnv["CI_GATE_REQUIRED"], "CHECK_CMD_BD_PUREGEO_TESTS") {
+		t.Errorf("ci-gate required set omits js/wasm hook job")
 	}
 }
 
@@ -332,10 +437,12 @@ func assertNoUnmanagedGoCacheSteps(t *testing.T, workflows map[string]ciWorkflow
 
 const (
 	setupGoActionFamily         = "actions/setup-go"
+	setupNodeActionFamily       = "actions/setup-node"
 	cacheMonolithicActionFamily = "actions/cache"
 	cacheRestoreActionFamily    = "actions/cache/restore"
 	cacheSaveActionFamily       = "actions/cache/save"
 	setupGoSHA                  = "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+	setupNodeSHA                = "820762786026740c76f36085b0efc47a31fe5020"
 	cacheSHA                    = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 	goCacheSchema               = "v2"
 	goBaseTag                   = "gms_pure_go"
@@ -628,6 +735,7 @@ type ciWorkflowJob struct {
 	Needs          ciWorkflowStringList `yaml:"needs"`
 	Steps          []ciWorkflowStep     `yaml:"steps"`
 	RunsOn         string               `yaml:"runs-on"`
+	If             string               `yaml:"if"`
 	TimeoutMinutes int                  `yaml:"timeout-minutes"`
 	Strategy       ciWorkflowStrategy   `yaml:"strategy"`
 }
@@ -648,13 +756,14 @@ type ciWorkflowMatrixInclude struct {
 }
 
 type ciWorkflowStep struct {
-	Name string            `yaml:"name"`
-	ID   string            `yaml:"id"`
-	If   string            `yaml:"if"`
-	Uses string            `yaml:"uses"`
-	Run  string            `yaml:"run"`
-	Env  map[string]string `yaml:"env"`
-	With map[string]string `yaml:"with"`
+	Name  string            `yaml:"name"`
+	ID    string            `yaml:"id"`
+	If    string            `yaml:"if"`
+	Uses  string            `yaml:"uses"`
+	Run   string            `yaml:"run"`
+	Shell string            `yaml:"shell"`
+	Env   map[string]string `yaml:"env"`
+	With  map[string]string `yaml:"with"`
 }
 
 type ciWorkflowStringList []string

@@ -85,15 +85,15 @@ jobs:
       - run: ./scripts/check-build-tags.sh
       - run: ./scripts/check-go-install-guidance.sh
 
-  # Lock in the cgo-test-contamination fix (mybd-ycx / GH#3683 follow-up).
-  # cmd/bd carries a mix of cgo-only test helpers (embedded Dolt, sql.DB) and
-  # pure-Go tests. Untagged test files that reach for cgo-only helpers break
-  # the entire package's CGO_ENABLED=0 compile, silently neutering pure-Go
-  # tests (the original symptom in PR #3704). This job compiles the cmd/bd
-  # test binary with CGO_ENABLED=0 and runs the pure-Go subset, so a
-  # regression that re-introduces cgo coupling fails fast.
+  # Lock in two CGO-disabled portability boundaries. cmd/bd carries a mix of
+  # cgo-only test helpers (embedded Dolt, sql.DB) and pure-Go tests; compiling
+  # and running its pure-Go subset prevents test contamination (mybd-ycx /
+  # GH#3683 follow-up). internal/hooks also declares a js/wasm boundary where
+  # process execution must fail explicitly, so this required leaf job compiles
+  # the complete package test binary and executes that exact contract under
+  # Node rather than allowing a missing platform implementation to recur.
   check-cmd-bd-puregeo-tests:
-    name: Check cmd/bd pure-Go tests compile (CGO_ENABLED=0)
+    name: Check pure-Go and js/wasm boundaries (CGO_ENABLED=0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -103,6 +103,121 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: '24'
+
+      - name: Run js/wasm hook boundary
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u BASHOPTS -u SHELLOPTS /usr/bin/bash --noprofile --norc -p -euo pipefail {0}
+        env:
+          BASH_ENV: ""
+          ENV: ""
+          CGO_ENABLED: "0"
+          GOARCH: wasm
+          GOENV: "off"
+          GOFLAGS: ""
+          GOOS: js
+          GOTOOLCHAIN: local
+          GOWORK: "off"
+          NODE_OPTIONS: ""
+        run: |
+          set -euo pipefail
+
+          [[ -n "${BASH_VERSION:-}" ]]
+          [[ "${BASH:-}" == "/usr/bin/bash" ]]
+          [[ /bin/bash -ef /usr/bin/bash ]]
+          [[ "$-" == *p* ]]
+          [[ ! -v BASH_ENV && ! -v ENV ]]
+          [[ "${CGO_ENABLED:-}" == "0" ]]
+          [[ "${GOARCH:-}" == "wasm" ]]
+          [[ "${GOENV:-}" == "off" ]]
+          [[ -z "${GOFLAGS:-}" ]]
+          [[ "${GOOS:-}" == "js" ]]
+          [[ "${GOTOOLCHAIN:-}" == "local" ]]
+          [[ "${GOWORK:-}" == "off" ]]
+          [[ -z "${NODE_OPTIONS:-}" ]]
+          [[ "${RUNNER_TEMP:-}" == /* ]]
+          IFS= read -r kernel_family < /proc/sys/kernel/ostype
+          [[ "$kernel_family" == "Linux" ]]
+
+          go_candidate="$(type -P go)"
+          node_candidate="$(type -P node)"
+          [[ "$go_candidate" == /* && -x "$go_candidate" ]]
+          [[ "$node_candidate" == /* && -x "$node_candidate" ]]
+
+          node_bin="$("$node_candidate" -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$node_candidate")"
+          go_bin="$("$node_bin" -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$go_candidate")"
+          [[ "$node_bin" == /* && -x "$node_bin" && "$node_candidate" -ef "$node_bin" ]]
+          [[ "$go_bin" == /* && -x "$go_bin" && "$go_candidate" -ef "$go_bin" ]]
+
+          go_version="$("$go_bin" env GOVERSION)"
+          node_version="$("$node_bin" --version)"
+          printf 'Go host: %s (%s)\n' "$go_bin" "$go_version"
+          printf 'Node host: %s (%s)\n' "$node_bin" "$node_version"
+
+          [[ "$("$go_bin" env GOHOSTOS)" == "linux" ]]
+          [[ "$("$go_bin" env GOOS)" == "js" ]]
+          [[ "$("$go_bin" env GOARCH)" == "wasm" ]]
+          [[ "$("$go_bin" env CGO_ENABLED)" == "0" ]]
+          case "$node_version" in
+            v24.*) ;;
+            *) printf 'unexpected Node version: %s\n' "$node_version" >&2; exit 1 ;;
+          esac
+          "$node_bin" -e 'if (typeof WebAssembly !== "object" || typeof WebAssembly.instantiate !== "function") process.exit(1)'
+
+          go_root="$("$node_bin" -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$("$go_bin" env GOROOT)")"
+          [[ -x "$go_root/bin/go" && "$go_bin" -ef "$go_root/bin/go" ]]
+          wasm_exec_node="$go_root/lib/wasm/wasm_exec_node.js"
+          wasm_exec_runtime="$go_root/lib/wasm/wasm_exec.js"
+          wasm_test="$RUNNER_TEMP/internal-hooks.test.wasm"
+          [[ -r "$wasm_exec_node" ]]
+          [[ -r "$wasm_exec_runtime" ]]
+
+          "$go_bin" test -tags gms_pure_go -c -o "$wasm_test" ./internal/hooks
+          [[ -s "$wasm_test" ]]
+          # This required lane owns the exact js/wasm refusal contract. If the
+          # wasm test surface grows, widen this selector and its count guard
+          # together rather than assuming compilation executes new tests.
+          test_status=0
+          test_output="$("$node_bin" --stack-size=8192 "$wasm_exec_node" "$wasm_test" \
+            -test.v -test.timeout=2m \
+            -test.run '^TestRunHookReportsUnsupportedExecution$' \
+            2>&1)" || test_status=$?
+          printf '%s\n' "$test_output"
+          (( test_status == 0 )) || exit "$test_status"
+
+          run_count=0
+          exact_run_count=0
+          exact_pass_count=0
+          nonpass_count=0
+          suite_pass_count=0
+          pass_pattern='^--- PASS: TestRunHookReportsUnsupportedExecution \([0-9.]+s\)$'
+          while IFS= read -r line; do
+            if [[ "$line" == "=== RUN   "* ]]; then
+              ((run_count += 1))
+            fi
+            if [[ "$line" == "=== RUN   TestRunHookReportsUnsupportedExecution" ]]; then
+              ((exact_run_count += 1))
+            fi
+            if [[ "$line" =~ $pass_pattern ]]; then
+              ((exact_pass_count += 1))
+            fi
+            case "$line" in
+              "--- FAIL: TestRunHookReportsUnsupportedExecution"*|"--- SKIP: TestRunHookReportsUnsupportedExecution"*)
+                ((nonpass_count += 1))
+                ;;
+            esac
+            if [[ "$line" == "PASS" ]]; then
+              ((suite_pass_count += 1))
+            fi
+          done <<< "$test_output"
+          if [[ "$run_count" != 1 || "$exact_run_count" != 1 || "$exact_pass_count" != 1 || "$nonpass_count" != 0 || "$suite_pass_count" != 1 ]]; then
+            printf 'expected one exact js/wasm hook test run and pass; got runs=%s exact-runs=%s exact-passes=%s nonpasses=%s suite-passes=%s\n' \
+              "$run_count" "$exact_run_count" "$exact_pass_count" "$nonpass_count" "$suite_pass_count" >&2
+            exit 1
+          fi
 
       - name: Build cmd/bd (CGO_ENABLED=0, gms_pure_go)
         env:
