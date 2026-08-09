@@ -649,7 +649,7 @@ func testCreateIssuesWithFullOptions(t *testing.T, f Factory) {
 	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
 		withDefaults(&types.Issue{ID: "test-a", Title: "A"}),
 		withDefaults(&types.Issue{ID: "test-b", Title: "B"}),
-	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+	}, "a", storage.BatchCreateOptions{SkipPrefixValidation: true}))
 	if _, err := s.GetIssue(c, "test-a"); err != nil {
 		t.Fatalf("batch issue test-a missing: %v", err)
 	}
@@ -659,7 +659,7 @@ func testCreateIssuesWithFullOptions(t *testing.T, f Factory) {
 		withDefaults(&types.Issue{ID: "test-x", Title: "X"}),
 		withDefaults(&types.Issue{ID: "test-y", Title: "Y", Dependencies: []*types.Dependency{{IssueID: "test-y", DependsOnID: "test-x", Type: types.DepBlocks}}}),
 		withDefaults(&types.Issue{ID: "test-z", Title: "Z", Dependencies: []*types.Dependency{{IssueID: "test-z", DependsOnID: "test-absent", Type: types.DepBlocks}}}),
-	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+	}, "a", storage.BatchCreateOptions{SkipPrefixValidation: true}))
 	recs, _ := s.GetAllDependencyRecords(c)
 	if got := depTargets(recs["test-y"]); !slices.Equal(got, []string{"test-x"}) {
 		t.Errorf("in-batch edge test-y = %v, want [test-x]", got)
@@ -671,7 +671,7 @@ func testCreateIssuesWithFullOptions(t *testing.T, f Factory) {
 	// ConflictSkip leaves an existing row untouched.
 	must(t, s.CreateIssue(c, withDefaults(&types.Issue{ID: "test-keep", Title: "Original"}), "a"))
 	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{withDefaults(&types.Issue{ID: "test-keep", Title: "Replacement"})},
-		"a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true, ConflictSkip: true}))
+		"a", storage.BatchCreateOptions{SkipPrefixValidation: true, ConflictSkip: true}))
 	if got, _ := s.GetIssue(c, "test-keep"); got.Title != "Original" {
 		t.Errorf("ConflictSkip overwrote title to %q, want Original", got.Title)
 	}
@@ -696,7 +696,7 @@ func testReconcileHierarchicalChildIDs(t *testing.T, f Factory) {
 	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
 		withDefaults(&types.Issue{ID: "x-1.1", Title: "child one"}),
 		withDefaults(&types.Issue{ID: "x-1.2", Title: "child two"}),
-	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+	}, "a", storage.BatchCreateOptions{SkipPrefixValidation: true}))
 
 	for _, id := range []string{"x-1.1", "x-1.2"} {
 		if _, err := s.GetIssue(c, id); err != nil {
@@ -708,7 +708,7 @@ func testReconcileHierarchicalChildIDs(t *testing.T, f Factory) {
 	// one level deeper — and, being a grandchild, must not advance the x-1 counter.
 	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
 		withDefaults(&types.Issue{ID: "x-1.2.1", Title: "grandchild"}),
-	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+	}, "a", storage.BatchCreateOptions{SkipPrefixValidation: true}))
 
 	// GetNextChildID reserves-and-advances, so call it once per parent. x-1 was
 	// reconciled to its max direct child (2, grandchild excluded) → next is x-1.3;

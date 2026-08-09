@@ -423,7 +423,7 @@ func testAuditReadyMultiStatusFilter(t *testing.T, f Factory) {
 	must(t, s.CreateIssuesWithFullOptions(c, []*types.Issue{
 		withDefaults(&types.Issue{ID: "msf-w-block", Title: "wisp blocked", Status: types.StatusBlocked, Ephemeral: true}),
 		withDefaults(&types.Issue{ID: "msf-w-prog", Title: "wisp in progress", Status: types.StatusInProgress, Ephemeral: true}),
-	}, "a", storage.BatchCreateOptions{OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: true}))
+	}, "a", storage.BatchCreateOptions{SkipPrefixValidation: true}))
 
 	// Statuses ORs across issues and wisps in a single call.
 	multi, err := s.GetReadyWork(c, types.WorkFilter{Statuses: []types.Status{types.StatusOpen, types.StatusBlocked}, IncludeEphemeral: true})

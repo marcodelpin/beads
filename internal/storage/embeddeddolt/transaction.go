@@ -88,7 +88,6 @@ func (t *embeddedTransaction) CreateIssue(ctx context.Context, issue *types.Issu
 
 func (t *embeddedTransaction) CreateIssues(ctx context.Context, issues []*types.Issue, actor string) error {
 	result, err := issueops.CreateIssuesInTxWithResult(ctx, t.tx, issues, actor, storage.BatchCreateOptions{
-		OrphanHandling:       storage.OrphanAllow,
 		SkipPrefixValidation: true,
 	})
 	if err != nil {

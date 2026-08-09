@@ -39,7 +39,7 @@ func ExecuteCreate(ctx context.Context, tx *sql.Tx, request publicops.CreateRequ
 	if err := ValidatePublicCreateRequest(attempt); err != nil {
 		return publicops.CreateResult{}, nil, err
 	}
-	batch, err := NewBatchContext(ctx, tx, storage.BatchCreateOptions{CreateOnly: true, OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: attempt.ForceIDPrefix})
+	batch, err := NewBatchContext(ctx, tx, storage.BatchCreateOptions{CreateOnly: true, SkipPrefixValidation: attempt.ForceIDPrefix})
 	if err != nil {
 		return publicops.CreateResult{}, nil, err
 	}
@@ -81,7 +81,7 @@ func ExecuteCreate(ctx context.Context, tx *sql.Tx, request publicops.CreateRequ
 	issue.Dependencies = storage.CreatePublicCreateDependencies(issue.ID, attempt)
 	var skipped []skippedDependency
 	created, err := CreateIssuesInTxWithResult(ctx, tx, []*types.Issue{issue}, attempt.Actor, storage.BatchCreateOptions{
-		CreateOnly: true, OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: attempt.ForceIDPrefix,
+		CreateOnly: true, SkipPrefixValidation: attempt.ForceIDPrefix,
 		OnSkippedDependency: func(issueID, dependsOnID, reason string) {
 			skipped = append(skipped, skippedDependency{issueID: issueID, dependsOnID: dependsOnID, reason: reason})
 		},

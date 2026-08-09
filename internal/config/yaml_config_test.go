@@ -42,10 +42,11 @@ func TestIsYamlOnlyKey(t *testing.T) {
 		{"backup.git-repo", true},
 		{"backup.future-key", true}, // prefix match
 
-		// Import settings
+		// Import settings. import.* is exact-match, not a prefix namespace:
+		// an unlisted import.* key must not be treated as yaml-only.
 		{"import.auto", true},
 		{"import.path", true},
-		{"import.orphan_handling", false},
+		{"import.unlisted-key", false},
 
 		// Secret keys (stored in yaml to avoid leaking via Dolt push)
 		{"github.token", true},

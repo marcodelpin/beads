@@ -128,12 +128,6 @@ func CreateIssueInTxWithResult(ctx context.Context, tx DBTX, bc *BatchContext, i
 		return result, nil
 	}
 
-	if skip, err := CheckOrphan(ctx, tx, issue, issueTable, bc.Opts.OrphanHandling); err != nil {
-		return result, err
-	} else if skip {
-		return result, nil
-	}
-
 	isNew, staleRejected, err := InsertIssueIfNew(ctx, tx, issueTable, issue, bc.Opts)
 	if err != nil {
 		return result, err
@@ -195,8 +189,7 @@ func CreateIssueInTxWithResult(ctx context.Context, tx DBTX, bc *BatchContext, i
 	}
 	// Journal the create once, after labels and comments are in the row's
 	// transaction, so the snapshot is the complete bead. The early returns above
-	// (collision skip, orphan skip, stale reject) wrote nothing and journal
-	// nothing.
+	// (collision skip, stale reject) wrote nothing and journal nothing.
 	if err := RecordEventInTx(ctx, tx, EventCreate, issue.ID); err != nil {
 		return result, err
 	}
@@ -599,37 +592,6 @@ func AllWisps(issues []*types.Issue) bool {
 		}
 	}
 	return true
-}
-
-// CheckOrphan handles orphan detection for hierarchical IDs.
-// Returns (skip=true, nil) if the issue should be skipped.
-//
-//nolint:gosec // G201: table is a hardcoded constant
-func CheckOrphan(ctx context.Context, tx DBTX, issue *types.Issue, issueTable string, handling storage.OrphanHandling) (skip bool, err error) {
-	if issue.ID == "" {
-		return false, nil
-	}
-	parentID, _, ok := ParseHierarchicalID(issue.ID)
-	if !ok {
-		return false, nil
-	}
-
-	var parentCount int
-	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE id = ?`, issueTable), parentID).Scan(&parentCount); err != nil {
-		return false, fmt.Errorf("failed to check parent existence: %w", err)
-	}
-	if parentCount > 0 {
-		return false, nil
-	}
-
-	switch handling {
-	case storage.OrphanStrict:
-		return false, fmt.Errorf("parent issue %s does not exist (strict mode)", parentID)
-	case storage.OrphanSkip:
-		return true, nil
-	default: // OrphanAllow, OrphanResurrect
-		return false, nil
-	}
 }
 
 // checkCrossTableIDCollision rejects a create whose ID already lives in the

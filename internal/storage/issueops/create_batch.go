@@ -119,7 +119,6 @@ func ExecuteCreateBatch(ctx context.Context, tx *sql.Tx, request publicops.Creat
 	}
 	options := storage.BatchCreateOptions{
 		CreateOnly:           true,
-		OrphanHandling:       storage.OrphanAllow,
 		SkipPrefixValidation: attempt.ForceIDPrefix,
 	}
 	batch, err := NewBatchContext(ctx, tx, options)

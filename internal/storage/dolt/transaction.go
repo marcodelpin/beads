@@ -475,7 +475,6 @@ func (t *doltTransaction) CreateIssues(ctx context.Context, issues []*types.Issu
 
 	if len(regularIssues) > 0 {
 		result, err := issueops.CreateIssuesInTxWithResult(ctx, t.regularTx, regularIssues, actor, storage.BatchCreateOptions{
-			OrphanHandling:       storage.OrphanAllow,
 			SkipPrefixValidation: true,
 		})
 		if err != nil {
@@ -488,7 +487,6 @@ func (t *doltTransaction) CreateIssues(ctx context.Context, issues []*types.Issu
 
 	if len(wispIssues) > 0 {
 		if _, err := issueops.CreateIssuesInTxWithResult(ctx, t.ignoredTx, wispIssues, actor, storage.BatchCreateOptions{
-			OrphanHandling:       storage.OrphanAllow,
 			SkipPrefixValidation: true,
 		}); err != nil {
 			return err
