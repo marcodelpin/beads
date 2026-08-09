@@ -163,8 +163,8 @@ func TestCanonicalActor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := canonicalActor(tt.in); got != tt.want {
-				t.Errorf("canonicalActor(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := CanonicalActor(tt.in); got != tt.want {
+				t.Errorf("CanonicalActor(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -186,8 +186,8 @@ func TestActorMatches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := actorMatches(tt.assignee, tt.actor); got != tt.want {
-				t.Errorf("actorMatches(%q, %q) = %v, want %v", tt.assignee, tt.actor, got, tt.want)
+			if got := ActorMatches(tt.assignee, tt.actor); got != tt.want {
+				t.Errorf("ActorMatches(%q, %q) = %v, want %v", tt.assignee, tt.actor, got, tt.want)
 			}
 		})
 	}
@@ -386,7 +386,7 @@ func TestAssigneeNotStolen(t *testing.T) {
 			wantErr:     true,
 		},
 		// ga-wzl83: same class as AssigneeMatches — actor and newAssignee are
-		// compared against the stored assignee under canonicalActor, so a
+		// compared against the stored assignee under CanonicalActor, so a
 		// different layer's spelling of the current holder's own identity is
 		// not mistaken for a stranger.
 		{

@@ -10,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/validation"
 	publicops "github.com/steveyegge/beads/issueops"
 )
 
@@ -660,6 +661,14 @@ func (u *issueUseCaseImpl) claim(ctx context.Context, id, actor string, useWisp 
 	}
 }
 
+// ApplyUpdate applies spec's guarded field updates and returns the resulting
+// issue. When ExpectedAssignee is set, the guard compares under
+// validation.ActorMatches, not verbatim ==, so two spellings of the same
+// identity (ga-wzl83) don't false-mismatch — the unit-of-work twin of
+// issueops.CheckExpectedFieldsInTx's SQL-CAS guard; both paths of
+// AuthorizeAssigneeTransferWithPools already made this fix, this was the
+// third, previously-split verbatim-comparison surface (ga-5ksp5, gate review
+// on #5439).
 func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec UpdateSpec, actor string) (*types.Issue, error) {
 	if id == "" {
 		return nil, fmt.Errorf("ApplyUpdate: id must not be empty")
@@ -686,7 +695,7 @@ func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec Upda
 		if spec.ExpectedVersion != nil && current.RowVersion != *spec.ExpectedVersion {
 			return nil, fmt.Errorf("%w: expected %d, got %d", storage.ErrVersionMismatch, *spec.ExpectedVersion, current.RowVersion)
 		}
-		if spec.ExpectedAssignee != nil && current.Assignee != *spec.ExpectedAssignee {
+		if spec.ExpectedAssignee != nil && !validation.ActorMatches(current.Assignee, *spec.ExpectedAssignee) {
 			return nil, fmt.Errorf("%w: %s is held by %q, expected %q",
 				storage.ErrAssigneeMismatch, id, current.Assignee, *spec.ExpectedAssignee)
 		}

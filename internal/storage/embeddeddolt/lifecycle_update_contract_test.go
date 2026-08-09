@@ -52,6 +52,9 @@ func TestLifecycleUpdateContract(t *testing.T) {
 	t.Run("ConditionalGuardsGateOrdinaryEdits", func(t *testing.T) {
 		conformance.RunLifecycleUpdateConditionalGuardsGateOrdinaryEdits(t, ctx, fixture)
 	})
+	t.Run("ConditionalGuardAcceptsRespelledAssignee", func(t *testing.T) {
+		conformance.RunLifecycleUpdateConditionalGuardAcceptsRespelledAssignee(t, ctx, fixture)
+	})
 	t.Run("MetadataPatchOrdersMergeSetUnset", func(t *testing.T) {
 		conformance.RunLifecycleUpdateMetadataPatchOrdersMergeSetUnset(t, ctx, fixture)
 	})

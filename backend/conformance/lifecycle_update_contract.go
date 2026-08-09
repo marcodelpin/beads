@@ -905,6 +905,71 @@ func RunLifecycleUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T, ctx cont
 	maskedEvents.assert(t, "guard masked by the one before it", 0)
 }
 
+// RunLifecycleUpdateConditionalGuardAcceptsRespelledAssignee pins the
+// ga-5ksp5 fix beside RunLifecycleUpdateConditionalGuardsGateOrdinaryEdits
+// above rather than inside it: that test's later "order-dependent composition"
+// arm depends on the row's assignee still being exactly "holder" all the way
+// to the end, so reassigning it mid-test to exercise a second spelling would
+// invalidate its own assumption.
+//
+// The two Gas Town identity spellings a caller can send for the same actor
+// (dot vs underscore separator, ga-wzl83) must not desync from the row's
+// stored spelling: an ExpectedAssignee guard is satisfied by either spelling
+// of the CURRENT holder, and still refused by a spelling of a genuinely
+// different identity. Separate from RunLifecycleUpdateAssigneeTransferFence
+// in this file, which pins the same respelling rule for the CLAIM/TRANSFER
+// fence (AuthorizeAssigneeTransferWithPools) — this pins it for the plain
+// compare-and-set guard (CheckExpectedFieldsInTx / ApplyUpdate's own check),
+// the third, previously-split verbatim-comparison surface the ga-3ipxu gate
+// review on #5439 found.
+func RunLifecycleUpdateConditionalGuardAcceptsRespelledAssignee(t *testing.T, ctx context.Context, fixture LifecycleUpdateFixture) {
+	t.Helper()
+
+	id := fixture.IssuePrefix + "-lup-respelledguard"
+	seedLifecycleUpdateIssue(t, ctx, fixture, lifecycleUpdateIssue(id))
+
+	priorityEdit := func(priority int) publicops.UpdateRequest {
+		return publicops.UpdateRequest{Actor: "writer", IssueID: id, Patch: publicops.IssuePatch{
+			Priority: publicops.Field[int]{Set: true, Value: priority},
+		}}
+	}
+	assertPriority := func(label string, want int) {
+		t.Helper()
+		if got := lifecycleUpdateRow(t, ctx, fixture, id).Priority; got != want {
+			t.Errorf("%s = %d, want %d", label, got, want)
+		}
+	}
+
+	assign := publicops.UpdateRequest{Actor: "writer", IssueID: id, Patch: publicops.IssuePatch{
+		Assignee: publicops.Field[string]{Set: true, Value: "gastown.mayor"},
+	}}
+	if _, err := fixture.Lifecycle.Update(ctx, assign); err != nil {
+		t.Fatalf("assign %s under a dotted identity: %v", id, err)
+	}
+
+	// A guard naming the SAME identity under a different (and
+	// doubled-separator) spelling is satisfied, same as the row's own
+	// verbatim spelling would be.
+	respelled := "gastown__mayor"
+	respelledEdit := priorityEdit(1)
+	respelledEdit.ExpectedAssignee = &respelled
+	if result, err := fixture.Lifecycle.Update(ctx, respelledEdit); err != nil || !result.Changed {
+		t.Fatalf("edit guarded on a different spelling of the current holder = %#v, %v; want the edit applied", result, err)
+	}
+	assertPriority("priority after a guard naming the holder under a different spelling", 1)
+
+	// Canonicalization must not over-match: a spelling of a genuinely
+	// different identity — not just a respelling of the holder — still
+	// refuses, and still writes nothing.
+	foreign := "gastown_dog-1"
+	foreignEdit := priorityEdit(3)
+	foreignEdit.ExpectedAssignee = &foreign
+	if _, err := fixture.Lifecycle.Update(ctx, foreignEdit); !errors.Is(err, storage.ErrAssigneeMismatch) {
+		t.Fatalf("edit guarded on an unrelated identity: err = %v, want ErrAssigneeMismatch", err)
+	}
+	assertPriority("priority after a guard naming an unrelated identity", 1)
+}
+
 // RunLifecycleUpdateMetadataPatchOrdersMergeSetUnset pins the sentence
 // MetadataPatch opens with: "Replace is mutually exclusive with Merge, Set, and
 // Unset. Without Replace, operations apply Merge, then Set keys in
