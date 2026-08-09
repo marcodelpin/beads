@@ -31,6 +31,12 @@ func TestIssueOperationsCreateInheritsParentLabels(t *testing.T) {
 	conformance.RunIssueOperationsCreateInheritsParentLabels(t, ctx, fixture)
 }
 
+func TestIssueOperationsCreateUnderAParentMintsTheNextChildID(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsCreateUnderAParentMintsTheNextChildID(t, ctx, fixture)
+}
+
 func TestIssueOperationsCreateRefusesAForeignIDPrefix(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
@@ -145,10 +151,28 @@ func TestIssueOperationsCreateWritesEveryScalarField(t *testing.T) {
 	conformance.RunIssueOperationsCreateWritesEveryScalarField(t, ctx, fixture)
 }
 
+func TestIssueOperationsCreateClosedDerivesTheClosedStamp(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsCreateClosedDerivesTheClosedStamp(t, ctx, fixture)
+}
+
 func TestIssueOperationsUpdateWritesEveryScalarPatchField(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
 	conformance.RunIssueOperationsUpdateWritesEveryScalarPatchField(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateStampsStartedAtOnceOnTheFirstInProgress(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateStampsStartedAtOnceOnTheFirstInProgress(t, ctx, fixture)
+}
+
+func TestIssueOperationsUpdateRawMetadataTakesTheFunnelsValueShapes(t *testing.T) {
+	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
+	defer cleanup()
+	conformance.RunIssueOperationsUpdateRawMetadataTakesTheFunnelsValueShapes(t, ctx, fixture)
 }
 
 func TestIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary(t *testing.T) {

@@ -44,11 +44,14 @@ import (
 // a backend can express without a private extension — title, description,
 // design, acceptance criteria, notes, append_notes, priority, issue type, the
 // label set, the four nullable members, the actor and the id. Everything the
-// staging cases own that needs more than that — Metadata, Status and close
-// policy, Assignee and the transfer fence, Claim, ParentID, Persistence, the
-// Expected* preconditions, Provenance — is deliberately absent: those have
-// owning cases already, and pinning them here would only make the block
-// unadoptable for the backends it exists to serve.
+// staging cases own that needs more than that — Metadata, close policy,
+// Assignee and the transfer fence, Claim, ParentID, Persistence, the Expected*
+// preconditions, Provenance — is deliberately absent: those have owning cases
+// already, and pinning them here would only make the block unadoptable for the
+// backends it exists to serve. Status appears in exactly one case below, as a
+// bare patch member driving the branch where each body derives started_at and
+// closed_at and therefore assembles its column list somewhere else; the close
+// POLICY that hangs off that branch stays where it is.
 //
 // DELIBERATE OVERLAP, named rather than hidden. The plane runner re-pins what
 // RunIssueOperationsUpdateIssuePlaneOnlyRefusesWisps asserts. The value is
@@ -57,9 +60,9 @@ import (
 // the shape a partial backend cannot run. Everything else here — patch
 // persistence and the hydrated result, Changed:false on a same-value patch,
 // append_notes against a notes replacement, the nullable clears, label replace
-// at the role seam, the unknown-id refusal for a plain Update, the actorless
-// refusal, and a refused patch writing no member — has no owning proof
-// anywhere in the package.
+// at the role seam, the creation stamp no patch can name, the unknown-id
+// refusal for a plain Update, the actorless refusal, and a refused patch
+// writing no member — has no owning proof anywhere in the package.
 //
 // HOW MANY VOTES THE THREE LEGS ARE: two. The server-backed and embedded stores
 // share one validate/execute body (internal/storage/issueops/execution.go
@@ -163,6 +166,104 @@ func RunLifecycleUpdatePersistsThePatchAndHydratesTheResult(t *testing.T, ctx co
 	}
 	if fixture.AddDependency != nil && !lifecycleUpdateHasEdge(result.Issue.Dependencies, peer) {
 		t.Errorf("update result dependencies = %v, want a record naming %s", result.Issue.Dependencies, peer)
+	}
+}
+
+// RunLifecycleUpdatePreservesTheCreationStamp pins the pair of columns an edit
+// is never allowed to touch: created_at and created_by describe the row's
+// origin, and Update is a verb about its content. Nothing in IssuePatch can
+// express either one (issueops/issueops.go IssuePatch names neither), so a body
+// that writes them writes them by accident — and the accident is silent, because
+// the caller asked for a title and got one.
+//
+// IT IS PINNED NOWHERE ELSE IN THE PACKAGE. The string "CreatedBy" appears in no
+// contract case, and every backend builds the update's column set itself: the
+// two stores through issueops.UpdateFields, the unit-of-work backend through its
+// own updateSpec and the allow-list in domain/db. Two implementations, two
+// chances to add a column that should not be there — and `bd show`'s "created by
+// X on Y" and every provenance report downstream of it read exactly these two.
+//
+// THE SEEDED STAMP IS DISTANT ON PURPOSE, and this is the case's fixture, not
+// its assertion. created_at is DATETIME(0) — no fractional seconds — so a
+// creation stamped at "now" and an update that rewrote it to "now" inside the
+// same second are the SAME STORED BYTES, and a case seeding the current time
+// cannot tell "preserved" from "rewritten". A stamp years in the past can only
+// survive by being left alone.
+//
+// The seeded values are READ BACK BEFORE THE UPDATE rather than assumed. A seed
+// hook that dropped the preset stamp would leave the row carrying "now", and the
+// case would then be comparing a rewrite against a rewrite and passing. That
+// precondition is also the only proof in the package that Create HONORS a preset
+// created_at, which every import and restore path depends on.
+//
+// BOTH SET-CLAUSE SHAPES ARE DRIVEN, because the backends build them on
+// different branches: a content-only patch, and a status patch, which is the leg
+// where each body additionally derives started_at and closed_at and so assembles
+// its column list somewhere else.
+func RunLifecycleUpdatePreservesTheCreationStamp(t *testing.T, ctx context.Context, fixture LifecycleUpdateFixture) {
+	t.Helper()
+
+	id := fixture.IssuePrefix + "-lup-created"
+	seeded := lifecycleUpdateIssue(id)
+	seeded.CreatedAt = lifecycleUpdateSeededCreatedAt
+	seeded.CreatedBy = "founder"
+	seedLifecycleUpdateIssue(t, ctx, fixture, seeded)
+
+	before := lifecycleUpdateRow(t, ctx, fixture, id)
+	if !before.CreatedAt.Equal(lifecycleUpdateSeededCreatedAt) {
+		t.Fatalf("seeded %s carries created_at %v, want the preset %v — a seed that stamps its own creation time leaves this case unable to tell a preserved stamp from a rewritten one",
+			id, before.CreatedAt.UTC(), lifecycleUpdateSeededCreatedAt)
+	}
+	if before.CreatedBy != "founder" {
+		t.Fatalf("seeded %s carries created_by %q, want the preset %q — see above", id, before.CreatedBy, "founder")
+	}
+
+	for _, edit := range []struct {
+		name  string
+		patch publicops.IssuePatch
+	}{
+		{"a content patch", publicops.IssuePatch{
+			Title: publicops.Field[string]{Set: true, Value: "retitled"},
+		}},
+		{"a status patch", publicops.IssuePatch{
+			Status: publicops.Field[publicops.Status]{Set: true, Value: types.StatusInProgress},
+		}},
+	} {
+		t.Run(edit.name, func(t *testing.T) {
+			result, err := fixture.Lifecycle.Update(ctx, publicops.UpdateRequest{Actor: "editor", IssueID: id, Patch: edit.patch})
+			if err != nil {
+				t.Fatalf("update %s with %s: %v", id, edit.name, err)
+			}
+			if !result.Changed {
+				t.Fatalf("%s on %s reported Changed = false, want a committed edit — a no-op would not exercise the write at all", edit.name, id)
+			}
+			assertLifecycleUpdateCreationStamp(t, "the stored row after "+edit.name, lifecycleUpdateRow(t, ctx, fixture, id))
+			// The result is held to the same expectation because it is what a
+			// front door renders after the write: a row that kept its stamp and
+			// a snapshot that reports the editor as the author still shows the
+			// caller the wrong provenance.
+			assertLifecycleUpdateCreationStamp(t, "the update result after "+edit.name, result.Issue)
+		})
+	}
+}
+
+// lifecycleUpdateSeededCreatedAt is years in the past, which is what makes a
+// rewritten created_at observable against a DATETIME(0) column: see
+// RunLifecycleUpdatePreservesTheCreationStamp.
+var lifecycleUpdateSeededCreatedAt = time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
+
+func assertLifecycleUpdateCreationStamp(t *testing.T, label string, issue *types.Issue) {
+	t.Helper()
+	if issue == nil {
+		t.Fatalf("%s = nil, want the updated issue", label)
+	}
+	if !issue.CreatedAt.Equal(lifecycleUpdateSeededCreatedAt) {
+		t.Errorf("%s created_at = %v, want it unchanged at %v — an edit does not re-create the row",
+			label, issue.CreatedAt.UTC(), lifecycleUpdateSeededCreatedAt)
+	}
+	if issue.CreatedBy != "founder" {
+		t.Errorf("%s created_by = %q, want it unchanged at %q — the editor is not the author",
+			label, issue.CreatedBy, "founder")
 	}
 }
 

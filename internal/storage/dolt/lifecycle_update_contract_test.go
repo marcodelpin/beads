@@ -24,6 +24,9 @@ func TestLifecycleUpdateContract(t *testing.T) {
 	t.Run("PersistsThePatchAndHydratesTheResult", func(t *testing.T) {
 		conformance.RunLifecycleUpdatePersistsThePatchAndHydratesTheResult(t, ctx, fixture)
 	})
+	t.Run("PreservesTheCreationStamp", func(t *testing.T) {
+		conformance.RunLifecycleUpdatePreservesTheCreationStamp(t, ctx, fixture)
+	})
 	t.Run("ReportsNoChangeForASameValuePatch", func(t *testing.T) {
 		conformance.RunLifecycleUpdateReportsNoChangeForASameValuePatch(t, ctx, fixture)
 	})

@@ -602,14 +602,35 @@ func RunDeleterRewritesReferencesInNeighbors(t *testing.T, ctx context.Context, 
 // preview reports the counts the real deletion goes on to report, rewrites
 // nothing, and leaves every row where it was.
 //
-// The two are compared against EACH OTHER rather than against literals: a
-// preview whose number differs from the run it precedes is worse than no
-// preview.
+// PREVIEW-VERSUS-RUN IS HALF A TEST, and the half it is missing is the one a
+// caller reads. The two counts agreeing says only that the two calls walked the
+// same code; both can be zero, or both can be wrong by the same amount, and
+// every comparison below still passes. `bd delete --dry-run` prints these
+// numbers as "this will also remove N labels and M dependencies", and a preview
+// that under-reports is how a caller consents to a deletion it did not agree to.
+//
+// So the counts are also held to the SEED. Two labels and one edge are written
+// before anything is asked, and the preview has to say two and one — which is
+// what makes the comparison afterwards a statement about the run rather than
+// about a shared zero. audit_issue-lifecycle.go's DeleteIssuesDryRunCounts pins
+// the same literals at the STORAGE seam, where it can only ever observe the one
+// body the two stores share; the unit-of-work Deleter is a second body, and its
+// counts have diverged from that one before.
+//
+// The labels are seeded on the row the edge points AT, so a body that counted
+// only the rows it walked first still has to reach both.
 func RunDeleterDryRunChangesNothing(t *testing.T, ctx context.Context, fixture DeleterFixture) {
 	t.Helper()
-	first := deleterSeedIssue(t, ctx, fixture, "dry", "1")
+	labeled := deleterIssue(fixture, "dry", "1", false)
+	labeled.Labels = []string{"deleter-dry-alpha", "deleter-dry-beta"}
+	first := deleterSeed(t, ctx, fixture, labeled)
 	second := deleterSeedIssue(t, ctx, fixture, "dry", "2")
 	deleterAddEdge(t, ctx, fixture, second, first)
+	// The seed is read back rather than assumed: a CreateIssue hook that
+	// dropped the label set would leave the literal below asserting a count the
+	// fixture never wrote, and the case would then fail for the wrong reason or
+	// — with the count corrected to nothing — pass for one.
+	deleterAssertLabelRows(t, ctx, fixture, 2, first)
 
 	request := publicops.DeleteRequest{IDs: []string{first, second}, Actor: "deleter-contract"}
 	preview := deleterDelete(t, ctx, fixture, deleterWithDryRun(request, true))
@@ -619,10 +640,17 @@ func RunDeleterDryRunChangesNothing(t *testing.T, ctx context.Context, fixture D
 	if preview.Deleted != 2 {
 		t.Errorf("preview.Deleted = %d, want 2", preview.Deleted)
 	}
+	if preview.Labels != 2 {
+		t.Errorf("preview.Labels = %d, want the 2 labels seeded on %s — a preview that under-reports is consent to a deletion the caller did not agree to", preview.Labels, first)
+	}
+	if preview.Dependencies != 1 {
+		t.Errorf("preview.Dependencies = %d, want the 1 seeded %s -> %s edge", preview.Dependencies, second, first)
+	}
 	if preview.ReferencesUpdated != 0 {
 		t.Errorf("preview.ReferencesUpdated = %d, want 0: a preview rewrites nothing", preview.ReferencesUpdated)
 	}
 	deleterAssertIssueRows(t, ctx, fixture, 2, first, second)
+	deleterAssertLabelRows(t, ctx, fixture, 2, first)
 
 	actual := deleterDelete(t, ctx, fixture, request)
 	if actual.Deleted != preview.Deleted {
@@ -636,6 +664,7 @@ func RunDeleterDryRunChangesNothing(t *testing.T, ctx context.Context, fixture D
 			preview.Labels, preview.Events, actual.Labels, actual.Events)
 	}
 	deleterAssertIssueRows(t, ctx, fixture, 0, first, second)
+	deleterAssertLabelRows(t, ctx, fixture, 0, first)
 }
 
 // RunDeleterRecordsExactlyOneHistoryEntry pins the versioning clause
@@ -1024,6 +1053,20 @@ func deleterRowCount(t *testing.T, ctx context.Context, fixture DeleterFixture, 
 		t.Fatalf("counting %s rows for %s: %v", table, id, err)
 	}
 	return got
+}
+
+// deleterAssertLabelRows counts one row's stored labels. The dry-run case reads
+// it both as a precondition on its own seed and as the erasure the preview
+// promised not to perform.
+func deleterAssertLabelRows(t *testing.T, ctx context.Context, fixture DeleterFixture, want int, id string) {
+	t.Helper()
+	var got int
+	if err := fixture.QueryScalar(ctx, "SELECT COUNT(*) FROM labels WHERE issue_id = ?", []any{id}, &got); err != nil {
+		t.Fatalf("counting label rows for %s: %v", id, err)
+	}
+	if got != want {
+		t.Errorf("label rows for %s = %d, want %d", id, got, want)
+	}
 }
 
 // deleterAssertEdgeRows counts the stored edges from dependent to blocker.

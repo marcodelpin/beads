@@ -26,9 +26,27 @@ import (
 // against the same infra-type routing the stores' own CreateIssue applies: a
 // configured infra type is ephemeral and lives in the wisp tables, never in
 // issues.
+//
+// THE LAST ARM IS THE ONE THE FIXTURE USED TO HIDE. Every arm above it
+// configures types.infra to "agent", which is ALREADY in the built-in infra set
+// (agent/role/message), so a backend that unioned the configured names with the
+// defaults, or that ignored the key outright, answers identically to one that
+// replaced them. The promise is replacement: a workspace that names its own
+// infra types has said which types are ephemeral, and the ones it did not name
+// are durable. Getting that backwards versions rows the workspace asked to keep
+// out of history, or drops rows it expected versioned — silently, at create.
+//
+// audit_config_metadata_slots_repomtime.go's testAuditConfiguredInfraTypes pins
+// the replacement on the CONFIG READ. This pins it where it is consumed, on all
+// three legs, and the unit-of-work provider resolves the set through its own
+// config use case.
 func RunIssueOperationsCreateRoutesInfraTypesToWisps(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
 	t.Helper()
-	for key, value := range map[string]string{"types.custom": "agent", "types.infra": "agent"} {
+	// "gate" is in the vocabulary from the start but not yet infra: the last
+	// arm needs a name that is creatable AND outside the built-in infra set, so
+	// that promoting it proves the configured value was read rather than
+	// defaulted.
+	for key, value := range map[string]string{"types.custom": "agent,gate", "types.infra": "agent"} {
 		if err := fixture.SetConfig(ctx, key, value); err != nil {
 			t.Fatalf("SetConfig(%s): %v", key, err)
 		}
@@ -75,6 +93,40 @@ func RunIssueOperationsCreateRoutesInfraTypesToWisps(t *testing.T, ctx context.C
 	}
 	assertIssueOperationsRowCount(t, ctx, fixture, "issues", durable.Issue.ID, 1)
 	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", durable.Issue.ID, 0)
+
+	// A configured set REPLACES the built-in one rather than adding to it. The
+	// workspace now says gate is its only infra type, so agent — a built-in
+	// infra name, and ephemeral in every arm above — has to come back durable.
+	if err := fixture.SetConfig(ctx, "types.infra", "gate"); err != nil {
+		t.Fatalf("SetConfig(types.infra, gate): %v", err)
+	}
+	evicted, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor: "writer",
+		Issue: &types.Issue{Title: "evicted infra type", Status: types.StatusOpen, Priority: 2, IssueType: types.IssueType("agent")},
+	})
+	if err != nil {
+		t.Fatalf("Create agent once the configured infra set no longer names it: %v", err)
+	}
+	if evicted.Issue.Ephemeral {
+		t.Errorf("create result Ephemeral = true for type agent, want false: a configured types.infra REPLACES the built-in set, it does not extend it")
+	}
+	assertIssueOperationsRowCount(t, ctx, fixture, "issues", evicted.Issue.ID, 1)
+	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", evicted.Issue.ID, 0)
+
+	// The control: without it, a backend that had simply stopped routing
+	// anything to the wisps plane would pass the arm above.
+	promoted, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor: "writer",
+		Issue: &types.Issue{Title: "promoted infra type", Status: types.StatusOpen, Priority: 2, IssueType: types.IssueType("gate")},
+	})
+	if err != nil {
+		t.Fatalf("Create the newly configured infra type gate: %v", err)
+	}
+	if !promoted.Issue.Ephemeral {
+		t.Errorf("create result Ephemeral = false for the configured infra type gate, want true")
+	}
+	assertIssueOperationsRowCount(t, ctx, fixture, "wisps", promoted.Issue.ID, 1)
+	assertIssueOperationsRowCount(t, ctx, fixture, "issues", promoted.Issue.ID, 0)
 }
 
 // RunIssueOperationsCreateRejectsMissingDependencyTargets pins the facade
@@ -490,6 +542,91 @@ func RunIssueOperationsCreateInheritsParentLabels(t *testing.T, ctx context.Cont
 	}
 	assertIssueOperationsLabels(t, ctx, fixture, none.Issue.ID, "child of label-less parent")
 	assertIssueOperationsStringSet(t, "child of label-less parent result labels", none.Issue.Labels)
+}
+
+// RunIssueOperationsCreateUnderAParentMintsTheNextChildID pins the ID a create
+// with a ParentID and no id of its own comes back with. The minting itself is
+// already DRIVEN by RunIssueOperationsCreateInheritsParentLabels — which reads
+// the labels that ride along and never looks at the id — so the shape of the id
+// is unpinned on every leg today.
+//
+// TWO GENUINELY DIFFERENT BODIES ANSWER IT. The two stores reach
+// issueops.GetNextChildIDTx through the role's create; the unit-of-work
+// provider mints in internal/storage/domain/db/child_counter.go, which scans
+// and parses the suffix itself against its own parent-table probe. Neither is
+// pinned by any contract case, and the id is the one part of a create the
+// caller could not have supplied and cannot correct afterwards: it is the
+// handle every later command uses.
+//
+// THE FIXTURE IS THE MIGRATION, in two places.
+//
+// A SIBLING IS SEEDED OUT OF BAND, at .5, with no .3 or .4 beside it. A counter
+// that merely incremented per call would answer .3 here; the promise is that
+// the mint SELF-HEALS to one past the highest direct child that exists, which
+// is what keeps a restored or hand-edited workspace from minting an id that is
+// already taken. A case that only ever creates children in order cannot state
+// the difference.
+//
+// A GRANDCHILD IS SEEDED AT .5.1, which is the trap the scan is written around:
+// the ids are matched with a prefix pattern, and a pattern that does not stop
+// at the first separator counts .5.1 as a direct child and mints past it.
+//
+// The last arm carries the collation half (bd-oyvc2.10): two parents whose ids
+// differ ONLY IN CASE keep separate counters, because the scan's comparison is
+// case-sensitive. Where it is not, one team's beads silently advance another's.
+//
+// Residue left where it is: GetNextChildID's "advance the counter WITHOUT
+// creating an issue" and its wisp-parent routing stay audit-only. Neither is
+// expressible here — no role reserves an id, and this fixture has no hook that
+// seeds a wisp parent.
+func RunIssueOperationsCreateUnderAParentMintsTheNextChildID(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	parent := fixture.IssuePrefix + "-childmint"
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, parent)
+
+	assertIssueOperationsMintedChildID(t, ctx, fixture, parent, parent+".1", "the first child of a childless parent")
+	assertIssueOperationsMintedChildID(t, ctx, fixture, parent, parent+".2", "the second child")
+
+	// The out-of-band sibling and its own child. Neither is created through the
+	// role, so the counter never saw them go in.
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, parent+".5")
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, parent+".5.1")
+	assertIssueOperationsMintedChildID(t, ctx, fixture, parent, parent+".6",
+		"the child after a seeded .5 with a grandchild at .5.1")
+
+	lower := fixture.IssuePrefix + "-childcase"
+	upper := fixture.IssuePrefix + "-childCASE"
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, lower)
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, upper)
+	seedIssueOperationsLabeledIssue(t, ctx, fixture, upper+".7")
+	assertIssueOperationsMintedChildID(t, ctx, fixture, lower, lower+".1",
+		"the first child of a parent whose differently-cased twin already has one")
+}
+
+// assertIssueOperationsMintedChildID creates one child under parent with no id
+// of its own and holds the minted id to want, then checks the row is really
+// there: an id the caller cannot resolve afterwards is not an answer.
+func assertIssueOperationsMintedChildID(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, parent, want, label string) {
+	t.Helper()
+	created, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:    "writer",
+		ParentID: parent,
+		Issue: &types.Issue{
+			Title: label, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create %s under %s: %v", label, parent, err)
+	}
+	if created.Issue == nil {
+		t.Fatalf("create %s under %s returned no issue", label, parent)
+	}
+	if created.Issue.ID != want {
+		t.Errorf("%s was minted %q, want %q", label, created.Issue.ID, want)
+		return
+	}
+	assertIssueOperationsRowCount(t, ctx, fixture, "issues", want, 1)
 }
 
 // RunIssueOperationsUpdateFoldsMetadataIntoOneEvent pins a compound update to a
@@ -2102,6 +2239,16 @@ func RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T, ct
 // expectation table, because it is what a front door renders: a create that
 // stored every column and hydrated one of them away is a field the caller still
 // cannot see.
+//
+// THE CREATION STAMP RIDES ALONG, in both directions, because create is the one
+// verb entitled to write it and nothing here said so. A caller supplying
+// created_at and created_by is every import, restore and tracker-sync path in
+// the tree — they exist to reproduce a history, and a body that overwrote the
+// pair with "now" and "the importing agent" would relabel the whole backlog as
+// today's work by this account. A caller supplying NEITHER gets a stamp anyway,
+// which is the half testCreateAndGet (conformance.go) pinned and no contract
+// did. The preset is years in the past on purpose: created_at is DATETIME(0),
+// so a preset at "now" and a stamp of "now" are the same stored bytes.
 func RunIssueOperationsCreateWritesEveryScalarField(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
 	t.Helper()
 
@@ -2110,6 +2257,7 @@ func RunIssueOperationsCreateWritesEveryScalarField(t *testing.T, ctx context.Co
 	externalRef := "created-ref"
 	dueAt := time.Date(2033, 5, 6, 7, 8, 9, 0, time.UTC)
 	deferUntil := time.Date(2033, 4, 5, 6, 7, 8, 0, time.UTC)
+	createdAt := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
 	created, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
 		Actor:         "writer",
 		ForceIDPrefix: true,
@@ -2121,6 +2269,7 @@ func RunIssueOperationsCreateWritesEveryScalarField(t *testing.T, ctx context.Co
 			Assignee: "created-assignee", Owner: "created-owner", ClosedBySession: "created-session",
 			EstimatedMinutes: &minutes, ExternalRef: &externalRef,
 			DueAt: &dueAt, DeferUntil: &deferUntil,
+			CreatedAt: createdAt, CreatedBy: "created-author",
 		},
 	})
 	if err != nil {
@@ -2128,6 +2277,39 @@ func RunIssueOperationsCreateWritesEveryScalarField(t *testing.T, ctx context.Co
 	}
 	if created.Issue == nil {
 		t.Fatalf("full scalar create of %s returned no issue", id)
+	}
+	assertIssueOperationsStoredColumns(t, ctx, fixture, id, "after the full scalar create", []issueOperationsColumnValue{
+		{"created_at", createdAt.Format(issueOperationsStoredTimeLayout)},
+		{"created_by", "created-author"},
+	})
+	if !created.Issue.CreatedAt.Equal(createdAt) {
+		t.Errorf("create result created_at = %v, want the preset %v", created.Issue.CreatedAt.UTC(), createdAt)
+	}
+	if created.Issue.CreatedBy != "created-author" {
+		t.Errorf("create result created_by = %q, want the preset %q", created.Issue.CreatedBy, "created-author")
+	}
+
+	// The other direction: a request that names no creation time still gets
+	// one. An empty created_at is a row that sorts and ages as though it were
+	// created at the zero time, which is what `bd list --stale` and every
+	// age-based report read.
+	stamped := fixture.IssuePrefix + "-createstamp"
+	lower := time.Now().UTC().Add(-issueOperationsClockSlack).Format(issueOperationsStoredTimeLayout)
+	if _, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+		Actor:         "writer",
+		ForceIDPrefix: true,
+		Issue: &types.Issue{
+			ID: stamped, Title: stamped, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+		},
+	}); err != nil {
+		t.Fatalf("create %s without a creation time: %v", stamped, err)
+	}
+	upper := time.Now().UTC().Add(issueOperationsClockSlack).Format(issueOperationsStoredTimeLayout)
+	autoStamp := readIssueOperationsStoredColumns(t, ctx, fixture, stamped, "after a create with no creation time", []string{"created_at"})[0].value
+	// The stored layout sorts lexicographically, so a string comparison is a
+	// time comparison. A bare "not empty" check would accept the zero time.
+	if autoStamp < lower || autoStamp > upper {
+		t.Errorf("%s created_at = %q after a create that named none, want a stamp between %q and %q", stamped, autoStamp, lower, upper)
 	}
 
 	stored := []issueOperationsColumnValue{
@@ -2151,6 +2333,91 @@ func RunIssueOperationsCreateWritesEveryScalarField(t *testing.T, ctx context.Co
 	}
 	assertIssueOperationsStoredColumns(t, ctx, fixture, id, "after the full scalar create", stored)
 	assertIssueOperationsColumnValues(t, id, "in the create result", issueOperationsIssueScalars(created.Issue), stored)
+}
+
+// RunIssueOperationsCreateClosedDerivesTheClosedStamp pins what a create that
+// arrives already closed does about the column it did not fill: a closed issue
+// with no closed_at gets one derived from the timestamps it DID carry, one
+// second past the later of created_at and updated_at
+// (internal/storage/issueops/create.go PrepareIssueForInsert).
+//
+// The path is `bd import` and every restore and tracker-sync: rows arrive
+// closed, from a system that recorded when they were made and last touched but
+// not when they were finished. A backend that left the column NULL produces a
+// closed backlog with no completion dates — every cycle-time and throughput
+// report over the imported range silently drops those rows — and a backend that
+// stamped "now" dates the whole import to the day it ran.
+//
+// THE AUDIT CASE'S FIXTURE CANNOT SEE WHICH TIMESTAMP THE BODY READ.
+// audit_issue-lifecycle.go's testAuditCreateClosedDerivesClosedAt seeds
+// created_at and updated_at to the SAME instant, so max(created, updated) and
+// created and updated are all the same number, and a body that read any one of
+// them passes. The second arm below moves them apart, which is the whole of
+// what "max" means.
+//
+// The third arm is the guard on the other side: the derivation is a default,
+// not a policy. A caller that supplied its own completion time keeps it, and a
+// body that derived unconditionally would overwrite the one fact the import
+// actually knew.
+//
+// HOW MANY VOTES: one. All three legs reach PrepareIssueForInsert through
+// issueops.PreparePublicCreateRequest before any backend-specific create body
+// runs — the unit-of-work provider included (internal/storage/uow calls it in
+// Create before handing the issue to its own domain use case). The case is
+// worth having as a stated promise, but it is one body read three times, not a
+// second opinion.
+func RunIssueOperationsCreateClosedDerivesTheClosedStamp(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+
+	base := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
+	supplied := time.Date(2019, 6, 7, 8, 9, 10, 0, time.UTC)
+	for index, test := range []struct {
+		name         string
+		createdAt    time.Time
+		updatedAt    time.Time
+		closedAt     *time.Time
+		wantClosedAt time.Time
+	}{
+		{
+			name: "from a row whose stamps agree", createdAt: base, updatedAt: base,
+			wantClosedAt: base.Add(time.Second),
+		},
+		{
+			// updated_at is LATER, so a body reading created_at alone lands a
+			// second past the wrong one.
+			name: "from the later of the two stamps", createdAt: base, updatedAt: base.Add(72 * time.Hour),
+			wantClosedAt: base.Add(72*time.Hour + time.Second),
+		},
+		{
+			name: "never over a stamp the caller supplied", createdAt: base, updatedAt: base,
+			closedAt: &supplied, wantClosedAt: supplied,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := fixture.IssuePrefix + "-createclosed-" + strconv.Itoa(index)
+			if _, err := fixture.Operations.Create(ctx, publicops.CreateRequest{
+				Actor:         "writer",
+				ForceIDPrefix: true,
+				Issue: &types.Issue{
+					ID: id, Title: id, Status: types.StatusClosed, Priority: 2, IssueType: types.TypeTask,
+					CreatedAt: test.createdAt, UpdatedAt: test.updatedAt, ClosedAt: test.closedAt,
+				},
+			}); err != nil {
+				t.Fatalf("create closed %s: %v", id, err)
+			}
+			// The two source columns are read back first: a create that
+			// normalized them to "now" would leave the expectation below
+			// describing a row that does not exist, and the case would fail
+			// somewhere unhelpful instead of saying so.
+			assertIssueOperationsStoredColumns(t, ctx, fixture, id, "the stamps the derivation reads", []issueOperationsColumnValue{
+				{"created_at", test.createdAt.Format(issueOperationsStoredTimeLayout)},
+				{"updated_at", test.updatedAt.Format(issueOperationsStoredTimeLayout)},
+			})
+			assertIssueOperationsStoredColumns(t, ctx, fixture, id, "the derived close stamp", []issueOperationsColumnValue{
+				{"closed_at", test.wantClosedAt.Format(issueOperationsStoredTimeLayout)},
+			})
+		})
+	}
 }
 
 // RunIssueOperationsUpdateWritesEveryScalarPatchField pins the whole scalar and
@@ -2282,6 +2549,153 @@ func RunIssueOperationsUpdateWritesEveryScalarPatchField(t *testing.T, ctx conte
 		t.Errorf("restating every scalar field of %s rewrote the row: %+v, want it unchanged at %+v", id, after, before)
 	}
 	events.assert(t, "restated scalar patch", 0, nil)
+}
+
+// RunIssueOperationsUpdateStampsStartedAtOnceOnTheFirstInProgress pins the
+// started_at lifecycle a plain status update carries with it
+// (internal/storage/issueops/update.go ManageStartedAt: "auto-sets started_at
+// when transitioning to in_progress. If the issue already has a started_at, it
+// is preserved"). It drives the UNTYPED FUNNEL, because IssuePatch has no
+// started_at member and the funnel is what every `bd update -s` and every
+// external-sync caller reaches.
+//
+// STAMPING AND PRESERVING FAIL IN OPPOSITE DIRECTIONS, so both are here. A body
+// that never stamps leaves an in_progress row that has never started, and
+// nothing downstream can say how long the work has been running — the lease
+// reclaim reads exactly this column. A body that RE-stamps resets that clock
+// every time an agent bounces a bead through open and back, which is the shape
+// a retry loop produces, and the row then looks freshly started forever.
+//
+// The closest existing case is
+// RunIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow, which
+// pins preservation of a seeded started_at under CLAIM. Neither the stamp on an
+// empty column nor preservation across a plain status patch is pinned anywhere.
+//
+// THE PRESERVING ROW'S STAMP IS SEEDED YEARS IN THE PAST, and that is the
+// fixture doing the work rather than the assertion. started_at is DATETIME(0):
+// a row stamped by the first transition and re-stamped by the second, both
+// inside one second, holds the same bytes either way, so a case that stamped
+// its own precondition could not tell preservation from a rewrite. The stamping
+// row therefore proves only that a stamp lands, in a measured window, and the
+// preserving row — seeded, never stamped by this case — carries the whole
+// preservation claim across a full open/in_progress/open/in_progress cycle.
+func RunIssueOperationsUpdateStampsStartedAtOnceOnTheFirstInProgress(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+	if fixture.UpdateRaw == nil {
+		t.Skip("fixture has no UpdateRaw: this backend's untyped update funnel is unreachable, so ManageStartedAt is UNPINNED here")
+	}
+
+	stamping := fixture.IssuePrefix + "-startstamp"
+	if err := fixture.CreateIssue(ctx, &types.Issue{
+		ID: stamping, Title: stamping, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+	}, "seed"); err != nil {
+		t.Fatalf("seed %s: %v", stamping, err)
+	}
+	assertIssueOperationsStartedAt(t, ctx, fixture, stamping, "before any transition", "")
+
+	lower := time.Now().UTC().Add(-issueOperationsClockSlack).Format(issueOperationsStoredTimeLayout)
+	issueOperationsUpdateStatus(t, ctx, fixture, stamping, types.StatusInProgress)
+	upper := time.Now().UTC().Add(issueOperationsClockSlack).Format(issueOperationsStoredTimeLayout)
+	stamped := issueOperationsStartedAt(t, ctx, fixture, stamping, "after the first in_progress")
+	// The stored layout sorts lexicographically, so string bounds are time
+	// bounds. A bare "not empty" check would accept the zero time, which is
+	// what a body writing an unset *time.Time lands.
+	if stamped < lower || stamped > upper {
+		t.Errorf("%s started_at = %q after its first in_progress, want a stamp between %q and %q", stamping, stamped, lower, upper)
+	}
+
+	preserving := fixture.IssuePrefix + "-startkeep"
+	seededStart := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := fixture.CreateIssue(ctx, &types.Issue{
+		ID: preserving, Title: preserving, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+		StartedAt: &seededStart,
+	}, "seed"); err != nil {
+		t.Fatalf("seed %s: %v", preserving, err)
+	}
+	want := seededStart.Format(issueOperationsStoredTimeLayout)
+	// The precondition, not an assumption: a seed hook that dropped the preset
+	// stamp would leave every check below comparing a rewrite with a rewrite.
+	assertIssueOperationsStartedAt(t, ctx, fixture, preserving, "as seeded", want)
+
+	for _, step := range []types.Status{types.StatusInProgress, types.StatusOpen, types.StatusInProgress} {
+		issueOperationsUpdateStatus(t, ctx, fixture, preserving, step)
+		assertIssueOperationsStartedAt(t, ctx, fixture, preserving, "after a status update to "+string(step), want)
+	}
+}
+
+// issueOperationsUpdateStatus drives one status change through the untyped
+// funnel, which is the only route to it that carries no patch of its own.
+func issueOperationsUpdateStatus(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id string, status types.Status) {
+	t.Helper()
+	if err := fixture.UpdateRaw(ctx, id, map[string]any{"status": string(status)}, "writer"); err != nil {
+		t.Fatalf("raw status update of %s to %q: %v", id, status, err)
+	}
+}
+
+func issueOperationsStartedAt(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id, label string) string {
+	t.Helper()
+	return readIssueOperationsStoredColumns(t, ctx, fixture, id, label, []string{"started_at"})[0].value
+}
+
+func assertIssueOperationsStartedAt(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture, id, label, want string) {
+	t.Helper()
+	if got := issueOperationsStartedAt(t, ctx, fixture, id, label); got != want {
+		t.Errorf("%s started_at %s = %q, want %q", id, label, got, want)
+	}
+}
+
+// RunIssueOperationsUpdateRawMetadataTakesTheFunnelsValueShapes pins what the
+// UNTYPED update funnel accepts in its metadata slot. The typed
+// IssuePatch.Metadata surface is an ordered merge/set/unset document with its
+// own owning cases; this is the OTHER entry, the one every `bd update
+// --metadata` and every backfill script reaches, where the value arrives as
+// whatever the caller's JSON decoder produced.
+//
+// The shapes are the contract. The two stores funnel through
+// storage.NormalizeMetadataValue, which names string, []byte and
+// json.RawMessage; the unit-of-work backend funnels through its own
+// normalizeUpdateValue in internal/storage/domain/db. Two maps, and nothing
+// held them to the same accepted set — a backend that took only one of the
+// three would refuse a caller the others serve, or worse, store the Go
+// rendering of a []byte as the document.
+//
+// audit_issue-lifecycle.go's testAuditMetadataJSONRoundTrip drives []byte alone
+// and only at the storage seam. The document is compared parsed rather than
+// byte-for-byte because a JSON column may reformat and reorder, and the NOT
+// NULL probe is the half a value comparison cannot make: a NULL column reads
+// back as the literal "null" and compares equal to an empty document.
+func RunIssueOperationsUpdateRawMetadataTakesTheFunnelsValueShapes(t *testing.T, ctx context.Context, fixture IssueOperationsStagingFixture) {
+	t.Helper()
+	if fixture.UpdateRaw == nil {
+		t.Skip("fixture has no UpdateRaw: this backend's untyped update funnel is unreachable, so its metadata slot is UNPINNED here")
+	}
+
+	id := fixture.IssuePrefix + "-rawmeta"
+	if err := fixture.CreateIssue(ctx, &types.Issue{
+		ID: id, Title: id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+		Metadata: json.RawMessage(`{"team":"seeded"}`),
+	}, "seed"); err != nil {
+		t.Fatalf("seed %s: %v", id, err)
+	}
+	assertIssueOperationsStoredMetadata(t, ctx, fixture, id, "as seeded", `{"team":"seeded"}`)
+
+	for _, shape := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"a []byte", []byte(`{"team":"ops"}`), `{"team":"ops"}`},
+		{"a string", `{"team":"sre"}`, `{"team":"sre"}`},
+		{"a json.RawMessage", json.RawMessage(`{"team":"platform"}`), `{"team":"platform"}`},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			if err := fixture.UpdateRaw(ctx, id, map[string]any{"metadata": shape.value}, "writer"); err != nil {
+				t.Fatalf("raw metadata update of %s with %s: %v", id, shape.name, err)
+			}
+			assertIssueOperationsStoredMetadata(t, ctx, fixture, id, "after a raw update with "+shape.name, shape.want)
+			assertIssueOperationsMetadataIsNotNull(t, ctx, fixture, id, "after a raw update with "+shape.name)
+		})
+	}
 }
 
 // RunIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary pins the
@@ -2526,6 +2940,12 @@ var issueOperationsClaimBystanderColumns = []string{
 // issueOperationsStoredTimeLayout is how Dolt renders a DATETIME cast to CHAR.
 // The columns carry no fractional seconds, so this round-trips exactly.
 const issueOperationsStoredTimeLayout = "2006-01-02 15:04:05"
+
+// issueOperationsClockSlack widens the window a case allows around a stamp the
+// implementation wrote from its own clock. Every backend here stamps in Go, in
+// this process, so the two clocks are the same one; the slack covers the
+// truncation to whole seconds and a slow call, not a clock skew.
+const issueOperationsClockSlack = 5 * time.Second
 
 // issueOperationsColumnValue names one stored column and the value it holds, so
 // a field-surface assertion reports WHICH column disagreed.
