@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/eventsjournal"
 	"github.com/steveyegge/beads/internal/httpapi"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/backends"
@@ -175,6 +176,7 @@ func runServe() error {
 		if err != nil {
 			return HandleError("bd serve: %v", err)
 		}
+		defer startServeEventsJournalMaintenance(info.BeadsDir, store)()
 		return serveListen(httpapi.Config{
 			Addr:              serveAddr,
 			AllowNonLoopback:  serveAllowNonLoopback,
@@ -241,6 +243,8 @@ func runServe() error {
 		provider = p
 	}
 
+	defer startServeEventsJournalMaintenance(info.BeadsDir, provider)()
+
 	return serveListen(httpapi.Config{
 		Addr:             serveAddr,
 		AllowNonLoopback: serveAllowNonLoopback,
@@ -249,6 +253,39 @@ func runServe() error {
 		SchemaVersion:    JSONSchemaVersion,
 		Mode:             serveResolvedMode(info, db),
 	})
+}
+
+// startServeEventsJournalMaintenance runs events-journal retention for the life
+// of the server and returns the function that stops it.
+//
+// A server is not a command, so it is excluded from the per-command maintenance
+// net (runsPostCommandMaintenance) — including the writer-pays auto-prune
+// trigger that fires after a CLI mutation. Without this, the one topology that
+// journals fastest, because it is the one accepting concurrent HTTP mutations
+// for hours, would be the one that never prunes. A ticker is the honest shape
+// for a process with no command boundary: it polls, and the same persisted
+// watermark every CLI process reads decides whether a pass is actually due, so
+// a server and the CLIs beside it share one schedule rather than three.
+//
+// The stop is deferred by the caller so it runs after the server has drained:
+// maintenance and requests overlap freely (both are ordinary transactions), but
+// nothing should still be deleting when the provider closes underneath it.
+func startServeEventsJournalMaintenance(beadsDir string, source any) func() {
+	if !eventsjournal.EnabledFor(beadsDir) || !eventsjournal.AutoPruneEnabledFor(beadsDir) {
+		return func() {}
+	}
+	// The plumbing this server answers FROM, not whatever the root pre-run left
+	// in a global: on the server-mode arm serve builds its own provider, and
+	// maintaining a journal through a different handle than the one writing it
+	// is how a topology ends up pruning the wrong database.
+	runner := eventsJournalMaintenanceRunnerFor(source)
+	if runner == nil {
+		return func() {}
+	}
+	return eventsjournal.StartAutoPruneTicker(rootCtx, runner,
+		eventsjournal.DefaultAutoPruneTickInterval,
+		eventsJournalAutoPruneOptions(),
+		reportEventsJournalAutoPrune)
 }
 
 // serveListen binds and runs. It is where the two database sources converge:

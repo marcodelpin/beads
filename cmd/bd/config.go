@@ -1024,6 +1024,14 @@ var recognizedConfigKeys = map[string]bool{
 	"auto_compact_enabled": true, "schema_version": true,
 	"output.title-length": true,
 	"prime.max-memories":  true, "prime.max-memory-chars": true,
+	// The events-journal family. All four are startup settings that land in
+	// config.yaml (config.YamlOnlyKeys), and every one of them is documented as
+	// a `bd config set` invocation — including the auto-prune opt-out, where an
+	// unrecognized-key warning next to a command that DID take effect reads as
+	// "that did not work" on the one setting whose whole purpose is to stop bd
+	// deleting records.
+	"events-journal": true, "events-journal-auto-prune": true,
+	"events-journal-retain-days": true, "events-journal-retain-rows": true,
 }
 
 func isRecognizedConfigKey(key string) bool {

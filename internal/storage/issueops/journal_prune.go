@@ -17,13 +17,18 @@ import (
 // repositories — hands its own transaction to these functions, so the read
 // contract and the retention rules cannot drift between plumbings.
 //
-// Pruning deletes rows below a caller-supplied sequence number, but never below
-// a configurable retention floor. Two independent floors compose: keep every
-// row younger than events-journal-retain-days, and always keep the newest
+// Pruning deletes rows below a sequence number, but never below a configurable
+// retention floor. Two independent floors compose: keep every row younger than
+// events-journal-retain-days, and always keep the newest
 // events-journal-retain-rows rows regardless of age. The floors are pure "keep"
 // constraints, so they can only ever reduce what a prune removes — a consumer
 // that has not advanced its watermark stays protected even against
 // `prune --before <huge>`.
+//
+// Both prunes resolve through the same floors: the one an operator asks for
+// (`bd events prune`, this file) and the automatic bounding that keeps an
+// enabled journal inside its floors (journal_autoprune.go, whose whole target
+// is "the bound the floors leave when nothing else constrains it").
 //
 // EVERY prune is a strict PREFIX delete: --before and both floors are resolved
 // into ONE exclusive seq bound and the delete is `seq < bound`. Nothing here
@@ -323,37 +328,51 @@ func ComputeEventsPruneWhere(
 	return where, args, false, nil
 }
 
+// eventsPruneFloorReadersInTx returns the two substrate reads
+// ComputeEventsPruneWhere resolves its floors with, bound to one transaction.
+// Both prune entry points — the explicit `bd events prune` below and the
+// automatic bounding in journal_autoprune.go — take their readers from here, so
+// a floor cannot mean one thing when an operator asks for it and another when
+// maintenance applies it.
+func eventsPruneFloorReadersInTx(ctx context.Context, tx DBTX, retainRows int) (
+	func() (int64, bool, error),
+	func(time.Time) (int64, bool, error),
+) {
+	readRowsCeil := func() (int64, bool, error) {
+		var ceil int64
+		scanErr := tx.QueryRowContext(ctx, EventsPruneRowsCeilQuery(), retainRows).Scan(&ceil)
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		if scanErr != nil {
+			return 0, false, fmt.Errorf("journal: compute retain-rows floor: %w", scanErr)
+		}
+		return ceil, true, nil
+	}
+	readDaysFloor := func(cutoff time.Time) (int64, bool, error) {
+		// MIN over no matching rows yields one NULL row, not ErrNoRows.
+		var floorSeq sql.NullInt64
+		scanErr := tx.QueryRowContext(ctx, EventsPruneDaysFloorQuery(), cutoff).Scan(&floorSeq)
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		if scanErr != nil {
+			return 0, false, fmt.Errorf("journal: compute retain-days floor: %w", scanErr)
+		}
+		if !floorSeq.Valid {
+			return 0, false, nil
+		}
+		return floorSeq.Int64, true, nil
+	}
+	return readRowsCeil, readDaysFloor
+}
+
 // PruneEventsInTx deletes journal rows with seq below before, honoring the
 // retain-days and retain-rows floors (0 disables a floor), and returns the
 // number of rows deleted. It runs inside the caller's transaction.
 func PruneEventsInTx(ctx context.Context, tx DBTX, before int64, retainDays, retainRows int, now time.Time) (int64, error) {
-	where, args, skip, err := ComputeEventsPruneWhere(before, retainDays, retainRows, now,
-		func() (int64, bool, error) {
-			var ceil int64
-			scanErr := tx.QueryRowContext(ctx, EventsPruneRowsCeilQuery(), retainRows).Scan(&ceil)
-			if errors.Is(scanErr, sql.ErrNoRows) {
-				return 0, false, nil
-			}
-			if scanErr != nil {
-				return 0, false, fmt.Errorf("journal: compute retain-rows floor: %w", scanErr)
-			}
-			return ceil, true, nil
-		},
-		func(cutoff time.Time) (int64, bool, error) {
-			// MIN over no matching rows yields one NULL row, not ErrNoRows.
-			var floorSeq sql.NullInt64
-			scanErr := tx.QueryRowContext(ctx, EventsPruneDaysFloorQuery(), cutoff).Scan(&floorSeq)
-			if errors.Is(scanErr, sql.ErrNoRows) {
-				return 0, false, nil
-			}
-			if scanErr != nil {
-				return 0, false, fmt.Errorf("journal: compute retain-days floor: %w", scanErr)
-			}
-			if !floorSeq.Valid {
-				return 0, false, nil
-			}
-			return floorSeq.Int64, true, nil
-		})
+	readRowsCeil, readDaysFloor := eventsPruneFloorReadersInTx(ctx, tx, retainRows)
+	where, args, skip, err := ComputeEventsPruneWhere(before, retainDays, retainRows, now, readRowsCeil, readDaysFloor)
 	if err != nil {
 		return 0, err
 	}

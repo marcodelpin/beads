@@ -37,6 +37,12 @@ The journal records every committed issue mutation as an ordered, replayable
 row. Enable it with 'bd config set events-journal true' (or
 BD_EVENTS_JOURNAL=1). Records are emitted only while it is enabled.
 
+Retention is automatic: an enabled journal is bounded to the retention floors
+(events-journal-retain-days / -rows, 7 days / 100k rows by default) without
+anyone running a command. Disable both floors for an unbounded ledger, or
+events-journal-auto-prune for manual control; 'bd events prune' remains for an
+earlier, on-demand cut below the floors.
+
 Coverage and scope:
   - Every mutation through bd's normal write paths (create, update, close,
     reopen, delete, claim, dependency add/remove, label add/remove, comment) is
@@ -143,23 +149,32 @@ var eventsPruneCmd = &cobra.Command{
 	Short: "Delete journal records below a sequence number (retention)",
 	Long: `Delete events journal records with seq less than --before.
 
-Use after a consumer has durably processed everything up to that seq. Pruning
-is manual: nothing deletes journal rows on your behalf. The journal is
-clone-local operational state, so pruning never affects issue data.
+Retention is already enforced automatically: after a mutating command commits,
+and on a timer in 'bd serve', bd deletes everything the floors below do not
+protect. This command is for an EARLIER, on-demand cut BELOW the floors — after
+a consumer has durably processed a span you do not want to wait out. It cannot
+cut deeper than the floors: shrinking the retained window itself means lowering
+them. The journal is clone-local operational state, so pruning never affects
+issue data.
 
 Two retention floors compose onto --before and can only reduce what a prune
-removes:
+removes. They bound the automatic prune and this one identically:
   events-journal-retain-days   keep every row younger than N days (default 7)
   events-journal-retain-rows   always keep the newest N rows (default 100000)
 
+Set BOTH floors to 0 for an unbounded ledger: automatic pruning then does
+nothing, and this command becomes the only thing that deletes a record. To keep
+the floors but own deletion yourself, set events-journal-auto-prune false.
+
 Note the floors are time-based and count-based — they are NOT a consumer
 watermark. They protect only the recent window; a consumer that has fallen
-further behind than both floors allow can still be pruned past and lose records.
+further behind than both floors allow will be pruned past and lose records.
 Consumers are responsible for tracking their own watermark (the highest seq they
-have durably processed) and for pruning no further than they have consumed.
-Pruned history cannot be recovered from the workspace — the journal is the only
-local copy. Pair a prune with 'dolt gc' to reclaim the space, since the table is
-working-set (dolt_ignored) state that ordinary Dolt commits never garbage-collect.`,
+have durably processed) and for sizing the floors to the longest outage they
+intend to survive. Pruned history cannot be recovered from the workspace — the
+journal is the only local copy. Pruning frees rows, not disk: pair it with
+'dolt gc' to reclaim the space, since the table is working-set (dolt_ignored)
+state that ordinary Dolt commits never garbage-collect.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {

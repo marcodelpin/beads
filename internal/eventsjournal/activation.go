@@ -51,27 +51,62 @@ const EnvVar = "BD_EVENTS_JOURNAL"
 // beadsDir is empty only where no workspace has been resolved yet; there is no
 // target to consult, so the process-merged value is the only answer available.
 func EnabledFor(beadsDir string) bool {
-	if enabled, ok := parseBool(os.LookupEnv(EnvVar)); ok {
+	return resolveEnabledFor(EnvVar, ConfigKey, beadsDir, false)
+}
+
+// resolveEnabledFor is the precedence above, for one env/config key pair and
+// its default. AutoPruneEnabledFor resolves the same way against a different
+// default, and the two must not drift: they answer for the same workspace in
+// the same command, and an operator who sets one in a target's config.yaml
+// expects the other to be read from the same place.
+func resolveEnabledFor(envVar, configKey, beadsDir string, byDefault bool) bool {
+	if enabled, ok := parseBool(os.LookupEnv(envVar)); ok {
 		return enabled
 	}
 	if beadsDir == "" {
-		return config.GetBool(ConfigKey)
+		// The process-merged value, resolved the same way as the workspace file
+		// below rather than through GetBool. GetBool casts an unparseable value
+		// to false, which for a key that DEFAULTS TO TRUE turns a typo into a
+		// silent opt-out on one arm and a silent opt-in on the other — the same
+		// setting answering differently depending only on whether a workspace
+		// had been resolved yet.
+		if enabled, ok := parseBool(config.GetString(configKey), true); ok {
+			return enabled
+		}
+		return byDefault
 	}
-	if enabled, ok := parseBool(config.WorkspaceYamlValue(beadsDir, ConfigKey)); ok {
+	if enabled, ok := parseBool(config.WorkspaceYamlValue(beadsDir, configKey)); ok {
 		return enabled
 	}
-	return false
+	return byDefault
 }
 
+// parseBool accepts what strconv.ParseBool accepts plus the YAML 1.1 boolean
+// spellings — yes/no/on/off, any case.
+//
+// The extras are not cosmetic. These settings are read out of a hand-edited
+// config.yaml, `no` is how a large share of people write false in YAML, and a
+// value this function rejects falls through to the key's DEFAULT. For
+// events-journal-auto-prune that default is true, so `events-journal-auto-prune:
+// no` would have read as "keep pruning" — an unrecognized opt-out that goes on
+// deleting the records the operator was trying to preserve. A parser used to
+// resolve deletion policy has to understand the way the file is actually
+// written.
 func parseBool(raw string, present bool) (bool, bool) {
 	if !present {
 		return false, false
 	}
-	value, err := strconv.ParseBool(strings.TrimSpace(raw))
-	if err != nil {
-		return false, false
+	value := strings.TrimSpace(raw)
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return parsed, true
 	}
-	return value, true
+	switch strings.ToLower(value) {
+	case "yes", "on":
+		return true, true
+	case "no", "off":
+		return false, true
+	}
+	return false, false
 }
 
 // ActivateStore applies beadsDir's configured activation to a freshly opened

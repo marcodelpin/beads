@@ -1,6 +1,6 @@
 ---
 title: Events Journal
-description: The durable, ordered record of every committed issue mutation that external tooling tails and replays — enabling it, the record contract, resuming after a prune, retention, and what it deliberately does not cover.
+description: The durable, ordered record of every committed issue mutation that external tooling tails and replays — enabling it, the record contract, resuming after a prune, automatic retention, and what it deliberately does not cover.
 ---
 
 Something outside beads wants to stay in step with a workspace: a dashboard, a
@@ -14,9 +14,10 @@ reads those records with a cursor it can resume from. The spirit is a binlog,
 not a notification: a record states a change that has already committed, it
 carries the resulting state, and it stays readable until you prune it.
 
-The journal is **off by default**, local to one clone, and manual to prune.
-Everything below assumes you turned it on for a consumer that is actually
-reading it.
+The journal is **off by default**, local to one clone, and bounded by default
+once it is on: beads keeps the retention floors below and prunes past them
+without being asked. Everything below assumes you turned it on for a consumer
+that is actually reading it.
 
 ## Which of the three event systems do you want?
 
@@ -43,12 +44,17 @@ and follows the journal from there.
 | Key | Default | Effect |
 |---|---|---|
 | `events-journal` | `false` | Master switch. Off costs nothing; on costs one snapshot write per mutation. |
-| `events-journal-retain-days` | `7` | `bd events prune` keeps every record younger than this many days. `0` disables the floor. |
-| `events-journal-retain-rows` | `100000` | `bd events prune` always keeps this many newest records. `0` disables the floor. |
+| `events-journal-retain-days` | `7` | Keep every record younger than this many days. `0` disables the floor. |
+| `events-journal-retain-rows` | `100000` | Always keep this many newest records. `0` disables the floor. |
+| `events-journal-auto-prune` | `true` | Enforce the floors automatically. `false` leaves deletion to `bd events prune`. |
 
-All three are startup settings kept in `config.yaml` rather than database
-config, and each has an environment equivalent: `BD_EVENTS_JOURNAL`,
-`BD_EVENTS_JOURNAL_RETAIN_DAYS`, `BD_EVENTS_JOURNAL_RETAIN_ROWS`.
+The floors bound both prunes: the automatic one and `bd events prune`. See
+[Retention and pruning](#retention-and-pruning).
+
+All four are startup settings kept in `config.yaml` rather than database config,
+and each has an environment equivalent: `BD_EVENTS_JOURNAL`,
+`BD_EVENTS_JOURNAL_RETAIN_DAYS`, `BD_EVENTS_JOURNAL_RETAIN_ROWS`,
+`BD_EVENTS_JOURNAL_AUTO_PRUNE`.
 
 ## Reading it
 
@@ -196,26 +202,58 @@ can, and a consumer must never be handed one silently.
 
 ## Retention and pruning
 
-Pruning is manual. Nothing deletes journal records on your behalf.
+The journal is bounded automatically. After a mutating command commits — and on
+a timer inside `bd serve` — beads deletes the prefix the two retention floors do
+not protect, so an enabled journal settles at "the last 7 days, or the newest
+100 000 records, whichever is larger" instead of growing forever.
 
 ```bash
-bd events prune --before 4000   # delete records with seq < 4000
+bd events prune --before 4000   # an earlier, on-demand cut below the floors
 ```
 
-The two retention floors compose onto `--before` and can only ever *reduce*
-what a prune removes. Every prune resolves `--before` and both floors into a
-single bound and deletes the prefix below it, so a prune can never leave a hole
-above a protected record.
+Both floors compose onto `--before` and can only ever *reduce* what a prune
+removes. Every prune — automatic or asked for — resolves `--before` and both
+floors into a single bound and deletes the prefix below it, so a prune can never
+leave a hole above a protected record. Automatic pruning is that same
+computation with `--before` set past the head: delete everything the floors do
+not protect, and nothing else.
+
+`bd events prune` therefore cuts *earlier*, never *deeper*: it removes a
+consumed span before the floors would have, and shrinking the retained window
+itself means lowering the floors.
+
+| Want | Do |
+|---|---|
+| A bounded feed | Nothing. It is the default. |
+| A different window | Set `events-journal-retain-days` / `events-journal-retain-rows`. |
+| An unbounded ledger | Set **both** floors to `0`. Automatic pruning then does nothing at all. |
+| Floors respected on reads, deletion under your own control | `bd config set events-journal-auto-prune false`, and run `bd events prune` yourself. |
+
+Maintenance never fails a command. A pass that cannot run is logged and skipped,
+it is capped at a few batches per invocation so a long backlog drains over
+several commands rather than stalling one, and a throttle keeps it to about one
+pass an hour per workspace — or sooner after a large burst of writes.
+
+A pass maintains **the workspace whose command triggered it**. A routed write
+(`bd create --repo ../other`) records into the target's journal, but the
+retention pass runs against the workspace you ran the command in. A workspace
+that is only ever written remotely relies on commands run in it — or on its own
+`bd serve` — to stay bounded; if nothing ever runs there, prune it on a schedule
+of your own.
 
 <Warning>
 The floors are a time and count window, **not a consumer watermark**. A
-consumer that has fallen further behind than both floors allow can still be
-pruned past and lose records. Track your own watermark — the highest seq you
-have durably processed — and prune no further than that.
+consumer that has fallen further behind than both floors allow will be pruned
+past and lose records — now without anyone running a command to do it. Track
+your own watermark, size the floors for the longest outage you intend to
+survive, and read [Resuming, and the truncation
+error](#resuming-and-the-truncation-error) before you lower them.
 </Warning>
 
 Pruned history cannot be recovered from the workspace; the journal is the only
-local copy. Pair a prune with `dolt gc` to actually reclaim the space.
+local copy. Pruning frees rows, not disk: pair it with `dolt gc` to actually
+reclaim the space, since these are working-set tables that ordinary Dolt commits
+never collect.
 
 ## What the journal does not cover
 

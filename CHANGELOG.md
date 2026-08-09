@@ -22,17 +22,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **It is off by default and opt-in per workspace**: `bd config set
   events-journal true`, or `BD_EVENTS_JOURNAL=1`. Nothing is recorded while it
-  is off, so a workspace that never enables it pays nothing. Two retention
-  floors bound what a prune may delete — `events-journal-retain-days`
-  (default 7) and `events-journal-retain-rows` (default 100000), each disabled
-  by setting it to 0. All three are `config.yaml` keys with `BD_EVENTS_JOURNAL*`
-  environment equivalents.
+  is off, so a workspace that never enables it pays nothing.
+
+  **On means bounded.** Two retention floors define the window every consumer
+  is guaranteed — `events-journal-retain-days` (default 7) and
+  `events-journal-retain-rows` (default 100000), each disabled by setting it to
+  0 — and beads enforces them for you: after a mutating command commits, and on
+  a timer inside `bd serve`, it deletes the prefix the floors do not protect.
+  The pass is throttled by a persisted watermark (about one an hour per
+  workspace — or sooner after a large burst of writes), runs in its own
+  transactions outside the mutation's, is capped at a few batches so a long
+  backlog drains over several commands rather than stalling one, and can never
+  fail a command — a failure is logged and skipped. It maintains the workspace
+  whose command triggered it, so a workspace only ever written remotely (a
+  routed `bd create --repo`) relies on commands run in it, or on its own `bd
+  serve`. Setting both floors to 0 keeps every record forever;
+  `events-journal-auto-prune false` keeps the floors but leaves deletion to you.
+  All four are `config.yaml` keys with `BD_EVENTS_JOURNAL*` environment
+  equivalents.
 
   `bd events tail --since <seq>` prints records as JSON lines and `--follow`
   keeps printing them as writes commit; `bd events export` prints the journal
-  from the beginning; `bd events prune --before <seq>` deletes a consumed
-  prefix. Pruning is manual — nothing deletes journal records on your behalf,
-  and the floors are a recent-window guarantee, not a consumer watermark.
+  from the beginning; `bd events prune --before <seq>` takes an earlier,
+  on-demand cut below the floors — it cannot cut deeper than they allow, so
+  shrinking the retained window means lowering them. The floors are a
+  recent-window guarantee, not a consumer watermark: size them for the longest
+  outage a consumer must survive.
 
   **A read that cannot resume fails instead of lying.** When `--since` falls
   below the oldest retained record, the read neither skips ahead to the

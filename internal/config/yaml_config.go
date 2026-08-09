@@ -26,11 +26,12 @@ var YamlOnlyKeys = map[string]bool{
 	"json":  true,
 	// Events journal: read through viper during root pre-run, before the store
 	// is open, so a DB-backed write would be silently unread — the GH#536 class
-	// this map exists to prevent. Without these three entries
+	// this map exists to prevent. Without these four entries
 	// `bd config set events-journal true` reports success and changes nothing.
 	"events-journal":             true,
 	"events-journal-retain-days": true,
 	"events-journal-retain-rows": true,
+	"events-journal-auto-prune":  true,
 
 	// Database and identity
 	"db":       true,
