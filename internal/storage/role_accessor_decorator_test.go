@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -12,35 +14,100 @@ import (
 	"github.com/steveyegge/beads/memoryops"
 )
 
-// roleAccessorNames is the twenty-four-strong capability surface every storage
-// decorator has to answer for. It is written out rather than derived so that
-// adding a twenty-fifth role to DoltStorage without deciding what each decorator
-// does with it is a compile-or-test failure somewhere, not silence.
-var roleAccessorNames = []string{
-	"IssueLifecycle",
-	"IssueReader",
-	"IssueClaimer",
-	"IssueRelations",
-	"EdgeReader",
-	"BlockingAnnotator",
-	"TreeWalker",
-	"Counter",
-	"WorkspaceConfig",
-	"Memories",
-	"VersionReconciler",
-	"StatsReporter",
-	"CycleDetector",
-	"ReadyCounter",
-	"Querier",
-	"Sweeper",
-	"Deleter",
-	"Bootstrapper",
-	"InitVerifier",
-	"Commenter",
-	"ReadyClaimer",
-	"BatchCloser",
-	"BatchCreator",
-	"DependencyEditor",
+// roleAccessorNames is the capability surface every storage decorator has to
+// answer for: every DoltStorage method that hands out a role interface from the
+// public facade.
+//
+// It is DERIVED because a written-out list is the same silence this test
+// exists to break. A hand-kept list of twenty-four names promised that adding a
+// twenty-fifth role would fail somewhere, and it could not deliver: the
+// decorators embed DoltStorage, so the new accessor is promoted rather than
+// declared, everything still compiles, and the census simply never hears about
+// it. Reflection puts the new role in the census the moment it joins the
+// interface, which is the only version of that promise that holds.
+var roleAccessorNames = deriveRoleAccessorNames()
+
+// deriveRoleAccessorNames censuses the role accessors DoltStorage declares.
+func deriveRoleAccessorNames() []string {
+	names, _ := roleAccessorNamesOf(reflect.TypeOf((*DoltStorage)(nil)).Elem())
+	return names
+}
+
+// roleAccessorNamesOf reports every method of surface that takes nothing and
+// returns (role interface, error), where the role belongs to the public facade.
+// It also reports the accessor-shaped methods whose interface belongs to no
+// facade package, because that is how a census shrinks in silence: a third
+// facade package would arrive in exactly that shape and every role in it would
+// simply stop being asked about.
+func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
+	facade := map[string]bool{
+		reflect.TypeOf((*issueops.Reader)(nil)).Elem().PkgPath():    true,
+		reflect.TypeOf((*memoryops.Memories)(nil)).Elem().PkgPath(): true,
+	}
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+
+	for i := range surface.NumMethod() {
+		accessor := surface.Method(i)
+		signature := accessor.Type
+		if signature.NumIn() != 0 || signature.NumOut() != 2 || signature.Out(1) != errorType {
+			continue
+		}
+		role := signature.Out(0)
+		if role.Kind() != reflect.Interface {
+			continue
+		}
+		if !facade[role.PkgPath()] {
+			unclassified = append(unclassified, accessor.Name+" -> "+role.PkgPath()+"."+role.Name())
+			continue
+		}
+		names = append(names, accessor.Name)
+	}
+	sort.Strings(names)
+	sort.Strings(unclassified)
+	return names, unclassified
+}
+
+// TestEveryStoreRoleAccessorIsClassified fails when DoltStorage hands out an
+// interface the census cannot place. Every one of the twenty-four today is a
+// facade role, so this costs nothing and closes the path where a role surface
+// grows a package and the census quietly stops covering it.
+func TestEveryStoreRoleAccessorIsClassified(t *testing.T) {
+	_, unclassified := roleAccessorNamesOf(reflect.TypeOf((*DoltStorage)(nil)).Elem())
+	for _, accessor := range unclassified {
+		t.Errorf("accessor %s belongs to no known facade package: teach the census that package, "+
+			"or every role in it goes uncensused", accessor)
+	}
+}
+
+// rehearsalSurface is a fabricated store surface: DoltStorage plus one more
+// role accessor and two methods that are not accessors at all.
+type rehearsalSurface interface {
+	DoltStorage
+	// Rehearser is the twenty-fifth accessor the census must find on its own.
+	Rehearser() (issueops.Reader, error)
+	// Rehearse returns no role, and RehearsalName returns no error: neither is
+	// an accessor, and neither may reach the census.
+	Rehearse() error
+	RehearsalName() (string, error)
+}
+
+// TestRoleAccessorCensusGrowsWithTheStoreSurface is the test the old
+// hand-written list could not have passed. It fabricates a twenty-fifth role
+// accessor and asserts the census finds it without being told, which is the
+// whole reason the list is derived: a new accessor is promoted onto every
+// decorator by the embedded interface, so nothing else in the build says a
+// word about it.
+func TestRoleAccessorCensusGrowsWithTheStoreSurface(t *testing.T) {
+	rehearsal, unclassified := roleAccessorNamesOf(reflect.TypeOf((*rehearsalSurface)(nil)).Elem())
+
+	want := append(slices.Clone(roleAccessorNames), "Rehearser")
+	slices.Sort(want)
+	if !slices.Equal(rehearsal, want) {
+		t.Errorf("census of the rehearsal surface = %v, want the real accessors plus Rehearser (%v)", rehearsal, want)
+	}
+	if len(unclassified) != 0 {
+		t.Errorf("rehearsal surface reported %v as unclassified; every added method returns a facade role or no role at all", unclassified)
+	}
 }
 
 // TestHookFiringStoreDeclaresEveryRoleAccessor is the structural half of the
@@ -64,6 +131,9 @@ func TestHookFiringStoreDeclaresEveryRoleAccessor(t *testing.T) {
 // see internal/telemetry/role_accessor_decorator_test.go.
 func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	t.Helper()
+	if len(roleAccessorNames) == 0 {
+		t.Fatal("no DoltStorage method hands out a facade role; the census is empty and this test would pass vacuously")
+	}
 	for _, name := range roleAccessorNames {
 		method, ok := decorator.MethodByName(name)
 		if !ok {
