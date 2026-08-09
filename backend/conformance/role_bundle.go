@@ -91,6 +91,7 @@ type RoleContractBundle struct {
 	EdgeReader           func(t *testing.T) *EdgeReaderFixture
 	Importer             func(t *testing.T) *ImporterFixture
 	LifecycleCloseReopen func(t *testing.T) *LifecycleCloseReopenFixture
+	LifecycleCreate      func(t *testing.T) *LifecycleCreateFixture
 	LifecycleUpdate      func(t *testing.T) *LifecycleUpdateFixture
 	Memories             func(t *testing.T) *MemoriesFixture
 	MetadataCAS          func(t *testing.T) *MetadataCASFixture

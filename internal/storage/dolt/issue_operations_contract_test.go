@@ -13,64 +13,16 @@ func TestIssueOperationsCreateRoutesInfraTypesToWisps(t *testing.T) {
 	conformance.RunIssueOperationsCreateRoutesInfraTypesToWisps(t, ctx, fixture)
 }
 
-func TestIssueOperationsCreateRejectsMissingDependencyTargets(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsCreateRejectsMissingDependencyTargets(t, ctx, fixture)
-}
-
-func TestIssueOperationsCreateRefusesAnOccupiedID(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsCreateRefusesAnOccupiedID(t, ctx, fixture)
-}
-
-func TestIssueOperationsCreateInheritsParentLabels(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsCreateInheritsParentLabels(t, ctx, fixture)
-}
-
 func TestIssueOperationsCreateUnderAParentMintsTheNextChildID(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
 	conformance.RunIssueOperationsCreateUnderAParentMintsTheNextChildID(t, ctx, fixture)
 }
 
-func TestIssueOperationsCreateRefusesAForeignIDPrefix(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsCreateRefusesAForeignIDPrefix(t, ctx, fixture)
-}
-
 func TestIssueOperationsUpdateFoldsMetadataIntoOneEvent(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
 	conformance.RunIssueOperationsUpdateFoldsMetadataIntoOneEvent(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateMetadataPatchOrdersMergeSetUnset(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateMetadataPatchOrdersMergeSetUnset(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateClosePolicy(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateClosePolicy(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateAssigneeTransferFence(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateAssigneeTransferFence(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateConditionalGuardsGateOrdinaryEdits(t, ctx, fixture)
 }
 
 func TestIssueOperationsUpdateClosedFieldsMatchClose(t *testing.T) {
@@ -109,18 +61,6 @@ func TestIssueOperationsUpdateLabelPatchValueRules(t *testing.T) {
 	conformance.RunIssueOperationsUpdateLabelPatchValueRules(t, ctx, fixture)
 }
 
-func TestIssueOperationsUpdateParentIDReplacesTheParentEdge(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateParentIDReplacesTheParentEdge(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateParentIDReplacesEveryParent(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateParentIDReplacesEveryParent(t, ctx, fixture)
-}
-
 func TestIssueOperationsUpdateMetadataReplaceClearsAndValidates(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
@@ -131,24 +71,6 @@ func TestIssueOperationsRequestValuesAreNotMutated(t *testing.T) {
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
 	conformance.RunIssueOperationsRequestValuesAreNotMutated(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateProvenanceLabelsHistory(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateProvenanceLabelsHistory(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdatePersistentPreservesUnversionedClass(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdatePersistentPreservesUnversionedClass(t, ctx, fixture)
-}
-
-func TestIssueOperationsCreateWritesEveryScalarField(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsCreateWritesEveryScalarField(t, ctx, fixture)
 }
 
 func TestIssueOperationsCreateClosedDerivesTheClosedStamp(t *testing.T) {
@@ -179,12 +101,6 @@ func TestIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary(t *testi
 	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
 	defer cleanup()
 	conformance.RunIssueOperationsUpdateRefusesATypeOutsideTheWorkspaceVocabulary(t, ctx, fixture)
-}
-
-func TestIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow(t *testing.T) {
-	fixture, ctx, cleanup := newDoltIssueOperationsFixture(t)
-	defer cleanup()
-	conformance.RunIssueOperationsUpdateClaimIsAMutationWhenThePatchRestoresTheRow(t, ctx, fixture)
 }
 
 func TestIssueOperationsUpdateStatusCrossingSettlesDependers(t *testing.T) {
@@ -221,7 +137,6 @@ func newDoltIssueOperationsFixture(t *testing.T) (conformance.IssueOperationsSta
 		storeCleanup()
 		t.Fatalf("NewIssueOperations: %v", err)
 	}
-	kit := newDoltRoleFixtureKit(store, "test")
 	fixture := conformance.IssueOperationsStagingFixture{
 		IssuePrefix: "test",
 		Operations:  operations,
@@ -231,7 +146,6 @@ func newDoltIssueOperationsFixture(t *testing.T) (conformance.IssueOperationsSta
 		QueryScalar: func(ctx context.Context, query string, args []any, dest ...any) error {
 			return store.db.QueryRowContext(ctx, query, args...).Scan(dest...)
 		},
-		CountHistoryMatching: kit.CountHistoryMatching,
 	}
 	return fixture, ctx, func() {
 		cancel()
