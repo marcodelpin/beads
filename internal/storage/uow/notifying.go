@@ -83,6 +83,7 @@ import (
 	"reflect"
 
 	"github.com/steveyegge/beads/internal/hooks"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -309,6 +310,46 @@ func (p *notifyingProvider) SetPoolLimits(limits PoolLimits) {
 	if tuner, ok := p.inner.(PoolTuner); ok {
 		tuner.SetPoolLimits(limits)
 	}
+}
+
+// SetEventsJournalEnabled forwards durable-journal activation to the provider
+// that actually binds it to a transaction (doltSQLProvider.BeginTx). Activation
+// is per instance, and the instance that matters is the inner one; the wrapper
+// holds no journal state of its own.
+//
+// It fires no hook and records nothing, which is not an omission: the journal
+// is written at the issueops seam inside the mutation's transaction, so every
+// write this wrapper already records is journaled by the layer beneath it.
+func (p *notifyingProvider) SetEventsJournalEnabled(enabled bool) {
+	if configurer, ok := p.inner.(storage.EventsJournalConfigurer); ok {
+		configurer.SetEventsJournalEnabled(enabled)
+	}
+}
+
+// eventsMaintenanceRunner is issueops.EventsMaintenanceRunner under this file's
+// import alias, named once so the forwarder below reads as an ordinary
+// capability check.
+type eventsMaintenanceRunner = storageissueops.EventsMaintenanceRunner
+
+// RunEventsMaintenanceTx forwards one events-journal retention step to the
+// inner provider's transaction machinery. It is maintenance on a dolt_ignored
+// table — a prefix delete of records already committed — so there is nothing
+// for a hook to describe and no bead a script could be handed.
+//
+// A provider that cannot maintain the journal fails here rather than silently
+// succeeding, matching RunNonTx above: the caller logs it and carries on.
+//
+// The forwarder is deliberately not the only defense. Auto-prune's resolution
+// peels ProviderUnwrapper before asserting this capability, so it reaches the
+// inner provider even through a decorator that never declared the method. Both
+// halves are cheap and the failure they prevent — retention silently not
+// running behind a wrapper — is invisible from the outside.
+func (p *notifyingProvider) RunEventsMaintenanceTx(ctx context.Context, fn func(context.Context, storageissueops.DBTX) error) error {
+	runner, ok := p.inner.(eventsMaintenanceRunner)
+	if !ok {
+		return fmt.Errorf("uow: provider %T does not support events-journal maintenance", p.inner)
+	}
+	return runner.RunEventsMaintenanceTx(ctx, fn)
 }
 
 var (

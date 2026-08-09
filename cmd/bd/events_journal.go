@@ -70,17 +70,37 @@ func eventsJournalMaintenanceRunner() issueops.EventsMaintenanceRunner {
 }
 
 // eventsJournalMaintenanceRunnerFor resolves ONE plumbing value — a store or a
-// unit-of-work provider — to its maintenance capability, peeling the store
-// decorator chain first so the hook and telemetry layers do not hide it.
+// unit-of-work provider — to its maintenance capability.
+//
+// BOTH decorator chains are peeled, and the provider half is not symmetry for
+// its own sake. bd wraps the unit-of-work provider in a hook-firing decorator
+// whenever a hook runner exists, which is by default; a bare type assertion
+// against that wrapper matches nothing, and auto-prune becomes a silent no-op
+// in exactly the topology — proxied server — that journals fastest. Nothing
+// reports it: retention that never runs looks identical to retention with
+// nothing to do.
+//
+// The wrapper also forwards the capability itself (notifyingProvider.
+// RunEventsMaintenanceTx), so this is the second of two defenses rather than
+// the only one. That is deliberate: the forwarder keeps the wrapper's SURFACE
+// honest, which the parity guards enforce, and this peel keeps RESOLUTION
+// honest against a future decorator that forgets one. A capability that is
+// invisible when it goes missing gets both.
 func eventsJournalMaintenanceRunnerFor(plumbing any) issueops.EventsMaintenanceRunner {
 	if plumbing == nil {
 		return nil
 	}
-	if s, ok := plumbing.(storage.DoltStorage); ok {
-		if s == nil {
+	switch p := plumbing.(type) {
+	case storage.DoltStorage:
+		if p == nil {
 			return nil
 		}
-		plumbing = storage.UnwrapStore(s)
+		plumbing = storage.UnwrapStore(p)
+	case uow.UnitOfWorkProvider:
+		if p == nil {
+			return nil
+		}
+		plumbing = uow.UnwrapProvider(p)
 	}
 	runner, _ := plumbing.(issueops.EventsMaintenanceRunner)
 	return runner

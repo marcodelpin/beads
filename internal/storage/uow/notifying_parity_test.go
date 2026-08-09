@@ -111,6 +111,11 @@ func TestNotifyingUOWWrapsEveryMutatingUseCase(t *testing.T) {
 			"DoltRemoteUseCase": "Dolt remotes are repository plumbing; no bead changes and no event to name",
 			"RawSQLUseCase": "the raw escape hatch executes statements this layer cannot read, so it " +
 				"cannot say which bead changed; the DoltStorage chain fires nothing for raw access either",
+			"EventsJournalUseCase": "read-only cursor surface; fires no hooks. Its two operations are a " +
+				"read of bd_events_journal and a prefix delete of records already committed — the " +
+				"delete changes no bead, and the journal itself is written at the issueops seam " +
+				"inside the mutation's own transaction, so everything it records is already covered " +
+				"by the use case that made the change",
 		})
 }
 
@@ -268,6 +273,11 @@ func TestNotifyingProviderBuildsRolesOnItself(t *testing.T) {
 		"RunNonTx":      true,
 		"SetPoolLimits": true,
 		"Unwrap":        true,
+		// Events-journal capability plumbing: activation binds on the inner
+		// provider's transactions, and a retention pass writes no bead. Neither
+		// builds a role, so neither can build one "on itself".
+		"SetEventsJournalEnabled": true,
+		"RunEventsMaintenanceTx":  true,
 	}
 
 	var checked int
