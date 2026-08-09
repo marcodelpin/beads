@@ -296,6 +296,24 @@ var roleContractCases = []roleContract{
 		RunEdgeReaderWritesNothing,
 	),
 
+	roleCases("GraphCounter", "GraphCounter()", oncePerRole,
+		func(b RoleContractBundle) func(t *testing.T) *GraphCounterFixture { return b.GraphCounter },
+		RunGraphCounterCountsOutboundEdges,
+		RunGraphCounterCountsInboundEdges,
+		RunGraphCounterAnswersOnePerAnchorInRequestOrder,
+		RunGraphCounterDistinguishesNoEdgesFromNoAnchor,
+		RunGraphCounterCollapsesRepeatedAnchors,
+		RunGraphCounterFiltersEdgesNotAnchors,
+		RunGraphCounterNarrowsInboundByDependentStatus,
+		RunGraphCounterCountsAcrossBothPlanes,
+		RunGraphCounterNarrowsAWispDependentByStatus,
+		RunGraphCounterResolvesIDsExactly,
+		RunGraphCounterAnswersAnEmptyRequest,
+		RunGraphCounterRefusesAnUnusableRequest,
+		RunGraphCounterLeavesTheRequestAlone,
+		RunGraphCounterWritesNothing,
+	),
+
 	// The accessor named here is NOT a storage.DoltStorage one, alone among
 	// these rows: Importer is served only by uow.ImporterSource, so a backend
 	// built on the store interface has nothing to fill this field with and

@@ -625,6 +625,35 @@ func TestTreeWalkerExposesTypedUnsupportedError(t *testing.T) {
 	}
 }
 
+// TestGraphCounterKeepsTelemetryOutermost is the READ answer again: counting
+// edges fires no completion hooks, so the hook decorator adds no layer.
+func TestGraphCounterKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	counter, err := storage.NewHookFiringStore(instrumented, nil).GraphCounter()
+	if err != nil {
+		t.Fatalf("GraphCounter() error = %v", err)
+	}
+	if got := reflect.TypeOf(counter).String(); got != "*telemetry.instrumentedGraphCounter" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+func TestGraphCounterExposesTypedUnsupportedError(t *testing.T) {
+	counter, err := (*dolt.DoltStore)(nil).GraphCounter()
+	if counter != nil {
+		t.Fatalf("GraphCounter() counter = %T, want nil", counter)
+	}
+	var unsupported *beads.ErrUnsupported
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("GraphCounter() error = %v, want *beads.ErrUnsupported", err)
+	}
+}
+
 func TestCounterExposesTypedUnsupportedError(t *testing.T) {
 	counter, err := (*dolt.DoltStore)(nil).Counter()
 	if counter != nil {

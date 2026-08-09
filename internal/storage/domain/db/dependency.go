@@ -907,6 +907,15 @@ func (r *dependencySQLRepositoryImpl) WalkDependencyTree(ctx context.Context, re
 	return issueops.WalkDependencyTreeInTx(ctx, r.runner, req)
 }
 
+// CountEdges runs the SHARED edge-count body, unwrapped for
+// WalkDependencyTree's reason: the body publishes issueops.ErrValidation as the
+// role's own vocabulary, and a `fmt.Errorf("db: ...: %w")` would keep it
+// matchable while putting this repository's name into a message the direct
+// route never decorates.
+func (r *dependencySQLRepositoryImpl) CountEdges(ctx context.Context, req publicops.EdgeCountRequest) (publicops.EdgeCountResult, error) {
+	return issueops.ExecuteEdgeCount(ctx, r.runner, req)
+}
+
 func (r *dependencySQLRepositoryImpl) GetTree(ctx context.Context, rootID string, opts domain.DepTreeOpts) ([]*types.TreeNode, error) {
 	if rootID == "" {
 		return nil, errors.New("db: DependencySQLRepository.GetTree: rootID must not be empty")

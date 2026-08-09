@@ -180,6 +180,7 @@ func TestRecordingDependencyUseCaseCoversItsSurface(t *testing.T) {
 	assertPartition(t, "DependencyUseCase", interfaceMethods(reflect.TypeOf((*domain.DependencyUseCase)(nil)).Elem()),
 		reflect.TypeOf((*recordingDepUC)(nil)), map[string]string{
 			"CountByIssueID":   reads,
+			"CountEdges":       reads,
 			"CountByWispID":    reads,
 			"CountsByIssueIDs": reads,
 			"CountsByWispIDs":  reads,

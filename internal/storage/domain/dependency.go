@@ -167,6 +167,11 @@ type DependencySQLRepository interface {
 	// directions of a `both` request inside ONE transaction. GetTree above is the
 	// unvalidated shape.
 	WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error)
+	// CountEdges answers the batched edge count in the shape
+	// issueops.GraphCounter publishes: validated, per-anchor, spanning both
+	// dependency planes, with the existence probe and the tally in ONE
+	// transaction. CountByIssueID above is the single-anchor, unprobed shape.
+	CountEdges(ctx context.Context, req issueops.EdgeCountRequest) (issueops.EdgeCountResult, error)
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
 	GetWispDependencyRecordsForIDs(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error)
@@ -203,6 +208,9 @@ type DependencyUseCase interface {
 	// WalkDependencyTree is the shape issueops.TreeWalker publishes; see the
 	// repository method of the same name.
 	WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error)
+	// CountEdges is the shape issueops.GraphCounter publishes; see the
+	// repository method of the same name.
+	CountEdges(ctx context.Context, req issueops.EdgeCountRequest) (issueops.EdgeCountResult, error)
 	// AddDependencies asserts a batch of edges, each landing in the plane its
 	// own SOURCE lives in. There is deliberately no plane-pinned variant:
 	// `bd dep add` takes whatever ids the caller names and one request may
@@ -645,6 +653,13 @@ func (u *dependencyUseCaseImpl) DetectCycleReport(ctx context.Context) (issueops
 // refusals are typed sentinels both front doors classify.
 func (u *dependencyUseCaseImpl) WalkDependencyTree(ctx context.Context, req issueops.WalkTreeRequest) (issueops.TreeResult, error) {
 	return u.depRepo.WalkDependencyTree(ctx, req)
+}
+
+// CountEdges passes the request straight through, for WalkDependencyTree's
+// reason: the request's whole vocabulary is validated inside the shared body,
+// and its refusals are typed sentinels both front doors classify.
+func (u *dependencyUseCaseImpl) CountEdges(ctx context.Context, req issueops.EdgeCountRequest) (issueops.EdgeCountResult, error) {
+	return u.depRepo.CountEdges(ctx, req)
 }
 
 func (u *dependencyUseCaseImpl) GetDependencyTree(ctx context.Context, rootID string, opts DepTreeOpts) ([]*types.TreeNode, error) {

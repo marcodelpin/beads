@@ -129,6 +129,9 @@ func (s *roleAccessorStore) CycleDetector() (issueops.CycleDetector, error) {
 }
 func (s *roleAccessorStore) EdgeReader() (issueops.EdgeReader, error) { return s.surface, s.err }
 func (s *roleAccessorStore) TreeWalker() (issueops.TreeWalker, error) { return s.surface, s.err }
+func (s *roleAccessorStore) GraphCounter() (issueops.GraphCounter, error) {
+	return s.surface, s.err
+}
 func (s *roleAccessorStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return s.surface, s.err
 }
@@ -249,6 +252,10 @@ func (*roleAccessorSentinel) CountReady(context.Context, issueops.ReadyRequest) 
 	return issueops.ReadyCountResult{}, nil
 }
 
+func (*roleAccessorSentinel) CountEdges(context.Context, issueops.EdgeCountRequest) (issueops.EdgeCountResult, error) {
+	return issueops.EdgeCountResult{}, nil
+}
+
 func (*roleAccessorSentinel) Query(context.Context, issueops.QueryRequest) (issueops.IssuePage, error) {
 	return issueops.IssuePage{}, nil
 }
@@ -344,6 +351,7 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }, sentinel},
 		{"BlockingAnnotator", func() (any, error) { return wrapped.BlockingAnnotator() }, sentinel},
 		{"TreeWalker", func() (any, error) { return wrapped.TreeWalker() }, sentinel},
+		{"GraphCounter", func() (any, error) { return wrapped.GraphCounter() }, sentinel},
 		{"Counter", func() (any, error) { return wrapped.Counter() }, sentinel},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }, sentinel},
 		{"Memories", func() (any, error) { return wrapped.Memories() }, memorySentinel},
@@ -398,6 +406,7 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"EdgeReader", func() (any, error) { return wrapped.EdgeReader() }},
 		{"BlockingAnnotator", func() (any, error) { return wrapped.BlockingAnnotator() }},
 		{"TreeWalker", func() (any, error) { return wrapped.TreeWalker() }},
+		{"GraphCounter", func() (any, error) { return wrapped.GraphCounter() }},
 		{"Counter", func() (any, error) { return wrapped.Counter() }},
 		{"WorkspaceConfig", func() (any, error) { return wrapped.WorkspaceConfig() }},
 		{"Memories", func() (any, error) { return wrapped.Memories() }},

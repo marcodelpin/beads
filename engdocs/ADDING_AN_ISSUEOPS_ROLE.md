@@ -498,6 +498,27 @@ is worse than no case. Say which mechanism actually holds a promise in the
 contract's coverage paragraph, and name the substrate that would make it
 observable.
 
+**And validation moves WITH the body when there is only one.** `ExecuteEdgeRead`
+leaves `ValidateEdgeReadRequest` to each accessor, because that role has two
+bodies and the check belongs to each of them. `issueops.GraphCounter` has one
+body on all three legs, so its validation runs INSIDE `ExecuteEdgeCount`: there
+is no second implementation for a per-leg check to belong to, and a leg that
+forgot to call the validator would be a leg answering a different contract with
+nothing to notice it. Ask which shape you have before copying the accessor's
+first three lines from a sibling.
+
+**A role whose front doors land later still lands whole, and says so.** The
+checklist's steps 1-11 are the role; steps 12 and 13 are the front doors.
+`issueops.GraphCounter` shipped with NEITHER — no `bd` command and no HTTP
+operation — because the numbers it answers are already printed through
+`internal/workapi`'s detail seam, which is shared with an HTTP handler and
+therefore moves in a change with its own parity argument, and because the wire
+operation was separately gated. That is `BatchApplier`'s absent CLI and
+`VersionReconciler`'s absent HTTP at the same time, and it is only legible as a
+decision if the leaf doc says it: what a facade-only slice buys is ONE place
+where the role's rules are stated and held to on three legs, before either
+surface has to agree with the other.
+
 ## When the role's answer carries a JSON value
 
 Two traps, both found in review of `issueops.MetadataCAS` and both invisible to

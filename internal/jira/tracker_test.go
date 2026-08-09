@@ -698,6 +698,10 @@ func (s *configStore) TreeWalker() (issueops.TreeWalker, error) {
 	return nil, &storage.ErrUnsupported{Op: "TreeWalker", Backend: "jira-config-stub"}
 }
 
+func (s *configStore) GraphCounter() (issueops.GraphCounter, error) {
+	return nil, &storage.ErrUnsupported{Op: "GraphCounter", Backend: "jira-config-stub"}
+}
+
 func (s *configStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return nil, &storage.ErrUnsupported{Op: "ReadyCounter", Backend: "jira-config-stub"}
 }

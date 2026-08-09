@@ -246,6 +246,14 @@ type Storage interface {
 	// walk has a depth, a cycle policy and a node shape of its own. Reads fire
 	// no hooks, as for IssueReader.
 	TreeWalker() (issueops.TreeWalker, error)
+	// GraphCounter returns the guarded edge-count surface for this store: how
+	// many dependency edges each of several anchors has, in one named
+	// direction, spanning both dependency planes. Its own role rather than a
+	// third Counter method (that one's predicate is a filter over the issues
+	// table and says nothing about an edge) and rather than a counted
+	// EdgeReader (that one answers with the stored ROWS, outbound only). Reads
+	// fire no hooks, as for IssueReader.
+	GraphCounter() (issueops.GraphCounter, error)
 	// ReadyCounter returns the guarded ready-count surface for this store: the
 	// size of the ready set, which is the number `bd ready`'s pagination
 	// publishes and which no other role answers. Counter's predicate is a
