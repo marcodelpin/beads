@@ -291,6 +291,8 @@ type ApplyCloseItem struct {
 	// ExpectedVersion Requires the row's `revision` to equal this value, evaluated as-modified and checked before the idempotent close. A miss refuses the whole request with `409 precondition_failed`, and `ApplyUpdateItem.expected_version`'s already-written rule applies here identically.
 	//
 	// THERE IS DELIBERATELY NO `expected_status` HERE. A close is idempotent — re-closing a closed issue is `changed: false` — so a guard spelled to refuse an already-closed row is asking for a REFUSAL where this verb answers with a no-op. That belongs on an `update` item whose `patch.status` crosses into the done category.
+	//
+	// DECODE IT AS A 64-BIT INTEGER, on `ApplyUpdateItem.expected_version`'s terms, including its note that a corrupted token here costs the whole plan.
 	ExpectedVersion *int64 `json:"expected_version,omitempty"`
 
 	// Force Bypasses close policy — the open-children refusal and the live-blocker refusal — and nothing else.
@@ -485,6 +487,8 @@ type ApplyItemResult struct {
 	// ITS COVERAGE IS PARTIAL, and the partiality is inherited rather than introduced: the token is rewritten by claim, close, unclaim and the generic update path, and NOT by the direct-update paths that rewrite text without touching it. A client needing complete change detection combines it with `updated_at`, `status` and the label set.
 	//
 	// It is ALWAYS PRESENT, including as 0. Zero is a real value — a legacy row backfilled and not mutated since — and a `dep_add` is 0 too, because an edge acts on no single row's version. An absent member would be ambiguous between the two.
+	//
+	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double parser corrupts it silently, and the corruption only shows up as a `precondition_failed` on the NEXT request. This member is the one every other `revision` on the surface is spelled against, so the warning belongs here most of all — a client that reads it through a lossy parser here carries the damage into every guard it composes.
 	Revision int64 `json:"revision"`
 }
 
@@ -604,6 +608,8 @@ type ApplyUpdateItem struct {
 	// IT IS A `400`, NOT A `409`, ON A ROW THIS REQUEST HAS ALREADY WRITTEN — including one an earlier item created. The token is minted by the write, so mid-request there is no value a caller could send: the pre-request token is stale by construction and a row this request just created never had one the caller could read. Refusing statically says so; answering with a mismatch would send the caller looking for a concurrent writer that does not exist.
 	//
 	// `expected_status` and `expected_assignee` carry no such rule, because a caller CAN know what its own earlier item set them to.
+	//
+	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out. It bites harder here than anywhere else on the surface: a corrupted token refuses the WHOLE plan rather than one write, so a client with a lossy parser loses every item of every batch it guards.
 	ExpectedVersion *int64 `json:"expected_version,omitempty"`
 
 	// ForceAssigneeTransfer Bypasses ONLY a genuine transfer away from a live foreign in-progress owner. Reasserting the exact current assignee is idempotent and needs no force. It requires `patch.assignee` — a request setting it without one is a `400` — and it must be false when `expected_assignee` is sent.
@@ -771,7 +777,7 @@ type CloseIssueRequest struct {
 	//
 	// IT IS CHECKED BEFORE THE IDEMPOTENT RE-CLOSE, which is the one place this guard differs from the update's. A re-close of a row somebody else has moved since the caller read it is a `409` and not the 200-with-`already_closed` the same body earns without a guard: a replay whose premise has expired is a refusal the caller wants to see, and it is the only way `already_closed` can be trusted as "nothing has happened here since".
 	//
-	// The token is the `revision` this operation's own response carries. Compose the next expectation from the value a write ANSWERED with, never from a number the client incremented itself: the token is OPAQUE and compared for equality alone, so it has no predecessor a client can compute. No READ on this surface publishes one yet, so a first guarded close seeds itself from an unguarded lifecycle write or from `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`.
+	// The token is the `revision` this operation's own response carries. Compose the next expectation from the value a write ANSWERED with, never from a number the client incremented itself: the token is OPAQUE and compared for equality alone, so it has no predecessor a client can compute. A first guarded close seeds itself from `GET /v0/beads/issues/{id}`'s `revision` — the read that sources a guard — or, for a chain already mid-flight, from an unguarded lifecycle write or `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`.
 	//
 	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double parser corrupts it silently, and the corruption only surfaces as a `precondition_failed` on the NEXT request.
 	ExpectedVersion *int64 `json:"expected_version,omitempty"`
@@ -1068,7 +1074,7 @@ type DeleteIssuesRequest struct {
 	//
 	// IT GUARDS LIFECYCLE STATE, NOT THE GRAPH. The token is reminted by status, assignee and started-at writes and deliberately not by label, dependency or rename writes, so a match does not promise the bead's edges are the ones you saw.
 	//
-	// The token is the `revision` a lifecycle write answers with. DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out; no READ on this surface publishes one yet.
+	// The token is the `revision` a lifecycle write answers with, and the one `GET /v0/beads/issues/{id}` publishes — which is where a delete guard should seed itself, since reading the bead before erasing it is the only way to be sure it is the bead you meant. DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out.
 	ExpectedVersion *int64 `json:"expected_version,omitempty"`
 
 	// Force Delete the named beads and leave their dependents ORPHANED, reported in `orphaned`. Without it and without `cascade`, a named bead with a dependent the request did not name is refused.
@@ -1749,7 +1755,7 @@ type UpdateIssueRequest struct {
 
 	// ExpectedVersion Requires the row's revision to equal this value before the patch. A miss refuses the WHOLE request with `409 precondition_failed` and writes nothing — `ApplyUpdateItem.expected_version`'s contract, on the operation that patches one row.
 	//
-	// The token is the `revision` this operation's own response carries. No READ on this surface publishes one yet, so a first guarded write seeds itself from an unguarded one or from `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`. Compose the next expectation from the value the write ANSWERED with, never from a number the client incremented itself: the token is OPAQUE and compared for equality alone, so it has no predecessor a client can compute.
+	// The token is the `revision` this operation's own response carries, and the same one `GET /v0/beads/issues/{id}` publishes — which is where a first guarded write seeds itself, rather than from an unguarded one or from `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`. Compose the next expectation from the value the write ANSWERED with, never from a number the client incremented itself: the token is OPAQUE and compared for equality alone, so it has no predecessor a client can compute.
 	//
 	// DECODE IT AS A 64-BIT INTEGER. Live tokens run past 5e17, where an IEEE-754 double's ulp is already 64, so a parser that decodes JSON numbers as doubles — JavaScript's `JSON.parse`, Go's `any`, Python's `float` — hands back a value NEAR the token that is not it, and the guard is refused against a row nothing else touched.
 	ExpectedVersion *int64 `json:"expected_version,omitempty"`
@@ -1778,7 +1784,7 @@ type UpdateIssueResponse struct {
 
 	// Revision The row's optimistic-concurrency token AFTER this write, spelled the way `ApplyItemResult.revision` spells it.
 	//
-	// It is here because `expected_version` is: a guard whose token no response carries is a guard a caller cannot fill. A read-modify-write loop composes its next expectation from THIS value and never from a number it incremented itself, for the reason `compareAndSetMetadata` gives about a value the store renormalizes. No read on this surface publishes a revision yet; when one does, this member is what it will agree with.
+	// It is here because `expected_version` is: a guard whose token no response carries is a guard a caller cannot fill. A read-modify-write loop composes its next expectation from THIS value and never from a number it incremented itself, for the reason `compareAndSetMetadata` gives about a value the store renormalizes. `GET /v0/beads/issues/{id}`'s `revision` is the read that publishes the same token, and this member agrees with it.
 	//
 	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double parser corrupts it silently, and the corruption only shows up as a `precondition_failed` on the NEXT request.
 	Revision int64 `json:"revision"`

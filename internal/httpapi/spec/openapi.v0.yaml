@@ -959,6 +959,38 @@ paths:
         The CLI has no `--include-ephemeral` flag for `bd list` yet, so this is
         the one filter on this operation with no `bd list` spelling;
         `--include-infra` is the nearest one and is wider.
+
+
+        THE ROWS CARRY NO `revision`, AND THE DETAIL READ DOES. A list-then-guard
+        loop is a real shape, and the reason the token stops at
+        `GET /v0/beads/issues/{id}` is not its size — measured against a 20k-row
+        production export the member is 28 bytes on a 1449-byte median row,
+        under 2%. It is that `IssueWithCounts` is ALSO THE INTERCHANGE ROW: it
+        is the record `bd export` writes to JSONL and the auto-export flushes
+        into a git-tracked `issues.jsonl`, and the token is re-minted by every
+        write, so publishing it on this element would put a per-write-random
+        value into a file whose whole value is that it diffs only when
+        something meant something. That is the loss `Issue`'s own storage field
+        is withheld from generic serialization to prevent, and a wire member
+        cannot opt out of it — the element here and the element there are one
+        pinned Go struct. `IssueDetails` has neither problem: nothing
+        interchanges it, and it is assembled in exactly one place, which is
+        also why its token cannot be silently 0 on some path that forgot to
+        set it. A caller that has a list and wants a guard reads the rows it
+        actually intends to write, one detail read each — the read it needs
+        anyway to decide.
+
+
+        THE DOOR, IF A LATER REVISION WANTS THE TOKEN HERE: it needs a list
+        element that is NOT the interchange element. The exclusion above is a
+        consequence of the two being ONE pinned Go struct, not a judgement that
+        a per-row token is unwanted, so the way in is to separate them — and
+        nothing short of that will do, because any member added to this element
+        ships in `bd export`'s JSONL by construction. Until then a client MUST
+        model the absent member as ABSENT and never as `0`: zero is a real
+        token here (a legacy row backfilled and not mutated since), so a client
+        that defaulted a missing `revision` to 0 would compose guards that
+        match exactly the rows it is most dangerous to be wrong about.
       parameters:
         - name: status
           in: query
@@ -1840,6 +1872,18 @@ paths:
         and `comments_omitted` and pays for neither. A request that sets
         neither parameter is answered exactly as this operation answered it
         before the parameters existed.
+
+
+        IT IS THE TOKEN SOURCE FOR A GUARDED WRITE. The response carries
+        `revision`, the row's optimistic-concurrency token, so a
+        read-modify-write loop starts HERE: read the row, decide from what it
+        says, and send the token back as the next request's `expected_version`.
+        Before this member every token on the surface was minted by a WRITE, so
+        the first guarded write of a loop had to be preceded by a write the
+        caller did not want to make — or guarded on nothing at all, which is
+        the lost-update this whole family exists to refuse. The token is
+        carried on every 200, including for an ephemeral wisp resolved by the
+        fallback lookup.
       parameters:
         - $ref: '#/components/parameters/IssueID'
         - name: include_comments
@@ -2456,8 +2500,9 @@ paths:
 
         The token travels back on `revision`, so a read-modify-write chain that
         ends in a close composes its expectation from the value the previous
-        write answered with. No READ on this surface publishes a revision yet;
-        when one does, this member is what it will agree with.
+        write answered with — or, where the chain STARTS with a read, from
+        `GET /v0/beads/issues/{id}`'s `revision`, which is the same token and
+        agrees with this one.
 
 
         ## Planes
@@ -2592,7 +2637,8 @@ paths:
 
         The token travels back on `revision`, so a reopen-then-re-close recovery
         composes its next expectation from the value this operation answered
-        with. No READ on this surface publishes a revision yet.
+        with, and a recovery that starts by reading composes its first from
+        `GET /v0/beads/issues/{id}`'s `revision`.
 
 
         ## Planes
@@ -5549,7 +5595,7 @@ components:
       x-go-type-import:
         name: types
         path: github.com/steveyegge/beads/internal/types
-      required: [id, title, priority, created_at, updated_at]
+      required: [id, title, priority, created_at, updated_at, revision]
       properties:
         # --- repeated from Issue (see the pinned-schema note above) ---
         id: { type: string }
@@ -5656,6 +5702,56 @@ components:
           type: integer
         epic_closeable:
           type: boolean
+        revision:
+          type: integer
+          format: int64
+          description: >-
+            The row's optimistic-concurrency token, and THE READ THAT SOURCES A
+            GUARD. Every `expected_version` on this surface is composed from a
+            token some response carried; until this member existed the only
+            responses that carried one were WRITES, so a caller's first guarded
+            write had to be preceded by a write it did not want to make. This
+            is that member, and it is the one the write responses' "when a read
+            publishes one, this member is what it will agree with" was written
+            against.
+
+
+            IT IS EQUALITY-ONLY: compare it, never order or interpret it. A
+            change signals the row was mutated since you read it, and nothing
+            more — it is a random value the engine rewrites, not a counter.
+            `ApplyItemResult.revision` states the full rule and this member
+            carries it verbatim.
+
+
+            ITS COVERAGE IS PARTIAL, on the same inherited terms: the token is
+            rewritten by claim, close, unclaim and the generic update path, and
+            NOT by the direct-update paths that rewrite text without touching
+            it. A client needing complete change detection combines it with
+            `updated_at`, `status` and the label set.
+
+
+            It is ALWAYS PRESENT, including as 0 — a legacy row backfilled and
+            not mutated since — because an absent member would be ambiguous
+            between a legacy-zero row and a server that does not publish the
+            token.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double
+            parser corrupts it silently, and the corruption only shows up as a
+            `precondition_failed` on the NEXT request.
+
+
+            IT IS THE ANCHOR ROW'S ALONE. The issues nested under
+            `dependencies` and `dependents` are `IssueWithDependencyMetadata`
+            and carry no token: a caller that means to guard a NEIGHBOUR reads
+            that neighbour with its own `GET /v0/beads/issues/{id}`, and a
+            token lifted off an embedded relation would be one the response
+            never promised was fresh.
+
+
+            IT IS NOT ON THE LIST ROWS, and that is a decision rather than an
+            oversight — see `GET /v0/beads/issues`.
 
     IssueWithDependencyMetadata:
       type: object
@@ -6398,10 +6494,12 @@ components:
             bead's edges are the ones you saw.
 
 
-            The token is the `revision` a lifecycle write answers with. DECODE
-            IT AS A 64-BIT INTEGER, for the reason
-            `UpdateIssueRequest.expected_version` spells out; no READ on this
-            surface publishes one yet.
+            The token is the `revision` a lifecycle write answers with, and the
+            one `GET /v0/beads/issues/{id}` publishes — which is where a delete
+            guard should seed itself, since reading the bead before erasing it
+            is the only way to be sure it is the bead you meant. DECODE IT AS A
+            64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out.
 
     DeleteIssuesResult:
       type: object
@@ -7631,6 +7729,13 @@ components:
 
             `expected_status` and `expected_assignee` carry no such rule,
             because a caller CAN know what its own earlier item set them to.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out. It bites harder
+            here than anywhere else on the surface: a corrupted token refuses
+            the WHOLE plan rather than one write, so a client with a lossy
+            parser loses every item of every batch it guards.
         expected_status:
           type: string
           maxLength: 255
@@ -7910,6 +8015,11 @@ components:
             REFUSAL where this verb answers with a no-op. That belongs on an
             `update` item whose `patch.status` crosses into the done category.
 
+
+            DECODE IT AS A 64-BIT INTEGER, on
+            `ApplyUpdateItem.expected_version`'s terms, including its note that
+            a corrupted token here costs the whole plan.
+
     ApplyDepAddItem:
       type: object
       additionalProperties: false
@@ -8059,6 +8169,15 @@ components:
             legacy row backfilled and not mutated since — and a `dep_add` is 0
             too, because an edge acts on no single row's version. An absent
             member would be ambiguous between the two.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double
+            parser corrupts it silently, and the corruption only shows up as a
+            `precondition_failed` on the NEXT request. This member is the one
+            every other `revision` on the surface is spelled against, so the
+            warning belongs here most of all — a client that reads it through a
+            lossy parser here carries the damage into every guard it composes.
 
     AddDependenciesRequest:
       type: object
@@ -8633,9 +8752,10 @@ components:
             Compose the next expectation from the value a write ANSWERED with,
             never from a number the client incremented itself: the token is
             OPAQUE and compared for equality alone, so it has no predecessor a
-            client can compute. No READ on this surface publishes one yet, so a
-            first guarded close seeds itself from an unguarded lifecycle write
-            or from `POST /v0/beads/issues:batchApply`'s
+            client can compute. A first guarded close seeds itself from
+            `GET /v0/beads/issues/{id}`'s `revision` — the read that sources a
+            guard — or, for a chain already mid-flight, from an unguarded
+            lifecycle write or `POST /v0/beads/issues:batchApply`'s
             `ApplyItemResult.revision`.
 
 
@@ -8873,10 +8993,11 @@ components:
             the operation that patches one row.
 
 
-            The token is the `revision` this operation's own response carries.
-            No READ on this surface publishes one yet, so a first guarded write
-            seeds itself from an unguarded one or from
-            `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`.
+            The token is the `revision` this operation's own response carries,
+            and the same one `GET /v0/beads/issues/{id}` publishes — which is
+            where a first guarded write seeds itself, rather than from an
+            unguarded one or from `POST /v0/beads/issues:batchApply`'s
+            `ApplyItemResult.revision`.
             Compose the next expectation from the value the write ANSWERED with,
             never from a number the client incremented itself: the token is
             OPAQUE and compared for equality alone, so it has no predecessor a
@@ -9162,8 +9283,8 @@ components:
             loop composes its next expectation from THIS value and never from a
             number it incremented itself, for the reason
             `compareAndSetMetadata` gives about a value the store renormalizes.
-            No read on this surface publishes a revision yet; when one does, this
-            member is what it will agree with.
+            `GET /v0/beads/issues/{id}`'s `revision` is the read that publishes
+            the same token, and this member agrees with it.
 
 
             DECODE IT AS A 64-BIT INTEGER, for the reason
