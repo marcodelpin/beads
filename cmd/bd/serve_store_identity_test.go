@@ -229,6 +229,21 @@ func (*serveIdentityStore) EdgeReader() (issueops.EdgeReader, error) { return se
 func (*serveIdentityStore) GraphCounter() (issueops.GraphCounter, error) {
 	return serveIdentityRole{}, nil
 }
+
+// IssueRelations is the first role added to serveIssueRoles since this stub
+// stopped embedding a nil store, so the comment above it is now a record of the
+// old regime rather than a warning about this one: GraphCounter had to be found
+// by a CI shard, and this had to be declared before the package would build,
+// with `missing method IssueRelations` naming it.
+//
+// It is declared HERE, at depth 1, and that placement is the load-bearing half.
+// serveIdentityDoltStore embeds this type shallower than serveStubRest's nil
+// store, so a role declared here shadows the promotion; one declared on the
+// wrapper instead would satisfy the compiler and leave the assertion below
+// unable to see it.
+func (*serveIdentityStore) IssueRelations() (issueops.Relations, error) {
+	return serveIdentityRole{}, nil
+}
 func (*serveIdentityStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return serveIdentityRole{}, nil
 }
@@ -271,6 +286,7 @@ type serveIdentityRole struct {
 	issueops.CycleDetector
 	issueops.EdgeReader
 	issueops.GraphCounter
+	issueops.Relations
 	issueops.BlockingAnnotator
 	issueops.TreeWalker
 	issueops.ReadyCounter

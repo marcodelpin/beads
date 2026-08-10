@@ -134,6 +134,35 @@ func (c *roleGraphCounter) countRequests() []issueops.EdgeCountRequest {
 	return append([]issueops.EdgeCountRequest(nil), c.counts...)
 }
 
+// roleRelations is the single-anchor NEIGHBOR role of the store-shaped source,
+// its own fake beside roleEdgeReader for roleGraphCounter's reason: the two sit
+// on adjacent accessors and answer about the same edges, so one fake serving
+// both would let a test pass on a server that had wired the neighbor handler to
+// the stored-edge reader.
+type roleRelations struct {
+	items []*issueops.RelatedIssue
+	err   error
+
+	mu   sync.Mutex
+	reqs []issueops.RelatedRequest
+}
+
+func (r *roleRelations) Related(_ context.Context, req issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
+	r.mu.Lock()
+	r.reqs = append(r.reqs, req)
+	r.mu.Unlock()
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.items, nil
+}
+
+func (r *roleRelations) relatedRequests() []issueops.RelatedRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]issueops.RelatedRequest(nil), r.reqs...)
+}
+
 // roleBlockingAnnotator is the derived-decoration role of the store-shaped
 // source. It is its own fake beside roleEdgeReader because the two are separate
 // interfaces for separate questions, and a double answering both would be the
@@ -832,6 +861,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.GraphCounter == nil {
 		cfg.GraphCounter = &roleGraphCounter{}
+	}
+	if cfg.Relations == nil {
+		cfg.Relations = &roleRelations{}
 	}
 	if cfg.BlockingAnnotator == nil {
 		cfg.BlockingAnnotator = &roleBlockingAnnotator{}

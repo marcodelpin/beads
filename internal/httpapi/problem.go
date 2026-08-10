@@ -411,6 +411,23 @@ const (
 	// answers about a set of ISSUES described by a predicate, and this one about
 	// EDGES anchored on ids, per anchor.
 	OpCountDependencyEdges = "countDependencyEdges"
+	// OpListRelatedIssues reads ONE issue's neighbors in a named direction,
+	// behind issueops.Relations. It is NOT listDependencies narrowed to one
+	// anchor: that operation answers the stored edge ROWS with their targets
+	// spelled as stored, and this one answers the ISSUES on the far end — so an
+	// edge whose target this database holds no row for is a row there and no
+	// neighbor here, and the two answer different arities of question.
+	//
+	// It is a SUB-RESOURCE OF THE ISSUE rather than a member of the dependency
+	// collection, and the argument is ELEMENT IDENTITY rather than a claim about
+	// what that collection answers with — getDependencyTree answers hydrated
+	// TreeNodes, so "everything under /dependencies is about edges" would be
+	// false. What decides it is narrower and checkable: the rows here are the
+	// SAME pinned struct getIssue already carries under `dependencies` and
+	// `dependents`, so this operation is that pair, standalone,
+	// direction-parameterized and type-filterable — and it belongs on the
+	// resource whose members it publishes.
+	OpListRelatedIssues = "listRelatedIssues"
 	// OpListBlockingAnnotations reads the DERIVED blocking decoration for
 	// several issues at once — open blockers, issues blocked, and the parent.
 	// It is separate from listDependencies because it answers a summary over
@@ -612,6 +629,20 @@ var operationCodes = map[string][]Code{
 	// for a stronger version of the same reason: this operation probes no id's
 	// existence at all, so there is nothing it could 404 on.
 	OpListBlockingAnnotations: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// getDependencyTree's row exactly, and for its reasons: ONE anchor, so a
+	// miss is the 404 it is rather than a per-anchor flag — there is no other
+	// answer to preserve by reporting it in the body, and an empty neighbor
+	// list is the common case, so a typo answered with one would never surface.
+	//
+	// Its 400 is BOTH the transport's and the ROLE's. The transport owns the
+	// unknown key and the repeated single-valued parameter; ValidateRelatedRequest
+	// owns the two that are about this request's MEANING — a missing or
+	// unrecognized direction, and a dependency type no edge could carry — and each
+	// reaches the client as the 400 it is, on the sentinel, with the parameter
+	// named. The validator's third refusal, an empty anchor id, is unreachable
+	// here: the id is a PATH segment this handler bounds before the role is
+	// asked, and an id that fails that bound is the 404 a real miss gets.
+	OpListRelatedIssues: {CodeInvalidArgument, CodeUnauthenticated, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The 404 is the difference from the row above: this operation has ONE
 	// anchor, so there is no other answer to preserve by reporting the miss in
 	// the body. Its 400 is its own — an empty root, a direction outside the

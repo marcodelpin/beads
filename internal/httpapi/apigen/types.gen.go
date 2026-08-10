@@ -120,16 +120,34 @@ func (e GetDependencyTreeParamsDirection) Valid() bool {
 
 // Defines values for CountDependencyEdgesParamsDirection.
 const (
-	In  CountDependencyEdgesParamsDirection = "in"
-	Out CountDependencyEdgesParamsDirection = "out"
+	CountDependencyEdgesParamsDirectionIn  CountDependencyEdgesParamsDirection = "in"
+	CountDependencyEdgesParamsDirectionOut CountDependencyEdgesParamsDirection = "out"
 )
 
 // Valid indicates whether the value is a known member of the CountDependencyEdgesParamsDirection enum.
 func (e CountDependencyEdgesParamsDirection) Valid() bool {
 	switch e {
-	case In:
+	case CountDependencyEdgesParamsDirectionIn:
 		return true
-	case Out:
+	case CountDependencyEdgesParamsDirectionOut:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRelatedIssuesParamsDirection.
+const (
+	ListRelatedIssuesParamsDirectionIn  ListRelatedIssuesParamsDirection = "in"
+	ListRelatedIssuesParamsDirectionOut ListRelatedIssuesParamsDirection = "out"
+)
+
+// Valid indicates whether the value is a known member of the ListRelatedIssuesParamsDirection enum.
+func (e ListRelatedIssuesParamsDirection) Valid() bool {
+	switch e {
+	case ListRelatedIssuesParamsDirectionIn:
+		return true
+	case ListRelatedIssuesParamsDirectionOut:
 		return true
 	default:
 		return false
@@ -935,7 +953,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.count`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
+	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.related`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.count`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
 	//
 	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
@@ -1546,6 +1564,20 @@ type Ref struct {
 	Key *string `json:"key,omitempty"`
 }
 
+// RelatedIssues One issue's neighbors — the body of `GET /v0/beads/issues/{id}/related`. It is NOT a page: this operation has no limit and no cursor, and it names ONE anchor, so there is nothing for a `has_more` to be about.
+//
+// There is no `missing` beside `items`, unlike `DependencyEdges`. That member exists because a batch cannot report an absent anchor any other way without discarding the anchors it did find; here the single absent anchor is a 404.
+//
+// It is NOT `x-go-type`-pinned, for `EdgeCounts`' reason: there is no canonical Go struct whose JSON encoding is this envelope. The role answers with a bare slice of `issueops.RelatedIssue`, and THAT element is pinned — see `IssueWithDependencyMetadata`.
+type RelatedIssues struct {
+	// Items The neighbors, ascending by id with the edge type breaking a tie. Empty array (never null) when this issue has none in the requested direction, or when the `type` filter rejected every edge.
+	//
+	// Each element is a full issue plus `dependency_type`, the type of the edge that led to it — the same element `GET /v0/beads/issues/{id}` carries under `dependencies` and `dependents`, so the two surfaces are one compatibility domain.
+	//
+	// AN EDGE WITH NO FAR END IN THIS DATABASE CONTRIBUTES NOTHING here: an `external:` reference, an id in another repository's namespace and an id whose issue was deleted out from under its edges are all silently absent, with no placeholder row and no error. The length of this array is a NEIGHBOR count, never an edge count.
+	Items []IssueWithDependencyMetadata `json:"items"`
+}
+
 // ReleaseIssueRequest defines model for ReleaseIssueRequest.
 type ReleaseIssueRequest struct {
 	// Actor Who is releasing the claim. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value reaches the event the release records and the storage commit message, so an unvalidated newline would forge audit-trail lines.
@@ -2071,6 +2103,26 @@ type GetIssueParams struct {
 	// IncludeDependents Populate `dependents` with the issues that depend on this one, each carrying its edge type — the shape `dependencies` already carries. Default false, for `include_comments`'s reason.
 	IncludeDependents *bool `form:"include_dependents,omitempty" json:"include_dependents,omitempty"`
 }
+
+// ListRelatedIssuesParams defines parameters for ListRelatedIssues.
+type ListRelatedIssuesParams struct {
+	// Direction Which way this issue's edges are walked. `out` answers the issues it DEPENDS ON — the `dependencies` member of `GET /v0/beads/issues/{id}`. `in` answers the issues that depend on it — that read's `dependents` member.
+	//
+	// IT IS REQUIRED AND HAS NO DEFAULT, on `GET /v0/beads/dependencies:count`'s terms and for the reason `issueops.RelationDirection` gives: the two answers have the same shape and the same member names, so a caller handed the inverse graph has nothing to notice. An absent or unrecognized value is a 400 `invalid_argument` with `param: "direction"`, never a walk in some default direction.
+	//
+	// The vocabulary is CLOSED — unlike `type` below — because it is a property of the edge's shape rather than of a workspace's configuration.
+	Direction ListRelatedIssuesParamsDirection `form:"direction" json:"direction"`
+
+	// Type Edge types to include. Repeat the parameter. Empty means every type.
+	//
+	// `GET /v0/beads/dependencies`'s `type` exactly: the vocabulary is OPEN, so an unrecognized value is not an error and simply matches no edge, while a value no edge could ever carry — empty, or longer than the column — is a 400 `invalid_argument` with `param: "type"`.
+	//
+	// The filter narrows EDGES, never the anchor. An issue whose every edge it rejects is answered with an empty `items` and not with a 404, which is a different fact from an id that names nothing.
+	Type *[]string `form:"type,omitempty" json:"type,omitempty"`
+}
+
+// ListRelatedIssuesParamsDirection defines parameters for ListRelatedIssues.
+type ListRelatedIssuesParamsDirection string
 
 // ClaimNextIssueParams defines parameters for ClaimNextIssue.
 type ClaimNextIssueParams struct {

@@ -308,6 +308,7 @@ func runServe() error {
 			CycleDetector:     roles.cycles,
 			EdgeReader:        roles.edges,
 			GraphCounter:      roles.edgeCounter,
+			Relations:         roles.relations,
 			BlockingAnnotator: roles.blocking,
 			TreeWalker:        roles.tree,
 			ReadyCounter:      roles.readyCounter,
@@ -648,6 +649,7 @@ type serveRoleSource interface {
 	CycleDetector() (issueops.CycleDetector, error)
 	EdgeReader() (issueops.EdgeReader, error)
 	GraphCounter() (issueops.GraphCounter, error)
+	IssueRelations() (issueops.Relations, error)
 	BlockingAnnotator() (issueops.BlockingAnnotator, error)
 	TreeWalker() (issueops.TreeWalker, error)
 	ReadyCounter() (issueops.ReadyCounter, error)
@@ -712,6 +714,7 @@ func serveIssueRoles(src serveRoleSource, journalEnabled bool) (serveRoles, erro
 		{"cycle detector", func() (err error) { roles.cycles, err = src.CycleDetector(); return }},
 		{"edge reader", func() (err error) { roles.edges, err = src.EdgeReader(); return }},
 		{"graph counter", func() (err error) { roles.edgeCounter, err = src.GraphCounter(); return }},
+		{"issue relations", func() (err error) { roles.relations, err = src.IssueRelations(); return }},
 		{"blocking annotator", func() (err error) { roles.blocking, err = src.BlockingAnnotator(); return }},
 		{"tree walker", func() (err error) { roles.tree, err = src.TreeWalker(); return }},
 		{"ready counter", func() (err error) { roles.readyCounter, err = src.ReadyCounter(); return }},
@@ -798,6 +801,7 @@ type serveRoles struct {
 	cycles       issueops.CycleDetector
 	edges        issueops.EdgeReader
 	edgeCounter  issueops.GraphCounter
+	relations    issueops.Relations
 	blocking     issueops.BlockingAnnotator
 	tree         issueops.TreeWalker
 	readyCounter issueops.ReadyCounter

@@ -2169,6 +2169,159 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/issues/{id}/related:
+    get:
+      operationId: listRelatedIssues
+      summary: List one issue's neighbors in a named direction
+      description: >-
+        THE ISSUES ON THE FAR END of this issue's edges, in the direction the
+        request names, each carrying the type of the edge that led to it. It is
+        the read behind `bd dep list`'s neighbor view, and its elements are the
+        same `IssueWithDependencyMetadata` the `dependencies` and `dependents`
+        members of `GET /v0/beads/issues/{id}` already carry.
+
+
+        IT IS A SUB-RESOURCE OF THE ISSUE, not a member of the dependency
+        collection, and the two answer different things about the same edges.
+        `GET /v0/beads/dependencies` returns the stored edge ROWS — targets
+        spelled exactly as stored, nothing looked up — for many anchors at once;
+        this one is anchored on ONE issue and answers with HYDRATED ISSUES, so
+        an edge whose far end this database holds no row for is not a neighbor
+        at all. `issueops.Relations` and `issueops.EdgeReader` state that split
+        once; nothing is restated here.
+
+
+        THE CONSEQUENCE IS WORTH READING BEFORE COUNTING ANYTHING. A dependency
+        target may be an `external:` reference or an id belonging to another
+        repository, and this database holds no issue for either. Such an edge is
+        left out with no placeholder row and no error, so the length of `items`
+        is this issue's NEIGHBOR count and not its EDGE count, and the two
+        differ by however many of its edges point outside this database. A
+        caller that needs the edges themselves reads
+        `GET /v0/beads/dependencies`; a caller that needs the number reads
+        `GET /v0/beads/dependencies:count`, which counts edges and not
+        neighbors.
+
+
+        AN ID THAT NAMES NEITHER AN ISSUE NOR A WISP IS A 404, and that is the
+        difference from every other graph read on this surface. Those are
+        batched and report a miss per anchor, because failing the call would
+        throw away the answers for the ids that were found; here there is one
+        anchor and no other answer to preserve. It matters because an empty
+        `items` is the COMMON case — most issues have neighbors in only one
+        direction — so a typo answered with an empty list would never surface.
+
+
+        BOTH PLANES ARE READ, on the anchor and on its neighbors. The anchor is
+        resolved against the durable and ephemeral planes together, so a wisp id
+        is a legal anchor; and the neighbors are collected from BOTH dependency
+        tables and hydrated from both issue tables, so a durable issue's `in`
+        neighbors include the wisps that depend on it and a `direction=out`
+        answer includes the wisp targets it depends on. Those are the ROLE's
+        rules, stated at `issueops.Relations`, and this document cites them
+        rather than restating them.
+
+
+        THE ORDER IS PINNED: ascending by the neighbor's id, with the edge type
+        breaking a tie. It is pinned rather than left to the query because the
+        rows come from two dependency tables read in sequence, so their natural
+        order is an artifact of which plane a neighbor happens to live on —
+        stable enough to look deliberate and not stable enough to rely on.
+
+
+        THE ROWS CARRY NO `revision`, on `GET /v0/beads/issues`'s terms. The
+        element here is the pinned Go struct `GET /v0/beads/issues/{id}` carries
+        under `dependencies` and `dependents`, so it publishes an issue's own
+        serialized fields and nothing this operation invents; the
+        optimistic-concurrency token stays on the detail read, which is where a
+        guarded write composes its `expected_version` from. A client holding a
+        neighbor list and wanting a guard reads the rows it actually intends to
+        write, one detail read each.
+
+
+        THERE IS NO `limit` AND NO CURSOR. One issue's neighbors are unbounded
+        here exactly as the `dependencies` member of
+        `GET /v0/beads/issues/{id}` already is, and this operation names ONE
+        anchor, so there is no question to bound instead — which is what the
+        dependency-collection reads bound at 100 `issue_id` values apiece. A
+        limit with no cursor behind it would truncate with no way to fetch the
+        rest.
+
+
+        THERE IS NO `both` DIRECTION, for the reason
+        `GET /v0/beads/dependencies:count` has none: a caller that wants the
+        pair asks twice, and one call answering both would have to say which
+        direction each row came from — which is a second member on an element
+        this document deliberately shares with the detail read.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+        - name: direction
+          in: query
+          required: true
+          description: >-
+            Which way this issue's edges are walked. `out` answers the issues it
+            DEPENDS ON — the `dependencies` member of
+            `GET /v0/beads/issues/{id}`. `in` answers the issues that depend on
+            it — that read's `dependents` member.
+
+
+            IT IS REQUIRED AND HAS NO DEFAULT, on
+            `GET /v0/beads/dependencies:count`'s terms and for the reason
+            `issueops.RelationDirection` gives: the two answers have the same
+            shape and the same member names, so a caller handed the inverse graph
+            has nothing to notice. An absent or unrecognized value is a 400
+            `invalid_argument` with `param: "direction"`, never a walk in some
+            default direction.
+
+
+            The vocabulary is CLOSED — unlike `type` below — because it is a
+            property of the edge's shape rather than of a workspace's
+            configuration.
+          schema:
+            type: string
+            enum: [out, in]
+        - name: type
+          in: query
+          description: >-
+            Edge types to include. Repeat the parameter. Empty means every
+            type.
+
+
+            `GET /v0/beads/dependencies`'s `type` exactly: the vocabulary is
+            OPEN, so an unrecognized value is not an error and simply matches no
+            edge, while a value no edge could ever carry — empty, or longer than
+            the column — is a 400 `invalid_argument` with `param: "type"`.
+
+
+            The filter narrows EDGES, never the anchor. An issue whose every
+            edge it rejects is answered with an empty `items` and not with a
+            404, which is a different fact from an id that names nothing.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: This issue's neighbors, in ascending neighbor id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelatedIssues'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/issues/{id}:claim:
     post:
       operationId: claimIssue
@@ -6476,7 +6629,7 @@ components:
             derived from its route table, and the server-wide BEHAVIORS it
             enforces. v0's operation vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.count`, `issues.get`,
-            `issues.create`,
+            `issues.related`, `issues.create`,
             `issues.batchClose`,
             `issues.claim`, `issues.claimNext`, `issues.release`,
             `issues.close`, `issues.reopen`, `issues.update`,
@@ -7543,6 +7696,49 @@ components:
             entry and an id that names nothing is simply bare.
           items:
             $ref: '#/components/schemas/IssueBlocking'
+
+    RelatedIssues:
+      type: object
+      description: >-
+        One issue's neighbors — the body of
+        `GET /v0/beads/issues/{id}/related`. It is NOT a page: this operation
+        has no limit and no cursor, and it names ONE anchor, so there is nothing
+        for a `has_more` to be about.
+
+
+        There is no `missing` beside `items`, unlike `DependencyEdges`. That
+        member exists because a batch cannot report an absent anchor any other
+        way without discarding the anchors it did find; here the single absent
+        anchor is a 404.
+
+
+        It is NOT `x-go-type`-pinned, for `EdgeCounts`' reason: there is no
+        canonical Go struct whose JSON encoding is this envelope. The role
+        answers with a bare slice of `issueops.RelatedIssue`, and THAT element
+        is pinned — see `IssueWithDependencyMetadata`.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: >-
+            The neighbors, ascending by id with the edge type breaking a tie.
+            Empty array (never null) when this issue has none in the requested
+            direction, or when the `type` filter rejected every edge.
+
+
+            Each element is a full issue plus `dependency_type`, the type of the
+            edge that led to it — the same element
+            `GET /v0/beads/issues/{id}` carries under `dependencies` and
+            `dependents`, so the two surfaces are one compatibility domain.
+
+
+            AN EDGE WITH NO FAR END IN THIS DATABASE CONTRIBUTES NOTHING here:
+            an `external:` reference, an id in another repository's namespace
+            and an id whose issue was deleted out from under its edges are all
+            silently absent, with no placeholder row and no error. The length of
+            this array is a NEIGHBOR count, never an edge count.
+          items:
+            $ref: '#/components/schemas/IssueWithDependencyMetadata'
 
     BatchCreateRequest:
       type: object

@@ -319,6 +319,8 @@ var (
 	_ uow.StatsReporterSource       = timedProvider{}
 	_ uow.CycleDetectorSource       = timedProvider{}
 	_ uow.EdgeReaderSource          = timedProvider{}
+	_ uow.GraphCounterSource        = timedProvider{}
+	_ uow.RelationsSource           = timedProvider{}
 	_ uow.BlockingAnnotatorSource   = timedProvider{}
 	_ uow.TreeWalkerSource          = timedProvider{}
 	_ uow.ReadyCounterSource        = timedProvider{}
@@ -433,6 +435,14 @@ func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 // reason and with the same hazard as IssueReader.
 func (p timedProvider) GraphCounter() (issueops.GraphCounter, error) {
 	return uow.NewGraphCounter(p)
+}
+
+// IssueRelations builds the single-anchor neighbor role OVER THIS WRAPPER, for
+// the same reason and with the same hazard as IssueReader. It is the one
+// accessor here whose name is not the role's: the seam spells it IssueRelations
+// on both the store and the provider, and this type implements the seam.
+func (p timedProvider) IssueRelations() (issueops.Relations, error) {
+	return uow.NewIssueRelations(p)
 }
 
 // BlockingAnnotator builds the blocking-decoration role OVER THIS WRAPPER, for

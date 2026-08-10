@@ -41,6 +41,13 @@ import (
 //
 // issueops.EdgeReader has no wrapper here for the same reason: it answers with
 // a value, and wireEdges drops a nil edge.
+//
+// issueops.Relations has none either, and it is the case worth stating because
+// it is the first role that answers with a SLICE OF POINTERS and still needs no
+// wrapper. What decides it is not the pointer, it is whether a handler
+// dereferences one it was handed: wireRelated skips a nil element exactly as
+// wireEdges and wireItems do, so the only thing a wrapper could add is the
+// appearance of a guarantee.
 type checkedReader struct{ inner issueops.Reader }
 
 // Ready passes the request through unchanged.

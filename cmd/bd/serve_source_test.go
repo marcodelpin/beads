@@ -105,6 +105,7 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 			metadataCAS:  &serveStubMetadataCAS{},
 			counter:      &serveStubCounter{},
 			edgeCounter:  &serveStubGraphCounter{},
+			relations:    &serveStubRelations{},
 			inner:        inner,
 		}}
 	}
@@ -354,6 +355,7 @@ type serveRolesStore struct {
 	metadataCAS  *serveStubMetadataCAS
 	counter      *serveStubCounter
 	edgeCounter  *serveStubGraphCounter
+	relations    *serveStubRelations
 	inner        storage.DoltStorage
 }
 
@@ -454,6 +456,31 @@ func (s *serveRolesStore) Counter() (issueops.Counter, error) { return s.counter
 // began binding it; this one was found the same way, by this test panicking the
 // moment the binding landed.
 func (s *serveRolesStore) GraphCounter() (issueops.GraphCounter, error) { return s.edgeCounter, nil }
+
+// IssueRelations is the FIRST role added to serveIssueRoles since this type
+// stopped embedding a nil store, and it is worth recording what that changed —
+// because the two comments above it describe the old regime and are now history
+// rather than instruction.
+//
+// Counter and GraphCounter had to be FOUND. Neither is wrapped by the hook
+// decorator (both are reads, so their decorators recurse), so neither was
+// noticed until `bd serve` began binding it — GraphCounter on a full-package CI
+// shard, because no -run pattern anyone reaches for names this test.
+//
+// This one could not be missed. serveRoleSource names the accessor, the
+// assertion above requires it, and omitting it is `*serveRolesStore does not
+// implement serveRoleSource (missing method IssueRelations)` at build time, in
+// this file, naming the method. Which is the whole return on #5539 landing
+// first, measured on the next role rather than asserted about it.
+func (s *serveRolesStore) IssueRelations() (issueops.Relations, error) { return s.relations, nil }
+
+// serveStubRelations is the neighbor role's stand-in, ErrUnsupported like every
+// stub here.
+type serveStubRelations struct{}
+
+func (*serveStubRelations) Related(context.Context, issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
+	return nil, errors.ErrUnsupported
+}
 
 // serveStubGraphCounter is the edge-count role's stand-in, ErrUnsupported like
 // every stub here.

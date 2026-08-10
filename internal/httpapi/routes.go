@@ -298,6 +298,23 @@ var routeTable = []route{
 		handler:     (*Server).handleUpdate,
 	},
 	{
+		op:     OpListRelatedIssues,
+		method: http.MethodGet,
+		// A SUB-RESOURCE of the issue-detail path, and the surface's first. The
+		// segment is a LITERAL after a single-segment wildcard, so pattern and
+		// specPath agree and the router registers the documented path itself —
+		// no declaration is needed and the claim row's exception does not apply.
+		//
+		// It collides with nothing. `/v0/beads/issues/{id}` is a different whole
+		// path, which is what ServeMux matches on, and the custom-method
+		// dispatcher's `/v0/beads/issues/{idop}` is registered under POST and is
+		// one segment shorter besides.
+		pattern:     "/v0/beads/issues/{id}/related",
+		capability:  "issues.related",
+		implemented: true,
+		handler:     (*Server).handleListRelatedIssues,
+	},
+	{
 		op:          OpListSettings,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/config",
