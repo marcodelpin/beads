@@ -25,6 +25,10 @@ import (
 // lingering handle open; it confirms the child has actually terminated, then
 // asserts the drift probe reports it dead.
 func TestIsServerProbablyRunningReportsDeadPIDWithLingeringHandle(t *testing.T) {
+	// FORK-ONLY guard, re-applied on top of upstream's improved wait check during
+	// the #5191 port: upstream rewrote the WaitForSingleObject arm (it now asserts
+	// WAIT_OBJECT_0, which is stricter and is kept), and taking their side wholesale
+	// dropped this skip. Both belong. (bda-9l1, sys-iogddl)
 	if testing.Short() {
 		t.Skip("spawns a real child process to probe Windows handle liveness; skipped in -short (bda-9l1)")
 	}
@@ -43,9 +47,14 @@ func TestIsServerProbablyRunningReportsDeadPIDWithLingeringHandle(t *testing.T) 
 	if err != nil {
 		t.Skipf("cannot open probe handle for pid %d: %v", pid, err)
 	}
-	if _, err := windows.WaitForSingleObject(probe, 5000); err != nil {
+	status, err := windows.WaitForSingleObject(probe, 5000)
+	if err != nil {
 		windows.CloseHandle(probe)
 		t.Fatalf("waiting for child to exit: %v", err)
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		windows.CloseHandle(probe)
+		t.Fatalf("wait for process %d returned status %#x, want WAIT_OBJECT_0", pid, status)
 	}
 	windows.CloseHandle(probe)
 

@@ -795,6 +795,9 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 		msg, _ := cmd.Flags().GetString("message")
 		// GH#4078: explicit commits include config and report truthfully.
 		// Without -m, CommitPending builds a descriptive summary message.
+		// The truthful committed bool also covers the embedded store's
+		// nil-error no-op Commit, which upstream detects with a before/after
+		// HEAD-hash comparison instead.
 		committed, err := explicitDoltCommit(ctx, st, msg)
 		if err != nil {
 			return HandleError("%v", err)
@@ -804,6 +807,7 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 			return nil
 		}
 		commandDidExplicitDoltCommit = true
+
 		fmt.Println("Committed.")
 		return nil
 	},
@@ -826,11 +830,19 @@ required. Use this command for explicit control or diagnostics.`,
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 		}
-		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+		fileCfg, err := loadDoltBackendConfig(beadsDir)
+		if err != nil {
 			return HandleError("%v", err)
 		}
 		if !usesSQLServer() {
 			return HandleError("'bd dolt start' is not supported in embedded mode (no Dolt server)")
+		}
+		// A remote (non-localhost) server host means bd does not own the
+		// server lifecycle (GH#3545/GH#3518): starting a repo-local
+		// server here would write local PID/port state that shadows the
+		// configured remote endpoint.
+		if host := fileCfg.GetDoltServerHost(); !usesProxiedServer() && !configfile.IsLocalHostString(host) {
+			return HandleError("the configured Dolt server host is remote (%s); 'bd dolt start' only manages a local server.\nStart the server on that host, or clear dolt_server_host / dolt.host / BEADS_DOLT_SERVER_HOST to run one locally", host)
 		}
 		serverDir := doltserver.ResolveServerDir(beadsDir)
 
@@ -879,11 +891,19 @@ scope cannot be established.`,
 		if beadsDir == "" {
 			return HandleErrorWithHint(activeWorkspaceNotFoundError(), diagHint())
 		}
-		if _, err := loadDoltBackendConfig(beadsDir); err != nil {
+		fileCfg, err := loadDoltBackendConfig(beadsDir)
+		if err != nil {
 			return HandleError("%v", err)
 		}
 		if !usesSQLServer() {
 			return HandleError("'bd dolt stop' is not supported in embedded mode (no Dolt server)")
+		}
+		// Same remote-host ownership guard as 'bd dolt start': with a
+		// remote server host, the repo-local PID state (if any) is a
+		// leftover, and stopping it would report success while the
+		// configured external server keeps running (GH#3545/GH#3518).
+		if host := fileCfg.GetDoltServerHost(); !usesProxiedServer() && !configfile.IsLocalHostString(host) {
+			return HandleError("the configured Dolt server host is remote (%s); 'bd dolt stop' only manages a local server.\nStop the server on that host, or clear dolt_server_host / dolt.host / BEADS_DOLT_SERVER_HOST to manage one locally", host)
 		}
 		force, _ := cmd.Flags().GetBool("force")
 
@@ -1625,9 +1645,10 @@ var doltRemoteCmd = &cobra.Command{
 	Long: `Manage Dolt remotes for push/pull replication.
 
 Subcommands:
-  add <name> <url>   Add a new remote
-  list               List all configured remotes
-  remove <name>      Remove a remote`,
+  add <name> <url>     Add a new remote
+  list                 List all configured remotes
+  remove <name>        Remove a remote
+  reset-data <name>    Replace a remote's data plane after a history squash`,
 }
 
 var doltRemoteAddCmd = &cobra.Command{
@@ -1841,9 +1862,11 @@ func init() {
 	doltCleanDatabasesCmd.Flags().Bool("dry-run", false, "Show what would be dropped without dropping")
 	doltCleanDatabasesCmd.Flags().Bool("purge-dropped", false, "After dropping, also run CALL DOLT_PURGE_DROPPED_DATABASES() — server-global and irreversible, see --help")
 	doltRemoteAddCmd.Flags().Bool("allow-git-origin", false, "Allow adding a Dolt remote whose URL matches the git origin (proceed with a warning instead of aborting)")
+	doltRemoteResetDataCmd.Flags().BoolVarP(&doltRemoteResetDataYes, "yes", "y", false, "Skip the confirmation prompt (required in non-interactive use)")
 	doltRemoteCmd.AddCommand(doltRemoteAddCmd)
 	doltRemoteCmd.AddCommand(doltRemoteListCmd)
 	doltRemoteCmd.AddCommand(doltRemoteRemoveCmd)
+	doltRemoteCmd.AddCommand(doltRemoteResetDataCmd)
 	doltCmd.AddCommand(doltShowCmd)
 	doltCmd.AddCommand(doltSetCmd)
 	doltCmd.AddCommand(doltTestCmd)
@@ -1974,6 +1997,7 @@ func showDoltConfig(testConnection bool) error {
 				result["host"] = showHost
 				result["port"] = showPort
 				result["user"] = cfg.GetDoltServerUser()
+				result["tls"] = cfg.GetDoltServerTLS()
 				result["shared_server"] = doltserver.IsSharedServerMode()
 				if testConnection {
 					result["connection_ok"] = testServerConnection(showHost, showPort)
@@ -2001,6 +2025,7 @@ func showDoltConfig(testConnection bool) error {
 		fmt.Printf("  Host:     %s\n", showHost)
 		fmt.Printf("  Port:     %d\n", showPort)
 		fmt.Printf("  User:     %s\n", cfg.GetDoltServerUser())
+		fmt.Printf("  TLS:      %t\n", cfg.GetDoltServerTLS())
 		if doltserver.IsSharedServerMode() {
 			fmt.Println("  Mode:     shared server")
 			if sharedDir, err := doltserver.SharedServerDir(); err == nil {

@@ -17,6 +17,7 @@ cmd/bd/prune_bench_test.go::TestPruneLargeFixture
 cmd/bd/update_metadata_race_test.go::TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys
 cmd/bd/note_race_test.go::TestNote_ConcurrentProcesses_NoLostNotes
 internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentMergeOps_NoLostUpdate
+internal/workapi/sweep_test.go::TestCandidateIDMatcherLargeFixture
 EOF
 )
 

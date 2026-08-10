@@ -10,7 +10,37 @@ import (
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
+	"github.com/steveyegge/beads/issueops"
 )
+
+// createDependencyRequests translates parsed --deps specs into the create
+// request's edge list. The specs are already alias-normalized and deduped by
+// parseDepSpecs; the facade rejects the exact duplicates that dedupe removes.
+func createDependencyRequests(specs []domain.DependencySpec) []issueops.CreateDependency {
+	if len(specs) == 0 {
+		return nil
+	}
+	requests := make([]issueops.CreateDependency, 0, len(specs))
+	for _, spec := range specs {
+		requests = append(requests, issueops.CreateDependency{
+			TargetID: spec.TargetID,
+			Type:     spec.Type,
+			Reverse:  spec.SwapDirection,
+			Metadata: spec.Metadata,
+			ThreadID: spec.ThreadID,
+		})
+	}
+	return requests
+}
+
+// waitsForRequest translates the parsed --waits-for spec into the create
+// request's spawner gate.
+func waitsForRequest(spec *domain.WaitsForSpec) *issueops.WaitsFor {
+	if spec == nil {
+		return nil
+	}
+	return &issueops.WaitsFor{SpawnerID: spec.SpawnerID, Gate: spec.Gate}
+}
 
 func parseDepSpecs(deps []string) ([]domain.DependencySpec, error) {
 	// deps arrives already comma-split: cobra's StringSlice flag CSV-decodes
@@ -152,8 +182,8 @@ func canonicalDependencyType(t types.DependencyType) types.DependencyType {
 // commands stay in lockstep.
 func validateDependencyType(t types.DependencyType) error {
 	if !t.IsValid() {
-		return fmt.Errorf("invalid dependency type %q (must be non-empty, max 50 chars); valid types: %s",
-			t, createDepsAcceptedTypeList())
+		return fmt.Errorf("invalid dependency type %q (must be non-empty, max %d chars); valid types: %s",
+			t, types.MaxDependencyTypeLen, createDepsAcceptedTypeList())
 	}
 	if !t.IsWellKnown() {
 		return fmt.Errorf("unknown dependency type %q; valid types: %s",

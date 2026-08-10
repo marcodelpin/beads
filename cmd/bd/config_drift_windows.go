@@ -4,7 +4,7 @@ package main
 
 import "golang.org/x/sys/windows"
 
-// processAlive reports whether a process with the given PID is still running.
+// pidAlive reports whether a process with the given PID is still running.
 //
 // A bare OpenProcess / os.FindProcess success is NOT sufficient on Windows.
 // The kernel process object of a terminated process lingers, and stays
@@ -17,17 +17,17 @@ import "golang.org/x/sys/windows"
 // process's handle is signaled (WaitForSingleObject returns WAIT_OBJECT_0),
 // a running one times out (WAIT_TIMEOUT). This distinguishes live from dead
 // even when OpenProcess still succeeds on a lingering handle.
-func processAlive(pid int) bool {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+func pidAlive(pid int) bool {
+	processHandle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		// No such process, or we may not open it.
 		return false
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(processHandle) }()
 
-	s, err := windows.WaitForSingleObject(h, 0)
+	waitResult, err := windows.WaitForSingleObject(processHandle, 0)
 	if err != nil {
 		return false
 	}
-	return s == uint32(windows.WAIT_TIMEOUT)
+	return waitResult == uint32(windows.WAIT_TIMEOUT)
 }

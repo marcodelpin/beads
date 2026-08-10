@@ -328,7 +328,7 @@ func isServerProbablyRunning(beadsDir string) bool {
 		return false
 	}
 
-	return processAlive(pid)
+	return pidAlive(pid)
 }
 
 // printDriftItems renders drift results in human-readable format.

@@ -16,6 +16,8 @@ import (
 	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/kvkeys"
+	"github.com/steveyegge/beads/internal/storage/uow"
+	"github.com/steveyegge/beads/memoryops"
 )
 
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
@@ -1075,4 +1077,18 @@ func captureMemoryProvenance() memoryProvenance {
 		prov.Commit = strings.TrimSpace(string(out))
 	}
 	return prov
+}
+
+// memoriesFromProvider is that accessor step for a provider the caller names.
+//
+// It takes the provider rather than reading the global one because `bd prime`
+// opens a provider SCOPED to its read — prime is in noDbCommands, so the root
+// pre-run opens nothing — and one spelling of "ask this provider for the memory
+// surface" is the whole point of having an accessor at all.
+func memoriesFromProvider(provider uow.UnitOfWorkProvider) (memoryops.Memories, error) {
+	src, ok := provider.(uow.MemoriesSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the persistent-memory surface", provider)
+	}
+	return src.Memories()
 }

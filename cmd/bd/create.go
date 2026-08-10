@@ -24,6 +24,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/validation"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // validateCreateArgs runs as cobra's Args validation, which executes before
@@ -70,20 +71,16 @@ var createCmd = &cobra.Command{
 		graphFile, _ := cmd.Flags().GetString("graph")
 
 		if file != "" {
-			if graphFile != "" {
-				return HandleError("cannot specify both --file and --graph")
-			}
-			if len(args) > 0 {
-				return HandleError("cannot specify both title and --file flag")
-			}
-			dryRun, _ := cmd.Flags().GetBool("dry-run")
-			if dryRun {
-				return HandleError("--dry-run is not supported with --file flag")
-			}
-			if err := rejectSingleIssueFlagsForMarkdown(cmd); err != nil {
+			// gatherCreateInput repeats the --file argument checks and applies
+			// the plan-wide flags this route used to accept and ignore
+			// (--ephemeral, --no-history, --mol-type, --validate). It is the
+			// same input the proxied route reads, which is what lets both build
+			// one issueops.CreateBatchRequest.
+			in, err := gatherCreateInput(cmd, args)
+			if err != nil {
 				return err
 			}
-			return createIssuesFromMarkdown(cmd, file)
+			return createIssuesFromMarkdown(rootCtx, in)
 		}
 
 		if graphFile != "" {
@@ -259,7 +256,7 @@ var createCmd = &cobra.Command{
 			// Warn if defer date is in the past (user probably meant future)
 			if t.Before(time.Now()) && !silent && !debug.IsQuiet() {
 				fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
-					ui.RenderWarn("!"), t.Format("2006-01-02 15:04"))
+					ui.RenderWarn("!"), t.Local().Format("2006-01-02 15:04"))
 				fmt.Fprintf(os.Stderr, "  Did you mean a future date? Use --defer=+1h or --defer=tomorrow\n")
 			}
 			deferUntil = &t
@@ -551,6 +548,15 @@ var createCmd = &cobra.Command{
 
 		ctx := createCtx
 
+		// Resolve partial --deps targets the way `bd dep add` does, so a bare
+		// slug becomes a qualified id rather than a dangling edge, and an
+		// unknown target fails closed here instead of reaching the write.
+		resolvedDepSpecs, resolveErr := resolveDepSpecTargets(ctx, store, depSpecs)
+		if resolveErr != nil {
+			return HandleErrorRespectJSON("%v", resolveErr)
+		}
+		depSpecs = resolvedDepSpecs
+
 		// If a discovered-from dependency is present, inherit source_repo
 		// from the referenced parent issue. Reuse the already-parsed specs
 		// (not the raw --deps strings) so this can't drift from parseDepSpec's
@@ -572,58 +578,92 @@ var createCmd = &cobra.Command{
 			return depErr
 		}
 
-		// On the LIVE path, createIssueWithDeps (#4731) applies the create and
-		// its dependency edges in ONE transaction, so a failed edge rolls back
-		// the create instead of leaving a dep-less permanently-ready bead. The
-		// spool wrapper keeps the queued-create durability: if the server is
-		// unreachable the whole op is spooled and replayed later (from pendingDeps).
-		edges := createDepEdges{parentID: parentID, specs: depSpecs, waitsFor: waitsForSpec}
-
-		res, err := writeWithSpool(ctx, "create",
+		ops, err := writeOps(store)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		opsCtx, err := issueOpsContext(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		// Label inheritance stays CLI-side (mergeCreateLabels above) because the
+		// dry-run preview needs it too; asking the facade to inherit as well
+		// would append the parent's labels a second time.
+		//
+		// Fork seam (GH#4379/GH#4378-review D1, internal/spool): wrap the
+		// facade create so a transient server-unreachable error queues the
+		// whole op (issue + dependency edges) for replay instead of failing.
+		// Permanent errors (incl. RULING R1's ErrAlreadyExists) pass through.
+		var result issueops.CreateResult
+		spoolRes, err := writeWithSpool(ctx, "create",
 			spoolPayload(map[string]interface{}{
 				"issue":        issue,
 				"actor":        actor,
 				"dependencies": pendingDeps,
 			}),
 			func() error {
-				return createIssueWithDeps(ctx, store, issue, actor, edges)
+				var cerr error
+				result, cerr = ops.Create(opsCtx, issueops.CreateRequest{
+					Actor:         actor,
+					Issue:         issue,
+					ParentID:      parentID,
+					Dependencies:  createDependencyRequests(depSpecs),
+					WaitsFor:      waitsForRequest(waitsForSpec),
+					ForceIDPrefix: forceCreate,
+					IDPrefix:      createIDPrefixOverride(),
+				})
+				return cerr
 			},
 		)
 		if err != nil {
+			// RULING R1: an occupied --id is a refusal, not a silent full-row
+			// upsert reported as success.
+			if errors.Is(err, storage.ErrAlreadyExists) && explicitID != "" {
+				return HandleErrorRespectJSON("%s already exists; use bd update, or bd import for upsert semantics", explicitID)
+			}
 			return HandleErrorRespectJSON("%v", err)
 		}
-
-		if res.Spooled {
+		if spoolRes.Spooled {
 			// The create is QUEUED, not applied: no issue ID exists yet (it
 			// is generated server-side at replay) and the dependency edges
 			// ride in the spool payload. Report an honest queued outcome
 			// instead of a fake success with an empty ID (GH#4378-review D1).
+			// This branch runs BEFORE any read of result.Issue, which is nil
+			// on the spooled path.
 			if jsonOutput {
 				return outputJSON(map[string]interface{}{
 					"spooled": true,
-					"op_id":   res.OpID,
+					"op_id":   spoolRes.OpID,
 					"title":   issue.Title,
 				})
 			}
 			if silent {
-				fmt.Printf("QUEUED %s\n", res.OpID)
+				fmt.Printf("QUEUED %s\n", spoolRes.OpID)
 				return nil
 			}
 			fmt.Printf("%s Queued for replay (server unreachable): %s\n", ui.RenderWarn("!"), issue.Title)
-			fmt.Printf("  No issue ID yet -- it is assigned when the write replays (op_id: %s)\n", res.OpID)
+			fmt.Printf("  No issue ID yet -- it is assigned when the write replays (op_id: %s)\n", spoolRes.OpID)
 			return nil
 		}
+		// Every post-write read comes from the facade's result snapshot, never
+		// from the local struct: the facade clones its request, so the local
+		// struct still has no ID for an auto-minted create and no persisted
+		// timestamps. Dependencies and comments are dropped because `bd create`
+		// has never printed them.
+		created := result.Issue
+		created.Dependencies = nil
+		created.Comments = nil
 
+		edges := createDepEdges{parentID: parentID, specs: depSpecs, waitsFor: waitsForSpec}
 		if edges.empty() {
-			// Bare create: createIssueWithDeps delegated to store.CreateIssue,
-			// which commits the issue but leaves a follow-up Dolt commit for
-			// embedded mode. The deps path commits inside its own transaction.
-			shouldCommit, err := shouldCommitCreatePostWrites(issue, false)
+			// Bare create: preserve the embedded-mode follow-up Dolt commit.
+			// The deps path commits inside its transaction instead.
+			shouldCommit, err := shouldCommitCreatePostWrites(created, false)
 			if err != nil {
 				return HandleError("dolt auto-commit failed: %v", err)
 			}
 			if shouldCommit {
-				commitMsg := fmt.Sprintf("bd: create %s", issue.ID)
+				commitMsg := fmt.Sprintf("bd: create %s", created.ID)
 				if err := store.Commit(ctx, commitMsg); err != nil && !isDoltNothingToCommit(err) {
 					WarnError("failed to commit: %v", err)
 				}
@@ -633,7 +673,7 @@ var createCmd = &cobra.Command{
 		if repoPath != "." && targetStore != nil {
 			if err := commitPendingIfEmbedded(ctx, targetStore, actor, doltAutoCommitParams{
 				Command:  "create",
-				IssueIDs: []string{issue.ID},
+				IssueIDs: []string{created.ID},
 			}); err != nil {
 				debug.Logf("warning: failed to commit routed repo: %v", err)
 			}
@@ -646,20 +686,20 @@ var createCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			if err := outputJSON(issue); err != nil {
+			if err := outputJSON(created); err != nil {
 				return err
 			}
 		} else if silent {
-			fmt.Println(issue.ID)
+			fmt.Println(created.ID)
 		} else {
-			debug.PrintNormal("%s Created issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(issue.ID, issue.Title))
-			debug.PrintNormal("  Priority: P%d\n", issue.Priority)
-			debug.PrintNormal("  Status: %s\n", issue.Status)
+			debug.PrintNormal("%s Created issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(created.ID, created.Title))
+			debug.PrintNormal("  Priority: P%d\n", created.Priority)
+			debug.PrintNormal("  Status: %s\n", created.Status)
 
 			maybeShowTip(store)
 		}
 
-		SetLastTouchedID(issue.ID)
+		SetLastTouchedID(created.ID)
 		return nil
 	},
 }
@@ -901,6 +941,22 @@ func mergeCreateLabels(labels, inheritedLabels []string) []string {
 	return merged
 }
 
+// createIDPrefixOverride is the prefix an explicit --id must match, when the
+// WORKSPACE knows better than the database does.
+//
+// config.yaml's `issue-prefix` wins over the database's, except under --global
+// where the shared database is authoritative (GH#4957, selectCreateIDPrefix).
+// Only a front door can read config.yaml — a shared server's database knows
+// only its own prefix — so both routes resolve it here and hand it to the role
+// as CreateRequest.IDPrefix. Empty means "the substrate's prefix is right",
+// which is the ordinary case.
+func createIDPrefixOverride() string {
+	if globalFlag {
+		return ""
+	}
+	return overlayYAMLPrefix("")
+}
+
 func selectCreateIDPrefix(global bool, yamlPrefix, storePrefix string) string {
 	if global {
 		return storePrefix
@@ -940,17 +996,7 @@ func renderCreateDryRunPreview(issue *types.Issue, labels, deps []string) {
 }
 
 func shouldCommitCreatePostWrites(_ *types.Issue, _ bool) (bool, error) {
-	if isEmbeddedMode() {
-		if strings.TrimSpace(doltAutoCommit) == "" {
-			return true, nil
-		}
-		mode, err := getDoltAutoCommitMode()
-		if err != nil {
-			return false, err
-		}
-		return mode == doltAutoCommitOn, nil
-	}
-	return false, nil
+	return embeddedWritesCommitNow()
 }
 
 func createDepsAcceptedTypeList() string {
@@ -1023,6 +1069,16 @@ func formatTimeForRPC(t *time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
+// openDryRunTargetStore opens the store a `create --dry-run --repo <other>`
+// resolves --parent against. It is read-only on BOTH paths and must stay that
+// way: newDoltStoreFromConfig runs schema initialization on whatever it opens
+// and can rename a legacy hyphenated database and rewrite the target's
+// metadata.json on the way (GH#3231), so using it here would have a dry-run
+// mutate a repository the user only named as a lookup target — the same
+// migrate-at-open trap this preview policy exists to close, one repo over.
+// newPreviewStoreFromConfig is the non-mutating factory for a foreign
+// project (bd-6dnrw.32), relaxed for previews exactly as the root pre-run
+// relaxes the command's own store.
 func openDryRunTargetStore(ctx context.Context, repoPath string) (storage.DoltStorage, error) {
 	if remotecache.IsRemoteURL(repoPath) {
 		cache, err := remotecache.DefaultCache()
@@ -1031,7 +1087,7 @@ func openDryRunTargetStore(ctx context.Context, repoPath string) (storage.DoltSt
 		}
 		// The dry-run parent lookup only reads from this cached remote store.
 		// Do not add writes here; dry-runs must not mutate cached remotes.
-		store, err := cache.OpenStore(ctx, repoPath, newDoltStoreFromConfig)
+		store, err := cache.OpenStore(ctx, repoPath, newPreviewStoreFromConfig)
 		if err != nil {
 			return nil, fmt.Errorf("dry-run parent lookup requires an existing cached remote store for %s: %w", repoPath, err)
 		}
@@ -1048,7 +1104,7 @@ func openDryRunTargetStore(ctx context.Context, repoPath string) (storage.DoltSt
 		return nil, fmt.Errorf("failed to inspect target repo %s: %w", targetPath, err)
 	}
 
-	store, err := newDoltStoreFromConfig(ctx, beadsDir)
+	store, err := newPreviewStoreFromConfig(ctx, beadsDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open target store for dry-run: %w", err)
 	}

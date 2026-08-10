@@ -17,6 +17,7 @@ import (
 	internalbeads "github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/memoryops"
 )
 
 var (
@@ -421,9 +422,20 @@ func outputMemoriesOnlyContext(w io.Writer) error {
 	return nil
 }
 
-// formatMemoriesForPrime queries memories from the k/v store and formats them for injection.
-// Returns empty string if no memories or if store is unavailable.
+// formatMemoriesForPrime reads the memory plane through memoryops.Memories and
+// formats it for injection. Returns empty string if no memories or if the plane
+// is unavailable — prime degrades silently rather than failing a session-start
+// hook, which is prime's presentation policy and not the role's.
 func formatMemoriesForPrime(compact bool) string {
+	// bd-mm8wf: in a proxied-server workspace the memory read must ride the
+	// proxied plane (UOW provider), never ensureStoreActiveForPrime — the
+	// lazy direct-store open is the same seam class bd-m7zzd closed in
+	// relate.go and human.go, here in a read-only limb. The proxied dual
+	// preserves prime's silent-skip and timeout-banner contracts.
+	if usesProxiedServer() {
+		return formatMemoriesForPrimeProxied(compact)
+	}
+
 	// Try to initialize store if not already active (prime may run before other commands)
 	if store == nil {
 		timeout := primeStoreTimeout()
@@ -443,25 +455,48 @@ func formatMemoriesForPrime(compact bool) string {
 	if store == nil {
 		return ""
 	}
-	ctx := context.Background()
-	allConfig, err := store.GetAllConfig(ctx)
+	memories, err := store.Memories()
 	if err != nil {
 		return ""
 	}
+	result, err := memories.List(context.Background(), memoryops.ListRequest{})
+	if err != nil {
+		return ""
+	}
+	return renderPrimeMemoryPlane(result.Memories, compact)
+}
 
-	fullPrefix := kvPrefix + memoryPrefix
-	now := time.Now()
-	memories := make(map[string]primedMemory)
-	for k, v := range allConfig {
-		if !strings.HasPrefix(k, fullPrefix) {
-			continue
-		}
-		userKey := strings.TrimPrefix(k, fullPrefix)
+// renderPrimeMemoryPlane renders the memory plane for injection — the shared
+// tail of the classic and proxied (bd-mm8wf) memory-read paths, so the two
+// cannot drift in what a memory looks like once fetched.
+//
+// It takes the PLANE, not a config map: which rows are memories is
+// memoryops.Memories.List's answer now, on both routes, which is what stopped
+// prime from being a fifth front door with its own copy of the kv.memory.
+// prefix rule.
+func renderPrimeMemoryPlane(memories map[string]string, compact bool) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	selected := selectPrimeMemories(memories, time.Now())
+	if len(selected) == 0 {
+		return ""
+	}
+	maxCount, maxChars := primeMemoryCaps()
+	return renderPrimeMemories(selected, compact, maxCount, maxChars)
+}
+
+// selectPrimeMemories is the fork's memory-expiry seam (memory_envelope.go):
+// the plane's stored values are expiry envelopes. Hide expired memories
+// unless the user asked to be notified - hide and delete policies are
+// silently dropped from the prime output so the model doesn't waste context
+// on stale facts. Sitting under renderPrimeMemoryPlane it covers both the
+// classic and the proxied route.
+func selectPrimeMemories(memories map[string]string, now time.Time) map[string]primedMemory {
+	selected := make(map[string]primedMemory, len(memories))
+	for k, v := range memories {
 		env := parseStoredMemory(v)
 		expired := env.isExpired(now)
-		// Hide expired memories unless the user asked to be notified: hide
-		// and delete policies are silently dropped from the prime output so
-		// the model doesn't waste context on stale facts.
 		if expired && env.effectivePolicy() != policyNotify {
 			continue
 		}
@@ -471,13 +506,9 @@ func formatMemoriesForPrime(compact bool) string {
 		} else if env.ValidUntil != "" {
 			marker = fmt.Sprintf(" [valid until %s]", env.ValidUntil)
 		}
-		memories[userKey] = primedMemory{content: env.Content, marker: marker}
+		selected[k] = primedMemory{content: env.Content, marker: marker}
 	}
-	if len(memories) == 0 {
-		return ""
-	}
-	maxCount, maxChars := primeMemoryCaps()
-	return renderPrimeMemories(memories, compact, maxCount, maxChars)
+	return selected
 }
 
 // primeConfigInt reads an integer config key (stubbable for tests).
