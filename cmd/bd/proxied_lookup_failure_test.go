@@ -109,16 +109,6 @@ func showViewCmd(view string) *cobra.Command {
 	return cmd
 }
 
-// cmdWithStringFlag registers one string flag so the command under test does
-// not fall back to an environment lookup for it - `bd comment add` shells out
-// to git for the author when --author is empty, which has nothing to do with
-// what is being tested here.
-func cmdWithStringFlag(name, value string) *cobra.Command {
-	cmd := &cobra.Command{}
-	cmd.Flags().String(name, value, "")
-	return cmd
-}
-
 // closeReasonCmd registers the reason flags `bd close` reads before it resolves
 // anything. collectCloseReasonFlags returns an error for an unregistered one,
 // which would abort the command ahead of the lookup under test.
@@ -336,10 +326,26 @@ var proxiedLookupCommands = []struct {
 	{
 		name: "comment add",
 		run: func(ctx context.Context) error {
-			return runCommentsAddProxiedServer(cmdWithStringFlag("author", "tester"), ctx, []string{stubMissingID, "hello"})
+			return runCommentsAddProxiedServer(ctx, stubMissingID, "tester", "hello")
 		},
 		wantNotFound: "Error: issue bd-missing not found",
 		wantHardErr:  "Error: resolving bd-missing: connection reset by peer",
+	},
+	{
+		name: "human respond",
+		run: func(ctx context.Context) error {
+			return runHumanRespondProxiedServer(ctx, stubMissingID, "Response: resp")
+		},
+		wantNotFound: "Error: issue not found: bd-missing",
+		wantHardErr:  "Error: resolving issue ID bd-missing: connection reset by peer",
+	},
+	{
+		name: "human dismiss",
+		run: func(ctx context.Context) error {
+			return runHumanDismissProxiedServer(ctx, stubMissingID, "Dismissed")
+		},
+		wantNotFound: "Error: issue not found: bd-missing",
+		wantHardErr:  "Error: resolving issue ID bd-missing: connection reset by peer",
 	},
 }
 
