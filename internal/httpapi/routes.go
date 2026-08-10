@@ -224,6 +224,22 @@ var routeTable = []route{
 		handler:     (*Server).handleQueryIssues,
 	},
 	{
+		op:     OpCountIssues,
+		method: http.MethodGet,
+		// A collection-level custom method on the issue collection, spelled the
+		// way ready:count's is: both segments are LITERAL, so pattern and
+		// specPath agree and the router registers the documented path itself.
+		//
+		// It cannot collide with the claim's wide POST wildcard — that one is
+		// registered under POST and requires the separating slash this path has
+		// none of — nor with the plain collection GET, which ServeMux matches
+		// whole.
+		pattern:     "/v0/beads/issues:count",
+		capability:  "issues.count",
+		implemented: true,
+		handler:     (*Server).handleCountIssues,
+	},
+	{
 		op:          OpGetIssue,
 		method:      http.MethodGet,
 		pattern:     "/v0/beads/issues/{id}",

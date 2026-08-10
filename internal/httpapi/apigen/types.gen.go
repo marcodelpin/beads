@@ -139,6 +139,33 @@ func (e ClaimNextIssueParamsSort) Valid() bool {
 	}
 }
 
+// Defines values for CountIssuesParamsGroupBy.
+const (
+	CountIssuesParamsGroupByAssignee CountIssuesParamsGroupBy = "assignee"
+	CountIssuesParamsGroupByLabel    CountIssuesParamsGroupBy = "label"
+	CountIssuesParamsGroupByPriority CountIssuesParamsGroupBy = "priority"
+	CountIssuesParamsGroupByStatus   CountIssuesParamsGroupBy = "status"
+	CountIssuesParamsGroupByType     CountIssuesParamsGroupBy = "type"
+)
+
+// Valid indicates whether the value is a known member of the CountIssuesParamsGroupBy enum.
+func (e CountIssuesParamsGroupBy) Valid() bool {
+	switch e {
+	case CountIssuesParamsGroupByAssignee:
+		return true
+	case CountIssuesParamsGroupByLabel:
+		return true
+	case CountIssuesParamsGroupByPriority:
+		return true
+	case CountIssuesParamsGroupByStatus:
+		return true
+	case CountIssuesParamsGroupByType:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QueryIssuesParamsSort.
 const (
 	QueryIssuesParamsSortAssignee QueryIssuesParamsSort = "assignee"
@@ -180,19 +207,19 @@ func (e QueryIssuesParamsSort) Valid() bool {
 
 // Defines values for ListReadyWorkParamsSort.
 const (
-	Hybrid   ListReadyWorkParamsSort = "hybrid"
-	Oldest   ListReadyWorkParamsSort = "oldest"
-	Priority ListReadyWorkParamsSort = "priority"
+	ListReadyWorkParamsSortHybrid   ListReadyWorkParamsSort = "hybrid"
+	ListReadyWorkParamsSortOldest   ListReadyWorkParamsSort = "oldest"
+	ListReadyWorkParamsSortPriority ListReadyWorkParamsSort = "priority"
 )
 
 // Valid indicates whether the value is a known member of the ListReadyWorkParamsSort enum.
 func (e ListReadyWorkParamsSort) Valid() bool {
 	switch e {
-	case Hybrid:
+	case ListReadyWorkParamsSortHybrid:
 		return true
-	case Oldest:
+	case ListReadyWorkParamsSortOldest:
 		return true
-	case Priority:
+	case ListReadyWorkParamsSortPriority:
 		return true
 	default:
 		return false
@@ -860,7 +887,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.get`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
+	// Capabilities The operations this server actually implements, derived from its route table. v0's vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; it grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation — never the version string.
 	//
 	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
@@ -1159,6 +1186,23 @@ type Issue = types.Issue
 //
 // `blocked_by` and `blocks` are ASCENDING BY ID with repeats collapsed, and both are always present — an empty array, never null and never absent, so a client reads "nothing blocks this" from the answer rather than from a missing key. `parent` is absent when the issue has none and when the parent it has is closed.
 type IssueBlocking = issueops.IssueBlocking
+
+// IssueCount The size of a matching set, and its buckets when `group_by` asked for them. It carries no items and no cursor: this is a number about a set, and the operations that return rows are `GET /v0/beads/issues` and `GET /v0/beads/issues:query`.
+//
+// ONE SCHEMA FOR BOTH SHAPES, because the grouped answer is the scalar answer plus one member rather than a different answer. See the operation's own description for why that is one operation and not two.
+//
+// It is NOT `x-go-type`-pinned, for `ReadyCount`'s reason: there is no canonical Go struct whose JSON encoding is this contract.
+type IssueCount struct {
+	// Groups Bucket key to cardinality, PRESENT exactly when the request carried `group_by` and ABSENT otherwise. That absence is the answer to "you did not ask for buckets"; an empty OBJECT is the answer to "nothing matched", and the two are deliberately different — a client must be able to tell a scalar count from a grouped count of an empty set without re-reading its own request.
+	//
+	// Buckets with no rows are absent rather than present at zero. The dimensions are open-ended — any assignee, any label, any custom status — so there is no closed set of keys to enumerate and a client reads an absent key as zero. The KEY normalization is part of the contract and is documented on `group_by`.
+	Groups *map[string]int `json:"groups,omitempty"`
+
+	// Total How many issues match. Never negative; `0` when nothing matches, which is a 200 rather than a 404 — a question about a set has an answer even when the set is empty, and a client polling for work would otherwise have to classify an error to read a zero.
+	//
+	// Under `group_by` this is still the cardinality of the WHOLE matching set and NOT the sum of `groups`. The two differ for `label`, whose buckets overlap; see the operation description.
+	Total int64 `json:"total"`
+}
 
 // IssueDetails An `Issue` with its labels, dependency edges and cardinalities — the body of `GET /v0/beads/issues/{id}`. `dependencies` and `dependents` carry FULL issue objects plus the edge type, not bare edges. Property semantics are documented on `Issue`.
 type IssueDetails = types.IssueDetails
@@ -1992,6 +2036,100 @@ type ClaimNextIssueParams struct {
 
 // ClaimNextIssueParamsSort defines parameters for ClaimNextIssue.
 type ClaimNextIssueParamsSort string
+
+// CountIssuesParams defines parameters for CountIssues.
+type CountIssuesParams struct {
+	// Status One stored status. The empty value and the literal `all` both mean EVERY status, which is what makes a bare count answer for closed rows as well as open ones.
+	//
+	// IT IS ONE STATUS, NOT A COMMA-SEPARATED SET, and that is the one parameter name this operation shares with `GET /v0/beads/issues` while meaning something narrower — that one takes a comma-separated OR set. It is stated here rather than quietly reconciled, because a client that assumed otherwise would read a plausible number instead of an error.
+	//
+	// It is NOT validated against this workspace's configured vocabulary. An unrecognized name matches nothing and the answer is `0`, not a refusal — the shipped behavior of `bd count`, published rather than tightened, because a scripted caller counting a status its workspace has since dropped currently reads 0 and would otherwise start reading an error.
+	Status *string `form:"status,omitempty" json:"status,omitempty"`
+
+	// Type One issue type, with `status`'s match-nothing-rather-than-fail treatment and NO shorthand alias expansion at all — unlike `GET /v0/beads/ready`'s `type`, which expands aliases.
+	//
+	// It has a SECOND effect under `include_infra`: a type this workspace calls infra routes the count to the ephemeral tier. See that parameter.
+	Type *string `form:"type,omitempty" json:"type,omitempty"`
+
+	// Assignee Only issues assigned to this actor. Sending it beside `no_assignee` is not refused: the two are handed to the filter as written and answer with the empty intersection, which is `0`.
+	Assignee *string `form:"assignee,omitempty" json:"assignee,omitempty"`
+
+	// Priority Exact priority. Absent means unfiltered — the distinction matters because `0` is a real priority, which is why the role models this as a pointer.
+	Priority *int `form:"priority,omitempty" json:"priority,omitempty"`
+
+	// PriorityMin Lowest priority to count, inclusive.
+	PriorityMin *int `form:"priority_min,omitempty" json:"priority_min,omitempty"`
+
+	// PriorityMax Highest priority to count, inclusive.
+	PriorityMax *int `form:"priority_max,omitempty" json:"priority_max,omitempty"`
+
+	// Label Labels that must ALL be present. Repeat the parameter. Entries are trimmed and de-duplicated inside the role, and a set whose entries are all blank is the same as an unset one.
+	Label *[]string `form:"label,omitempty" json:"label,omitempty"`
+
+	// LabelAny Labels of which at least ONE must be present. Repeat the parameter; same normalization as `label`.
+	LabelAny *[]string `form:"label_any,omitempty" json:"label_any,omitempty"`
+
+	// Title Case-insensitive substring match on the title.
+	Title *string `form:"title,omitempty" json:"title,omitempty"`
+
+	// Id A comma-separated id set to restrict the count to. Splitting, trimming and de-duplication happen inside the role, so a caller passes the string it was given rather than a slice it had to prepare.
+	Id *string `form:"id,omitempty" json:"id,omitempty"`
+
+	// TitleContains Substring match on the title, spelled as `GET /v0/beads/issues:query` spells it. It overlaps `title` deliberately: both reach the filter, and the two names exist because the role carries both fields.
+	TitleContains *string `form:"title_contains,omitempty" json:"title_contains,omitempty"`
+
+	// DescContains Substring match on the description.
+	DescContains *string `form:"desc_contains,omitempty" json:"desc_contains,omitempty"`
+
+	// NotesContains Substring match on the notes.
+	NotesContains *string `form:"notes_contains,omitempty" json:"notes_contains,omitempty"`
+
+	// CreatedAfter RFC 3339. Only issues created strictly after this instant.
+	CreatedAfter *time.Time `form:"created_after,omitempty" json:"created_after,omitempty"`
+
+	// CreatedBefore RFC 3339. Only issues created strictly before this instant.
+	CreatedBefore *time.Time `form:"created_before,omitempty" json:"created_before,omitempty"`
+
+	// UpdatedAfter RFC 3339.
+	UpdatedAfter *time.Time `form:"updated_after,omitempty" json:"updated_after,omitempty"`
+
+	// UpdatedBefore RFC 3339.
+	UpdatedBefore *time.Time `form:"updated_before,omitempty" json:"updated_before,omitempty"`
+
+	// ClosedAfter RFC 3339. Counting closed rows needs no `status` beside it: a bare count already includes them.
+	ClosedAfter *time.Time `form:"closed_after,omitempty" json:"closed_after,omitempty"`
+
+	// ClosedBefore RFC 3339.
+	ClosedBefore *time.Time `form:"closed_before,omitempty" json:"closed_before,omitempty"`
+
+	// EmptyDescription Only issues with no description.
+	EmptyDescription *bool `form:"empty_description,omitempty" json:"empty_description,omitempty"`
+
+	// NoAssignee Only issues with no assignee.
+	NoAssignee *bool `form:"no_assignee,omitempty" json:"no_assignee,omitempty"`
+
+	// NoLabels Only issues carrying no label.
+	NoLabels *bool `form:"no_labels,omitempty" json:"no_labels,omitempty"`
+
+	// IncludeInfra Count the cardinality of `bd list --include-infra --all` instead of the durable plane. IT CHANGES FOUR THINGS AT ONCE, and they are listed rather than summarized because a caller reading "include infra" would expect one:
+	//
+	// the ephemeral wisps tier is MERGED IN, picking up both wisps and the `no_history` beads that are durable work stored in that tier; template molecules are EXCLUDED, which a default count includes; gate beads are EXCLUDED unless `type=gate` asks for them by name; and a `type` this workspace calls infra ROUTES the count to the ephemeral tier instead of the durable one.
+	//
+	// The infra vocabulary is the WORKSPACE's, read from its configuration inside the role. A caller does not supply it and cannot — that config load is what this role exists to keep off both front doors.
+	//
+	// Unset, the count is durable-plane only and applies none of the four: the historical `bd count` answer, kept exactly so a scripted caller reads the same number it read yesterday.
+	IncludeInfra *bool `form:"include_infra,omitempty" json:"include_infra,omitempty"`
+
+	// GroupBy Bucket the count by one dimension and return `groups` beside `total`. Absent, the response carries `total` alone.
+	//
+	// The set is CLOSED, and a value outside it is a `400` rather than an empty answer: a caller that misspelled a dimension and got zero buckets back has no way to tell that from a workspace with nothing in it. That is the role's own rule, applied at the edge here so the refusal names the parameter.
+	//
+	// Bucket KEYS are normalized and printed unmodified by every front door, so the normalization is part of this contract: a priority bucket is `P` followed by the number (`P1`); the assignee bucket for unassigned rows is `(unassigned)`, never the empty string, which would be indistinguishable from a stored empty assignee; the label bucket for rows carrying no label at all is `(no labels)`, and it is ABSENT rather than zero when every matching row has one; `status` and `type` buckets are the stored value verbatim.
+	GroupBy *CountIssuesParamsGroupBy `form:"group_by,omitempty" json:"group_by,omitempty"`
+}
+
+// CountIssuesParamsGroupBy defines parameters for CountIssues.
+type CountIssuesParamsGroupBy string
 
 // QueryIssuesParams defines parameters for QueryIssues.
 type QueryIssuesParams struct {

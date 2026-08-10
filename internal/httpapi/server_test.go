@@ -582,11 +582,32 @@ func TestUnroutedPathsKeepTheErrorShape(t *testing.T) {
 }
 
 // TestCapabilitiesAdvertiseEveryImplementedOperation: `capabilities` is how a
-// client checks for an operation — never the version string — so it has to be
-// derived from what this build actually serves. With the read endpoints landed
-// there are no 501 stubs left, which makes the whole v0 vocabulary the expected
-// answer; the derivation is what keeps it honest for the next operation, which
-// will arrive stubbed.
+// client checks for an operation — never the version string — so what this
+// asserts is that the WIRE carries what the route table implies, token for
+// token and in order.
+//
+// THE EXPECTATION IS DERIVED FROM routeTable, NOT SPELLED OUT, and the change
+// is worth the sentence it costs. A hand-written golden here was a THIRD copy
+// of one list — beside the route table and the document's own vocabulary
+// paragraph — and a third copy buys an oracle only if it has an independent
+// source. It did not: it was maintained by hand from the other two, so its only
+// real behavior was to fail whenever a new operation landed. That is a cost
+// pretending to be a check, and the cost fell on the wrong PR: the count slice
+// updated this copy, missed cmd/bd's identical one, and turned the proxied
+// shard red on a list nothing about the count had changed.
+//
+// CONTENT IS PINNED ELSEWHERE, AND INDEPENDENTLY.
+// TestSpecCapabilityVocabularyMatchesTheRouteTable compares the derived set
+// against the `capabilities` prose in openapi.v0.yaml in BOTH directions, and
+// that paragraph is written by hand from the operation the author is adding. So
+// a route row with a typo'd or invented capability still fails a test — that
+// one — and adding an operation still costs a deliberate edit, in the document
+// where a client reads the vocabulary rather than in two test files where
+// nobody does.
+//
+// What is left here is the half only this test can see: that the derivation
+// reaches the wire at all, through contextResponse, sorted, with the
+// `implemented` gate applied.
 func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 	ts := newTestServer(t, Config{})
 
@@ -595,21 +616,52 @@ func TestCapabilitiesAdvertiseEveryImplementedOperation(t *testing.T) {
 	for _, c := range caps {
 		got = append(got, c.(string))
 	}
-	want := []string{
-		"config.get", "config.list", "dependencies.add", "dependencies.blocking",
-		"dependencies.cycles", "dependencies.list", "dependencies.remove",
-		"dependencies.tree", "events.list", "events.watch", "issues.batchApply",
-		"issues.batchClose", "issues.batchCreate", "issues.casMetadata",
-		"issues.claim", "issues.claimNext", "issues.close", "issues.create", "issues.delete", "issues.get", "issues.list",
-		"issues.query", "issues.release", "issues.reopen", "issues.sweep", "issues.update",
-		"memories.forget", "memories.get",
-		"memories.list", "memories.remember", "ready.count", "ready.list",
-		"stats.get",
+
+	// Re-derived rather than compared against Capabilities(), which is what
+	// this handler already calls: `Capabilities() == Capabilities()` is green
+	// for every surface including an empty one. Walking the table here keeps the
+	// three things that function does — the `implemented` gate, the empty-token
+	// filter, and the sort — observable.
+	var want []string
+	for _, rt := range routeTable {
+		if rt.implemented && rt.capability != "" {
+			want = append(want, rt.capability)
+		}
+	}
+	slices.Sort(want)
+
+	if len(want) == 0 {
+		t.Fatal("the route table contributed no capabilities; this case would pass against a server that advertises nothing")
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("capabilities = %v, want %v", got, want)
 	}
+	// Sortedness is asserted on the WIRE rather than inferred from the equality
+	// above, because a client is told to treat this as a set it may search.
+	// Falsified: reversing Capabilities()' sort turns this red.
+	if !slices.IsSorted(got) {
+		t.Errorf("capabilities = %v, want them sorted", got)
+	}
 }
+
+// THE `implemented` GATE IS NOT PINNED HERE, and saying so is the point.
+//
+// A loop asserting that no unimplemented row is advertised was written, run
+// against two mutations, and deleted: it cannot fail. Capabilities() applies the
+// gate, and the expectation above re-applies it, so a stub is missing from both
+// sides and they agree. Dropping the gate from Capabilities() is unfalsifiable
+// for a second reason — there are no 501 rows in v0 at all, so removing a filter
+// that filters nothing changes nothing. A green case named for that promise
+// would be worse than no case: a reviewer greps for the gate, finds a test named
+// for it, and stops looking.
+//
+// What actually holds it is TestSpecStatusCodesMatchHandlerTable, which fails on
+// ANY row with implemented false — 501 is documented nowhere and `not_implemented`
+// is deliberately absent from the frozen vocabulary, so a stub cannot land
+// without an exemption block that says why. The probe that would upgrade this
+// case is a Capabilities() that takes its rows as an argument; that is
+// production surgery for a test, and it is not worth it while a stub cannot
+// reach main.
 
 // TestClaimPathReachesItsHandler drives the path the DOCUMENT spells, which is
 // the one thing route parity cannot check for the claim row: that row declares

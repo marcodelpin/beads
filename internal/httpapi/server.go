@@ -217,7 +217,13 @@ type Config struct {
 	BlockingAnnotator issueops.BlockingAnnotator
 	TreeWalker        issueops.TreeWalker
 	ReadyCounter      issueops.ReadyCounter
-	Querier           issueops.Querier
+	// Counter is the issue-count role behind GET /v0/beads/issues:count. It is
+	// a SEPARATE field from ReadyCounter because it is a separate role: that
+	// one sizes the ready predicate, this one sizes a filter, and neither can
+	// answer the other's question. Required on the same terms as every field
+	// here.
+	Counter issueops.Counter
+	Querier issueops.Querier
 	// Sweeper is the DESTRUCTIVE one, required on the same terms as every other
 	// role rather than opt-in: whether this build erases beads is a decision
 	// for the operator who chose to run bd serve, not a consequence of whether
@@ -326,6 +332,7 @@ type Server struct {
 	issueBlocking     issueops.BlockingAnnotator
 	issueTree         issueops.TreeWalker
 	issueReadyCounter issueops.ReadyCounter
+	issueCounter      issueops.Counter
 	issueQuerier      issueops.Querier
 	issueSweeper      issueops.Sweeper
 	issueDeleter      issueops.Deleter
@@ -474,6 +481,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueBlocking:     cfg.BlockingAnnotator,
 		issueTree:         cfg.TreeWalker,
 		issueReadyCounter: cfg.ReadyCounter,
+		issueCounter:      cfg.Counter,
 		issueQuerier:      cfg.Querier,
 		issueSweeper:      cfg.Sweeper,
 		issueDeleter:      cfg.Deleter,
@@ -587,12 +595,12 @@ func Listen(cfg Config) (*Server, error) {
 // "all or nothing" would turn an honest condition into a special case inside
 // three functions. It is checked once, on its own, below.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
+	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
+const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -929,6 +937,24 @@ func (s *Server) readyCounter(r *http.Request) (issueops.ReadyCounter, error) {
 	}
 	var src uow.ReadyCounterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.ReadyCounter()
+}
+
+// counter returns the issue-count surface for one request, on the same terms as
+// readyCounter above and held by INTERFACE so uow.CounterSource is load-bearing
+// rather than decorative.
+//
+// It goes out UNWRAPPED, for readyCounter's reason: both of this role's methods
+// answer with a VALUE, so a checked wrapper would be ceremony that reads like a
+// guarantee. The one pointer-shaped thing in its result is CountByGroupResult's
+// map, and the role promises an empty map rather than nil — a promise the
+// handler does not have to trust, because a nil map ranges and marshals as an
+// empty object either way.
+func (s *Server) counter(r *http.Request) (issueops.Counter, error) {
+	if s.provider == nil {
+		return s.issueCounter, nil
+	}
+	var src uow.CounterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.Counter()
 }
 
 // querier returns the boolean-query surface for one request, on the same terms

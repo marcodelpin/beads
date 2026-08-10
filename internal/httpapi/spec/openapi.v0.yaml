@@ -1482,6 +1482,345 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/issues:count:
+    get:
+      operationId: countIssues
+      summary: Count issues matching a predicate
+      description: >-
+        How many issues match, and — with `group_by` — how many in each bucket.
+        It is the operation behind `bd count`, and it answers from
+        `issueops.Counter` over the same predicate that command builds.
+
+
+        ## It is not `GET /v0/beads/issues` with the page taken off
+
+
+        That is the difference to internalize before using it, because the two
+        answer about DIFFERENT SETS by default. A listing hides closed, pinned,
+        template and gate rows; a count hides NONE of them. An empty request
+        here counts every durable row this workspace holds, closed rows
+        included, and it is the ROLE that decides that — the same decision
+        `bd count` has always made — not a default this operation applies.
+
+
+        Nor is it a listing with paging removed at the type level: there is no
+        `limit`, no `offset` and no `cursor`, and the role refuses the first two
+        rather than accepting them and dropping them. A cardinality is a number
+        about a set; bounding the scan would answer "how many of the first N",
+        which is the shape that makes a caller believe `limit=10` bounded the
+        answer.
+
+
+        There is no free-text `q` either. The count seam takes one and both of
+        this role's front doors have always passed the empty string, so it is
+        left off rather than published untested. `title`, `title_contains`,
+        `desc_contains` and `notes_contains` are the substring matches that ARE
+        reachable.
+
+
+        ## One operation, two shapes of one answer
+
+
+        `group_by` selects the bucketed form. It is a parameter rather than a
+        second operationId because the role is one role born with two methods,
+        for a reason this document inherits rather than re-decides: the two ask
+        the SAME predicate of the SAME set and differ only in whether the answer
+        is one number or a number per bucket. The grouped response is the scalar
+        response PLUS `groups` — the same schema, with one member that appears
+        when you ask for it — so there is no second contract here to hide under
+        one id.
+
+
+        That is the opposite of `GET /v0/beads/events:watch`, which is a sibling
+        operation rather than a mode of the paged read: those two differ in media
+        type, lifetime, limits and capacity, and one operation carrying both
+        would have documented two of everything. Here nothing differs but one
+        optional response member.
+
+
+        ## `total` is not the sum of `groups`
+
+
+        For four of the five dimensions it happens to be. For `label` it is not,
+        and that is why the role computes it rather than leaving a client to add
+        the buckets up: LABEL BUCKETS OVERLAP. An issue carrying three labels is
+        one row in `total` and one row in each of three buckets, so a client that
+        summed them would report a workspace three times its size.
+
+
+        The two numbers are NOT promised to describe one snapshot. The
+        store-backed implementation runs the scalar and the grouped query
+        separately, so a concurrent write between them can leave them
+        disagreeing by that write. Nothing here is transactional across the two.
+
+
+        ## Planes
+
+
+        A count is DURABLE-PLANE ONLY unless `include_infra` is set. The wisps
+        tier — ephemeral wisps and the `no_history` beads that are durable work
+        stored in that tier — is not counted by default, and `include_infra`
+        changes FOUR things at once rather than one. See that parameter; it is
+        the one place on this operation where a single flag moves the set in
+        more than one direction.
+      parameters:
+        - name: status
+          in: query
+          description: >-
+            One stored status. The empty value and the literal `all` both mean
+            EVERY status, which is what makes a bare count answer for closed
+            rows as well as open ones.
+
+
+            IT IS ONE STATUS, NOT A COMMA-SEPARATED SET, and that is the one
+            parameter name this operation shares with `GET /v0/beads/issues`
+            while meaning something narrower — that one takes a comma-separated
+            OR set. It is stated here rather than quietly reconciled, because a
+            client that assumed otherwise would read a plausible number instead
+            of an error.
+
+
+            It is NOT validated against this workspace's configured vocabulary.
+            An unrecognized name matches nothing and the answer is `0`, not a
+            refusal — the shipped behavior of `bd count`, published rather than
+            tightened, because a scripted caller counting a status its workspace
+            has since dropped currently reads 0 and would otherwise start
+            reading an error.
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: >-
+            One issue type, with `status`'s match-nothing-rather-than-fail
+            treatment and NO shorthand alias expansion at all — unlike
+            `GET /v0/beads/ready`'s `type`, which expands aliases.
+
+
+            It has a SECOND effect under `include_infra`: a type this workspace
+            calls infra routes the count to the ephemeral tier. See that
+            parameter.
+          schema:
+            type: string
+        - name: assignee
+          in: query
+          description: >-
+            Only issues assigned to this actor. Sending it beside
+            `no_assignee` is not refused: the two are handed to the filter as
+            written and answer with the empty intersection, which is `0`.
+          schema:
+            type: string
+        - name: priority
+          in: query
+          description: >-
+            Exact priority. Absent means unfiltered — the distinction matters
+            because `0` is a real priority, which is why the role models this
+            as a pointer.
+          schema:
+            type: integer
+        - name: priority_min
+          in: query
+          description: Lowest priority to count, inclusive.
+          schema:
+            type: integer
+        - name: priority_max
+          in: query
+          description: Highest priority to count, inclusive.
+          schema:
+            type: integer
+        - name: label
+          in: query
+          description: >-
+            Labels that must ALL be present. Repeat the parameter. Entries are
+            trimmed and de-duplicated inside the role, and a set whose entries
+            are all blank is the same as an unset one.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: label_any
+          in: query
+          description: >-
+            Labels of which at least ONE must be present. Repeat the parameter;
+            same normalization as `label`.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: title
+          in: query
+          description: Case-insensitive substring match on the title.
+          schema:
+            type: string
+        - name: id
+          in: query
+          description: >-
+            A comma-separated id set to restrict the count to. Splitting,
+            trimming and de-duplication happen inside the role, so a caller
+            passes the string it was given rather than a slice it had to
+            prepare.
+          schema:
+            type: string
+        - name: title_contains
+          in: query
+          description: >-
+            Substring match on the title, spelled as `GET /v0/beads/issues:query`
+            spells it. It overlaps `title` deliberately: both reach the filter,
+            and the two names exist because the role carries both fields.
+          schema:
+            type: string
+        - name: desc_contains
+          in: query
+          description: Substring match on the description.
+          schema:
+            type: string
+        - name: notes_contains
+          in: query
+          description: Substring match on the notes.
+          schema:
+            type: string
+        - name: created_after
+          in: query
+          description: RFC 3339. Only issues created strictly after this instant.
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          description: RFC 3339. Only issues created strictly before this instant.
+          schema:
+            type: string
+            format: date-time
+        - name: updated_after
+          in: query
+          description: RFC 3339.
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          description: RFC 3339.
+          schema:
+            type: string
+            format: date-time
+        - name: closed_after
+          in: query
+          description: >-
+            RFC 3339. Counting closed rows needs no `status` beside it: a bare
+            count already includes them.
+          schema:
+            type: string
+            format: date-time
+        - name: closed_before
+          in: query
+          description: RFC 3339.
+          schema:
+            type: string
+            format: date-time
+        - name: empty_description
+          in: query
+          description: Only issues with no description.
+          schema:
+            type: boolean
+            default: false
+        - name: no_assignee
+          in: query
+          description: Only issues with no assignee.
+          schema:
+            type: boolean
+            default: false
+        - name: no_labels
+          in: query
+          description: Only issues carrying no label.
+          schema:
+            type: boolean
+            default: false
+        - name: include_infra
+          in: query
+          description: >-
+            Count the cardinality of `bd list --include-infra --all` instead of
+            the durable plane. IT CHANGES FOUR THINGS AT ONCE, and they are
+            listed rather than summarized because a caller reading "include
+            infra" would expect one:
+
+
+            the ephemeral wisps tier is MERGED IN, picking up both wisps and the
+            `no_history` beads that are durable work stored in that tier;
+            template molecules are EXCLUDED, which a default count includes;
+            gate beads are EXCLUDED unless `type=gate` asks for them by name;
+            and a `type` this workspace calls infra ROUTES the count to the
+            ephemeral tier instead of the durable one.
+
+
+            The infra vocabulary is the WORKSPACE's, read from its configuration
+            inside the role. A caller does not supply it and cannot — that
+            config load is what this role exists to keep off both front doors.
+
+
+            Unset, the count is durable-plane only and applies none of the four:
+            the historical `bd count` answer, kept exactly so a scripted caller
+            reads the same number it read yesterday.
+          schema:
+            type: boolean
+            default: false
+        - name: group_by
+          in: query
+          description: >-
+            Bucket the count by one dimension and return `groups` beside
+            `total`. Absent, the response carries `total` alone.
+
+
+            The set is CLOSED, and a value outside it is a `400` rather than an
+            empty answer: a caller that misspelled a dimension and got zero
+            buckets back has no way to tell that from a workspace with nothing
+            in it. That is the role's own rule, applied at the edge here so the
+            refusal names the parameter.
+
+
+            Bucket KEYS are normalized and printed unmodified by every front
+            door, so the normalization is part of this contract: a priority
+            bucket is `P` followed by the number (`P1`); the assignee bucket for
+            unassigned rows is `(unassigned)`, never the empty string, which
+            would be indistinguishable from a stored empty assignee; the label
+            bucket for rows carrying no label at all is `(no labels)`, and it is
+            ABSENT rather than zero when every matching row has one; `status`
+            and `type` buckets are the stored value verbatim.
+          schema:
+            type: string
+            enum: [status, priority, type, assignee, label]
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: The size of the matching set, and its buckets when asked for.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueCount'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, a repeated
+            single-valued one, a malformed boolean, integer or RFC 3339 instant,
+            or a `group_by` outside the closed set.
+
+
+            EVERY REFUSAL HERE IS THE TRANSPORT'S. Unlike the listings, this
+            operation has no predicate its library surface can turn down: an
+            unrecognized `status` or `type` matches nothing and answers `0`, and
+            the one refusal the count role does make — an unknown bucketing
+            dimension — is refused at the edge above, so it never reaches the
+            role at all.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/issues/{id}:
     get:
       operationId: getIssue
@@ -5831,7 +6170,8 @@ components:
           description: >-
             The operations this server actually implements, derived from its
             route table. v0's vocabulary is `ready.list`, `ready.count`,
-            `issues.list`, `issues.query`, `issues.get`, `issues.create`,
+            `issues.list`, `issues.query`, `issues.count`, `issues.get`,
+            `issues.create`,
             `issues.batchClose`,
             `issues.claim`, `issues.claimNext`, `issues.release`,
             `issues.close`, `issues.reopen`, `issues.update`,
@@ -5860,6 +6200,56 @@ components:
             not read the capability as a promise that records will arrive.
           items:
             type: string
+
+    IssueCount:
+      type: object
+      required: [total]
+      description: >-
+        The size of a matching set, and its buckets when `group_by` asked for
+        them. It carries no items and no cursor: this is a number about a set,
+        and the operations that return rows are `GET /v0/beads/issues` and
+        `GET /v0/beads/issues:query`.
+
+
+        ONE SCHEMA FOR BOTH SHAPES, because the grouped answer is the scalar
+        answer plus one member rather than a different answer. See the
+        operation's own description for why that is one operation and not two.
+
+
+        It is NOT `x-go-type`-pinned, for `ReadyCount`'s reason: there is no
+        canonical Go struct whose JSON encoding is this contract.
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: >-
+            How many issues match. Never negative; `0` when nothing matches,
+            which is a 200 rather than a 404 — a question about a set has an
+            answer even when the set is empty, and a client polling for work
+            would otherwise have to classify an error to read a zero.
+
+
+            Under `group_by` this is still the cardinality of the WHOLE matching
+            set and NOT the sum of `groups`. The two differ for `label`, whose
+            buckets overlap; see the operation description.
+        groups:
+          type: object
+          additionalProperties:
+            type: integer
+          description: >-
+            Bucket key to cardinality, PRESENT exactly when the request carried
+            `group_by` and ABSENT otherwise. That absence is the answer to "you
+            did not ask for buckets"; an empty OBJECT is the answer to "nothing
+            matched", and the two are deliberately different — a client must be
+            able to tell a scalar count from a grouped count of an empty set
+            without re-reading its own request.
+
+
+            Buckets with no rows are absent rather than present at zero. The
+            dimensions are open-ended — any assignee, any label, any custom
+            status — so there is no closed set of keys to enumerate and a client
+            reads an absent key as zero. The KEY normalization is part of the
+            contract and is documented on `group_by`.
 
     ReadyCount:
       type: object

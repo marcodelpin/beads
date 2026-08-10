@@ -209,6 +209,7 @@ func (*serveIdentityStore) TreeWalker() (issueops.TreeWalker, error) { return se
 func (*serveIdentityStore) ReadyCounter() (issueops.ReadyCounter, error) {
 	return serveIdentityRole{}, nil
 }
+func (*serveIdentityStore) Counter() (issueops.Counter, error) { return serveIdentityRole{}, nil }
 func (*serveIdentityStore) Querier() (issueops.Querier, error) { return serveIdentityRole{}, nil }
 func (*serveIdentityStore) Sweeper() (issueops.Sweeper, error) { return serveIdentityRole{}, nil }
 func (*serveIdentityStore) Deleter() (issueops.Deleter, error) { return serveIdentityRole{}, nil }
@@ -245,6 +246,7 @@ type serveIdentityRole struct {
 	issueops.BlockingAnnotator
 	issueops.TreeWalker
 	issueops.ReadyCounter
+	issueops.Counter
 	issueops.Querier
 	issueops.Sweeper
 	issueops.Deleter

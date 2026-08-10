@@ -103,6 +103,7 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 			dependencies: &serveStubDependencyEditor{},
 			batchApplier: &serveStubBatchApplier{},
 			metadataCAS:  &serveStubMetadataCAS{},
+			counter:      &serveStubCounter{},
 			inner:        inner,
 		}
 	}
@@ -346,6 +347,7 @@ type serveRolesStore struct {
 	dependencies *serveStubDependencyEditor
 	batchApplier *serveStubBatchApplier
 	metadataCAS  *serveStubMetadataCAS
+	counter      *serveStubCounter
 	inner        storage.DoltStorage
 }
 
@@ -402,6 +404,33 @@ func (*serveRolesStore) Memories() (memoryops.Memories, error)                  
 // compare-and-set that runs the workspace's on_update script once per contended
 // retry round of every coordination loop pointed at this server.
 func (s *serveRolesStore) MetadataCAS() (issueops.MetadataCAS, error) { return s.metadataCAS, nil }
+
+// Counter is declared for a different reason than every accessor above it, and
+// the reason is the one engdocs/ADDING_AN_ISSUEOPS_ROLE.md calls "the step with
+// no number": a role this stub does NOT declare arrives PROMOTED from the
+// embedded storage.DoltStorage, which is nil here, so the first caller to reach
+// it is a nil dereference in somebody else's test rather than a compile error.
+//
+// The count role is not one the hook decorator wraps — it is a READ, so
+// hook_counter.go recurses and hands back the inner surface unwrapped — which is
+// exactly why it needed this: the recursion lands on this type, and this type
+// had no Counter to land on. It went unnoticed until `bd serve` began binding
+// the role, and then it surfaced on one CI runner as a panic in a test about
+// hook peeling.
+func (s *serveRolesStore) Counter() (issueops.Counter, error) { return s.counter, nil }
+
+// serveStubCounter is the count role's stand-in. It answers ErrUnsupported like
+// every stub here: this file's subject is which LAYER a role comes from, never
+// what the role answers.
+type serveStubCounter struct{}
+
+func (*serveStubCounter) Count(context.Context, issueops.CountRequest) (issueops.CountResult, error) {
+	return issueops.CountResult{}, errors.ErrUnsupported
+}
+
+func (*serveStubCounter) CountByGroup(context.Context, issueops.CountByGroupRequest) (issueops.CountByGroupResult, error) {
+	return issueops.CountByGroupResult{}, errors.ErrUnsupported
+}
 
 type serveStubReader struct{}
 
