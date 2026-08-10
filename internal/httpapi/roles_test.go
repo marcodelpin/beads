@@ -106,6 +106,34 @@ func (e *roleEdgeReader) edgeRequests() []issueops.EdgeReadRequest {
 	return append([]issueops.EdgeReadRequest(nil), e.reads...)
 }
 
+// roleGraphCounter is the edge-COUNT role of the store-shaped source, its own
+// fake beside roleEdgeReader rather than a method on it: the two are separate
+// roles with separate accessors, and one fake answering both would let a test
+// pass on a server that had wired the count handler to the reader.
+type roleGraphCounter struct {
+	result issueops.EdgeCountResult
+	err    error
+
+	mu     sync.Mutex
+	counts []issueops.EdgeCountRequest
+}
+
+func (c *roleGraphCounter) CountEdges(_ context.Context, req issueops.EdgeCountRequest) (issueops.EdgeCountResult, error) {
+	c.mu.Lock()
+	c.counts = append(c.counts, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.EdgeCountResult{}, c.err
+	}
+	return c.result, nil
+}
+
+func (c *roleGraphCounter) countRequests() []issueops.EdgeCountRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.EdgeCountRequest(nil), c.counts...)
+}
+
 // roleBlockingAnnotator is the derived-decoration role of the store-shaped
 // source. It is its own fake beside roleEdgeReader because the two are separate
 // interfaces for separate questions, and a double answering both would be the
@@ -801,6 +829,9 @@ func rolesConfig(cfg Config) Config {
 	}
 	if cfg.EdgeReader == nil {
 		cfg.EdgeReader = &roleEdgeReader{}
+	}
+	if cfg.GraphCounter == nil {
+		cfg.GraphCounter = &roleGraphCounter{}
 	}
 	if cfg.BlockingAnnotator == nil {
 		cfg.BlockingAnnotator = &roleBlockingAnnotator{}

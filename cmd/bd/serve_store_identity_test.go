@@ -202,6 +202,17 @@ func (*serveIdentityStore) CycleDetector() (issueops.CycleDetector, error) {
 	return serveIdentityRole{}, nil
 }
 func (*serveIdentityStore) EdgeReader() (issueops.EdgeReader, error) { return serveIdentityRole{}, nil }
+
+// GraphCounter is declared for the reason every accessor here is, and it is the
+// one this stub was CAUGHT missing rather than written with: the edge-count
+// role is a read, so its hook decorator recurses, and the recursion lands on a
+// type whose embedded storage.DoltStorage is nil. That is a promoted method on
+// a nil interface — a segfault inside `bd serve`'s role extraction, not a
+// compile error — and it surfaced only on the full-suite macOS shard, because
+// no test name here matches the ones a role slice thinks to run.
+func (*serveIdentityStore) GraphCounter() (issueops.GraphCounter, error) {
+	return serveIdentityRole{}, nil
+}
 func (*serveIdentityStore) BlockingAnnotator() (issueops.BlockingAnnotator, error) {
 	return serveIdentityRole{}, nil
 }
@@ -243,6 +254,7 @@ type serveIdentityRole struct {
 	issueops.StatsReporter
 	issueops.CycleDetector
 	issueops.EdgeReader
+	issueops.GraphCounter
 	issueops.BlockingAnnotator
 	issueops.TreeWalker
 	issueops.ReadyCounter

@@ -322,6 +322,23 @@ var routeTable = []route{
 		handler:     (*Server).handleListDependencies,
 	},
 	{
+		op:     OpCountDependencyEdges,
+		method: http.MethodGet,
+		// A collection-level custom method on the dependency collection,
+		// spelled the way ready:count and issues:count are: both segments are
+		// LITERAL, so pattern and specPath agree and the router registers the
+		// documented path itself.
+		//
+		// It collides with nothing. The three literal paths under this
+		// collection — /cycles, /blocking, /tree — all carry a separating
+		// slash, and the plain collection GET is a different whole segment,
+		// which is what ServeMux matches on.
+		pattern:     "/v0/beads/dependencies:count",
+		capability:  "dependencies.count",
+		implemented: true,
+		handler:     (*Server).handleCountDependencyEdges,
+	},
+	{
 		op:     OpListBlockingAnnotations,
 		method: http.MethodGet,
 		// A literal path under the same collection as the stored-edge read. No

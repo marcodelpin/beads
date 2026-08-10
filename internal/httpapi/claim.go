@@ -429,6 +429,12 @@ func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 	return uow.NewEdgeReader(p)
 }
 
+// GraphCounter builds the edge-count role OVER THIS WRAPPER, for the same
+// reason and with the same hazard as IssueReader.
+func (p timedProvider) GraphCounter() (issueops.GraphCounter, error) {
+	return uow.NewGraphCounter(p)
+}
+
 // BlockingAnnotator builds the blocking-decoration role OVER THIS WRAPPER, for
 // the same reason and with the same hazard as IssueReader.
 func (p timedProvider) BlockingAnnotator() (issueops.BlockingAnnotator, error) {

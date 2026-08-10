@@ -403,6 +403,14 @@ const (
 	// member because it answers per named issue, reports the ids that named
 	// nothing, and returns edges whose target this database holds no row for.
 	OpListDependencies = "listDependencies"
+	// OpCountDependencyEdges sizes each anchor's edge set in ONE named
+	// direction, behind issueops.GraphCounter. It is NOT listDependencies
+	// counted: that operation is outgoing-only and takes no direction, this one
+	// REQUIRES one and answers about either end, so the two agree on a number
+	// only at direction=out. It is also not a third Counter method — that role
+	// answers about a set of ISSUES described by a predicate, and this one about
+	// EDGES anchored on ids, per anchor.
+	OpCountDependencyEdges = "countDependencyEdges"
 	// OpListBlockingAnnotations reads the DERIVED blocking decoration for
 	// several issues at once — open blockers, issues blocked, and the parent.
 	// It is separate from listDependencies because it answers a summary over
@@ -584,6 +592,22 @@ var operationCodes = map[string][]Code{
 	// the response's `missing` member, so a batch keeps the answers for the ids
 	// that were found. A 404 would discard them.
 	OpListDependencies: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The stored-edge read's vocabulary exactly, and no not_found for its
+	// reason: an id that names nothing is reported on its own anchor, so a
+	// batch keeps the answers for the ids that were found. The role has no
+	// ErrNotFound at all, which its doc states.
+	//
+	// Its 400 is BOTH the transport's and the ROLE's, which is what separates
+	// this row from GET /v0/beads/issues:count beside it. That operation
+	// refuses its one enum at the edge and reaches no role refusal; here
+	// ValidateEdgeCountRequest runs inside the single shared body — the role
+	// has one body on all three legs, so the check could not belong to an
+	// accessor — and four of its refusals are reachable over the wire: a
+	// missing or unrecognized direction, a status beside direction=out, an
+	// empty id, and a dependency type no edge could carry. Each reaches the
+	// client as the 400 it is, on the sentinel, with the parameter named in the
+	// validator's own order.
+	OpCountDependencyEdges: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The same vocabulary as the stored-edge read beside it, and no not_found
 	// for a stronger version of the same reason: this operation probes no id's
 	// existence at all, so there is nothing it could 404 on.

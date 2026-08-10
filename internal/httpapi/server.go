@@ -209,11 +209,18 @@ type Config struct {
 	// hook-firing refusal below bites hardest on it: a store's own
 	// IssueLifecycle() returns a role that fires on_create, on_update and the
 	// close hooks for every mutation it lands.
-	Lifecycle         issueops.Lifecycle
-	Settings          issueops.WorkspaceConfig
-	Stats             issueops.StatsReporter
-	CycleDetector     issueops.CycleDetector
-	EdgeReader        issueops.EdgeReader
+	Lifecycle     issueops.Lifecycle
+	Settings      issueops.WorkspaceConfig
+	Stats         issueops.StatsReporter
+	CycleDetector issueops.CycleDetector
+	EdgeReader    issueops.EdgeReader
+	// GraphCounter is the edge-count role behind
+	// GET /v0/beads/dependencies:count. It is a SEPARATE field from EdgeReader
+	// for the reason Counter is separate from ReadyCounter: that role answers
+	// with the edge ROWS in one direction, this one with a number in either,
+	// and neither can answer the other's question. Required on the same terms
+	// as every field here.
+	GraphCounter      issueops.GraphCounter
 	BlockingAnnotator issueops.BlockingAnnotator
 	TreeWalker        issueops.TreeWalker
 	ReadyCounter      issueops.ReadyCounter
@@ -329,6 +336,7 @@ type Server struct {
 	issueStats        issueops.StatsReporter
 	issueCycles       issueops.CycleDetector
 	issueEdges        issueops.EdgeReader
+	issueEdgeCounter  issueops.GraphCounter
 	issueBlocking     issueops.BlockingAnnotator
 	issueTree         issueops.TreeWalker
 	issueReadyCounter issueops.ReadyCounter
@@ -478,6 +486,7 @@ func Listen(cfg Config) (*Server, error) {
 		issueStats:        cfg.Stats,
 		issueCycles:       cfg.CycleDetector,
 		issueEdges:        cfg.EdgeReader,
+		issueEdgeCounter:  cfg.GraphCounter,
 		issueBlocking:     cfg.BlockingAnnotator,
 		issueTree:         cfg.TreeWalker,
 		issueReadyCounter: cfg.ReadyCounter,
@@ -595,12 +604,12 @@ func Listen(cfg Config) (*Server, error) {
 // "all or nothing" would turn an honest condition into a special case inside
 // three functions. It is checked once, on its own, below.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
+	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.GraphCounter, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
+const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, GraphCounter, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -895,6 +904,21 @@ func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
 	}
 	var src uow.EdgeReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.EdgeReader()
+}
+
+// graphCounter returns the edge-count surface for one request, built the same
+// two ways as edgeReader above and held by INTERFACE so
+// uow.GraphCounterSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED, for counter's reason: the role answers with a VALUE
+// whose slice a nil-safe range walks, so no handler dereferences a pointer it
+// returned and a checked wrapper would be ceremony that reads like a guarantee.
+func (s *Server) graphCounter(r *http.Request) (issueops.GraphCounter, error) {
+	if s.provider == nil {
+		return s.issueEdgeCounter, nil
+	}
+	var src uow.GraphCounterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.GraphCounter()
 }
 
 // blockingAnnotator returns the derived blocking-decoration surface for one

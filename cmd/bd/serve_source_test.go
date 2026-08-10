@@ -104,6 +104,7 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 			batchApplier: &serveStubBatchApplier{},
 			metadataCAS:  &serveStubMetadataCAS{},
 			counter:      &serveStubCounter{},
+			edgeCounter:  &serveStubGraphCounter{},
 			inner:        inner,
 		}
 	}
@@ -348,6 +349,7 @@ type serveRolesStore struct {
 	batchApplier *serveStubBatchApplier
 	metadataCAS  *serveStubMetadataCAS
 	counter      *serveStubCounter
+	edgeCounter  *serveStubGraphCounter
 	inner        storage.DoltStorage
 }
 
@@ -418,6 +420,22 @@ func (s *serveRolesStore) MetadataCAS() (issueops.MetadataCAS, error) { return s
 // the role, and then it surfaced on one CI runner as a panic in a test about
 // hook peeling.
 func (s *serveRolesStore) Counter() (issueops.Counter, error) { return s.counter, nil }
+
+// GraphCounter is declared for Counter's reason, and it is the SECOND role to
+// need this file edited for a promotion rather than for a hook: the edge count
+// is a read, so hook_graph_counter.go recurses and the recursion lands here.
+// The count role's own comment above says this went unnoticed until `bd serve`
+// began binding it; this one was found the same way, by this test panicking the
+// moment the binding landed.
+func (s *serveRolesStore) GraphCounter() (issueops.GraphCounter, error) { return s.edgeCounter, nil }
+
+// serveStubGraphCounter is the edge-count role's stand-in, ErrUnsupported like
+// every stub here.
+type serveStubGraphCounter struct{}
+
+func (*serveStubGraphCounter) CountEdges(context.Context, issueops.EdgeCountRequest) (issueops.EdgeCountResult, error) {
+	return issueops.EdgeCountResult{}, errors.ErrUnsupported
+}
 
 // serveStubCounter is the count role's stand-in. It answers ErrUnsupported like
 // every stub here: this file's subject is which LAYER a role comes from, never

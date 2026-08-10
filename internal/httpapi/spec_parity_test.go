@@ -386,6 +386,36 @@ func TestSpecDefaultsMatchSharedConstants(t *testing.T) {
 			t.Errorf("%s: limit description does not document the non-loopback refusal of limit=0", tc.opID)
 		}
 	}
+
+	// The anchor bound on ALL THREE dependency-collection reads. Each bounds
+	// the same thing — how many issues one call may ask about — from the same
+	// maxDependencyAnchors, and each says so in prose. Nothing kept the
+	// document's number and the constant together until this: the bound is
+	// enforced in the handler, so a spec that drifted to a different maxItems
+	// would be refused by the server it documents, at a number no reader could
+	// have predicted.
+	//
+	// THE THIRD ROW IS THE POINT. listBlockingAnnotations enforces the same
+	// constant (blocking.go) and declares the same maxItems, and it predates
+	// this gate — so a two-operation loop would have pinned the copies that
+	// happened to be in the slice that wrote it and left the oldest one free
+	// to drift. Every operation reading maxDependencyAnchors belongs here, and
+	// the next one to do so must be added.
+	for _, opID := range []string{OpListDependencies, OpCountDependencyEdges, OpListBlockingAnnotations} {
+		so, ok := ops[opID]
+		if !ok {
+			t.Fatalf("operation %q missing from the spec", opID)
+		}
+		schema := mapAt(t, specParam(t, so, "issue_id"), "schema")
+		if got, ok := schema["maxItems"].(int); !ok || got != maxDependencyAnchors {
+			t.Errorf("%s: issue_id maxItems = %v, want the shared bound %d", opID, schema["maxItems"], maxDependencyAnchors)
+		}
+		// At least one is required on both, and the schema is where a
+		// generated client learns it.
+		if got, ok := schema["minItems"].(int); !ok || got != 1 {
+			t.Errorf("%s: issue_id minItems = %v, want 1", opID, schema["minItems"])
+		}
+	}
 }
 
 // capabilityToken matches one backticked capability token in the

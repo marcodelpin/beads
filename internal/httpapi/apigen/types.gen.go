@@ -118,6 +118,24 @@ func (e GetDependencyTreeParamsDirection) Valid() bool {
 	}
 }
 
+// Defines values for CountDependencyEdgesParamsDirection.
+const (
+	In  CountDependencyEdgesParamsDirection = "in"
+	Out CountDependencyEdgesParamsDirection = "out"
+)
+
+// Valid indicates whether the value is a known member of the CountDependencyEdgesParamsDirection enum.
+func (e CountDependencyEdgesParamsDirection) Valid() bool {
+	switch e {
+	case In:
+		return true
+	case Out:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ClaimNextIssueParamsSort.
 const (
 	ClaimNextIssueParamsSortHybrid   ClaimNextIssueParamsSort = "hybrid"
@@ -245,6 +263,30 @@ type AddDependenciesResponse struct {
 	//
 	// Never null and never shorter than the request: a partial outcome does not exist on this operation.
 	Added []DependencyEdge `json:"added"`
+}
+
+// AnchorEdgeCount One anchor's edge cardinality, or the report that it is not there.
+type AnchorEdgeCount struct {
+	// Count How many stored edges match, in the requested direction, after the type and status filters. Never negative.
+	//
+	// It SPANS BOTH DEPENDENCY PLANES and is a SUM over them rather than a distinct count of edge rows — a durable issue's dependent count includes the wisps that depend on it, and a wisp's dependency count includes the durable issues it depends on. `issueops.AnchorEdgeCount.Count` states the rule, the one state that can make the sum differ from a distinct count, and why this role answers with the sum. Nothing is restated here.
+	//
+	// ALWAYS PRESENT, including as 0, and 0 is the COMMON answer: most issues have no edges in at least one direction. It is 0 for a missing anchor too, which is exactly why `missing` is beside it.
+	//
+	// DECODE IT AS A 64-BIT INTEGER. The member is `format: int64` and a workspace's graph is not bounded by 2^53; a lossy parser would answer a number NEAR the count, which on a cardinality is worse than an error because nothing downstream can tell.
+	Count int64 `json:"count"`
+
+	// Id The anchor, spelled exactly as the request spelled it. It is not re-canonicalized: there is no fuzzy, prefix or substring resolution on this surface, so what comes back is what went out.
+	Id string `json:"id"`
+
+	// Missing True when no issue and no wisp carries this id.
+	//
+	// ALWAYS PRESENT, including as `false`. It is the member that keeps this from being a question a caller cannot tell it got wrong: a count of 0 is otherwise indistinguishable from a typo, and an absent boolean would be ambiguous between "present" and "this producer does not report misses".
+	//
+	// A missing anchor counts 0 whatever rows are still keyed to it — a dependency row whose source has been deleted is orphaned data, and counting it would contradict this flag.
+	//
+	// DANGLING EDGES ARE NOT MISSING ANCHORS. This is about the ANCHOR. An edge whose OTHER end names nothing is counted like any other edge, and nothing here reports on it.
+	Missing bool `json:"missing"`
 }
 
 // ApplyBatchRequest defines model for ApplyBatchRequest.
@@ -893,7 +935,7 @@ type ContextResponse struct {
 	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
 	BeadsDir string `json:"beads_dir"`
 
-	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
+	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.create`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `dependencies.cycles`, `dependencies.list`, `dependencies.count`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
 	//
 	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
@@ -1153,6 +1195,16 @@ type DependencyTreePage struct {
 	//
 	// It is empty only when a `status` filter matched nothing — the root is kept in a filtered answer solely as an ancestor of a match, never for its own sake. Without `status` the root is always the first element, which is what lets a client tell "this issue depends on nothing" from "this issue is not there" (a 404).
 	Items []TreeNode `json:"items"`
+}
+
+// EdgeCounts Each anchor's edge cardinality — the body of `GET /v0/beads/dependencies:count`. It is NOT a page and carries no total: the answer is per anchor, and a sum across anchors would double-count every edge whose two ends were both named.
+//
+// It is NOT `x-go-type`-pinned, for `IssueCount`'s reason: there is no canonical Go struct whose JSON encoding is this contract. The role answers with `issueops.EdgeCountResult`, whose members carry no JSON tags at all because nothing marshals it.
+type EdgeCounts struct {
+	// Anchors One entry per DISTINCT requested `issue_id`, in the order the request first named it. Empty array (never null) when the request named no anchors this server accepted — which it cannot, since `issue_id` is required and bounded below at one.
+	//
+	// A repeated id appears ONCE. The collapse happens before anything is counted, so a caller that summed the entries would not count the same edges twice.
+	Anchors []AnchorEdgeCount `json:"anchors"`
 }
 
 // EventRecord One record of the durable events journal: a single committed issue mutation, as a replaying consumer receives it.
@@ -1871,6 +1923,40 @@ type GetDependencyTreeParams struct {
 
 // GetDependencyTreeParamsDirection defines parameters for GetDependencyTree.
 type GetDependencyTreeParamsDirection string
+
+// CountDependencyEdgesParams defines parameters for CountDependencyEdges.
+type CountDependencyEdgesParams struct {
+	// IssueId The anchors to count around. Repeat the parameter; at least one is required and at most 100 are accepted, and either bound is a 400 `invalid_argument` with `param: "issue_id"`, `reason: "invalid_value"`.
+	//
+	// Each value must be an EXACT canonical issue id, for the reason `GET /v0/beads/dependencies` gives. A value that matches nothing is reported on its own anchor rather than refused. An EMPTY value is a 400: the empty string names nothing a caller can have meant, and reporting it as a missing anchor would put a nameless row in an answer keyed by name.
+	//
+	// Repeats collapse onto the first mention — a second entry carries no second fact and would only invite a caller summing the result to count the same edges twice.
+	IssueId []string `form:"issue_id" json:"issue_id"`
+
+	// Direction Which end of the edge the anchors sit on. `out` counts what each anchor DEPENDS ON — the direction `bd dep list` reads and the number `bd show` prints as the dependency count. `in` counts what depends on it.
+	//
+	// IT IS REQUIRED, and that is the one deliberate unfriendliness on this request. The two answers are about DIFFERENT EDGE SETS, and a workspace where most issues have edges in only one direction returns the same number for both often enough that a caller who meant the other one would not notice for a long time. An absent or unrecognized value is a 400 `invalid_argument` with `param: "direction"`, never a count in some default direction.
+	//
+	// The vocabulary is CLOSED — unlike `type` below — because it is a property of the edge's shape rather than of a workspace's configuration.
+	Direction CountDependencyEdgesParamsDirection `form:"direction" json:"direction"`
+
+	// Type Edge types to include. Repeat the parameter. Empty means every type.
+	//
+	// `GET /v0/beads/dependencies`'s `type` exactly: the vocabulary is OPEN, so an unrecognized value is not an error and simply matches no edge, while a value no edge could ever carry — empty, or longer than the column — is a 400 `invalid_argument`.
+	//
+	// The filter narrows EDGES, never anchors. An anchor whose every edge it rejects comes back present with a count of 0, which is a different fact from an anchor that is not there.
+	Type *[]string `form:"type,omitempty" json:"type,omitempty"`
+
+	// Status Count only edges whose DEPENDENT — the issue at the source end, the one doing the depending — is in this stored status. Empty means every status.
+	//
+	// IT IS LEGAL ONLY WITH `direction=in`. Sending it beside `direction=out` is a 400 `invalid_argument` with `param: "status"` and `reason: "invalid_value"`, rather than a filter that is quietly ignored. The asymmetry is the substrate's and `issueops.EdgeCountRequest.Status` states why: narrowing by status joins the far end of the edge to the row holding its status, and an OUTBOUND edge's far end may be an `external:` reference or an id belonging to another repository — rows this database does not hold — so the filter would silently drop every dangling edge.
+	//
+	// It is ONE status, not a comma-separated OR set, and it is NOT validated against the workspace vocabulary: an unrecognized name matches nothing and counts 0 rather than failing, exactly as `GET /v0/beads/issues:count`'s `status` does. A scripted caller counting a status its workspace has since dropped reads 0 and should keep reading 0.
+	Status *string `form:"status,omitempty" json:"status,omitempty"`
+}
+
+// CountDependencyEdgesParamsDirection defines parameters for CountDependencyEdges.
+type CountDependencyEdgesParamsDirection string
 
 // ListEventsParams defines parameters for ListEvents.
 type ListEventsParams struct {

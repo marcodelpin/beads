@@ -307,6 +307,7 @@ func runServe() error {
 			Stats:             roles.stats,
 			CycleDetector:     roles.cycles,
 			EdgeReader:        roles.edges,
+			GraphCounter:      roles.edgeCounter,
 			BlockingAnnotator: roles.blocking,
 			TreeWalker:        roles.tree,
 			ReadyCounter:      roles.readyCounter,
@@ -664,6 +665,7 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 		{"stats reporter", func() (err error) { roles.stats, err = src.StatsReporter(); return }},
 		{"cycle detector", func() (err error) { roles.cycles, err = src.CycleDetector(); return }},
 		{"edge reader", func() (err error) { roles.edges, err = src.EdgeReader(); return }},
+		{"graph counter", func() (err error) { roles.edgeCounter, err = src.GraphCounter(); return }},
 		{"blocking annotator", func() (err error) { roles.blocking, err = src.BlockingAnnotator(); return }},
 		{"tree walker", func() (err error) { roles.tree, err = src.TreeWalker(); return }},
 		{"ready counter", func() (err error) { roles.readyCounter, err = src.ReadyCounter(); return }},
@@ -736,6 +738,7 @@ type serveRoles struct {
 	stats        issueops.StatsReporter
 	cycles       issueops.CycleDetector
 	edges        issueops.EdgeReader
+	edgeCounter  issueops.GraphCounter
 	blocking     issueops.BlockingAnnotator
 	tree         issueops.TreeWalker
 	readyCounter issueops.ReadyCounter
