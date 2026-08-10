@@ -226,7 +226,7 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if usesProxiedServer() {
-			return HandleErrorRespectJSON("remember is not supported in proxied-server mode")
+			return runRememberProxied(cmd, args)
 		}
 		CheckReadonly("remember")
 
@@ -610,7 +610,7 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if usesProxiedServer() {
-			return HandleErrorRespectJSON("memories is not supported in proxied-server mode")
+			return runMemoriesProxied(args)
 		}
 		evt := metrics.NewCommandEvent("memories")
 		defer func() {
@@ -882,7 +882,7 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if usesProxiedServer() {
-			return HandleErrorRespectJSON("forget is not supported in proxied-server mode")
+			return runForgetProxied(args)
 		}
 		CheckReadonly("forget")
 
@@ -951,7 +951,7 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if usesProxiedServer() {
-			return HandleErrorRespectJSON("recall is not supported in proxied-server mode")
+			return runRecallProxied(args)
 		}
 		evt := metrics.NewCommandEvent("recall")
 		defer func() {
