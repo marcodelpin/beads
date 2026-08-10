@@ -278,8 +278,11 @@ type Config struct {
 	// EventsJournal is the durable mutation journal's READ side, and the ONE
 	// role here that is required CONDITIONALLY — which is why it is absent from
 	// sourceRoles and checked on its own. Like Memories it is not an issueops
-	// role: the journal is engine state on a dolt_ignored table, not a bead
-	// query, so its seam lives in internal/storage beside the rows it yields.
+	// role: the journal is a replay feed over engine state on a dolt_ignored
+	// table, not a bead query, so it has its own leaf package (journalops,
+	// whose doc states why). storage.EventsJournalCursor is an ALIAS of
+	// journalops.Journal, so this field names the role whichever spelling
+	// reaches it.
 	//
 	// Required exactly when EventsJournalEnabled. A workspace that records
 	// nothing needs no reader, and a storage backend that cannot read the
@@ -288,7 +291,7 @@ type Config struct {
 	// activation to a store. Demanding it unconditionally would make a
 	// capability nothing uses a precondition for running the server.
 	//
-	// It is a storage.EventsJournalCursor and deliberately NOT the wider
+	// It is the READ role and deliberately NOT the wider
 	// storage.EventsJournalAccessor the CLI takes. That interface also prunes,
 	// and a server that is documented to publish the journal and never retain
 	// it should not be holding a delete it merely promises not to call.
