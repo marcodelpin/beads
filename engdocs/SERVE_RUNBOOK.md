@@ -1,8 +1,14 @@
 # `bd serve` operator runbook
 
-Last reviewed: 2026-08-09 (freshness sources: the operating-envelope constants
-in `internal/httpapi/server.go` and `internal/httpapi/events_watch.go`, and the
-fields their `event` emitters write)
+Last reviewed: 2026-08-10
+
+Freshness source: `internal/httpapi/server.go`,
+`internal/httpapi/events_watch.go`, `cmd/bd/serve.go` and
+`internal/httpapi/auth.go` — the operating-envelope constants, the fields their
+`event` emitters write, and the flag, posture and token-file rules.
+
+Every flag, error string, event name and reason value quoted below was checked
+against a build of those files, not read off the source.
 
 Running the v0 HTTP surface. For the contract it serves — the operations, the
 error vocabulary, the cursor, the loopback posture — see
@@ -65,15 +71,97 @@ double-forks and expects the child to survive its controlling terminal must
 either detach the process from the terminal itself or keep it in the
 foreground under the supervisor.
 
+### Authentication
+
+Off by default, and off is the loopback posture: a `bd serve` with no auth
+flags is byte for byte the server it has always been.
+
+```
+bd serve --addr 127.0.0.1:7777 --auth-token-file /run/secrets/bd-tokens
+```
+
+Every operation except `GET /healthz` then requires
+`Authorization: Bearer <token>`. `GET /v0/beads/context` is **not** exempt — it
+reports the repo root, the beads directory and the database name. `/healthz` is
+the one exemption, because a kubelet probe presents no credential and a
+liveness endpoint that 401s is a pod that restarts forever.
+
+The file holds **one token per line, and every non-empty line is accepted**.
+There is no `--auth-token` flag: an argument is readable out of `ps` by every
+local user. `BEADS_SERVE_TOKEN_FILE` is the environment fallback, and it
+applies only when the flag was not passed.
+
+**Rotation is a file rewrite, with no restart.** Write the new token alongside
+the old, roll the clients over, then delete the old line; both the addition and
+the removal take effect within about a second. The server re-reads the file
+while it runs — gated to at most one `stat(2)` per second for the whole
+process, on the accepting path as well as on a mismatch, which is what makes
+revocation work and not just rotation. Write it atomically (temp file plus
+rename; a Kubernetes secret mount already does). A failed or empty re-read
+keeps the last-good set and logs `event=auth_reload_error`, so a writer that
+truncates before writing cannot lock every client out.
+
+Tokens are held and compared as SHA-256 digests in constant time, so the
+process holds no raw credential and a heap dump discloses none.
+
+The refusal is `401` with `code: unauthenticated` and `WWW-Authenticate:
+Bearer`. Its `detail` is a fixed string and never echoes what was presented; a
+missing header, a wrong scheme and an unrecognized token are deliberately one
+code. Each one logs `event=auth_refused` with `reason=missing`,
+`reason=malformed` or `reason=unknown_token`, which is where an operator tells
+a misconfigured client from a stale token. The check runs **before** the
+database semaphore, so a storm of refusals costs one SHA-256 each and can never
+occupy the slots authenticated clients are waiting for.
+
+A token is a shared secret granting the **whole** surface. It is not an
+identity and carries no scopes, so it never makes `actor` an authenticated
+principal — `actor` stays caller-asserted provenance for the audit trail, and
+any client the token admits can claim as any name.
+
+Confirm the posture from the startup line rather than from the absence of a
+flag: `event=startup` carries `auth=none` or `auth=bearer (<path>)`.
+
 ### Binding beyond loopback
 
-`--allow-non-loopback` prints a warning and changes nothing else. There is no
-authentication and no TLS: every peer that can reach the address can read every
-issue and claim work as any actor. Put an authenticating reverse proxy in front
-of it, or do not use the flag.
+`--allow-non-loopback` **requires `--auth-token-file`**. Beyond loopback,
+reaching the address would otherwise be the whole authorization: every peer
+that can reach it gets full read and claim access.
 
-One behavioral difference follows the flag: `limit=0` (unlimited) is refused on
-both list operations with 400 `invalid_argument`. Clients must page.
+```
+bd serve --addr 0.0.0.0:7777 --auth-token-file /run/secrets/bd-tokens \
+         --allowed-host bd.internal.example
+```
+
+`--insecure-no-auth` is the explicit, auditable way to bind beyond loopback
+with no credential. It applies only beside `--allow-non-loopback` (on loopback
+there is nothing to waive) and it contradicts `--auth-token-file`. Use it only
+where a network boundary you already trust is doing the job.
+
+Either way a non-loopback bind prints a warning on stderr at startup, and the
+two are different sentences — one names the missing credential, the other names
+the missing TLS:
+
+```
+bd serve: WARNING: --insecure-no-auth binds 0.0.0.0:7777 beyond loopback with no authentication. Any peer that can reach it can read every issue and claim work as any actor.
+bd serve: WARNING: 0.0.0.0:7777 is bound beyond loopback with bearer authentication but NO TLS. Tokens and issue data travel in plaintext; deploy it inside a trusted network boundary.
+```
+
+**There is still no TLS.** Even with a token, the credential and every issue
+body travel in plaintext, so a deployment beyond loopback has to supply
+confidentiality itself — a service mesh, or a trusted network boundary. An
+authenticating reverse proxy in front is still a reasonable shape; the token
+file is what stops the origin being open if it is bypassed.
+
+**The Host allowlist is what a service deployment trips over first.** The
+DNS-rebinding check answers only to loopback spellings and the bind address, so
+a client dialing a service DNS name gets a `400` on every request. Enumerate
+the names it dials with `--allowed-host` (repeatable, matched exactly, no
+wildcards). The `event=startup` line prints the effective allowlist.
+
+One behavioral difference follows `--allow-non-loopback`: `limit=0` (unlimited)
+is refused on both list operations with 400 `invalid_argument` /
+`reason: "invalid_value"`, whether or not a token is configured. Clients must
+page.
 
 ## Probes
 
@@ -96,6 +184,14 @@ and retry, not as a hard failure.
 Suggested probe settings: the readiness probe inherits the server's 60s
 whole-request deadline as its worst case, so give it a timeout well under that
 (2–5s) and let the probe's own failure threshold do the smoothing.
+
+**On a server started with `--auth-token-file`, the readiness probe needs the
+token and the liveness probe does not.** `/healthz` is the one auth-exempt
+route; `GET /v0/beads/ready` is not, so an unauthenticated readiness probe gets
+a `401` — never a 503 — and a load balancer reading only the status class will
+book a healthy server as permanently not-ready. Give the readiness probe an
+`Authorization: Bearer` header, and alert on `event=auth_refused` with
+`op=listReadyWork` as the signal that you forgot.
 
 ## Detecting a wedge
 
@@ -296,7 +392,9 @@ Other events on the same stream:
 
 | Event | When |
 |---|---|
-| `startup` | Bound address, mode, workspace, database, host allowlist, capabilities. |
+| `startup` | Bound address, mode, workspace, database, host allowlist, capabilities, and `auth` — `none`, or `bearer (<token file path>)`. Check `auth` after a deploy rather than inferring it from a process listing. |
+| `auth_refused` | A `401`. Carries `request_id`, `op`, `remote_addr` and `reason` (`missing`, `malformed`, `unknown_token`). A burst of `unknown_token` from one peer is a client left on a rotated-out token; `missing` is a client that was never configured with one. |
+| `auth_reload_error` | The token file could not be re-read. **Not** a refusal — the last-good set stays in force — but the file an operator is rotating is unreadable and nothing else says so. |
 | `limits` | The operating envelope this build compiled in. Log it, then compare against this page. |
 | `request_error` | Accompanies a ≥500, carrying the real error the body withholds. Join on `request_id`. Not emitted when the client hung up (see above). |
 | `pool_limits_unavailable` | The unit-of-work provider does not expose the pool knob, so the limits below are *not* applied and the pool is unbounded. Worth alerting on; it changes the connection budget. |
@@ -319,6 +417,19 @@ gives the shape, the `request_error` line gives the cause.
 |---|---|
 | `bd serve requires a Dolt SQL server; this workspace uses embedded Dolt` | Permanent. The embedded backend commits outside the SQL transaction on a separate connection, so this server's per-request atomicity would be a lie there. Refused by `serveDatabaseSource`, which is the only thing refusing it — see "Workspace modes" in the design doc. |
 | `bd serve is unavailable under strict readonly` | `--readonly`, or `readonly` in config. Every server this command binds publishes the issue-claim operation and the advertised capability set is a property of the build, not of the flags on the process that started it — so the alternatives were a server advertising a claim it always fails (the store source, where the read-only open reaches the claimer) or a `--readonly` that quietly bought nothing (the provider source, which builds its own writable connection). Drop the flag to serve. |
-| `host must be a numeric IP literal, not a name — use 127.0.0.1 rather than localhost` | `--addr` was given a DNS name. |
-| `binds beyond loopback; bd serve has no authentication, so this requires --allow-non-loopback` | A non-loopback `--addr` without the flag. |
+| `--addr "localhost:7777": host must be a numeric IP literal, not a name — use 127.0.0.1 rather than localhost` | `--addr` was given a DNS name. |
+| `--addr "0.0.0.0:7777" binds beyond loopback, which requires --allow-non-loopback (and, with it, --auth-token-file)` | A non-loopback `--addr` without the flag. |
+| `--allow-non-loopback requires --auth-token-file (or the explicit --insecure-no-auth): every peer that can reach the address gets full read and claim access` | Binding beyond loopback with no credential and no waiver. |
+| `--insecure-no-auth applies only to a bind beyond loopback; on loopback there is nothing to waive, so pass --allow-non-loopback or drop the flag` | The waiver without the bind it waives. |
+| `--insecure-no-auth contradicts --auth-token-file; pass one or the other` | Both spellings of the auth decision at once. |
+| `--auth-token-file: token file <path>: open <path>: no such file or directory` | The token file is unreadable. Also `is a directory`, `contains no tokens`, and `is larger than 1048576 bytes; that is a mis-pointed path, not a token file`. All four are refusals at startup, never a server that binds anyway. |
 | `address already in use` | The fixed-port mutual exclusion working as intended: a second server is already on that port. |
+
+The five auth and bind refusals above are raised by `resolveServeConfig` before
+serve opens its database source or listener, independent of the workspace, so
+they read the same in every workspace mode. (The root command's
+`PersistentPreRunE` still resolves the workspace first, so a directory with no
+beads database answers `no beads database found` ahead of any of them.) And
+`httpapi.Listen` re-checks the same rules, so a second caller of the package
+cannot assemble a `Config` that serves the whole surface to a network with no
+credential.

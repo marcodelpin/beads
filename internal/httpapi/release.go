@@ -36,7 +36,9 @@ var releaseRequestMembers = []string{claimActorMember, releaseExpectedAssigneeMe
 //
 // THE ACTOR IS ALSO THE OWNERSHIP FENCE'S SUBJECT here, which it is on no other
 // operation: a release carrying neither guard nor force succeeds only while the
-// actor is the holder. That is not authorization — this surface has none — it
+// actor is the holder. That is not authorization: the actor is not the
+// authenticated principal even where a bearer is required, because the token a
+// deployment configures is shared and admits a client to the whole surface. It
 // is the anti-yank guard the claim gets from refusing a foreign holder, pointed
 // the other way, and it is the role's rather than this handler's.
 //

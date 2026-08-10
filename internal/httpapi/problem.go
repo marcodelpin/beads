@@ -54,9 +54,23 @@ const (
 	// not a client bug.
 	CodeInvalidCursor Code = "invalid_cursor"
 	CodeNotFound      Code = "not_found"
-	// CodeAlreadyClaimed carries the holder in the `assignee` extension
-	// member, read inside the same transaction — never parsed out of the
-	// sentinel's message text.
+	// CodeAlreadyClaimed reports a live foreign holder. Where the `assignee`
+	// extension member is present it is the holder, read inside the same
+	// transaction and never parsed out of the sentinel's message text — but
+	// PRESENCE IS PER PRODUCER, and there are four:
+	//
+	//   - claimIssue always attaches it: the claim's conflict path reads the
+	//     row it lost to, so it has the holder in hand.
+	//   - updateIssue and applyBatch attach it CONDITIONALLY, when the refusing
+	//     error carried one. The assignee fence
+	//     (AuthorizeAssigneeTransferWithPools) refuses without naming the
+	//     holder, so an implementation that reported none leaves it absent.
+	//   - releaseIssue NEVER attaches it. It is the same fence pointed the
+	//     other way and it names nobody.
+	//
+	// A client therefore treats the member as optional on every operation but
+	// the claim, and re-reads the row when it is absent. Absence means "this
+	// refusal could not name the holder", never "nobody holds it".
 	CodeAlreadyClaimed Code = "already_claimed"
 	CodeNotClaimable   Code = "not_claimable"
 	// CodeNotReleasable is a row refusing to give up a claim, and it covers
@@ -271,6 +285,13 @@ const (
 	// recovery is always to send something different, never to retry; the
 	// detail says which case it was.
 	ReasonInvalidValue Reason = "invalid_value"
+	// ReasonProjectMismatch means the request stamped a Bd-Project-Id that is
+	// not the project this server serves. Like the Host-header refusal it is a
+	// document-level 400 reachable on every enforced route rather than
+	// per-operation behavior, and it is the one refusal that carries
+	// `server_project_id`. The recovery is to stop stamping this server with
+	// another workspace's id, never to retry the same request.
+	ReasonProjectMismatch Reason = "project_mismatch"
 )
 
 // staticDetail is the set of codes whose `detail` is FIXED, whatever the
@@ -396,6 +417,31 @@ const (
 	// member because it answers per named issue, reports the ids that named
 	// nothing, and returns edges whose target this database holds no row for.
 	OpListDependencies = "listDependencies"
+	// OpCountDependencyEdges sizes each anchor's edge set in ONE named
+	// direction, behind issueops.GraphCounter. It is NOT listDependencies
+	// counted: that operation is outgoing-only and takes no direction, this one
+	// REQUIRES one and answers about either end, so the two agree on a number
+	// only at direction=out. It is also not a third Counter method — that role
+	// answers about a set of ISSUES described by a predicate, and this one about
+	// EDGES anchored on ids, per anchor.
+	OpCountDependencyEdges = "countDependencyEdges"
+	// OpListRelatedIssues reads ONE issue's neighbors in a named direction,
+	// behind issueops.Relations. It is NOT listDependencies narrowed to one
+	// anchor: that operation answers the stored edge ROWS with their targets
+	// spelled as stored, and this one answers the ISSUES on the far end — so an
+	// edge whose target this database holds no row for is a row there and no
+	// neighbor here, and the two answer different arities of question.
+	//
+	// It is a SUB-RESOURCE OF THE ISSUE rather than a member of the dependency
+	// collection, and the argument is ELEMENT IDENTITY rather than a claim about
+	// what that collection answers with — getDependencyTree answers hydrated
+	// TreeNodes, so "everything under /dependencies is about edges" would be
+	// false. What decides it is narrower and checkable: the rows here are the
+	// SAME pinned struct getIssue already carries under `dependencies` and
+	// `dependents`, so this operation is that pair, standalone,
+	// direction-parameterized and type-filterable — and it belongs on the
+	// resource whose members it publishes.
+	OpListRelatedIssues = "listRelatedIssues"
 	// OpListBlockingAnnotations reads the DERIVED blocking decoration for
 	// several issues at once — open blockers, issues blocked, and the parent.
 	// It is separate from listDependencies because it answers a summary over
@@ -577,10 +623,40 @@ var operationCodes = map[string][]Code{
 	// the response's `missing` member, so a batch keeps the answers for the ids
 	// that were found. A 404 would discard them.
 	OpListDependencies: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The stored-edge read's vocabulary exactly, and no not_found for its
+	// reason: an id that names nothing is reported on its own anchor, so a
+	// batch keeps the answers for the ids that were found. The role has no
+	// ErrNotFound at all, which its doc states.
+	//
+	// Its 400 is BOTH the transport's and the ROLE's, which is what separates
+	// this row from GET /v0/beads/issues:count beside it. That operation
+	// refuses its one enum at the edge and reaches no role refusal; here
+	// ValidateEdgeCountRequest runs inside the single shared body — the role
+	// has one body on all three legs, so the check could not belong to an
+	// accessor — and four of its refusals are reachable over the wire: a
+	// missing or unrecognized direction, a status beside direction=out, an
+	// empty id, and a dependency type no edge could carry. Each reaches the
+	// client as the 400 it is, on the sentinel, with the parameter named in the
+	// validator's own order.
+	OpCountDependencyEdges: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The same vocabulary as the stored-edge read beside it, and no not_found
 	// for a stronger version of the same reason: this operation probes no id's
 	// existence at all, so there is nothing it could 404 on.
 	OpListBlockingAnnotations: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// getDependencyTree's row exactly, and for its reasons: ONE anchor, so a
+	// miss is the 404 it is rather than a per-anchor flag — there is no other
+	// answer to preserve by reporting it in the body, and an empty neighbor
+	// list is the common case, so a typo answered with one would never surface.
+	//
+	// Its 400 is BOTH the transport's and the ROLE's. The transport owns the
+	// unknown key and the repeated single-valued parameter; ValidateRelatedRequest
+	// owns the two that are about this request's MEANING — a missing or
+	// unrecognized direction, and a dependency type no edge could carry — and each
+	// reaches the client as the 400 it is, on the sentinel, with the parameter
+	// named. The validator's third refusal, an empty anchor id, is unreachable
+	// here: the id is a PATH segment this handler bounds before the role is
+	// asked, and an id that fails that bound is the 404 a real miss gets.
+	OpListRelatedIssues: {CodeInvalidArgument, CodeUnauthenticated, CodeNotFound, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The 404 is the difference from the row above: this operation has ONE
 	// anchor, so there is no other answer to preserve by reporting the miss in
 	// the body. Its 400 is its own — an empty root, a direction outside the
@@ -1104,6 +1180,25 @@ func InvalidArgument(param string, reason Reason, detail string) Result {
 	}
 	r := string(reason)
 	res.Problem.Reason = &r
+	return res
+}
+
+// ProjectMismatch builds the 400 for a request whose Bd-Project-Id header names
+// a workspace this server does not serve. got is the id the client stamped; own
+// is this server's own project id, disclosed in the `server_project_id`
+// extension member so a stamped client can tell a wrong-server refusal from a
+// malformed one without parsing `detail`.
+//
+// This is the ONLY refusal on the surface that sets `server_project_id`, and it
+// is raised only after the request has cleared the Host gate (and, in a
+// deployment that adds one, its authentication layer): a request turned away by
+// an earlier gate is answered before the stamp is ever compared, so it never
+// discloses the server's identity. Presence of the member is therefore the
+// signal that this specific check — and nothing earlier — fired.
+func ProjectMismatch(got, own string) Result {
+	res := InvalidArgument(ProjectIDHeader, ReasonProjectMismatch,
+		"the "+ProjectIDHeader+" header names project "+strconv.Quote(got)+", which this server does not serve")
+	res.Problem.ServerProjectId = &own
 	return res
 }
 

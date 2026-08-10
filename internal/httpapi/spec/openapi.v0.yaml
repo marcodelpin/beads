@@ -52,7 +52,7 @@ info:
     it decides every refusal before opening its stream.
 
 
-    ## Three 400s cut across operations, and are documented here once
+    ## Four 400s cut across operations, and are documented here once
 
 
     * **Host header.** A request whose `Host` header is not in the server's
@@ -62,19 +62,28 @@ info:
     * **Unknown query parameter.** Every operation rejects any query parameter
       outside its own parameter table with `400` / `code: invalid_argument` /
       `reason: "unknown_parameter"` and `param` naming the offending key.
-      Operations with no parameters at all (`GET /healthz`,
-      `GET /v0/beads/context`, `GET /v0/beads/dependencies/cycles`,
+      Operations that declare no QUERY parameter at all reject every query key
+      the same way. Today that is twenty-two of the thirty-eight operations
+      here — `GET /healthz`, `GET /v0/beads/context`,
+      `GET /v0/beads/dependencies/cycles`, `POST /v0/beads/issues`,
+      `PATCH /v0/beads/issues/{id}`,
       `POST /v0/beads/issues/{id}:claim`,
       `POST /v0/beads/issues/{id}:release`,
       `POST /v0/beads/issues/{id}:close`,
       `POST /v0/beads/issues/{id}:reopen`,
       `POST /v0/beads/issues/{id}:casMetadata`, `POST /v0/beads/issues:sweep`,
       `POST /v0/beads/issues:delete`,
+      `POST /v0/beads/issues:batchCreate`,
       `POST /v0/beads/issues:batchApply`,
       `POST /v0/beads/issues:batchClose`, `GET /v0/beads/config`,
       `GET /v0/beads/config/{key}`, `POST /v0/beads/dependencies:add`,
-      `POST /v0/beads/dependencies:remove`) reject every query key the same
-      way.
+      `POST /v0/beads/dependencies:remove`, `POST /v0/beads/memories`,
+      `GET /v0/beads/memories/{key}` and `DELETE /v0/beads/memories/{key}`.
+      A path parameter is not a query parameter: several of those carry
+      `{id}` or `{key}` and still take no query key. The authority is each
+      operation's own `parameters` table, which is what a generated client
+      reads; this list is a convenience and, being prose, is the half that can
+      go stale — six entries were missing from it before this revision.
 
     * **Request media type.** Every operation that carries a request body
       requires `Content-Type: application/json` and refuses anything else with
@@ -90,14 +99,35 @@ info:
       `415` is deliberately not used: it is not in this surface's status
       vocabulary, and adding one for this would be permanent wire surface.
 
+    * **Project-id stamp.** A request MAY carry a `Bd-Project-Id` header naming
+      the workspace the client means to address. When the header is present and
+      its value is not the project this server serves, the request is refused
+      with `400` / `code: invalid_argument` / `param: "Bd-Project-Id"` /
+      `reason: "project_mismatch"`, and that refusal — alone on this surface —
+      carries the server's own project id in the `server_project_id` member so a
+      stamped client can tell a wrong-server refusal from a malformed one. The
+      comparison is LITERAL: a server whose own `project_id` is empty refuses
+      every non-empty stamp, because it cannot assert it is the workspace the
+      client named. An ABSENT header is the backward-compatible path — a client
+      that never sends it is served exactly as before, and enforcement triggers
+      only when the header arrives — so this is additive wire surface, not a new
+      precondition on requests already in the field. The refusal is raised after
+      the Host gate and before any database work, so a misdirected request
+      mutates nothing. It is skipped on `GET /healthz` and `GET /v0/beads/context`
+      alone: liveness must answer whatever workspace a caller believed it
+      reached, and the identity handshake is where a client LEARNS the project
+      id to stamp with. A client detects that a server performs this check by
+      the `project.enforce` capability (see `ContextResponse`).
+
 
     The first two are uniform rules reachable on EVERY route including
-    `GET /healthz`; the third holds on every body-carrying operation. All three
-    are stated here instead of being repeated on every operation. The
-    per-operation `responses` below therefore list what an operation produces
-    BEYOND them: a generated client must treat `400 invalid_argument` as
-    possible everywhere, including on the operations whose documented statuses
-    are only `404`/`500`/`503`.
+    `GET /healthz`; the third holds on every body-carrying operation; the fourth
+    holds on every route EXCEPT the two exempt reads named above. All four are
+    stated here instead of being repeated on every operation. The per-operation
+    `responses` below therefore list what an operation produces BEYOND them: a
+    generated client must treat `400 invalid_argument` as possible everywhere,
+    including on the operations whose documented statuses are only
+    `404`/`500`/`503`.
 
 
     ## Authentication is a deployment posture
@@ -148,8 +178,10 @@ info:
     ## Version skew: what a client may gate on
 
 
-    * `capabilities` gates OPERATION presence. It is derived from the server's
-      implemented handlers; check the list, never the version string.
+    * `capabilities` gates OPERATION presence, and also advertises server-wide
+      BEHAVIOR tokens such as `project.enforce` (per-request `Bd-Project-Id`
+      enforcement). It is derived from the server's implemented handlers plus the
+      behaviors this build enforces; check the list, never the version string.
     * `bd_version` gates BEHAVIORAL changes tied to a release, and is the only
       field a client may compare as a version.
     * `api_version` gates the path major, and changes only when `/v1` is cut.
@@ -161,6 +193,28 @@ info:
     * Clients MUST default-branch on unknown `code` and `reason` values within
       a status class: both vocabularies grow additively, so an exhaustive
       switch breaks on the first addition.
+
+
+    ## An `operationId` is not derivable from its path
+
+
+    A custom method usually reads the same in both — `:claim` is `claimIssue`,
+    `:sweep` is `sweepIssues` — and TWO OPERATIONS INVERT IT. Neither is a
+    typo and neither will be renamed, because an `operationId` is a generated
+    client's method name and a path is wire surface, so both are one-way doors:
+
+
+    | Path | `operationId` | Capability token |
+    |---|---|---|
+    | `POST /v0/beads/issues:batchApply` | `applyBatch` | `issues.batchApply` |
+    | `POST /v0/beads/issues/{id}:casMetadata` | `compareAndSetMetadata` | `issues.casMetadata` |
+
+
+    The capability token follows the PATH in both cases, not the
+    `operationId`, so a client probing `capabilities` before calling a
+    generated method reads two different spellings of one operation. A spec
+    author adding an operation should spell them alike; a spec author touching
+    these two should leave both spellings exactly as they are.
 
 
     ## Schema evolution while `/v0` is the newest path version
@@ -959,6 +1013,38 @@ paths:
         The CLI has no `--include-ephemeral` flag for `bd list` yet, so this is
         the one filter on this operation with no `bd list` spelling;
         `--include-infra` is the nearest one and is wider.
+
+
+        THE ROWS CARRY NO `revision`, AND THE DETAIL READ DOES. A list-then-guard
+        loop is a real shape, and the reason the token stops at
+        `GET /v0/beads/issues/{id}` is not its size — measured against a 20k-row
+        production export the member is 28 bytes on a 1449-byte median row,
+        under 2%. It is that `IssueWithCounts` is ALSO THE INTERCHANGE ROW: it
+        is the record `bd export` writes to JSONL and the auto-export flushes
+        into a git-tracked `issues.jsonl`, and the token is re-minted by every
+        write, so publishing it on this element would put a per-write-random
+        value into a file whose whole value is that it diffs only when
+        something meant something. That is the loss `Issue`'s own storage field
+        is withheld from generic serialization to prevent, and a wire member
+        cannot opt out of it — the element here and the element there are one
+        pinned Go struct. `IssueDetails` has neither problem: nothing
+        interchanges it, and it is assembled in exactly one place, which is
+        also why its token cannot be silently 0 on some path that forgot to
+        set it. A caller that has a list and wants a guard reads the rows it
+        actually intends to write, one detail read each — the read it needs
+        anyway to decide.
+
+
+        THE DOOR, IF A LATER REVISION WANTS THE TOKEN HERE: it needs a list
+        element that is NOT the interchange element. The exclusion above is a
+        consequence of the two being ONE pinned Go struct, not a judgement that
+        a per-row token is unwanted, so the way in is to separate them — and
+        nothing short of that will do, because any member added to this element
+        ships in `bd export`'s JSONL by construction. Until then a client MUST
+        model the absent member as ABSENT and never as `0`: zero is a real
+        token here (a legacy row backfilled and not mutated since), so a client
+        that defaulted a missing `revision` to 0 would compose guards that
+        match exactly the rows it is most dangerous to be wrong about.
       parameters:
         - name: status
           in: query
@@ -1840,6 +1926,18 @@ paths:
         and `comments_omitted` and pays for neither. A request that sets
         neither parameter is answered exactly as this operation answered it
         before the parameters existed.
+
+
+        IT IS THE TOKEN SOURCE FOR A GUARDED WRITE. The response carries
+        `revision`, the row's optimistic-concurrency token, so a
+        read-modify-write loop starts HERE: read the row, decide from what it
+        says, and send the token back as the next request's `expected_version`.
+        Before this member every token on the surface was minted by a WRITE, so
+        the first guarded write of a loop had to be preceded by a write the
+        caller did not want to make — or guarded on nothing at all, which is
+        the lost-update this whole family exists to refuse. The token is
+        carried on every 200, including for an ephemeral wisp resolved by the
+        fallback lookup.
       parameters:
         - $ref: '#/components/parameters/IssueID'
         - name: include_comments
@@ -1858,6 +1956,17 @@ paths:
             Populate `dependents` with the issues that depend on this one, each
             carrying its edge type — the shape `dependencies` already carries.
             Default false, for `include_comments`'s reason.
+          schema:
+            type: boolean
+            default: false
+        - name: brief_deps
+          in: query
+          description: >-
+            Reduce each row in `dependencies` to its identity-and-shape fields
+            (`id`, `title`, `status`, `issue_type`, `priority`,
+            `dependency_type`), dropping `description`, `design`, `notes` and
+            `acceptance_criteria`. Default false, so the payload is unchanged
+            for a client that does not ask.
           schema:
             type: boolean
             default: false
@@ -2046,8 +2155,10 @@ paths:
         '409':
           description: >-
             The request is well-formed and the STATE refuses it, and NOTHING WAS
-            WRITTEN. Four codes, each inherited from the operation that already
-            publishes it rather than minted here.
+            WRITTEN. Five codes, each inherited from the operation that already
+            publishes it rather than minted here, and described in the four
+            paragraphs below — `dependency_cycle` and `dependency_exists` share
+            one, because they are one member reaching the graph.
 
 
             `precondition_failed` is `expected_version`, `expected_status` or
@@ -2097,6 +2208,159 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/issues/{id}/related:
+    get:
+      operationId: listRelatedIssues
+      summary: List one issue's neighbors in a named direction
+      description: >-
+        THE ISSUES ON THE FAR END of this issue's edges, in the direction the
+        request names, each carrying the type of the edge that led to it. It is
+        the read behind `bd dep list`'s neighbor view, and its elements are the
+        same `IssueWithDependencyMetadata` the `dependencies` and `dependents`
+        members of `GET /v0/beads/issues/{id}` already carry.
+
+
+        IT IS A SUB-RESOURCE OF THE ISSUE, not a member of the dependency
+        collection, and the two answer different things about the same edges.
+        `GET /v0/beads/dependencies` returns the stored edge ROWS — targets
+        spelled exactly as stored, nothing looked up — for many anchors at once;
+        this one is anchored on ONE issue and answers with HYDRATED ISSUES, so
+        an edge whose far end this database holds no row for is not a neighbor
+        at all. `issueops.Relations` and `issueops.EdgeReader` state that split
+        once; nothing is restated here.
+
+
+        THE CONSEQUENCE IS WORTH READING BEFORE COUNTING ANYTHING. A dependency
+        target may be an `external:` reference or an id belonging to another
+        repository, and this database holds no issue for either. Such an edge is
+        left out with no placeholder row and no error, so the length of `items`
+        is this issue's NEIGHBOR count and not its EDGE count, and the two
+        differ by however many of its edges point outside this database. A
+        caller that needs the edges themselves reads
+        `GET /v0/beads/dependencies`; a caller that needs the number reads
+        `GET /v0/beads/dependencies:count`, which counts edges and not
+        neighbors.
+
+
+        AN ID THAT NAMES NEITHER AN ISSUE NOR A WISP IS A 404, and that is the
+        difference from every other graph read on this surface. Those are
+        batched and report a miss per anchor, because failing the call would
+        throw away the answers for the ids that were found; here there is one
+        anchor and no other answer to preserve. It matters because an empty
+        `items` is the COMMON case — most issues have neighbors in only one
+        direction — so a typo answered with an empty list would never surface.
+
+
+        BOTH PLANES ARE READ, on the anchor and on its neighbors. The anchor is
+        resolved against the durable and ephemeral planes together, so a wisp id
+        is a legal anchor; and the neighbors are collected from BOTH dependency
+        tables and hydrated from both issue tables, so a durable issue's `in`
+        neighbors include the wisps that depend on it and a `direction=out`
+        answer includes the wisp targets it depends on. Those are the ROLE's
+        rules, stated at `issueops.Relations`, and this document cites them
+        rather than restating them.
+
+
+        THE ORDER IS PINNED: ascending by the neighbor's id, with the edge type
+        breaking a tie. It is pinned rather than left to the query because the
+        rows come from two dependency tables read in sequence, so their natural
+        order is an artifact of which plane a neighbor happens to live on —
+        stable enough to look deliberate and not stable enough to rely on.
+
+
+        THE ROWS CARRY NO `revision`, on `GET /v0/beads/issues`'s terms. The
+        element here is the pinned Go struct `GET /v0/beads/issues/{id}` carries
+        under `dependencies` and `dependents`, so it publishes an issue's own
+        serialized fields and nothing this operation invents; the
+        optimistic-concurrency token stays on the detail read, which is where a
+        guarded write composes its `expected_version` from. A client holding a
+        neighbor list and wanting a guard reads the rows it actually intends to
+        write, one detail read each.
+
+
+        THERE IS NO `limit` AND NO CURSOR. One issue's neighbors are unbounded
+        here exactly as the `dependencies` member of
+        `GET /v0/beads/issues/{id}` already is, and this operation names ONE
+        anchor, so there is no question to bound instead — which is what the
+        dependency-collection reads bound at 100 `issue_id` values apiece. A
+        limit with no cursor behind it would truncate with no way to fetch the
+        rest.
+
+
+        THERE IS NO `both` DIRECTION, for the reason
+        `GET /v0/beads/dependencies:count` has none: a caller that wants the
+        pair asks twice, and one call answering both would have to say which
+        direction each row came from — which is a second member on an element
+        this document deliberately shares with the detail read.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+        - name: direction
+          in: query
+          required: true
+          description: >-
+            Which way this issue's edges are walked. `out` answers the issues it
+            DEPENDS ON — the `dependencies` member of
+            `GET /v0/beads/issues/{id}`. `in` answers the issues that depend on
+            it — that read's `dependents` member.
+
+
+            IT IS REQUIRED AND HAS NO DEFAULT, on
+            `GET /v0/beads/dependencies:count`'s terms and for the reason
+            `issueops.RelationDirection` gives: the two answers have the same
+            shape and the same member names, so a caller handed the inverse graph
+            has nothing to notice. An absent or unrecognized value is a 400
+            `invalid_argument` with `param: "direction"`, never a walk in some
+            default direction.
+
+
+            The vocabulary is CLOSED — unlike `type` below — because it is a
+            property of the edge's shape rather than of a workspace's
+            configuration.
+          schema:
+            type: string
+            enum: [out, in]
+        - name: type
+          in: query
+          description: >-
+            Edge types to include. Repeat the parameter. Empty means every
+            type.
+
+
+            `GET /v0/beads/dependencies`'s `type` exactly: the vocabulary is
+            OPEN, so an unrecognized value is not an error and simply matches no
+            edge, while a value no edge could ever carry — empty, or longer than
+            the column — is a 400 `invalid_argument` with `param: "type"`.
+
+
+            The filter narrows EDGES, never the anchor. An issue whose every
+            edge it rejects is answered with an empty `items` and not with a
+            404, which is a different fact from an id that names nothing.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: This issue's neighbors, in ascending neighbor id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelatedIssues'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -2188,10 +2452,13 @@ paths:
         `POST /v0/beads/issues/{id}:claim`'s reason. HERE IT IS ALSO THE
         OWNERSHIP FENCE'S SUBJECT: a release carrying neither
         `expected_assignee` nor `force` succeeds only while `actor` is the
-        current holder. That is not authentication — this surface has none, and
-        `actor` is caller-asserted provenance exactly as it is on the claim —
-        it is the same anti-yank guard the claim gets from refusing a foreign
-        holder, pointed the other way.
+        current holder. That is not authentication — `actor` is caller-asserted
+        provenance exactly as it is on the claim, and it is NOT the
+        authenticated principal even where a bearer is required: the token a
+        deployment configures admits a client to the whole surface and names
+        nobody, so it can neither confirm nor contradict the name in `actor`.
+        The fence is the same anti-yank guard the claim gets from refusing a
+        foreign holder, pointed the other way.
 
 
         ## NOT IDEMPOTENT, which is the one thing to read before adopting it
@@ -2456,8 +2723,9 @@ paths:
 
         The token travels back on `revision`, so a read-modify-write chain that
         ends in a close composes its expectation from the value the previous
-        write answered with. No READ on this surface publishes a revision yet;
-        when one does, this member is what it will agree with.
+        write answered with — or, where the chain STARTS with a read, from
+        `GET /v0/beads/issues/{id}`'s `revision`, which is the same token and
+        agrees with this one.
 
 
         ## Planes
@@ -2592,7 +2860,8 @@ paths:
 
         The token travels back on `revision`, so a reopen-then-re-close recovery
         composes its next expectation from the value this operation answered
-        with. No READ on this surface publishes a revision yet.
+        with, and a recovery that starts by reading composes its first from
+        `GET /v0/beads/issues/{id}`'s `revision`.
 
 
         ## Planes
@@ -3350,8 +3619,10 @@ paths:
         '409':
           description: >-
             The request is well-formed and the STATE refuses it, and NOTHING WAS
-            WRITTEN. Five codes, and every one of them is a statement a caller
-            could not have made without reading state it does not hold.
+            WRITTEN. Six codes, and every one of them is a statement a caller
+            could not have made without reading state it does not hold. Five
+            paragraphs cover them: `dependency_cycle` and `dependency_exists`
+            share one, because they are the graph's own pair.
 
 
             `precondition_failed` is a guard that missed:
@@ -4014,6 +4285,191 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/dependencies:count:
+    get:
+      operationId: countDependencyEdges
+      summary: Count the dependency edges around several issues
+      description: >-
+        HOW MANY EDGES each named issue has in ONE named direction, after the
+        type and status filters — the cardinality behind
+        `GET /v0/beads/dependencies`, plus the direction that read does not
+        take. Nothing is materialized: this is the operation for a caller that
+        wants the numbers for issues whose edges it will never print.
+
+
+        IT IS NOT THE LISTING COUNTED, and the operationId says so rather than
+        pretending otherwise. The listing is OUTGOING ONLY and takes no
+        direction; this one REQUIRES a direction and answers about either end.
+        Naming it `countDependencies` would have promised that it sizes the set
+        `listDependencies` returns, which it does only at `direction=out`.
+
+
+        THE ANSWER IS PER ANCHOR, which is the other difference from the
+        listing. That one flattens every issue's edges onto one array because
+        the rows carry their own `issue_id`; a number does not, so folding
+        these together would produce a total no caller asked for and lose the
+        per-issue answer every caller wants. `anchors` carries one entry per
+        DISTINCT requested id, in the order the request first named it — an
+        array rather than an object, because the request's order is part of the
+        answer and a keyed object would have made that ordering this surface's
+        own invention.
+
+
+        A NAMED ISSUE THAT DOES NOT EXIST IS NOT A 404, on
+        `GET /v0/beads/dependencies`'s terms and one sharper: its entry reports
+        `missing: true` with `count: 0`, and 0 is the COMMON answer here —
+        most issues have no edges in at least one direction — so without that
+        flag a typo would be indistinguishable from a real zero and would never
+        surface. There is no `not_found` on this operation at all.
+
+
+        THE COUNT SPANS BOTH DEPENDENCY PLANES and is a SUM rather than a
+        distinct count of edge rows; a status-narrowed count reads the
+        dependent's status from its own plane; and `status` is legal only with
+        `direction=in` because an outbound edge's far end may be a row this
+        database does not hold. Those are the ROLE's rules, stated once at
+        `issueops.GraphCounter` and its `EdgeCountRequest`, and this document
+        cites them rather than restating them — a second telling is a second
+        thing to keep true.
+
+
+        THERE IS NO `limit` AND NO CURSOR, for the reason
+        `GET /v0/beads/dependencies` has none and `GET /v0/beads/issues:count`
+        gives: a cardinality has no page, and bounding the scan would answer
+        "how many of the first N". The QUESTION is bounded instead, at 100
+        `issue_id` values per call — the same bound, the same number and the
+        same constant as the listing on this collection, because the two bound
+        the same thing and a client holding both must not have to learn two
+        numbers.
+
+
+        THERE IS NO `both` DIRECTION. A caller that wants the pair asks twice,
+        which is what every front door in the tree already does. One call
+        answering both would mean two numbers per anchor, and `status` — which
+        narrows by a row only the inbound direction has — would then govern one
+        of them and silently not the other.
+      parameters:
+        - name: issue_id
+          in: query
+          description: >-
+            The anchors to count around. Repeat the parameter; at least one is
+            required and at most 100 are accepted, and either bound is a 400
+            `invalid_argument` with `param: "issue_id"`, `reason:
+            "invalid_value"`.
+
+
+            Each value must be an EXACT canonical issue id, for the reason
+            `GET /v0/beads/dependencies` gives. A value that matches nothing is
+            reported on its own anchor rather than refused. An EMPTY value is a
+            400: the empty string names nothing a caller can have meant, and
+            reporting it as a missing anchor would put a nameless row in an
+            answer keyed by name.
+
+
+            Repeats collapse onto the first mention — a second entry carries no
+            second fact and would only invite a caller summing the result to
+            count the same edges twice.
+          style: form
+          explode: true
+          required: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+        - name: direction
+          in: query
+          required: true
+          description: >-
+            Which end of the edge the anchors sit on. `out` counts what each
+            anchor DEPENDS ON — the direction `bd dep list` reads and the number
+            `bd show` prints as the dependency count. `in` counts what depends
+            on it.
+
+
+            IT IS REQUIRED, and that is the one deliberate unfriendliness on
+            this request. The two answers are about DIFFERENT EDGE SETS, and a
+            workspace where most issues have edges in only one direction returns
+            the same number for both often enough that a caller who meant the
+            other one would not notice for a long time. An absent or
+            unrecognized value is a 400 `invalid_argument` with
+            `param: "direction"`, never a count in some default direction.
+
+
+            The vocabulary is CLOSED — unlike `type` below — because it is a
+            property of the edge's shape rather than of a workspace's
+            configuration.
+          schema:
+            type: string
+            enum: [out, in]
+        - name: type
+          in: query
+          description: >-
+            Edge types to include. Repeat the parameter. Empty means every
+            type.
+
+
+            `GET /v0/beads/dependencies`'s `type` exactly: the vocabulary is
+            OPEN, so an unrecognized value is not an error and simply matches no
+            edge, while a value no edge could ever carry — empty, or longer than
+            the column — is a 400 `invalid_argument`.
+
+
+            The filter narrows EDGES, never anchors. An anchor whose every edge
+            it rejects comes back present with a count of 0, which is a
+            different fact from an anchor that is not there.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: status
+          in: query
+          description: >-
+            Count only edges whose DEPENDENT — the issue at the source end, the
+            one doing the depending — is in this stored status. Empty means
+            every status.
+
+
+            IT IS LEGAL ONLY WITH `direction=in`. Sending it beside
+            `direction=out` is a 400 `invalid_argument` with `param: "status"`
+            and `reason: "invalid_value"`, rather than a filter that is quietly
+            ignored. The asymmetry is the substrate's and
+            `issueops.EdgeCountRequest.Status` states why: narrowing by status
+            joins the far end of the edge to the row holding its status, and an
+            OUTBOUND edge's far end may be an `external:` reference or an id
+            belonging to another repository — rows this database does not hold
+            — so the filter would silently drop every dangling edge.
+
+
+            It is ONE status, not a comma-separated OR set, and it is NOT
+            validated against the workspace vocabulary: an unrecognized name
+            matches nothing and counts 0 rather than failing, exactly as
+            `GET /v0/beads/issues:count`'s `status` does. A scripted caller
+            counting a status its workspace has since dropped reads 0 and
+            should keep reading 0.
+          schema:
+            type: string
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: One entry per distinct anchor, in the order first named.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgeCounts'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/dependencies/blocking:
     get:
       operationId: listBlockingAnnotations
@@ -4321,13 +4777,16 @@ paths:
         answer.
 
 
-        MEMORY CONTENT IS SERVED IN FULL and this API has no authentication.
-        Every entry carries its value verbatim; there is no `redacted` member
-        and nothing is withheld. See `POST /v0/beads/memories` for why a
-        key-name heuristic would be worse here than no promise at all. This is
-        the operation that makes stored memories DISCOVERABLE rather than merely
-        readable by a caller who already knows a key — an operator binding
-        beyond loopback is accepting exactly that.
+        MEMORY CONTENT IS SERVED IN FULL, and authentication does not narrow
+        that. Every entry carries its value verbatim; there is no `redacted`
+        member and nothing is withheld. A bearer decides WHO may call, not what
+        a caller who is let in may read, so a token-protected server serves
+        every memory to every holder of the token. See
+        `POST /v0/beads/memories` for why a key-name heuristic would be worse
+        here than no promise at all. This is the operation that makes stored
+        memories DISCOVERABLE rather than merely readable by a caller who
+        already knows a key — an operator binding beyond loopback is accepting
+        exactly that for everyone the token admits.
 
 
         A memory stored as the EMPTY STRING is enumerated here, because its key
@@ -4414,7 +4873,8 @@ paths:
 
 
         MEMORY CONTENT IS SERVED IN FULL, here and on every other operation of
-        this plane, and this API has no authentication. There is no `redacted`
+        this plane, and a bearer does not change that — it gates WHO may call,
+        never what a caller who is let in may read. There is no `redacted`
         member and no value withholding: the settings surface's redaction is a
         heuristic over the KEY NAME, and memory keys are derived from the
         content, so the same rule would withhold a memory ABOUT tokens while
@@ -4498,10 +4958,10 @@ paths:
         one way a client can tell the two apart.
 
 
-        MEMORY CONTENT IS SERVED IN FULL and this API has no authentication:
-        `Memory` carries no `redacted` member and withholds nothing. See
-        `POST /v0/beads/memories` for why a key-name heuristic would be worse
-        than no promise at all.
+        MEMORY CONTENT IS SERVED IN FULL, and a configured bearer does not
+        narrow it: `Memory` carries no `redacted` member and withholds nothing
+        from any caller the token admits. See `POST /v0/beads/memories` for why
+        a key-name heuristic would be worse than no promise at all.
 
 
         KEYS THIS OPERATION CANNOT REACH. `bd remember --key` accepts any
@@ -5223,7 +5683,7 @@ components:
     # ---------------------------------------------------------------------
     # Pinned schemas.
     #
-    # Each of the twelve below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the thirteen below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.
@@ -5235,10 +5695,13 @@ components:
     # added to the Go struct without an entry here fails CI, and an entry here
     # with no Go field fails CI.
     #
-    # Nine of the twelve are pinned to `internal/types`; `Cycle`, `CycleMember`
-    # and `IssueBlocking`, which appear after `BondRef`, are pinned to the role
-    # package `issueops` instead, because that is where those canonical structs
-    # live.
+    # Nine of the thirteen are pinned to `internal/types`. The other four are
+    # pinned where their canonical struct actually lives: `CycleMember`,
+    # `Cycle` and `IssueBlocking`, which appear after `Statistics`, to the role
+    # package `issueops`; `EventRecord`, last of the group, to
+    # `internal/eventsjournal`. TestWireTagBijection's `pinnedSchemas` table is
+    # the enumeration that is machine-checked; the counts here are prose and go
+    # stale in silence, so a schema added to that table updates them too.
     # ---------------------------------------------------------------------
 
     Issue:
@@ -5549,7 +6012,7 @@ components:
       x-go-type-import:
         name: types
         path: github.com/steveyegge/beads/internal/types
-      required: [id, title, priority, created_at, updated_at]
+      required: [id, title, priority, created_at, updated_at, revision]
       properties:
         # --- repeated from Issue (see the pinned-schema note above) ---
         id: { type: string }
@@ -5656,6 +6119,56 @@ components:
           type: integer
         epic_closeable:
           type: boolean
+        revision:
+          type: integer
+          format: int64
+          description: >-
+            The row's optimistic-concurrency token, and THE READ THAT SOURCES A
+            GUARD. Every `expected_version` on this surface is composed from a
+            token some response carried; until this member existed the only
+            responses that carried one were WRITES, so a caller's first guarded
+            write had to be preceded by a write it did not want to make. This
+            is that member, and it is the one the write responses' "when a read
+            publishes one, this member is what it will agree with" was written
+            against.
+
+
+            IT IS EQUALITY-ONLY: compare it, never order or interpret it. A
+            change signals the row was mutated since you read it, and nothing
+            more — it is a random value the engine rewrites, not a counter.
+            `ApplyItemResult.revision` states the full rule and this member
+            carries it verbatim.
+
+
+            ITS COVERAGE IS PARTIAL, on the same inherited terms: the token is
+            rewritten by claim, close, unclaim and the generic update path, and
+            NOT by the direct-update paths that rewrite text without touching
+            it. A client needing complete change detection combines it with
+            `updated_at`, `status` and the label set.
+
+
+            It is ALWAYS PRESENT, including as 0 — a legacy row backfilled and
+            not mutated since — because an absent member would be ambiguous
+            between a legacy-zero row and a server that does not publish the
+            token.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double
+            parser corrupts it silently, and the corruption only shows up as a
+            `precondition_failed` on the NEXT request.
+
+
+            IT IS THE ANCHOR ROW'S ALONE. The issues nested under
+            `dependencies` and `dependents` are `IssueWithDependencyMetadata`
+            and carry no token: a caller that means to guard a NEIGHBOUR reads
+            that neighbour with its own `GET /v0/beads/issues/{id}`, and a
+            token lifted off an embedded relation would be one the response
+            never promised was fresh.
+
+
+            IT IS NOT ON THE LIST ROWS, and that is a decision rather than an
+            oversight — see `GET /v0/beads/issues`.
 
     IssueWithDependencyMetadata:
       type: object
@@ -6099,9 +6612,16 @@ components:
             `GET /v0/beads/dependencies`.
 
     # ---------------------------------------------------------------------
-    # Envelope schemas. These have no canonical Go type behind them: they are
-    # new wire surface, generated normally, and the generated type is the only
-    # implementation — so there is nothing for them to drift against.
+    # Envelope schemas. Almost all of these have no canonical Go type behind
+    # them: they are new wire surface, generated normally, and the generated
+    # type is the only implementation — so there is nothing for them to drift
+    # against.
+    #
+    # `EventRecord`, further down this region, is the exception and is pinned
+    # to `eventsjournal.Record`: the journal's published envelope is shared with
+    # `bd events tail`, so it HAS a canonical implementation to drift against.
+    # TestWireTagBijection's `pinnedSchemas` is the authority on which schemas
+    # are pinned; do not read this region's position as the answer.
     # ---------------------------------------------------------------------
 
     Health:
@@ -6168,24 +6688,28 @@ components:
         capabilities:
           type: array
           description: >-
-            The operations this server actually implements, derived from its
-            route table. v0's vocabulary is `ready.list`, `ready.count`,
+            The tokens this server advertises: the OPERATIONS it implements,
+            derived from its route table, and the server-wide BEHAVIORS it
+            enforces. v0's operation vocabulary is `ready.list`, `ready.count`,
             `issues.list`, `issues.query`, `issues.count`, `issues.get`,
-            `issues.create`,
+            `issues.related`, `issues.create`,
             `issues.batchClose`,
             `issues.claim`, `issues.claimNext`, `issues.release`,
             `issues.close`, `issues.reopen`, `issues.update`,
             `issues.sweep`, `issues.delete`, `issues.batchCreate`,
             `issues.batchApply`,
             `stats.get`, `config.list`, `config.get`, `dependencies.cycles`,
-            `dependencies.list`, `dependencies.blocking`, `dependencies.tree`,
+            `dependencies.list`, `dependencies.count`,
+            `dependencies.blocking`, `dependencies.tree`,
             `dependencies.add`, `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
             `memories.forget`, `events.list`, `events.watch`,
-            `issues.casMetadata`;
-            it grows additively, and an operation never
-            appears here unless it is fully implemented. This is how a client
-            checks for an operation — never the version string.
+            `issues.casMetadata`; the one behavior token is `project.enforce`,
+            which announces that a `Bd-Project-Id` stamp for the wrong workspace
+            is refused here rather than silently ignored. The list grows
+            additively, and an operation never appears here unless it is fully
+            implemented. This is how a client checks for an operation or a
+            behavior — never the version string.
 
 
             THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which
@@ -6342,9 +6866,12 @@ components:
 
 
             It defaults FALSE, which is the guarded mode, and the default is
-            the protection: this surface has no authentication, so an omitted
-            member must not silently choose the answer that changes another
-            bead's graph.
+            the protection. Authentication here is a deployment posture, and
+            where it is configured it is a single shared bearer that admits a
+            client to the WHOLE surface — it names no principal this operation
+            could weigh and grants no narrower right — so an omitted member
+            must not silently choose the answer that changes another bead's
+            graph.
         dry_run:
           type: boolean
           default: false
@@ -6398,10 +6925,12 @@ components:
             bead's edges are the ones you saw.
 
 
-            The token is the `revision` a lifecycle write answers with. DECODE
-            IT AS A 64-BIT INTEGER, for the reason
-            `UpdateIssueRequest.expected_version` spells out; no READ on this
-            surface publishes one yet.
+            The token is the `revision` a lifecycle write answers with, and the
+            one `GET /v0/beads/issues/{id}` publishes — which is where a delete
+            guard should seed itself, since reading the bead before erasing it
+            is the only way to be sure it is the bead you meant. DECODE IT AS A
+            64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out.
 
     DeleteIssuesResult:
       type: object
@@ -6525,12 +7054,15 @@ components:
 
 
             It DEFAULTS ON here, unlike the library default, and that is
-            deliberate. This surface has no authentication and this is its only
-            destructive operation, so a caller that omits the member must not
-            get weaker protection than the operator typing `bd prune`, which
-            protects unless `--ignore-references`. The inverse — opt OUT
-            locally, opt IN remotely — is the shape that lets a stray request
-            delete a decision trail nothing brings back.
+            deliberate. This is the only destructive operation on the surface,
+            and the bearer a deployment may configure is not a per-caller
+            right: one shared token admits a client to everything published
+            here, so being authenticated says nothing about whether this
+            particular deletion was meant. A caller that omits the member must
+            therefore not get weaker protection than the operator typing `bd
+            prune`, which protects unless `--ignore-references`. The inverse —
+            opt OUT locally, opt IN remotely — is the shape that lets a stray
+            request delete a decision trail nothing brings back.
 
 
             It costs a full scan of the not-done set and its comments. Sending
@@ -6869,11 +7401,15 @@ components:
         One entry of the workspace's stored settings plane.
 
 
-        THIS SCHEMA IS DELIBERATELY NOT `x-go-type`-PINNED, and it is the only
-        response component on this surface that is not. The seven pinned
-        schemas above are pinned because a canonical Go struct already IS the
-        contract — `types.Issue`'s JSON encoding is what `bd show --json`
-        emits. A setting has no such struct: the CLI marshals an ad-hoc
+        THIS SCHEMA IS DELIBERATELY NOT `x-go-type`-PINNED, and it is one of
+        the two ROW schemas on this surface that is not — `Memory` is the
+        other. (Envelopes and page wrappers are unpinned as a class, for a
+        different reason: they are new wire surface with no prior
+        implementation. `TestWireTagBijection`'s `pinnedSchemas` is the
+        authority on what is pinned.) The thirteen pinned schemas above are
+        pinned because a canonical Go struct already IS the contract —
+        `types.Issue`'s JSON encoding is what `bd show --json` emits. A setting
+        has no such struct: the CLI marshals an ad-hoc
         `map[string]string` per verb, so there is nothing to pin TO, and
         minting a type to pin to would mean changing what `bd config get
         --json` prints in order to satisfy a rule about not changing it.
@@ -6881,9 +7417,10 @@ components:
 
         The two surfaces are still one shape where they overlap — `key` and
         `value` are spelled as the CLI spells them — and they diverge in
-        exactly one deliberate place, `redacted`, which exists because this
-        surface has no authentication and the CLI requires access to the
-        database anyway.
+        exactly one deliberate place, `redacted`, which exists because a bearer
+        on this surface is optional, shared and surface-wide — it cannot decide
+        that one caller may read a credential and another may not — while the
+        CLI requires access to the database anyway.
       required: [key, redacted]
       properties:
         key:
@@ -6937,9 +7474,10 @@ components:
         `Setting`. Redaction there is a decision about the KEY NAME, which works
         because settings keys are configured names; memory keys are derived from
         the content, so the same rule would withhold a memory about credentials
-        and serve one containing a credential under an innocuous slug. This
-        surface has no authentication and states the exposure rather than
-        implying a protection it does not have.
+        and serve one containing a credential under an innocuous slug. A
+        configured bearer would not close that either — it admits a client to
+        the whole surface rather than to particular keys — so this schema
+        states the exposure rather than implying a protection it does not have.
       properties:
         key:
           type: string
@@ -7123,6 +7661,95 @@ components:
           items:
             type: string
 
+    EdgeCounts:
+      type: object
+      description: >-
+        Each anchor's edge cardinality — the body of
+        `GET /v0/beads/dependencies:count`. It is NOT a page and carries no
+        total: the answer is per anchor, and a sum across anchors would
+        double-count every edge whose two ends were both named.
+
+
+        It is NOT `x-go-type`-pinned, for `IssueCount`'s reason: there is no
+        canonical Go struct whose JSON encoding is this contract. The role
+        answers with `issueops.EdgeCountResult`, whose members carry no JSON
+        tags at all because nothing marshals it.
+      required: [anchors]
+      properties:
+        anchors:
+          type: array
+          description: >-
+            One entry per DISTINCT requested `issue_id`, in the order the
+            request first named it. Empty array (never null) when the request
+            named no anchors this server accepted — which it cannot, since
+            `issue_id` is required and bounded below at one.
+
+
+            A repeated id appears ONCE. The collapse happens before anything is
+            counted, so a caller that summed the entries would not count the
+            same edges twice.
+          items:
+            $ref: '#/components/schemas/AnchorEdgeCount'
+
+    AnchorEdgeCount:
+      type: object
+      description: One anchor's edge cardinality, or the report that it is not there.
+      required: [id, count, missing]
+      properties:
+        id:
+          type: string
+          description: >-
+            The anchor, spelled exactly as the request spelled it. It is not
+            re-canonicalized: there is no fuzzy, prefix or substring resolution
+            on this surface, so what comes back is what went out.
+        count:
+          type: integer
+          format: int64
+          description: >-
+            How many stored edges match, in the requested direction, after the
+            type and status filters. Never negative.
+
+
+            It SPANS BOTH DEPENDENCY PLANES and is a SUM over them rather than a
+            distinct count of edge rows — a durable issue's dependent count
+            includes the wisps that depend on it, and a wisp's dependency count
+            includes the durable issues it depends on.
+            `issueops.AnchorEdgeCount.Count` states the rule, the one state that
+            can make the sum differ from a distinct count, and why this role
+            answers with the sum. Nothing is restated here.
+
+
+            ALWAYS PRESENT, including as 0, and 0 is the COMMON answer: most
+            issues have no edges in at least one direction. It is 0 for a
+            missing anchor too, which is exactly why `missing` is beside it.
+
+
+            DECODE IT AS A 64-BIT INTEGER. The member is `format: int64` and a
+            workspace's graph is not bounded by 2^53; a lossy parser would
+            answer a number NEAR the count, which on a cardinality is worse
+            than an error because nothing downstream can tell.
+        missing:
+          type: boolean
+          description: >-
+            True when no issue and no wisp carries this id.
+
+
+            ALWAYS PRESENT, including as `false`. It is the member that keeps
+            this from being a question a caller cannot tell it got wrong: a
+            count of 0 is otherwise indistinguishable from a typo, and an
+            absent boolean would be ambiguous between "present" and "this
+            producer does not report misses".
+
+
+            A missing anchor counts 0 whatever rows are still keyed to it — a
+            dependency row whose source has been deleted is orphaned data, and
+            counting it would contradict this flag.
+
+
+            DANGLING EDGES ARE NOT MISSING ANCHORS. This is about the ANCHOR. An
+            edge whose OTHER end names nothing is counted like any other edge,
+            and nothing here reports on it.
+
     BlockingAnnotations:
       type: object
       description: >-
@@ -7144,6 +7771,49 @@ components:
             entry and an id that names nothing is simply bare.
           items:
             $ref: '#/components/schemas/IssueBlocking'
+
+    RelatedIssues:
+      type: object
+      description: >-
+        One issue's neighbors — the body of
+        `GET /v0/beads/issues/{id}/related`. It is NOT a page: this operation
+        has no limit and no cursor, and it names ONE anchor, so there is nothing
+        for a `has_more` to be about.
+
+
+        There is no `missing` beside `items`, unlike `DependencyEdges`. That
+        member exists because a batch cannot report an absent anchor any other
+        way without discarding the anchors it did find; here the single absent
+        anchor is a 404.
+
+
+        It is NOT `x-go-type`-pinned, for `EdgeCounts`' reason: there is no
+        canonical Go struct whose JSON encoding is this envelope. The role
+        answers with a bare slice of `issueops.RelatedIssue`, and THAT element
+        is pinned — see `IssueWithDependencyMetadata`.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: >-
+            The neighbors, ascending by id with the edge type breaking a tie.
+            Empty array (never null) when this issue has none in the requested
+            direction, or when the `type` filter rejected every edge.
+
+
+            Each element is a full issue plus `dependency_type`, the type of the
+            edge that led to it — the same element
+            `GET /v0/beads/issues/{id}` carries under `dependencies` and
+            `dependents`, so the two surfaces are one compatibility domain.
+
+
+            AN EDGE WITH NO FAR END IN THIS DATABASE CONTRIBUTES NOTHING here:
+            an `external:` reference, an id in another repository's namespace
+            and an id whose issue was deleted out from under its edges are all
+            silently absent, with no placeholder row and no error. The length of
+            this array is a NEIGHBOR count, never an edge count.
+          items:
+            $ref: '#/components/schemas/IssueWithDependencyMetadata'
 
     BatchCreateRequest:
       type: object
@@ -7631,6 +8301,13 @@ components:
 
             `expected_status` and `expected_assignee` carry no such rule,
             because a caller CAN know what its own earlier item set them to.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out. It bites harder
+            here than anywhere else on the surface: a corrupted token refuses
+            the WHOLE plan rather than one write, so a client with a lossy
+            parser loses every item of every batch it guards.
         expected_status:
           type: string
           maxLength: 255
@@ -7910,6 +8587,11 @@ components:
             REFUSAL where this verb answers with a no-op. That belongs on an
             `update` item whose `patch.status` crosses into the done category.
 
+
+            DECODE IT AS A 64-BIT INTEGER, on
+            `ApplyUpdateItem.expected_version`'s terms, including its note that
+            a corrupted token here costs the whole plan.
+
     ApplyDepAddItem:
       type: object
       additionalProperties: false
@@ -8059,6 +8741,15 @@ components:
             legacy row backfilled and not mutated since — and a `dep_add` is 0
             too, because an edge acts on no single row's version. An absent
             member would be ambiguous between the two.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double
+            parser corrupts it silently, and the corruption only shows up as a
+            `precondition_failed` on the NEXT request. This member is the one
+            every other `revision` on the surface is spelled against, so the
+            warning belongs here most of all — a client that reads it through a
+            lossy parser here carries the damage into every guard it composes.
 
     AddDependenciesRequest:
       type: object
@@ -8633,9 +9324,10 @@ components:
             Compose the next expectation from the value a write ANSWERED with,
             never from a number the client incremented itself: the token is
             OPAQUE and compared for equality alone, so it has no predecessor a
-            client can compute. No READ on this surface publishes one yet, so a
-            first guarded close seeds itself from an unguarded lifecycle write
-            or from `POST /v0/beads/issues:batchApply`'s
+            client can compute. A first guarded close seeds itself from
+            `GET /v0/beads/issues/{id}`'s `revision` — the read that sources a
+            guard — or, for a chain already mid-flight, from an unguarded
+            lifecycle write or `POST /v0/beads/issues:batchApply`'s
             `ApplyItemResult.revision`.
 
 
@@ -8873,10 +9565,11 @@ components:
             the operation that patches one row.
 
 
-            The token is the `revision` this operation's own response carries.
-            No READ on this surface publishes one yet, so a first guarded write
-            seeds itself from an unguarded one or from
-            `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`.
+            The token is the `revision` this operation's own response carries,
+            and the same one `GET /v0/beads/issues/{id}` publishes — which is
+            where a first guarded write seeds itself, rather than from an
+            unguarded one or from `POST /v0/beads/issues:batchApply`'s
+            `ApplyItemResult.revision`.
             Compose the next expectation from the value the write ANSWERED with,
             never from a number the client incremented itself: the token is
             OPAQUE and compared for equality alone, so it has no predecessor a
@@ -9162,8 +9855,8 @@ components:
             loop composes its next expectation from THIS value and never from a
             number it incremented itself, for the reason
             `compareAndSetMetadata` gives about a value the store renormalizes.
-            No read on this surface publishes a revision yet; when one does, this
-            member is what it will agree with.
+            `GET /v0/beads/issues/{id}`'s `revision` is the read that publishes
+            the same token, and this member agrees with it.
 
 
             DECODE IT AS A 64-BIT INTEGER, for the reason
@@ -9513,17 +10206,33 @@ components:
           type: string
           description: >-
             With `invalid_argument`: `unknown_parameter` (this server does not
-            know that parameter — version skew; degrade or fall back) or
+            know that parameter — version skew; degrade or fall back),
             `invalid_value` (the value is not one this server will act on:
             malformed, out of vocabulary, or — for `limit=0` under
             `--allow-non-loopback` — legal but refused in this server's
-            configuration; `detail` says which). Either way `invalid_value`
-            means send something different, never retry the same request. The
-            set may grow; default-branch on unknown values.
+            configuration; `detail` says which), or `project_mismatch` (the
+            `Bd-Project-Id` header named a project this server does not serve —
+            a document-level refusal like the Host-header 400, raised on every
+            enforced route, and the one that carries `server_project_id`; see
+            the document-level rule). Either way the recovery is to send
+            something different, never to retry the same request. The set may
+            grow; default-branch on unknown values.
         assignee:
           type: string
           description: >-
-            With `already_claimed`: the actor currently holding the issue.
+            With `already_claimed`: the actor currently holding the issue, read
+            inside the transaction that refused.
+
+
+            IT IS OPTIONAL ON EVERY OPERATION BUT THE CLAIM. `POST
+            /v0/beads/issues/{id}:claim` always carries it, because its
+            conflict path reads the row it lost to. `PATCH
+            /v0/beads/issues/{id}` and `POST /v0/beads/issues:batchApply` carry
+            it only when the refusing transaction reported a holder, and `POST
+            /v0/beads/issues/{id}:release` never does — the ownership fence
+            refuses without naming anyone. An absent member means "this refusal
+            could not name the holder", never "nobody holds it"; re-read the
+            row.
         issue_status:
           type: string
           description: >-
@@ -9607,6 +10316,16 @@ components:
             member is omitted rather than reconstructed. Its absence therefore
             means "this server cannot tell you what it found", never "it found
             zero".
+
+
+            NO v0 OPERATION EMITS IT TODAY, nor `actual_status` or
+            `actual_assignee`. Every operation that publishes a guard refuses
+            all-or-nothing, and none of the roles behind them carries the
+            observed value out of the rolled-back transaction. The three
+            members are declared so that an operation whose role CAN report
+            what it found is an addition rather than a wire change — a client
+            must not wait for them, and must never read their absence as a
+            value.
         expected_status:
           type: string
           description: >-
@@ -9713,3 +10432,13 @@ components:
             (This server mints per-process ids that do not survive a restart;
             a deployment may substitute any identifier with the same
             log-correlation property, such as an edge trace id.)
+        server_project_id:
+          type: string
+          description: >-
+            With `invalid_argument` / `reason: "project_mismatch"` ONLY: the
+            project id this server actually serves, so a client that stamped a
+            `Bd-Project-Id` can tell a wrong-server refusal from a malformed one
+            without parsing `detail`. It is set on that refusal and on no other,
+            and never on a refusal raised before the stamp is checked — the Host
+            gate, or a deployment's authentication layer — so its PRESENCE is the
+            signal that this specific check fired.

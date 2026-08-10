@@ -92,8 +92,8 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 	// peeling all of them (storage.UnwrapStore) is the mistake that looks
 	// identical on a single-layer chain. The middle store stands in for the
 	// telemetry layer bd wires there, which is an Unwrapper too.
-	stubs := func(inner storage.DoltStorage) *serveRolesStore {
-		return &serveRolesStore{
+	stubs := func(inner storage.DoltStorage) *serveRolesDoltStore {
+		return &serveRolesDoltStore{serveRolesStore: &serveRolesStore{
 			reader:       &serveStubReader{},
 			claimer:      &serveStubClaimer{},
 			batchCloser:  &serveStubBatchCloser{},
@@ -104,8 +104,10 @@ func TestServeIssueRolesComeFromBeneathTheHookDecorator(t *testing.T) {
 			batchApplier: &serveStubBatchApplier{},
 			metadataCAS:  &serveStubMetadataCAS{},
 			counter:      &serveStubCounter{},
+			edgeCounter:  &serveStubGraphCounter{},
+			relations:    &serveStubRelations{},
 			inner:        inner,
-		}
+		}}
 	}
 	inner := stubs(nil)
 	middle := stubs(inner)
@@ -325,11 +327,16 @@ func writeBrokenBeadsConfig(t *testing.T, beadsDir string) {
 	}
 }
 
-// serveRolesStore is the smallest DoltStorage the role extraction can be
-// pointed at: it publishes its own roles and unwraps to an inner store with
-// different ones, so a peel of the wrong depth lands on identifiably wrong
-// values. The embedded DoltStorage is nil, so an accessor serveIssueRoles
-// starts calling without a stub here panics rather than passing quietly.
+// serveRolesStore is the smallest source the role extraction can be pointed at:
+// it publishes its own roles and unwraps to an inner store with different ones,
+// so a peel of the wrong depth lands on identifiably wrong values.
+//
+// IT EMBEDS NOTHING, and the assertion below is why. A stub that embedded a nil
+// storage.DoltStorage would answer every accessor it forgot with a promoted
+// method on a nil interface — a segfault inside serveIssueRoles rather than a
+// compile error, which is how GraphCounter reached this file. Declaring the
+// whole of serveRoleSource means the next role added there stops the build here,
+// naming the method.
 //
 // Only the reader and the claimer carry identifiable values. That is enough to
 // pin the peel DEPTH, which is the whole property under test: serveIssueRoles
@@ -337,7 +344,6 @@ func writeBrokenBeadsConfig(t *testing.T, beadsDir string) {
 // can come from a different layer than these two did. The rest return nil
 // because the extraction does not inspect them.
 type serveRolesStore struct {
-	storage.DoltStorage
 	reader       *serveStubReader
 	claimer      *serveStubClaimer
 	batchCloser  *serveStubBatchCloser
@@ -348,8 +354,32 @@ type serveRolesStore struct {
 	batchApplier *serveStubBatchApplier
 	metadataCAS  *serveStubMetadataCAS
 	counter      *serveStubCounter
+	edgeCounter  *serveStubGraphCounter
+	relations    *serveStubRelations
 	inner        storage.DoltStorage
 }
+
+var _ serveRoleSource = (*serveRolesStore)(nil)
+
+// serveRolesDoltStore is serveRolesStore where a WHOLE store is required:
+// wireStorageDecorators builds the chain this test peels, and it takes a
+// storage.DoltStorage.
+//
+// The roles above sit one embed shallower than the nil store beneath them, so
+// they shadow it: every accessor serveIssueRoles reaches is declared, and only
+// the rest of the interface — none of which this test calls — falls through to
+// the nil embed. A new role therefore fails the assertion above rather than
+// being quietly promoted here.
+type serveRolesDoltStore struct {
+	*serveRolesStore
+	serveStubRest
+}
+
+// serveStubRest carries the remainder of storage.DoltStorage for a stub that
+// declares its own roles, one embed deeper than those roles. It is the shared
+// half of the shadowing described above; serve_store_identity_test.go's stub
+// uses it for the same reason.
+type serveStubRest struct{ storage.DoltStorage }
 
 func (s *serveRolesStore) IssueReader() (issueops.Reader, error)   { return s.reader, nil }
 func (s *serveRolesStore) IssueClaimer() (issueops.Claimer, error) { return s.claimer, nil }
@@ -418,6 +448,47 @@ func (s *serveRolesStore) MetadataCAS() (issueops.MetadataCAS, error) { return s
 // the role, and then it surfaced on one CI runner as a panic in a test about
 // hook peeling.
 func (s *serveRolesStore) Counter() (issueops.Counter, error) { return s.counter, nil }
+
+// GraphCounter is declared for Counter's reason, and it is the SECOND role to
+// need this file edited for a promotion rather than for a hook: the edge count
+// is a read, so hook_graph_counter.go recurses and the recursion lands here.
+// The count role's own comment above says this went unnoticed until `bd serve`
+// began binding it; this one was found the same way, by this test panicking the
+// moment the binding landed.
+func (s *serveRolesStore) GraphCounter() (issueops.GraphCounter, error) { return s.edgeCounter, nil }
+
+// IssueRelations is the FIRST role added to serveIssueRoles since this type
+// stopped embedding a nil store, and it is worth recording what that changed —
+// because the two comments above it describe the old regime and are now history
+// rather than instruction.
+//
+// Counter and GraphCounter had to be FOUND. Neither is wrapped by the hook
+// decorator (both are reads, so their decorators recurse), so neither was
+// noticed until `bd serve` began binding it — GraphCounter on a full-package CI
+// shard, because no -run pattern anyone reaches for names this test.
+//
+// This one could not be missed. serveRoleSource names the accessor, the
+// assertion above requires it, and omitting it is `*serveRolesStore does not
+// implement serveRoleSource (missing method IssueRelations)` at build time, in
+// this file, naming the method. Which is the whole return on #5539 landing
+// first, measured on the next role rather than asserted about it.
+func (s *serveRolesStore) IssueRelations() (issueops.Relations, error) { return s.relations, nil }
+
+// serveStubRelations is the neighbor role's stand-in, ErrUnsupported like every
+// stub here.
+type serveStubRelations struct{}
+
+func (*serveStubRelations) Related(context.Context, issueops.RelatedRequest) ([]*issueops.RelatedIssue, error) {
+	return nil, errors.ErrUnsupported
+}
+
+// serveStubGraphCounter is the edge-count role's stand-in, ErrUnsupported like
+// every stub here.
+type serveStubGraphCounter struct{}
+
+func (*serveStubGraphCounter) CountEdges(context.Context, issueops.EdgeCountRequest) (issueops.EdgeCountResult, error) {
+	return issueops.EdgeCountResult{}, errors.ErrUnsupported
+}
 
 // serveStubCounter is the count role's stand-in. It answers ErrUnsupported like
 // every stub here: this file's subject is which LAYER a role comes from, never

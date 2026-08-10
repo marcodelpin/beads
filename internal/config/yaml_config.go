@@ -153,8 +153,10 @@ var secretKeySegments = map[string]bool{
 // `bd config set` guard that refuses to write a credential into a git-tracked
 // file, and — since the settings surface went on the wire — the redaction in
 // internal/httpapi that decides whether GET /v0/beads/config publishes a
-// value. `bd serve` has no authentication, so a spelling missing from this
-// predicate is a credential served in cleartext.
+// value. Redaction is the whole control there: a `bd serve` bearer is optional
+// and, where configured, shared and surface-wide, so it cannot withhold one
+// value from one caller — and there is no TLS either. A spelling missing from
+// this predicate is a credential served in cleartext.
 //
 // It errs toward over-redacting for that reason: a key wrongly withheld is an
 // operator asking why, and a key wrongly published cannot be recalled. The

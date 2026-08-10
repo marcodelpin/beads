@@ -176,9 +176,21 @@ type MetadataCAS interface {
 	// that; a role's caller here is a retry loop, for which a lost race is the
 	// ordinary path and an error is the wrong shape for it — and an error
 	// cannot hand back Current without a bespoke type every caller must
-	// errors.As before it can read the one field it needs. A FRONT DOOR STILL
-	// OWES THE LOUD REFUSAL: a CLI or HTTP surface over this role reports a
-	// false Swapped as a failed precondition, never as success.
+	// errors.As before it can read the one field it needs.
+	//
+	// A FRONT DOOR OWES THE CALLER AN UNMISTAKABLE ANSWER, WHICH IS NOT THE
+	// SAME AS AN ERROR, and the shipped HTTP spelling is the worked example:
+	// POST /v0/beads/issues/{id}:casMetadata answers a refused swap with 200
+	// and `swapped: false` beside `current`, and publishes NO 409 at all,
+	// because a conflict code would put a retry loop's ordinary iteration into
+	// the error channel and force the value that loop needs next to travel as
+	// a problem extension member. What a front door must never do is let a
+	// false Swapped read as a landed write: `swapped` is the member a client
+	// dispatches on, and a surface that reported only the status would be
+	// telling a caller its swap succeeded. A front door whose contract is an
+	// EXIT CODE — a shell script's, where a swallowed refusal is the hazard
+	// this role's sibling guards raise ErrAssigneeMismatch for — owes a
+	// non-zero exit instead, for the same reason spelled in its own vocabulary.
 	//
 	// REFUSALS, all before anything is written:
 	//

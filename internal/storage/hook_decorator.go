@@ -234,6 +234,11 @@ func (h *HookFiringStore) CloseIssueWithResult(ctx context.Context, id string, r
 // on_close on success — mirroring CloseIssue, this includes the idempotent
 // no-op when the issue was already closed (res.Unchanged). A guard rejection
 // (ErrCloseBlocked) or any other error returns without firing.
+//
+// THE BATCH VERBS DO NOT FOLLOW THIS RULE: hookBatchCloser and hookBatchApplier
+// fire per item on Changed, so a replayed teardown does not re-run on_close N
+// times (ga-2yaqp.1). This single close keeps the firing because one re-close
+// is one answer to one question a script asked.
 func (h *HookFiringStore) CloseIssueChecked(ctx context.Context, id string, actor string, opts CloseIssueOptions) (CloseIssueResult, error) {
 	res, err := h.inner.CloseIssueChecked(ctx, id, actor, opts)
 	if err != nil {

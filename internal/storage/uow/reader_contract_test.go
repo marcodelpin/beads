@@ -98,6 +98,9 @@ func TestReaderContract(t *testing.T) {
 	t.Run("GetOptionalRowListsAreOffByDefault", func(t *testing.T) {
 		conformance.RunReaderGetOptionalRowListsAreOffByDefault(t, ctx, fixture)
 	})
+	t.Run("GetBriefDepsProjectsTheDependencyRows", func(t *testing.T) {
+		conformance.RunReaderGetBriefDepsProjectsTheDependencyRows(t, ctx, fixture)
+	})
 	t.Run("GetDetailShapeMatchesTheSeededIssue", func(t *testing.T) {
 		conformance.RunReaderGetDetailShapeMatchesTheSeededIssue(t, ctx, fixture)
 	})

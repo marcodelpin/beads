@@ -46,13 +46,17 @@ const (
 // caller-named actor, and the write whose posture every later one adopted.
 //
 // ACTOR SEMANTICS, stated because adopting this endpoint depends on them. The
-// actor is caller-ASSERTED provenance for the audit trail, not authenticated
-// identity: this API has no authentication, so any client can claim as any
-// name, exactly as any local process can pass any --actor to the CLI. The CAS
-// is therefore a correctness fence against CONCURRENT claims, not an
-// authorization boundary — it guarantees that two racing claimants cannot both
-// win, and guarantees nothing about who either of them really is. The
-// loopback-only bind is what bounds the blast radius of that posture.
+// actor is caller-ASSERTED provenance for the audit trail and is NOT the
+// authenticated principal, even where a bearer is required: the token a
+// deployment configures is shared and surface-wide, so it names nobody and
+// cannot confirm or contradict the actor a request sends. Any client that
+// reaches this endpoint can claim as any name, exactly as any local process
+// can pass any --actor to the CLI. The CAS is therefore a correctness fence
+// against CONCURRENT claims, not an authorization boundary — it guarantees
+// that two racing claimants cannot both win, and guarantees nothing about who
+// either of them really is. What bounds the blast radius of that posture is
+// the bind: loopback by default, and beyond loopback only with a token file
+// (or the explicit --insecure-no-auth).
 //
 // Two things a CLI claim does that this deliberately does not: hooks do not
 // fire (a user-controlled subprocess per mutation is an unbounded latency
@@ -319,6 +323,8 @@ var (
 	_ uow.StatsReporterSource       = timedProvider{}
 	_ uow.CycleDetectorSource       = timedProvider{}
 	_ uow.EdgeReaderSource          = timedProvider{}
+	_ uow.GraphCounterSource        = timedProvider{}
+	_ uow.RelationsSource           = timedProvider{}
 	_ uow.BlockingAnnotatorSource   = timedProvider{}
 	_ uow.TreeWalkerSource          = timedProvider{}
 	_ uow.ReadyCounterSource        = timedProvider{}
@@ -427,6 +433,20 @@ func (p timedProvider) CycleDetector() (issueops.CycleDetector, error) {
 // reason and with the same hazard as IssueReader.
 func (p timedProvider) EdgeReader() (issueops.EdgeReader, error) {
 	return uow.NewEdgeReader(p)
+}
+
+// GraphCounter builds the edge-count role OVER THIS WRAPPER, for the same
+// reason and with the same hazard as IssueReader.
+func (p timedProvider) GraphCounter() (issueops.GraphCounter, error) {
+	return uow.NewGraphCounter(p)
+}
+
+// IssueRelations builds the single-anchor neighbor role OVER THIS WRAPPER, for
+// the same reason and with the same hazard as IssueReader. It is the one
+// accessor here whose name is not the role's: the seam spells it IssueRelations
+// on both the store and the provider, and this type implements the seam.
+func (p timedProvider) IssueRelations() (issueops.Relations, error) {
+	return uow.NewIssueRelations(p)
 }
 
 // BlockingAnnotator builds the blocking-decoration role OVER THIS WRAPPER, for

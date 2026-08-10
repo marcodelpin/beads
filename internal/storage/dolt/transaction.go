@@ -428,19 +428,22 @@ func (t *doltTransaction) CreateIssue(ctx context.Context, issue *types.Issue, a
 		return fmt.Errorf("issue must not be nil")
 	}
 
-	if issueops.IsWisp(issue) {
-		bc, err := issueops.NewBatchContext(ctx, t.ignoredTx, storage.BatchCreateOptions{SkipPrefixValidation: true})
-		if err != nil {
-			return err
-		}
-		_, err = issueops.CreateIssueInTxWithResult(ctx, t.ignoredTx, bc, issue, actor)
-		return err
-	}
-
+	// Build the validation context on regularTx for both tiers: wisp rows
+	// live on the ignored session, but the validation context (config,
+	// custom_types) lives in regular dolt-tracked tables — reading it
+	// through regularTx keeps types registered earlier in this transaction
+	// (tx.SetConfig("types.custom", ...)) visible. Both sessions are
+	// pinned to the same branch (GH#5443).
 	bc, err := issueops.NewBatchContext(ctx, t.regularTx, storage.BatchCreateOptions{SkipPrefixValidation: true})
 	if err != nil {
 		return err
 	}
+
+	if issueops.IsWisp(issue) {
+		_, err = issueops.CreateIssueInTxWithResult(ctx, t.ignoredTx, bc, issue, actor)
+		return err
+	}
+
 	result, err := issueops.CreateIssueInTxWithResult(ctx, t.regularTx, bc, issue, actor)
 	if err != nil {
 		return err
@@ -473,10 +476,18 @@ func (t *doltTransaction) CreateIssues(ctx context.Context, issues []*types.Issu
 		}
 	}
 
+	// See CreateIssue: one validation context on regularTx serves both
+	// tiers, so in-transaction custom-type registration is visible to the
+	// wisp tier too (GH#5443).
+	bc, err := issueops.NewBatchContext(ctx, t.regularTx, storage.BatchCreateOptions{
+		SkipPrefixValidation: true,
+	})
+	if err != nil {
+		return err
+	}
+
 	if len(regularIssues) > 0 {
-		result, err := issueops.CreateIssuesInTxWithResult(ctx, t.regularTx, regularIssues, actor, storage.BatchCreateOptions{
-			SkipPrefixValidation: true,
-		})
+		result, err := issueops.CreateIssuesInTxWithContext(ctx, t.regularTx, bc, regularIssues, actor)
 		if err != nil {
 			return err
 		}
@@ -486,9 +497,7 @@ func (t *doltTransaction) CreateIssues(ctx context.Context, issues []*types.Issu
 	}
 
 	if len(wispIssues) > 0 {
-		if _, err := issueops.CreateIssuesInTxWithResult(ctx, t.ignoredTx, wispIssues, actor, storage.BatchCreateOptions{
-			SkipPrefixValidation: true,
-		}); err != nil {
+		if _, err := issueops.CreateIssuesInTxWithContext(ctx, t.ignoredTx, bc, wispIssues, actor); err != nil {
 			return err
 		}
 	}
@@ -1114,16 +1123,17 @@ func (t *doltTransaction) readDepTargetForPrecheck(ctx context.Context, sourceID
 	return &p, nil
 }
 
-// checkCrossTierSchedulingCycle rejects a scheduling edge (blocks,
-// conditional-blocks, parent-child — the same set issueops.CheckDependencyCycleInTx
-// gates) that would close a cycle, using the merged view of both sessions'
-// dependency tables. The in-tx cycle check scans both tables on the write tx
-// and so misses edges added on the other session earlier in this logical
-// transaction.
+// checkCrossTierSchedulingCycle rejects a scheduling edge that would close a
+// cycle, using the merged view of both sessions' dependency tables. The in-tx
+// cycle check scans both tables on the write tx and so misses edges added on
+// the other session earlier in this logical transaction.
+//
+// The set is types.IsSchedulingEdge's, by call and not by restatement: an
+// inline copy that missed a fifth scheduling type would fall through to
+// "not a scheduling edge" and skip this gate entirely, which is silence rather
+// than a failure — the whole reason that predicate was consolidated (ga-2ltro.10).
 func (t *doltTransaction) checkCrossTierSchedulingCycle(ctx context.Context, dep *types.Dependency) error {
-	switch dep.Type {
-	case types.DepBlocks, types.DepConditionalBlocks, types.DepParentChild:
-	default:
+	if !types.IsSchedulingEdge(dep.Type) {
 		return nil
 	}
 	cycle, err := t.CycleThroughEdges(ctx, [][2]string{{dep.IssueID, dep.DependsOnID}})
@@ -1277,10 +1287,28 @@ func (t *doltTransaction) SetConfig(ctx context.Context, key, value string) erro
 		INSERT INTO config (`+"`key`"+`, value) VALUES (?, ?)
 		ON DUPLICATE KEY UPDATE value = VALUES(value)
 	`, key, value)
-	if err == nil {
-		t.dirty.MarkDirty("config")
+	if err != nil {
+		return wrapExecError("set config in tx", err)
 	}
-	return wrapExecError("set config in tx", err)
+	t.dirty.MarkDirty("config")
+
+	// ResolveCustomTypesInTx reads the normalized tables first, so without
+	// this sync a type registered in-transaction stays invisible to
+	// validation whenever the table already has rows.
+	table, err := issueops.SyncConfigTables(ctx, t.regularTx, key, value)
+	if err != nil {
+		return err
+	}
+	if table != "" {
+		t.dirty.MarkDirty(table)
+	}
+
+	// Keep store-level caches (GetCustomTypes and friends) coherent with
+	// in-transaction config writes; see invalidateConfigCaches.
+	if t.store != nil {
+		t.store.invalidateConfigCaches(key)
+	}
+	return nil
 }
 
 // GetConfig gets a config value within the transaction

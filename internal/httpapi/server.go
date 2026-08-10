@@ -209,11 +209,26 @@ type Config struct {
 	// hook-firing refusal below bites hardest on it: a store's own
 	// IssueLifecycle() returns a role that fires on_create, on_update and the
 	// close hooks for every mutation it lands.
-	Lifecycle         issueops.Lifecycle
-	Settings          issueops.WorkspaceConfig
-	Stats             issueops.StatsReporter
-	CycleDetector     issueops.CycleDetector
-	EdgeReader        issueops.EdgeReader
+	Lifecycle     issueops.Lifecycle
+	Settings      issueops.WorkspaceConfig
+	Stats         issueops.StatsReporter
+	CycleDetector issueops.CycleDetector
+	EdgeReader    issueops.EdgeReader
+	// GraphCounter is the edge-count role behind
+	// GET /v0/beads/dependencies:count. It is a SEPARATE field from EdgeReader
+	// for the reason Counter is separate from ReadyCounter: that role answers
+	// with the edge ROWS in one direction, this one with a number in either,
+	// and neither can answer the other's question. Required on the same terms
+	// as every field here.
+	GraphCounter issueops.GraphCounter
+	// Relations is the single-anchor neighbor read behind
+	// GET /v0/beads/issues/{id}/related. It is a SEPARATE field from EdgeReader
+	// for the reason issueops.EdgeReader's own doc gives at length: that role
+	// answers with the edge ROWS for many anchors and reports a miss per anchor,
+	// this one answers with the hydrated ISSUES on the far end for ONE anchor and
+	// answers ErrNotFound. Different answer shape, different miss policy,
+	// different arity. Required on the same terms as every field here.
+	Relations         issueops.Relations
 	BlockingAnnotator issueops.BlockingAnnotator
 	TreeWalker        issueops.TreeWalker
 	ReadyCounter      issueops.ReadyCounter
@@ -329,6 +344,8 @@ type Server struct {
 	issueStats        issueops.StatsReporter
 	issueCycles       issueops.CycleDetector
 	issueEdges        issueops.EdgeReader
+	issueEdgeCounter  issueops.GraphCounter
+	issueRelations    issueops.Relations
 	issueBlocking     issueops.BlockingAnnotator
 	issueTree         issueops.TreeWalker
 	issueReadyCounter issueops.ReadyCounter
@@ -478,6 +495,8 @@ func Listen(cfg Config) (*Server, error) {
 		issueStats:        cfg.Stats,
 		issueCycles:       cfg.CycleDetector,
 		issueEdges:        cfg.EdgeReader,
+		issueEdgeCounter:  cfg.GraphCounter,
+		issueRelations:    cfg.Relations,
 		issueBlocking:     cfg.BlockingAnnotator,
 		issueTree:         cfg.TreeWalker,
 		issueReadyCounter: cfg.ReadyCounter,
@@ -595,12 +614,12 @@ func Listen(cfg Config) (*Server, error) {
 // "all or nothing" would turn an honest condition into a special case inside
 // three functions. It is checked once, on its own, below.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
+	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.GraphCounter, cfg.Relations, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
+const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, GraphCounter, Relations, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -796,17 +815,21 @@ func (s *Server) claimer(r *http.Request) (issueops.Claimer, error) {
 // terms as every role above and held by INTERFACE so uow.BatchCloserSource is
 // load-bearing rather than decorative.
 //
-// It goes out UNWRAPPED, like the dependency editor: CloseBatchResult is a
-// VALUE, and the pointer its outcomes carry is forwarded rather than
-// dereferenced — a nil issue on a successful outcome is omitted from that
-// item's body, which is the same absence a refused item produces and is the
-// honest answer either way.
+// Wrapped in checkedBatchCloser from either source, and the hazard it folds is
+// not the one the other wrappers exist for. Nothing here dereferences the issue
+// pointer an outcome carries; what this role owns instead is a POSITIONAL array
+// the client reads against its own argument list, and checkedBatchCloser says
+// what a miscounted or contentless entry in it costs.
 func (s *Server) batchCloser(r *http.Request) (issueops.BatchCloser, error) {
 	if s.provider == nil {
-		return s.issueBatchCloser, nil
+		return checkedBatchCloser{inner: s.issueBatchCloser}, nil
 	}
 	var src uow.BatchCloserSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
-	return src.BatchCloser()
+	closer, err := src.BatchCloser()
+	if err != nil {
+		return nil, err
+	}
+	return checkedBatchCloser{inner: closer}, nil
 }
 
 // readyClaimer returns the take-ready-work surface for one request.
@@ -895,6 +918,38 @@ func (s *Server) edgeReader(r *http.Request) (issueops.EdgeReader, error) {
 	}
 	var src uow.EdgeReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.EdgeReader()
+}
+
+// graphCounter returns the edge-count surface for one request, built the same
+// two ways as edgeReader above and held by INTERFACE so
+// uow.GraphCounterSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED, for counter's reason: the role answers with a VALUE
+// whose slice a nil-safe range walks, so no handler dereferences a pointer it
+// returned and a checked wrapper would be ceremony that reads like a guarantee.
+func (s *Server) graphCounter(r *http.Request) (issueops.GraphCounter, error) {
+	if s.provider == nil {
+		return s.issueEdgeCounter, nil
+	}
+	var src uow.GraphCounterSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.GraphCounter()
+}
+
+// relations returns the single-anchor neighbor surface for one request, built
+// the same two ways as edgeReader above and held by INTERFACE so
+// uow.RelationsSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED even though the role answers with a slice of POINTERS,
+// which is the one place this differs from checkedReader's argument. That
+// wrapper exists because handleGetIssue DEREFERENCES the pointer a role handed
+// back; here wireRelated drops a nil element the way wireItems and wireEdges
+// already do, so there is nothing for a checked wrapper to make safe.
+func (s *Server) relations(r *http.Request) (issueops.Relations, error) {
+	if s.provider == nil {
+		return s.issueRelations, nil
+	}
+	var src uow.RelationsSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.IssueRelations()
 }
 
 // blockingAnnotator returns the derived blocking-decoration surface for one
@@ -1444,14 +1499,21 @@ func (s *Server) closeStreams() {
 }
 
 // route wraps one operation with the limits that apply to it: the per-request
-// deadline, the bearer credential unless the operation is exempt, and — unless
-// the operation is exempt — a database slot.
+// deadline, the bearer credential unless the operation is exempt, the
+// Bd-Project-Id stamp check unless the operation is exempt, and — unless the
+// operation is exempt — a database slot.
 //
 // The credential check runs BEFORE the semaphore, which is the load-bearing
 // ordering: a storm of refused requests then costs one SHA-256 each and can
 // never occupy the slots, or the SQL connections pinned to them, that
 // authenticated clients are waiting for. It runs inside withRequestContext, so
 // a 401 gets a request id and a request log line like every other refusal.
+//
+// The stamp check runs AFTER the credential and before the semaphore: the
+// project-mismatch refusal is the one that discloses this server's own project
+// id (server_project_id), so it must sit behind the authentication gate — an
+// unauthenticated caller is turned away by the 401 before the stamp is ever
+// compared, and so learns nothing about the workspace's identity.
 func (s *Server) route(rt route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := requestInfo(r.Context())
@@ -1470,6 +1532,19 @@ func (s *Server) route(rt route) http.Handler {
 
 		if !rt.authExempt && s.auth != nil && !s.authorize(w, r, rec) {
 			return
+		}
+
+		// Identity before resources: a stamp for the wrong workspace is turned
+		// away before it can buy a database slot or open a unit of work, so a
+		// misdirected read or write costs nothing and mutates nothing. The two
+		// exempt routes (liveness, identity handshake) skip it. It runs after
+		// the credential check so the server_project_id it discloses stays
+		// behind the authentication gate.
+		if !rt.projectExempt {
+			if res := s.checkProjectStamp(r); res != nil {
+				s.fail(w, r, *res)
+				return
+			}
 		}
 
 		if !rt.bypassSemaphore {
@@ -1547,6 +1622,39 @@ func (s *Server) authLabel() string {
 		return "none"
 	}
 	return "bearer (" + s.auth.path + ")"
+}
+
+// checkProjectStamp enforces per-request workspace identity. A client that
+// stamps a request with its intended workspace's project id in the
+// Bd-Project-Id header is asserting "I mean to be talking to THIS workspace"; if
+// the id it names is not the one this server serves, the request is refused
+// before it can read or write the wrong workspace. It returns nil when the
+// request may proceed, or the 400 to write.
+//
+// The comparison is LITERAL, and a server whose own project id is empty refuses
+// any non-empty stamp: it cannot prove it is the workspace the client named, so
+// it does not answer as if it were. That mirrors the identity handshake — a
+// server advertises the id it can assert, and asserts nothing when it has none.
+//
+// Two paths return nil. An ABSENT header is the backward-compatible one: an
+// older client never sends it, and enforcement triggers only when the header
+// arrives, so this adds no precondition to any request already in the field. A
+// stamp equal to the server's own project id is a match.
+//
+// The refusal is recorded on the request line like every other middleware
+// refusal, so a client persistently addressing the wrong server is attributable
+// on loopback down to the local process.
+func (s *Server) checkProjectStamp(r *http.Request) *Result {
+	stamp := r.Header.Get(ProjectIDHeader)
+	if stamp == "" {
+		return nil
+	}
+	if stamp == s.ctxBody.ProjectId {
+		return nil
+	}
+	requestInfo(r.Context()).refuse(stamp)
+	res := ProjectMismatch(stamp, s.ctxBody.ProjectId)
+	return &res
 }
 
 // fail writes a problem response and records what it was for the log line.
