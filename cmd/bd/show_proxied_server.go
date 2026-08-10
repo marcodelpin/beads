@@ -34,6 +34,7 @@ type showProxiedInput struct {
 	watchMode       bool
 	currentMode     bool
 	includeDepends  bool
+	briefDeps       bool
 	includeComments bool
 }
 
@@ -49,6 +50,7 @@ func gatherShowProxiedInput(cmd *cobra.Command, args []string) *showProxiedInput
 	in.watchMode, _ = cmd.Flags().GetBool("watch")
 	in.currentMode, _ = cmd.Flags().GetBool("current")
 	in.includeDepends, _ = cmd.Flags().GetBool("include-dependents")
+	in.briefDeps, _ = cmd.Flags().GetBool("brief-deps")
 	in.includeComments, _ = cmd.Flags().GetBool("include-comments")
 
 	idFlags, _ := cmd.Flags().GetStringArray("id")
@@ -425,11 +427,7 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 	foundCount := 0
 	for idx, id := range in.ids {
 		if rd != nil {
-			details, derr := rd.Get(ctx, issueops.GetRequest{
-				ID:                id,
-				IncludeDependents: in.includeDepends,
-				IncludeComments:   in.includeComments,
-			})
+			details, derr := rd.Get(ctx, in.getRequest(id))
 			if derr != nil {
 				if errors.Is(derr, storage.ErrNotFound) {
 					// The corpus pins this pair for a missing id: the human
@@ -560,4 +558,10 @@ func proxiedRenderIssue(ctx context.Context, uw uow.UnitOfWork, issue *types.Iss
 	}
 
 	fmt.Println()
+}
+
+// getRequest carries the proxied show flags onto the read contract. See
+// showGetRequest: the two routes build this independently.
+func (in *showProxiedInput) getRequest(id string) issueops.GetRequest {
+	return showGetRequest(id, in.includeDepends, in.includeComments, in.briefDeps)
 }

@@ -46,6 +46,7 @@ var showCmd = &cobra.Command{
 		currentMode, _ := cmd.Flags().GetBool("current")
 		includeDepends, _ := cmd.Flags().GetBool("include-dependents")
 		includeComments, _ := cmd.Flags().GetBool("include-comments")
+		briefDeps, _ := cmd.Flags().GetBool("brief-deps")
 		ctx := rootCtx
 
 		// Helper to format timestamp based on --local-time flag
@@ -160,11 +161,7 @@ var showCmd = &cobra.Command{
 					result.Close()
 					return HandleErrorRespectJSON("%v", rerr)
 				}
-				details, derr := rd.Get(ctx, issueops.GetRequest{
-					ID:                issue.ID,
-					IncludeDependents: includeDepends,
-					IncludeComments:   includeComments,
-				})
+				details, derr := rd.Get(ctx, showGetRequest(issue.ID, includeDepends, includeComments, briefDeps))
 				if derr != nil {
 					result.Close()
 					return HandleErrorRespectJSON("%v", derr)
@@ -306,6 +303,19 @@ func init() {
 	showCmd.Flags().Bool("current", false, "Show the currently active issue (in-progress, hooked, or last touched)")
 	showCmd.Flags().Bool("include-dependents", false, "Stream full dependent issues in JSON output (--json only; may be slow on hub beads)")
 	showCmd.Flags().Bool("include-comments", false, "Stream full comment bodies in JSON output (--json only; may be slow on issues with many comments)")
+	showCmd.Flags().Bool("brief-deps", false, "Reduce each dependency to its identity fields in JSON output (--json only; drops description, design, notes and acceptance criteria)")
 	showCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(showCmd)
+}
+
+// showGetRequest carries the show flags onto the read contract. Extracted so
+// the hop is reachable from a test: both show routes build this request
+// independently, and a dropped field here is invisible to every other test.
+func showGetRequest(id string, includeDependents, includeComments, briefDeps bool) issueops.GetRequest {
+	return issueops.GetRequest{
+		ID:                id,
+		IncludeDependents: includeDependents,
+		IncludeComments:   includeComments,
+		BriefDeps:         briefDeps,
+	}
 }
