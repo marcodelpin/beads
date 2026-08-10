@@ -255,8 +255,13 @@ func (r *uowApplyRun) applyUpdate(ctx context.Context, index int, item *publicop
 	return nil
 }
 
-// runUpdate is issueOperations.Update's transaction body, reached from here so
-// the two cannot drift on the fence, the guards or the Changed rule.
+// runUpdate is the batch/plan path's own independent twin of
+// issueOperations.Update's transaction body (issue_operations.go) — the two
+// share no call path, so "cannot drift" was never true as a mechanism; they
+// must be kept in lockstep by hand on every fence, guard and Changed-rule
+// change. ga-v2k49 is a concrete instance of that drift: claimChanged's actor
+// comparison here and there diverged (one verbatim, one not) until both were
+// found and fixed independently.
 func (r *uowApplyRun) runUpdate(ctx context.Context, request publicops.UpdateRequest) (publicops.UpdateResult, error) {
 	spec, err := updateSpec(request)
 	if err != nil {
@@ -275,7 +280,11 @@ func (r *uowApplyRun) runUpdate(ctx context.Context, request publicops.UpdateReq
 			return publicops.UpdateResult{}, err
 		}
 	}
-	claimChanged := request.Claim && (before.Status != types.StatusInProgress || before.Assignee != request.Actor)
+	// ActorMatches (not a verbatim compare, ga-v2k49): see the identical
+	// comment on issueOperations.Update's claimChanged in issue_operations.go
+	// — this is that expression's independent twin, which must reach the same
+	// answer despite having no shared code path with it.
+	claimChanged := request.Claim && (before.Status != types.StatusInProgress || !storageissueops.ActorMatches(before.Assignee, request.Actor))
 	updated, err := r.uw.IssueUseCase().ApplyUpdate(ctx, request.IssueID, spec, request.Actor)
 	if err != nil {
 		return publicops.UpdateResult{}, err
