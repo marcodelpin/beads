@@ -1105,6 +1105,43 @@ func TestReopenRequestMembersMatchTheHandler(t *testing.T) {
 	}
 }
 
+// TestDeleteRequestMembersMatchTheHandler is the reopen's gate for the delete
+// body, and it is new in the slice that gave that body a sixth member.
+//
+// The gap it closes is the same one every gate in this file closes, on the
+// operation where it costs the most. `deleteMembers` is a hand-rolled copy of
+// the schema — the handler reads raw members so a refusal can name the
+// offending one, which on THIS operation is the difference between orphaning a
+// dependent and deleting it — and nothing tied that copy to the document.
+// A member documented and not honored is refused as `unknown_parameter` with
+// every other gate green; a member honored and not documented is undisclosed
+// input on an irreversible write.
+func TestDeleteRequestMembersMatchTheHandler(t *testing.T) {
+	accepted := map[string]bool{}
+	for _, name := range deleteMembers {
+		accepted[name] = true
+	}
+
+	goFields := jsonTagNames(t, reflect.TypeOf(apigen.DeleteIssuesRequest{}))
+	if extra := diff(goFields, accepted); len(extra) > 0 {
+		t.Errorf("generated DeleteIssuesRequest declares members the delete handler refuses as unknown: %v\n"+
+			"teach deleteRequest to honor them, or the document promises a member the server turns down", extra)
+	}
+	if missing := diff(accepted, goFields); len(missing) > 0 {
+		t.Errorf("the delete handler accepts members DeleteIssuesRequest does not declare: %v", missing)
+	}
+
+	doc := loadSpec(t)
+	schema := mapAt(t, mapAt(t, mapAt(t, doc, "components"), "schemas"), "DeleteIssuesRequest")
+	specProps := schemaProperties(t, doc, schema)
+	if extra := diff(specProps, accepted); len(extra) > 0 {
+		t.Errorf("the DeleteIssuesRequest schema documents members the delete handler refuses: %v", extra)
+	}
+	if missing := diff(accepted, specProps); len(missing) > 0 {
+		t.Errorf("the delete handler accepts members the DeleteIssuesRequest schema does not document: %v", missing)
+	}
+}
+
 // TestCompareAndSetMetadataRequestMembersMatchTheHandler is the reopen's gate
 // for the compare-and-set body, and it earns its place twice over: this handler
 // reads raw members not only to name an offending one but because the OMISSION

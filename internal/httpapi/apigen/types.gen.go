@@ -736,7 +736,18 @@ type CloseIssueRequest struct {
 	// Actor Who is closing the issue. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value reaches stored columns, event-stream attribution and the storage commit message, so an unvalidated newline would forge audit-trail lines.
 	Actor string `json:"actor"`
 
+	// ExpectedVersion Requires the row's revision to equal this value BEFORE the close. A miss refuses the whole request with `409 precondition_failed` and writes nothing — `UpdateIssueRequest.expected_version`'s contract, on the operation that closes one row.
+	//
+	// IT IS CHECKED BEFORE THE IDEMPOTENT RE-CLOSE, which is the one place this guard differs from the update's. A re-close of a row somebody else has moved since the caller read it is a `409` and not the 200-with-`already_closed` the same body earns without a guard: a replay whose premise has expired is a refusal the caller wants to see, and it is the only way `already_closed` can be trusted as "nothing has happened here since".
+	//
+	// The token is the `revision` this operation's own response carries. Compose the next expectation from the value a write ANSWERED with, never from a number the client incremented itself: the token is OPAQUE and compared for equality alone, so it has no predecessor a client can compute. No READ on this surface publishes one yet, so a first guarded close seeds itself from an unguarded lifecycle write or from `POST /v0/beads/issues:batchApply`'s `ApplyItemResult.revision`.
+	//
+	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double parser corrupts it silently, and the corruption only surfaces as a `precondition_failed` on the NEXT request.
+	ExpectedVersion *int64 `json:"expected_version,omitempty"`
+
 	// Force Bypass close policy — the open-children refusal and the live-blocker refusal — and nothing else. The refusals are the ROLE's, so this endpoint cannot skip a guard by forgetting one exists. A forced close still reports `open_children`.
+	//
+	// IT BYPASSES POLICY, NEVER A PRECONDITION. `expected_version` is still checked with it set, for the reason `issueops.CloseRequest.Force` gives: a caller saying "close it anyway" has said nothing about whether the row is still the one it read.
 	Force *bool `json:"force,omitempty"`
 
 	// Reason Why the issue is closed. Stored on the issue and read back as `close_reason`. THE FIRST CLOSE WINS: an idempotent re-close writes neither this nor `session`, so a replayed close cannot rewrite the record of why the work ended. Refused for control characters, and bounded by what the column holds rather than by the number above.
@@ -756,6 +767,13 @@ type CloseIssueResponse struct {
 
 	// OpenChildren How many open children the close observed. Reported by a FORCED close — including an idempotent re-close — because a caller that bypassed the guard is exactly the caller that wants the number. An unforced close that got this far had none, so it reports 0.
 	OpenChildren int `json:"open_children"`
+
+	// Revision The row's optimistic-concurrency token AFTER this close, spelled the way `UpdateIssueResponse.revision` spells it.
+	//
+	// It is here because `expected_version` is: a guard whose token no response carries is a guard a caller cannot fill, and a close-then-reopen or close-then-delete chain has to compose its next expectation from the value the close ANSWERED with. An idempotent re-close carries one too — the row still has a version, and a caller that guarded a replay needs the token whether or not the replay wrote.
+	//
+	// DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueResponse.revision` spells out.
+	Revision int64 `json:"revision"`
 }
 
 // CloseOutcome What happened to ONE requested item.
@@ -1008,6 +1026,19 @@ type DeleteIssuesRequest struct {
 
 	// DryRun Report what the deletion WOULD do and change nothing. The counts and BOTH refusals are the ones the real request would produce, computed against the same snapshot, and nothing is recorded in history either.
 	DryRun *bool `json:"dry_run,omitempty"`
+
+	// ExpectedVersion Requires the named bead's revision to equal this value before anything is erased. A miss refuses the whole request with `409 precondition_failed` and deletes NOTHING — `UpdateIssueRequest.expected_version`'s contract, on the operation where being wrong about which row you are looking at cannot be undone.
+	//
+	// IT REQUIRES A SINGLE-ID REQUEST. Sending it beside more than one DISTINCT id is a `400` naming this member, refused before anything is read. One token cannot describe two rows: the version space is per-row, so checking one number against a list would pass by coincidence for a list of never-written rows — every one of them holds 0 — and fail forever for a list whose rows have since diverged. A guard that passes by coincidence and a guard nobody can satisfy are one defect seen from two sides. Delete one bead per guarded request; the per-id shape a batch would need is a token PER id, which is a different request type.
+	//
+	// DUPLICATES COLLAPSE FIRST, so `{"ids":["be-1","be-1"], "expected_version":N}` names one bead and is legal. The refusal counts DISTINCT ids, not mentions, exactly as the library surface does.
+	//
+	// NEITHER `cascade` NOR `force` BYPASSES IT. Both bypass POLICY — the dependents guard — and never a precondition. Under `cascade` the guard still covers only the NAMED bead: the closure is resolved inside the deleting transaction, so a matching token promises the row is the one you read and promises nothing about how far the closure has grown since. A caller that needs the closure itself pinned wants `dry_run` first.
+	//
+	// IT GUARDS LIFECYCLE STATE, NOT THE GRAPH. The token is reminted by status, assignee and started-at writes and deliberately not by label, dependency or rename writes, so a match does not promise the bead's edges are the ones you saw.
+	//
+	// The token is the `revision` a lifecycle write answers with. DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out; no READ on this surface publishes one yet.
+	ExpectedVersion *int64 `json:"expected_version,omitempty"`
 
 	// Force Delete the named beads and leave their dependents ORPHANED, reported in `orphaned`. Without it and without `cascade`, a named bead with a dependent the request did not name is refused.
 	//
@@ -1500,6 +1531,13 @@ type ReopenIssueRequest struct {
 	// Actor Who is reopening the issue. `ClaimRequest.actor`'s rules exactly: the server trims it, then refuses an empty result, anything longer than 256 BYTES (the `maxLength` above counts characters — the byte limit is the binding one), and any control character including newline. The value reaches the `reopened` event's attribution and the storage commit message, so an unvalidated newline would forge audit-trail lines.
 	Actor string `json:"actor"`
 
+	// ExpectedVersion Requires the row's revision to equal this value BEFORE the reopen. A miss refuses the whole request with `409 precondition_failed` and writes nothing — `CloseIssueRequest.expected_version`'s contract, on the close's mirror.
+	//
+	// IT IS CHECKED BEFORE THE NON-DONE NO-OP, the mirror of the close's check-before-the-idempotent-re-close, and for the same reason: a reopen of a row somebody else has moved is a `409` rather than the 200-with-`already_open` the same body earns unguarded, which is what lets `already_open` be read as "nothing has happened here since".
+	//
+	// The token is the `revision` this operation's own response carries; compose the next expectation from a value a write ANSWERED with and never from one the client computed. DECODE IT AS A 64-BIT INTEGER, for the reason `UpdateIssueRequest.expected_version` spells out.
+	ExpectedVersion *int64 `json:"expected_version,omitempty"`
+
 	// Reason Why the issue is being reopened. Recorded on the `reopened` EVENT this move records — not on a field of the issue, and not carried in the response, so a caller that wants it back reads the issue's events. Refused for control characters, and bounded by what the column holds rather than by the number above.
 	Reason *string `json:"reason,omitempty"`
 }
@@ -1511,6 +1549,9 @@ type ReopenIssueResponse struct {
 
 	// Issue A tracked work item. Property semantics documented here apply to every schema that repeats them below.
 	Issue Issue `json:"issue"`
+
+	// Revision The row's optimistic-concurrency token AFTER this reopen, spelled the way `CloseIssueResponse.revision` spells it and here for the same reason: a recovery flow that reopens and then re-closes composes its next `expected_version` from this value. DECODE IT AS A 64-BIT INTEGER.
+	Revision int64 `json:"revision"`
 }
 
 // Setting One entry of the workspace's stored settings plane.

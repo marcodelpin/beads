@@ -146,7 +146,7 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request, id string
 		return issueops.UpdateRequest{}, false
 	}
 
-	expectedVersion, res := applyInt64Member(members, "", "expected_version")
+	expectedVersion, res := applyVersionGuardMember(members, "")
 	if res != nil {
 		s.fail(w, r, *res)
 		return issueops.UpdateRequest{}, false

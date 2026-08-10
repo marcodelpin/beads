@@ -2011,6 +2011,27 @@ paths:
         by forgetting one exists.
 
 
+        ## The guard
+
+
+        `expected_version` is a compare-and-set precondition on the row's
+        revision, checked FIRST — before close policy and before the idempotent
+        re-close. A miss refuses the whole request with
+        `409 precondition_failed` and writes nothing.
+
+
+        POLICY AND PRECONDITION ARE DIFFERENT THINGS, and `force` is the bypass
+        for exactly one of them. A forced close still answers to the guard: the
+        two members say "close it even though the graph objects" and "only if
+        this is still the row I read", which are unrelated claims.
+
+
+        The token travels back on `revision`, so a read-modify-write chain that
+        ends in a close composes its expectation from the value the previous
+        write answered with. No READ on this surface publishes a revision yet;
+        when one does, this member is what it will agree with.
+
+
         ## Planes
 
 
@@ -2046,8 +2067,9 @@ paths:
             Invalid request: an unknown query parameter, an unparseable or
             oversized body, an unknown body member, an `actor` that is empty
             after trimming, longer than 256 bytes, or carrying control
-            characters — or a `reason` or `session` longer than the column
-            holds or carrying control characters.
+            characters, a `reason` or `session` longer than the column holds or
+            carrying control characters — or an `expected_version` that is not
+            an integer.
           x-bd-codes: [invalid_argument]
           content:
             application/problem+json:
@@ -2057,11 +2079,25 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            Close policy refused an unforced close (`not_closable`): the issue
-            has open children — carrying the `open_children` extension member —
-            or a live blocker, which carries none. Resend with `force: true` to
-            bypass both. Nothing was written.
-          x-bd-codes: [not_closable]
+            Two refusals share this status and are told apart by `code`.
+
+
+            `precondition_failed`: `expected_version` did not match the row's
+            current revision. `param` is `expected_version` and the refusal
+            echoes the value the REQUEST guarded on; there is no `actual_version`
+            beside it, because the transaction that saw the mismatch rolled back
+            and a read afterwards would describe a row the refusal never saw.
+            Re-read and recompose rather than retrying the same body.
+
+
+            `not_closable`: close policy refused an unforced close — the issue
+            has open children, carrying the `open_children` extension member, or
+            a live blocker, which carries none. Resend with `force: true` to
+            bypass both. `force` does NOT bypass the guard above.
+
+
+            Nothing was written in either case.
+          x-bd-codes: [not_closable, precondition_failed]
           content:
             application/problem+json:
               schema:
@@ -2104,14 +2140,27 @@ paths:
         simply carries none.
 
 
-        ## No conflict to name
+        ## No POLICY conflict to name
 
 
-        This operation documents no `409`, and the absence is deliberate:
-        reopen has no policy guard. Close has one — open children, a live
-        blocker — and reopen is the direction that removes an issue from the
-        done category rather than adding it, so there is nothing for a policy
-        to refuse.
+        There is still no policy refusal here, and the absence is deliberate:
+        close has one — open children, a live blocker — and reopen is the
+        direction that removes an issue from the done category rather than
+        adding it, so there is nothing for a policy to refuse. `not_closable`
+        is not in this operation's vocabulary and never will be.
+
+
+        The one `409` it does document is a PRECONDITION rather than a policy.
+        `expected_version` is a compare-and-set on the row's revision, checked
+        FIRST — before the non-done no-op — and a miss refuses the whole request
+        with `precondition_failed` and writes nothing. It is the caller's own
+        guard rather than a rule of the graph, which is why the operation can
+        carry it while carrying no policy conflict at all.
+
+
+        The token travels back on `revision`, so a reopen-then-re-close recovery
+        composes its next expectation from the value this operation answered
+        with. No READ on this surface publishes a revision yet.
 
 
         ## Planes
@@ -2149,8 +2198,9 @@ paths:
             Invalid request: an unknown query parameter, an unparseable or
             oversized body, an unknown body member, an `actor` that is empty
             after trimming, longer than 256 bytes, or carrying control
-            characters — or a `reason` longer than the column holds or carrying
-            control characters.
+            characters, a `reason` longer than the column holds or carrying
+            control characters — or an `expected_version` that is not an
+            integer.
           x-bd-codes: [invalid_argument]
           content:
             application/problem+json:
@@ -2158,6 +2208,22 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            `expected_version` did not match the row's current revision
+            (`precondition_failed`). `param` is `expected_version` and the
+            refusal echoes the value the REQUEST guarded on, with no
+            `actual_version` beside it for the reason
+            `POST /v0/beads/issues/{id}:close` gives. Nothing was written.
+
+
+            This operation's ONLY conflict, and it is a precondition rather than
+            a policy: `not_closable` is not in its vocabulary.
+          x-bd-codes: [precondition_failed]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -2417,6 +2483,37 @@ paths:
         deleting it is the one place that convenience is not one.
 
 
+        ## The guard, and why it takes one id
+
+
+        `expected_version` is a compare-and-set precondition on the row this
+        request NAMES: the deletion proceeds only if that bead's revision still
+        equals it, and otherwise the request is `409 precondition_failed` and
+        nothing is deleted. It is the guard that matters most on this operation,
+        because being wrong about which bead you are looking at is the one
+        mistake here that cannot be undone.
+
+
+        IT REQUIRES A SINGLE-ID REQUEST, and that is a `400` naming
+        `expected_version` rather than a fudge: one token cannot describe two
+        rows. Duplicates collapse first, so repeating one id is still one bead.
+
+
+        THE ORDER THE REFUSALS HAPPEN IN IS PART OF THE ANSWER. Request shape
+        first, then the existence probe (`404`), then this guard (`409`), then
+        the dependents refusal (`400`). A request that is both a typo and a
+        graph problem reports the typo, which is the one a caller can fix
+        without deciding anything; and a stale guard outranks the dependents
+        refusal because a caller whose view has moved should not be asked to
+        choose `cascade` or `force` over information that has already changed.
+
+
+        NEITHER `cascade` NOR `force` BYPASSES IT. They bypass POLICY. Under
+        `cascade` the guard covers the named bead alone — the closure is
+        resolved inside the deleting transaction, so it may have grown since the
+        caller's read.
+
+
         ## One transaction
 
 
@@ -2449,7 +2546,8 @@ paths:
           description: >-
             Invalid request: an unparseable or oversized body, an unknown body
             member, an empty or over-long `ids`, a blank id, an `actor` that is
-            empty after trimming or carries control characters — or a named
+            empty after trimming or carries control characters, an
+            `expected_version` beside more than one distinct id — or a named
             bead with a dependent the request did not name and neither
             `cascade` nor `force` to say what to do about it, which the library
             surface refuses as a safety invariant.
@@ -2466,6 +2564,22 @@ paths:
             from a malformed id would be probing the id space. `bd delete`
             names them, because it is answering the person who typed them.
           x-bd-codes: [not_found]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >-
+            `expected_version` did not match the named bead's current revision
+            (`precondition_failed`), and NOTHING was deleted. `param` is
+            `expected_version` and the refusal echoes the value the REQUEST
+            guarded on, with no `actual_version` beside it for the reason
+            `POST /v0/beads/issues/{id}:close` gives.
+
+
+            It outranks the dependents refusal and is outranked by the `404`:
+            see the operation description.
+          x-bd-codes: [precondition_failed]
           content:
             application/problem+json:
               schema:
@@ -5650,6 +5764,55 @@ components:
             and BOTH refusals are the ones the real request would produce,
             computed against the same snapshot, and nothing is recorded in
             history either.
+        expected_version:
+          type: integer
+          format: int64
+          description: >-
+            Requires the named bead's revision to equal this value before
+            anything is erased. A miss refuses the whole request with
+            `409 precondition_failed` and deletes NOTHING —
+            `UpdateIssueRequest.expected_version`'s contract, on the operation
+            where being wrong about which row you are looking at cannot be
+            undone.
+
+
+            IT REQUIRES A SINGLE-ID REQUEST. Sending it beside more than one
+            DISTINCT id is a `400` naming this member, refused before anything
+            is read. One token cannot describe two rows: the version space is
+            per-row, so checking one number against a list would pass by
+            coincidence for a list of never-written rows — every one of them
+            holds 0 — and fail forever for a list whose rows have since
+            diverged. A guard that passes by coincidence and a guard nobody can
+            satisfy are one defect seen from two sides. Delete one bead per
+            guarded request; the per-id shape a batch would need is a token PER
+            id, which is a different request type.
+
+
+            DUPLICATES COLLAPSE FIRST, so `{"ids":["be-1","be-1"],
+            "expected_version":N}` names one bead and is legal. The refusal
+            counts DISTINCT ids, not mentions, exactly as the library surface
+            does.
+
+
+            NEITHER `cascade` NOR `force` BYPASSES IT. Both bypass POLICY — the
+            dependents guard — and never a precondition. Under `cascade` the
+            guard still covers only the NAMED bead: the closure is resolved
+            inside the deleting transaction, so a matching token promises the
+            row is the one you read and promises nothing about how far the
+            closure has grown since. A caller that needs the closure itself
+            pinned wants `dry_run` first.
+
+
+            IT GUARDS LIFECYCLE STATE, NOT THE GRAPH. The token is reminted by
+            status, assignee and started-at writes and deliberately not by
+            label, dependency or rename writes, so a match does not promise the
+            bead's edges are the ones you saw.
+
+
+            The token is the `revision` a lifecycle write answers with. DECODE
+            IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out; no READ on this
+            surface publishes one yet.
 
     DeleteIssuesResult:
       type: object
@@ -7852,9 +8015,49 @@ components:
             ROLE's, so this endpoint cannot skip a guard by forgetting one
             exists. A forced close still reports `open_children`.
 
+
+            IT BYPASSES POLICY, NEVER A PRECONDITION. `expected_version` is
+            still checked with it set, for the reason
+            `issueops.CloseRequest.Force` gives: a caller saying "close it
+            anyway" has said nothing about whether the row is still the one it
+            read.
+        expected_version:
+          type: integer
+          format: int64
+          description: >-
+            Requires the row's revision to equal this value BEFORE the close. A
+            miss refuses the whole request with `409 precondition_failed` and
+            writes nothing — `UpdateIssueRequest.expected_version`'s contract,
+            on the operation that closes one row.
+
+
+            IT IS CHECKED BEFORE THE IDEMPOTENT RE-CLOSE, which is the one place
+            this guard differs from the update's. A re-close of a row somebody
+            else has moved since the caller read it is a `409` and not the
+            200-with-`already_closed` the same body earns without a guard: a
+            replay whose premise has expired is a refusal the caller wants to
+            see, and it is the only way `already_closed` can be trusted as
+            "nothing has happened here since".
+
+
+            The token is the `revision` this operation's own response carries.
+            Compose the next expectation from the value a write ANSWERED with,
+            never from a number the client incremented itself: the token is
+            OPAQUE and compared for equality alone, so it has no predecessor a
+            client can compute. No READ on this surface publishes one yet, so a
+            first guarded close seeds itself from an unguarded lifecycle write
+            or from `POST /v0/beads/issues:batchApply`'s
+            `ApplyItemResult.revision`.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueRequest.expected_version` spells out: an IEEE-754-double
+            parser corrupts it silently, and the corruption only surfaces as a
+            `precondition_failed` on the NEXT request.
+
     CloseIssueResponse:
       type: object
-      required: [issue, already_closed, open_children]
+      required: [issue, already_closed, open_children, revision]
       properties:
         issue:
           $ref: '#/components/schemas/Issue'
@@ -7872,6 +8075,25 @@ components:
             close — including an idempotent re-close — because a caller that
             bypassed the guard is exactly the caller that wants the number. An
             unforced close that got this far had none, so it reports 0.
+        revision:
+          type: integer
+          format: int64
+          description: >-
+            The row's optimistic-concurrency token AFTER this close, spelled the
+            way `UpdateIssueResponse.revision` spells it.
+
+
+            It is here because `expected_version` is: a guard whose token no
+            response carries is a guard a caller cannot fill, and a
+            close-then-reopen or close-then-delete chain has to compose its next
+            expectation from the value the close ANSWERED with. An idempotent
+            re-close carries one too — the row still has a version, and a caller
+            that guarded a replay needs the token whether or not the replay
+            wrote.
+
+
+            DECODE IT AS A 64-BIT INTEGER, for the reason
+            `UpdateIssueResponse.revision` spells out.
 
     ReopenIssueRequest:
       type: object
@@ -7900,10 +8122,31 @@ components:
             the response, so a caller that wants it back reads the issue's
             events. Refused for control characters, and bounded by what the
             column holds rather than by the number above.
+        expected_version:
+          type: integer
+          format: int64
+          description: >-
+            Requires the row's revision to equal this value BEFORE the reopen. A
+            miss refuses the whole request with `409 precondition_failed` and
+            writes nothing — `CloseIssueRequest.expected_version`'s contract, on
+            the close's mirror.
+
+
+            IT IS CHECKED BEFORE THE NON-DONE NO-OP, the mirror of the close's
+            check-before-the-idempotent-re-close, and for the same reason: a
+            reopen of a row somebody else has moved is a `409` rather than the
+            200-with-`already_open` the same body earns unguarded, which is what
+            lets `already_open` be read as "nothing has happened here since".
+
+
+            The token is the `revision` this operation's own response carries;
+            compose the next expectation from a value a write ANSWERED with and
+            never from one the client computed. DECODE IT AS A 64-BIT INTEGER,
+            for the reason `UpdateIssueRequest.expected_version` spells out.
 
     ReopenIssueResponse:
       type: object
-      required: [issue, already_open]
+      required: [issue, already_open, revision]
       properties:
         issue:
           $ref: '#/components/schemas/Issue'
@@ -7914,6 +8157,15 @@ components:
             nothing — idempotent, mirroring `CloseIssueResponse.already_closed`
             and `ClaimResponse.already_claimed`. The response still carries the
             row.
+        revision:
+          type: integer
+          format: int64
+          description: >-
+            The row's optimistic-concurrency token AFTER this reopen, spelled
+            the way `CloseIssueResponse.revision` spells it and here for the same
+            reason: a recovery flow that reopens and then re-closes composes its
+            next `expected_version` from this value. DECODE IT AS A 64-BIT
+            INTEGER.
 
     MetadataValue:
       # No x-go-type-import: the generator already imports encoding/json
