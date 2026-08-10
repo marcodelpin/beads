@@ -188,6 +188,61 @@ func (c *roleReadyCounter) countRequests() []issueops.ReadyRequest {
 	return append([]issueops.ReadyRequest(nil), c.counts...)
 }
 
+// roleCounter is the issue-count role's double, and it records BOTH requests
+// separately: the operation chooses between the role's two methods on one
+// parameter, so a case has to be able to say which one was called and not only
+// what it was handed.
+type roleCounter struct {
+	total   int64
+	groups  map[string]int
+	err     error
+	groupTo int64
+
+	mu       sync.Mutex
+	counts   []issueops.CountRequest
+	buckets  []issueops.CountByGroupRequest
+	nilGroup bool
+}
+
+func (c *roleCounter) Count(_ context.Context, req issueops.CountRequest) (issueops.CountResult, error) {
+	c.mu.Lock()
+	c.counts = append(c.counts, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.CountResult{}, c.err
+	}
+	return issueops.CountResult{Total: c.total}, nil
+}
+
+func (c *roleCounter) CountByGroup(_ context.Context, req issueops.CountByGroupRequest) (issueops.CountByGroupResult, error) {
+	c.mu.Lock()
+	c.buckets = append(c.buckets, req)
+	c.mu.Unlock()
+	if c.err != nil {
+		return issueops.CountByGroupResult{}, c.err
+	}
+	// nilGroup lets a case drive the one thing the role promises and an
+	// implementation could still get wrong: a grouped answer with no buckets is
+	// an EMPTY object on the wire, never null.
+	groups := c.groups
+	if groups == nil && !c.nilGroup {
+		groups = map[string]int{}
+	}
+	return issueops.CountByGroupResult{Groups: groups, Total: c.groupTo}, nil
+}
+
+func (c *roleCounter) countRequests() []issueops.CountRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.CountRequest(nil), c.counts...)
+}
+
+func (c *roleCounter) groupRequests() []issueops.CountByGroupRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]issueops.CountByGroupRequest(nil), c.buckets...)
+}
+
 // roleQuerier is the boolean-query role's double. It records the whole request
 // because the property this surface owes is that the EXPRESSION reaches the
 // role untouched: a handler that parsed it here would be a second
@@ -756,6 +811,9 @@ func rolesConfig(cfg Config) Config {
 	if cfg.ReadyCounter == nil {
 		cfg.ReadyCounter = &roleReadyCounter{}
 	}
+	if cfg.Counter == nil {
+		cfg.Counter = &roleCounter{}
+	}
 	if cfg.Querier == nil {
 		cfg.Querier = &roleQuerier{}
 	}
@@ -1015,6 +1073,14 @@ func TestListenRequiresExactlyOneDatabaseSource(t *testing.T) {
 		{
 			name:    "no ready counter",
 			cfg:     rolesConfigWithout(func(c *Config) { c.ReadyCounter = nil }),
+			wantErr: "no database source",
+		},
+		{
+			// The issue count is a SEPARATE role from the ready count beside
+			// it: missing it, the server binds, advertises issues.count, and
+			// nil-dereferences on the first request that sizes a filter.
+			name:    "no counter",
+			cfg:     rolesConfigWithout(func(c *Config) { c.Counter = nil }),
 			wantErr: "no database source",
 		},
 		{

@@ -409,6 +409,21 @@ const (
 	OpGetDependencyTree = "getDependencyTree"
 	OpCountReadyWork    = "countReadyWork"
 	OpQueryIssues       = "queryIssues"
+	// OpCountIssues sizes a set the ISSUE listing describes, behind
+	// issueops.Counter. It is a sibling of countReadyWork rather than a mode of
+	// it: that one sizes the READY predicate, which is dependency-aware and not
+	// expressible as a filter over one table, and this one sizes a predicate.
+	//
+	// It is also NOT `listIssues` with the page taken off, which is the mistake
+	// its own document spends a section on: a listing hides closed, pinned,
+	// template and gate rows and a count hides none of them, so the two answer
+	// about different sets for the same parameters. That difference is the
+	// ROLE's and is the reason Counter is not a counted variant of Reader.
+	//
+	// One operation carries both of the role's methods. `group_by` selects the
+	// bucketed shape, and the grouped response is the scalar response plus one
+	// member — the same schema, not a second contract wearing one id.
+	OpCountIssues = "countIssues"
 	// OpRemoveDependency is the first WRITE to the dependency graph on this
 	// surface, behind issueops.DependencyEditor. It names one edge by both its
 	// endpoints, because an edge has two and neither alone identifies it.
@@ -576,6 +591,25 @@ var operationCodes = map[string][]Code{
 	// and can refuse them the same way. limit=0's mode-dependent refusal has no
 	// analog here because there is no limit to pass.
 	OpCountReadyWork: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// The ready count's vocabulary exactly, and for the same reasons: a
+	// cardinality has no page, so there is no cursor to invalidate and no
+	// unlimited-read refusal to make; and no 404, because a predicate matching
+	// nothing is 0 — the role has no ErrNotFound at all, which its own doc
+	// states, since a question about a set has an answer even when the set is
+	// empty.
+	//
+	// Its 400 is ENTIRELY THE TRANSPORT'S, which is the one way this row differs
+	// from the listings' beside it: a malformed boolean, integer or timestamp, a
+	// repeated single-valued parameter, and a `group_by` outside the closed set.
+	//
+	// No ROLE refusal is reachable. issueops.Counter has exactly one
+	// ErrValidation — ValidateCountGroup's unknown dimension, since
+	// BuildCountFilter cannot fail — and countGroupOf refuses that dimension at
+	// the edge, so the shared read failure path never classifies a count. An
+	// unrecognized status or type is not a refusal at all here; the role
+	// promises it matches nothing and answers 0.
+	// TestCountGroupEnumMatchesTheRolesVocabulary is what keeps that true.
+	OpCountIssues: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
 	// The listing's vocabulary minus the cursor: this operation has none, so
 	// invalid_cursor cannot arise. An unparseable EXPRESSION is an
 	// invalid_argument on `q` rather than a code of its own — a client's

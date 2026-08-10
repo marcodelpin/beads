@@ -310,6 +310,7 @@ func runServe() error {
 			BlockingAnnotator: roles.blocking,
 			TreeWalker:        roles.tree,
 			ReadyCounter:      roles.readyCounter,
+			Counter:           roles.counter,
 			Querier:           roles.querier,
 			Sweeper:           roles.sweeper,
 			Deleter:           roles.deleter,
@@ -666,6 +667,7 @@ func serveIssueRoles(src storage.DoltStorage, journalEnabled bool) (serveRoles, 
 		{"blocking annotator", func() (err error) { roles.blocking, err = src.BlockingAnnotator(); return }},
 		{"tree walker", func() (err error) { roles.tree, err = src.TreeWalker(); return }},
 		{"ready counter", func() (err error) { roles.readyCounter, err = src.ReadyCounter(); return }},
+		{"counter", func() (err error) { roles.counter, err = src.Counter(); return }},
 		{"querier", func() (err error) { roles.querier, err = src.Querier(); return }},
 		{"sweeper", func() (err error) { roles.sweeper, err = src.Sweeper(); return }},
 		{"deleter", func() (err error) { roles.deleter, err = src.Deleter(); return }},
@@ -737,6 +739,7 @@ type serveRoles struct {
 	blocking     issueops.BlockingAnnotator
 	tree         issueops.TreeWalker
 	readyCounter issueops.ReadyCounter
+	counter      issueops.Counter
 	querier      issueops.Querier
 	sweeper      issueops.Sweeper
 	deleter      issueops.Deleter

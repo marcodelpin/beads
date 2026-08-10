@@ -322,6 +322,7 @@ var (
 	_ uow.BlockingAnnotatorSource   = timedProvider{}
 	_ uow.TreeWalkerSource          = timedProvider{}
 	_ uow.ReadyCounterSource        = timedProvider{}
+	_ uow.CounterSource             = timedProvider{}
 	_ uow.QuerierSource             = timedProvider{}
 	_ uow.SweeperSource             = timedProvider{}
 	_ uow.DeleterSource             = timedProvider{}
@@ -444,6 +445,11 @@ func (p timedProvider) TreeWalker() (issueops.TreeWalker, error) {
 // and with the same hazard as IssueReader.
 func (p timedProvider) ReadyCounter() (issueops.ReadyCounter, error) {
 	return uow.NewReadyCounter(p)
+}
+
+// Counter builds the issue counter OVER THIS WRAPPER, for ReadyCounter's reason.
+func (p timedProvider) Counter() (issueops.Counter, error) {
+	return uow.NewCounter(p)
 }
 
 // Querier builds the boolean-query role OVER THIS WRAPPER, for the same reason
