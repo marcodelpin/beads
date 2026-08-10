@@ -305,8 +305,8 @@ func RunWorkspaceConfigListExcludesTheKVPlane(t *testing.T, ctx context.Context,
 // who knew the exact key was a different class of caller, and `bd remember`
 // derives its key from the content it stores, so the keys are guessable and
 // GET /v0/beads/config/kv.memory.<slug> walked around the wall — on a surface
-// with no authentication, whose redaction decides on the key NAME while a
-// memory's secret is in the VALUE.
+// whose only credential is an optional shared bearer, and whose redaction
+// decides on the key NAME while a memory's secret is in the VALUE.
 //
 // WHAT IT ASSERTS IS AN INDISTINGUISHABILITY, and it takes four probes to say
 // so:

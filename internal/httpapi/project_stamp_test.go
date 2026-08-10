@@ -190,11 +190,14 @@ func TestHealthAndContextAnswerDespiteAWrongStamp(t *testing.T) {
 }
 
 // TestProjectStampRefusalDoesNotLeakThroughTheHostGate pins the ordering that
-// scopes the disclosure. This surface has no authentication layer, so the
-// earliest gate a request meets is the Host allowlist middleware, which runs
-// before the mux dispatches to route() and therefore before the stamp is ever
-// compared. A request that fails BOTH — a foreign Host and a wrong stamp — is
-// answered by the Host gate, and that answer must not carry server_project_id.
+// scopes the disclosure. On a server with no token file there is no
+// authentication layer at all, so the earliest gate a request meets is the
+// Host allowlist middleware, which runs before the mux dispatches to route()
+// and therefore before the stamp is ever compared. With a token file the 401
+// sits between the two — behind the Host gate, ahead of the stamp (route()) —
+// so it only widens the guarantee this test pins. A request that fails BOTH —
+// a foreign Host and a wrong stamp — is answered by the Host gate, and that
+// answer must not carry server_project_id.
 //
 // It is the OSS analog of the auth-before-check ordering: server_project_id is
 // added by exactly one constructor (ProjectMismatch), reached only after every

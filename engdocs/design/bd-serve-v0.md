@@ -184,18 +184,36 @@ obligation instead of a hidden server-side reconciliation.
 
 ## The loopback posture
 
-v0 has no authentication and no TLS. The trust model is the loopback boundary
-— the same boundary the database behind it already relies on.
+v0 has **optional** bearer authentication and no TLS. On loopback the trust
+model is the loopback boundary — the same boundary the database behind it
+already relies on — and a `bd serve` with no auth flags is byte for byte the
+server it has always been.
+
+`--auth-token-file` turns authentication on: every operation except
+`GET /healthz` then requires `Authorization: Bearer <token>`, including
+`GET /v0/beads/context`, which reports the repo root, beads directory and
+database name. The file holds one token per line and every line is accepted;
+it is re-read while the server runs, so rotation and revocation both take
+effect within about a second and neither needs a restart. There is
+deliberately no `--auth-token` flag: an argument is readable out of the process
+listing by every local user.
+
+The token is a shared secret that grants the WHOLE surface. It is not an
+identity, it carries no scopes, and it therefore never makes `actor` an
+authenticated principal — see below.
 
 `--addr` defaults to `127.0.0.1:0`. The host must be a numeric IP literal.
 `--allow-non-loopback` is the operator decision to bind beyond loopback; it is
-never taken by default, it prints a warning naming what it exposes, and nothing
-else about the server changes. Every peer that can reach the address gets full
-read and claim access.
+never taken by default, and it now **requires `--auth-token-file`**, because
+otherwise reaching the address would be the whole authorization: every peer
+that can reach it would get full read and claim access.
+`--insecure-no-auth` is the explicit, auditable way to say you meant that
+anyway — it applies only beside `--allow-non-loopback`, contradicts a token
+file, and logs a warning naming what it exposes.
 
 Three things bound the posture regardless of bind mode:
 
-**The Host allowlist**, which has no off switch. An unauthenticated service on
+**The Host allowlist**, which has no off switch. A service on
 loopback is reachable from any browser on the host, and a page that re-resolves
 its own name to `127.0.0.1` issues requests the browser treats as same-origin,
 so no CORS rule stops them. What the browser does preserve is the attacker's
@@ -225,8 +243,10 @@ one and, on that 400, re-issues with an explicit limit and pages with `cursor`.
 It is a client-side fix, never a retry.
 
 An `actor` on an HTTP request is caller-asserted provenance for the audit
-trail, not authenticated identity — the same thing it has always been on the
-CLI, where any local process can pass any `--actor`. The claim's
+trail and is not the authenticated principal, even where a bearer is required:
+one shared token admits a client to everything, so it can neither confirm nor
+contradict the name a request sends. That is the same thing `actor` has always
+been on the CLI, where any local process can pass any `--actor`. The claim's
 compare-and-set is therefore a correctness fence against *concurrent* claims,
 not an authorization boundary: it guarantees that two racing claimants cannot
 both win, and guarantees nothing about who either of them really is.

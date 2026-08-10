@@ -72,8 +72,9 @@ func ValidateSettingWrite(key, value string) (string, error) {
 // keys and the `bd remember` memories nested under them are USER DATA stored as
 // config rows beneath kvkeys.Prefix, and an enumeration that returned them
 // published that data on `bd config list` and on GET /v0/beads/config alike —
-// the latter unauthenticated, and redacting on the KEY NAME while a memory's
-// content is in the VALUE. `bd config list` carrying kv rows was never a
+// the latter reachable by anything a shared bearer admits, if one is
+// configured at all, and redacting on the KEY NAME while a memory's content is
+// in the VALUE. `bd config list` carrying kv rows was never a
 // design; it fell out of one storage table holding two planes.
 //
 // THE WHOLE PREFIX GOES, not just kv.memory.: "settings minus one user-data

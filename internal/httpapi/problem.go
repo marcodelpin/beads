@@ -54,9 +54,23 @@ const (
 	// not a client bug.
 	CodeInvalidCursor Code = "invalid_cursor"
 	CodeNotFound      Code = "not_found"
-	// CodeAlreadyClaimed carries the holder in the `assignee` extension
-	// member, read inside the same transaction — never parsed out of the
-	// sentinel's message text.
+	// CodeAlreadyClaimed reports a live foreign holder. Where the `assignee`
+	// extension member is present it is the holder, read inside the same
+	// transaction and never parsed out of the sentinel's message text — but
+	// PRESENCE IS PER PRODUCER, and there are four:
+	//
+	//   - claimIssue always attaches it: the claim's conflict path reads the
+	//     row it lost to, so it has the holder in hand.
+	//   - updateIssue and applyBatch attach it CONDITIONALLY, when the refusing
+	//     error carried one. The assignee fence
+	//     (AuthorizeAssigneeTransferWithPools) refuses without naming the
+	//     holder, so an implementation that reported none leaves it absent.
+	//   - releaseIssue NEVER attaches it. It is the same fence pointed the
+	//     other way and it names nobody.
+	//
+	// A client therefore treats the member as optional on every operation but
+	// the claim, and re-reads the row when it is absent. Absence means "this
+	// refusal could not name the holder", never "nobody holds it".
 	CodeAlreadyClaimed Code = "already_claimed"
 	CodeNotClaimable   Code = "not_claimable"
 	// CodeNotReleasable is a row refusing to give up a claim, and it covers

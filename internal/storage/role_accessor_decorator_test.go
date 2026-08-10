@@ -68,9 +68,11 @@ func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
 }
 
 // TestEveryStoreRoleAccessorIsClassified fails when DoltStorage hands out an
-// interface the census cannot place. Every one of the twenty-seven today is a
+// interface the census cannot place. Every one of the twenty-eight today is a
 // facade role, so this costs nothing and closes the path where a role surface
-// grows a package and the census quietly stops covering it.
+// grows a package and the census quietly stops covering it. (roleAccessorNames
+// is derived, so the count is prose and only this sentence goes stale — but it
+// does go stale, and the last three sweeps found it saying twenty-seven.)
 func TestEveryStoreRoleAccessorIsClassified(t *testing.T) {
 	_, unclassified := roleAccessorNamesOf(reflect.TypeOf((*DoltStorage)(nil)).Elem())
 	for _, accessor := range unclassified {
@@ -148,9 +150,9 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-seven
-// role accessors, each answering with a distinguishable sentinel so a test can
-// tell a decorated surface from a passed-through one.
+// roleAccessorStore is a DoltStorage whose only real methods are the
+// twenty-eight role accessors, each answering with a distinguishable sentinel
+// so a test can tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
 	DoltStorage
 	lifecycle    issueops.Lifecycle
@@ -280,7 +282,9 @@ func (s *roleAccessorStore) Releaser() (issueops.Releaser, error) {
 	return s.releaser, s.err
 }
 
-// roleAccessorSentinel implements twenty-six of the twenty-seven roles at once.
+// roleAccessorSentinel implements twenty-seven of the twenty-eight roles at
+// once — every one but memoryops.Memories, whose List collides with
+// issueops.Reader.List and needs the second sentinel below.
 // Nothing calls its methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 

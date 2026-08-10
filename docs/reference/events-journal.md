@@ -119,7 +119,9 @@ record — editing or deleting a bead does not redact it from the journal. And
 because this is an HTTP read, any process that can reach the address gets that
 history without the filesystem permissions on `.beads/` that `bd events tail`
 requires. Weigh both before binding a journal-enabled workspace with
-`--allow-non-loopback`; `bd serve` has no authentication.
+`--allow-non-loopback` — which requires `--auth-token-file` (or the explicit
+`--insecure-no-auth`), and that token is shared and surface-wide: every client
+holding it reads the whole journal.
 </Warning>
 
 Two refusals are worth wiring into a consumer before it ships. A checkpoint
@@ -219,7 +221,8 @@ ignores it does not lose records silently, but it does stall loudly: a bare
 </Warning>
 
 The exposure warning above applies identically — a stream is the same history
-over the same unauthenticated address, held open — and so does the capability
+over the same address and under the same shared credential, held open — and so
+does the capability
 rule: `events.watch` appears in `/v0/beads/context`'s capabilities on every
 build, and says nothing about whether this workspace has a journal.
 

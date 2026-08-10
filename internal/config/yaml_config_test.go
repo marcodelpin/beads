@@ -782,10 +782,11 @@ func TestIsSecretKey(t *testing.T) {
 		{"some.api-key", true},
 
 		// Spellings the wire redaction has to cover. GET /v0/beads/config
-		// publishes a value for any key this returns false for, and bd serve
-		// has no authentication, so each of these is a credential in cleartext
-		// if it regresses. "apikey" in particular is the spelling the
-		// published schema promises is covered.
+		// publishes a value for any key this returns false for, and bd serve's
+		// bearer — optional, and shared and surface-wide where it is
+		// configured — cannot withhold one value from one caller, so each of
+		// these is a credential in cleartext if it regresses. "apikey" in
+		// particular is the spelling the published schema promises is covered.
 		{"integrations.apikey", true},
 		{"github.pat", true},
 		{"github.auth", true},

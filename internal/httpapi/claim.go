@@ -46,13 +46,17 @@ const (
 // caller-named actor, and the write whose posture every later one adopted.
 //
 // ACTOR SEMANTICS, stated because adopting this endpoint depends on them. The
-// actor is caller-ASSERTED provenance for the audit trail, not authenticated
-// identity: this API has no authentication, so any client can claim as any
-// name, exactly as any local process can pass any --actor to the CLI. The CAS
-// is therefore a correctness fence against CONCURRENT claims, not an
-// authorization boundary — it guarantees that two racing claimants cannot both
-// win, and guarantees nothing about who either of them really is. The
-// loopback-only bind is what bounds the blast radius of that posture.
+// actor is caller-ASSERTED provenance for the audit trail and is NOT the
+// authenticated principal, even where a bearer is required: the token a
+// deployment configures is shared and surface-wide, so it names nobody and
+// cannot confirm or contradict the actor a request sends. Any client that
+// reaches this endpoint can claim as any name, exactly as any local process
+// can pass any --actor to the CLI. The CAS is therefore a correctness fence
+// against CONCURRENT claims, not an authorization boundary — it guarantees
+// that two racing claimants cannot both win, and guarantees nothing about who
+// either of them really is. What bounds the blast radius of that posture is
+// the bind: loopback by default, and beyond loopback only with a token file
+// (or the explicit --insecure-no-auth).
 //
 // Two things a CLI claim does that this deliberately does not: hooks do not
 // fire (a user-controlled subprocess per mutation is an unbounded latency

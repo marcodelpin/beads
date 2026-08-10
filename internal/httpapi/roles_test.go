@@ -1350,15 +1350,22 @@ func TestConfiguredRolesServeTheSameReadyBytesAsAProvider(t *testing.T) {
 // operations against a store-shaped source: none of them can reach a unit of
 // work here, because there is no provider to open one.
 //
-// NOT ALL OF THEM, despite the name: the subtests below drive ten of the
-// seventeen capability-bearing operations in routes.go. The other seven —
-// dependencies/cycles, dependencies/blocking, dependencies/tree,
-// issues:batchCreate, issues:sweep, issues:delete, issues/{id}:casMetadata and
-// issues:batchApply — are exercised against a roles source in their own files
-// (cycles_test.go, blocking_test.go, tree_test.go, batch_create_test.go,
-// sweep_test.go, delete_test.go, metadata_cas_test.go, batch_apply_test.go).
-// Either add the eight here or keep this
-// paragraph accurate; do not generalize the sentence again.
+// NOT ALL OF THEM, despite the name: the subtests below drive the ten
+// operations whose roles this test configures — ready, ready:count,
+// issues:query, issues, issues/{id}, issues/{id}:claim, config, config/{key},
+// stats and dependencies. Every OTHER capability-bearing row in routeTable is
+// driven against a roles source in its own file; grep `rolesConfig(` to find
+// the one you want. The gap this test's name implies is a file boundary, not a
+// coverage hole.
+//
+// AND NO TOTAL GOES HERE, deliberately. The sentence this replaces said "ten
+// of the seventeen capability-bearing operations in routes.go" against a table
+// that had already reached thirty-four, then thirty-six; it called the
+// remainder "the other seven" and enumerated eight; and it closed by
+// instructing the next reader to keep it accurate. A count of a table that
+// grows every wire slice is the one thing a comment cannot hold. Keep the ten
+// — they are this file's own subtests, and the compiler and the reader both
+// see them — and do not generalize the sentence into "every database route".
 func TestConfiguredRolesAnswerEveryDatabaseRoute(t *testing.T) {
 	details := &issueops.IssueDetails{Issue: *seededIssue("bd-1", "alice", types.StatusOpen)}
 	reader := &roleReader{page: issueops.IssuePage{Items: countedPage(), HasMore: true}, details: details}

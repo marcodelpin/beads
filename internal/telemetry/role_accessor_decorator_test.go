@@ -92,9 +92,9 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 	}
 }
 
-// roleAccessorStore is a DoltStorage whose only real methods are the twenty-seven
-// role accessors, each answering with a distinguishable sentinel so a test can tell
-// an instrumented surface from a passed-through one.
+// roleAccessorStore is a DoltStorage whose only real methods are the
+// twenty-eight role accessors, each answering with a distinguishable sentinel
+// so a test can tell an instrumented surface from a passed-through one.
 //
 // TWO sentinels rather than one: memoryops.Memories.List and issueops.Reader.List
 // are the same method name with different signatures, so no single Go type can
@@ -172,7 +172,9 @@ func (s *roleAccessorStore) Releaser() (issueops.Releaser, error) {
 	return s.surface, s.err
 }
 
-// roleAccessorSentinel implements twenty-six of the twenty-seven roles at once.
+// roleAccessorSentinel implements twenty-seven of the twenty-eight roles at
+// once — every one but memoryops.Memories, whose List collides with
+// issueops.Reader.List and needs the second sentinel below.
 // Nothing calls its methods; identity is the whole point.
 type roleAccessorSentinel struct{}
 

@@ -81,7 +81,8 @@ type EdgeCountRequest struct {
 	// bound belongs to the WIRE operation, where the request arrives from
 	// somewhere else and the cost of an unbounded one is a stranger's — the
 	// split ApplyBatchRequest.Items makes explicitly by bounding at 100. The
-	// graph-counts wire slice sets it.
+	// graph-counts wire slice set it: GET /v0/beads/dependencies:count bounds
+	// `issue_id` at minItems 1, maxItems 100.
 	IDs []string
 
 	// Direction is which edges the count is over, and it is REQUIRED. An empty
@@ -250,16 +251,21 @@ type EdgeCountResult struct {
 // Deterministic request-validation failures match ErrValidation; result values
 // are unspecified when error is non-nil.
 //
-// THERE IS NO CLI FRONT DOOR IN THE SLICE THAT INTRODUCED THIS ROLE, and no
-// HTTP operation either. That is written down here rather than left to be
-// inferred, the way VersionReconciler writes down its absent HTTP half and
-// BatchApplier its absent CLI. The numbers this role answers are already
-// printed by `bd show`, which reads them through internal/workapi's detail
-// seam — a seam shared with an HTTP handler, so moving it is its own change
-// with its own parity argument — and the wire operation that publishes them
-// lands in the graph-counts wire slice. What this slice buys is the facade: one
-// place where the direction, the plane span, the missing-anchor rule and the
-// status asymmetry are stated once and held to on three legs.
+// THERE WAS NO FRONT DOOR AT ALL IN THE SLICE THAT INTRODUCED THIS ROLE,
+// neither CLI nor HTTP, and that was written down here rather than left to be
+// inferred — the way VersionReconciler writes down its absent HTTP half and
+// BatchApplier its absent CLI. What a facade-only slice buys is ONE place where
+// the direction, the plane span, the missing-anchor rule and the status
+// asymmetry are stated and held to on three legs, before either surface has to
+// agree with the other.
+//
+// THE HTTP HALF HAS SINCE LANDED: GET /v0/beads/dependencies:count publishes
+// this role's whole filter surface, and the anchor bound this request
+// deliberately leaves to the wire is set there. THE CLI HALF STILL HAS NOT, and
+// that is still a decision rather than a gap: the numbers this role answers are
+// already printed by `bd show`, which reads them through internal/workapi's
+// detail seam — a seam shared with an HTTP handler, so moving it is its own
+// change with its own parity argument.
 type GraphCounter interface {
 	// CountEdges returns each anchor's edge cardinality in the requested
 	// direction.

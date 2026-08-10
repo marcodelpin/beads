@@ -1139,7 +1139,7 @@ type DeleteIssuesRequest struct {
 
 	// Force Delete the named beads and leave their dependents ORPHANED, reported in `orphaned`. Without it and without `cascade`, a named bead with a dependent the request did not name is refused.
 	//
-	// It defaults FALSE, which is the guarded mode, and the default is the protection: this surface has no authentication, so an omitted member must not silently choose the answer that changes another bead's graph.
+	// It defaults FALSE, which is the guarded mode, and the default is the protection. Authentication here is a deployment posture, and where it is configured it is a single shared bearer that admits a client to the WHOLE surface — it names no principal this operation could weigh and grants no narrower right — so an omitted member must not silently choose the answer that changes another bead's graph.
 	Force *bool `json:"force,omitempty"`
 
 	// Ids The beads to delete, exact ids, in either plane. DUPLICATES COLLAPSE. An empty array is a `400` rather than a no-op — a caller whose id list came out empty because its own construction broke would read "deleted 0" and conclude the workspace was already clean.
@@ -1395,7 +1395,7 @@ type MemoriesPage struct {
 //
 // NOT `x-go-type`-PINNED, for the reason `Setting` is not: the CLI marshals an ad-hoc map per verb, so there is no canonical Go struct whose JSON encoding is this contract, and minting one to pin to would mean changing what `bd recall --json` prints in order to satisfy a rule about not changing it.
 //
-// IT HAS NO `redacted` MEMBER, and that is the deliberate difference from `Setting`. Redaction there is a decision about the KEY NAME, which works because settings keys are configured names; memory keys are derived from the content, so the same rule would withhold a memory about credentials and serve one containing a credential under an innocuous slug. This surface has no authentication and states the exposure rather than implying a protection it does not have.
+// IT HAS NO `redacted` MEMBER, and that is the deliberate difference from `Setting`. Redaction there is a decision about the KEY NAME, which works because settings keys are configured names; memory keys are derived from the content, so the same rule would withhold a memory about credentials and serve one containing a credential under an innocuous slug. A configured bearer would not close that either — it admits a client to the whole surface rather than to particular keys — so this schema states the exposure rather than implying a protection it does not have.
 type Memory struct {
 	// Key The memory's key, echoed verbatim.
 	Key string `json:"key"`
@@ -1422,9 +1422,13 @@ type Problem struct {
 	// ActualVersion With `precondition_failed`: the `revision` the row was found holding, read inside the transaction that refused the guard.
 	//
 	// PRESENT ONLY WHERE THE REFUSING OPERATION CAN REPORT IT. An all-or-nothing operation rolls its transaction back, so a value read after the fact would describe a row the refusal never saw; where the role behind an operation does not carry the observed value, this member is omitted rather than reconstructed. Its absence therefore means "this server cannot tell you what it found", never "it found zero".
+	//
+	// NO v0 OPERATION EMITS IT TODAY, nor `actual_status` or `actual_assignee`. Every operation that publishes a guard refuses all-or-nothing, and none of the roles behind them carries the observed value out of the rolled-back transaction. The three members are declared so that an operation whose role CAN report what it found is an addition rather than a wire change — a client must not wait for them, and must never read their absence as a value.
 	ActualVersion *int64 `json:"actual_version,omitempty"`
 
-	// Assignee With `already_claimed`: the actor currently holding the issue.
+	// Assignee With `already_claimed`: the actor currently holding the issue, read inside the transaction that refused.
+	//
+	// IT IS OPTIONAL ON EVERY OPERATION BUT THE CLAIM. `POST /v0/beads/issues/{id}:claim` always carries it, because its conflict path reads the row it lost to. `PATCH /v0/beads/issues/{id}` and `POST /v0/beads/issues:batchApply` carry it only when the refusing transaction reported a holder, and `POST /v0/beads/issues/{id}:release` never does — the ownership fence refuses without naming anyone. An absent member means "this refusal could not name the holder", never "nobody holds it"; re-read the row.
 	Assignee *string `json:"assignee,omitempty"`
 
 	// BlockerId With `dependency_cycle`, hierarchy refusal only: the ancestor or descendant the edge named as blocker. See `issue_id`.
@@ -1697,9 +1701,9 @@ type ReopenIssueResponse struct {
 
 // Setting One entry of the workspace's stored settings plane.
 //
-// THIS SCHEMA IS DELIBERATELY NOT `x-go-type`-PINNED, and it is the only response component on this surface that is not. The seven pinned schemas above are pinned because a canonical Go struct already IS the contract — `types.Issue`'s JSON encoding is what `bd show --json` emits. A setting has no such struct: the CLI marshals an ad-hoc `map[string]string` per verb, so there is nothing to pin TO, and minting a type to pin to would mean changing what `bd config get --json` prints in order to satisfy a rule about not changing it.
+// THIS SCHEMA IS DELIBERATELY NOT `x-go-type`-PINNED, and it is one of the two ROW schemas on this surface that is not — `Memory` is the other. (Envelopes and page wrappers are unpinned as a class, for a different reason: they are new wire surface with no prior implementation. `TestWireTagBijection`'s `pinnedSchemas` is the authority on what is pinned.) The thirteen pinned schemas above are pinned because a canonical Go struct already IS the contract — `types.Issue`'s JSON encoding is what `bd show --json` emits. A setting has no such struct: the CLI marshals an ad-hoc `map[string]string` per verb, so there is nothing to pin TO, and minting a type to pin to would mean changing what `bd config get --json` prints in order to satisfy a rule about not changing it.
 //
-// The two surfaces are still one shape where they overlap — `key` and `value` are spelled as the CLI spells them — and they diverge in exactly one deliberate place, `redacted`, which exists because this surface has no authentication and the CLI requires access to the database anyway.
+// The two surfaces are still one shape where they overlap — `key` and `value` are spelled as the CLI spells them — and they diverge in exactly one deliberate place, `redacted`, which exists because a bearer on this surface is optional, shared and surface-wide — it cannot decide that one caller may read a credential and another may not — while the CLI requires access to the database anyway.
 type Setting struct {
 	// Key The setting's key, echoed verbatim.
 	Key string `json:"key"`
@@ -1763,7 +1767,7 @@ type SweepRequest struct {
 
 	// ProtectReferenced Skip candidates whose id is CITED — as a literal, at word boundaries — in the description, notes or comments of any bead that is not done, so a decision trail a live bead still points at is not deleted out from under it.
 	//
-	// It DEFAULTS ON here, unlike the library default, and that is deliberate. This surface has no authentication and this is its only destructive operation, so a caller that omits the member must not get weaker protection than the operator typing `bd prune`, which protects unless `--ignore-references`. The inverse — opt OUT locally, opt IN remotely — is the shape that lets a stray request delete a decision trail nothing brings back.
+	// It DEFAULTS ON here, unlike the library default, and that is deliberate. This is the only destructive operation on the surface, and the bearer a deployment may configure is not a per-caller right: one shared token admits a client to everything published here, so being authenticated says nothing about whether this particular deletion was meant. A caller that omits the member must therefore not get weaker protection than the operator typing `bd prune`, which protects unless `--ignore-references`. The inverse — opt OUT locally, opt IN remotely — is the shape that lets a stray request delete a decision trail nothing brings back.
 	//
 	// It costs a full scan of the not-done set and its comments. Sending `protect_referenced: false` buys the cheaper sweep, and asking for it explicitly is the point: that is the request that should be the deliberate one.
 	ProtectReferenced *bool `json:"protect_referenced,omitempty"`
