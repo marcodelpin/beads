@@ -335,6 +335,87 @@ func TestPRPreflightPlatformsRunsTestScriptPrebuiltBinaryContract(t *testing.T) 
 	}
 }
 
+func TestRepositoryTextEOLPolicyWorkflow(t *testing.T) {
+	workflow := readCIWorkflow(t, "pr.yml")
+	job := workflow.job(t, "check-doc-freshness-platforms")
+
+	if want := "${{ matrix.os }}"; job.RunsOn != want {
+		t.Errorf("check-doc-freshness-platforms runs-on = %q, want %q", job.RunsOn, want)
+	}
+	wantMatrix := map[string]string{
+		"ubuntu-latest":  "linux",
+		"macos-latest":   "darwin",
+		"windows-latest": "windows",
+	}
+	if len(job.Strategy.Matrix.OS) != 0 {
+		t.Errorf("check-doc-freshness-platforms retains an unbound os-list matrix: %v", job.Strategy.Matrix.OS)
+	}
+	if got, want := len(job.Strategy.Matrix.Include), len(wantMatrix); got != want {
+		t.Fatalf("check-doc-freshness-platforms include tuple count = %d, want %d", got, want)
+	}
+	seen := make(map[string]bool, len(wantMatrix))
+	for _, tuple := range job.Strategy.Matrix.Include {
+		wantGOOS, ok := wantMatrix[tuple.OS]
+		if !ok {
+			t.Errorf("unexpected check-doc-freshness-platforms runner tuple: %+v", tuple)
+			continue
+		}
+		if seen[tuple.OS] {
+			t.Errorf("duplicate check-doc-freshness-platforms runner tuple for %q", tuple.OS)
+		}
+		seen[tuple.OS] = true
+		if tuple.ExpectedGOOS != wantGOOS {
+			t.Errorf("runner %q expected_goos = %q, want %q", tuple.OS, tuple.ExpectedGOOS, wantGOOS)
+		}
+		if tuple.Coverage || tuple.TestFlags != "" {
+			t.Errorf(
+				"runner %q has unexpected shared matrix fields: coverage=%t test-flags=%q",
+				tuple.OS,
+				tuple.Coverage,
+				tuple.TestFlags,
+			)
+		}
+		if len(tuple.Extra) != 0 {
+			t.Errorf("runner %q has unexpected matrix fields: %v", tuple.OS, tuple.Extra)
+		}
+	}
+
+	docStep := job.step(t, "Exercise native date and Bash process boundary")
+	const wantDocCommand = "go test '-tags=integration,gms_pure_go' -count=1 -run '^TestDocFreshness' ./scripts"
+	if docStep.Run != wantDocCommand {
+		t.Errorf("doc-freshness command = %q, want exact original %q", docStep.Run, wantDocCommand)
+	}
+
+	eolStep := job.step(t, "Exercise repository text EOL policy boundary")
+	const wantEOLCommand = "go test '-tags=integration,gms_pure_go' -count=1 ./scripts/gitattributespolicy -args -required-host -expected-goos '${{ matrix.expected_goos }}'"
+	if eolStep.Run != wantEOLCommand {
+		t.Errorf("repository EOL command = %q, want %q", eolStep.Run, wantEOLCommand)
+	}
+	if eolStep.If != "" {
+		t.Errorf("repository EOL step has conditional if = %q", eolStep.If)
+	}
+	if strings.Contains(eolStep.Run, "-run") {
+		t.Errorf("repository EOL step may not filter the narrow package: %q", eolStep.Run)
+	}
+	if job.stepIndex(t, "Exercise native date and Bash process boundary") >=
+		job.stepIndex(t, "Exercise repository text EOL policy boundary") {
+		t.Error("repository EOL step must remain separate and follow doc freshness")
+	}
+
+	gate := workflow.job(t, "ci-gate")
+	if !contains(gate.Needs, "check-doc-freshness-platforms") {
+		t.Errorf("ci-gate does not need check-doc-freshness-platforms: %v", gate.Needs)
+	}
+	gateEnv := gate.step(t, "Evaluate CI gate").Env
+	const gateKey = "CHECK_DOC_FRESHNESS_PLATFORMS"
+	if want := "${{ needs.check-doc-freshness-platforms.result }}"; gateEnv[gateKey] != want {
+		t.Errorf("ci-gate env %s = %q, want %q", gateKey, gateEnv[gateKey], want)
+	}
+	if !contains(strings.Fields(gateEnv["CI_GATE_REQUIRED"]), gateKey) {
+		t.Errorf("ci-gate CI_GATE_REQUIRED does not include %q", gateKey)
+	}
+}
+
 func TestGoCacheOwnershipTopology(t *testing.T) {
 	workflows := map[string]ciWorkflow{
 		"main.yml":    readCIWorkflow(t, "main.yml"),
@@ -834,9 +915,11 @@ type ciWorkflowMatrix struct {
 }
 
 type ciWorkflowMatrixInclude struct {
-	OS        string `yaml:"os"`
-	Coverage  bool   `yaml:"coverage"`
-	TestFlags string `yaml:"test-flags"`
+	OS           string         `yaml:"os"`
+	ExpectedGOOS string         `yaml:"expected_goos"`
+	Coverage     bool           `yaml:"coverage"`
+	TestFlags    string         `yaml:"test-flags"`
+	Extra        map[string]any `yaml:",inline"`
 }
 
 type ciWorkflowStep struct {
