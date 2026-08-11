@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--brief` on `bd list` and `bd ready`, and `brief` on the two HTTP
+  listings** (#5546, #5554, #5586). The listing commands return the whole body
+  of every row they page. On one real 16,051-issue store `bd ready --json`
+  returned 454,021 bytes with notes plus description accounting for 76% of it,
+  on exactly the call an agent makes to decide what to work on next. `--brief`
+  omits the free-form text (`description`, `design`, `acceptance_criteria`,
+  `notes`, `payload`, `waiters`), measuring 93.4% smaller. Filtering is
+  untouched: `--desc-contains` and its siblings select rows, and this selects
+  fields. It is opt-in and the default payload is unchanged.
+
+  **The response carries no marker for the omission.** An omitted field is
+  indistinguishable from a genuinely empty one, so only the caller that passed
+  the flag knows its rows are partial; there is no `is_lite_partial` in the
+  JSON. The one visible marker is in text output, where `bd list --long
+  --brief` prints `Description: (omitted by --brief)` rather than an empty
+  section.
+
+  The flag is refused wherever it could not be honored, rather than accepted
+  and dropped. On `bd ready` it requires `--json` and is refused with `--claim`,
+  `--gated`, `--mol` and `--explain`: the projection reaches the driver through
+  the counts query alone, which those routes do not run. On `bd list` it works
+  in text mode too, and is refused with `--watch`, with the `--parent` tree
+  walk, and with `--format`, where a caller's template could print a dropped
+  field with nothing to mark it.
+
 - **`--brief-deps` on `bd show`, and `brief_deps` on the HTTP detail read**
   (#5546, #5547, #5549). `bd show --json` inlines every dependency at full
   body, so reading one issue costs the free-form text of everything it depends
@@ -420,6 +445,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now gone from the create path.
 
 ### Fixed
+
+- **A long or multi-paragraph close reason renders as body text in `bd show`**
+  ([#5595](https://github.com/gastownhall/beads/pull/5595)). Every other
+  free-text field — description, design, notes, acceptance criteria, comments —
+  reaches the terminal through the markdown renderer, which word wraps and
+  indents. The close reason did not: it was formatted into the metadata block
+  beside `Owner:` and `Created:`, so it never wrapped and its second and later
+  lines read as separate metadata entries, a blank line and a bare `- bullet`
+  sitting directly under `Created:`. `bd close --reason-file` exists so agents
+  can write structured close reports, and those were exactly the reasons that
+  came out corrupted. A reason that still fits one metadata line — nearly all
+  of them, including one-liners that arrive from a file with a trailing
+  newline — is unchanged; anything larger now gets a `CLOSE REASON` section
+  rendered by the same call the other body fields make. The JSON payload is
+  untouched. The compaction savings line moved into the metadata block at the
+  same time, so it can no longer be stranded below that section, and all five
+  `bd show` render paths now report it alike.
 
 - **Script hooks now fire on both write plumbings** (bd-opisf). bd has two write
   plumbings and only one of them ran the workspace's hook scripts. The
