@@ -221,7 +221,7 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
-		Version: "1.2.0",
+		Version: "1.2.1",
 		Date:    "2026-08-11",
 		Changes: []string{
 			"MIGRATION: first open with this binary runs migration 0062 (events -> dolt_ignored storage, bd-red8u): a one-time four-phase self-committing flip that removes per-event dolt commit churn. Expect one slower first invocation per clone; do not interrupt it.",
