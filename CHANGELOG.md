@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-11
+
+(Released as 1.2.1: the v1.2.0 tag burned pre-publish on a freebsd
+cross-compile failure in the release build — fixed below — and a burned tag is
+never reused, per the v1.1.1 precedent.)
+
 ### Added
 
 - **`--brief` on `bd list` and `bd ready`, and `brief` on the two HTTP
@@ -446,6 +452,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **FreeBSD builds compile again** (#5661). The dbproxy process-identity arc
+  (procid, unverified-process) shipped linux/darwin/windows implementations
+  with no fallback, breaking `GOOS=freebsd` compilation — caught only by the
+  release build's cross-compile (GH#5662 tracks the CI gap). Unsupported
+  platforms now get stubs that fail proxied-mode spawns with a clean,
+  actionable error; classic (non-proxied) bd is unaffected, matching what
+  v1.1.2 shipped on freebsd.
 - **Telemetry no longer taxes every bd invocation.** Two startup costs paid on
   every command, measured during the post-wave startup audit, are gone. First,
   the machine-scoped distinct ID was recomputed on every invocation — a fork
