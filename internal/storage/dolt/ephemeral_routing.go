@@ -361,6 +361,21 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 	return nil
 }
 
+const (
+	// postTxCommitMaxElapsed is deliberately short: the caller swallows the
+	// final error, so a long fight for a best-effort commit buys nothing and
+	// a stuck server (migration lock, read-only manifest) would otherwise
+	// stall EVERY mutation for the full outage. The 25ms initial interval
+	// mirrors withRetryTx's conflict tuning so routine 1213/1205 races retry
+	// promptly.
+	postTxCommitMaxElapsed = 5 * time.Second
+	// postTxCommitGrace pads the detached context past the backoff budget.
+	// The two bounds are NOT redundant: MaxElapsedTime only stops SCHEDULING
+	// further attempts, while the ctx deadline is the only thing that can
+	// cancel an attempt already hung in-flight (stuck server mid-statement).
+	postTxCommitGrace = 2 * time.Second
+)
+
 // doltAddAndCommitPostTx stages and Dolt-commits tables OUTSIDE any open SQL
 // transaction, against the session's current — post-merge — root. This is
 // the safe ordering for operations whose data transaction has already
@@ -382,21 +397,6 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 // degrades to nothing-to-commit, which doltAddAndCommit swallows. Plain
 // backoff, no circuit breaker: a failure here is benign to the data and must
 // not fail-fast unrelated operations.
-const (
-	// postTxCommitMaxElapsed is deliberately short: the caller swallows the
-	// final error, so a long fight for a best-effort commit buys nothing and
-	// a stuck server (migration lock, read-only manifest) would otherwise
-	// stall EVERY mutation for the full outage. The 25ms initial interval
-	// mirrors withRetryTx's conflict tuning so routine 1213/1205 races retry
-	// promptly.
-	postTxCommitMaxElapsed = 5 * time.Second
-	// postTxCommitGrace pads the detached context past the backoff budget.
-	// The two bounds are NOT redundant: MaxElapsedTime only stops SCHEDULING
-	// further attempts, while the ctx deadline is the only thing that can
-	// cancel an attempt already hung in-flight (stuck server mid-statement).
-	postTxCommitGrace = 2 * time.Second
-)
-
 func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string, commitMsg string) error {
 	// Detach from the caller's cancellation: the data transaction has already
 	// committed, so a request deadline or shutdown landing in this window
