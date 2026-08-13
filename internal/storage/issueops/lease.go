@@ -323,20 +323,34 @@ func HeartbeatIssueInTx(ctx context.Context, tx DBTX, id, actor string) error {
 	//       labeled with the remote node.
 	//
 	// Re-homing on heartbeat would clear both — and the branch below already
-	// says "heartbeat => this node grants it" (a heartbeat with no lease row
-	// calls UpsertLeaseInTx, which stamps the local node). It is NOT done here
-	// because the two branches are not the same claim: UpsertLeaseInTx is
-	// MINTING a lease row through this store, while this UPDATE is refreshing
-	// one whose provenance is already recorded. Re-homing would mean a
-	// heartbeat arriving here — including one whose only path to this store is
+	// says "heartbeat => this node grants it" (a heartbeat that matches no
+	// lease row calls UpsertLeaseInTx, which stamps the local node). It is NOT
+	// done on THIS path because the two are not the same claim: UpsertLeaseInTx
+	// is MINTING a lease row through this store, while this UPDATE is refreshing
+	// one whose provenance is already recorded. Re-homing here would mean a
+	// heartbeat arriving at this store — including one whose only path here is
 	// the JSONL import that materialized case (b) — silently reassigns
 	// enforcement of a lease another replica granted, which is precisely the
 	// robbery the guard exists to prevent (a remote view is stale by up to one
-	// sync interval). Keeping the invariant makes the failure mode LOUD and
-	// recoverable (reportForeignSkips names it every run; --any-replica
-	// reverts it) rather than silent. The escape hatches are documented in
-	// `bd reclaim --help` and docs/federation.md; the fix for (a) is to reap on
-	// the old name or pass --any-replica once that replica is gone for good.
+	// sync interval). Keeping it makes the failure mode LOUD and recoverable
+	// (reportForeignSkips summarizes it every run; --any-replica reverts it)
+	// rather than silent. The escape hatches are documented in
+	// `bd reclaim --help` and docs/multi-agent/federation.md; the fix for (a)
+	// is to reap on the old name, or `bd reclaim --any-replica --id <id>` /
+	// `bd unclaim --force <id>` for a single stranded unit once that replica is
+	// gone for good.
+	//
+	// SCOPE, precisely: the no-re-home invariant holds on THIS fast path only.
+	// The disambiguation fallback below re-homes, by design and unavoidably —
+	// when `holder = ?` misses because the lease row spells the same identity
+	// differently (ga-v2k49/ga-wzl83), it re-arms through UpsertLeaseInTx, whose
+	// ON DUPLICATE KEY UPDATE stamps the LOCAL node over whatever was there.
+	// So "a heartbeat never re-homes a foreign lease" is false for a
+	// spelling-mismatched holder, and RestoreLeaseOnImportInTx can relabel in
+	// the other direction (it takes granted_node from the snapshot when the
+	// local row is expired). Neither is changed here: both are pre-existing
+	// paths with their own rationale, and the point of this note is that the
+	// invariant is a property of the common path, not of the lease row.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE leases SET lease_expires_at = ?, heartbeat_at = ?,
 			granted_node = IF(COALESCE(granted_node, '') = '', ?, granted_node)
@@ -520,14 +534,17 @@ func formatForeignSkipSummary(groups []foreignSkipGroup, total int, localNode st
 		fmt.Fprintf(&b, "%q (%d)", g.node, g.count)
 	}
 	if rest > 0 {
-		fmt.Fprintf(&b, " and %d more %s (%d)", rest, pluralWord(rest, "replica", "replicas"), restCount)
+		fmt.Fprintf(&b, ", and %d more %s (%d)", rest, pluralWord(rest, "replica", "replicas"), restCount)
 	}
+	// --any-replica is named with --id: the bare form reverts EVERY foreign
+	// stale lease, live peers included, which is the wrong lever for the
+	// one-stranded-unit case an operator reading this line usually has.
 	return fmt.Sprintf("reclaim: skipped %d stale %s granted by %s — %s, not this node (%q). "+
-		"Reap %s on the granting replica, or pass --any-replica if that replica is gone. "+
-		"(bd -v lists them.)\n",
+		"Reap %s on the granting replica, or pass --any-replica --id <id> if that replica is gone. "+
+		"(bd -v lists up to %d of them.)\n",
 		total, pluralWord(total, "lease", "leases"),
 		pluralWord(len(groups), "another replica", "other replicas"), b.String(), localNode,
-		pluralWord(total, "it", "them"))
+		pluralWord(total, "it", "them"), foreignSkipDetailRows)
 }
 
 // reportForeignSkipDetail names the declined leases one per line, capped at

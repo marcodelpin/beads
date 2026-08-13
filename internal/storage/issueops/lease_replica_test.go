@@ -106,7 +106,7 @@ func TestFormatForeignSkipSummary(t *testing.T) {
 				t.Errorf("summary = %q, want it to contain %q", got, want)
 			}
 		}
-		if strings.Contains(got, "more") {
+		if strings.Contains(got, "more replica") {
 			t.Errorf("summary = %q, want no collapsed tail at exactly the cap", got)
 		}
 	})
