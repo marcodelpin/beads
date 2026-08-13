@@ -70,6 +70,9 @@ type seqConnector struct {
 	queryErr func(query string) error
 	// rows, when set, serves a canned result set for matching queries.
 	rows func(query string) (driver.Rows, bool)
+	// commitErr, when set, can fail the driver-level tx COMMIT after it is
+	// recorded (for exercising the ambiguous commit-phase path).
+	commitErr func() error
 }
 
 func (c *seqConnector) Connect(context.Context) (driver.Conn, error) {
@@ -92,7 +95,7 @@ func (c *seqConn) Begin() (driver.Tx, error)           { return c.BeginTx(contex
 
 func (c *seqConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
 	c.parent.rec.add(c.id, "BEGIN")
-	return &seqTx{rec: c.parent.rec, conn: c.id}, nil
+	return &seqTx{rec: c.parent.rec, conn: c.id, commitErr: c.parent.commitErr}, nil
 }
 
 func (c *seqConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
@@ -121,11 +124,18 @@ func (c *seqConn) QueryContext(_ context.Context, query string, _ []driver.Named
 }
 
 type seqTx struct {
-	rec  *seqRecorder
-	conn int
+	rec       *seqRecorder
+	conn      int
+	commitErr func() error
 }
 
-func (t *seqTx) Commit() error   { t.rec.add(t.conn, "COMMIT"); return nil }
+func (t *seqTx) Commit() error {
+	t.rec.add(t.conn, "COMMIT")
+	if t.commitErr != nil {
+		return t.commitErr()
+	}
+	return nil
+}
 func (t *seqTx) Rollback() error { t.rec.add(t.conn, "ROLLBACK"); return nil }
 
 type seqRows struct{}
@@ -359,6 +369,72 @@ func TestPostTxDoltCommitRetriesSerializationConflict(t *testing.T) {
 	}
 	if doltCommits < 2 {
 		t.Fatalf("expected the DOLT_COMMIT to be retried after 1213, saw %d attempt(s)", doltCommits)
+	}
+}
+
+// TestPostTxDoltCommitSurvivesCallerCancellation pins the detached-context
+// contract: the data transaction has already committed when the post-tx
+// dolt commit runs, so the caller's request-scoped cancellation (deadline,
+// shutdown, Ctrl-C) must not skip the audit commit — the post-tx phase runs
+// on a detached context with its own budget.
+func TestPostTxDoltCommitSurvivesCallerCancellation(t *testing.T) {
+	rec := &seqRecorder{}
+	db := sql.OpenDB(&seqConnector{rec: rec})
+	defer func() { _ = db.Close() }()
+
+	s := &DoltStore{db: db}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before the post-tx commit starts
+
+	if err := s.doltAddAndCommitPostTx(ctx, []string{"issues"}, "bd: update test-1"); err != nil {
+		t.Fatalf("post-tx dolt commit must survive caller cancellation, got: %v", err)
+	}
+	sawDoltCommit := false
+	for _, ev := range rec.snapshot() {
+		if strings.Contains(ev, "DOLT_COMMIT") {
+			sawDoltCommit = true
+		}
+	}
+	if !sawDoltCommit {
+		t.Fatalf("DOLT_COMMIT never ran under a cancelled caller context; events: %v", rec.snapshot())
+	}
+}
+
+// TestAmbiguousTxCommitStillAttemptsDoltCommit pins the errCommitPhase
+// best-effort contract: a connection loss during the SQL COMMIT is ambiguous
+// — the commit may have landed server-side. If it landed, the working set
+// holds the change and only a post-tx DOLT_ADD/DOLT_COMMIT can restore the
+// audit entry the old in-tx ordering guaranteed; if it rolled back, staging
+// an unchanged working set degrades to nothing-to-commit. So the post-tx
+// commit must be attempted even on the error path, while the original
+// errCommitPhase error still surfaces for the claim-verify protocol.
+func TestAmbiguousTxCommitStillAttemptsDoltCommit(t *testing.T) {
+	rec := &seqRecorder{}
+	connector := &seqConnector{rec: rec}
+	connector.commitErr = func() error { return errors.New("invalid connection") }
+	db := sql.OpenDB(connector)
+	defer func() { _ = db.Close() }()
+
+	s := &DoltStore{db: db}
+
+	err := s.runIssueOperationTx(context.Background(), "bd: update test-1", func(tx *sql.Tx) (storageissueops.ChangedTables, error) {
+		return storageissueops.ChangedTables{"issues": true}, nil
+	})
+	if err == nil {
+		t.Fatal("ambiguous commit loss must surface its error to the caller")
+	}
+	if !errors.Is(err, errCommitPhase) {
+		t.Fatalf("commit-phase connection loss must carry errCommitPhase, got: %v", err)
+	}
+	sawDoltCommit := false
+	for _, ev := range rec.snapshot() {
+		if strings.Contains(ev, "DOLT_COMMIT") {
+			sawDoltCommit = true
+		}
+	}
+	if !sawDoltCommit {
+		t.Fatalf("best-effort DOLT_COMMIT never attempted after ambiguous tx commit; events: %v", rec.snapshot())
 	}
 }
 

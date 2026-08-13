@@ -3,6 +3,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
@@ -60,10 +61,28 @@ func (s *DoltStore) runIssueOperationTxWithMessage(ctx context.Context, fn func(
 		tables, commitMsg, err = fn(tx)
 		return err
 	})
+	staged := sortedDirtyTables(tables)
+	if commitMsg == "" {
+		// A body can dirty tables without composing a message (e.g. a ready
+		// claim whose side effects landed but which claimed nothing); never
+		// mint a Dolt commit with an empty message.
+		commitMsg = "bd: issue operation"
+	}
 	if err != nil {
+		if errors.Is(err, errCommitPhase) && len(staged) > 0 {
+			// The SQL commit outcome is ambiguous: it may have landed
+			// server-side before the connection dropped. If it landed, the
+			// working set holds the change and this best-effort commit
+			// restores the audit entry the in-tx ordering used to guarantee;
+			// if it rolled back, staging an unchanged working set degrades to
+			// nothing-to-commit. Either way the original error must still
+			// return so the claim-verify protocol resolves the true outcome.
+			if cerr := s.doltAddAndCommitPostTx(ctx, staged, commitMsg); cerr != nil {
+				log.Printf("dolt: best-effort dolt commit after ambiguous tx commit failed for %q: %v", commitMsg, cerr)
+			}
+		}
 		return err
 	}
-	staged := sortedDirtyTables(tables)
 	if len(staged) == 0 {
 		return nil
 	}

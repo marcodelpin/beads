@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
@@ -378,14 +381,40 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 // degrades to nothing-to-commit, which doltAddAndCommit swallows. Plain
 // backoff, no circuit breaker: a failure here is benign to the data and must
 // not fail-fast unrelated operations.
+//
+// postTxCommitMaxElapsed is deliberately short: the caller swallows the
+// final error, so a long fight for a best-effort commit buys nothing and a
+// stuck server (migration lock, read-only manifest) would otherwise stall
+// EVERY mutation for the full outage. The 25ms initial interval mirrors
+// withRetryTx's conflict tuning so routine 1213/1205 races retry promptly.
+const postTxCommitMaxElapsed = 5 * time.Second
+
 func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string, commitMsg string) error {
-	bo := newServerRetryBackoff()
+	// Detach from the caller's cancellation: the data transaction has already
+	// committed, so a request deadline or shutdown landing in this window
+	// must not deterministically skip the audit commit (values — tracing —
+	// are preserved). The commit gets its own budget instead.
+	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(ctx, postTxCommitMaxElapsed+2*time.Second)
+	defer cancel()
+
+	bo := backoff.NewExponentialBackOff()
+	bo.InitialInterval = 25 * time.Millisecond
+	bo.MaxElapsedTime = postTxCommitMaxElapsed
 	return backoff.Retry(func() error {
 		err := s.doltAddAndCommit(ctx, tables, commitMsg)
 		if err == nil {
 			return nil
 		}
-		if isRetryableError(err) || isSerializationError(err) || isDoltAutocommitRollbackError(err) {
+		// Mirror withRetryTx's accounting so conflict pressure on this path
+		// stays visible to the same counters that tracked it in-tx.
+		if isSerializationError(err) || isDoltAutocommitRollbackError(err) {
+			doltMetrics.serializationErrors.Add(ctx, 1)
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "serialization")))
+			return err
+		}
+		if isRetryableError(err) {
+			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "connection")))
 			return err
 		}
 		return backoff.Permanent(err)

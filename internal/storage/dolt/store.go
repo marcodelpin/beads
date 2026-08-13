@@ -1005,6 +1005,16 @@ func (s *DoltStore) withReadTxLongTimeout(ctx context.Context, fn func(tx *sql.T
 	})
 }
 
+// withRetryTx runs fn in a write transaction, replaying the WHOLE body on
+// rollback-guaranteed conflicts (1213/1205 serialization, Dolt's exact 1105
+// autocommit rollback) and on pre-commit transient connection errors.
+//
+// Contract for closures: fn may run multiple times. Any state the closure
+// captures must be re-derived on EVERY attempt — unconditional assignment,
+// or an explicit reset at the top of the body when an assignment is
+// conditional — otherwise a rolled-back attempt's values leak into post-tx
+// logic (verify passes, hooks, return values). See ready_claimer.ClaimNext's
+// `claimed = nil` reset for the canonical example.
 func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
@@ -3004,15 +3014,17 @@ func (s *DoltStore) doltAddAndCommit(ctx context.Context, tables []string, commi
 		if !isDoltNothingToCommit(err) {
 			return fmt.Errorf("dolt commit: %w", err)
 		}
-		// Server mode: sessions on one branch share the working set, so a
-		// concurrent writer's DOLT_COMMIT can absorb this operation's rows
-		// under ITS message; this one then has nothing to commit and its
-		// message never reaches dolt log. The data is intact either way — log
-		// so the missing audit line is explicable. (Embedded mode reaches
-		// this benignly when a write leaves the working set unchanged; stay
-		// quiet there.)
+		// Nothing-to-commit has three benign causes and the server cannot say
+		// which occurred: a no-op write (working set unchanged), absorption —
+		// sessions on one branch share the working set, so a concurrent
+		// writer's DOLT_COMMIT can sweep this operation's rows under ITS
+		// message — or a retried commit whose first attempt actually landed.
+		// The data is intact in every case; log neutrally (server mode only:
+		// embedded has no concurrent sessions and mostly hits the no-op case)
+		// so a missing audit line is explicable without asserting a
+		// concurrent writer that may not exist.
 		if s.serverMode {
-			log.Printf("dolt: commit %q absorbed by a concurrent commit (nothing to commit); the change is included in another writer's dolt commit", commitMsg)
+			log.Printf("dolt: commit %q made no dolt commit (nothing to commit): no-op write, change absorbed into a concurrent writer's commit, or an already-committed retry", commitMsg)
 		}
 	}
 	return nil
