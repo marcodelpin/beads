@@ -258,6 +258,24 @@ permanently gone (or a node that was renamed and now sees its own old leases
 as foreign) — not a normal setting, since only the granting machine has a
 first-hand view of whether the holder is alive.
 
+**A heartbeat proves the holder is alive; it does not move the lease.** The
+replica recorded on a lease row is written once, when the lease is granted, and
+a later heartbeat only *backfills* it when it is still empty — it never
+overwrites a row that positively names a replica. So a lease keeps its granting
+replica for life, and two states can strand one where a local heartbeat is
+keeping it alive:
+
+- a replica that was **renamed** (`mini` → `mini2`) heartbeats its own leases,
+  which now read foreign forever;
+- a foreign lease that arrived through the JSONL interchange, whose holder name
+  also exists locally, gets heartbeated here but stays labelled with the remote
+  node.
+
+Both are recoverable with `--any-replica` once you have confirmed the granting
+replica is not still reaping (that confirmation is the whole point of the
+guard), and `bd reclaim` names what it declined on stderr — one summary line
+per run, with `bd -v` expanding it to the individual leases.
+
 ## Planned Features
 
 The following operation has infrastructure support but is not yet exposed as
