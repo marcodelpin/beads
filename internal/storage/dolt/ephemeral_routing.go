@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -354,18 +355,54 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 // If this fails, the data change has still landed: it remains in the branch
 // working set and is carried into the next Dolt commit on the branch. The
 // error wrapping states that explicitly so callers and users do not retry
-// the mutation itself.
+// the mutation itself, and every error is tagged errDoltPostTxCommit so the
+// claim-family verify wrappers resolve the true outcome by re-read instead
+// of reporting a landed claim as failed.
 func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string, commitMsg string) error {
-	for _, table := range tables {
-		if err := schema.DrainCall(ctx, s.db, "CALL DOLT_ADD(?)", table); err != nil {
-			return fmt.Errorf("dolt add %s (post-tx; data already committed, change rides the next dolt commit): %w", table, err)
+	err := s.withRetry(ctx, func() error {
+		// Pin one connection for the whole DOLT_ADD…DOLT_COMMIT sequence, like
+		// doltAddAndCommit (GH#2455): on a >1-connection pool each bare s.db
+		// statement may land on a different session — including one checked out
+		// on another branch — where the commit degrades to nothing-to-commit or
+		// commits the wrong branch's staged root. Acquired inside the retry op
+		// so a retry after a dead-connection error gets a fresh session.
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("acquire connection (post-tx dolt commit): %w", err)
 		}
+		defer conn.Close()
+
+		for _, table := range tables {
+			if err := schema.DrainCall(ctx, conn, "CALL DOLT_ADD(?)", table); err != nil {
+				return fmt.Errorf("dolt add %s (post-tx; data already committed, change rides the next dolt commit): %w", table, err)
+			}
+		}
+		if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+			commitMsg, s.commitAuthorString()); err != nil {
+			if isDoltNothingToCommit(err) {
+				// Server mode: sessions on one branch share the working set, so
+				// a concurrent writer's DOLT_COMMIT can absorb this operation's
+				// rows under ITS message; this one then has nothing to commit
+				// and its message never reaches dolt log. The data is intact
+				// either way — log so the missing audit line is explicable.
+				// (Embedded mode reaches this benignly when a data-identical
+				// write leaves the working set unchanged; stay quiet there.)
+				if s.serverMode {
+					log.Printf("dolt: post-tx commit %q absorbed by a concurrent commit (nothing to commit); the change is included in another writer's dolt commit", commitMsg)
+				}
+				return nil
+			}
+			return fmt.Errorf("dolt commit (post-tx; data already committed, change rides the next dolt commit): %w", err)
+		}
+		return nil
+	})
+	if err == nil {
+		return nil
 	}
-	if err := schema.DrainCall(ctx, s.db, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
-		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
-		return fmt.Errorf("dolt commit (post-tx; data already committed, change rides the next dolt commit): %w", err)
-	}
-	return nil
+	// Tag every failure (including circuit-open and connection acquisition):
+	// by this point the data transaction has committed, so no caller may read
+	// this error as "nothing happened".
+	return fmt.Errorf("%w (%w)", err, errDoltPostTxCommit)
 }
 
 // getAllWispDependencyRecords returns all wisp dependency records, keyed by issue_id.

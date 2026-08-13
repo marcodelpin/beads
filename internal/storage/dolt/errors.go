@@ -50,6 +50,16 @@ var (
 	// connection dropped — so withRetryTx must NOT blindly replay it, or it
 	// could double-apply the write. Pre-commit failures carry no such risk.
 	errCommitPhase = errors.New("write commit phase")
+
+	// errDoltPostTxCommit marks a DOLT_ADD/DOLT_COMMIT failure that occurred
+	// AFTER the data transaction committed (doltAddAndCommitPostTx). Unlike
+	// errCommitPhase there is no ambiguity: the mutation HAS landed — it stays
+	// in the branch working set and rides the next dolt commit on the branch —
+	// only the trailing history commit failed. Claim-family verify wrappers
+	// treat it as "definitely landed": fall through to the re-read and report
+	// the true state, and never use it to justify a replay (nothing rolled
+	// back).
+	errDoltPostTxCommit = errors.New("post-tx dolt commit phase")
 )
 
 // isTableNotExistError returns true if the error indicates a MySQL/Dolt

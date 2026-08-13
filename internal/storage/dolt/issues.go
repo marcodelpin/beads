@@ -410,7 +410,13 @@ func (s *DoltStore) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter
 // the first attempt selected.
 func (s *DoltStore) verifiedReadyClaim(ctx context.Context, actor string, write func() (*types.Issue, error)) (*types.Issue, error) {
 	claimed, err := write()
-	if err != nil && !(errors.Is(err, errCommitPhase) && claimed != nil && s.serverMode) {
+	// Both sentinels fall through to the verify pass: errCommitPhase because
+	// the outcome is ambiguous, errDoltPostTxCommit because the data
+	// transaction definitely committed and only the trailing dolt commit
+	// failed — surfacing either raw would report a landed claim as failed
+	// (the wy-x543k inversion).
+	recoverable := errors.Is(err, errCommitPhase) || errors.Is(err, errDoltPostTxCommit)
+	if err != nil && !(recoverable && claimed != nil && s.serverMode) {
 		return nil, err
 	}
 	if claimed == nil || !s.serverMode {
@@ -433,8 +439,11 @@ func (s *DoltStore) verifiedReadyClaim(ctx context.Context, actor string, write 
 			}
 			return claimed, nil
 		}
-		if err != nil && attempt < 1 {
-			// Verified rolled back: nothing landed, safe to replay once.
+		if err != nil && errors.Is(err, errCommitPhase) && attempt < 1 {
+			// Verified rolled back: nothing landed, safe to replay once. Only
+			// errCommitPhase justifies this — a post-tx dolt commit failure
+			// means the claim landed and a racer overturned it, so a replay
+			// would re-assert a decision that was already overturned.
 			doltMetrics.claimVerifyRecovered.Add(ctx, 1, metric.WithAttributes(
 				attribute.String("op", "ready-claim"), attribute.String("outcome", "replayed")))
 			claimed, err = write()
@@ -446,7 +455,7 @@ func (s *DoltStore) verifiedReadyClaim(ctx context.Context, actor string, write 
 			// indeterminate error, which would reintroduce the wy-x543k
 			// false-failure and could orphan an applied claim on a DIFFERENT
 			// ready issue than the first attempt selected.
-			if err != nil && !(errors.Is(err, errCommitPhase) && claimed != nil) {
+			if err != nil && !((errors.Is(err, errCommitPhase) || errors.Is(err, errDoltPostTxCommit)) && claimed != nil) {
 				return nil, err
 			}
 			if claimed == nil {
@@ -459,11 +468,17 @@ func (s *DoltStore) verifiedReadyClaim(ctx context.Context, actor string, write 
 			}
 			continue
 		}
-		if err != nil {
+		if err != nil && errors.Is(err, errCommitPhase) {
 			return nil, fmt.Errorf("ready claim of %s did not land (connection lost during commit; rollback verified by re-read): %w", claimed.ID, err)
 		}
 		doltMetrics.claimVerifyLost.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("op", "ready-claim")))
+		if err != nil {
+			// errDoltPostTxCommit: the claim landed, then a concurrent writer
+			// changed the row before the re-read; fail loudly, never replay.
+			return nil, fmt.Errorf("ready claim of %s landed (post-tx dolt commit failed) but no longer holds (found assignee=%q status=%q, want %s) — a concurrent writer changed it; treat the claim as NOT applied: %w",
+				claimed.ID, assignee, status, post.desc, err)
+		}
 		return nil, fmt.Errorf("ready claim of %s reported success but did not land (found assignee=%q status=%q, want %s) — server likely degraded; treat the claim as NOT applied",
 			claimed.ID, assignee, status, post.desc)
 	}

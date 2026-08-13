@@ -33,6 +33,11 @@ import (
 //   - ambiguous commit loss   -> (errCommitPhase, surfaced by withRetryTx as
 //     indeterminate) verify; applied -> success, verified rolled back -> replay
 //     the write once (safe: nothing landed)
+//   - post-tx dolt commit loss -> (errDoltPostTxCommit) the data transaction
+//     committed, so the write IS applied and only the trailing history commit
+//     failed; verify and report the true state. Never replay off this error:
+//     nothing rolled back, so a mismatch means a concurrent writer changed
+//     the row after us, not that our write vanished.
 //   - any other error         -> honest failure (CAS lost, not-claimable, or
 //     pre-commit errors withRetryTx already retried); no verify needed
 //
@@ -191,7 +196,7 @@ func (s *DoltStore) verifiedClaimWrite(ctx context.Context, id string, post clai
 	const maxReplays = 1
 	for attempt := 0; ; attempt++ {
 		err := write()
-		if err != nil && !errors.Is(err, errCommitPhase) {
+		if err != nil && !errors.Is(err, errCommitPhase) && !errors.Is(err, errDoltPostTxCommit) {
 			return err
 		}
 		assignee, status, verr := s.readClaimState(ctx, id)
@@ -209,7 +214,7 @@ func (s *DoltStore) verifiedClaimWrite(ctx context.Context, id string, post clai
 			}
 			return nil
 		}
-		if err != nil {
+		if err != nil && errors.Is(err, errCommitPhase) {
 			if attempt < maxReplays {
 				// Verified rolled back: nothing landed, so one replay is safe.
 				doltMetrics.claimVerifyRecovered.Add(ctx, 1, metric.WithAttributes(
@@ -221,6 +226,13 @@ func (s *DoltStore) verifiedClaimWrite(ctx context.Context, id string, post clai
 		}
 		doltMetrics.claimVerifyLost.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("op", post.op)))
+		if err != nil {
+			// errDoltPostTxCommit: our write landed, then a concurrent writer
+			// changed the row before the re-read. Replaying would re-assert a
+			// decision the racer already overturned; fail loudly instead.
+			return fmt.Errorf("%s of %s landed (post-tx dolt commit failed) but no longer holds (found assignee=%q status=%q, want %s) — a concurrent writer changed it; treat the %s as NOT applied: %w",
+				post.op, id, assignee, status, post.desc, post.op, err)
+		}
 		return fmt.Errorf("%s of %s reported success but did not land (found assignee=%q status=%q, want %s) — server likely degraded; treat the %s as NOT applied",
 			post.op, id, assignee, status, post.desc, post.op)
 	}

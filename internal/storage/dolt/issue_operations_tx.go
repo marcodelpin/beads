@@ -34,7 +34,16 @@ func (s *DoltStore) runIssueOperationTx(ctx context.Context, commitMsg string, f
 //
 // Failure mode note: if the post-commit Dolt commit fails, the data change
 // HAS landed — it remains in the branch working set and rides the next Dolt
-// commit. Callers must not treat that error as "nothing happened".
+// commit. Callers must not treat that error as "nothing happened"; it is
+// tagged errDoltPostTxCommit so the claim-family verify wrappers resolve the
+// true outcome by re-read instead of reporting a landed claim as failed.
+//
+// Audit-trail caveat (server mode): sessions on one branch share the working
+// set, so a concurrent writer's DOLT_COMMIT can absorb this operation's rows
+// under its own message; this operation's commit then degrades to
+// nothing-to-commit and its message never reaches dolt log. The data is
+// intact — doltAddAndCommitPostTx logs the absorption so the missing audit
+// line is explicable.
 func (s *DoltStore) runIssueOperationTxWithMessage(ctx context.Context, fn func(*sql.Tx) (storageissueops.ChangedTables, string, error)) error {
 	var staged []string
 	var commitMsg string
