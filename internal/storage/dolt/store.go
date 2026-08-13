@@ -3000,8 +3000,20 @@ func (s *DoltStore) doltAddAndCommit(ctx context.Context, tables []string, commi
 		}
 	}
 	if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
-		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
-		return fmt.Errorf("dolt commit: %w", err)
+		commitMsg, s.commitAuthorString()); err != nil {
+		if !isDoltNothingToCommit(err) {
+			return fmt.Errorf("dolt commit: %w", err)
+		}
+		// Server mode: sessions on one branch share the working set, so a
+		// concurrent writer's DOLT_COMMIT can absorb this operation's rows
+		// under ITS message; this one then has nothing to commit and its
+		// message never reaches dolt log. The data is intact either way — log
+		// so the missing audit line is explicable. (Embedded mode reaches
+		// this benignly when a write leaves the working set unchanged; stay
+		// quiet there.)
+		if s.serverMode {
+			log.Printf("dolt: commit %q absorbed by a concurrent commit (nothing to commit); the change is included in another writer's dolt commit", commitMsg)
+		}
 	}
 	return nil
 }

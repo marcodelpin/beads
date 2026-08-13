@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
+
+	"github.com/cenkalti/backoff/v4"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
@@ -329,9 +330,20 @@ func (s *DoltStore) demoteToWispInTx(ctx context.Context, tx *sql.Tx, id string,
 // Dolt commit writes every concurrently-changed row in the staged tables
 // back to its BEGIN-time value (lost update). The main issue-mutation path
 // (runIssueOperationTxWithMessage) no longer uses this; it commits the SQL
-// transaction first and then calls doltAddAndCommitPostTx. Remaining callers
-// (wisp promote/demote, legacy reopen, branch transaction wrapper) accept
-// the hazard for now and should migrate to the post-tx ordering.
+// transaction first and then calls doltAddAndCommitPostTx.
+//
+// The hazard remains LIVE everywhere the in-tx ordering survives — a larger
+// surface than this helper's callers: wisp promote/demote (this file),
+// legacy reopen (issues.go), RunInIssueLifecycleTransaction
+// (transaction.go), AND the same DOLT_ADD/DOLT_COMMIT-inside-tx pattern
+// inlined directly in the legacy DoltStore write methods in issues.go and
+// slots.go (UpdateIssue, UpdateIssueChecked, ClaimIssue, ClaimReadyIssue,
+// UnclaimIssue, UnclaimIssueIfAssignee, ReclaimExpiredLeases, CloseIssue*,
+// DeleteIssue*, MergeMetadata, SlotClear) — several reachable from live CLI
+// paths (bd edit/note/priority/defer/unclaim, linear sync) and from the
+// uow/domain claim surfaces. Every one of these should migrate to the
+// post-tx ordering; until then any of them racing a concurrent writer can
+// still silently revert that writer's committed rows.
 func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables []string, commitMsg string) error {
 	for _, table := range tables {
 		if err := schema.DrainCall(ctx, tx, "CALL DOLT_ADD(?)", table); err != nil {
@@ -353,56 +365,31 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 // with concurrent writers (see runIssueOperationTxWithMessage).
 //
 // If this fails, the data change has still landed: it remains in the branch
-// working set and is carried into the next Dolt commit on the branch. The
-// error wrapping states that explicitly so callers and users do not retry
-// the mutation itself, and every error is tagged errDoltPostTxCommit so the
-// claim-family verify wrappers resolve the true outcome by re-read instead
-// of reporting a landed claim as failed.
+// working set and is carried into the next Dolt commit on the branch
+// (runIssueOperationTxWithMessage logs and swallows the failure for exactly
+// that reason — see the failure-mode note there).
+//
+// The retry classifier must accept everything withRetryTx retried when the
+// dolt commit still ran in-tx: transient connection errors plus Dolt's
+// rollback-guaranteed commit conflicts (1213/1205 serialization, 1105
+// autocommit rollback), which are routine under the concurrent-writer load
+// this path exists for. Retrying the whole sequence is safe: re-staging is
+// idempotent, and a replayed DOLT_COMMIT whose first attempt actually landed
+// degrades to nothing-to-commit, which doltAddAndCommit swallows. Plain
+// backoff, no circuit breaker: a failure here is benign to the data and must
+// not fail-fast unrelated operations.
 func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string, commitMsg string) error {
-	err := s.withRetry(ctx, func() error {
-		// Pin one connection for the whole DOLT_ADD…DOLT_COMMIT sequence, like
-		// doltAddAndCommit (GH#2455): on a >1-connection pool each bare s.db
-		// statement may land on a different session — including one checked out
-		// on another branch — where the commit degrades to nothing-to-commit or
-		// commits the wrong branch's staged root. Acquired inside the retry op
-		// so a retry after a dead-connection error gets a fresh session.
-		conn, err := s.db.Conn(ctx)
-		if err != nil {
-			return fmt.Errorf("acquire connection (post-tx dolt commit): %w", err)
+	bo := newServerRetryBackoff()
+	return backoff.Retry(func() error {
+		err := s.doltAddAndCommit(ctx, tables, commitMsg)
+		if err == nil {
+			return nil
 		}
-		defer conn.Close()
-
-		for _, table := range tables {
-			if err := schema.DrainCall(ctx, conn, "CALL DOLT_ADD(?)", table); err != nil {
-				return fmt.Errorf("dolt add %s (post-tx; data already committed, change rides the next dolt commit): %w", table, err)
-			}
+		if isRetryableError(err) || isSerializationError(err) || isDoltAutocommitRollbackError(err) {
+			return err
 		}
-		if err := schema.DrainCall(ctx, conn, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
-			commitMsg, s.commitAuthorString()); err != nil {
-			if isDoltNothingToCommit(err) {
-				// Server mode: sessions on one branch share the working set, so
-				// a concurrent writer's DOLT_COMMIT can absorb this operation's
-				// rows under ITS message; this one then has nothing to commit
-				// and its message never reaches dolt log. The data is intact
-				// either way — log so the missing audit line is explicable.
-				// (Embedded mode reaches this benignly when a data-identical
-				// write leaves the working set unchanged; stay quiet there.)
-				if s.serverMode {
-					log.Printf("dolt: post-tx commit %q absorbed by a concurrent commit (nothing to commit); the change is included in another writer's dolt commit", commitMsg)
-				}
-				return nil
-			}
-			return fmt.Errorf("dolt commit (post-tx; data already committed, change rides the next dolt commit): %w", err)
-		}
-		return nil
-	})
-	if err == nil {
-		return nil
-	}
-	// Tag every failure (including circuit-open and connection acquisition):
-	// by this point the data transaction has committed, so no caller may read
-	// this error as "nothing happened".
-	return fmt.Errorf("%w (%w)", err, errDoltPostTxCommit)
+		return backoff.Permanent(err)
+	}, backoff.WithContext(bo, ctx))
 }
 
 // getAllWispDependencyRecords returns all wisp dependency records, keyed by issue_id.

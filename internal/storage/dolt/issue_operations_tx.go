@@ -3,7 +3,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
-	"sort"
+	"log"
 
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 )
@@ -32,41 +32,46 @@ func (s *DoltStore) runIssueOperationTx(ctx context.Context, commitMsg string, f
 // session's changes with concurrent writers; the post-commit DOLT_ADD then
 // stages the merged state, which cannot resurrect stale rows.
 //
-// Failure mode note: if the post-commit Dolt commit fails, the data change
-// HAS landed — it remains in the branch working set and rides the next Dolt
-// commit. Callers must not treat that error as "nothing happened"; it is
-// tagged errDoltPostTxCommit so the claim-family verify wrappers resolve the
-// true outcome by re-read instead of reporting a landed claim as failed.
+// Failure mode note: if the post-commit Dolt commit fails (after retries),
+// the data change HAS landed — it remains in the branch working set and
+// rides the next Dolt commit on the branch. That failure is therefore
+// logged and NOT propagated: the mutation succeeded, and surfacing an error
+// here would make every caller treat an applied mutation as failed —
+// automated retries double-apply (duplicate creates/comments), completion
+// hooks are skipped for a persisted state change, and the claim verify
+// wrappers report claims the caller actually holds as failed (the wy-x543k
+// inversion). The only cost of a swallowed failure is a missing dolt-log
+// audit line until the next commit.
 //
 // Audit-trail caveat (server mode): sessions on one branch share the working
 // set, so a concurrent writer's DOLT_COMMIT can absorb this operation's rows
 // under its own message; this operation's commit then degrades to
 // nothing-to-commit and its message never reaches dolt log. The data is
-// intact — doltAddAndCommitPostTx logs the absorption so the missing audit
-// line is explicable.
+// intact — doltAddAndCommit logs the absorption so the missing audit line is
+// explicable.
 func (s *DoltStore) runIssueOperationTxWithMessage(ctx context.Context, fn func(*sql.Tx) (storageissueops.ChangedTables, string, error)) error {
-	var staged []string
+	var tables storageissueops.ChangedTables
 	var commitMsg string
 	err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		// Reset on every attempt: a retried transaction re-runs the body and
-		// must not accumulate tables from a rolled-back attempt.
-		staged, commitMsg = nil, ""
-		tables, msg, err := fn(tx)
-		if err != nil {
-			return err
-		}
-		for table := range tables {
-			staged = append(staged, table)
-		}
-		sort.Strings(staged)
-		commitMsg = msg
-		return nil
+		// Plain assignment (not append-into-captured-state): a retried
+		// transaction re-runs the body and overwrites both values, so a
+		// rolled-back attempt cannot leak tables into the commit.
+		var err error
+		tables, commitMsg, err = fn(tx)
+		return err
 	})
 	if err != nil {
 		return err
 	}
+	staged := sortedDirtyTables(tables)
 	if len(staged) == 0 {
 		return nil
 	}
-	return s.doltAddAndCommitPostTx(ctx, staged, commitMsg)
+	if err := s.doltAddAndCommitPostTx(ctx, staged, commitMsg); err != nil {
+		// See the failure-mode note above: the mutation is applied and
+		// durable; only the trailing history commit is missing, and the
+		// change rides the next dolt commit on the branch.
+		log.Printf("dolt: post-tx dolt commit failed for %q (data already committed; change rides the next dolt commit): %v", commitMsg, err)
+	}
+	return nil
 }

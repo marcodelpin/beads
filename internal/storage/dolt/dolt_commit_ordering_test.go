@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	mysql "github.com/go-sql-driver/mysql"
+
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 )
 
@@ -277,13 +279,14 @@ func TestPostTxDoltAddCommitSharesOneConnection(t *testing.T) {
 	}
 }
 
-// TestPostTxDoltCommitFailureTaggedDefinitelyLanded pins the sentinel
-// contract: a post-tx DOLT_ADD/DOLT_COMMIT failure happens after the data
-// transaction committed, so the error must carry errDoltPostTxCommit (and
-// not errCommitPhase, which means "ambiguous — may not have landed") so the
-// claim-family verify wrappers fall through to the re-read instead of
-// reporting a landed write as failed.
-func TestPostTxDoltCommitFailureTaggedDefinitelyLanded(t *testing.T) {
+// TestPostTxDoltCommitFailureDoesNotFailMutation pins the swallow contract:
+// a post-tx DOLT_ADD/DOLT_COMMIT failure happens after the data transaction
+// committed, so the mutation IS applied and the operation must report
+// success (the failure is logged; the change rides the next dolt commit).
+// Surfacing it would make callers treat an applied mutation as failed —
+// automated retries double-apply, hooks are skipped, and claim callers
+// abandon claims they hold (the wy-x543k inversion).
+func TestPostTxDoltCommitFailureDoesNotFailMutation(t *testing.T) {
 	rec := &seqRecorder{}
 	connector := &seqConnector{rec: rec}
 	connector.queryErr = func(query string) error {
@@ -300,29 +303,62 @@ func TestPostTxDoltCommitFailureTaggedDefinitelyLanded(t *testing.T) {
 	err := s.runIssueOperationTx(context.Background(), "bd: update test-1", func(tx *sql.Tx) (storageissueops.ChangedTables, error) {
 		return storageissueops.ChangedTables{"issues": true}, nil
 	})
-	if err == nil {
-		t.Fatal("expected the injected dolt commit failure to surface")
-	}
-	if !errors.Is(err, errDoltPostTxCommit) {
-		t.Errorf("post-tx dolt commit failure not tagged errDoltPostTxCommit: %v", err)
-	}
-	if errors.Is(err, errCommitPhase) {
-		t.Errorf("post-tx dolt commit failure must not carry the ambiguous errCommitPhase: %v", err)
-	}
-	if !strings.Contains(err.Error(), "data already committed") {
-		t.Errorf("error must state the data change landed; got: %v", err)
+	if err != nil {
+		t.Fatalf("post-tx dolt commit failure must not fail the mutation (data committed); got: %v", err)
 	}
 
-	// The data COMMIT must have run — the failure is strictly post-tx.
+	// The data COMMIT and the DOLT_COMMIT attempt must both have run.
 	events := rec.snapshot()
-	sawCommit := false
+	sawCommit, sawDoltCommit := false, false
 	for _, ev := range events {
 		if ev == "COMMIT" {
 			sawCommit = true
 		}
+		if strings.Contains(ev, "DOLT_COMMIT") {
+			sawDoltCommit = true
+		}
 	}
 	if !sawCommit {
 		t.Fatalf("data transaction never committed; events: %v", events)
+	}
+	if !sawDoltCommit {
+		t.Fatalf("post-tx DOLT_COMMIT never attempted; events: %v", events)
+	}
+}
+
+// TestPostTxDoltCommitRetriesSerializationConflict pins the retry contract:
+// Dolt's rollback-guaranteed commit conflicts (1213/1205, 1105 autocommit
+// rollback) were retried when the dolt commit ran inside withRetryTx, and
+// they are routine under the concurrent-writer load the post-tx ordering
+// targets — so the post-tx sequence must retry them too, not fail (and lose
+// the audit commit) on first conflict.
+func TestPostTxDoltCommitRetriesSerializationConflict(t *testing.T) {
+	rec := &seqRecorder{}
+	connector := &seqConnector{rec: rec}
+	failures := 0
+	connector.queryErr = func(query string) error {
+		if strings.Contains(query, "DOLT_COMMIT") && failures == 0 {
+			failures++
+			return &mysql.MySQLError{Number: 1213, Message: "Deadlock found when trying to get lock"}
+		}
+		return nil
+	}
+	db := sql.OpenDB(connector)
+	defer func() { _ = db.Close() }()
+
+	s := &DoltStore{db: db}
+
+	if err := s.doltAddAndCommitPostTx(context.Background(), []string{"issues"}, "bd: update test-1"); err != nil {
+		t.Fatalf("serialization conflict must be retried to success, got: %v", err)
+	}
+	doltCommits := 0
+	for _, ev := range rec.snapshot() {
+		if strings.Contains(ev, "DOLT_COMMIT") {
+			doltCommits++
+		}
+	}
+	if doltCommits < 2 {
+		t.Fatalf("expected the DOLT_COMMIT to be retried after 1213, saw %d attempt(s)", doltCommits)
 	}
 }
 
