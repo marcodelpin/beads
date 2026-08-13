@@ -792,6 +792,7 @@ var doltMetrics struct {
 	circuitRejected      metric.Int64Counter
 	serializationErrors  metric.Int64Counter
 	writeRetries         metric.Int64Counter
+	postTxCommitDropped  metric.Int64Counter
 	connAcquireMs        metric.Float64Histogram
 	poolWaitCount        metric.Int64Counter
 	poolWaitMs           metric.Float64Histogram
@@ -824,6 +825,10 @@ func init() {
 	doltMetrics.writeRetries, _ = m.Int64Counter("bd.write_retries_total",
 		metric.WithDescription("Write-tx retries in withRetryTx (label: type=serialization|connection)"),
 		metric.WithUnit("{retry}"),
+	)
+	doltMetrics.postTxCommitDropped, _ = m.Int64Counter("bd.db.post_tx_commit_dropped",
+		metric.WithDescription("Post-tx dolt commits abandoned after retries; the data landed but no dolt commit was minted (change rides the next commit on the branch)"),
+		metric.WithUnit("{commit}"),
 	)
 	doltMetrics.connAcquireMs, _ = m.Float64Histogram("bd.db.conn_acquire_ms",
 		metric.WithDescription("Time to acquire a pooled connection for a Dolt transaction"),

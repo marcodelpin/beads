@@ -401,15 +401,15 @@ func TestPostTxDoltCommitSurvivesCallerCancellation(t *testing.T) {
 	}
 }
 
-// TestAmbiguousTxCommitStillAttemptsDoltCommit pins the errCommitPhase
-// best-effort contract: a connection loss during the SQL COMMIT is ambiguous
-// — the commit may have landed server-side. If it landed, the working set
-// holds the change and only a post-tx DOLT_ADD/DOLT_COMMIT can restore the
-// audit entry the old in-tx ordering guaranteed; if it rolled back, staging
-// an unchanged working set degrades to nothing-to-commit. So the post-tx
-// commit must be attempted even on the error path, while the original
-// errCommitPhase error still surfaces for the claim-verify protocol.
-func TestAmbiguousTxCommitStillAttemptsDoltCommit(t *testing.T) {
+// TestAmbiguousTxCommitDoesNotMintDoltCommit pins the errCommitPhase
+// contract: a connection loss during the SQL COMMIT is ambiguous — and NO
+// post-tx dolt commit may be attempted off that error. In server mode the
+// branch working set is shared, so staging it after a commit that actually
+// rolled back would mint a dolt commit of a CONCURRENT writer's pending rows
+// under this operation's message — phantom audit evidence for a mutation
+// the caller is simultaneously told did not land. The error must surface
+// unchanged so the claim-verify protocol resolves the true outcome.
+func TestAmbiguousTxCommitDoesNotMintDoltCommit(t *testing.T) {
 	rec := &seqRecorder{}
 	connector := &seqConnector{rec: rec}
 	connector.commitErr = func() error { return errors.New("invalid connection") }
@@ -427,14 +427,10 @@ func TestAmbiguousTxCommitStillAttemptsDoltCommit(t *testing.T) {
 	if !errors.Is(err, errCommitPhase) {
 		t.Fatalf("commit-phase connection loss must carry errCommitPhase, got: %v", err)
 	}
-	sawDoltCommit := false
 	for _, ev := range rec.snapshot() {
-		if strings.Contains(ev, "DOLT_COMMIT") {
-			sawDoltCommit = true
+		if strings.Contains(ev, "DOLT_ADD") || strings.Contains(ev, "DOLT_COMMIT") {
+			t.Fatalf("no dolt staging/commit may be attempted after an ambiguous tx commit (phantom audit hazard); events: %v", rec.snapshot())
 		}
-	}
-	if !sawDoltCommit {
-		t.Fatalf("best-effort DOLT_COMMIT never attempted after ambiguous tx commit; events: %v", rec.snapshot())
 	}
 }
 

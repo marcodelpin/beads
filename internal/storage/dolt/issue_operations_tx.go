@@ -3,7 +3,6 @@ package dolt
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"log"
 
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
@@ -61,35 +60,33 @@ func (s *DoltStore) runIssueOperationTxWithMessage(ctx context.Context, fn func(
 		tables, commitMsg, err = fn(tx)
 		return err
 	})
+	if err != nil {
+		// Includes errCommitPhase (ambiguous commit loss): NO post-tx dolt
+		// commit is attempted there. If the ambiguous commit actually landed,
+		// its audit entry is lost (the change rides the next dolt commit) —
+		// accepted, because attempting one would stage the SHARED branch
+		// working set, and when the commit actually rolled back that mints a
+		// dolt commit of a concurrent writer's pending rows under THIS
+		// operation's message (phantom audit evidence), fires even for
+		// definite rollbacks (a caller cancellation during tx.Commit is also
+		// tagged errCommitPhase), and delays the claim-verify re-read.
+		return err
+	}
 	staged := sortedDirtyTables(tables)
+	if len(staged) == 0 {
+		return nil
+	}
 	if commitMsg == "" {
 		// A body can dirty tables without composing a message (e.g. a ready
 		// claim whose side effects landed but which claimed nothing); never
 		// mint a Dolt commit with an empty message.
 		commitMsg = "bd: issue operation"
 	}
-	if err != nil {
-		if errors.Is(err, errCommitPhase) && len(staged) > 0 {
-			// The SQL commit outcome is ambiguous: it may have landed
-			// server-side before the connection dropped. If it landed, the
-			// working set holds the change and this best-effort commit
-			// restores the audit entry the in-tx ordering used to guarantee;
-			// if it rolled back, staging an unchanged working set degrades to
-			// nothing-to-commit. Either way the original error must still
-			// return so the claim-verify protocol resolves the true outcome.
-			if cerr := s.doltAddAndCommitPostTx(ctx, staged, commitMsg); cerr != nil {
-				log.Printf("dolt: best-effort dolt commit after ambiguous tx commit failed for %q: %v", commitMsg, cerr)
-			}
-		}
-		return err
-	}
-	if len(staged) == 0 {
-		return nil
-	}
 	if err := s.doltAddAndCommitPostTx(ctx, staged, commitMsg); err != nil {
 		// See the failure-mode note above: the mutation is applied and
 		// durable; only the trailing history commit is missing, and the
 		// change rides the next dolt commit on the branch.
+		doltMetrics.postTxCommitDropped.Add(ctx, 1)
 		log.Printf("dolt: post-tx dolt commit failed for %q (data already committed; change rides the next dolt commit): %v", commitMsg, err)
 	}
 	return nil

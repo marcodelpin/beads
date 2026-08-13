@@ -3,6 +3,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -381,13 +382,20 @@ func (s *DoltStore) doltAddAndCommitInTx(ctx context.Context, tx *sql.Tx, tables
 // degrades to nothing-to-commit, which doltAddAndCommit swallows. Plain
 // backoff, no circuit breaker: a failure here is benign to the data and must
 // not fail-fast unrelated operations.
-//
-// postTxCommitMaxElapsed is deliberately short: the caller swallows the
-// final error, so a long fight for a best-effort commit buys nothing and a
-// stuck server (migration lock, read-only manifest) would otherwise stall
-// EVERY mutation for the full outage. The 25ms initial interval mirrors
-// withRetryTx's conflict tuning so routine 1213/1205 races retry promptly.
-const postTxCommitMaxElapsed = 5 * time.Second
+const (
+	// postTxCommitMaxElapsed is deliberately short: the caller swallows the
+	// final error, so a long fight for a best-effort commit buys nothing and
+	// a stuck server (migration lock, read-only manifest) would otherwise
+	// stall EVERY mutation for the full outage. The 25ms initial interval
+	// mirrors withRetryTx's conflict tuning so routine 1213/1205 races retry
+	// promptly.
+	postTxCommitMaxElapsed = 5 * time.Second
+	// postTxCommitGrace pads the detached context past the backoff budget.
+	// The two bounds are NOT redundant: MaxElapsedTime only stops SCHEDULING
+	// further attempts, while the ctx deadline is the only thing that can
+	// cancel an attempt already hung in-flight (stuck server mid-statement).
+	postTxCommitGrace = 2 * time.Second
+)
 
 func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string, commitMsg string) error {
 	// Detach from the caller's cancellation: the data transaction has already
@@ -395,17 +403,19 @@ func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string,
 	// must not deterministically skip the audit commit (values — tracing —
 	// are preserved). The commit gets its own budget instead.
 	ctx = context.WithoutCancel(ctx)
-	ctx, cancel := context.WithTimeout(ctx, postTxCommitMaxElapsed+2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, postTxCommitMaxElapsed+postTxCommitGrace)
 	defer cancel()
 
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 25 * time.Millisecond
 	bo.MaxElapsedTime = postTxCommitMaxElapsed
-	return backoff.Retry(func() error {
+	var lastErr error
+	err := backoff.Retry(func() error {
 		err := s.doltAddAndCommit(ctx, tables, commitMsg)
 		if err == nil {
 			return nil
 		}
+		lastErr = err
 		// Mirror withRetryTx's accounting so conflict pressure on this path
 		// stays visible to the same counters that tracked it in-tx.
 		if isSerializationError(err) || isDoltAutocommitRollbackError(err) {
@@ -419,6 +429,13 @@ func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string,
 		}
 		return backoff.Permanent(err)
 	}, backoff.WithContext(bo, ctx))
+	if err != nil && lastErr != nil && !errors.Is(err, lastErr) {
+		// backoff.Retry returns the bare ctx error when the deadline expires
+		// mid-sleep, discarding the last real Dolt failure — the only
+		// diagnostic for a swallowed audit commit. Keep both.
+		return fmt.Errorf("%w (last attempt: %w)", err, lastErr)
+	}
+	return err
 }
 
 // getAllWispDependencyRecords returns all wisp dependency records, keyed by issue_id.
