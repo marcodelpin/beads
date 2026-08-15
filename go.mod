@@ -110,7 +110,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8 // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
+	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20250327172914-2fdc97757edf // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
@@ -264,4 +264,14 @@ require (
 	gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
 	gopkg.in/src-d/go-errors.v1 v1.0.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
+)
+
+// v1.2.0 and v1.2.1 were published accidentally without release testing and
+// auto-migrated local databases to an unsupported schema (v54..v65); v1.1.1
+// was a burned tag that never shipped. v1.2.2 re-releases the tested 1.1
+// line — retracting these keeps `go install ...@latest` off the bad versions.
+retract (
+	v1.2.1 // accidental untested release; superseded by v1.2.2
+	v1.2.0 // burned tag for the accidental 1.2 release, never published
+	v1.1.1 // burned tag, never published; superseded by v1.1.2
 )
