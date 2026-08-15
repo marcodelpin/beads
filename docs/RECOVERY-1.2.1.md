@@ -4,9 +4,9 @@ v1.2.0 and v1.2.1 were published by accident, without release testing.
 v1.2.2 (this release) returns everyone to the tested 1.1 line — it is the
 v1.1.2 code under a higher version number, so every install channel
 (Homebrew, npm, the install script, `go install`) moves forward onto tested
-code. The 1.2.x-only features (work leases, the events journal, `bd sync`,
-the `bd serve` HTTP API, provenance events) are **not** included; they will
-return in a properly tested release.
+code. The 1.2.x-only features (work leases, the events journal, sync
+federation, the HTTP API server, provenance events) are **not** included;
+they will return in a properly tested release.
 
 The catch: running the v1.2.1 binary even once (any command, including
 `bd list`) migrated your local database schema from v53 to v65. The v1.2.2
