@@ -62,7 +62,13 @@ var frozenMigrationHashes = map[string]string{
 	"0032_drop_schema_migrations_applied_at.up.sql":        "42b86d6b7352f7e158532cc67f4afa142dc2503ce9f780733c06fc9da3478751",
 	"0033_add_wisp_type_column.up.sql":                     "9256746bb0d6ad9ed9afba0f0501259f0a3599b7d7da507dd7d808a13c688c75",
 	"0034_add_spec_id_column.up.sql":                       "7add95ead971c57618cfbc52e5cb6771d872785bfc035bde12cd27a76358848e",
-	"0035_migrate_infra_to_wisps.up.sql":                   "f917fe319540155572f5c51618cbbe20ec8b9b669d5926d68e3a62629c317c5a",
+	// FORK divergence, deliberate: our 0035 carries a 5-line explanatory comment
+	// added in the 2026-05-23 upstream sync (bda-y3o supersession note). Fleet
+	// clones content-hashed THOSE bytes when they applied 0035, so the fork must
+	// pin its own file here - stripping the comment now would create the exact
+	// cross-clone hash skew this test exists to prevent.
+	// Upstream pin for reference: f917fe319540155572f5c51618cbbe20ec8b9b669d5926d68e3a62629c317c5a
+	"0035_migrate_infra_to_wisps.up.sql":                   "cebfe270192f2819e1a8f04b32134df6f383b48eb5f2954297b3c3cd99da4cde",
 	"0036_cleanup_autopush_metadata.up.sql":                "e55f1870c2bc031c574b495ebca650365a9c8088d7a8968fb86a19cab81267e8",
 	"0037_uuid_primary_keys.up.sql":                        "7526beadee13aa7d6ee2175e9a543210b07c1a4426c382f251ebd31eebe32745",
 	"0038_drop_hop_columns.up.sql":                         "002dc637d45840487c35a01ce15cee04872baa45c21f8e20170a4339135a38e7",
