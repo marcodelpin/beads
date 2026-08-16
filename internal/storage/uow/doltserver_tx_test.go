@@ -48,7 +48,7 @@ func TestDoltServerTxCommitFailureRollsBackBeforeRelease(t *testing.T) {
 	p, mock := newMockTxProvider(t)
 	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
 	expectPendingChanges(mock, 1)
-	mock.ExpectExec("DOLT_COMMIT").WillReturnError(errors.New("commit exploded"))
+	mock.ExpectExec(matchPlainCommit).WillReturnError(errors.New("commit exploded"))
 	mock.ExpectExec("ROLLBACK").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	tx, err := p.BeginTx(context.Background())
@@ -64,7 +64,7 @@ func TestDoltServerTxCommitAndRollbackFailurePoisonsConn(t *testing.T) {
 	p, mock := newMockTxProvider(t)
 	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
 	expectPendingChanges(mock, 1)
-	mock.ExpectExec("DOLT_COMMIT").WillReturnError(errors.New("commit exploded"))
+	mock.ExpectExec(matchPlainCommit).WillReturnError(errors.New("commit exploded"))
 	mock.ExpectExec("ROLLBACK").WillReturnError(errors.New("rollback exploded too"))
 
 	tx, err := p.BeginTx(context.Background())
@@ -98,14 +98,14 @@ func TestBeginTxStartTransactionFailureReleasesConn(t *testing.T) {
 }
 
 // The tests below pin the #4348 re-port (original commit 3bd52c27f): Commit
-// gates DOLT_COMMIT('-Am') on issueops.HasPendingChanges so an idempotent
-// write that staged nothing (same-value REPLACE INTO metadata, 0-row CAS
-// re-claim, per-tick orchestrator reconciles) no longer issues a
+// gates the phase-2 DOLT_COMMIT('-Am') on issueops.HasPendingChanges so an
+// idempotent write that staged nothing (same-value REPLACE INTO metadata,
+// 0-row CAS re-claim, per-tick orchestrator reconciles) no longer issues a
 // guaranteed-empty commit that Dolt rejects server-side with "nothing to
-// commit" — flooding the server log and burning CPU. The skip path must still
-// CLOSE the open SQL transaction (plain COMMIT) before the pinned connection
-// is released; releasing with START TRANSACTION open would hand the next
-// borrower an implicit commit of orphaned state.
+// commit" - flooding the server log and burning CPU. The gate runs BEFORE the
+// phase-1 SQL COMMIT (in-tx, where dolt_status is session-scoped); the skip
+// path simply omits phase 2, and phase 1 still CLOSES the open SQL
+// transaction before the pinned connection is released.
 
 // matchPlainCommit matches ONLY the plain SQL COMMIT (the ephemeral/skip
 // form), never CALL DOLT_COMMIT(...).
@@ -138,6 +138,7 @@ func TestDoltServerTxCommitIssuesDoltCommitWhenPending(t *testing.T) {
 	p, mock := newMockTxProvider(t)
 	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
 	expectPendingChanges(mock, 3)
+	mock.ExpectExec(matchPlainCommit).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DOLT_COMMIT").WithArgs("bd: real write").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tx, err := p.BeginTx(context.Background())
@@ -145,7 +146,58 @@ func TestDoltServerTxCommitIssuesDoltCommitWhenPending(t *testing.T) {
 
 	err = tx.Commit(context.Background(), "bd: real write")
 	require.NoError(t, err)
-	require.NoError(t, mock.ExpectationsWereMet(), "a dirty working set must be committed via DOLT_COMMIT")
+	require.NoError(t, mock.ExpectationsWereMet(), "a dirty working set must be committed via DOLT_COMMIT after the SQL COMMIT")
+}
+
+// TestDoltServerTxCommitOrdersSQLCommitBeforeDoltCommit pins the two-phase
+// ordering contract (the uow sibling of upstream #5740, mirroring
+// storage/dolt's dolt_commit_ordering_test.go): the plain SQL COMMIT - where
+// Dolt's commit-time three-way merge reconciles concurrent writers - MUST run
+// before DOLT_COMMIT('-Am'), which stages the whole working set. The old
+// single-statement in-tx DOLT_COMMIT built its commit from the BEGIN-time
+// snapshot and silently wrote concurrent writers' committed rows back to
+// their BEGIN-time values (the lost-update shape the two-id variant in
+// lostupdate_dolt_test.go reproduces against a real server). sqlmock matches
+// expectations in order, so a reverted ordering fails this test.
+func TestDoltServerTxCommitOrdersSQLCommitBeforeDoltCommit(t *testing.T) {
+	p, mock := newMockTxProvider(t)
+	mock.MatchExpectationsInOrder(true)
+	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
+	expectPendingChanges(mock, 1)
+	mock.ExpectExec(matchPlainCommit).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`CALL DOLT_COMMIT\('-Am', \?\);`).WithArgs("bd: ordered write").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	tx, err := p.BeginTx(context.Background())
+	require.NoError(t, err)
+
+	err = tx.Commit(context.Background(), "bd: ordered write")
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet(),
+		"DOLT_COMMIT must run OUTSIDE the SQL transaction, after the plain COMMIT (post-merge root)")
+	assert.Equal(t, 1, p.db.Stats().OpenConnections, "cleanly committed session may return to the pool")
+}
+
+// TestDoltServerTxCommitSwallowsPostTxDoltCommitFailure pins the phase-2
+// failure mode (mirroring runIssueOperationTxWithMessage): once the phase-1
+// COMMIT has landed the mutation is durable, so a failed post-tx DOLT_COMMIT
+// is logged and swallowed - propagating it would make callers treat an
+// applied mutation as failed and double-apply on retry. No ROLLBACK runs (no
+// transaction is open) and the session returns to the pool clean.
+func TestDoltServerTxCommitSwallowsPostTxDoltCommitFailure(t *testing.T) {
+	p, mock := newMockTxProvider(t)
+	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
+	expectPendingChanges(mock, 1)
+	mock.ExpectExec(matchPlainCommit).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DOLT_COMMIT").WillReturnError(errors.New("audit commit exploded"))
+
+	tx, err := p.BeginTx(context.Background())
+	require.NoError(t, err)
+
+	err = tx.Commit(context.Background(), "msg")
+	require.NoError(t, err, "a phase-2 failure must not fail the applied mutation")
+	require.NoError(t, mock.ExpectationsWereMet(), "no ROLLBACK: the SQL transaction is already closed")
+	assert.Equal(t, 1, p.db.Stats().OpenConnections, "session is clean and may return to the pool")
 }
 
 func TestDoltServerTxCommitPendingCheckFailureRollsBackBeforeRelease(t *testing.T) {
@@ -163,25 +215,29 @@ func TestDoltServerTxCommitPendingCheckFailureRollsBackBeforeRelease(t *testing.
 	assert.Equal(t, 1, p.db.Stats().OpenConnections, "rolled-back session is clean and may return to the pool")
 }
 
-// TestDoltServerTxCommitPropagatesNothingToCommit pins the deliberate
-// deviation from the original #4348 commit: a residual "nothing to commit"
-// from DOLT_COMMIT itself is NOT swallowed here. RunTx already swallows it at
-// the call site (tx.go), and the uow layer lets it surface as a lost-update
-// signal (lostupdate_dolt_test.go) — swallowing it a layer down could mask a
-// silently lost write.
-func TestDoltServerTxCommitPropagatesNothingToCommit(t *testing.T) {
+// TestDoltServerTxCommitSwallowsPostTxNothingToCommit re-points the old
+// TestDoltServerTxCommitPropagatesNothingToCommit: under the single-statement
+// in-tx shape a residual "nothing to commit" was the only surface a silently
+// lost write had, so the uow layer deliberately propagated it. Under the
+// two-phase shape durability is decided by the phase-1 COMMIT (which DOES
+// propagate failures); a post-tx "nothing to commit" means a concurrent
+// writer's DOLT_COMMIT absorbed this operation's rows under its own message
+// (or the commit-time merge was a no-net-change) - the data is durable and
+// only the audit line is elsewhere, so it is logged and swallowed.
+func TestDoltServerTxCommitSwallowsPostTxNothingToCommit(t *testing.T) {
 	p, mock := newMockTxProvider(t)
 	mock.ExpectExec("START TRANSACTION").WillReturnResult(sqlmock.NewResult(0, 0))
 	expectPendingChanges(mock, 1)
+	mock.ExpectExec(matchPlainCommit).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DOLT_COMMIT").WillReturnError(errors.New("nothing to commit"))
-	mock.ExpectExec("ROLLBACK").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	tx, err := p.BeginTx(context.Background())
 	require.NoError(t, err)
 
 	err = tx.Commit(context.Background(), "msg")
-	require.ErrorContains(t, err, "nothing to commit", "the lost-update signal must surface to the caller, not be swallowed here")
-	require.NoError(t, mock.ExpectationsWereMet(), "the failed DOLT_COMMIT leaves the tx open and must ROLLBACK before release")
+	require.NoError(t, err, "post-tx absorption is not a lost update: the phase-1 COMMIT already persisted the data")
+	require.NoError(t, mock.ExpectationsWereMet(), "no ROLLBACK: the SQL transaction is already closed")
+	assert.Equal(t, 1, p.db.Stats().OpenConnections, "session is clean and may return to the pool")
 }
 
 // TestDoltServerTxEphemeralCommitSkipsPendingCheck pins that the empty-message
