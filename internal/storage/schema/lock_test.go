@@ -141,6 +141,80 @@ func TestMigrateUpWithLockPreparationErrorReleasesAndJoinsReleaseFailure(t *test
 	}
 }
 
+// TestMigrateUpWithLockMigrationErrorNotMaskedByReleaseFailure covers the
+// sibling failure shape of the preparation-error case above: MigrateUp itself
+// fails AND the deferred lock release also fails. The combiner must not
+// introduce a separator newline between the two errors (for single-line
+// constituent errors like these fixtures the whole message stays on one
+// line), and the primary migration failure must lead, so a last-line-only
+// capture (`tail -1` in a triage script) cannot see only the generic release
+// wrapper. Classification is unchanged from the case above.
+func TestMigrateUpWithLockMigrationErrorNotMaskedByReleaseFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("pin mock connection: %v", err)
+	}
+	defer conn.Close()
+
+	lockName := MigrationLockName("testdb")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT GET_LOCK(?, ?)")).
+		WithArgs(lockName, migrationLockAcquireTimeoutSeconds).
+		WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(1))
+	// MigrateUp's first statement fails with a structural error, standing in
+	// for a migration hard-failing on a malformed clone.
+	migrationCause := errors.New("column 'is_blocked' could not be found in any table in scope")
+	releaseCause := errors.New("driver: bad connection")
+	mock.ExpectExec(regexp.QuoteMeta("INSERT IGNORE INTO dolt_ignore VALUES (?, true)")).
+		WillReturnError(migrationCause)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT RELEASE_LOCK(?)")).
+		WithArgs(lockName).
+		WillReturnError(releaseCause)
+
+	applied, err := MigrateUpWithLock(ctx, conn, "testdb")
+	if applied != 0 {
+		t.Fatalf("MigrateUpWithLock() applied = %d, want 0", applied)
+	}
+	if err == nil {
+		t.Fatal("MigrateUpWithLock() error = nil, want the migration failure")
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, "\n") {
+		t.Fatalf("MigrateUpWithLock() error is multi-line, want one line so a last-line-only capture cannot drop the primary error: %q", msg)
+	}
+	primaryIdx := strings.Index(msg, "is_blocked")
+	releaseIdx := strings.Index(msg, "release migration lock")
+	if primaryIdx < 0 {
+		t.Fatalf("MigrateUpWithLock() error = %q, want the primary migration diagnostic present", msg)
+	}
+	if releaseIdx < 0 {
+		t.Fatalf("MigrateUpWithLock() error = %q, want the lock-release diagnostic present too", msg)
+	}
+	if primaryIdx > releaseIdx {
+		t.Fatalf("MigrateUpWithLock() error = %q, want the primary migration error printed before the lock-release error", msg)
+	}
+
+	if !errors.Is(err, migrationCause) {
+		t.Fatalf("MigrateUpWithLock() error = %v, want errors.Is against the original migration cause", err)
+	}
+	if !errors.Is(err, releaseCause) {
+		t.Fatalf("MigrateUpWithLock() error = %v, want errors.Is against the original release cause", err)
+	}
+	if !errors.Is(err, ErrMigrationLockRelease) || !IsMigrationLockError(err) {
+		t.Fatalf("MigrateUpWithLock() error = %v, want classifiable release failure", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 // TestMigrateUpSeedsIgnorePatternsWhenNoWorkNeeded is the regression guard for
 // out-of-band-materialized databases: one whose migration cursors arrived
 // at-latest WITHOUT executing the seeding migrations (out-of-band table
