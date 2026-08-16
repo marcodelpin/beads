@@ -1477,13 +1477,16 @@ func applyConfigDefaults(cfg *Config) {
 	// dialing host:0 always fails. Default to the well-known shared-server
 	// port so a fresh clone — metadata.json carries dolt_server_host but the
 	// gitignored .beads/dolt-server.port does not exist yet — works out of
-	// the box (bda-i69). Skipped in test mode: tests must never silently
-	// reach a production shared server.
-	if cfg.ServerPort == 0 && cfg.ServerSocket == "" && !isLocalHost(cfg.ServerHost) &&
-		os.Getenv("BEADS_TEST_MODE") != "1" {
-		cfg.ServerPort = doltserver.DefaultSharedServerPort
-		fmt.Fprintf(os.Stderr, "Info: no Dolt port configured for remote server %s — defaulting to %d (echo <port> > .beads/dolt-server.port to override)\n",
-			cfg.ServerHost, cfg.ServerPort)
+	// the box (bda-i69). doltserver.RemoteFallbackPort owns the decision (and
+	// the test-mode / socket exemptions) so DefaultConfig above, which the
+	// read-only diagnostics resolve through, cannot land on a different port
+	// than this connection does (kb-fwrz). Normally DefaultConfig has already
+	// applied it; this still covers configs with no resolvable .beads dir.
+	if cfg.ServerPort == 0 && cfg.ServerSocket == "" {
+		if port, ok := doltserver.RemoteFallbackPort(cfg.ServerHost); ok {
+			cfg.ServerPort = port
+			doltserver.AnnounceRemoteFallbackPort(cfg.ServerHost, port)
+		}
 	}
 	// Port 0 means "not yet resolved" — auto-start (EnsureRunning) will
 	// allocate an ephemeral port. Don't default to 3307 as that caused

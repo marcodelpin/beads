@@ -645,10 +645,11 @@ const (
 	// PortSourceMetadataJSON is the deprecated metadata.json dolt_server_port
 	// fallback. Still an explicit user/tooling assertion, not bd bookkeeping.
 	PortSourceMetadataJSON PortSource = "metadata_json"
-	// PortSourceExternalHostDefault is the documented default port (3307)
-	// assumed for a host-inferred external server when no port source
-	// resolved (GH#3545): the user asserted a remote host, so bd fills in
-	// the default port rather than dialing :0 or allocating locally.
+	// PortSourceExternalHostDefault is the documented default port for a
+	// server on another machine when no port source resolved (GH#3545):
+	// the user asserted a remote host, so bd fills in the default port
+	// rather than dialing :0 or allocating locally. The value comes from
+	// RemoteFallbackPort, shared with the storage layer.
 	PortSourceExternalHostDefault PortSource = "external_host_default"
 )
 
@@ -793,55 +794,73 @@ func DefaultConfig(beadsDir string) *Config {
 		cfg.PortSharedServer = true
 	}
 
-	// Host-inferred external config (GH#3545): the server lives on
-	// another machine.
-	if cfg.Mode == ServerModeExternal {
-		fc := &configfile.Config{}
-		if _, err := os.Stat(configfile.ConfigPath(beadsDir)); err == nil {
-			if loaded, loadErr := configfile.Load(beadsDir); loadErr == nil && loaded != nil {
-				fc = loaded
+	// The server lives on another machine (GH#3545, kb-fwrz). Keyed on the
+	// HOST, not on cfg.Mode: an explicitly persisted dolt_mode suppresses
+	// host inference (see HostImpliesServerMode), so a repo with
+	// `dolt_mode: server` plus a remote dolt_server_host resolves as
+	// ServerModeOwned while still being remote. Gating this block on
+	// ServerModeExternal left exactly that shape at port 0, so every caller
+	// resolving through DefaultConfig — `bd dolt status`, `bd dolt show`,
+	// `bd dolt test` — dialed host:0 and reported a healthy remote as
+	// unreachable, while `bd dolt push` reached it because the storage layer
+	// applies its own remote default (kb-fwrz).
+	fc := &configfile.Config{}
+	if _, err := os.Stat(configfile.ConfigPath(beadsDir)); err == nil {
+		if loaded, loadErr := configfile.Load(beadsDir); loadErr == nil && loaded != nil {
+			fc = loaded
+		}
+	}
+	// Embedded and proxied-server workspaces are exempt, matching the
+	// exemptions in HostImpliesServerMode: neither dials the Dolt port, so
+	// filling one in would only invent provenance.
+	remoteHost := ""
+	if cfg.Mode != ServerModeEmbedded && !fc.IsDoltProxiedServerMode() {
+		remoteHost = fc.GetDoltServerHost()
+	}
+	if host := remoteHost; !configfile.IsLocalHostString(host) {
+		// The legacy BEADS_DOLT_PORT override is not in
+		// portSources but the storage layer honors it ahead of
+		// persisted sources; resolve it the same way here so
+		// credentials/probes and the eventual connection agree
+		// on the port. BEADS_DOLT_SERVER_PORT (PortSourceEnv)
+		// still wins over the legacy spelling.
+		if cfg.PortSource != PortSourceEnv {
+			if p, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BEADS_DOLT_PORT"))); err == nil && p > 0 {
+				cfg.Port = p
+				cfg.PortSource = PortSourceEnv
 			}
 		}
-		if !configfile.IsLocalHostString(fc.GetDoltServerHost()) {
-			// The legacy BEADS_DOLT_PORT override is not in
-			// portSources but the storage layer honors it ahead of
-			// persisted sources; resolve it the same way here so
-			// credentials/probes and the eventual connection agree
-			// on the port. BEADS_DOLT_SERVER_PORT (PortSourceEnv)
-			// still wins over the legacy spelling.
-			if cfg.PortSource != PortSourceEnv {
-				if p, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BEADS_DOLT_PORT"))); err == nil && p > 0 {
-					cfg.Port = p
-					cfg.PortSource = PortSourceEnv
+		// The gitignored port file is bd's bookkeeping for a
+		// bd-owned LOCAL server; pairing it with a remote host
+		// dials the remote machine on a stale local ephemeral
+		// port. Discard it and resume the precedence chain so
+		// lower-priority authoritative sources (listener.port,
+		// dolt.port, metadata dolt_server_port) still apply.
+		if cfg.PortSource == PortSourcePortFile {
+			cfg.Port = 0
+			cfg.PortSource = PortSourceUnset
+			for _, src := range portSources {
+				if src.source == PortSourcePortFile {
+					continue
+				}
+				if port, ok := src.resolve(beadsDir); ok {
+					cfg.Port = port
+					cfg.PortSource = src.source
+					cfg.PortSharedServer = sharedMode
+					break
 				}
 			}
-			// The gitignored port file is bd's bookkeeping for a
-			// bd-owned LOCAL server; pairing it with a remote host
-			// dials the remote machine on a stale local ephemeral
-			// port. Discard it and resume the precedence chain so
-			// lower-priority authoritative sources (listener.port,
-			// dolt.port, metadata dolt_server_port) still apply.
-			if cfg.PortSource == PortSourcePortFile {
-				cfg.Port = 0
-				cfg.PortSource = PortSourceUnset
-				for _, src := range portSources {
-					if src.source == PortSourcePortFile {
-						continue
-					}
-					if port, ok := src.resolve(beadsDir); ok {
-						cfg.Port = port
-						cfg.PortSource = src.source
-						cfg.PortSharedServer = sharedMode
-						break
-					}
-				}
-			}
-			// With no configured port, dial the documented default
-			// 3307, not :0 — there is no local Start() to allocate
-			// an ephemeral port for a remote server.
-			if cfg.Port == 0 {
-				cfg.Port = configfile.DefaultDoltServerPort
+		}
+		// With no configured port, dial the documented remote default,
+		// not :0 — there is no local Start() to allocate an ephemeral
+		// port for a remote server. RemoteFallbackPort is the same
+		// decision the storage layer applies, so a diagnostic can never
+		// report a port the connection path would not have used.
+		if cfg.Port == 0 {
+			if port, ok := RemoteFallbackPort(host); ok {
+				cfg.Port = port
 				cfg.PortSource = PortSourceExternalHostDefault
+				AnnounceRemoteFallbackPort(host, port)
 			}
 		}
 	}

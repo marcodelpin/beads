@@ -1601,6 +1601,10 @@ func TestResolveServerMode_HostInferredExternal(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
 	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	// The remote default is suppressed in test mode (RemoteFallbackPort), so
+	// pin the variable rather than inheriting whatever the run sets — the
+	// integration-tagged TestMain in this package exports it.
+	t.Setenv("BEADS_TEST_MODE", "")
 	config.ResetForTesting()
 
 	dir := t.TempDir()
@@ -1618,10 +1622,15 @@ func TestResolveServerMode_HostInferredExternal(t *testing.T) {
 
 	// Host-only config must fall back to the documented default port,
 	// not 0 — there is no local Start() to allocate one for a remote
-	// server (cross-vendor review P1, 2026-08-02).
+	// server (cross-vendor review P1, 2026-08-02). Fork-local: that default
+	// is DefaultSharedServerPort, the port this fleet's shared server
+	// listens on and the one the storage layer has always filled in for a
+	// remote host (bda-i69). Upstream's 3307 here made the SAME repo resolve
+	// two different ports depending only on whether dolt_mode happened to be
+	// persisted, which is what kb-fwrz surfaced.
 	cfg := DefaultConfig(dir)
-	if cfg.Port != configfile.DefaultDoltServerPort {
-		t.Errorf("DefaultConfig.Port = %d, want %d for host-only external config", cfg.Port, configfile.DefaultDoltServerPort)
+	if cfg.Port != DefaultSharedServerPort {
+		t.Errorf("DefaultConfig.Port = %d, want %d for host-only external config", cfg.Port, DefaultSharedServerPort)
 	}
 	if cfg.PortSource != PortSourceExternalHostDefault {
 		t.Errorf("DefaultConfig.PortSource = %q, want %q", cfg.PortSource, PortSourceExternalHostDefault)
@@ -1634,8 +1643,8 @@ func TestResolveServerMode_HostInferredExternal(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg = DefaultConfig(dir)
-	if cfg.Port != configfile.DefaultDoltServerPort {
-		t.Errorf("DefaultConfig.Port = %d, want %d: stale local port file must be ignored for a remote host", cfg.Port, configfile.DefaultDoltServerPort)
+	if cfg.Port != DefaultSharedServerPort {
+		t.Errorf("DefaultConfig.Port = %d, want %d: stale local port file must be ignored for a remote host", cfg.Port, DefaultSharedServerPort)
 	}
 	if err := os.Remove(portPath(dir)); err != nil {
 		t.Fatal(err)
@@ -1662,6 +1671,7 @@ func TestResolveServerMode_EnvHostBeatsEmbeddedMetadata(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
 	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "192.0.2.10")
+	t.Setenv("BEADS_TEST_MODE", "") // remote default is suppressed in test mode
 	config.ResetForTesting()
 
 	dir := t.TempDir()
@@ -1676,8 +1686,8 @@ func TestResolveServerMode_EnvHostBeatsEmbeddedMetadata(t *testing.T) {
 		t.Errorf("expected ServerModeExternal with remote env host over embedded metadata, got %v", mode)
 	}
 	cfg := DefaultConfig(dir)
-	if cfg.Port != configfile.DefaultDoltServerPort {
-		t.Errorf("DefaultConfig.Port = %d, want %d", cfg.Port, configfile.DefaultDoltServerPort)
+	if cfg.Port != DefaultSharedServerPort {
+		t.Errorf("DefaultConfig.Port = %d, want %d", cfg.Port, DefaultSharedServerPort)
 	}
 
 	// Proxied-server workspaces are exempt, matching the inference gate.
