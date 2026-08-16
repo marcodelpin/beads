@@ -262,3 +262,180 @@ func TestUOW_ConcurrentMergeOps_NoLostUpdate(t *testing.T) {
 	}
 	require.Equal(t, 1, strings.Count(final.Notes, "seed line"), "seed line duplicated: redo must not double-apply")
 }
+
+// TestUOW_ConcurrentDistinctIssues_NoLostUpdate proves the two-phase Commit
+// ordering fix (the uow sibling of upstream #5740) against a REAL Dolt
+// sql-server: concurrent writers mutating DIFFERENT issues must never lose a
+// write that reported success.
+//
+// This is the window TestUOW_ConcurrentMergeOps_NoLostUpdate cannot see:
+// writers on distinct rows never conflict, so nothing forces a retry - yet
+// under the old single-statement in-tx DOLT_COMMIT('-Am') shape each writer's
+// Dolt commit was built from its BEGIN-time snapshot with the then-current
+// branch HEAD as its parent, so a neighbor's row committed inside the
+// transaction's window was silently written back to its BEGIN-time value
+// (upstream #5740 / LatentLabsSpace/NEXUS#92; the production symptom is two
+// drain workers on different issues reverting each other's claims). The
+// barrier aligns the writers so their transactions overlap at commit time.
+func TestUOW_ConcurrentDistinctIssues_NoLostUpdate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts a Dolt container and a dbproxy subprocess; skipped in -short")
+	}
+	port := testutil.StartIsolatedDoltContainer(t)
+	portInt, err := strconv.Atoi(port)
+	require.NoError(t, err)
+
+	bdBin := buildBDBinary(t)
+	prev := proxy.ResolveExecutable
+	proxy.ResolveExecutable = func() (string, error) { return bdBin, nil }
+	t.Cleanup(func() { proxy.ResolveExecutable = prev })
+
+	t.Setenv("HOME", t.TempDir())
+
+	storeRootDir := t.TempDir()
+	shutdownOnInterrupt(t, storeRootDir)
+	t.Cleanup(func() {
+		if err := proxy.Shutdown(storeRootDir); err != nil {
+			t.Logf("proxy.Shutdown(%s): %v", storeRootDir, err)
+		}
+	})
+	logPath := filepath.Join(t.TempDir(), "server.log")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	provider, err := NewExternalDoltServerUOWProvider(
+		ctx,
+		storeRootDir,
+		"beads_lostupdate_distinct_test",
+		logPath,
+		configfile.ExternalDoltConfig{Host: "127.0.0.1", Port: portInt},
+		"root",
+		"",
+		0,
+		0,
+		false,
+		"",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	t.Cleanup(func() { _ = provider.Close(context.Background()) })
+
+	const writers = 4
+	issueID := func(writer int) string { return fmt.Sprintf("lud-%d", writer) }
+	func() {
+		uw, err := provider.NewUOW(ctx)
+		require.NoError(t, err)
+		defer uw.Close(ctx)
+		for i := 0; i < writers; i++ {
+			_, err = uw.IssueUseCase().CreateIssue(ctx, domain.CreateIssueParams{
+				Issue: &types.Issue{
+					ID:        issueID(i),
+					Title:     fmt.Sprintf("distinct lost-update target %d", i),
+					Status:    types.StatusOpen,
+					Priority:  2,
+					IssueType: types.TypeTask,
+					Metadata:  json.RawMessage(`{"seed":"yes"}`),
+				},
+				ExplicitID: issueID(i),
+			}, "seeder")
+			require.NoError(t, err)
+		}
+		require.NoError(t, uw.Commit(ctx, "seed distinct lost-update targets"))
+	}()
+
+	// writeOp mirrors the same-row test's writer: fresh UOW per attempt, one
+	// commit, whole-attempt redo on serialization failure, hard failure on a
+	// swallowed write. syncPoint is a barrier between ApplyUpdate and Commit on
+	// the FIRST attempt so every writer's transaction is open across every
+	// other writer's commit window.
+	writeOp := func(id, label string, fields map[string]any, syncPoint func()) error {
+		synced := false
+		syncOnce := func() {
+			if !synced {
+				synced = true
+				syncPoint()
+			}
+		}
+		defer syncOnce()
+		const maxAttempts = 40
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			err := func() error {
+				uw, err := provider.NewUOW(ctx)
+				if err != nil {
+					return fmt.Errorf("new uow: %w", err)
+				}
+				defer uw.Close(ctx)
+				if _, err := uw.IssueUseCase().ApplyUpdate(ctx, id,
+					domain.UpdateSpec{Fields: fields}, "writer-"+label); err != nil {
+					return err
+				}
+				syncOnce()
+				return uw.Commit(ctx, "write "+label)
+			}()
+			if err == nil {
+				return nil
+			}
+			if IsSerializationError(err) {
+				time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+				continue
+			}
+			if issueops.IsNothingToCommitError(err) {
+				return fmt.Errorf("write %s swallowed as nothing-to-commit on a fresh attempt (silent lost update): %w", label, err)
+			}
+			return fmt.Errorf("write %s: %w", label, err)
+		}
+		return fmt.Errorf("write %s: retries exhausted on serialization failures", label)
+	}
+
+	const rounds = 3
+	for round := 0; round < rounds; round++ {
+		errs := make([]error, writers)
+		var applied, done sync.WaitGroup
+		applied.Add(writers)
+		done.Add(writers)
+		barrier := func() {
+			applied.Done()
+			applied.Wait()
+		}
+		for i := 0; i < writers; i++ {
+			i := i
+			label := fmt.Sprintf("w%dr%d", i, round)
+			go func() {
+				defer done.Done()
+				errs[i] = writeOp(issueID(i), label, map[string]any{
+					issueops.OpSetMetadata: []string{label + "=1"},
+				}, barrier)
+			}()
+		}
+		done.Wait()
+		for i, err := range errs {
+			require.NoErrorf(t, err, "round %d writer %d", round, i)
+		}
+	}
+
+	// Every write reported as successful must be present on ITS issue: a
+	// neighbor's whole-working-set commit built from a stale snapshot is the
+	// only actor that can make one vanish without any writer seeing an error.
+	uw, err := provider.NewUOW(ctx)
+	require.NoError(t, err)
+	defer uw.Close(ctx)
+	var missing []string
+	for i := 0; i < writers; i++ {
+		final, err := uw.IssueUseCase().GetIssue(ctx, issueID(i))
+		require.NoError(t, err)
+		require.NotNil(t, final)
+		got := map[string]any{}
+		require.NoError(t, json.Unmarshal(final.Metadata, &got))
+		require.Equalf(t, "yes", got["seed"], "issue %s: seed key erased by a concurrent writer's stale-snapshot commit: %v", issueID(i), got)
+		for round := 0; round < rounds; round++ {
+			key := fmt.Sprintf("w%dr%d", i, round)
+			if _, ok := got[key]; !ok {
+				missing = append(missing, issueID(i)+":"+key)
+			}
+		}
+	}
+	require.Emptyf(t, missing,
+		"silent lost update across DISTINCT issues: %d successful writes missing (reverted by a neighbor's BEGIN-snapshot commit): %v",
+		len(missing), missing)
+}
