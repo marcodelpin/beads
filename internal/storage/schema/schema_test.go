@@ -581,6 +581,100 @@ func TestEnsureWispTablesForMigration0047DelegatesSplitTargetRepairWhenWispDepen
 	}
 }
 
+func TestPreMigrationRepairScopedToIgnored15(t *testing.T) {
+	// bda-3xeg: the repair must not fire for other versions or for the main
+	// source (whose cursor table differs); nil DB proves no queries are
+	// attempted.
+	if err := ignoredSource.preMigrationRepair(context.Background(), nil, 14); err != nil {
+		t.Fatalf("ignored v14 repair = %v, want nil no-op", err)
+	}
+	if err := mainSource.preMigrationRepair(context.Background(), nil, 15); err != nil {
+		t.Fatalf("main v15 repair = %v, want nil no-op", err)
+	}
+}
+
+func TestPreMigrationRepairDispatchesIgnored15ToWispIsBlockedRepair(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	tableQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`
+	columnQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`
+	indexQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.STATISTICS.*TABLE_NAME = \? AND INDEX_NAME = \?`
+
+	// bda-3xeg's actual measured shape: wisps exists (id/status present) but
+	// is_blocked never landed, and its index is missing too.
+	mock.ExpectQuery(tableQuery).WithArgs("wisps").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(columnQuery).WithArgs("wisps", "is_blocked").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectExec(`ALTER TABLE wisps ADD COLUMN is_blocked TINYINT\(1\) NOT NULL DEFAULT 0`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(indexQuery).WithArgs("wisps", "idx_wisps_is_blocked").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectExec(`CREATE INDEX idx_wisps_is_blocked ON wisps\(is_blocked, status\)`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := ignoredSource.preMigrationRepair(context.Background(), db, 15); err != nil {
+		t.Fatalf("ignored v15 repair: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestEnsureWispIsBlockedForRecomputeNoopsWhenWispsAbsent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// A clone whose ignored/0001 has not yet materialized wisps in this pass:
+	// 0015's own recompute has no rows to touch, so the repair must not
+	// attempt to ALTER a table that does not exist.
+	tableQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`
+	mock.ExpectQuery(tableQuery).WithArgs("wisps").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+
+	if err := ensureWispIsBlockedForRecompute(context.Background(), db); err != nil {
+		t.Fatalf("ensureWispIsBlockedForRecompute: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestEnsureWispIsBlockedForRecomputeNoopsWhenAlreadyPresent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// The common (non-drifted) path: a clone that ran ignored/0006 normally
+	// already has both the column and its index, so the repair issues no ALTER
+	// or CREATE INDEX -- matching ignored/0006's own guard being a no-op here.
+	tableQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`
+	columnQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`
+	indexQuery := `(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.STATISTICS.*TABLE_NAME = \? AND INDEX_NAME = \?`
+	mock.ExpectQuery(tableQuery).WithArgs("wisps").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(columnQuery).WithArgs("wisps", "is_blocked").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(indexQuery).WithArgs("wisps", "idx_wisps_is_blocked").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+
+	if err := ensureWispIsBlockedForRecompute(context.Background(), db); err != nil {
+		t.Fatalf("ensureWispIsBlockedForRecompute: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestEnsureDependenciesIDColumnNoopWhenAlreadyFullyBackfilledAndKeyed(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -1920,6 +2014,42 @@ func (m *mockDB) QueryRowContext(_ context.Context, _ string, _ ...any) *sql.Row
 	panic("not called")
 }
 
+// wispsAbsentDB extends mockDB's blind-success ExecContext / panicking
+// QueryContext with ONE answerable QueryRowContext query: bda-3xeg's
+// ignored/15 pre-migration repair (ensureWispIsBlockedForRecompute) probes
+// whether wisps exists before touching it, and *sql.Row has no public
+// constructor outside a real database/sql driver -- mockDB itself cannot
+// fake a scan result. A small embedded sqlmock answers exactly that one
+// query with "table absent" (0), so the repair takes its early no-op branch;
+// any OTHER QueryRowContext this pass might issue still surfaces loudly, via
+// sqlmock's own unmet/unexpected-call error rather than a silent success.
+type wispsAbsentDB struct {
+	mockDB
+	real *sql.DB
+}
+
+func newWispsAbsentDB(t *testing.T) *wispsAbsentDB {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`).
+		WithArgs("wisps").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	t.Cleanup(func() {
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("wispsAbsentDB: unmet sql expectations: %v", err)
+		}
+	})
+	return &wispsAbsentDB{real: db}
+}
+
+func (w *wispsAbsentDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return w.real.QueryRowContext(ctx, query, args...)
+}
+
 func TestRunMigrationsStderrOutput(t *testing.T) {
 	var buf bytes.Buffer
 	orig := stderr
@@ -1989,8 +2119,14 @@ func TestRunMigrationsUsesProvidedSource(t *testing.T) {
 	// Same upTo cap as the mainSource call: the source-threading regression
 	// this test guards (hardcoding mainSource) is only detectable when both
 	// calls share a bound, so their counts collapse to equal under the bug.
-	// ignoredSource has 16 migrations, so 39 is a no-op on correct behavior.
-	ignored, err := runMigrations(context.Background(), &mockDB{}, ignoredSource, 0, 39, false)
+	// ignoredSource has 24 migrations, so 39 is a no-op on correct behavior.
+	// A shared bound below 15 would dodge bda-3xeg's ignored/15 repair too,
+	// but main and ignored both number their first 14 files contiguously
+	// (1..14, no gaps in either series), so any bound < 15 gives main==
+	// ignored and would fail this test's own regression check for an
+	// unrelated reason. wispsAbsentDB answers that one repair's probe
+	// instead of dodging it.
+	ignored, err := runMigrations(context.Background(), newWispsAbsentDB(t), ignoredSource, 0, 39, false)
 	if err != nil {
 		t.Fatalf("runMigrations(ignoredSource): %v", err)
 	}
@@ -2031,7 +2167,11 @@ func TestRunMigrationsLargeRigNoticeOnlyOnMainSource(t *testing.T) {
 
 	var ignoredBuf bytes.Buffer
 	stderr = &ignoredBuf
-	_, err := runMigrations(context.Background(), &mockDB{}, ignoredSource, 0, 39, false)
+	// This assertion (no large-rig notice on the ignored-source pass) does
+	// not depend on applying every ignored migration, so bound below bda-
+	// 3xeg's ignored/15 repair (unlike the shared-bound source-threading
+	// check in TestRunMigrationsUsesProvidedSource) rather than answering it.
+	_, err := runMigrations(context.Background(), &mockDB{}, ignoredSource, 0, 14, false)
 	stderr = orig
 	if err != nil {
 		t.Fatalf("runMigrations(ignoredSource): %v", err)

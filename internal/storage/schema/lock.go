@@ -187,7 +187,28 @@ func MigrateUpWithLock(ctx context.Context, conn *sql.Conn, databaseName string,
 	}
 	defer func() {
 		if releaseErr := ReleaseMigrationLock(conn, lockName); releaseErr != nil {
-			err = errors.Join(err, releaseErr)
+			if err != nil {
+				// A migration/preparation error already occurred. Keep it as
+				// the LEADING text of a single-line message instead of
+				// errors.Join, which inserts a newline between the two
+				// errors' messages: a caller (or an operational script) that
+				// captures only the tail of a multi-line printed error then
+				// sees ONLY "schema: release migration lock: ...: driver: bad
+				// connection" -- a generic, retry-looking wrapper -- and
+				// never the structural cause it is masking (bda-3xeg: a
+				// residual-repair campaign's tail-1 capture recorded exactly
+				// this line and misclassified two databases missing
+				// wisps.is_blocked as transient-connection failures for a
+				// full retry pass). fmt.Errorf with two %w verbs still
+				// supports errors.Is/errors.As against BOTH errors
+				// (Unwrap() []error, Go 1.20+), so ErrMigrationLockRelease /
+				// IsMigrationLockError classification is unchanged -- only
+				// the rendered message keeps the primary error first and on
+				// one line, so it survives a last-line-only capture.
+				err = fmt.Errorf("%w (lock release also failed: %w)", err, releaseErr)
+			} else {
+				err = releaseErr
+			}
 		}
 	}()
 	if o.lockedPreparation != nil && o.lockedPreparation.fn != nil {
