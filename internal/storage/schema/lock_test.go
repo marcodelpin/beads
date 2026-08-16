@@ -141,6 +141,74 @@ func TestMigrateUpWithLockPreparationErrorReleasesAndJoinsReleaseFailure(t *test
 	}
 }
 
+// TestMigrateUpWithLockMigrationErrorNotMaskedByReleaseFailure is the
+// regression guard for bda-3xeg: when MigrateUp itself fails (a structural
+// migration error, not the WithLockedPreparation callback covered above) AND
+// the deferred lock release ALSO fails, the combined error must keep the
+// primary migration failure as the LEADING, undropped text of a single-line
+// message -- not a separate trailing line that a last-line-only capture
+// (e.g. a triage script piping through `tail -1`) would see instead of it.
+// ErrMigrationLockRelease/IsMigrationLockError classification must still
+// work exactly as it does for the preparation-error case above: this test
+// does not change that contract, only the rendered message shape.
+func TestMigrateUpWithLockMigrationErrorNotMaskedByReleaseFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("pin mock connection: %v", err)
+	}
+	defer conn.Close()
+
+	lockName := MigrationLockName("testdb")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT GET_LOCK(?, ?)")).
+		WithArgs(lockName, migrationLockAcquireTimeoutSeconds).
+		WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(1))
+	// MigrateUp's very first statement (seedDoltIgnorePatterns' first pattern)
+	// fails with a structural error -- standing in for 0015 hard-failing on a
+	// clone whose wisps table is missing is_blocked (bda-3xeg's actual shape),
+	// without needing the full migration-pass mock in expectOnePendingMigration.
+	mock.ExpectExec(regexp.QuoteMeta("INSERT IGNORE INTO dolt_ignore VALUES (?, true)")).
+		WillReturnError(errors.New("column 'is_blocked' could not be found in any table in scope"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT RELEASE_LOCK(?)")).
+		WithArgs(lockName).
+		WillReturnError(errors.New("driver: bad connection"))
+
+	applied, err := MigrateUpWithLock(ctx, conn, "testdb")
+	if applied != 0 {
+		t.Fatalf("MigrateUpWithLock() applied = %d, want 0", applied)
+	}
+	if err == nil {
+		t.Fatal("MigrateUpWithLock() error = nil, want the migration failure")
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, "\n") {
+		t.Fatalf("MigrateUpWithLock() error is multi-line, want one line so a\nlast-line-only capture cannot drop the primary error: %q", msg)
+	}
+	primaryIdx := strings.Index(msg, "is_blocked")
+	releaseIdx := strings.Index(msg, "release migration lock")
+	if primaryIdx < 0 {
+		t.Fatalf("MigrateUpWithLock() error = %q, want the primary migration diagnostic present", msg)
+	}
+	if releaseIdx >= 0 && primaryIdx > releaseIdx {
+		t.Fatalf("MigrateUpWithLock() error = %q, want the primary migration error printed before the lock-release error", msg)
+	}
+
+	// Classification contract unchanged from the preparation-error case above.
+	if !errors.Is(err, ErrMigrationLockRelease) || !IsMigrationLockError(err) {
+		t.Fatalf("MigrateUpWithLock() error = %v, want classifiable release failure", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 // TestMigrateUpSeedsIgnorePatternsWhenNoWorkNeeded is the regression guard for
 // out-of-band-materialized databases: one whose migration cursors arrived
 // at-latest WITHOUT executing the seeding migrations (out-of-band table
