@@ -154,22 +154,51 @@ func TestForceStopUnverifiedRejectsVerifiableV2Record(t *testing.T) {
 	assert.FileExists(t, pidfile.Path(root, PIDFileName))
 }
 
+// forceStopHelperEnv gates TestForceStopHelperProcess: without it the copied
+// test binary skips the helper body, so a stray direct invocation cannot
+// re-enter the suite.
+const forceStopHelperEnv = "BEADS_FORCE_STOP_HELPER"
+
+// TestForceStopHelperProcess is not a test: it is the body of the named
+// helper processes startNamedForceStopHelper spawns. It only runs in a copy
+// of this test binary launched with forceStopHelperEnv set, where it idles
+// until the test under way signals it (or the spawn's Cleanup does).
+func TestForceStopHelperProcess(t *testing.T) {
+	if os.Getenv(forceStopHelperEnv) != "1" {
+		t.Skip("helper-process body; only meaningful under startNamedForceStopHelper")
+	}
+	time.Sleep(30 * time.Second)
+}
+
 // startNamedForceStopHelper starts a long-sleeping process whose executable
 // basename is name and whose command line references dir (the binary lives
 // inside it), matching how a workspace's own bd/dolt processes reference
 // their root path.
+//
+// The long-sleeping body is THIS test binary re-executed in helper mode
+// (TestForceStopHelperProcess), not a renamed copy of the system sleep:
+// on distros where sleep resolves to a MULTICALL binary dispatching on
+// argv[0] - busybox, or the Rust uutils coreutils Ubuntu ships since 25.10
+// ("coreutils: unknown program 'dolt'", exit 1) - a renamed copy dies
+// instantly and the fixture silently loses its live process: the held flock
+// is released early (HeldLock's intermittent LockWasHeld=false, comm="")
+// and the paired recovery finds only dead records (SignalSent=false).
+// Double guard against re-entering the suite: the anchored -test.run
+// pattern selects only the helper body, and the env gate makes even a bare
+// invocation of the copy skip it.
 func startNamedForceStopHelper(t *testing.T, dir, name string) helperProcess {
 	t.Helper()
-	sleepPath, err := exec.LookPath("sleep")
+	self, err := os.Executable()
 	require.NoError(t, err)
-	sleepPath, err = filepath.EvalSymlinks(sleepPath)
+	self, err = filepath.EvalSymlinks(self)
 	require.NoError(t, err)
-	data, err := os.ReadFile(sleepPath)
+	data, err := os.ReadFile(self)
 	require.NoError(t, err)
 	executable := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(executable, data, 0o700))
 
-	cmd := exec.Command(executable, "30")
+	cmd := exec.Command(executable, "-test.run=TestForceStopHelperProcess$")
+	cmd.Env = append(os.Environ(), forceStopHelperEnv+"=1")
 	require.NoError(t, cmd.Start())
 	token, err := procid.Capture(cmd.Process.Pid)
 	require.NoError(t, err)
