@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,15 +155,13 @@ func TestForceStopUnverifiedRejectsVerifiableV2Record(t *testing.T) {
 	assert.FileExists(t, pidfile.Path(root, PIDFileName))
 }
 
-// forceStopHelperEnv gates TestForceStopHelperProcess: without it the copied
-// test binary skips the helper body, so a stray direct invocation cannot
-// re-enter the suite.
+// forceStopHelperEnv gates TestForceStopHelperProcess so a normal test run
+// skips the helper body.
 const forceStopHelperEnv = "BEADS_FORCE_STOP_HELPER"
 
-// TestForceStopHelperProcess is not a test: it is the body of the named
-// helper processes startNamedForceStopHelper spawns. It only runs in a copy
-// of this test binary launched with forceStopHelperEnv set, where it idles
-// until the test under way signals it (or the spawn's Cleanup does).
+// TestForceStopHelperProcess is the body of the helper processes
+// startNamedForceStopHelper spawns: a re-exec of this test binary that idles
+// until the test (or its Cleanup) kills it.
 func TestForceStopHelperProcess(t *testing.T) {
 	if os.Getenv(forceStopHelperEnv) != "1" {
 		t.Skip("helper-process body; only meaningful under startNamedForceStopHelper")
@@ -173,31 +172,31 @@ func TestForceStopHelperProcess(t *testing.T) {
 // startNamedForceStopHelper starts a long-sleeping process whose executable
 // basename is name and whose command line references dir (the binary lives
 // inside it), matching how a workspace's own bd/dolt processes reference
-// their root path.
-//
-// The long-sleeping body is THIS test binary re-executed in helper mode
-// (TestForceStopHelperProcess), not a renamed copy of the system sleep:
-// on distros where sleep resolves to a MULTICALL binary dispatching on
-// argv[0] - busybox, or the Rust uutils coreutils Ubuntu ships since 25.10
-// ("coreutils: unknown program 'dolt'", exit 1) - a renamed copy dies
-// instantly and the fixture silently loses its live process: the held flock
-// is released early (HeldLock's intermittent LockWasHeld=false, comm="")
-// and the paired recovery finds only dead records (SignalSent=false).
-// Double guard against re-entering the suite: the anchored -test.run
-// pattern selects only the helper body, and the env gate makes even a bare
-// invocation of the copy skip it.
+// their root path. The body is this test binary re-executed in helper mode,
+// not a renamed copy of the system sleep: on busybox/uutils-coreutils
+// systems (Ubuntu 25.10+) sleep is a multicall binary dispatching on
+// argv[0], so a renamed copy exits instantly and the fixture silently loses
+// its live process.
 func startNamedForceStopHelper(t *testing.T, dir, name string) helperProcess {
 	t.Helper()
 	self, err := os.Executable()
 	require.NoError(t, err)
 	self, err = filepath.EvalSymlinks(self)
 	require.NoError(t, err)
-	data, err := os.ReadFile(self)
-	require.NoError(t, err)
 	executable := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(executable, data, 0o700))
+	// Hard link when dir is on the same filesystem; stream a copy otherwise.
+	if os.Link(self, executable) != nil {
+		src, err := os.Open(self)
+		require.NoError(t, err)
+		dst, err := os.OpenFile(executable, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o700)
+		require.NoError(t, err)
+		_, cpErr := io.Copy(dst, src)
+		require.NoError(t, src.Close())
+		require.NoError(t, dst.Close())
+		require.NoError(t, cpErr)
+	}
 
-	cmd := exec.Command(executable, "-test.run=TestForceStopHelperProcess$")
+	cmd := exec.Command(executable, "-test.run=^TestForceStopHelperProcess$")
 	cmd.Env = append(os.Environ(), forceStopHelperEnv+"=1")
 	require.NoError(t, cmd.Start())
 	token, err := procid.Capture(cmd.Process.Pid)
