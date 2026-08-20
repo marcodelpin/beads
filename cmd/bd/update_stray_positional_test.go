@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Tests for bd-5247: `bd update --set-metadata a=1 b=2` silently turns `b=2`
 // into a positional issue id (--set-metadata takes one key=value per flag).
 // Before this guard, `a=1` was written and only the unbound pairs failed, so a
