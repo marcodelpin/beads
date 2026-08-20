@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/steveyegge/beads/internal/debug"
-	"gopkg.in/yaml.v3"
 	"github.com/steveyegge/beads/internal/execx"
+	"gopkg.in/yaml.v3"
 )
 
 var v *viper.Viper

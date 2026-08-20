@@ -91,7 +91,9 @@ type seqConn struct {
 
 func (c *seqConn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
 func (c *seqConn) Close() error                        { return nil }
-func (c *seqConn) Begin() (driver.Tx, error)           { return c.BeginTx(context.Background(), driver.TxOptions{}) }
+func (c *seqConn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
 
 func (c *seqConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
 	c.parent.rec.add(c.id, "BEGIN")

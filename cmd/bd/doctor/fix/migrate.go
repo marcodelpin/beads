@@ -10,11 +10,11 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // DatabaseVersion fixes database version mismatches by updating metadata in-process.

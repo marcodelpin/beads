@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"gopkg.in/yaml.v3"
 	"github.com/steveyegge/beads/internal/execx"
+	"gopkg.in/yaml.v3"
 )
 
 // ExternalHookManager represents a detected external hook management tool.

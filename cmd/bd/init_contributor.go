@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // runContributorWizard guides the user through OSS contributor setup

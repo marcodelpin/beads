@@ -2,10 +2,10 @@ package doctor
 
 import (
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
 	"path/filepath"
 	"strings"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // GitignoreTemplate is the canonical .beads/.gitignore content

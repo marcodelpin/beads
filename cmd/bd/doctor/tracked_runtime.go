@@ -2,9 +2,9 @@ package doctor
 
 import (
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"path/filepath"
 	"strings"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // trackedRuntimePatterns are file patterns under .beads/ that should never be

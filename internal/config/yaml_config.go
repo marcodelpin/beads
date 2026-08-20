@@ -3,12 +3,12 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"github.com/steveyegge/beads/internal/execx"
 
 	"gopkg.in/yaml.v3"
 )

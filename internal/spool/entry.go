@@ -31,15 +31,15 @@ var AllowedOps = map[string]bool{
 // migration. Schema version field v lets mixed-version fleets degrade
 // gracefully.
 type Entry struct {
-	OpID          string          `json:"op_id"`            // 32-hex random, dedup key
-	TS            string          `json:"ts"`               // RFC3339 UTC at enqueue
-	Op            string          `json:"op"`               // create | update | note | close
-	Payload       json.RawMessage `json:"payload"`          // op-specific args
-	Attempts      int             `json:"attempts"`         // replay attempts so far
+	OpID          string          `json:"op_id"`                     // 32-hex random, dedup key
+	TS            string          `json:"ts"`                        // RFC3339 UTC at enqueue
+	Op            string          `json:"op"`                        // create | update | note | close
+	Payload       json.RawMessage `json:"payload"`                   // op-specific args
+	Attempts      int             `json:"attempts"`                  // replay attempts so far
 	FirstFailedAt string          `json:"first_failed_at,omitempty"` // RFC3339; set on first failure
-	SchemaVersion int             `json:"v"`                // schema version, currently 1
-	ContentHash   string          `json:"content_hash"`     // blake3 hex of canonical payload
-	Origin        string          `json:"origin,omitempty"` // e.g. "bd-cli"
+	SchemaVersion int             `json:"v"`                         // schema version, currently 1
+	ContentHash   string          `json:"content_hash"`              // blake3 hex of canonical payload
+	Origin        string          `json:"origin,omitempty"`          // e.g. "bd-cli"
 	LastError     string          `json:"last_error,omitempty"`
 }
 

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	dockercontainer "github.com/moby/moby/api/types/container"
 	_ "github.com/go-sql-driver/mysql" // required by testcontainers Dolt module
+	dockercontainer "github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/dolt"
 )

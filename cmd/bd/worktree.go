@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/execx"
+	"github.com/steveyegge/beads/internal/git"
 )
 
 // isGitWorktree detects if the current directory is in a git worktree.

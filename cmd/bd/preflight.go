@@ -14,8 +14,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/execx"
+	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 )
 

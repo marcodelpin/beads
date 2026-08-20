@@ -11,9 +11,9 @@ import (
 
 	"github.com/steveyegge/beads/cmd/bd/doctor/fix"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/types"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // gitCmdTimeout is the timeout for git subprocess commands in doctor checks.

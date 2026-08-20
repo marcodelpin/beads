@@ -2,9 +2,9 @@ package doctor
 
 import (
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
 	"strings"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // PendingMigration represents a single pending migration

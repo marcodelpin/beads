@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/execx"
+	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
 // CheckBeadsRole verifies that beads.role is configured.

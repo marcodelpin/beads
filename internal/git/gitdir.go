@@ -2,13 +2,13 @@ package git
 
 import (
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // gitContext holds cached git repository information.

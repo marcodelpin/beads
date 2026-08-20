@@ -3,11 +3,11 @@ package doctor
 import (
 	"errors"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 const (

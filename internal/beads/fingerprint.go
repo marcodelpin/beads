@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-	"github.com/steveyegge/beads/internal/execx"
 )
 
 // RepoIDSource identifies how a repo fingerprint was derived.

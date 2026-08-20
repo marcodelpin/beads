@@ -2,8 +2,8 @@ package testutil
 
 import (
 	"fmt"
-	"strings"
 	"github.com/steveyegge/beads/internal/execx"
+	"strings"
 )
 
 // ForceRepoLocalHooksPath configures a git test repository to use .git/hooks
