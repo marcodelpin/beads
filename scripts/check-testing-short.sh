@@ -53,7 +53,7 @@ while IFS=: read -r file line _; do
     printf 'Disallowed testing.Short() at %s:%s in %s\n' "$file" "$line" "${func:-unknown}" >&2
     status=1
   fi
-done < <(find . -type f -name '*.go' -not -path './.git/*' -exec grep -n 'testing\.Short()' {} + || true)
+done < <(find . -type f -name '*.go' -not -path './.git/*' -not -path './.tmp/*' -exec grep -n 'testing\.Short()' {} + || true)
 
 if (( status != 0 )); then
   cat >&2 <<'EOF'
