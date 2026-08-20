@@ -460,6 +460,7 @@ func TestRekeyAuxRowIDsAllPassesSharesDriftRecordAcrossPasses(t *testing.T) {
 	// Both passes' markers already recorded: the ignored cursor is at or past
 	// the later pass's markerVersion, so rekeyAuxRowIDsAllPasses' single
 	// pendingVersions read reports neither markerVersion as pending.
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
 		"version", auxRekeyPassDerivedInsert.markerVersion)
 	expectIgnoredSentinelProbes(mock, true)
