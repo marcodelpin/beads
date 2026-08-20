@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -63,12 +64,20 @@ func getIssueInTx(ctx context.Context, tx DBTX, id, lockSuffix string) (*types.I
 	return nil, err
 }
 
+// missingOptionalIssueTable reports whether err is the absence of the optional
+// issue plane the hydration query just read. The hydration FROM clause also
+// carries sqlbuild.LeaseJoin, so a blanket table-not-exist check here folds a
+// missing leases table into "row absent" — a wrong answer, not an empty one.
+func missingOptionalIssueTable(err error, issueTable string) bool {
+	return optionalBlockedTable(issueTable) && dberrors.IsMissingTable(err, issueTable)
+}
+
 func getIssueFromTableInTx(ctx context.Context, tx DBTX, issueTable, labelTable, id, lockSuffix string) (*types.Issue, error) {
 	//nolint:gosec // G201: issueTable is a hardcoded literal supplied by getIssueInTx ("issues" or "wisps"); lockSuffix is "" or " FOR UPDATE". IssueSelectColumns needs LeaseJoin for the lease columns (sqlbuild contract).
 	row := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM %s %s WHERE id = ?%s`,
 		IssueSelectColumns, issueTable, sqlbuild.LeaseJoin(issueTable), lockSuffix), id)
 	issue, err := ScanIssueFrom(row)
-	if err == sql.ErrNoRows || isTableNotExistError(err) {
+	if err == sql.ErrNoRows || missingOptionalIssueTable(err, issueTable) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {

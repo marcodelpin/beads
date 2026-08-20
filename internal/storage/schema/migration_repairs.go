@@ -36,6 +36,7 @@ var preMigrationRepairs = map[repairKey]func(context.Context, DBConn) error{
 	{"schema_migrations", 47}:         ensureWispTablesForMixedBlockedRecompute,
 	{"schema_migrations", 53}:         repairV53RigAndSplitTargets,
 	{"schema_migrations", 58}:         repairWispDependenciesForwardShape,
+	{"ignored_schema_migrations", 7}:  ensureWispIsBlockedForRecompute,
 	{"ignored_schema_migrations", 15}: ensureWispIsBlockedForRecompute,
 }
 
@@ -220,40 +221,44 @@ func ensureWispTablesForMixedBlockedRecompute(ctx context.Context, db DBConn) er
 	return ensureWispDependenciesSplitTargets(ctx, db)
 }
 
-// ensureWispIsBlockedForRecompute repairs bda-3xeg: ignored/0006's own guard
-// no-ops (SELECT 1) when the wisps table does not exist yet at the moment it
-// runs -- its guard's AND condition requires wisps to already be present --
-// and once the ignored cursor advances past 6, 0006 never re-fires (pending
-// = version > MAX(cursor); a missing low-numbered row does not lower the
-// high-water mark). A clone whose wisps table is later materialized by a
-// path that predates is_blocked (the ignored/0001 CREATE-then-RENAME
-// pattern) then permanently lacks the column, and ignored/0015's frozen,
-// content-hashed recompute -- an UPDATE against wisps.is_blocked -- hard-
-// fails with "column 'is_blocked' could not be found in any table in
-// scope" (measured 2026-08-10 on two production clones, jrt04b rollout
-// residuals, ignored cursor sitting at 14).
+// ensureWispIsBlockedForRecompute repairs a drift shape in ignored/0006's own
+// guard: it no-ops (SELECT 1) when wisps does not exist yet at the moment it
+// runs, and once the ignored cursor advances past 6 that migration is never
+// pending again (pending = version > MAX(cursor); a missing low-numbered row
+// does not lower the high-water mark). wisps can be materialized without
+// is_blocked several ways -- ignored/0001's own CREATE-then-RENAME leaves an
+// existing wisps table untouched, and the main-side 0047 repair above
+// creates wisps at the wispsTableDDLForMigration0047 shape, which has no
+// is_blocked column, whenever the main pass reaches version 47 with wisps
+// entirely missing. Whichever path, a clone that ends up there permanently
+// lacks the column, and BOTH ignored/0007 and ignored/0015's frozen
+// recomputes (each an UPDATE against wisps.is_blocked) hard-fail with
+// "column 'is_blocked' could not be found in any table in scope", masking
+// the real defect behind a generic-looking SQL error.
 //
-// 0015's shipped body cannot be edited (frozen, content-hashed -- see the
-// package doc above), and a NEW, higher-numbered ignored migration would
-// never be reached by an already-affected clone: 0015 aborts the whole pass
-// before any later file runs, exactly like 0040/0041's frozen bodies above.
-// Keying this repair to {ignored_schema_migrations, 15} runs it immediately
-// before 0015's own SQL on every pass (runMigrations calls
-// preMigrationRepair right before execMigrationBody for that version), which
-// is the only path that self-heals an already-affected clone automatically.
-// The guard mirrors ignored/0006's original two statements (ADD COLUMN then
-// its index) so a clone that never ran 0006 to completion still ends up in
-// the shape 0006 would have produced.
+// A cursor-6 clone is the sharper case: it reaches 0007 first, and 0007's
+// hard-fail aborts the pass before any later file -- including 0015 -- ever
+// runs. Registering this repair only at {ignored_schema_migrations, 15}
+// left such a clone permanently unrecoverable: every pass re-hits 0007's
+// hard-fail before it can advance far enough to reach the version-15 entry
+// at all. Both 0007 and 0015's shipped bodies are frozen and content-hashed
+// like the repairs above, so neither can be fixed forward with a new
+// migration either. Registering this same function at BOTH
+// {ignored_schema_migrations, 7} and {ignored_schema_migrations, 15} runs it
+// immediately before either frozen file's own SQL, self-healing a clone
+// stuck at either cursor position. The repair is idempotent -- each of its
+// two steps re-probes the live schema and no-ops once its target already
+// exists -- so hitting it twice in one pass (once before 0007, again before
+// 0015) or on a later already-healed pass merely re-confirms the column and
+// index are present rather than re-adding them. It mirrors ignored/0006's
+// own two statements so a clone that never ran 0006 to completion still
+// ends up in the shape 0006 would have produced.
 func ensureWispIsBlockedForRecompute(ctx context.Context, db DBConn) error {
 	hasWisps, err := schemaTableExists(ctx, db, "wisps")
 	if err != nil {
 		return fmt.Errorf("checking wisps table: %w", err)
 	}
 	if !hasWisps {
-		// Nothing to repair yet: ignored/0001 (version 1, always earlier in
-		// the same pass) has not materialized wisps. 0015's own recompute
-		// then has no rows to touch either, so there is nothing this repair
-		// needs to do here.
 		return nil
 	}
 	if err := ensureWispIsBlockedColumn(ctx, db); err != nil {
@@ -262,9 +267,8 @@ func ensureWispIsBlockedForRecompute(ctx context.Context, db DBConn) error {
 	return ensureWispIsBlockedIndex(ctx, db)
 }
 
-// ensureWispIsBlockedColumn is ignored/0006's first statement, translated to
-// Go: add wisps.is_blocked if a clone somehow reached this repair without it
-// (the ADD COLUMN half of the 0006 shape bda-3xeg's clones never received).
+// ensureWispIsBlockedColumn is ignored/0006's ADD COLUMN statement,
+// translated to Go for a clone that reached this repair without it.
 func ensureWispIsBlockedColumn(ctx context.Context, db DBConn) error {
 	hasColumn, err := schemaColumnExists(ctx, db, "wisps", "is_blocked")
 	if err != nil {
@@ -279,8 +283,8 @@ func ensureWispIsBlockedColumn(ctx context.Context, db DBConn) error {
 	return nil
 }
 
-// ensureWispIsBlockedIndex is ignored/0006's second statement, translated to
-// Go: re-assert idx_wisps_is_blocked alongside the column above.
+// ensureWispIsBlockedIndex is ignored/0006's CREATE INDEX statement,
+// translated to Go alongside ensureWispIsBlockedColumn above.
 func ensureWispIsBlockedIndex(ctx context.Context, db DBConn) error {
 	hasIndex, err := schemaIndexExists(ctx, db, "wisps", "idx_wisps_is_blocked")
 	if err != nil {

@@ -201,6 +201,7 @@ func TestRekeyAuxRowIDsSkipsWhenMarkerRecorded(t *testing.T) {
 	}
 	defer db.Close()
 
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
 		"version", auxRekeyPassInitial.markerVersion)
 	expectIgnoredSentinelProbes(mock, true)
@@ -228,6 +229,7 @@ func TestRekeyAuxRowIDsRunsAllTablesWhenMarkerPending(t *testing.T) {
 	}
 	defer db.Close()
 
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
 		"version", auxRekeyPassInitial.markerVersion-1)
 	expectIgnoredSentinelProbes(mock, true)
@@ -350,6 +352,7 @@ func TestRekeyAuxRowIDsSkipsConvergedLineage(t *testing.T) {
 	}
 	defer db.Close()
 
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
 		"version", auxRekeyPassInitial.markerVersion-1)
 	expectIgnoredSentinelProbes(mock, true)
@@ -383,6 +386,7 @@ func TestRekeyAuxRowIDsResumesAfterCrash(t *testing.T) {
 	}
 	defer db.Close()
 
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
 		"version", auxRekeyPassInitial.markerVersion-1)
 	expectIgnoredSentinelProbes(mock, true)
@@ -413,6 +417,7 @@ func TestRekeyAuxRowIDsKeepsSentinelOnFailure(t *testing.T) {
 	}
 	defer db.Close()
 
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations",
 		"version", auxRekeyPassInitial.markerVersion-1)
 	expectIgnoredSentinelProbes(mock, true)

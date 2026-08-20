@@ -1356,11 +1356,11 @@ func TestPrintNoRemoteGuidance(t *testing.T) {
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
 
 	printNoRemoteGuidance()
 
 	w.Close()
-	os.Stdout = oldStdout
 
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
@@ -1382,11 +1382,11 @@ func TestPrintDivergedHistoryGuidance(t *testing.T) {
 	oldStderr := os.Stderr
 	r, w, _ := os.Pipe()
 	os.Stderr = w
+	defer func() { os.Stderr = oldStderr }()
 
 	printDivergedHistoryGuidance("push")
 
 	w.Close()
-	os.Stderr = oldStderr
 
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
@@ -1412,11 +1412,11 @@ func TestPrintAncestorPKMismatchGuidance(t *testing.T) {
 	oldStderr := os.Stderr
 	r, w, _ := os.Pipe()
 	os.Stderr = w
+	defer func() { os.Stderr = oldStderr }()
 
 	printAncestorPKMismatchGuidance(fmt.Errorf("error: cannot merge because table dependencies has different primary keys in its common ancestor"))
 
 	w.Close()
-	os.Stderr = oldStderr
 
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)

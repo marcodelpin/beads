@@ -16,22 +16,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testPlatformPath turns a POSIX-shaped fixture path into the shape the running
-// platform actually produces: on Windows filepath.IsAbs rejects a bare leading
-// "/" (no drive letter), so a POSIX literal can never satisfy configfile's own
-// absolute-path validation there (bda-rcn; same helper shape as cmd/bd's
-// testPlatformPath, bda-apn).
-//
-// Input and expectation are BOTH passed through this, so the assertions keep
-// their independent literal structure -- they are not rebuilt by calling the
-// code under test, which would make them tautological.
-func testPlatformPath(p string) string {
+// testPlatformPath makes a POSIX-shaped fixture path absolute on the running
+// platform: Windows filepath.IsAbs rejects a bare leading "/" (no volume), so
+// POSIX literals cannot satisfy ExternalDoltConfig.Validate there. Inputs and
+// the matching DSN expectation both go through it, keeping assertions literal
+// instead of rebuilt from the code under test.
+func testPlatformPath(t testing.TB, p string) string {
+	t.Helper()
 	if runtime.GOOS != "windows" {
 		return p
 	}
 	wd, err := os.Getwd()
 	if err != nil {
-		return filepath.FromSlash(p)
+		t.Fatalf("resolve volume for platform path fixture: %v", err)
 	}
 	return filepath.VolumeName(wd) + filepath.FromSlash(p)
 }
@@ -42,7 +39,7 @@ func TestExternalDoltConfigValidate(t *testing.T) {
 	})
 
 	t.Run("unix socket endpoint", func(t *testing.T) {
-		require.NoError(t, configfile.ExternalDoltConfig{Socket: testPlatformPath("/var/run/dolt.sock")}.Validate())
+		require.NoError(t, configfile.ExternalDoltConfig{Socket: testPlatformPath(t, "/var/run/dolt.sock")}.Validate())
 	})
 
 	t.Run("tcp endpoint with tls required and no cert/key", func(t *testing.T) {
@@ -58,8 +55,8 @@ func TestExternalDoltConfigValidate(t *testing.T) {
 			Host:        "hosted-dolt.example.com",
 			Port:        3306,
 			TLSRequired: true,
-			TLSCert:     testPlatformPath("/etc/beads/client.pem"),
-			TLSKey:      testPlatformPath("/etc/beads/client.key"),
+			TLSCert:     testPlatformPath(t, "/etc/beads/client.pem"),
+			TLSKey:      testPlatformPath(t, "/etc/beads/client.key"),
 		}.Validate())
 	})
 
@@ -78,13 +75,13 @@ func TestExternalDoltConfigValidate(t *testing.T) {
 	})
 
 	t.Run("socket and host together rejected", func(t *testing.T) {
-		err := configfile.ExternalDoltConfig{Host: "db", Port: 3306, Socket: testPlatformPath("/var/run/dolt.sock")}.Validate()
+		err := configfile.ExternalDoltConfig{Host: "db", Port: 3306, Socket: testPlatformPath(t, "/var/run/dolt.sock")}.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "either Socket OR (Host, Port)")
 	})
 
 	t.Run("socket and port together rejected", func(t *testing.T) {
-		err := configfile.ExternalDoltConfig{Port: 3306, Socket: testPlatformPath("/var/run/dolt.sock")}.Validate()
+		err := configfile.ExternalDoltConfig{Port: 3306, Socket: testPlatformPath(t, "/var/run/dolt.sock")}.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "either Socket OR (Host, Port)")
 	})
@@ -126,13 +123,13 @@ func TestExternalDoltConfigValidate(t *testing.T) {
 	})
 
 	t.Run("tls cert without key rejected", func(t *testing.T) {
-		err := configfile.ExternalDoltConfig{Host: "db", Port: 3306, TLSCert: testPlatformPath("/etc/beads/client.pem")}.Validate()
+		err := configfile.ExternalDoltConfig{Host: "db", Port: 3306, TLSCert: testPlatformPath(t, "/etc/beads/client.pem")}.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "TLSCert set without TLSKey")
 	})
 
 	t.Run("tls key without cert rejected", func(t *testing.T) {
-		err := configfile.ExternalDoltConfig{Host: "db", Port: 3306, TLSKey: testPlatformPath("/etc/beads/client.key")}.Validate()
+		err := configfile.ExternalDoltConfig{Host: "db", Port: 3306, TLSKey: testPlatformPath(t, "/etc/beads/client.key")}.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "TLSKey set without TLSCert")
 	})
@@ -142,7 +139,7 @@ func TestExternalDoltConfigValidate(t *testing.T) {
 			Host:    "db",
 			Port:    3306,
 			TLSCert: "client.pem",
-			TLSKey:  testPlatformPath("/etc/beads/client.key"),
+			TLSKey:  testPlatformPath(t, "/etc/beads/client.key"),
 		}.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "TLSCert")
@@ -153,7 +150,7 @@ func TestExternalDoltConfigValidate(t *testing.T) {
 		err := configfile.ExternalDoltConfig{
 			Host:    "db",
 			Port:    3306,
-			TLSCert: testPlatformPath("/etc/beads/client.pem"),
+			TLSCert: testPlatformPath(t, "/etc/beads/client.pem"),
 			TLSKey:  "client.key",
 		}.Validate()
 		require.Error(t, err)
@@ -202,7 +199,7 @@ func TestExternalDoltServer_ID(t *testing.T) {
 	t.Run("socket and tcp produce different ids even when notation overlaps", func(t *testing.T) {
 		a, err := NewExternalDoltServer(configfile.ExternalDoltConfig{Host: "db", Port: 3306})
 		require.NoError(t, err)
-		b, err := NewExternalDoltServer(configfile.ExternalDoltConfig{Socket: testPlatformPath("/var/run/dolt.sock")})
+		b, err := NewExternalDoltServer(configfile.ExternalDoltConfig{Socket: testPlatformPath(t, "/var/run/dolt.sock")})
 		require.NoError(t, err)
 		assert.NotEqual(t, a.ID(context.Background()), b.ID(context.Background()))
 	})
@@ -220,8 +217,8 @@ func TestExternalDoltServerID_AuthFieldsDoNotChangeID(t *testing.T) {
 	withAuth := base
 	withAuth.User = "beads"
 	withAuth.TLSRequired = true
-	withAuth.TLSCert = testPlatformPath("/etc/beads/client.pem")
-	withAuth.TLSKey = testPlatformPath("/etc/beads/client.key")
+	withAuth.TLSCert = testPlatformPath(t, "/etc/beads/client.pem")
+	withAuth.TLSKey = testPlatformPath(t, "/etc/beads/client.key")
 	assert.Equal(t, ExternalDoltServerID(base), ExternalDoltServerID(withAuth))
 }
 
@@ -243,10 +240,10 @@ func TestExternalDoltServer_DSN(t *testing.T) {
 	})
 
 	t.Run("unix socket", func(t *testing.T) {
-		s, err := NewExternalDoltServer(configfile.ExternalDoltConfig{Socket: testPlatformPath("/var/run/dolt.sock")})
+		s, err := NewExternalDoltServer(configfile.ExternalDoltConfig{Socket: testPlatformPath(t, "/var/run/dolt.sock")})
 		require.NoError(t, err)
 		dsn := s.DSN(context.Background(), "beads", "root", "")
-		assert.Contains(t, dsn, "unix("+testPlatformPath("/var/run/dolt.sock")+")")
+		assert.Contains(t, dsn, "unix("+testPlatformPath(t, "/var/run/dolt.sock")+")")
 		assert.NotContains(t, dsn, "tcp(")
 	})
 
