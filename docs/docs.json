@@ -251,7 +251,8 @@
         "group": "Architecture",
         "pages": [
           "architecture/index",
-          "architecture/dolt"
+          "architecture/dolt",
+          "spool"
         ]
       },
       {

@@ -274,3 +274,4 @@ tmp/docs/CLI_REFERENCE.md
 # Do NOT "fix" this by pinning dolt.port in a tracked .beads/config.yaml either - that would
 # restate the default and add a tracked file for no gain.
 !.beads/metadata.json
+docs/sessions/

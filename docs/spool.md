@@ -12,7 +12,7 @@ invocation.
 work survives network hiccups, a sleeping Dolt process, or a brief remote
 outage without losing data or forcing you to retry manually.
 
-Architecture rationale: see [docs/adr/0003-bd-write-spool.md](adr/0003-bd-write-spool.md)
+Architecture rationale: see `engdocs/adr/` (no dedicated spool ADR yet; see GH#4379)
 (once authored; the design was planned as ADR-0001 during bda-11t decomposition
 but numbered 0003 in the repo sequence).
 
@@ -253,8 +253,8 @@ non-zero `Dead-letter` after draining.
 
 - `bd doctor` — overall health check including Dolt remote reachability
 - `bd dolt push` / `bd dolt pull` — explicit Dolt sync
-- [docs/DOLT.md](DOLT.md) — Dolt backend overview
-- [docs/adr/0001-multi-remote-approach.md](adr/0001-multi-remote-approach.md) — ADR for multi-remote strategy
+- [Dolt backend overview](/architecture/dolt) — Dolt backend overview
+- [ADR 0001: multi-remote approach](https://github.com/steveyegge/beads/blob/main/engdocs/adr/0001-multi-remote-approach.md) — ADR for multi-remote strategy
 
 ## Spooled `create` semantics (GH#4378-review follow-up)
 
