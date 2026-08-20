@@ -55,7 +55,10 @@ func TestHelperSchemaInit(t *testing.T) {
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Must leave room for the retry wrapper's full serverRetryMaxElapsed (30s)
+	// budget on top of connect time, or the context cuts the retry short and
+	// re-creates the failure it exists to absorb.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
@@ -63,9 +66,18 @@ func TestHelperSchemaInit(t *testing.T) {
 		os.Exit(1)
 	}
 
-	_, err = initSchemaOnDB(ctx, db)
+	// initSchemaOnDBWithRetry, not the raw initSchemaOnDB: every production
+	// caller (DoltStore.initSchema, DoltStore.ApplySchemaMigrations) goes
+	// through this wrapper, and the 5s GET_LOCK wait in
+	// schema.MigrateUpWithLock is deliberately sized to fit inside its retry
+	// budget — see migrationLockAcquireTimeoutSeconds. Racing the raw call and
+	// demanding a first-try win asserts on a path no bd process ever takes:
+	// with N processes on one fresh database, N-1 of them are supposed to lose
+	// the lock and come back. #5880 made the same change in this file's
+	// TestMultiProcessSchemaInit_DoltVerify and missed this subprocess helper.
+	_, err = initSchemaOnDBWithRetry(ctx, db)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: initSchemaOnDB: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ERROR: initSchemaOnDBWithRetry: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -124,7 +136,10 @@ func TestMultiProcessSchemaInit(t *testing.T) {
 	for i := 0; i < numProcs; i++ {
 		procID := strconv.Itoa(i)
 		eg.Go(func() error {
-			subCtx, subCancel := context.WithTimeout(egCtx, 30*time.Second)
+			// Same reasoning as the subprocess's own context: this bound has to
+			// cover process start, connect, and the retry wrapper's whole 30s
+			// budget, so it cannot itself be 30s.
+			subCtx, subCancel := context.WithTimeout(egCtx, 2*time.Minute)
 			defer subCancel()
 
 			cmd := exec.CommandContext(subCtx, testBin,
