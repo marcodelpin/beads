@@ -957,6 +957,8 @@ type CompareAndSetMetadataResponse struct {
 }
 
 // ContextResponse The server's identity handshake. Every member is a deliberate, permanent choice; the field set is an allowlist frozen by a test that checks it against BOTH this document and the generated Go struct, so a field cannot arrive here as a side effect of the server's configuration growing one. In particular the workspace's sync remote is EXCLUDED, in this and every future version, because remote URLs routinely embed credentials — as are the database bind host/port (advertising them invites clients to bypass this API and dial the database directly) and the loopback/non-loopback bind mode.
+//
+// TWO MEMBERS ARE OPTIONAL, and they are the only two that describe the SERVER's filesystem rather than the workspace's logical identity: `beads_dir` and `repo_root`. A client must be able to read them as absent. Everything a remote caller identifies a workspace by is elsewhere and stays required — `project_id`, `database`, `backend`, `dolt_mode` — and an absolute host path is not something a remote caller can act on in any case: it cannot open it. `bd serve` publishes both, so a client reading a `bd serve` today sees no change; what the relaxation buys is that a deployment which does not want to disclose its filesystem layout can withhold them and still serve a body that conforms to this document.
 type ContextResponse struct {
 	// ApiVersion The path major this server serves. `v0` for this document.
 	ApiVersion string `json:"api_version"`
@@ -967,8 +969,10 @@ type ContextResponse struct {
 	// BdVersion The release version of the serving binary. The only field a client may compare as a version, and only for behavioral changes tied to a release.
 	BdVersion string `json:"bd_version"`
 
-	// BeadsDir Absolute path of the served workspace's `.beads` directory. A host path, kept because it is the single-workspace server's only workspace-identity handshake; disclosing it to network peers is part of what an operator accepts when binding beyond loopback.
-	BeadsDir string `json:"beads_dir"`
+	// BeadsDir Absolute path of the served workspace's `.beads` directory, when the server discloses it. A host path: `bd serve` publishes it because it is a single-workspace server's most legible workspace-identity handshake for the operator reading it, and disclosing it to network peers is part of what that operator accepts when binding beyond loopback.
+	//
+	// OPTIONAL, and absent means only that this server does not disclose its filesystem layout — never that it has no workspace. A client MUST NOT require it, MUST NOT treat absence as an error, and has no use for the value beyond display: it is a path on the SERVER's filesystem, which the client cannot open. Identify the workspace by `project_id` and `database`, which are required.
+	BeadsDir *string `json:"beads_dir,omitempty"`
 
 	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.related`, `issues.create`, `issues.addComment`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `config.set`, `config.unset`, `dependencies.cycles`, `dependencies.list`, `dependencies.count`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
 	//
@@ -984,8 +988,8 @@ type ContextResponse struct {
 	// ProjectId Logical project identifier.
 	ProjectId string `json:"project_id"`
 
-	// RepoRoot Absolute path of the served repository root. See `beads_dir`.
-	RepoRoot string `json:"repo_root"`
+	// RepoRoot Absolute path of the served repository root, when the server discloses it. OPTIONAL on the same terms as `beads_dir`; see it.
+	RepoRoot *string `json:"repo_root,omitempty"`
 
 	// SchemaVersion The shared JSON schema version — the same constant the CLI's stdout JSON envelope reports. Diagnostic only: it can move for CLI-only reasons with no HTTP wire change, so clients MUST NOT branch on it.
 	SchemaVersion int `json:"schema_version"`
