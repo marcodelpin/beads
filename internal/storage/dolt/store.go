@@ -4001,12 +4001,143 @@ func (s *DoltStore) pullFromRemoteUnchecked(ctx context.Context, remote string) 
 		return err
 	}
 
+	// ga-ivaps: a route that returns nil having merged nothing is silent
+	// divergence, so a transport's own "success" is not taken as proof the
+	// merge landed. Checked before the recompute: recomputing derived state
+	// over a merge that never arrived would report a second success on top of
+	// the first.
+	if err := s.verifyPullLanded(ctx, remote, preHead); err != nil {
+		return err
+	}
+
 	if !s.readOnly {
 		if err := s.recomputeBlockedAfterPull(ctx, preHead); err != nil {
 			return fmt.Errorf("pull succeeded but is_blocked recompute failed: %w", err)
 		}
 	}
 	return nil
+}
+
+// branchHash returns the commit hash at the tip of a local branch, or the empty
+// string when the branch has no row. Reads dolt_branches, which is global to the
+// database, so the answer does not depend on which branch the pooled connection
+// happens to be sitting on.
+func (s *DoltStore) branchHash(ctx context.Context, branch string) (string, error) {
+	var hash string
+	if err := s.db.QueryRowContext(ctx, "SELECT hash FROM dolt_branches WHERE name = ?", branch).Scan(&hash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return hash, nil
+}
+
+// verifyPullLanded reports whether the branch this store READS now contains the
+// remote-tracking ref the pull just fetched. It is the post-condition that makes
+// a pull which merged nothing distinguishable from one that had nothing to
+// merge (ga-ivaps).
+//
+// WHY A POST-CONDITION AND NOT A BETTER TRANSPORT CHECK. Pull() has several
+// routes (CLI subprocess, CALL DOLT_PULL, the fetch+merge fallback) and each
+// reports success its own way; `dolt pull` exits 0 both when it merged and when
+// it was already up to date, and CALL DOLT_PULL's (fast_forward, conflicts,
+// message) row is discarded by the shared DrainCall helper. Rather than teach
+// every route a new dialect, this asserts the one thing all of them promise:
+// after a successful pull, the branch you read contains what was fetched.
+//
+// THE THREE OUTCOMES, AND WHY THE NO-OP STAYS QUIET:
+//
+//   - nothing to merge — the tracking ref equals the local head, so the local
+//     branch trivially contains it. Returns nil, silently. This is the control:
+//     a no-op pull must not become an error.
+//   - merged — the local head is a descendant of the tracking ref, which still
+//     contains it. Returns nil.
+//   - reported success, merged nothing — the tracking ref moved and the local
+//     branch did not follow it, so the merge landed somewhere the caller does
+//     not read. Returns an error naming both hashes.
+//
+// WHY IT RE-FETCHES FIRST, which is the whole reason this works. Comparing the
+// two refs as the transport left them catches only half the problem: a pull
+// whose transport never reached THIS database leaves the tracking ref stale,
+// and a stale tracking ref equals the local head, so the worst failure looks
+// exactly like an honest no-op. Measured, not assumed — the ga-ivaps repro
+// leaves remotes/origin/<branch> byte-identical to the local branch while the
+// peer's commit sits unfetched on the remote. So the check refreshes the
+// tracking ref itself, over the store's OWN connection, before comparing. That
+// is what makes the comparison mean something: the ref it reads was written by
+// this database, not by whatever the transport may or may not have done
+// somewhere else. When the transport did land, the refresh is an
+// already-up-to-date no-op.
+//
+// Fails OPEN on anything it cannot read or do. The refresh fetch can fail for
+// reasons that say nothing about the pull (an external sql-server with no route
+// to the remote, credentials scoped to the CLI subprocess), dolt_remote_branches
+// carries no row for the tracking ref on remote types that do not maintain one,
+// and a missing system table is not evidence of divergence. Turning "I cannot
+// tell" into a failed pull would break working remotes to catch a broken one.
+//
+// KNOWN BLIND SPOT, one second wide, on git-backed remotes. Dolt's
+// GitBlobstore.syncForRead skips the underlying git fetch when it last synced
+// less than defaultSyncForReadTTL (1s) ago, and the blobstore is cached for the
+// life of the sql-server. A pull issued inside that window — including the
+// refresh above, which is served from the same cached mirror — cannot see a
+// peer's commit pushed during it, so a pull that merged nothing is
+// indistinguishable here from one that had nothing to merge and is reported as
+// success. Bounded and upstream: the next pull outside the window sees the
+// commit and merges it. Tests that push from a second process and then pull
+// must wait the window out rather than depend on it.
+//
+// preHead is the branch head read before the transport ran, and is the cheap
+// way out: a head that MOVED is itself proof the transport landed in this
+// database on this branch, so the refresh below — the only part that costs a
+// network round trip — is skipped for every pull that actually merged
+// something. An empty preHead means it could not be read, which verifies.
+func (s *DoltStore) verifyPullLanded(ctx context.Context, remote, preHead string) error {
+	trackingRef := "remotes/" + remote + "/" + s.branch
+
+	localHash, headErr := s.branchHash(ctx, s.branch)
+	if headErr == nil && preHead != "" && localHash != "" && localHash != preHead {
+		return nil
+	}
+
+	// Refresh the tracking ref through this database so the comparison below
+	// reads a ref this connection wrote. Best-effort by design: a refresh that
+	// cannot run leaves the weaker stale-ref comparison, which is still worth
+	// making.
+	if err := schema.DrainCall(ctx, s.db, "CALL DOLT_FETCH(?, ?)", remote, s.branch); err != nil {
+		log.Printf("warning: could not refresh %s to verify the pull landed: %v", trackingRef, err)
+	}
+
+	var remoteHash string
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT hash FROM dolt_remote_branches WHERE name = ?", trackingRef).Scan(&remoteHash); err != nil {
+		return nil
+	}
+	if remoteHash == "" {
+		return nil
+	}
+
+	// DOLT_MERGE_BASE is the containment test: the base of (local, tracking)
+	// is the tracking hash itself exactly when local already contains it —
+	// whether local is equal to it (nothing to merge) or ahead of it (merged).
+	var mergeBase sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT DOLT_MERGE_BASE(?, ?)", s.branch, trackingRef).Scan(&mergeBase); err != nil {
+		return nil
+	}
+	if !mergeBase.Valid || mergeBase.String == remoteHash {
+		return nil
+	}
+
+	if localHash == "" {
+		localHash = "unknown"
+	}
+	return fmt.Errorf("pull from %s/%s reported success but merged nothing into %s: %s is at %s while %s is at %s "+
+		"(their common ancestor is %s), so the fetched commits are not on the branch this database reads; "+
+		"the transport did not land — re-run the pull, and if it repeats, check that the dolt CLI directory and "+
+		"the sql-server are serving the same database and branch",
+		remote, s.branch, s.branch, s.branch, localHash, trackingRef, remoteHash, mergeBase.String)
 }
 
 // pullTransport routes one pull through CLI or SQL based on the remote's

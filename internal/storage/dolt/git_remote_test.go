@@ -1661,3 +1661,143 @@ func TestCredentialCLIRoutingE2E(t *testing.T) {
 	err = store.Push(ctx)
 	require.NoError(t, err, "Push should succeed via CLI credential routing (SC-001)")
 }
+
+// TestPullReportsSuccessOnlyWhenTheMergeLanded is the regression test for
+// ga-ivaps: Pull() returning nil having merged nothing.
+//
+// A sync that lies is worse than a sync that fails. Pull() collapses three
+// different outcomes into the single value nil — "I merged the peer's commits",
+// "there was nothing to merge", and "I reported success but the branch you read
+// did not receive anything" — and no caller can tell them apart. The third is
+// silent divergence: bd sync reports success while the local database quietly
+// falls behind the remote.
+//
+// THE DIVERGENCE IS CONSTRUCTED, NOT WAITED FOR. The CI symptom is intermittent
+// and nobody has reproduced it on demand, so this test does not chase the race.
+// It builds the *observable end state* that any such pull leaves behind — the
+// remote-tracking ref for (remote, branch) advanced past the branch the store
+// reads — and pins that Pull() refuses to call it success. Whatever made the
+// transport miss (a route that no-ops, a merge landing on another branch, a CLI
+// subprocess operating on a database the SQL session does not serve), it ends
+// here, and this is the assertion that catches it.
+//
+// The store is moved onto a branch the CLI directory is not checked out to,
+// which makes `dolt pull <remote> <branch>` merge into the CLI directory's
+// branch and leave the store's own branch untouched. That is a real route
+// through pullTransport, not a stub.
+//
+// Two controls, both required:
+//
+//   - A pull with real work to do must succeed AND deliver the peer's row. A
+//     post-condition that rejected everything would satisfy the subject
+//     assertion while breaking every pull in the product.
+//   - A pull with genuinely nothing to merge must still succeed QUIETLY. This is
+//     the control that keeps the fix from turning every no-op pull into an
+//     error, which is the obvious wrong way to make a lying pull loud.
+func TestPullReportsSuccessOnlyWhenTheMergeLanded(t *testing.T) {
+	store, setup, cleanup := setupEmbeddedGitRemote(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	seed := &types.Issue{
+		ID:        "pl-src-001",
+		Title:     "Source issue before push",
+		IssueType: types.TypeTask,
+		Status:    types.StatusOpen,
+		Priority:  2,
+	}
+	if err := store.CreateIssue(ctx, seed, "tester"); err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+	if err := store.Commit(ctx, "Add pl-src-001"); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+	if err := store.Push(ctx); err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Control 1: a pull with real work to do succeeds and delivers the row.
+	cloneDir := filepath.Join(setup.baseDir, "clone-pl")
+	doltClone(t, setup.remoteURL, cloneDir)
+	sourceInsertIssue(t, cloneDir, "pl-clone-001", "Clone issue")
+	sourceCommitAndPush(t, cloneDir, "Add pl-clone-001")
+
+	// The peer pushed from its own process; this store's sql-server last read
+	// the remote during store.Push() above and caches that view briefly.
+	waitOutGitRemoteReadCache()
+
+	if err := store.Pull(ctx); err != nil {
+		t.Fatalf("control broken: a pull with real work to do failed: %v", err)
+	}
+	if got, err := store.GetIssue(ctx, "pl-clone-001"); err != nil || got == nil {
+		t.Fatalf("control broken: Pull reported success but the peer's pl-clone-001 is absent (err=%v)", err)
+	}
+
+	// Control 2: the repeated pull has nothing to merge. It must still succeed,
+	// and say nothing about it. Waiting the cache out again is what makes this
+	// a genuine no-op rather than a cached one: inside the TTL the fetch is
+	// skipped, so the pull would report "nothing to merge" without ever asking
+	// the remote, and the control would hold even if a real no-op pull errored.
+	waitOutGitRemoteReadCache()
+
+	if err := store.Pull(ctx); err != nil {
+		t.Fatalf("control broken: a pull with genuinely nothing to merge must succeed quietly, got: %v", err)
+	}
+
+	// Subject: move the store onto a branch the CLI directory is not checked
+	// out to, so the pull's merge cannot land where the store reads.
+	if err := store.Branch(ctx, "feature"); err != nil {
+		t.Fatalf("Branch(feature) failed: %v", err)
+	}
+	if err := store.Checkout(ctx, "feature"); err != nil {
+		t.Fatalf("Checkout(feature) failed: %v", err)
+	}
+	if err := store.Push(ctx); err != nil {
+		t.Fatalf("pushing the feature branch failed: %v", err)
+	}
+
+	runCmd(t, cloneDir, "dolt", "fetch", "origin")
+	runCmd(t, cloneDir, "dolt", "checkout", "feature")
+	sourceInsertIssue(t, cloneDir, "pl-clone-002", "Clone issue on feature")
+	// Pushed to origin/feature explicitly: the sourceCommitAndPush helper
+	// pushes origin main, which from a feature checkout would push an
+	// unchanged main and leave the peer's commit nowhere. A fixture that never
+	// publishes the row makes Pull correct to merge nothing, and the case would
+	// be asserting on its own bug instead of the product's.
+	runDoltSQL(t, cloneDir, "CALL DOLT_ADD('.'); CALL DOLT_COMMIT('-Am', 'Add pl-clone-002 on feature')")
+	runCmd(t, cloneDir, "dolt", "push", "origin", "feature")
+
+	// Same cache, and the subject needs it out of the way even more than the
+	// controls do: inside the TTL the pull's fetch is skipped, so
+	// remotes/origin/feature never moves, the post-condition sees a local
+	// branch that trivially contains it, and the divergence this case exists
+	// to build is never constructed.
+	waitOutGitRemoteReadCache()
+
+	pullErr := store.Pull(ctx)
+	landed, getErr := store.GetIssue(ctx, "pl-clone-002")
+	delivered := getErr == nil && landed != nil
+
+	switch {
+	case pullErr == nil && delivered:
+		// The merge landed on the branch the store reads, so this run built no
+		// divergence and has nothing to say about detecting one. Not a pass.
+		t.Skip("the pull delivered pl-clone-002 onto the store's branch: no divergence was constructed")
+	case pullErr == nil && !delivered:
+		t.Fatalf("Pull reported success (nil) but pl-clone-002 never arrived on %q, the branch this store "+
+			"reads: a pull that merged nothing must not report success", "feature")
+	case delivered:
+		t.Fatalf("Pull failed with %v even though pl-clone-002 did arrive: the post-condition rejected a "+
+			"pull that landed", pullErr)
+	}
+
+	// The refusal has to be THIS refusal. A transport that failed for an
+	// unrelated reason would also make pullErr non-nil and would otherwise let
+	// the case pass without the post-condition existing at all.
+	if msg := pullErr.Error(); !strings.Contains(msg, "merged nothing") || !strings.Contains(msg, "remotes/origin/feature") {
+		t.Fatalf("Pull failed, but not with the merged-nothing post-condition: %v", pullErr)
+	}
+	t.Logf("Pull correctly refused to call this success: %v", pullErr)
+}
