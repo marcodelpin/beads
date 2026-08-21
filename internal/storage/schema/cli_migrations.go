@@ -17,6 +17,26 @@ package schema
 // databases, where PREPARE/EXECUTE runs over a real driver connection and
 // this limitation does not apply.
 //
+// Dolt 2.3.0 fixed #11345, and that fix MASKS a missing override here rather
+// than removing the need for one: on 2.3.x the CLI executes the prepared
+// ALTER, so a bundle that forgot the direct statement still lands the right
+// schema and TestCLIBundleMatchesRuntimeCommittedSchema goes green against a
+// 2.2.0 sql-server. Measured 2026-08-21 by running AllMigrationsSQL() through
+// each CLI and diffing information_schema: 2.1.8 and 2.2.0 produce
+// byte-identical snapshots; 2.3.1 lands three extra columns (0060's
+// storage_class on issues and wisps) and one extra widening (0065's
+// wisp_comments.text). So every override below must be justified against the
+// pre-2.3 behavior, and the string assertions in
+// TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities — which need
+// no Dolt binary at all — are the guard that survives a CLI version bump.
+//
+// 0065 deliberately has no override yet. It is invisible to the parity
+// oracle, which excludes wisp_ tables, and a direct MODIFY breaks
+// TestFullChainFromPreWispsAndMissingDependenciesIDConvergesThroughDoltCLI,
+// which replays this substitution over a database whose wisp_comments was
+// dropped and which 0047's repair does not recreate. That needs the test's
+// contract settled first, so it is tracked separately.
+//
 // For a migration whose PREPARE'd DML matters on this path (not just DDL),
 // the fix is not a direct-SQL override here — it is to not depend on
 // PREPARE'd writes to real tables in the source migration at all. Migration
@@ -79,6 +99,11 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		// schema delta: create the ephemeral leases table, drop the issues/
 		// wisps lease columns 0054 added. row_lock stays (see the migration).
 		return cliMigration0055MoveLeasesToTable
+	case "0060_add_storage_class.up.sql":
+		// Direct DDL for the same reason as 0054: the source migration's
+		// PREPARE guards make it idempotent on upgraded databases, and a
+		// fresh bundle always needs the column on both planes.
+		return cliMigration0060AddStorageClass
 	default:
 		return sqlText
 	}
@@ -119,6 +144,9 @@ ALTER TABLE issues DROP COLUMN lease_expires_at;
 ALTER TABLE issues DROP COLUMN heartbeat_at;
 ALTER TABLE wisps DROP COLUMN lease_expires_at;
 ALTER TABLE wisps DROP COLUMN heartbeat_at;`
+
+const cliMigration0060AddStorageClass = `ALTER TABLE issues ADD COLUMN storage_class VARCHAR(16);
+ALTER TABLE wisps ADD COLUMN storage_class VARCHAR(16);`
 
 const cliMigration0041SplitDependenciesTarget = `DELETE FROM dolt_nonlocal_tables;
 CALL DOLT_COMMIT('-Am', 'disable nonlocal tables for fk migrations');
