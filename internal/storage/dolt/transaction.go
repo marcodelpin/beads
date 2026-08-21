@@ -520,6 +520,14 @@ func (t *doltTransaction) GetIssue(ctx context.Context, id string) (*types.Issue
 // regularTx/ignoredTx (see txFor). Not worth re-implementing: partial-ID
 // resolution calls the (fast) store path, never a transaction, so this is cold.
 func (t *doltTransaction) SearchIssueIDs(ctx context.Context, query string, filter types.IssueFilter) ([]string, error) {
+	// The caller wants ids only, so opt out of the bulk label read SearchIssues
+	// would otherwise run and then project away. filter is a value copy, so this
+	// does not touch the caller's filter. SkipLabels gates only hydration: the
+	// label-driven WHERE predicates (LabelPattern, ExcludeLabels, LabelRegex,
+	// Labels/LabelsAny) are built from their own filter fields in
+	// BuildIssueFilterClauses and still select the same rows. Dependency
+	// hydration is already gated on IncludeDependencies, so it costs nothing here.
+	filter.SkipLabels = true
 	issues, err := t.SearchIssues(ctx, query, filter)
 	if err != nil {
 		return nil, err
@@ -611,7 +619,12 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 			_ = rows.Close()
 			return nil, wrapScanError("search issues in tx", err)
 		}
-		// GH#3567: a label/dependency subquery can repeat a row.
+		// Structural parity with issueops.searchTableInTxT, which dedups because
+		// it can drive from a joined label table where a row repeats (GH#3567).
+		// This tx query is JOIN-free — only id IN (<correlated subquery>)
+		// predicates from sqlbuild.BuildIssueFilterClauses — so a row cannot
+		// actually repeat on this path; the dedup mirrors the reference rather
+		// than guarding a live duplicate source here.
 		if _, dup := seen[id]; dup {
 			continue
 		}

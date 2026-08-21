@@ -348,11 +348,33 @@ func testTransactionSearchFilterParity(t *testing.T, f Factory) {
 		for _, leg := range []struct {
 			sortBy   string
 			sortDesc bool
-		}{{"created", false}, {"created", true}, {"title", false}} {
-			filter := types.IssueFilter{IDPrefix: parityPrefix, SkipWisps: true, Limit: 100, SortBy: leg.sortBy, SortDesc: leg.sortDesc}
+			limit    int
+		}{
+			{"created", false, 100},
+			{"created", true, 100},
+			{"title", false, 100},
+			// "id" is the only Go-side sort key (sqlbuild.IsGoSideSort): it
+			// renders no ORDER BY and is sorted — and, when bounded, trimmed —
+			// in Go, so it exercises a branch none of the SQL-side keys above
+			// reach. The bounded leg drives the Go-side eff-trim (len(ids) >
+			// eff), the one place this path withholds the SQL LIMIT and cuts
+			// the page in Go.
+			{"id", false, 100},
+			{"id", true, 100},
+			{"id", false, 2},
+		} {
+			filter := types.IssueFilter{IDPrefix: parityPrefix, SkipWisps: true, Limit: leg.limit, SortBy: leg.sortBy, SortDesc: leg.sortDesc}
 			oracle, err := s.SearchIssues(c, "", filter)
 			must(t, err)
 			want := orderedIDs(oracle)
+
+			// Control: a bound below the fixture size must actually cut the
+			// oracle's page, or the parity check below cannot tell a Go-side
+			// trim from a path that ignored the bound.
+			if leg.limit < parityFixtureSize && len(want) != leg.limit {
+				t.Fatalf("control broken: SortBy=%q oracle under Limit=%d answered %d rows %v, want %d",
+					leg.sortBy, leg.limit, len(want), want, leg.limit)
+			}
 
 			var got []string
 			must(t, s.RunInTransaction(c, "bd: parity sort", func(tx storage.Transaction) error {
@@ -364,18 +386,18 @@ func testTransactionSearchFilterParity(t *testing.T, f Factory) {
 				return nil
 			}))
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("in-tx SearchIssues(SortBy=%q, SortDesc=%v) = %v, want %v — the sort was accepted and ignored",
-					leg.sortBy, leg.sortDesc, got, want)
+				t.Errorf("in-tx SearchIssues(SortBy=%q, SortDesc=%v, Limit=%d) = %v, want %v — the sort was accepted and ignored",
+					leg.sortBy, leg.sortDesc, leg.limit, got, want)
 			}
 			// Control: the two directions must not be the same sequence, or
 			// the comparison above proves nothing about SortDesc.
-			if leg.sortBy == "created" && leg.sortDesc {
+			if leg.sortDesc {
 				ascFilter := filter
 				ascFilter.SortDesc = false
 				asc, ascErr := s.SearchIssues(c, "", ascFilter)
 				must(t, ascErr)
 				if reflect.DeepEqual(orderedIDs(asc), want) {
-					t.Fatalf("control broken: created ASC and DESC answer the same sequence %v", want)
+					t.Fatalf("control broken: %s ASC and DESC answer the same sequence %v", leg.sortBy, want)
 				}
 			}
 		}
