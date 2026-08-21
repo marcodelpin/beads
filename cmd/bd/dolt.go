@@ -797,14 +797,23 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 			return HandleError("no store available")
 		}
 		msg, _ := cmd.Flags().GetString("message")
-		// GH#4078: explicit commits include config and report truthfully.
-		// Without -m, CommitPending builds a descriptive summary message.
-		// The truthful committed bool also covers the embedded store's
-		// nil-error no-op Commit, which upstream detects with a before/after
-		// HEAD-hash comparison instead.
-		committed, err := explicitDoltCommit(ctx, st, msg)
+		if msg == "" {
+			msg = fmt.Sprintf("bd: dolt commit (auto-commit) by %s", getActor())
+		}
+		// CommitAll, not Commit: this command's contract is "any uncommitted
+		// changes in the working set", including changes made externally and
+		// the config table — which server-mode Commit excludes (GH#2455), so
+		// out-of-band config dirt used to survive this command forever. Its
+		// committed bool also replaces the HEAD-before/HEAD-after comparison
+		// this command used to detect tolerated no-ops with, which cost two
+		// extra HEAD reads and raced against concurrent writers.
+		committed, err := st.CommitAll(ctx, msg)
 		if err != nil {
-			return HandleError("%v", err)
+			if isDoltNothingToCommit(err) {
+				committed = false
+			} else {
+				return HandleError("%v", err)
+			}
 		}
 		if !committed {
 			fmt.Println("Nothing to commit.")

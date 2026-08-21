@@ -205,15 +205,22 @@ Examples:
 			return HandleErrorRespectJSON("commit message is required (use -m, --message, or --stdin)")
 		}
 
-		beforeHash, beforeErr := store.GetCurrentCommit(ctx)
-
 		commandDidExplicitDoltCommit = true
-		// GH#4078: include config and report truthfully - the old Commit()
-		// path silently no-opped on config-only working sets while still
-		// printing "Created commit".
-		committed, err := explicitDoltCommit(ctx, store, vcCommitMessage)
+		// CommitAll, not Commit: the explicit command promises "all current
+		// changes", so it must sweep in out-of-band writes (config above all,
+		// which server-mode Commit excludes per GH#2455) and must report an
+		// honest no-op instead of printing "Created commit" against the
+		// unchanged HEAD. Its committed bool is the atomic signal the old
+		// HEAD-before/HEAD-after comparison approximated (the mybd-z9h7j
+		// threading: CommitPending already had the shape), so the concurrent-
+		// writer misattribution race that comparison carried is gone.
+		committed, err := store.CommitAll(ctx, vcCommitMessage)
 		if err != nil {
-			return HandleErrorRespectJSON("failed to commit: %v", err)
+			if isDoltNothingToCommit(err) {
+				committed = false
+			} else {
+				return HandleErrorRespectJSON("failed to commit: %v", err)
+			}
 		}
 		if !committed {
 			if jsonOutput {
@@ -226,22 +233,6 @@ Examples:
 		hash, err := store.GetCurrentCommit(ctx)
 		if err != nil {
 			hash = "(unknown)"
-		}
-
-		// A store whose Commit tolerates nothing-to-commit (e.g. the embedded
-		// store) returns a nil error even when HEAD did not move. Detect that
-		// case here instead of relying on the error, so both backends report
-		// the same "nothing to commit" outcome. Known limitation: a concurrent
-		// writer advancing HEAD between the two reads is misattributed to this
-		// command — pre-existing for server mode, and fixing it means threading
-		// an atomic committed-bool through the VersionControl interface
-		// (tracked as bd mybd-z9h7j; CommitPending already has the shape).
-		if beforeErr == nil && err == nil && hash == beforeHash {
-			if jsonOutput {
-				return outputJSON(map[string]interface{}{"committed": false, "message": "nothing to commit"})
-			}
-			fmt.Println("Nothing to commit")
-			return nil
 		}
 
 		if jsonOutput {
