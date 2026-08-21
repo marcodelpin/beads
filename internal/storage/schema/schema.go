@@ -340,6 +340,11 @@ var doltIgnorePatterns = []string{
 	"bd_events_journal",
 	"bd_events_seq",
 	"ignored_schema_migrations",
+	// label_namespace_locks (0066, bd-7u5ki) has never existed on the
+	// versioned plane, same reasoning as the events journal tables above:
+	// asserting the pattern before 0066 runs is what keeps the CREATE from
+	// landing as tracked-at-HEAD.
+	"label_namespace_locks",
 	"leases",
 	"local_metadata",
 	"repo_mtimes",

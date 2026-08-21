@@ -47,6 +47,18 @@ func (r *labelSQLRepositoryImpl) Insert(ctx context.Context, issueID, label, act
 		return err
 	}
 	table := pickLabelTable(opts.UseWispsTable)
+	// Exclusive label namespaces (labels.exclusive-prefixes, bd-7u5ki): this
+	// was the proxied write path's bypass the review of upstream PR #4757
+	// found - AddLabelInTx (the embedded/classic path) enforced the guard,
+	// this INSERT IGNORE below did not, so 'bd label add' against a proxied
+	// server silently accepted a second label in a configured-exclusive
+	// namespace. issueops.EnforceExclusiveLabelInTx is the SAME primitive
+	// AddLabelInTx calls, including its per-(issue, namespace) lock
+	// (acquireLabelNamespaceLockInTx) - r.runner (db.Runner) is structurally
+	// identical to issueops.DBTX, so no adapter is needed.
+	if err := issueops.EnforceExclusiveLabelInTx(ctx, r.runner, table, issueID, label); err != nil {
+		return err
+	}
 	//nolint:gosec // G201: table is one of two hardcoded constants
 	result, err := r.runner.ExecContext(ctx,
 		fmt.Sprintf("INSERT IGNORE INTO %s (issue_id, label) VALUES (?, ?)", table),
