@@ -4014,49 +4014,66 @@ func (s *DoltStore) pullFromRemoteUnchecked(ctx context.Context, remote string) 
 // each route carries. Split from pullFromRemote so every successful route
 // funnels back through the is_blocked recompute.
 func (s *DoltStore) pullTransport(ctx context.Context, remote string) error {
+	_, err := s.pullTransportReporting(ctx, remote)
+	return err
+}
+
+// pullTransportReporting is pullTransport plus the transport's own account of
+// what it did. The CLI routes have none to give — `dolt pull` exits 0 whether
+// it merged or was already up to date, and its stdout is discarded — so they
+// report nothing; the SQL routes return what CALL DOLT_PULL (or the fallback's
+// CALL DOLT_MERGE) said. See pullReport for what that does and does not prove.
+func (s *DoltStore) pullTransportReporting(ctx context.Context, remote string) (pullReport, error) {
 	creds := s.credentialsForRemote(remote)
 	// Git-protocol remotes: use CLI to avoid MySQL connection timeout during transfer.
 	// Must check before remoteUser — Hosted Dolt SSH remotes have remoteUser set
 	// but still need CLI to avoid SQL connection timeout.
 	// Credentials are passed directly to the subprocess via cmd.Env.
 	if useCLI, err := s.prepareCLIRouteForGitProtocol(ctx, remote); err != nil {
-		return err
+		return pullReport{}, err
 	} else if useCLI {
 		// CLI pull leaves any conflicts in the working set; run the auto-resolver so
 		// git-protocol remotes get the same audit-only dependency / metadata repair
 		// as the SQL DOLT_PULL path (#4259).
-		return s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
+		return pullReport{}, s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
 	}
 	// Credential CLI routing: mirrors git-protocol path, including post-pull
 	// auto-resolution.
 	if useCLI, err := s.prepareCLIRouteForCredentials(ctx, remote, creds); err != nil {
-		return err
+		return pullReport{}, err
 	} else if useCLI {
-		return s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
+		return pullReport{}, s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
 	}
 	// Cloud auth CLI routing (GH#6), including post-pull auto-resolution.
 	if useCLI, err := s.prepareCLIRouteForCloudAuth(ctx, remote); err != nil {
-		return err
+		return pullReport{}, err
 	} else if useCLI {
-		return s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
+		return pullReport{}, s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
 	}
 	// Local file:// pulls intentionally stay on the SQL path. The matching CLI
 	// guard is a push-only optimization; SQL pull keeps pullWithAutoResolve in
 	// charge of metadata-only conflict repair.
+	var report pullReport
 	if s.remoteUser != "" && remote == s.remote {
-		return withRemoteOperationEnv(creds, s.isS3Remote(ctx, remote), func() error {
-			if err := s.pullWithAutoResolve(ctx, remote, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
+		err := withRemoteOperationEnv(creds, s.isS3Remote(ctx, remote), func() error {
+			var err error
+			report, err = s.pullWithAutoResolveReporting(ctx, remote, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch)
+			if err != nil {
 				return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 			}
 			return nil
 		})
+		return report, err
 	}
-	return withRemoteOperationEnv(nil, s.isS3Remote(ctx, remote), func() error {
-		if err := s.pullWithAutoResolve(ctx, remote, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
+	err := withRemoteOperationEnv(nil, s.isS3Remote(ctx, remote), func() error {
+		var err error
+		report, err = s.pullWithAutoResolveReporting(ctx, remote, "CALL DOLT_PULL(?, ?)", remote, s.branch)
+		if err != nil {
 			return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 		}
 		return nil
 	})
+	return report, err
 }
 
 // pullWithAutoResolve executes a DOLT_PULL query with long timeout and auto-resolves
@@ -4091,12 +4108,24 @@ func (s *DoltStore) openLongTimeoutConn() (*sql.DB, error) {
 // fallback targets it directly, so pulls from non-default remotes (PullRemote,
 // federation peers) no longer fall back to s.remote.
 func (s *DoltStore) pullWithAutoResolve(ctx context.Context, remote string, query string, args ...any) error {
-	return s.withCircuitWrite(ctx, func(ctx context.Context) error {
-		return s.pullWithAutoResolveUnchecked(ctx, remote, query, args...)
-	})
+	_, err := s.pullWithAutoResolveReporting(ctx, remote, query, args...)
+	return err
 }
 
-func (s *DoltStore) pullWithAutoResolveUnchecked(ctx context.Context, remote string, query string, args ...any) error {
+// pullWithAutoResolveReporting is pullWithAutoResolve plus the row the pull (or
+// the fetch+merge fallback) returned — the engine's own account of whether
+// anything merged. See pullReport.
+func (s *DoltStore) pullWithAutoResolveReporting(ctx context.Context, remote string, query string, args ...any) (pullReport, error) {
+	var report pullReport
+	err := s.withCircuitWrite(ctx, func(ctx context.Context) error {
+		var err error
+		report, err = s.pullWithAutoResolveUnchecked(ctx, remote, query, args...)
+		return err
+	})
+	return report, err
+}
+
+func (s *DoltStore) pullWithAutoResolveUnchecked(ctx context.Context, remote string, query string, args ...any) (pullReport, error) {
 	// Audited for be-b0am's fresh-connection branch hazard: NOT safe, and all
 	// three callers share it. Passing a branch argument does not avoid it.
 	//
@@ -4120,18 +4149,18 @@ func (s *DoltStore) pullWithAutoResolveUnchecked(ctx context.Context, remote str
 	// sites. The fix is s.pinStoreBranch(ctx, db) before BeginTx below.
 	db, err := s.openLongTimeoutConn()
 	if err != nil {
-		return err
+		return pullReport{}, err
 	}
 	defer db.Close()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return pullReport{}, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	// Allow commits with conflicts so we can inspect and resolve them.
 	if _, err := tx.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 1"); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
+		return pullReport{}, fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
 	}
 	// bd-6dnrw.4: a merge that violates a foreign key (e.g. one clone deleted
 	// an issue while another inserted a child row referencing it) rolls the
@@ -4141,10 +4170,16 @@ func (s *DoltStore) pullWithAutoResolveUnchecked(ctx context.Context, remote str
 	// to commit anything the repair did not fully clear.
 	if _, err := tx.ExecContext(ctx, "SET @@dolt_force_transaction_commit = 1"); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("failed to set dolt_force_transaction_commit: %w", err)
+		return pullReport{}, fmt.Errorf("failed to set dolt_force_transaction_commit: %w", err)
 	}
 
-	pullErr := schema.DrainCall(ctx, tx, query, args...)
+	// DOLT_PULL's row is the engine's only in-band account of what the pull
+	// did: `dolt pull` on the CLI exits 0 whether it merged or was already up
+	// to date, and so does this CALL. Capturing it costs nothing — the drain
+	// is identical — and it is the difference between a caller that knows
+	// nothing arrived and one that only knows no error occurred (ga-bq9zd).
+	pullRow, pullErr := schema.CallReturningRow(ctx, tx, query, args...)
+	report := parseMergeReport(pullRow)
 
 	// GH#3144: When DOLT_PULL fails because upstream branch tracking is not
 	// configured in repo_state.json (common when remote was added via
@@ -4153,17 +4188,25 @@ func (s *DoltStore) pullWithAutoResolveUnchecked(ctx context.Context, remote str
 	if pullErr != nil && isBranchTrackingError(pullErr) {
 		if err := schema.DrainCall(ctx, tx, "CALL DOLT_FETCH(?, ?)", remote, s.branch); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("fetch from %s/%s: %w", remote, s.branch, err)
+			return pullReport{}, fmt.Errorf("fetch from %s/%s: %w", remote, s.branch, err)
 		}
 		trackingRef := remote + "/" + s.branch
-		mergeErr := schema.DrainCall(ctx, tx, "CALL DOLT_MERGE(?)", trackingRef)
+		// The merge, not the pull, is now what happened — so its row replaces
+		// the failed pull's report rather than adding to it.
+		mergeRow, mergeErr := schema.CallReturningRow(ctx, tx, "CALL DOLT_MERGE(?)", trackingRef)
+		report = parseMergeReport(mergeRow)
+		// Retained deliberately even though DOLT_MERGE reports the ordinary
+		// no-op as a MESSAGE with a nil error (measured: "Everything
+		// up-to-date" and "cannot fast forward from a to b. a is ahead of b
+		// already" both arrive that way). Dolt's squash path still returns
+		// "Already up to date." as a real error, and that is what this catches.
 		if mergeErr != nil && strings.Contains(mergeErr.Error(), "up to date") {
 			mergeErr = nil
 		}
 		pullErr = mergeErr
 	}
 
-	return s.settleMergeInTx(ctx, tx, pullErr)
+	return report, s.settleMergeInTx(ctx, tx, pullErr)
 }
 
 // settleMergeInTx finishes a pull/merge that ran in tx: it auto-resolves the
