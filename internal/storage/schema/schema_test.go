@@ -1177,9 +1177,9 @@ DELETE FROM schema_migrations WHERE version = %d;
 // no-op its wisp half when wisp_comments is absent. A bare
 // CREATE INDEX ... ON wisp_comments would fail at PREPARE ("table not found")
 // and brick the first writable open. The durable comments half still runs.
-// AllMigrationsSQL is main-source only (it never creates wisp_comments), so
-// applying it already runs 0056 against an absent wisp_comments; the isolated
-// re-apply then asserts the no-op explicitly.
+// The seed below drops wisp_comments before re-applying 0056 in isolation:
+// the bundle itself does create the table (main-plane 0021), so the absent
+// case has to be staged rather than assumed.
 func TestMigration0056NoopsWithoutWispCommentsThroughDoltCLI(t *testing.T) {
 	testutil.RequireDoltBinary(t)
 
@@ -1207,6 +1207,49 @@ DELETE FROM schema_migrations WHERE version = %d;
 	// index name; a composite spans three STATISTICS rows).
 	requireDoltCount(t, dir,
 		`SELECT COUNT(DISTINCT INDEX_NAME) AS c FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND INDEX_NAME = 'idx_comments_issue_created_id'`, "1")
+}
+
+// TestMigration0065NoopsWithoutWispCommentsThroughDoltCLI is what licenses
+// cliSubstituteAssumesWispTables: the fresh-bundle substitute for 0065 is a
+// bare MODIFY that aborts the batch with "table not found" on a database that
+// never synced wisp_comments (#4695/#4176), so replay callers use the frozen
+// source text instead -- and this pins that the frozen text really does
+// tolerate the absent table rather than merely being assumed to. A missing
+// table makes the INFORMATION_SCHEMA probe yield NULL, and IF(NULL = 1, ...)
+// takes the 'SELECT 1' branch.
+func TestMigration0065NoopsWithoutWispCommentsThroughDoltCLI(t *testing.T) {
+	testutil.RequireDoltBinary(t)
+
+	dir := filepath.Join(t.TempDir(), "widen-wisp-comments-no-wisps")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create no-wisps dir: %v", err)
+	}
+	runDoltCommand(t, dir, "init", "--name", "test", "--email", "test@example.com")
+	runDoltSQL(t, dir, AllMigrationsSQL())
+
+	seedSQL := fmt.Sprintf(`
+DROP TABLE IF EXISTS wisp_comments;
+DELETE FROM schema_migrations WHERE version = %d;
+`, LatestVersion())
+	migrationSQL, err := mainSource.files.ReadFile("migrations/0065_widen_wisp_comments_text.up.sql")
+	if err != nil {
+		t.Fatalf("read 0065 migration: %v", err)
+	}
+	runDoltSQL(t, dir, seedSQL+"\n"+string(migrationSQL))
+
+	requireDoltCount(t, dir,
+		`SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wisp_comments'`, "0")
+
+	// Control: the same absent table under the registered substitute is the
+	// failure this test exists to route around. Without it, "the frozen text
+	// tolerates it" would be indistinguishable from "nothing here can fail".
+	substitute := cliCompatibleMigrationSQL("0065_widen_wisp_comments_text.up.sql", string(migrationSQL))
+	if substitute == string(migrationSQL) {
+		t.Fatal("0065 has no registered CLI substitute; this test's control is vacuous")
+	}
+	if err := runDoltSQLExpectingError(t, dir, substitute); err == nil {
+		t.Fatal("0065 CLI substitute unexpectedly succeeded against an absent wisp_comments")
+	}
 }
 
 func TestMigration0053RepairsRigWispsThroughDoltCLI(t *testing.T) {
@@ -1598,16 +1641,17 @@ ALTER TABLE dependencies DROP COLUMN id;
 			if err != nil {
 				t.Fatalf("read %s: %v", f.name, err)
 			}
-			if f.version == 53 {
-				// The registered CLI substitute (cliMigration0053RepairRigWisps)
-				// assumes every wisp_* table already exists -- true for a
-				// fresh AllMigrationsSQL() bundle, where the ignored sequence's
-				// final committed shape is all that matters, but not here:
-				// this test's ordering deliberately matches real MigrateUp
-				// (main before ignored), so at this point only wisps and
-				// wisp_dependencies exist yet. The raw frozen text's own
-				// @has_wisps/@has_wisp_labels/... guards handle that correctly
-				// (proven already by TestMigration0053NoopsWithoutWispTablesThroughDoltCLI),
+			if cliSubstituteAssumesWispTables(f.name) {
+				// These substitutes assume every wisp_* table already exists
+				// -- true for a fresh AllMigrationsSQL() bundle, where the
+				// ignored sequence's final committed shape is all that
+				// matters, but not here: this test's ordering deliberately
+				// matches real MigrateUp (main before ignored), so at this
+				// point only wisps and wisp_dependencies exist yet. The raw
+				// frozen text's own guards handle that correctly (0053's
+				// @has_wisps/@has_wisp_labels/... proven by
+				// TestMigration0053NoopsWithoutWispTablesThroughDoltCLI;
+				// 0065's by TestMigration0065NoopsWithoutWispCommentsThroughDoltCLI),
 				// so use it unsubstituted here.
 				b.WriteString(string(data))
 			} else {
@@ -1880,6 +1924,7 @@ func TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities(t *testing.T)
 		// statement is in the bundle.
 		"ALTER TABLE issues ADD COLUMN storage_class VARCHAR(16);",
 		"ALTER TABLE wisps ADD COLUMN storage_class VARCHAR(16);",
+		"ALTER TABLE wisp_comments MODIFY COLUMN text LONGTEXT NOT NULL;",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("AllMigrationsSQL missing direct CLI DDL %q", want)
@@ -1894,6 +1939,10 @@ func TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities(t *testing.T)
 		// on upgraded databases. Only the main series is bundled, so this
 		// token can only come from that file's source text.
 		"COLUMN_NAME = 'storage_class'",
+		// Likewise 0065's guard variable. The generic check that no NEW
+		// migration reaches the bundle with a prepared ALTER lives in
+		// cli_prepared_ddl.go; these stay as per-migration anchors.
+		"@wisp_comments_needs_fix",
 	} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("AllMigrationsSQL contains source prepared-DDL guard %q", forbidden)
@@ -1958,6 +2007,21 @@ func runDoltSQL(t *testing.T, dir, query string) {
 		t.Fatalf("write dolt sql file: %v", err)
 	}
 	runDoltCommand(t, dir, "sql", "-f", sqlFile)
+}
+
+// runDoltSQLExpectingError runs query the same way runDoltSQL does but returns
+// the error instead of failing the test, so a caller can assert that a
+// statement really is rejected.
+func runDoltSQLExpectingError(t *testing.T, dir, query string) error {
+	t.Helper()
+	sqlFile := filepath.Join(t.TempDir(), "migration-bundle.sql")
+	if err := os.WriteFile(sqlFile, []byte(query), 0o644); err != nil {
+		t.Fatalf("write dolt sql file: %v", err)
+	}
+	cmd := exec.Command("dolt", "sql", "-f", sqlFile)
+	cmd.Dir = dir
+	_, err := cmd.CombinedOutput()
+	return err
 }
 
 func queryDoltCSV(t *testing.T, dir, query string) []map[string]string {
