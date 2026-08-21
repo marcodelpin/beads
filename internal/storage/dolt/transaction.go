@@ -35,7 +35,6 @@ type doltTransaction struct {
 	// role: it deliberately drops wisp_* tables because they are dolt-ignored.
 	wroteRegularDep bool
 	wroteWispDep    bool
-	lifecycle       bool
 	// journalPinned records that ignoredTx IS regularTx because the events
 	// journal collapsed the two planes into one transaction, so the finish path
 	// must not commit or roll it back a second time.
@@ -124,7 +123,7 @@ func (s *DoltStore) runInIssueLifecycleTransaction(
 		var callbackErr error
 		err := run(ctx, func(sqlTx *sql.Tx) error {
 			invoked = true
-			tx := &doltTransaction{regularTx: sqlTx, ignoredTx: sqlTx, store: s, lifecycle: true}
+			tx := &doltTransaction{regularTx: sqlTx, ignoredTx: sqlTx, store: s}
 			if callbackErr = fn(tx); callbackErr != nil {
 				return callbackErr
 			}
@@ -532,7 +531,26 @@ func (t *doltTransaction) SearchIssueIDs(ctx context.Context, query string, filt
 }
 
 // SearchIssues searches for issues within the transaction.
-// Supports the same filter fields as DoltStore.SearchIssues (bd-v6v8).
+//
+// It is a SECOND filter builder, hand-rolled here because issueops' shared one
+// merges issues and wisps over a single *sql.Tx while this transaction splits
+// those tiers across regularTx/ignoredTx (see txFor). Being a second builder is
+// the hazard: a field it does not implement is not refused, it is IGNORED, and
+// the caller gets plausible wrong rows with no error.
+//
+// This builder does NOT honor the following IssueFilter fields, all of which
+// the store-level DoltStore.SearchIssues does (measured against it on one
+// fixture, 2026-08-20): Statuses, ExcludeLabels, LabelPattern, LabelRegex,
+// IsBlocked, StartedAfter/StartedBefore, the AfterID/AfterCreatedAt keyset
+// cursor, SortBy/SortDesc (results are always priority ASC, created_at DESC),
+// and MaxRows/MaxRowsSource (the defensive row cap is not enforced). It also
+// never hydrates Issue.Labels, so SkipLabels=false does not get labels. Callers
+// needing any of those must use the store-level search. Tracked as siblings of
+// ga-1huib.8; the fix that removes the divergence for good is deleting this
+// builder in favor of the shared one, not adding fields to it one at a time.
+//
+// IncludeDependencies IS honored (ga-1huib.8), through the same bulk read
+// issueops uses.
 func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
 	table := "issues"
 	if filter.Ephemeral != nil && *filter.Ephemeral {
@@ -870,9 +888,45 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 		}
 		issues = append(issues, issue)
 	}
+	if err := t.hydrateSearchDependencies(ctx, depTable, filter, issues); err != nil {
+		return nil, err
+	}
 	return issues, nil
 }
 
+// hydrateSearchDependencies populates Issue.Dependencies when the filter asked
+// for it, using the same bulk read issueops.SearchIssuesInTx uses so the two
+// backends answer IncludeDependencies from one implementation. Issues with no
+// edges keep a nil slice; the map simply has no entry for them.
+func (t *doltTransaction) hydrateSearchDependencies(ctx context.Context, depTable string, filter types.IssueFilter, issues []*types.Issue) error {
+	if !filter.IncludeDependencies || len(issues) == 0 {
+		return nil
+	}
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = issue.ID
+	}
+	depsByID, err := issueops.GetDependencyRecordsForIssuesFromTableInTx(ctx, t.txFor(depTable), depTable, ids)
+	if err != nil {
+		return fmt.Errorf("search issues in tx: hydrate dependencies: %w", err)
+	}
+	for _, issue := range issues {
+		if deps, ok := depsByID[issue.ID]; ok {
+			issue.Dependencies = deps
+		}
+	}
+	return nil
+}
+
+// UpdateIssue applies field updates and records the "updated" history event,
+// which is what the store-level DoltStore.UpdateIssue records for the same
+// change and what embeddedTransaction.UpdateIssue records here. Wrapping an
+// update in a transaction must not change its audit trail: a consumer cannot
+// see which backend or which call shape it got, so a transaction-only silence
+// shows up as a user's own edits missing from the history of their own issue.
+// The eventless variant exists for demotion (ephemeral_routing.go), which
+// copies the historical event stream and appends one demotion event of its
+// own; a generic update is not that case.
 func (t *doltTransaction) UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error {
 	table := "issues"
 	if t.isActiveWisp(ctx, id) {
@@ -889,11 +943,7 @@ func (t *doltTransaction) UpdateIssue(ctx context.Context, id string, updates ma
 		}
 	}
 
-	update := issueops.UpdateIssueWithoutEventInTx
-	if t.lifecycle {
-		update = issueops.UpdateIssueInTx
-	}
-	result, err := update(ctx, t.txFor(table), id, updates, actor)
+	result, err := issueops.UpdateIssueInTx(ctx, t.txFor(table), id, updates, actor)
 	if err != nil {
 		return wrapExecError("update issue in tx", err)
 	}
@@ -901,10 +951,8 @@ func (t *doltTransaction) UpdateIssue(ctx context.Context, id string, updates ma
 		return nil
 	}
 	t.dirty.MarkDirty(table)
-	if t.lifecycle {
-		_, _, eventTable, _ := issueops.WispTableRouting(table == "wisps")
-		t.dirty.MarkDirty(eventTable)
-	}
+	_, _, eventTable, _ := issueops.WispTableRouting(table == "wisps")
+	t.dirty.MarkDirty(eventTable)
 	return nil
 }
 
