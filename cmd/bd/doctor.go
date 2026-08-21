@@ -743,6 +743,15 @@ func runDiagnostics(path string) doctorResult {
 	labelWhitespaceCheck := convertWithCategory(doctor.CheckLabelWhitespaceWithStore(sharedStore), doctor.CategoryData)
 	result.Checks = append(result.Checks, labelWhitespaceCheck)
 
+	// Check 10e: label vocabulary (bd label define/undefine/defined) --
+	// undefined labels in use (when labels.vocabulary != open) and
+	// case-variant clusters (e.g. Backend/backend) across all labels
+	// regardless of mode. Warn-only, same reasoning as 10c/10d: neither is
+	// auto-fixable, and this ships into workspaces that may already carry
+	// both.
+	labelVocabularyCheck := convertWithCategory(doctor.CheckLabelVocabularyWithStore(sharedStore), doctor.CategoryData)
+	result.Checks = append(result.Checks, labelVocabularyCheck)
+
 	// Check 11: Claude integration
 	claudeCheck := convertWithCategory(doctor.CheckClaude(path), doctor.CategoryIntegration)
 	result.Checks = append(result.Checks, claudeCheck)

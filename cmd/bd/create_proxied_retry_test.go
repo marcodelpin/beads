@@ -185,3 +185,4 @@ func (f *fakeUOW) DependencyUseCase() domain.DependencyUseCase               { r
 func (f *fakeUOW) LabelUseCase() domain.LabelUseCase                         { return &fakeCreateLabelUC{} }
 func (f *fakeUOW) CommentUseCase() domain.CommentUseCase                     { return &fakeCreateCommentUC{} }
 func (f *fakeUOW) RawSQLUseCase() domain.RawSQLUseCase                       { return nil }
+func (f *fakeUOW) LabelVocabularyUseCase() domain.LabelVocabularyUseCase     { return nil }
