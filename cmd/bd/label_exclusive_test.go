@@ -69,6 +69,18 @@ func TestExclusiveLabels_AddLabelRejected(t *testing.T) {
 	}
 }
 
+// The genuine two-concurrent-writer regression for the check-then-insert
+// race (bd-7u5ki) lives in internal/storage/domain/db
+// (TestLabelExclusiveConcurrentAddsSerializeToOneWinner), not here: *dolt.
+// DoltStore pins MaxOpenConns(1) for DOLT_CHECKOUT session affinity (see
+// newTestStoreSharedBranch), so two goroutines calling st.AddLabel on the
+// SAME store share ONE connection and are serialized by the pool itself
+// before either transaction can observe the other's uncommitted state -
+// exactly the shape that makes a race test pass whether or not the fix is
+// present. The domain/db suite's plain *sql.DB carries no such limit, so two
+// goroutines opening their own s.db.BeginTx() there create REAL overlapping
+// transactions against the same real Dolt server.
+
 func TestExclusiveLabels_UnconfiguredKeepsFreeFormLabels(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStoreWithPrefix(t, filepath.Join(t.TempDir(), "test.db"), "test")
