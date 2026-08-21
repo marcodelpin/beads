@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -532,346 +533,89 @@ func (t *doltTransaction) SearchIssueIDs(ctx context.Context, query string, filt
 
 // SearchIssues searches for issues within the transaction.
 //
-// It is a SECOND filter builder, hand-rolled here because issueops' shared one
-// merges issues and wisps over a single *sql.Tx while this transaction splits
-// those tiers across regularTx/ignoredTx (see txFor). Being a second builder is
-// the hazard: a field it does not implement is not refused, it is IGNORED, and
-// the caller gets plausible wrong rows with no error.
+// The WHERE clause, the ORDER BY, the row bound and the label/dependency
+// hydration all come from the SHARED implementation the store-level searches
+// use (sqlbuild.BuildIssueFilterClauses, sqlbuild.OrderBy,
+// issueops.EffectiveSearchLimit/EnforceMaxRowsCap,
+// issueops.GetLabelsForIssuesFromTableInTx). This used to be a second,
+// hand-rolled filter builder, and that was the whole defect: a field the second
+// builder did not implement was not refused, it was IGNORED, and the caller got
+// plausible wrong rows with no error (ga-v1nuj — Statuses, ExcludeLabels,
+// LabelPattern, LabelRegex, IsBlocked, StartedAfter/StartedBefore,
+// SortBy/SortDesc, MaxRows and the AfterID/AfterCreatedAt keyset cursor were all
+// accepted and dropped; labels were never hydrated at all). A new filter field
+// now reaches this path for free, which is the point of not having a second
+// builder.
 //
-// This builder does NOT honor the following IssueFilter fields, all of which
-// the store-level DoltStore.SearchIssues does (measured against it on one
-// fixture, 2026-08-20): Statuses, ExcludeLabels, LabelPattern, LabelRegex,
-// IsBlocked, StartedAfter/StartedBefore, the AfterID/AfterCreatedAt keyset
-// cursor, SortBy/SortDesc (results are always priority ASC, created_at DESC),
-// and MaxRows/MaxRowsSource (the defensive row cap is not enforced). It also
-// never hydrates Issue.Labels, so SkipLabels=false does not get labels. Callers
-// needing any of those must use the store-level search. Tracked as siblings of
-// ga-1huib.8; the fix that removes the divergence for good is deleting this
-// builder in favor of the shared one, not adding fields to it one at a time.
+// What still differs from the store-level search, deliberately and visibly:
 //
-// IncludeDependencies IS honored (ga-1huib.8), through the same bulk read
-// issueops uses.
+//   - NO WISP MERGE. This runs ONE table — issues, or wisps when the filter
+//     routes there — because doltTransaction splits the two tiers across
+//     regularTx/ignoredTx (see txFor) and the shared searchInTx merges them over
+//     a single *sql.Tx. So a default (SkipWisps=false) search here answers what
+//     a SkipWisps=true search answers at the store level. That is a structural
+//     difference in the transaction, not a dropped filter field, and merging the
+//     tiers is its own change with its own blast radius.
+//   - filter.Lite and filter.NoIDShrink are not read. Both describe HOW to
+//     fetch, not WHICH rows: ignoring Lite returns fully populated rows with
+//     IsLitePartial left false, which is exactly what that flag promises a
+//     caller may receive, and this path is always id-shrunk anyway. Neither can
+//     produce a wrong answer, so neither is worth a refusal.
+//   - filter.Offset is not read — nor is it read by issueops, so the store-level
+//     search ignores it too. Refusing it HERE would invent a divergence rather
+//     than remove one.
 func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
-	table := "issues"
+	tables := issueops.IssuesFilterTables
 	if filter.Ephemeral != nil && *filter.Ephemeral {
-		table = "wisps"
+		tables = issueops.WispsFilterTables
 	}
 	// If searching by IDs that are all ephemeral, use wisps table (bd-w2w)
 	if len(filter.IDs) > 0 && allEphemeral(filter.IDs) {
-		table = "wisps"
+		tables = issueops.WispsFilterTables
 	}
 
-	// Derive related table names from the main table
-	depTable := "dependencies"
-	labelTable := "labels"
-	if table == "wisps" {
-		depTable = "wisp_dependencies"
-		labelTable = "wisp_labels"
+	whereClauses, args, err := issueops.BuildIssueFilterClauses(query, filter, tables)
+	if err != nil {
+		return nil, err
 	}
-
-	whereClauses := []string{}
-	args := []interface{}{}
-
-	// Text search — optimized to avoid full-table scans (hq-319).
-	if query != "" {
-		lowerQuery := strings.ToLower(query)
-		if looksLikeIssueID(query) {
-			whereClauses = append(whereClauses, "(id = ? OR id LIKE ? OR LOWER(title) LIKE ?)")
-			args = append(args, lowerQuery, lowerQuery+"%", "%"+lowerQuery+"%")
-		} else {
-			whereClauses = append(whereClauses, "(LOWER(title) LIKE ? OR id LIKE ?)")
-			pattern := "%" + lowerQuery + "%"
-			args = append(args, pattern, pattern)
-		}
-	}
-
-	if filter.TitleSearch != "" {
-		whereClauses = append(whereClauses, "LOWER(title) LIKE ?")
-		args = append(args, "%"+strings.ToLower(filter.TitleSearch)+"%")
-	}
-	if filter.TitleContains != "" {
-		whereClauses = append(whereClauses, "LOWER(title) LIKE ?")
-		args = append(args, "%"+strings.ToLower(filter.TitleContains)+"%")
-	}
-	if filter.DescriptionContains != "" {
-		whereClauses = append(whereClauses, "LOWER(description) LIKE ?")
-		args = append(args, "%"+strings.ToLower(filter.DescriptionContains)+"%")
-	}
-	if filter.NotesContains != "" {
-		whereClauses = append(whereClauses, "LOWER(notes) LIKE ?")
-		args = append(args, "%"+strings.ToLower(filter.NotesContains)+"%")
-	}
-	if filter.ExternalRefContains != "" {
-		whereClauses = append(whereClauses, "LOWER(external_ref) LIKE ?")
-		args = append(args, "%"+strings.ToLower(filter.ExternalRefContains)+"%")
-	}
-	if filter.ExternalRef != nil {
-		whereClauses = append(whereClauses, "external_ref = ?")
-		args = append(args, *filter.ExternalRef)
-	}
-
-	// Status
-	if filter.Status != nil {
-		whereClauses = append(whereClauses, "status = ?")
-		args = append(args, *filter.Status)
-	}
-	if len(filter.ExcludeStatus) > 0 {
-		placeholders := make([]string, len(filter.ExcludeStatus))
-		for i, s := range filter.ExcludeStatus {
-			placeholders[i] = "?"
-			args = append(args, string(s))
-		}
-		whereClauses = append(whereClauses, fmt.Sprintf("status NOT IN (%s)", strings.Join(placeholders, ",")))
-	}
-
-	if len(filter.ExcludeTypes) > 0 {
-		placeholders := make([]string, len(filter.ExcludeTypes))
-		for i, tp := range filter.ExcludeTypes {
-			placeholders[i] = "?"
-			args = append(args, string(tp))
-		}
-		//nolint:gosec // G201: table is hardcoded to "issues" or "wisps"
-		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT id FROM %s WHERE issue_type NOT IN (%s))", table, strings.Join(placeholders, ",")))
-	}
-
-	// Priority
-	if filter.Priority != nil {
-		whereClauses = append(whereClauses, "priority = ?")
-		args = append(args, *filter.Priority)
-	}
-	if filter.PriorityMin != nil {
-		whereClauses = append(whereClauses, "priority >= ?")
-		args = append(args, *filter.PriorityMin)
-	}
-	if filter.PriorityMax != nil {
-		whereClauses = append(whereClauses, "priority <= ?")
-		args = append(args, *filter.PriorityMax)
-	}
-
-	if filter.IssueType != nil {
-		//nolint:gosec // G201: table is hardcoded to "issues" or "wisps"
-		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT id FROM %s WHERE issue_type = ?)", table))
-		args = append(args, *filter.IssueType)
-	}
-
-	// Assignee
-	if filter.Assignee != nil {
-		whereClauses = append(whereClauses, "assignee = ?")
-		args = append(args, *filter.Assignee)
-	}
-
-	// Date ranges
-	if filter.CreatedAfter != nil {
-		whereClauses = append(whereClauses, "created_at > ?")
-		args = append(args, filter.CreatedAfter.Format(time.RFC3339))
-	}
-	if filter.CreatedBefore != nil {
-		whereClauses = append(whereClauses, "created_at < ?")
-		args = append(args, filter.CreatedBefore.Format(time.RFC3339))
-	}
-	if filter.UpdatedAfter != nil {
-		whereClauses = append(whereClauses, "updated_at > ?")
-		args = append(args, filter.UpdatedAfter.Format(time.RFC3339))
-	}
-	if filter.UpdatedBefore != nil {
-		whereClauses = append(whereClauses, "updated_at < ?")
-		args = append(args, filter.UpdatedBefore.Format(time.RFC3339))
-	}
-	if filter.ClosedAfter != nil {
-		whereClauses = append(whereClauses, "closed_at > ?")
-		args = append(args, filter.ClosedAfter.Format(time.RFC3339))
-	}
-	if filter.ClosedBefore != nil {
-		whereClauses = append(whereClauses, "closed_at < ?")
-		args = append(args, filter.ClosedBefore.Format(time.RFC3339))
-	}
-	if filter.DeferAfter != nil {
-		whereClauses = append(whereClauses, "defer_until > ?")
-		args = append(args, filter.DeferAfter.Format(time.RFC3339))
-	}
-	if filter.DeferBefore != nil {
-		whereClauses = append(whereClauses, "defer_until < ?")
-		args = append(args, filter.DeferBefore.Format(time.RFC3339))
-	}
-	if filter.DueAfter != nil {
-		whereClauses = append(whereClauses, "due_at > ?")
-		args = append(args, filter.DueAfter.Format(time.RFC3339))
-	}
-	if filter.DueBefore != nil {
-		whereClauses = append(whereClauses, "due_at < ?")
-		args = append(args, filter.DueBefore.Format(time.RFC3339))
-	}
-
-	// Empty/null checks
-	if filter.EmptyDescription {
-		whereClauses = append(whereClauses, "(description IS NULL OR description = '')")
-	}
-	if filter.NoAssignee {
-		whereClauses = append(whereClauses, "(assignee IS NULL OR assignee = '')")
-	}
-	if filter.NoLabels {
-		//nolint:gosec // G201: labelTable is hardcoded to "labels" or "wisp_labels"
-		whereClauses = append(whereClauses, fmt.Sprintf("id NOT IN (SELECT DISTINCT issue_id FROM %s)", labelTable))
-	}
-
-	// Label filtering (AND)
-	if len(filter.Labels) > 0 {
-		for _, label := range filter.Labels {
-			//nolint:gosec // G201: labelTable is hardcoded to "labels" or "wisp_labels"
-			whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT issue_id FROM %s WHERE label = ?)", labelTable))
-			args = append(args, label)
-		}
-	}
-
-	// Label filtering (OR)
-	if len(filter.LabelsAny) > 0 {
-		placeholders := make([]string, len(filter.LabelsAny))
-		for i, label := range filter.LabelsAny {
-			placeholders[i] = "?"
-			args = append(args, label)
-		}
-		//nolint:gosec // G201: labelTable is hardcoded to "labels" or "wisp_labels"
-		whereClauses = append(whereClauses, fmt.Sprintf("id IN (SELECT issue_id FROM %s WHERE label IN (%s))", labelTable, strings.Join(placeholders, ", ")))
-	}
-
-	// ID filtering
-	if len(filter.IDs) > 0 {
-		placeholders := make([]string, len(filter.IDs))
-		for i, id := range filter.IDs {
-			placeholders[i] = "?"
-			args = append(args, id)
-		}
-		whereClauses = append(whereClauses, fmt.Sprintf("id IN (%s)", strings.Join(placeholders, ", ")))
-	}
-
-	if filter.IDPrefix != "" {
-		whereClauses = append(whereClauses, "id LIKE ?")
-		args = append(args, filter.IDPrefix+"%")
-	}
-	if filter.SpecIDPrefix != "" {
-		whereClauses = append(whereClauses, "spec_id LIKE ?")
-		args = append(args, filter.SpecIDPrefix+"%")
-	}
-
-	// Source repo
-	if filter.SourceRepo != nil {
-		whereClauses = append(whereClauses, "source_repo = ?")
-		args = append(args, *filter.SourceRepo)
-	}
-
-	// Ephemeral filtering (when querying issues table with explicit ephemeral filter)
-	if filter.Ephemeral != nil {
-		if *filter.Ephemeral {
-			whereClauses = append(whereClauses, "ephemeral = 1")
-		} else {
-			whereClauses = append(whereClauses, "(ephemeral = 0 OR ephemeral IS NULL)")
-		}
-	}
-
-	// Pinned filtering
-	if filter.Pinned != nil {
-		if *filter.Pinned {
-			whereClauses = append(whereClauses, "pinned = 1")
-		} else {
-			whereClauses = append(whereClauses, "(pinned = 0 OR pinned IS NULL)")
-		}
-	}
-
-	// Template filtering
-	if filter.IsTemplate != nil {
-		if *filter.IsTemplate {
-			whereClauses = append(whereClauses, "is_template = 1")
-		} else {
-			whereClauses = append(whereClauses, "(is_template = 0 OR is_template IS NULL)")
-		}
-	}
-
-	// Parent filtering
-	if filter.ParentID != nil {
-		parentID := *filter.ParentID
-		//nolint:gosec // G201: depTable is hardcoded to "dependencies" or "wisp_dependencies"
-		whereClauses = append(whereClauses, fmt.Sprintf("(id IN (SELECT issue_id FROM %s WHERE type = 'parent-child' AND %s = ?) OR (id LIKE CONCAT(?, '.%%') AND id NOT IN (SELECT issue_id FROM %s WHERE type = 'parent-child')))", depTable, issueops.DepTargetExpr, depTable))
-		args = append(args, parentID, parentID)
-	}
-
-	// No-parent filtering
-	if filter.NoParent {
-		//nolint:gosec // G201: depTable is hardcoded to "dependencies" or "wisp_dependencies"
-		whereClauses = append(whereClauses, fmt.Sprintf("id NOT IN (SELECT issue_id FROM %s WHERE type = 'parent-child')", depTable))
-	}
-
-	// Molecule type filtering
-	if filter.MolType != nil {
-		whereClauses = append(whereClauses, "mol_type = ?")
-		args = append(args, string(*filter.MolType))
-	}
-
-	// Wisp type filtering
-	if filter.WispType != nil {
-		whereClauses = append(whereClauses, "wisp_type = ?")
-		args = append(args, string(*filter.WispType))
-	}
-
-	// Time-based scheduling filters
-	if filter.Deferred {
-		whereClauses = append(whereClauses, "(defer_until IS NOT NULL OR status = ?)")
-		args = append(args, types.StatusDeferred)
-	}
-	if filter.Overdue {
-		whereClauses = append(whereClauses, "due_at IS NOT NULL AND due_at < ? AND status != ?")
-		args = append(args, time.Now().UTC().Format(time.RFC3339), types.StatusClosed)
-	}
-
-	// Metadata existence check
-	if filter.HasMetadataKey != "" {
-		if err := storage.ValidateMetadataKey(filter.HasMetadataKey); err != nil {
-			return nil, err
-		}
-		whereClauses = append(whereClauses, "JSON_EXTRACT(metadata, ?) IS NOT NULL")
-		args = append(args, storage.JSONMetadataPath(filter.HasMetadataKey))
-	}
-
-	// Metadata field equality filters
-	if len(filter.MetadataFields) > 0 {
-		metaKeys := make([]string, 0, len(filter.MetadataFields))
-		for k := range filter.MetadataFields {
-			metaKeys = append(metaKeys, k)
-		}
-		sort.Strings(metaKeys)
-		for _, k := range metaKeys {
-			if err := storage.ValidateMetadataKey(k); err != nil {
-				return nil, err
-			}
-			whereClauses = append(whereClauses, "JSON_UNQUOTE(JSON_EXTRACT(metadata, ?)) = ?")
-			args = append(args, storage.JSONMetadataPath(k), filter.MetadataFields[k])
-		}
-	}
-
 	whereSQL := ""
 	if len(whereClauses) > 0 {
 		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
+	// A page bound is only pushed under an order the query can express (the rule
+	// issueops.searchTableInTxT states): a Go-side sort key renders no ORDER BY,
+	// and a LIMIT with no ORDER BY does not return the first n rows, it returns n
+	// rows. Under such a key the query scans the whole matching set and the bound
+	// is applied below, after the order exists.
+	goSideSort := sqlbuild.IsGoSideSort(filter.SortBy)
+	eff := issueops.EffectiveSearchLimit(filter.Limit, filter.MaxRows)
 	limitSQL := ""
-	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf(" LIMIT %d", filter.Limit)
+	if eff > 0 && !goSideSort {
+		limitSQL = fmt.Sprintf(" LIMIT %d", eff)
 	}
 
-	//nolint:gosec // G201: table is hardcoded, whereSQL is parameterized
-	rows, err := t.txFor(table).QueryContext(ctx, fmt.Sprintf(`
-		SELECT id FROM %s %s ORDER BY priority ASC, created_at DESC %s
-	`, table, whereSQL, limitSQL), args...)
+	//nolint:gosec // G201: table name is a fixed constant, whereSQL is parameterized
+	rows, err := t.txFor(tables.Main).QueryContext(ctx, fmt.Sprintf(
+		`SELECT id FROM %s %s %s %s`,
+		tables.Main, whereSQL, sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, ""), limitSQL), args...)
 	if err != nil {
 		return nil, wrapQueryError("search issues in tx", err)
 	}
 
 	var ids []string
+	seen := make(map[string]struct{})
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			_ = rows.Close()
 			return nil, wrapScanError("search issues in tx", err)
 		}
+		// GH#3567: a label/dependency subquery can repeat a row.
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
@@ -879,6 +623,13 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 		return nil, wrapQueryError("search issues in tx: rows iteration", err)
 	}
 	_ = rows.Close()
+
+	if goSideSort {
+		sort.SliceStable(ids, func(i, j int) bool { return sqlbuild.LessID(ids[i], ids[j], filter.SortDesc) })
+		if eff > 0 && len(ids) > eff {
+			ids = ids[:eff]
+		}
+	}
 
 	var issues []*types.Issue
 	for _, id := range ids {
@@ -888,10 +639,47 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 		}
 		issues = append(issues, issue)
 	}
-	if err := t.hydrateSearchDependencies(ctx, depTable, filter, issues); err != nil {
+	if err := t.hydrateSearchLabels(ctx, tables, filter, issues); err != nil {
+		return nil, err
+	}
+	if err := t.hydrateSearchDependencies(ctx, tables.Dependencies, filter, issues); err != nil {
+		return nil, err
+	}
+
+	// Trim to the caller's page before the cap check, exactly as
+	// issueops.searchInTx does: the cap is a statement about the rows actually
+	// handed back, and eff can exceed filter.Limit when MaxRows sized the bound.
+	if filter.Limit > 0 && len(issues) > filter.Limit {
+		issues = issues[:filter.Limit]
+	}
+	if err := issueops.EnforceMaxRowsCap(len(issues), filter.MaxRows, filter.MaxRowsSource); err != nil {
 		return nil, err
 	}
 	return issues, nil
+}
+
+// hydrateSearchLabels populates Issue.Labels from the tier the search ran
+// against, using the same bulk read issueops.searchInTx uses. SkipLabels is the
+// caller's opt-out; without this the transaction answered every search with
+// unlabeled issues while the store-level search labeled them (ga-v1nuj).
+func (t *doltTransaction) hydrateSearchLabels(ctx context.Context, tables issueops.FilterTables, filter types.IssueFilter, issues []*types.Issue) error {
+	if filter.SkipLabels || len(issues) == 0 {
+		return nil
+	}
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = issue.ID
+	}
+	labelsByID, err := issueops.GetLabelsForIssuesFromTableInTx(ctx, t.txFor(tables.Labels), tables.Labels, ids)
+	if err != nil {
+		return fmt.Errorf("search issues in tx: hydrate labels: %w", err)
+	}
+	for _, issue := range issues {
+		if labels, ok := labelsByID[issue.ID]; ok {
+			issue.Labels = labels
+		}
+	}
+	return nil
 }
 
 // hydrateSearchDependencies populates Issue.Dependencies when the filter asked
