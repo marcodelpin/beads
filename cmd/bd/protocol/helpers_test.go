@@ -49,6 +49,8 @@ func TestMain(m *testing.M) {
 
 func testMainInner(m *testing.M) int {
 	os.Setenv("BEADS_TEST_MODE", "1")
+	// AD-01 (be-c5p): allow protocol tests to connect to the spawned test server.
+	os.Setenv("BEADS_TEST_SERVER", "1")
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: %v, skipping Dolt tests\n", err)
 	} else {
@@ -173,6 +175,10 @@ type workspace struct {
 	dir string
 	bd  string
 	t   *testing.T
+	// prefix is the id prefix this workspace was initialized with — the
+	// interchange tests need it to mint well-formed ids in hand-written
+	// JSONL fixtures.
+	prefix string
 }
 
 // testPrefix returns a unique prefix with a random suffix to ensure each test
@@ -206,6 +212,7 @@ func newWorkspace(t *testing.T) *workspace {
 
 	prefix := testPrefix(t)
 	w.run("init", "--prefix", prefix, "--quiet")
+	w.prefix = prefix
 	return w
 }
 
@@ -215,10 +222,12 @@ func (w *workspace) env() []string {
 		"HOME=" + w.dir,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"BEADS_TEST_MODE=1",
-		// HOME is the t.TempDir workspace, so the telemetry emitter writes its
-		// lock + event files under it — asynchronously, which races TempDir
-		// cleanup and fails the test with "directory not empty". Tests never
-		// want to emit metrics anyway.
+		// Metrics off. Two reasons, one of them a test-stability bug: bd spawns a
+		// DETACHED `bd send-metrics` child that writes $HOME/.beads/eventsData
+		// after the parent exits, and HOME here is the t.TempDir() workspace — so
+		// the child races Go's RemoveAll and the test fails its own cleanup with
+		// "unlinkat …: directory not empty". (The other reason: a test suite
+		// should not ship telemetry.)
 		"BD_DISABLE_METRICS=1",
 	}
 	if testDoltPort > 0 {

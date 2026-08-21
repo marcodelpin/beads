@@ -1,3 +1,8 @@
+-- Use INFORMATION_SCHEMA introspection to build the column intersection at
+-- runtime: survives both legacy Go-schema residual columns on `issues` (which
+-- aren't on `wisps`) and future canonical additions without re-touching this
+-- migration. Supersedes the earlier fork-side hardcoded 51-column INSERT
+-- (bda-y3o) — upstream's dynamic approach is strictly more robust.
 SET @shared_cols = (
     SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY ORDINAL_POSITION SEPARATOR ', ')
     FROM INFORMATION_SCHEMA.COLUMNS

@@ -222,6 +222,9 @@ func TestRunLintCheck_SkipLintFlag(t *testing.T) {
 }
 
 func TestRunFmtCheck_Formatted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real gofmt subprocess; skipped in -short (bda-9l1)")
+	}
 	dir := t.TempDir()
 	// Write a properly formatted Go file
 	err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644)
@@ -242,6 +245,9 @@ func TestRunFmtCheck_Formatted(t *testing.T) {
 }
 
 func TestRunFmtCheck_Unformatted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real gofmt subprocess; skipped in -short (bda-9l1)")
+	}
 	dir := t.TempDir()
 	// Write a poorly formatted Go file (extra spaces, no newline)
 	err := os.WriteFile(filepath.Join(dir, "bad.go"), []byte("package main\nfunc  main( )  {  }\n"), 0644)

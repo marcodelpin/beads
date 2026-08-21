@@ -111,9 +111,20 @@ func installAgents(env agentsEnv, integration agentsIntegration) error {
 		_, _ = fmt.Fprintf(env.stderr, "Warning: %s is a symlink%s; skipping managed section injection to preserve link mode/content. Update the target file directly, or replace the symlink with a regular file and re-run '%s'.\n", agentsFile, targetHint, integration.setupCommand)
 		env.markSkipped()
 		return nil
-	} else if err != nil && !os.IsNotExist(err) {
-		_, _ = fmt.Fprintf(env.stderr, "Error: failed to inspect %s: %v\n", env.agentsPath, err)
-		return err
+	} else if err != nil {
+		if !os.IsNotExist(err) {
+			_, _ = fmt.Fprintf(env.stderr, "Error: failed to inspect %s: %v\n", env.agentsPath, err)
+			return err
+		}
+		// A "not exists" here is benign on the happy path (we are about to create
+		// the file), but on Windows it also covers a path that traverses a regular
+		// file, where POSIX would have said ENOTDIR. Disambiguate so both
+		// platforms fail early with the same message instead of falling through to
+		// a confusing temp-file write error.
+		if notDirErr := ancestorNotDirErr(env.agentsPath); notDirErr != nil {
+			_, _ = fmt.Fprintf(env.stderr, "Error: failed to inspect %s: %v\n", env.agentsPath, notDirErr)
+			return notDirErr
+		}
 	}
 
 	profile := resolveProfile(integration)

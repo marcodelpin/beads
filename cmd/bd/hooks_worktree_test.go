@@ -11,6 +11,9 @@ import (
 )
 
 func TestConfigureBeadsHooksPath_WorktreeUsesMainRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-hooks-worktree-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +84,9 @@ func TestConfigureBeadsHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 }
 
 func TestConfigureSharedHooksPath_WorktreeUsesMainRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-shared-hooks-worktree-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +157,9 @@ func TestConfigureSharedHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 }
 
 func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-reset-hooks-worktree-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +234,9 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 }
 
 func TestConfigureBeadsHooksPath_NormalRepoUnchanged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-hooks-normal-test-*")
 	if err != nil {
 		t.Fatal(err)

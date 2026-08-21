@@ -10,6 +10,7 @@ import (
 
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -365,7 +366,7 @@ func promptForkExclude(upstreamURL string, quiet bool) (bool, error) {
 // Use setupGitExclude instead for new code.
 func setupGlobalGitIgnore(homeDir string, projectPath string, verbose bool) error {
 	// Check if user already has a global gitignore file configured
-	cmd := exec.Command("git", "config", "--global", "core.excludesfile")
+	cmd := execx.GitCommand("config", "--global", "core.excludesfile")
 	output, err := cmd.Output()
 
 	var ignorePath string

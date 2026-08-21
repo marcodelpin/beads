@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func testMemories(n int) map[string]string {
-	m := make(map[string]string, n)
+func testMemories(n int) map[string]primedMemory {
+	m := make(map[string]primedMemory, n)
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("mem-%02d", i)
-		m[key] = fmt.Sprintf("insight body for %s", key)
+		m[key] = primedMemory{content: fmt.Sprintf("insight body for %s", key)}
 	}
 	return m
 }
@@ -53,7 +53,7 @@ func TestRenderPrimeMemoriesCountCap(t *testing.T) {
 
 func TestRenderPrimeMemoriesCharCapStopsAtWholeMemoryBoundary(t *testing.T) {
 	memories := testMemories(4)
-	oneEntry := len(fmt.Sprintf("### mem-00\n%s\n\n", memories["mem-00"]))
+	oneEntry := len(fmt.Sprintf("### mem-00\n%s\n\n", memories["mem-00"].content))
 	out := renderPrimeMemories(memories, false, 0, oneEntry+5)
 
 	if !strings.Contains(out, "showing 1 of 4") {
@@ -68,7 +68,7 @@ func TestRenderPrimeMemoriesCharCapStopsAtWholeMemoryBoundary(t *testing.T) {
 }
 
 func TestRenderPrimeMemoriesCharCapAlwaysEmitsFirstMemory(t *testing.T) {
-	memories := map[string]string{"huge": strings.Repeat("x", 4096)}
+	memories := map[string]primedMemory{"huge": {content: strings.Repeat("x", 4096)}}
 	out := renderPrimeMemories(memories, false, 0, 100)
 
 	if !strings.Contains(out, "### huge\n") {
@@ -106,7 +106,7 @@ func TestRenderPrimeMemoriesBannerNamesOnlyBindingCap(t *testing.T) {
 	// One entry is roughly: "### mem-00\ninsight body for mem-00\n\n" ~ 40+ bytes.
 	// Set char cap to allow only 1 entry so char cap fires, not count cap.
 	memories := testMemories(5)
-	firstEntry := fmt.Sprintf("### mem-00\n%s\n\n", memories["mem-00"])
+	firstEntry := fmt.Sprintf("### mem-00\n%s\n\n", memories["mem-00"].content)
 	smallCharBudget := len(firstEntry) + 5 // fits exactly 1 entry
 
 	out := renderPrimeMemories(memories, false, 50, smallCharBudget)

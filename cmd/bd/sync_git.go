@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/doltremote"
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // isGitRepo checks if the current working directory is in a git repository.
@@ -17,14 +17,14 @@ import (
 // before calling other git functions to prevent hangs on Windows (GH#727).
 // Does not use RepoContext because it's a prerequisite check for git availability.
 func isGitRepo() bool {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd := execx.GitCommand("rev-parse", "--git-dir")
 	return cmd.Run() == nil
 }
 
 // isBareGitRepo checks if the current git repository is bare.
 // Returns false when not in a git repository.
 func isBareGitRepo() bool {
-	cmd := exec.Command("git", "rev-parse", "--is-bare-repository")
+	cmd := execx.GitCommand("rev-parse", "--is-bare-repository")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
@@ -72,7 +72,7 @@ func gitHasAnyRemotes() bool {
 
 // gitOriginGetURL returns the URL for the origin git remote.
 func gitOriginGetURL() (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := execx.GitCommand("remote", "get-url", "origin")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -102,15 +102,26 @@ func gitOriginHasDoltDataRef() bool {
 }
 
 func gitRemoteHasDoltDataRef(remote string) bool {
+	hasData, err := gitRemoteHasDoltDataRefStatus(remote)
+	return err == nil && hasData
+}
+
+// gitOriginHasDoltDataRefStatus is the tri-state form: no data vs. unknown.
+func gitOriginHasDoltDataRefStatus() (bool, error) {
+	return gitRemoteHasDoltDataRefStatus("origin")
+}
+
+// A non-nil error means UNKNOWN, not "no data" — the bool is meaningless.
+func gitRemoteHasDoltDataRefStatus(remote string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", gitRemoteURLForLsRemote(remote), "refs/dolt/data")
+	cmd := execx.GitCommandContext(ctx, "ls-remote", gitRemoteURLForLsRemote(remote), "refs/dolt/data")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.Output()
 	if err != nil {
-		return false
+		return false, fmt.Errorf("probe refs/dolt/data on %s: %w", remote, err)
 	}
-	return strings.TrimSpace(string(output)) != ""
+	return strings.TrimSpace(string(output)) != "", nil
 }
 
 func gitRemoteURLForLsRemote(remote string) string {

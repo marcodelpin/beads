@@ -86,7 +86,7 @@ func metricsTestEnv(home string, extra ...string) []string {
 	base := bdEnv(home)
 	out := make([]string, 0, len(base)+len(extra)+1)
 	for _, e := range base {
-		if strings.HasPrefix(e, "BD_DISABLE_METRICS=") {
+		if strings.HasPrefix(e, "BD_DISABLE_METRICS=") || strings.HasPrefix(e, "DO_NOT_TRACK=") {
 			continue
 		}
 		out = append(out, e)
@@ -583,37 +583,6 @@ func TestMetricsRootVersionFlagSuppressesFirstRunNotice(t *testing.T) {
 	}
 }
 
-// TestInitProxiedServerRejectedNotYetImplemented asserts `bd init
-// --proxied-server` is rejected as "not yet implemented", keeping
-// proxied-server mode gated off so usesProxiedServer() is never true.
-func TestInitProxiedServerRejectedNotYetImplemented(t *testing.T) {
-	bd := buildEmbeddedBD(t)
-	home, err := testTempDir("bd-proxied-gate-home-*")
-	if err != nil {
-		t.Fatalf("temp home: %v", err)
-	}
-	repo, err := testTempDir("bd-proxied-gate-repo-*")
-	if err != nil {
-		t.Fatalf("temp repo: %v", err)
-	}
-	initGitRepoAt(t, repo)
-
-	cmd := exec.Command(bd, "init", "--non-interactive", "--quiet", "--proxied-server")
-	cmd.Dir = repo
-	cmd.Env = metricsTestEnv(home)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
-
-	if runErr == nil {
-		t.Fatalf("bd init --proxied-server unexpectedly succeeded; proxied-server mode must stay gated off\nstdout:\n%s", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), "not yet implemented") {
-		t.Errorf("bd init --proxied-server stderr = %q, want it to contain %q", stderr.String(), "not yet implemented")
-	}
-}
-
 // metrics off must not queue a usage event, honoring the "No usage data will be
 // collected or sent" promise even though metrics are still enabled for the
 // off invocation itself.
@@ -630,9 +599,13 @@ func TestMetricsOffEmitsNoEvent(t *testing.T) {
 	initGitRepoAt(t, repo)
 
 	// Establish the metrics-enabled baseline and confirm a normal command emits.
-	runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet")
+	initOut, initErr := runBdForMetrics(t, bd, repo, home, "init", "--non-interactive", "--quiet")
 	if got := allCommandEvents(t, home); len(got) == 0 {
-		t.Fatalf("precondition: metrics-enabled `bd init` produced no event; env may be misconfigured")
+		// Report what the child actually did. runBdForMetrics discards the exit
+		// code (`_ = cmd.Run()`), so "env may be misconfigured" was a guess that
+		// hid the real cause -- a failed `bd init` and a genuinely event-less one
+		// looked identical here (bda-4m1).
+		t.Fatalf("precondition: metrics-enabled `bd init` produced no event.\nstdout:\n%s\nstderr:\n%s", initOut, initErr)
 	}
 	if err := os.RemoveAll(filepath.Join(home, ".beads", "eventsData")); err != nil {
 		t.Fatalf("clear eventsData: %v", err)

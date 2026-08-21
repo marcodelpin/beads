@@ -12,6 +12,9 @@ import (
 )
 
 func TestReset_WorktreeFindsBeadsDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-reset-worktree-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +104,9 @@ func TestReset_WorktreeFindsBeadsDir(t *testing.T) {
 }
 
 func TestReset_WorktreeNoBeadsReturnsEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-reset-no-beads-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +156,9 @@ func TestReset_WorktreeNoBeadsReturnsEmpty(t *testing.T) {
 }
 
 func TestReset_WorktreeSubdirFindsBeadsDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir, err := os.MkdirTemp("", "beads-reset-subdir-test-*")
 	if err != nil {
 		t.Fatal(err)

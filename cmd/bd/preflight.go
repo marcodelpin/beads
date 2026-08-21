@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 )
@@ -429,7 +430,7 @@ func runBeadsPollutionCheck() CheckResult {
 		issuesPath = rel
 	}
 
-	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd := execx.GitCommand("rev-parse", "--abbrev-ref", "HEAD")
 	branchOut, err := branchCmd.Output()
 	if err != nil {
 		return CheckResult{
@@ -444,12 +445,12 @@ func runBeadsPollutionCheck() CheckResult {
 
 	var diffOutput []byte
 	if branch != "main" && branch != "HEAD" {
-		cmd := exec.Command("git", "diff", "origin/main...HEAD", "--", issuesPath)
+		cmd := execx.GitCommand("diff", "origin/main...HEAD", "--", issuesPath)
 		diffOutput, _ = cmd.Output()
 	} else {
-		cmd := exec.Command("git", "diff", "HEAD", "--", issuesPath)
+		cmd := execx.GitCommand("diff", "HEAD", "--", issuesPath)
 		out1, _ := cmd.Output()
-		cmd2 := exec.Command("git", "diff", "--cached", "--", issuesPath)
+		cmd2 := execx.GitCommand("diff", "--cached", "--", issuesPath)
 		out2, _ := cmd2.Output()
 		diffOutput = append(out1, out2...)
 	}
@@ -488,11 +489,11 @@ func runNixHashCheck() CheckResult {
 	command := "git diff HEAD -- go.sum"
 
 	// Check for unstaged changes to go.sum
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD", "--", "go.sum")
+	cmd := execx.GitCommand("diff", "--name-only", "HEAD", "--", "go.sum")
 	output, _ := cmd.Output()
 
 	// Check for staged changes to go.sum
-	stagedCmd := exec.Command("git", "diff", "--name-only", "--cached", "--", "go.sum")
+	stagedCmd := execx.GitCommand("diff", "--name-only", "--cached", "--", "go.sum")
 	stagedOutput, _ := stagedCmd.Output()
 
 	hasChanges := len(strings.TrimSpace(string(output))) > 0 || len(strings.TrimSpace(string(stagedOutput))) > 0

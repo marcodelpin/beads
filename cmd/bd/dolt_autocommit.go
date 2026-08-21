@@ -23,27 +23,72 @@ func transact(ctx context.Context, s storage.DoltStorage, commitMsg string, fn f
 }
 
 // transactHonoringAutoCommit wraps transactional CLI writes whose Dolt commit is
-// part of command auto-commit policy. In embedded batch/off modes the SQL
-// transaction still commits, but no Dolt version commit is created.
+// part of command auto-commit policy. In batch/off modes the SQL transaction
+// still commits, but no Dolt version commit is created — the blank message
+// makes StageAndCommit a no-op, in embedded and SQL-server mode alike
+// (bd-4wamg: batch used to be silently inert in server mode).
 func transactHonoringAutoCommit(ctx context.Context, s storage.DoltStorage, commitMsg string, fn func(tx storage.Transaction) error) error {
 	msg := commitMsg
 	committedExplicitly := strings.TrimSpace(msg) != ""
-	if isEmbeddedMode() {
-		mode, err := getDoltAutoCommitMode()
-		if err != nil {
-			return err
-		}
-		if mode != doltAutoCommitOn {
-			msg = ""
-			committedExplicitly = false
-		}
+	commitNow, err := writesCommitNow()
+	if err != nil {
+		return err
+	}
+	if !commitNow {
+		msg = ""
+		committedExplicitly = false
 	}
 
-	err := s.RunInTransaction(ctx, msg, fn)
+	err = s.RunInTransaction(ctx, msg, fn)
 	if err == nil && committedExplicitly {
 		commandDidExplicitDoltCommit = true
 	}
 	return err
+}
+
+// writesCommitNow reports whether a CLI write should create its Dolt version
+// commit as part of the write (mode "on"), rather than leaving it in the
+// working set for a later explicit commit point (batch/off; bd dolt commit).
+// An unset value means no Dolt store resolved a default (e.g. a non-Dolt
+// backend), where per-write version commits are the only behavior that
+// exists — treat it as "on".
+func writesCommitNow() (bool, error) {
+	if strings.TrimSpace(doltAutoCommit) == "" {
+		return true, nil
+	}
+	mode, err := getDoltAutoCommitMode()
+	if err != nil {
+		return false, err
+	}
+	return mode == doltAutoCommitOn, nil
+}
+
+// embeddedWritesCommitNow is writesCommitNow for the embedded-only commit
+// points (the PersistentPostRun working-set flush and create's post-write
+// flush). In SQL-server mode those flushes never run — mode "on" writes
+// version themselves inside the storage layer.
+func embeddedWritesCommitNow() (bool, error) {
+	if !isEmbeddedMode() {
+		return false, nil
+	}
+	return writesCommitNow()
+}
+
+// issueOpsContext applies command auto-commit policy to the context a write verb
+// hands the issue-operations facade. The facade creates its Dolt version commit
+// inside the storage layer, so batch mode cannot blank a commit message the way
+// transactHonoringAutoCommit does — it has to say so on the context instead.
+// This is mode-driven, not embedded-only: in SQL-server mode the storage
+// layer's per-write commit sites honor the same deferral (bd-4wamg).
+func issueOpsContext(ctx context.Context) (context.Context, error) {
+	commitNow, err := writesCommitNow()
+	if err != nil {
+		return nil, err
+	}
+	if commitNow {
+		return ctx, nil
+	}
+	return issueops.WithDeferredVersionCommit(ctx), nil
 }
 
 type doltAutoCommitParams struct {
@@ -79,6 +124,31 @@ func commitPendingIfEmbedded(ctx context.Context, st storage.DoltStorage, actor 
 		p.MessageOverride = formatDoltAutoCommitMessage(p.Command, actor, p.IssueIDs)
 	}
 	return maybeAutoCommitStore(ctx, st, p)
+}
+
+// commitConfigWrite commits the config table immediately after an
+// intentional config write (bd remember/forget, bd config set/unset).
+// Server modes only: maybeAutoCommit skips SQL-server modes entirely, and
+// generic Commit() excludes config (GH#2455) — so without this the write
+// strands the working set dirty and the next 'bd dolt pull' fails until a
+// manual flush (GH#4078). The commit is SCOPED to the config table, so a
+// concurrent operation's dirty tables are never swept. Embedded mode is a
+// no-op: its '-Am' auto-commit and the unflagged-writes sweep already
+// include config. Runs regardless of dolt.auto-commit mode — leaving the
+// config write uncommitted is the bug, not a batching feature (this
+// restores the v1.0.1 behavior from PR #3052).
+func commitConfigWrite(ctx context.Context, st storage.DoltStorage, command string) error {
+	if isEmbeddedMode() || st == nil {
+		return nil
+	}
+	if lm, ok := storage.UnwrapStore(st).(storage.LifecycleManager); ok && lm.IsClosed() {
+		return nil
+	}
+	msg := formatDoltAutoCommitMessage(command, getActor(), nil)
+	if err := st.CommitConfigOnly(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("committing config write: %w", err)
+	}
+	return nil
 }
 
 func maybeAutoCommitStore(ctx context.Context, st storage.DoltStorage, p doltAutoCommitParams) error {

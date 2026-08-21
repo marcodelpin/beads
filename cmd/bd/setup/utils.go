@@ -11,6 +11,32 @@ import (
 
 var errRefuseSymlinkWrite = errors.New("refusing to write through symlink")
 
+// ancestorNotDirErr returns a descriptive error when the nearest EXISTING
+// ancestor of path is not a directory, and nil otherwise.
+//
+// It disambiguates one platform difference. When a path traverses a regular
+// file, POSIX reports ENOTDIR, which os.IsNotExist correctly rejects. Windows
+// reports ERROR_PATH_NOT_FOUND, which Go maps to fs.ErrNotExist, making it
+// indistinguishable from a genuinely absent file by os.IsNotExist alone. A
+// caller that treats "not exists" as benign therefore fails OPEN on Windows and
+// only discovers the bad path later, at write time, with a confusing message.
+func ancestorNotDirErr(path string) error {
+	for p := filepath.Dir(path); ; {
+		info, err := os.Stat(p)
+		if err == nil {
+			if info.IsDir() {
+				return nil
+			}
+			return fmt.Errorf("%s is not a directory", p)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return nil
+		}
+		p = parent
+	}
+}
+
 // atomicWriteFile writes data to a file atomically using a unique temporary file.
 // This prevents race conditions when multiple processes write to the same file.
 // If path is a symlink, the write is refused; callers that deliberately want
@@ -24,6 +50,12 @@ func atomicWriteFile(path string, data []byte, perm ...os.FileMode) error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect path: %w", err)
 	}
+	// Deliberately NOT consulting ancestorNotDirErr here (audited in bda-8ll).
+	// This guard exists to refuse symlink write-through, not to validate the
+	// path: a not-exists is the normal case, since we are about to create the
+	// file. When the path traverses a regular file the fallthrough write fails
+	// anyway and names the path, so the only cost is a slightly less precise
+	// message - not worth an extra ancestor walk on every write.
 
 	return atomicWriteFileFollowingSymlink(path, data, perm...)
 }

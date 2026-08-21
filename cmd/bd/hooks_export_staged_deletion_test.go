@@ -43,6 +43,9 @@ func setupExportStagedDeletionRepo(t *testing.T) (repoDir, filePath string) {
 }
 
 func TestIsExportFileStagedForDeletion_StagedDeletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	repoDir, filePath := setupExportStagedDeletionRepo(t)
 
 	run := func(args ...string) {
@@ -73,6 +76,9 @@ func TestIsExportFileStagedForDeletion_NoStagedDeletion(t *testing.T) {
 }
 
 func TestIsExportFileStagedForDeletion_StagedModificationNotDeletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	repoDir, filePath := setupExportStagedDeletionRepo(t)
 
 	run := func(args ...string) {

@@ -121,20 +121,17 @@ func TestE2E_AutoStartedRepoLocalServerPersistsAcrossCommands(t *testing.T) {
 	}
 }
 
+// buildLifecycleTestBinary returns the path to a bd binary for subprocess
+// tests. Delegates to buildBDForInitTests (test_helpers_pure_test.go), which
+// shares ONE sync.Once-cached binary across every cmd/bd test helper using
+// the same build config (gms_pure_go, -buildvcs=false, ambient env) instead
+// of each helper rebuilding its own copy (bda-9l1).
 func buildLifecycleTestBinary(t *testing.T) string {
 	t.Helper()
-	pkgDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	bdBinary := filepath.Join(t.TempDir(), "bd")
-	cmd := exec.Command("go", "build", "-tags", "gms_pure_go", "-o", bdBinary, ".")
-	cmd.Dir = pkgDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
-	return bdBinary
+	// Shared once-per-process binary (honors BEADS_TEST_BD_BINARY) instead of
+	// a per-test go build — the in-test link steps dominated cmd/bd's wall
+	// clock (wy-4mtr0).
+	return buildBDForInitTests(t)
 }
 
 func runBDExecWithBinary(t *testing.T, bdBinary string, dir string, env []string, args ...string) (string, error) {

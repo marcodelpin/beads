@@ -14,7 +14,7 @@ import (
 func initExecTestDB(t *testing.T) string {
 	t.Helper()
 	tmpDir := createTempDirWithCleanup(t)
-	initCmd := exec.Command(testBD, "init", "--prefix", "test", "--quiet")
+	initCmd := exec.Command(buildBDForInitTests(t), "init", "--prefix", "test", "--quiet")
 	initCmd.Dir = tmpDir
 	initCmd.Env = os.Environ()
 	if out, err := initCmd.CombinedOutput(); err != nil {
@@ -26,7 +26,7 @@ func initExecTestDB(t *testing.T) string {
 // createExecTestIssue creates a test issue using the bd binary and returns the ID.
 func createExecTestIssue(t *testing.T, tmpDir, title string) string {
 	t.Helper()
-	createCmd := exec.Command(testBD, "create", title, "-p", "1", "--json")
+	createCmd := exec.Command(buildBDForInitTests(t), "create", title, "-p", "1", "--json")
 	createCmd.Dir = tmpDir
 	createCmd.Env = os.Environ()
 	out, err := createCmd.CombinedOutput()

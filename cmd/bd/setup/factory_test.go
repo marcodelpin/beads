@@ -371,6 +371,9 @@ func TestWrapperReturnsErrorOnFailure(t *testing.T) {
 	})
 
 	t.Run("RemoveFactory", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission tests when running as root (mode bits are not enforced)")
+		}
 		env := factoryEnv{agentsPath: filepath.Join(t.TempDir(), "AGENTS.md"), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
 		beadsSection := agents.EmbeddedBeadsSection()
 		if err := os.WriteFile(env.agentsPath, []byte(beadsSection), 0644); err != nil {

@@ -12,7 +12,12 @@ internal/testutil/fixtures/fixtures_test.go::TestLargeFromJSONL
 internal/storage/dolt/concurrent_test.go::TestHighContentionStress
 internal/storage/dolt/concurrent_test.go::TestConcurrentWorkQueueDrain
 internal/storage/dolt/lease_test.go::TestConcurrentHeartbeatReclaimClose
+internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentMergeOps_NoLostUpdate
 cmd/bd/prune_bench_test.go::TestPruneLargeFixture
+cmd/bd/update_metadata_race_test.go::TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys
+cmd/bd/note_race_test.go::TestNote_ConcurrentProcesses_NoLostNotes
+internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentMergeOps_NoLostUpdate
+internal/workapi/sweep_test.go::TestCandidateIDMatcherLargeFixture
 EOF
 )
 
@@ -24,13 +29,21 @@ while IFS=: read -r file line _; do
     continue
   fi
 
+  content=$(sed -n "${line}p" "$file")
+  if [[ "$content" =~ ^[[:space:]]*// ]]; then
+    continue
+  fi
+
   func=$(
     awk -v target="$line" '
-      NR <= target && /^func [A-Za-z0-9_]+\(/ {
+      NR > target { exit }
+      /^func [A-Za-z0-9_]+\(/ {
         current = $0
         sub(/^func /, "", current)
         sub(/\(.*/, "", current)
+        next
       }
+      current != "" && /^}/ { current = "" }
       END { print current }
     ' "$file"
   )
@@ -40,7 +53,7 @@ while IFS=: read -r file line _; do
     printf 'Disallowed testing.Short() at %s:%s in %s\n' "$file" "$line" "${func:-unknown}" >&2
     status=1
   fi
-done < <(find . -type f -name '*.go' -not -path './.git/*' -exec grep -n 'testing\.Short()' {} + || true)
+done < <(find . -type f -name '*.go' -not -path './.git/*' -not -path './.tmp/*' -exec grep -n 'testing\.Short()' {} + || true)
 
 if (( status != 0 )); then
   cat >&2 <<'EOF'

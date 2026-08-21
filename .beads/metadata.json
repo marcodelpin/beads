@@ -1,0 +1,8 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_host": "forgejo-mdp.mdp",
+  "dolt_database": "bda",
+  "project_id": "446e9f1e-ff6f-4129-a290-b8b17732fcff"
+}

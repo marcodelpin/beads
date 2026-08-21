@@ -6,10 +6,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+// countMemoriesInStore returns the number of kv.memory.* entries in the
+// store's config. Used by the fork-only auto-import guard to avoid
+// resurrecting deleted memories when the issues table is empty.
+func countMemoriesInStore(ctx context.Context, s storage.DoltStorage) (int, error) {
+	all, err := s.GetAllConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	prefix := kvPrefix + memoryPrefix
+	n := 0
+	for k := range all {
+		if strings.HasPrefix(k, prefix) {
+			n++
+		}
+	}
+	return n, nil
+}
 
 // jsonlImporter is implemented by stores that support single-transaction
 // JSONL import (currently EmbeddedDoltStore). Stores that don't implement
@@ -122,6 +141,22 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 	// Prefer single-transaction import (embedded mode) to avoid
 	// DOLT_COMMIT races with concurrent writers.
 	if importer, ok := s.(jsonlImporter); ok {
+		// Fork-only guard (P0): TotalIssues==0 is not enough — a database with
+		// 0 issues but >=1 memory IS populated, and re-importing the JSONL on
+		// every invocation will resurrect memories that were intentionally
+		// deleted (e.g. by 'bd memories --gc' or 'bd gc' memory prune).
+		// Scoped to the embedded path because:
+		//   1) the embedded ImportJSONLData replays full config including
+		//      memory keys, which is exactly the resurrection vector;
+		//   2) the server-mode fallback's emptiness is already enforced by
+		//      the upstream TotalIssues guard above, and applying this
+		//      memory check there breaks upstream's
+		//      TestMaybeAutoImportJSONL_ServerModeFallback_RunsWhenEmpty
+		//      because the test's fakeFallbackStore intentionally does not
+		//      implement GetAllConfig (panics on call).
+		if memCount, err := countMemoriesInStore(ctx, s); err == nil && memCount > 0 {
+			return
+		}
 		imported, err := importer.ImportJSONLData(ctx, issues, configEntries, "auto-import")
 		if err != nil {
 			writeAutoImportStamp(beadsDir, info)

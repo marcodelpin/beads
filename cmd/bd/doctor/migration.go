@@ -2,8 +2,8 @@ package doctor
 
 import (
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -107,7 +107,7 @@ func CheckPendingMigrations(path string) DoctorCheck {
 
 // hasGitRemote checks if the repository has a git remote
 func hasGitRemote(repoPath string) bool {
-	cmd := exec.Command("git", "remote")
+	cmd := execx.GitCommand("remote")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {

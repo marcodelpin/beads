@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/beads/cmd/bd/doctor/fix"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
@@ -196,7 +196,7 @@ func CheckUntrackedBeadsFiles(path string) DoctorCheck {
 	}
 
 	// Run git status --porcelain to find untracked files in .beads/
-	cmd := exec.Command("git", "status", "--porcelain", ".beads/")
+	cmd := execx.GitCommand("status", "--porcelain", ".beads/")
 	cmd.Dir = repoRoot
 	output, err := cmd.Output()
 	if err != nil {

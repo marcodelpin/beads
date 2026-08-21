@@ -199,31 +199,49 @@ func TestGenerateHookSection(t *testing.T) {
 func TestGenerateHookSection_Timeout(t *testing.T) {
 	section := generateHookSection("pre-push")
 
-	// Must use shell timeout command with configurable duration
+	// The duration is configurable but must be validated before it reaches a
+	// helper command line.
 	if !strings.Contains(section, "BEADS_HOOK_TIMEOUT") {
 		t.Error("section missing BEADS_HOOK_TIMEOUT env var")
 	}
 	if !strings.Contains(section, fmt.Sprintf("%d", hookTimeoutSeconds)) {
 		t.Errorf("section missing default timeout %d", hookTimeoutSeconds)
 	}
-	if !strings.Contains(section, "command -v timeout") {
-		t.Error("section missing timeout availability check")
+	if !strings.Contains(section, `*[^0-9]*`) && !strings.Contains(section, `*[!0-9]*`) {
+		t.Error("section missing positive-integer timeout validation")
 	}
-	if !strings.Contains(section, "command -v gtimeout") {
-		t.Error("section missing gtimeout fallback for macOS coreutils")
-	}
-	if !strings.Contains(section, "perl -e 'alarm shift; exec @ARGV'") {
-		t.Error("section missing perl alarm fallback for stock macOS")
-	}
-	if !strings.Contains(section, "_bd_used_perl=1") {
-		t.Error("section missing perl branch marker")
+	if !strings.Contains(section, "invalid BEADS_HOOK_TIMEOUT") {
+		t.Error("section missing invalid-timeout warning")
 	}
 
-	// Timeout exit code (124) must be handled gracefully — continue, don't block git
-	if !strings.Contains(section, "_bd_exit -eq 124") {
+	// A name match is insufficient: native Windows has an incompatible
+	// timeout.exe. Require a successful GNU identity probe for timeout or
+	// gtimeout before invoking it.
+	if !strings.Contains(section, "for _bd_timeout_candidate in timeout gtimeout") {
+		t.Error("section missing ordered timeout/gtimeout capability probes")
+	}
+	if !strings.Contains(section, `if _bd_timeout_version="$("$_bd_timeout_candidate" --version 2>/dev/null)"; then`) {
+		t.Error("section does not require a successful version probe")
+	}
+	if !strings.Contains(section, `"timeout (GNU coreutils) "*`) {
+		t.Error("section missing GNU coreutils identity check")
+	}
+	if !strings.Contains(section, `"$_bd_timeout_command" -- "$_bd_timeout"`) {
+		t.Error("section missing GNU timeout argv separator")
+	}
+	if !strings.Contains(section, "perl -e 'alarm shift; exec @ARGV' --") {
+		t.Error("section missing perl alarm fallback for stock macOS")
+	}
+	if !strings.Contains(section, "_bd_timeout_backend=perl") {
+		t.Error("section missing scoped perl backend marker")
+	}
+
+	// GNU deadline statuses and Perl SIGALRM are scoped to the backend that can
+	// synthesize them. The direct fallback must not swallow a natural 124/142.
+	if !strings.Contains(section, `"$_bd_exit" -eq 124`) {
 		t.Error("section missing timeout exit code handling")
 	}
-	if !strings.Contains(section, "[ $_bd_used_perl -eq 1 ] && [ $_bd_exit -eq 142 ]") {
+	if !strings.Contains(section, `"$_bd_timeout_backend" = perl`) || !strings.Contains(section, `"$_bd_exit" -eq 142`) {
 		t.Error("section missing perl-scoped SIGALRM timeout exit code handling")
 	}
 	if !strings.Contains(section, "timed out") {
@@ -236,12 +254,44 @@ func TestGenerateHookSection_Timeout(t *testing.T) {
 	}
 }
 
+func TestTrackedManagedHookSectionsMatchGenerator(t *testing.T) {
+	for _, hookName := range managedHookNames {
+		hookName := hookName
+		t.Run(hookName, func(t *testing.T) {
+			path := filepath.Join("..", "..", ".githooks", hookName)
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read tracked hook %s: %v", path, err)
+			}
+
+			tracked := string(content)
+			begin := strings.Index(tracked, hookSectionBeginLine())
+			if begin < 0 {
+				t.Fatalf("tracked hook missing %q", hookSectionBeginLine())
+			}
+			endMarker := hookSectionEndLine() + "\n"
+			relativeEnd := strings.Index(tracked[begin:], endMarker)
+			if relativeEnd < 0 {
+				t.Fatalf("tracked hook missing %q", hookSectionEndLine())
+			}
+			end := begin + relativeEnd + len(endMarker)
+
+			if got, want := tracked[begin:end], generateHookSection(hookName); got != want {
+				t.Fatalf("tracked managed section drifted from generator\nwant:\n%s\ngot:\n%s", want, got)
+			}
+			if strings.Count(tracked, hookSectionBeginPrefix) != 1 || strings.Count(tracked, hookSectionEndPrefix) != 1 {
+				t.Fatal("tracked hook must contain exactly one managed section")
+			}
+		})
+	}
+}
+
 // TestGenerateHookSection_DBNotInitialized verifies exit code 3 handling (GH#2449).
 func TestGenerateHookSection_DBNotInitialized(t *testing.T) {
 	section := generateHookSection("pre-commit")
 
 	// Exit code 3 = beads database not initialized; hook must continue gracefully
-	if !strings.Contains(section, "_bd_exit -eq 3") {
+	if !strings.Contains(section, `"$_bd_exit" -eq 3`) {
 		t.Error("section missing exit code 3 (DB not initialized) handling")
 	}
 	if !strings.Contains(section, "database not initialized") {
@@ -250,7 +300,7 @@ func TestGenerateHookSection_DBNotInitialized(t *testing.T) {
 
 	// After handling exit code 3, the effective exit must be 0 (success)
 	// Verify the pattern: set _bd_exit=0 after detecting code 3
-	if !strings.Contains(section, "if [ $_bd_exit -eq 3 ]; then") {
+	if !strings.Contains(section, `if [ "$_bd_exit" -eq 3 ]; then`) {
 		t.Error("section missing exit code 3 conditional")
 	}
 }
@@ -703,6 +753,9 @@ func TestUninstallHooksRemovesEmptyFile(t *testing.T) {
 // TestConfigureBeadsHooksPath_AbsolutePath verifies that core.hooksPath is set to
 // an absolute path so that git worktrees can find the hooks directory (GH#2414).
 func TestConfigureBeadsHooksPath_AbsolutePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	tmpDir := newGitRepo(t)
 	runInDir(t, tmpDir, func() {
 		// Create .beads/hooks/ directory
@@ -737,6 +790,9 @@ func TestConfigureBeadsHooksPath_AbsolutePath(t *testing.T) {
 // TestInstallHooksBeads_WorktreeAccess verifies that hooks installed with --beads
 // are accessible from a git worktree (GH#2414).
 func TestInstallHooksBeads_WorktreeAccess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (commit, worktree add/remove); skipped in -short (bda-9l1)")
+	}
 	tmpDir := newGitRepo(t)
 	runInDir(t, tmpDir, func() {
 		// Create .beads/ directory with metadata.json (needed for FindBeadsDir)
@@ -831,6 +887,9 @@ func setupBeadsDir(t *testing.T, repoDir string) string {
 // a local core.hooksPath that shadows the global one, silently killing global
 // hooks. The fix copies hooks from the effective directory before overriding.
 func TestInstallHooksBeads_PreservesGlobalHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
+	}
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))
@@ -894,6 +953,9 @@ func TestInstallHooksBeads_PreservesGlobalHooks(t *testing.T) {
 // default .git/hooks/ directory (both managed and non-managed) are preserved
 // when beads redirects core.hooksPath to .beads/hooks/.
 func TestInstallHooksBeads_PreservesDefaultGitHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	repoDir := newGitRepo(t)
 	runInDir(t, repoDir, func() {
 		hooksDir := filepath.Join(repoDir, ".git", "hooks")
@@ -1101,6 +1163,9 @@ func TestHooksNeedUpdate(t *testing.T) {
 // directory is symlinked when hooks are preserved from a husky-managed directory.
 // GH#3132 Bug 1: without this, hooks that source $(dirname "$0")/_/husky.sh fail.
 func TestInstallHooksBeads_HuskyV8Helper(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
+	}
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))
@@ -1188,6 +1253,9 @@ func TestInstallHooksBeads_HuskyV8Helper(t *testing.T) {
 // GH#3132 Bug 2: husky v9's h dispatcher uses dirname(dirname($0)) which breaks
 // when hooks are relocated from .husky/_/ to .beads/hooks/.
 func TestInstallHooksBeads_HuskyV9Shims(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
+	}
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))

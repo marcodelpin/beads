@@ -2,7 +2,7 @@ package doctor
 
 import (
 	"fmt"
-	"os/exec"
+	"github.com/steveyegge/beads/internal/execx"
 	"path/filepath"
 	"strings"
 )
@@ -85,7 +85,7 @@ func CheckTrackedRuntimeFiles(repoPath string) DoctorCheck {
 	repoRoot := resolvedBeadsRepoRoot(repoPath)
 
 	// Get all files tracked by git under .beads/
-	cmd := exec.Command("git", "ls-files", ".beads") // #nosec G204 - args are constructed from known parts
+	cmd := execx.GitCommand("ls-files", ".beads") // #nosec G204 - args are constructed from known parts
 	cmd.Dir = repoRoot
 	output, err := cmd.Output()
 	if err != nil {
@@ -212,7 +212,7 @@ func FixTrackedRuntimeFiles(repoPath string) error {
 	repoRoot := resolvedBeadsRepoRoot(repoPath)
 
 	// Get all files tracked by git under .beads/
-	cmd := exec.Command("git", "ls-files", ".beads") // #nosec G204 - args are constructed from known parts
+	cmd := execx.GitCommand("ls-files", ".beads") // #nosec G204 - args are constructed from known parts
 	cmd.Dir = repoRoot
 	output, err := cmd.Output()
 	if err != nil {
@@ -247,7 +247,7 @@ func FixTrackedRuntimeFiles(repoPath string) error {
 
 	// Untrack files (keeps local copies)
 	args := append([]string{"rm", "--cached", "--"}, toUntrack...)
-	cmd = exec.Command("git", args...) // #nosec G204 - args are constructed from known parts
+	cmd = execx.GitCommand(args...) // #nosec G204 - args are constructed from known parts
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to untrack files: %w\n%s", err, string(out))

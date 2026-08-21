@@ -24,7 +24,7 @@ func TestCLI_ReopenClearsDeferUntil(t *testing.T) {
 	id := createExecTestIssue(t, tmpDir, "Deferred then reopened")
 
 	// Defer the issue to far future
-	cmd := exec.Command(testBD, "update", id, "--defer", "+8760h") // 1 year
+	cmd := exec.Command(buildBDForInitTests(t), "update", id, "--defer", "+8760h") // 1 year
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -32,7 +32,7 @@ func TestCLI_ReopenClearsDeferUntil(t *testing.T) {
 	}
 
 	// Close it
-	cmd = exec.Command(testBD, "close", id)
+	cmd = exec.Command(buildBDForInitTests(t), "close", id)
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -40,7 +40,7 @@ func TestCLI_ReopenClearsDeferUntil(t *testing.T) {
 	}
 
 	// Reopen it
-	cmd = exec.Command(testBD, "reopen", id)
+	cmd = exec.Command(buildBDForInitTests(t), "reopen", id)
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -48,7 +48,7 @@ func TestCLI_ReopenClearsDeferUntil(t *testing.T) {
 	}
 
 	// Verify defer_until is cleared
-	cmd = exec.Command(testBD, "show", id, "--json")
+	cmd = exec.Command(buildBDForInitTests(t), "show", id, "--json")
 	cmd.Dir = tmpDir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()

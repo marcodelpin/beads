@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/execx"
 	internalgit "github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/domain"
 )
@@ -25,7 +26,7 @@ type gitRepositoryImpl struct {
 var _ domain.GitRepository = (*gitRepositoryImpl)(nil)
 
 func (r *gitRepositoryImpl) gitCmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := execx.GitCommandContext(ctx, args...)
 	cmd.Dir = r.workDir
 	return cmd
 }
@@ -200,7 +201,11 @@ func (r *gitRepositoryImpl) Commit(ctx context.Context, params domain.GitCommitP
 	if params.Message == "" {
 		return domain.GitCommitResult{}, fmt.Errorf("git: Commit: Message must not be empty")
 	}
-	args := []string{"commit"}
+	args := []string{}
+	if params.SkipHooks {
+		args = append(args, "-c", "core.hooksPath=")
+	}
+	args = append(args, "commit")
 	if params.NoVerify {
 		args = append(args, "--no-verify")
 	}

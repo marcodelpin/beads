@@ -8,6 +8,9 @@ import (
 )
 
 func TestIsBareGitRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	t.Run("returns true in bare repository", func(t *testing.T) {
 		repoDir := filepath.Join(t.TempDir(), "bare.git")
 		runGitForSyncTest(t, "", "init", "--bare", repoDir)
@@ -63,6 +66,9 @@ func TestIsBareGitRepo(t *testing.T) {
 }
 
 func TestGitOriginGetURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	t.Run("returns origin URL", func(t *testing.T) {
 		repoDir := t.TempDir()
 		bareDir := filepath.Join(t.TempDir(), "bare.git")
@@ -109,6 +115,9 @@ func TestGitOriginGetURL(t *testing.T) {
 }
 
 func TestGitOriginHasDoltDataRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
+	}
 	t.Run("returns false for nonexistent ref", func(t *testing.T) {
 		bareDir := filepath.Join(t.TempDir(), "bare.git")
 		runGitForSyncTest(t, "", "init", "--bare", bareDir)

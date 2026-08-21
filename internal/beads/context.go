@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/steveyegge/beads/internal/execx"
 	"github.com/steveyegge/beads/internal/git"
 )
 
@@ -171,7 +172,7 @@ func isExternalBeadsDir(beadsDir string) (bool, error) {
 // getGitCommonDirForPath returns the shared git directory for a path.
 // For worktrees, this returns the shared git directory (common to all worktrees).
 func getGitCommonDirForPath(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir")
+	cmd := execx.GitCommand("-C", path, "rev-parse", "--git-common-dir")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get git common dir for %s: %w", path, err)
@@ -206,7 +207,7 @@ func repoRootForBeadsDir(beadsDir string) string {
 
 // getRepoRootFromPath returns the git repository root for a given path.
 func getRepoRootFromPath(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")
+	cmd := execx.GitCommand("-C", path, "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get git root for %s: %w", path, err)
@@ -235,7 +236,7 @@ func getRepoRootFromPath(path string) (string, error) {
 // the correct repository (the one containing .beads/).
 func (rc *RepoContext) GitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	gitArgs := append([]string{"-c", "core.hooksPath="}, args...)
-	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	cmd := execx.GitCommandContext(ctx, gitArgs...)
 	cmd.Dir = rc.RepoRoot
 
 	// GH#2538: Ensure git uses the target repository, not the worktree we may be running from.
@@ -259,7 +260,7 @@ func (rc *RepoContext) GitCmd(ctx context.Context, args ...string) *exec.Cmd {
 //
 // If CWD is not in a git repository, cmd.Dir is left unset (uses process CWD).
 func (rc *RepoContext) GitCmdCWD(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := execx.GitCommandContext(ctx, args...)
 	if rc.CWDRepoRoot != "" {
 		cmd.Dir = rc.CWDRepoRoot
 	}
@@ -309,22 +310,40 @@ func isPathInSafeBoundary(path string) bool {
 		return false
 	}
 
-	// Allow OS-designated temp directories (e.g., /var/folders on macOS)
-	// On macOS, TempDir() returns paths under /var/folders which symlinks to /private/var/folders
-	tempDir := os.TempDir()
-	resolvedTemp, _ := filepath.EvalSymlinks(tempDir)
-	resolvedPath, _ := filepath.EvalSymlinks(absPath)
-	if resolvedTemp != "" && strings.HasPrefix(resolvedPath, resolvedTemp) {
-		return true
-	}
-	// Also check unresolved paths (in case symlink resolution fails)
-	if strings.HasPrefix(absPath, tempDir) {
-		return true
+	// Allow OS-designated temp directories (e.g., /var/folders on macOS, which
+	// symlinks to /private/var/folders). World-writable, so resolve symlinks
+	// before admitting: a symlink planted under the temp dir whose target
+	// escapes the boundary must be rejected, not followed into a system
+	// directory — same treatment as the /Users/Shared carve-out below
+	// (be-kghzr SEC-003 hardening).
+	// The carve-out must admit both spellings of the temp root: os.TempDir()
+	// itself (on macOS the symlinked /var/folders/... form) and its physical
+	// resolution (/private/var/folders/...). A caller-supplied path that has
+	// already been symlink-resolved arrives in the physical form and would
+	// otherwise skip this branch and be rejected by the /private deny prefix
+	// below.
+	tempDir := strings.TrimSuffix(os.TempDir(), "/")
+	physTempDir := strings.TrimSuffix(resolveLongestExistingAncestor(tempDir), "/")
+	if absPath == tempDir || strings.HasPrefix(absPath, tempDir+"/") ||
+		absPath == physTempDir || strings.HasPrefix(absPath, physTempDir+"/") {
+		return resolvedPathWithinRoot(absPath, tempDir)
 	}
 
 	// Allow /var/home as a valid user home directory (Fedora Silverblue, Bluefin, etc.)
 	if strings.HasPrefix(absPath, "/var/home/") {
 		return true
+	}
+
+	// Allow /var/tmp as the FHS-standard secondary temp directory (persists across
+	// reboots, unlike /tmp). This is distinct from the os.TempDir() carve-out
+	// above: a machine's build tooling can set GOTMPDIR to redirect Go's own
+	// test/compile temp dirs under /var/tmp even while os.TempDir() itself still
+	// reports /tmp, so t.TempDir() in a test binary can land here without the
+	// os.TempDir() check ever seeing it (be-odye4). Like /Users/Shared, /var/tmp is
+	// world-writable (drwxrwxrwt), so resolve symlinks before admitting (SEC-003):
+	// a symlink planted under it must not be followed into a rejected directory.
+	if absPath == "/var/tmp" || strings.HasPrefix(absPath, "/var/tmp/") {
+		return resolvedPathWithinRoot(absPath, "/var/tmp")
 	}
 
 	for _, prefix := range unsafePrefixes {

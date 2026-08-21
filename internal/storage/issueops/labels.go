@@ -133,6 +133,12 @@ func getLabelsIntoFromTable(ctx context.Context, tx DBTX, labelTable string, ids
 // transaction. Automatically routes to wisp tables if the ID is an active wisp.
 // Uses INSERT IGNORE for idempotency.
 func AddLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issueID, label, actor string) error {
+	// Reject an over-length label up front. The INSERT IGNORE below would
+	// otherwise silently truncate it to the VARCHAR(255) column, storing a label
+	// the caller never sent; a typed ErrFieldTooLong is the clean rejection.
+	if err := types.CheckFieldLen("label", label); err != nil {
+		return err
+	}
 	if labelTable == "" || eventTable == "" {
 		isWisp := IsActiveWispInTx(ctx, tx, issueID)
 		_, lt, et, _ := WispTableRouting(isWisp)
@@ -143,7 +149,7 @@ func AddLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issueID,
 			eventTable = et
 		}
 	}
-	if err := checkExclusiveLabelInTx(ctx, tx, labelTable, issueID, label); err != nil {
+	if err := EnforceExclusiveLabelInTx(ctx, tx, labelTable, issueID, label); err != nil {
 		return err
 	}
 	//nolint:gosec // G201: labelTable is from WispTableRouting ("labels" or "wisp_labels")
@@ -151,21 +157,45 @@ func AddLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issueID,
 		return fmt.Errorf("add label: %w", err)
 	}
 	comment := "Added label: " + label
-	//nolint:gosec // G201: eventTable is from WispTableRouting ("events" or "wisp_events")
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (id, issue_id, event_type, actor, comment) VALUES (?, ?, ?, ?, ?)`, eventTable),
-		NewEventID(), issueID, types.EventLabelAdded, actor, comment); err != nil {
+	if err := InsertDerivedEvent(ctx, tx, eventTable, AuxEvent{
+		IssueID:   issueID,
+		EventType: types.EventLabelAdded,
+		Actor:     actor,
+		Comment:   str(comment),
+	}); err != nil {
 		return fmt.Errorf("add label: record event: %w", err)
 	}
-	return nil
+	// A label is part of the bead snapshot, so a label write journals as an
+	// update carrying the complete post-mutation set.
+	return RecordEventInTx(ctx, tx, EventUpdate, issueID)
 }
 
-// checkExclusiveLabelInTx rejects the add when the label falls in a
+// EnforceExclusiveLabelInTx rejects the add when the label falls in a
 // configured exclusive namespace (labels.exclusive-prefixes, bd-7u5ki) the
 // issue already carries a different label in. It lives at the shared insert
-// choke point so every interactive mutation path — bd label add, bd update
-// --add-label, bd label propagate — gets the same guard. With no prefixes
-// configured (the default) only the config lookup runs.
-func checkExclusiveLabelInTx(ctx context.Context, tx DBTX, labelTable, issueID, label string) error {
+// choke point so every interactive mutation path - bd label add, bd update
+// --add-label, bd label propagate, bd set-state - gets the same guard. With
+// no prefixes configured (the default) only the config lookup runs.
+//
+// EXPORTED so internal/storage/domain/db.labelSQLRepositoryImpl.Insert (the
+// proxied/UOW write path's raw INSERT IGNORE) can call the SAME check the
+// classic AddLabelInTx uses, rather than duplicating it - db.Runner and this
+// package's DBTX are structurally identical (see blocked_state.go's DBTX
+// doc), so a *sql.Tx from the embedded path and a uow db.Runner both satisfy
+// this signature unchanged.
+//
+// ACQUIRES THE PER-(issueID, namespace) LOCK BEFORE READING existing labels,
+// closing the check-then-insert race the review of upstream PR #4757
+// (bd-7u5ki) found: two concurrent writers adding DIFFERENT labels into the
+// SAME exclusive namespace insert DIFFERENT primary keys in the labels
+// table, so neither commit conflicts with the other and both writers'
+// "no violation" read stays true forever. Rewriting the lock row's row_lock
+// cell forces both writers to collide on ONE shared cell instead, so Dolt's
+// commit-time merge surfaces a 1213/1205 serialization error for the loser -
+// withRetryTx/RunTx replay the WHOLE transaction against a fresh read, which
+// now observes the winner's committed label and correctly rejects it. See
+// migration 0066 (label_namespace_locks) for the full mechanism writeup.
+func EnforceExclusiveLabelInTx(ctx context.Context, tx DBTX, labelTable, issueID, label string) error {
 	raw, err := GetConfigInTx(ctx, tx, labelns.ConfigKey)
 	if err != nil {
 		return fmt.Errorf("add label: %w", err)
@@ -178,15 +208,36 @@ func checkExclusiveLabelInTx(ctx context.Context, tx DBTX, labelTable, issueID, 
 	if prefix == "" {
 		return nil
 	}
+	if err := acquireLabelNamespaceLockInTx(ctx, tx, issueID, prefix); err != nil {
+		return fmt.Errorf("add label: %w", err)
+	}
 	existing, err := GetLabelsInTx(ctx, tx, labelTable, issueID)
 	if err != nil {
 		return fmt.Errorf("add label: %w", err)
 	}
 	for _, have := range existing {
 		if have != label && labelns.Match(prefixes, have) == prefix {
-			return fmt.Errorf("cannot add label %q to %s: namespace %q is exclusive (%s) and the issue already has %q — remove it first, or swap in one step with 'bd label add --replace'",
+			return fmt.Errorf("cannot add label %q to %s: namespace %q is exclusive (%s) and the issue already has %q - remove it first, or swap in one step with 'bd label add --replace'",
 				label, issueID, prefix, labelns.ConfigKey, have)
 		}
+	}
+	return nil
+}
+
+// acquireLabelNamespaceLockInTx rewrites the (issueID, namespace) lock row's
+// row_lock cell to a fresh value, INSIDE the caller's transaction, mirroring
+// the issues/wisps row_lock CAS (see lease.go freshRowLock). The token's
+// value carries no meaning; the write's only job is to touch the SAME cell a
+// concurrent writer into the same namespace also touches, so the two
+// transactions collide at commit time instead of merging silently. Scoped to
+// (issueID, namespace) rather than the whole issue row so an unrelated
+// status/assignee update never collides with a label add, and vice versa.
+func acquireLabelNamespaceLockInTx(ctx context.Context, tx DBTX, issueID, namespace string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO label_namespace_locks (issue_id, namespace, row_lock) VALUES (?, ?, ?)
+		ON DUPLICATE KEY UPDATE row_lock = VALUES(row_lock)
+	`, issueID, namespace, freshRowLock()); err != nil {
+		return fmt.Errorf("acquire label namespace lock: %w", err)
 	}
 	return nil
 }
@@ -264,9 +315,13 @@ func RemoveLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issue
 		return fmt.Errorf("remove label: %w", err)
 	}
 	comment := "Removed label: " + label
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (id, issue_id, event_type, actor, comment) VALUES (?, ?, ?, ?, ?)`, eventTable),
-		NewEventID(), issueID, types.EventLabelRemoved, actor, comment); err != nil {
+	if err := InsertDerivedEvent(ctx, tx, eventTable, AuxEvent{
+		IssueID:   issueID,
+		EventType: types.EventLabelRemoved,
+		Actor:     actor,
+		Comment:   str(comment),
+	}); err != nil {
 		return fmt.Errorf("remove label: record event: %w", err)
 	}
-	return nil
+	return RecordEventInTx(ctx, tx, EventUpdate, issueID)
 }
