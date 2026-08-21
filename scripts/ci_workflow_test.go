@@ -1217,3 +1217,85 @@ func contains(items []string, want string) bool {
 	}
 	return false
 }
+
+// TestWorkflowsInstallPinnedDolt keeps the Dolt CLI under test pinned. Every
+// workflow used to install it by piping dolthub/dolt's releases/latest
+// install.sh, so the binary under test changed whenever upstream published —
+// including backports, which can move "latest" backwards. When Dolt 2.3.0
+// landed it regressed CALL DOLT_RESET('--hard'): roughly one freshly created
+// database in twenty comes up with the procedure permanently broken
+// ("Error 1105 (HY000): context canceled"), which made
+// TestFreshBootstrapHealIncarnation fail on a coin flip. See
+// scripts/ci/install-dolt.sh for the per-version measurements. The CLI is now
+// pinned to the same release as the container image, so the two halves of
+// every server-mode test (the per-test sql-server doltserver.Start launches,
+// and the shared container) can never drift apart.
+func TestWorkflowsInstallPinnedDolt(t *testing.T) {
+	workflowDir := filepath.Join(sourceRepoRoot(t), ".github", "workflows")
+	entries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installers := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yml" {
+			continue
+		}
+		path := filepath.Join(workflowDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(data)
+		if strings.Contains(body, "dolt/releases/latest") {
+			t.Errorf("%s installs dolt from releases/latest; use ./scripts/ci/install-dolt.sh so the "+
+				"binary under test is pinned", entry.Name())
+		}
+		installers += strings.Count(body, "scripts/ci/install-dolt.sh")
+	}
+	if installers == 0 {
+		t.Fatal("no workflow installs dolt via scripts/ci/install-dolt.sh — the pin is not wired up")
+	}
+}
+
+// TestPinnedDoltCLIMatchesContainerImage keeps the CLI pin and the sql-server
+// container pin on the same Dolt release. Server-mode tests run both at once
+// against the same databases; a drifting pair tests a combination no release
+// ever shipped.
+func TestPinnedDoltCLIMatchesContainerImage(t *testing.T) {
+	root := sourceRepoRoot(t)
+
+	installer, err := os.ReadFile(filepath.Join(root, "scripts", "ci", "install-dolt.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliVersion := captureOne(t, `(?m)^readonly version="([0-9]+\.[0-9]+\.[0-9]+)"$`, string(installer), "scripts/ci/install-dolt.sh")
+
+	common, err := os.ReadFile(filepath.Join(root, "internal", "testutil", "testdoltcommon.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageVersion := captureOne(t, `dolthub/dolt-sql-server:([0-9]+\.[0-9]+\.[0-9]+)`, string(common), "testdoltcommon.go:DoltDockerImage")
+
+	pullScript, err := os.ReadFile(filepath.Join(root, "scripts", "ci", "pull-dolt-image.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pullVersion := captureOne(t, `dolthub/dolt-sql-server:([0-9]+\.[0-9]+\.[0-9]+)`, string(pullScript), "scripts/ci/pull-dolt-image.sh")
+
+	if cliVersion != imageVersion || cliVersion != pullVersion {
+		t.Errorf("dolt pins disagree: CLI %s, DoltDockerImage %s, pull-dolt-image.sh %s",
+			cliVersion, imageVersion, pullVersion)
+	}
+}
+
+func captureOne(t *testing.T, pattern, body, source string) string {
+	t.Helper()
+
+	matches := regexp.MustCompile(pattern).FindStringSubmatch(body)
+	if matches == nil {
+		t.Fatalf("%s does not match %s", source, pattern)
+	}
+	return matches[1]
+}
