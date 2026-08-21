@@ -132,6 +132,68 @@ func runLabelListAllProxiedServer(ctx context.Context) error {
 	return nil
 }
 
+// runLabelRenameProxiedServer is the proxied-server counterpart of
+// DoltStore/EmbeddedDoltStore.RenameLabel. It has no atomic sweep primitive
+// of its own on this route: the proxied write surface exposes per-issue
+// LabelUseCase.AddLabel/RemoveLabel (and their wisp twins), not the raw
+// labels/wisp_labels tables, so a rename here is add-then-remove per issue -
+// the same N-issue fan-out shape label propagate already uses below (see the
+// comment on its own AddLabel/AddWispLabel branch).
+//
+// KNOWN PARITY GAP, recorded rather than hidden: the direct route emits one
+// EventLabelRenamed per issue (internal/storage/issueops/labels.go); this
+// route emits a label_removed/label_added PAIR per issue instead, because
+// LabelUseCase has no rename-shaped event to ask for. The rename semantics
+// (merge-on-collision, honest zero-carrier no-op, dry-run preview) are
+// identical on both routes; only the audit-trail SHAPE differs. Follow-up:
+// give domain.LabelUseCase its own rename primitive once one is needed badly
+// enough to justify the LabelSQLRepository surface it would require.
+func runLabelRenameProxiedServer(ctx context.Context, oldLabel, newLabel string) (renamed, merged int, err error) {
+	if uowProvider == nil {
+		return 0, 0, HandleError("proxied-server UOW provider not initialized")
+	}
+
+	err = uow.RunTx(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
+		oldPage, serr := uw.IssueUseCase().SearchIssues(ctx, "", types.IssueFilter{Labels: []string{oldLabel}})
+		if serr != nil {
+			return "", fmt.Errorf("searching issues with label %q: %w", oldLabel, serr)
+		}
+		if len(oldPage.Items) == 0 {
+			return "", nil
+		}
+		newPage, serr := uw.IssueUseCase().SearchIssues(ctx, "", types.IssueFilter{Labels: []string{newLabel}})
+		if serr != nil {
+			return "", fmt.Errorf("searching issues with label %q: %w", newLabel, serr)
+		}
+		alreadyNew := make(map[string]struct{}, len(newPage.Items))
+		for _, issue := range newPage.Items {
+			alreadyNew[issue.ID] = struct{}{}
+		}
+
+		for _, issue := range oldPage.Items {
+			if _, ok := alreadyNew[issue.ID]; ok {
+				merged++
+			}
+			var e error
+			if issue.Ephemeral {
+				if e = uw.LabelUseCase().AddWispLabel(ctx, issue.ID, newLabel, actor); e == nil { //nolint:forbidigo // rename fan-out; mirrors label propagate's same-shape waiver below, awaits a BatchApplier accessor
+					e = uw.LabelUseCase().RemoveWispLabel(ctx, issue.ID, oldLabel, actor) //nolint:forbidigo // rename fan-out; see above
+				}
+			} else {
+				if e = uw.LabelUseCase().AddLabel(ctx, issue.ID, newLabel, actor); e == nil { //nolint:forbidigo // rename fan-out; see above
+					e = uw.LabelUseCase().RemoveLabel(ctx, issue.ID, oldLabel, actor) //nolint:forbidigo // rename fan-out; see above
+				}
+			}
+			if e != nil {
+				return "", fmt.Errorf("rename label '%s' -> '%s' on %s: %w", oldLabel, newLabel, issue.ID, e)
+			}
+		}
+		renamed = len(oldPage.Items)
+		return fmt.Sprintf("bd: label rename '%s' -> '%s' (%d issues)", oldLabel, newLabel, renamed), nil
+	})
+	return renamed, merged, err
+}
+
 func runLabelPropagateProxiedServer(ctx context.Context, args []string) error {
 	label := strings.TrimSpace(args[1])
 	if label == "" {
