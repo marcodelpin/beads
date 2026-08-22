@@ -11,13 +11,14 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/storage/backendnames"
 )
 
 const ConfigFileName = "metadata.json"
 
 type Config struct {
 	Database string `json:"database"`
-	Backend  string `json:"backend,omitempty"` // Storage backend: "dolt" (default), "postgres", "mysql", or "sqlite". Read via GetBackend().
+	Backend  string `json:"backend,omitempty"` // Storage backend: "dolt" (default), a registered extension, or a legacy rejection tombstone. Read via GetBackend().
 
 	// Deletions configuration
 	DeletionsRetentionDays int `json:"deletions_retention_days,omitempty"` // 0 means use default (3 days)
@@ -34,19 +35,19 @@ type Config struct {
 	DoltServerTLS      bool   `json:"dolt_server_tls,omitempty"`      // Enable TLS for server connections (required for Hosted Dolt)
 	DoltDataDir        string `json:"dolt_data_dir,omitempty"`        // Custom dolt data directory (absolute path; default: .beads/dolt)
 	DoltRemotesAPIPort int    `json:"dolt_remotesapi_port,omitempty"` // Dolt remotesapi port for federation (default: 8080)
+	DoltTeamServer     bool   `json:"dolt_team_server,omitempty"`     // Schema is managed by beads-team-server (bts); bd never runs migrations (proxied-server mode only)
 	// Note: Password should be set via BEADS_DOLT_PASSWORD env var for security
 
-	// Postgres backend (backend="postgres"). Password is NEVER persisted; it
-	// comes from BEADS_PG_PASSWORD or BEADS_POSTGRES_URL.
-	PostgresDSN    string `json:"postgres_dsn,omitempty"`    // e.g. postgres://user@host:5432/db (no password)
-	PostgresSchema string `json:"postgres_schema,omitempty"` // per-workspace schema (search_path)
+	// Deprecated backend fields are retained only to round-trip metadata written by
+	// the short-lived PostgreSQL/MySQL implementations. They are not connection
+	// configuration for current builds; store selection rejects those backends.
+	PostgresDSN    string `json:"postgres_dsn,omitempty"`
+	PostgresSchema string `json:"postgres_schema,omitempty"`
+	MySQLDSN       string `json:"mysql_dsn,omitempty"`
+	MySQLDatabase  string `json:"mysql_database,omitempty"`
 
-	// MySQL backend (backend="mysql"). Password is NEVER persisted; it comes from
-	// BEADS_MYSQL_PASSWORD or BEADS_MYSQL_URL.
-	MySQLDSN      string `json:"mysql_dsn,omitempty"`      // e.g. user@tcp(host:3306)/ (no password)
-	MySQLDatabase string `json:"mysql_database,omitempty"` // per-workspace database (MySQL's isolation unit)
-
-	// SQLite backend (backend="sqlite"). File-based, embedded; no credentials.
+	// Deprecated: retained only to round-trip metadata written by the removed
+	// SQLite backend (backend="sqlite"); store selection rejects that backend.
 	SQLitePath string `json:"sqlite_path,omitempty"` // database file, relative to the beads dir (default beads.db)
 
 	// Project identity — unique ID generated at bd init time.
@@ -118,6 +119,35 @@ func Load(beadsDir string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	return &cfg, nil
+}
+
+// LoadForDiscovery reads workspace metadata without migrating or rewriting it.
+//
+// Store admission uses this only to classify a workspace before a command can
+// open storage. In particular, legacy config.json remains in place so a failed
+// admission cannot turn a recoverable old workspace into a partially migrated
+// one. Unknown JSON fields remain tolerated here because callers use the
+// result only to decide whether to issue a conservative refusal; normal store
+// selection keeps its existing validation.
+func LoadForDiscovery(beadsDir string) (*Config, error) {
+	data, err := os.ReadFile(ConfigPath(beadsDir)) // #nosec G304 -- beadsDir is caller-selected workspace state
+	if os.IsNotExist(err) {
+		data, err = os.ReadFile(filepath.Join(beadsDir, "config.json")) // #nosec G304 -- legacy workspace state
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading legacy config: %w", err)
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
 	return &cfg, nil
 }
 
@@ -231,9 +261,9 @@ type BackendCapabilities struct {
 	SingleProcessOnly bool
 }
 
-// CapabilitiesForBackend returns capabilities for a backend string.
-// Dolt is the only supported backend. Returns SingleProcessOnly=true by default;
-// use Config.GetCapabilities() to properly handle server mode.
+// CapabilitiesForBackend returns capabilities for a backend string. Embedded Dolt
+// is single-process-only; use Config.GetCapabilities() to account for
+// Dolt server and proxied-server modes.
 func CapabilitiesForBackend(_ string) BackendCapabilities {
 	return BackendCapabilities{SingleProcessOnly: true}
 }
@@ -249,10 +279,21 @@ func (c *Config) GetCapabilities() BackendCapabilities {
 	return CapabilitiesForBackend(backend)
 }
 
-// GetBackend returns the configured storage backend. Only the explicitly-allowlisted
-// non-default backends ("postgres", "mysql") are honored; "", "dolt", and any legacy
-// or unknown value resolve to dolt so the default path stays byte-identical and a
-// typo fails safe to Dolt.
+// IsSupportedBackend reports whether backend selects Dolt or a backend
+// registered by this binary. The empty value is the legacy/default spelling
+// of Dolt. OSS registers no alternate backends.
+func IsSupportedBackend(backend string) bool {
+	return backend == "" || backend == BackendDolt || backendnames.Has(backend)
+}
+
+// GetBackend returns the configured storage backend. PostgreSQL, MySQL, and
+// SQLite remain recognizable here so workspaces created by earlier builds can
+// fail loudly at store selection instead of silently falling back to an empty
+// Dolt database.
+// Registered extension names are returned unchanged. Empty and explicit Dolt
+// retain the established Dolt behavior. GetBackend keeps the historical Dolt
+// fallback for unknown values, so storage-selection callers must check
+// IsSupportedBackend(c.Backend) before opening or creating storage.
 func (c *Config) GetBackend() string {
 	if c != nil {
 		switch c.Backend {
@@ -262,6 +303,9 @@ func (c *Config) GetBackend() string {
 			return BackendMySQL
 		case BackendSQLite:
 			return BackendSQLite
+		}
+		if backendnames.Has(c.Backend) {
+			return c.Backend
 		}
 	}
 	return BackendDolt
@@ -275,82 +319,6 @@ func (c *Config) GetSQLitePath() string {
 	}
 	return c.SQLitePath
 }
-
-// GetPostgresDSN returns the base Postgres connection string: BEADS_POSTGRES_URL (a
-// full override that may carry a password) if set, else the persisted,
-// password-free metadata postgres_dsn. It never merges a password — password
-// resolution (BEADS_PG_PASSWORD_COMMAND, BEADS_PG_PASSWORD, the credentials file)
-// and placement happen at open time in the postgres backend, which owns the pgx
-// parser this low-level package must not import (see the note at RedactPassword).
-func (c *Config) GetPostgresDSN() string {
-	if u := os.Getenv("BEADS_POSTGRES_URL"); u != "" {
-		return u
-	}
-	if c == nil {
-		return ""
-	}
-	return c.PostgresDSN
-}
-
-// GetPostgresPasswordCommand returns the credential command that resolves the
-// Postgres password: BEADS_PG_PASSWORD_COMMAND. Empty means no command — the static
-// BEADS_PG_PASSWORD / credentials-file path applies. The command's stdout is a
-// password (a bare token or a {token,expires_in} envelope); it is run at open time,
-// out-ranking the static password so a rotating secret is never shadowed by a stale
-// env value. It is deliberately read from the environment only, NOT metadata.json:
-// a metadata-sourced command is arbitrary code run on open, so persisting it waits
-// on a workspace-trust gate.
-func (c *Config) GetPostgresPasswordCommand() string {
-	return os.Getenv("BEADS_PG_PASSWORD_COMMAND")
-}
-
-// GetPostgresSchema returns the per-workspace Postgres schema (search_path).
-func (c *Config) GetPostgresSchema() string {
-	if c == nil {
-		return ""
-	}
-	return c.PostgresSchema
-}
-
-// GetMySQLDSN returns the base MySQL server DSN: BEADS_MYSQL_URL (a full override
-// that may carry a password) if set, else the persisted, password-free metadata
-// mysql_dsn. It never merges a password — password resolution
-// (BEADS_MYSQL_PASSWORD_COMMAND, BEADS_MYSQL_PASSWORD, the credentials file) and
-// placement happen at open time in the mysql backend, which owns the go-sql-driver
-// parser this low-level package must not import (see the note at RedactPassword).
-func (c *Config) GetMySQLDSN() string {
-	if u := os.Getenv("BEADS_MYSQL_URL"); u != "" {
-		return u
-	}
-	if c == nil {
-		return ""
-	}
-	return c.MySQLDSN
-}
-
-// GetMySQLPasswordCommand returns the credential command that resolves the MySQL
-// password: BEADS_MYSQL_PASSWORD_COMMAND. Empty means no command — the static
-// BEADS_MYSQL_PASSWORD / credentials-file path applies. The command's stdout is a
-// password (a bare token or a {token,expires_in} envelope); it is run at open time,
-// out-ranking the static password so a rotating secret is never shadowed by a stale
-// env value. It is deliberately read from the environment only, NOT metadata.json:
-// a metadata-sourced command is arbitrary code run on open, so persisting it waits
-// on a workspace-trust gate.
-func (c *Config) GetMySQLPasswordCommand() string {
-	return os.Getenv("BEADS_MYSQL_PASSWORD_COMMAND")
-}
-
-// GetMySQLDatabase returns the per-workspace MySQL database (isolation unit).
-func (c *Config) GetMySQLDatabase() string {
-	if c == nil {
-		return ""
-	}
-	return c.MySQLDatabase
-}
-
-// Password redaction for persistence lives in pgdialect.RedactPassword, not here:
-// it must fail closed (verify with pgx that no password survives) and therefore
-// depends on the pgx parser, which this low-level config package must not import.
 
 // Dolt mode constants
 const (
@@ -374,8 +342,22 @@ const (
 // Checks (in priority order):
 //  1. BEADS_DOLT_SERVER_MODE=1 env var
 //  2. BEADS_DOLT_SHARED_SERVER env var (shared-server implies server mode)
-//  3. dolt_mode field in metadata.json (project-local, explicit)
-//  4. dolt.mode in config.yaml (user-global fallback, only when metadata.json has no mode)
+//  3. BEADS_DOLT_SERVER_HOST env var set to a non-localhost value (GH#3545):
+//     an operator who configures a remote host but forgets the mode flag
+//     would otherwise silently fall through to embedded storage. Setting
+//     the env var to an explicit localhost value (or empty string) is
+//     treated as a deliberate suppression of host-based inference, not
+//     merely "no signal" — it also suppresses the struct/config.yaml host
+//     inference below.
+//  4. dolt_mode field in metadata.json (project-local, explicit) — always
+//     wins over any persisted or configured host, since it is the
+//     operator's explicit statement of intent.
+//  5. Non-localhost DoltServerHost persisted in metadata.json (GH#3545),
+//     when no explicit dolt_mode is set and env didn't suppress inference.
+//  6. dolt.mode in config.yaml (user-global fallback, only when
+//     metadata.json has no mode)
+//  7. Non-localhost dolt.host in config.yaml (GH#3545), gated the same way
+//     as (5) — a configured host must mean server mode.
 //
 // Runtime env vars take precedence over persisted metadata.json to prevent
 // stale dolt_mode=embedded from overriding active server intent (GH#2949).
@@ -391,12 +373,77 @@ func (c *Config) IsDoltServerMode() bool {
 	if v := os.Getenv("BEADS_DOLT_SHARED_SERVER"); v == "1" || strings.EqualFold(v, "true") {
 		return true
 	}
+	// Host-based inference (GH#3545): a configured non-localhost host
+	// implies server mode. Centralized in HostImpliesServerMode so the
+	// storage-mode resolver (here) and the lifecycle resolver
+	// (doltserver.ResolveServerMode) cannot disagree.
+	if c.HostImpliesServerMode() {
+		return true
+	}
 	if c.DoltMode != "" {
-		// metadata.json has an explicit mode — respect it over config.yaml
+		// metadata.json has an explicit mode — respect it over any
+		// persisted host and over config.yaml.
 		return strings.ToLower(c.DoltMode) == DoltModeServer
 	}
 	// Fall back to config.yaml dolt.mode setting (no metadata.json mode set)
-	if mode := config.GetYamlConfig("dolt.mode"); strings.EqualFold(mode, "server") {
+	return strings.EqualFold(config.GetYamlConfig("dolt.mode"), "server")
+}
+
+// HostImpliesServerMode evaluates host-based server-mode inference
+// (GH#3545) against the EFFECTIVE host precedence chain (env >
+// metadata.json > config.yaml, mirroring GetDoltServerHost), so that a
+// lower-priority host that GetDoltServerHost would ignore can never
+// drive the inference. Rules, in order:
+//
+//   - Proxied-server workspaces are exempt: IsDoltServerMode and
+//     IsDoltProxiedServerMode are mutually exclusive (the
+//     proxied-to-server migration depends on it).
+//   - A non-empty BEADS_DOLT_SERVER_HOST decides alone: a non-localhost
+//     value implies server mode even over explicit dolt_mode=embedded
+//     (runtime env beats stale metadata, GH#2949); an explicit
+//     localhost value suppresses inference from lower-priority hosts —
+//     matching GetDoltServerHost, which then dials locally. An EMPTY
+//     env value is ignored (behaves as unset), again matching
+//     GetDoltServerHost: treating empty as suppression would select
+//     embedded storage while the effective dial host stays remote —
+//     exactly the split-storage failure this inference fixes.
+//   - An explicit metadata.json dolt_mode disables inference from
+//     persisted/configured hosts.
+//   - A metadata.json dolt_server_host, when set, decides alone (a
+//     lower-priority config.yaml dolt.host is not consulted, matching
+//     GetDoltServerHost precedence).
+//   - An explicit config.yaml dolt.mode disables inference from the
+//     config.yaml dolt.host.
+func (c *Config) HostImpliesServerMode() bool {
+	if strings.EqualFold(c.DoltMode, DoltModeProxiedServer) {
+		return false
+	}
+	if h := os.Getenv("BEADS_DOLT_SERVER_HOST"); h != "" {
+		return !IsLocalHostString(h)
+	}
+	if c.DoltMode != "" {
+		return false
+	}
+	if c.DoltServerHost != "" {
+		return !IsLocalHostString(c.DoltServerHost)
+	}
+	if config.GetYamlConfig("dolt.mode") != "" {
+		return false
+	}
+	if h := config.GetYamlConfig("dolt.host"); h != "" {
+		return !IsLocalHostString(h)
+	}
+	return false
+}
+
+// IsLocalHostString reports whether host refers to the local machine, for
+// the purposes of mode inference. Mirrors the helpers in cmd/bd/dolt.go
+// and internal/storage/dolt/store.go; kept private to this package to
+// limit the blast radius of GH#3545's fix — consolidating the (now four)
+// definitions is a separate cleanup.
+func IsLocalHostString(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "", "localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0":
 		return true
 	}
 	return false
@@ -409,9 +456,23 @@ func (c *Config) IsDoltProxiedServerMode() bool {
 	return strings.ToLower(c.DoltMode) == DoltModeProxiedServer
 }
 
+// IsTeamServerManaged reports whether the database's schema and identity are
+// owned by beads-team-server (bts). Only meaningful in proxied-server mode.
+func (c *Config) IsTeamServerManaged() bool {
+	return c.IsDoltProxiedServerMode() && c.DoltTeamServer
+}
+
 // GetDoltMode returns the Dolt connection mode, defaulting to server.
+// GetDoltMode returns the EFFECTIVE mode: when no mode is persisted but
+// host-based inference (GH#3545) selects server mode, it reports
+// "server" so effective-context consumers (bd context, integrations)
+// agree with IsDoltServerMode instead of advertising an embedded mode
+// next to a remote server endpoint.
 func (c *Config) GetDoltMode() string {
 	if c.DoltMode == "" {
+		if c.HostImpliesServerMode() {
+			return DoltModeServer
+		}
 		return DoltModeEmbedded
 	}
 	return c.DoltMode

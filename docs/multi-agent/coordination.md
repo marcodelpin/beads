@@ -22,7 +22,8 @@ bd update bd-42 --claim
 bd ready --claim --json
 
 # Release a claimed issue
-bd unclaim bd-42
+bd assign bd-42 ""              # clear the assignee
+bd update bd-42 --status open   # make it claimable again
 ```
 
 ### Checking Assigned Work
@@ -90,6 +91,8 @@ bd dep add bd-merge bd-epic.1
 bd dep add bd-merge bd-epic.2
 bd dep add bd-merge bd-epic.3
 ```
+
+If `bd-epic` carries a size/effort label, see [Labels](/core-concepts/labels) for keeping it off the parts.
 
 <Tip>
 For structured epic fan-out, `bd swarm` creates and tracks a swarm molecule
