@@ -1,3 +1,5 @@
+//go:build cgo
+
 package main
 
 import (
@@ -9,8 +11,9 @@ import (
 	"github.com/steveyegge/beads/internal/labelns"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
-	"github.com/steveyegge/beads/internal/storage/issueops"
+	storeops "github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // newExclusiveLabelStore returns a test store with tier: and review:
@@ -66,6 +69,18 @@ func TestExclusiveLabels_AddLabelRejected(t *testing.T) {
 	}
 }
 
+// The genuine two-concurrent-writer regression for the check-then-insert
+// race (bd-7u5ki) lives in internal/storage/domain/db
+// (TestLabelExclusiveConcurrentAddsSerializeToOneWinner), not here: *dolt.
+// DoltStore pins MaxOpenConns(1) for DOLT_CHECKOUT session affinity (see
+// newTestStoreSharedBranch), so two goroutines calling st.AddLabel on the
+// SAME store share ONE connection and are serialized by the pool itself
+// before either transaction can observe the other's uncommitted state -
+// exactly the shape that makes a race test pass whether or not the fix is
+// present. The domain/db suite's plain *sql.DB carries no such limit, so two
+// goroutines opening their own s.db.BeginTx() there create REAL overlapping
+// transactions against the same real Dolt server.
+
 func TestExclusiveLabels_UnconfiguredKeepsFreeFormLabels(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStoreWithPrefix(t, filepath.Join(t.TempDir(), "test.db"), "test")
@@ -92,15 +107,29 @@ func TestExclusiveLabels_CreateWithConflictRejected(t *testing.T) {
 	}
 }
 
+// TestExclusiveLabels_UpdateSwapsInOneCommand exercises the production path
+// 'bd update --remove-label tier:fable --add-label tier:opus' now takes:
+// issueops.Lifecycle.Update with one IssuePatch carrying both. The direct
+// route (issueops.ApplyLabelPatch) computes the target label SET and removes
+// before it adds, so a same-call swap must not trip the exclusivity guard.
 func TestExclusiveLabels_UpdateSwapsInOneCommand(t *testing.T) {
 	ctx := context.Background()
 	st := newExclusiveLabelStore(t)
 	issue := mustCreateLabeledIssue(t, st, "tier:fable")
 
-	// --remove-label tier:fable --add-label tier:opus in one update: removes
-	// must run before adds or the add trips the exclusivity guard.
-	if err := applyLabelUpdates(ctx, st, issue.ID, "tester", nil, []string{"tier:opus"}, []string{"tier:fable"}); err != nil {
-		t.Fatalf("applyLabelUpdates swap: %v", err)
+	lifecycle, err := st.IssueLifecycle()
+	if err != nil {
+		t.Fatalf("IssueLifecycle: %v", err)
+	}
+	if _, err := lifecycle.Update(ctx, issueops.UpdateRequest{
+		Actor:   "tester",
+		IssueID: issue.ID,
+		Patch: issueops.IssuePatch{Labels: issueops.LabelPatch{
+			Add:    []string{"tier:opus"},
+			Remove: []string{"tier:fable"},
+		}},
+	}); err != nil {
+		t.Fatalf("Update swap: %v", err)
 	}
 	labels, _ := st.GetLabels(ctx, issue.ID)
 	if len(labels) != 1 || labels[0] != "tier:opus" {
@@ -108,30 +137,51 @@ func TestExclusiveLabels_UpdateSwapsInOneCommand(t *testing.T) {
 	}
 }
 
-func TestExclusiveLabels_ReplaceTxFuncSwaps(t *testing.T) {
+// TestExclusiveLabels_ReplaceSwapsAcrossTwoUpdates exercises the mechanism
+// applyLabelAddReplace ('bd label add --replace') uses: remove the
+// conflicting label in its OWN Update call, then add the new one in a
+// second - the shape needed because the direct route (ApplyLabelPatch)
+// removes-then-adds within one patch while the proxied route
+// (domain/issue.go ApplyUpdate) adds-then-removes, so a single combined
+// patch would swap on only one of the two backends.
+func TestExclusiveLabels_ReplaceSwapsAcrossTwoUpdates(t *testing.T) {
 	ctx := context.Background()
 	st := newExclusiveLabelStore(t)
 	issue := mustCreateLabeledIssue(t, st, "tier:fable")
 
-	txFunc := exclusiveReplaceAddTxFunc([]string{"tier:", "review:"})
-	err := st.RunInTransaction(ctx, "", func(tx storage.Transaction) error {
-		return txFunc(ctx, tx, issue.ID, "tier:opus", "tester")
-	})
+	lifecycle, err := st.IssueLifecycle()
 	if err != nil {
-		t.Fatalf("replace add: %v", err)
+		t.Fatalf("IssueLifecycle: %v", err)
+	}
+	prefixes := []string{"tier:", "review:"}
+	toRemove := conflictingExclusiveLabels(prefixes, []string{"tier:opus"}, []string{"tier:fable"})
+	if len(toRemove) != 1 || toRemove[0] != "tier:fable" {
+		t.Fatalf("conflictingExclusiveLabels: expected [tier:fable], got %v", toRemove)
+	}
+	if _, err := lifecycle.Update(ctx, issueops.UpdateRequest{
+		Actor: "tester", IssueID: issue.ID,
+		Patch: issueops.IssuePatch{Labels: issueops.LabelPatch{Remove: toRemove}},
+	}); err != nil {
+		t.Fatalf("replace remove step: %v", err)
+	}
+	if _, err := lifecycle.Update(ctx, issueops.UpdateRequest{
+		Actor: "tester", IssueID: issue.ID,
+		Patch: issueops.IssuePatch{Labels: issueops.LabelPatch{Add: []string{"tier:opus"}}},
+	}); err != nil {
+		t.Fatalf("replace add step: %v", err)
 	}
 	labels, _ := st.GetLabels(ctx, issue.ID)
 	if len(labels) != 1 || labels[0] != "tier:opus" {
 		t.Fatalf("expected [tier:opus], got %v", labels)
 	}
 
-	// Without prefixes (no --replace), the same helper is a plain add and the
-	// storage guard rejects the conflict.
-	plain := exclusiveReplaceAddTxFunc(nil)
-	err = st.RunInTransaction(ctx, "", func(tx storage.Transaction) error {
-		return plain(ctx, tx, issue.ID, "tier:fable", "tester")
-	})
-	if err == nil || !strings.Contains(err.Error(), "exclusive") {
+	// Without prefixes (no --replace), conflictingExclusiveLabels finds
+	// nothing to remove, so the plain add trips the storage guard - matching
+	// the un-replaced 'bd label add' behavior.
+	if got := conflictingExclusiveLabels(nil, []string{"tier:fable"}, []string{"tier:opus"}); got != nil {
+		t.Fatalf("expected no conflicts without configured prefixes, got %v", got)
+	}
+	if err := st.AddLabel(ctx, issue.ID, "tier:fable", "tester"); err == nil || !strings.Contains(err.Error(), "exclusive") {
 		t.Fatalf("expected rejection without --replace, got %v", err)
 	}
 }
@@ -144,7 +194,6 @@ func TestExclusiveLabels_ImportWarnsAndKeepsLabels(t *testing.T) {
 		IssueType: types.TypeTask, Labels: []string{"tier:fable", "tier:opus"}}
 	var reported [][3]string
 	err := st.CreateIssuesWithFullOptions(ctx, []*types.Issue{issue}, "importer", storage.BatchCreateOptions{
-		OrphanHandling:             storage.OrphanAllow,
 		SkipPrefixValidation:       true,
 		ExclusiveLabelConflictWarn: true,
 		OnExclusiveLabelConflict: func(issueID, prefix string, labels []string) {
@@ -178,7 +227,6 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	closed := &types.Issue{ID: "test-v2", Title: "c", Status: types.StatusClosed, Priority: 2,
 		IssueType: types.TypeTask, Labels: []string{"tier:fable", "tier:opus"}}
 	if err := st.CreateIssuesWithFullOptions(ctx, []*types.Issue{violating, closed}, "importer", storage.BatchCreateOptions{
-		OrphanHandling:             storage.OrphanAllow,
 		SkipPrefixValidation:       true,
 		ExclusiveLabelConflictWarn: true,
 	}); err != nil {
@@ -186,7 +234,7 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	}
 	mustCreateLabeledIssue(t, st, "tier:fable", "area:x")
 
-	violations, err := issueops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), prefixes)
+	violations, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), prefixes)
 	if err != nil {
 		t.Fatalf("FindExclusiveLabelViolations: %v", err)
 	}
@@ -199,7 +247,7 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	}
 
 	// No prefixes configured: nothing to scan.
-	none, err := issueops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), nil)
+	none, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), nil)
 	if err != nil || none != nil {
 		t.Fatalf("expected nil, nil for empty prefixes, got %v, %v", none, err)
 	}
