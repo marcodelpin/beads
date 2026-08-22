@@ -711,6 +711,9 @@ func runLabelAdd(ctx context.Context, args []string) error {
 	// miscount #5812 is about, reached by a different command. Warning here
 	// keeps the whole CLI saying the same thing about the same input.
 	warnLabelsContainingWhitespace(labels)
+	if err := checkLabelVocabulary(ctx, labels); err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
 	issueIDs, err := resolveLabelIssueIDs(ctx, "add", issueIDs)
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
