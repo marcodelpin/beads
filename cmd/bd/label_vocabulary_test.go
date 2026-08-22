@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
@@ -184,4 +186,109 @@ func TestImportBypassesLabelVocabularyEnforcement(t *testing.T) {
 	if !found {
 		t.Errorf("expected the undefined label to survive import untouched, got: %v", labels)
 	}
+}
+
+// newUpdateLabelFlagsCommand mirrors TestGatherUpdateInputNormalizesLabels'
+// inline cobra.Command: gatherUpdateInput reads flags through
+// Flags().Changed, which reports false for anything unregistered, so the two
+// label flags exercised here are all these cases need.
+func newUpdateLabelFlagsCommand(t *testing.T, args ...string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "update"}
+	cmd.Flags().StringSlice("add-label", nil, "Add labels (repeatable)")
+	cmd.Flags().StringSlice("set-labels", nil, "Set labels, replacing all existing (repeatable)")
+	if err := cmd.ParseFlags(args); err != nil {
+		t.Fatalf("parse update flags: %v", err)
+	}
+	return cmd
+}
+
+// TestGatherUpdateInputEnforcesLabelVocabulary_AddLabel is the regression
+// test for the proxied-server hole this call site closes: gatherUpdateInput
+// is runUpdateProxiedServer's ONLY input path (the direct route in
+// update.go's RunE checks --add-label/--set-labels itself, inline, and never
+// calls gatherUpdateInput), so before this call site existed, `bd update
+// --add-label` on a proxied deployment silently bypassed
+// labels.vocabulary=enforce. Without the fix this test fails with a nil
+// error.
+func TestGatherUpdateInputEnforcesLabelVocabulary_AddLabel(t *testing.T) {
+	s, ctx := setupLabelVocabularyTestStore(t)
+	if err := s.SetConfig(ctx, labelsVocabularyConfigKey, labelsVocabularyEnforce); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	cmd := newUpdateLabelFlagsCommand(t, "--add-label", "undefined-label")
+	_, err := gatherUpdateInput(ctx, cmd)
+	if err == nil {
+		t.Fatal("enforce mode must refuse an undefined --add-label via gatherUpdateInput, got nil")
+	}
+	if !strings.Contains(err.Error(), "undefined-label") {
+		t.Errorf("expected the error to name the label, got: %v", err)
+	}
+}
+
+// TestGatherUpdateInputEnforcesLabelVocabulary_SetLabels is the --set-labels
+// twin of the above: the same gatherUpdateInput call site normalizes both
+// flags, and the vocabulary check must cover both.
+func TestGatherUpdateInputEnforcesLabelVocabulary_SetLabels(t *testing.T) {
+	s, ctx := setupLabelVocabularyTestStore(t)
+	if err := s.SetConfig(ctx, labelsVocabularyConfigKey, labelsVocabularyEnforce); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	cmd := newUpdateLabelFlagsCommand(t, "--set-labels", "undefined-label")
+	_, err := gatherUpdateInput(ctx, cmd)
+	if err == nil {
+		t.Fatal("enforce mode must refuse an undefined --set-labels via gatherUpdateInput, got nil")
+	}
+	if !strings.Contains(err.Error(), "undefined-label") {
+		t.Errorf("expected the error to name the label, got: %v", err)
+	}
+}
+
+// TestGatherUpdateInputEnforcesLabelVocabulary_DefinedLabelPasses is the
+// positive control: enforce mode must not refuse a label already in the
+// registry, on either flag, through gatherUpdateInput.
+func TestGatherUpdateInputEnforcesLabelVocabulary_DefinedLabelPasses(t *testing.T) {
+	s, ctx := setupLabelVocabularyTestStore(t)
+	if err := s.SetConfig(ctx, labelsVocabularyConfigKey, labelsVocabularyEnforce); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if err := s.DefineLabel(ctx, "backend", "", "tester"); err != nil {
+		t.Fatalf("DefineLabel: %v", err)
+	}
+
+	cmd := newUpdateLabelFlagsCommand(t, "--add-label", "backend", "--set-labels", "backend")
+	in, err := gatherUpdateInput(ctx, cmd)
+	if err != nil {
+		t.Fatalf("enforce mode must accept a defined label, got: %v", err)
+	}
+	assertLabels(t, in.addLabels, []string{"backend"})
+	if in.setLabels == nil {
+		t.Fatal("expected --set-labels to be captured")
+	}
+	assertLabels(t, *in.setLabels, []string{"backend"})
+}
+
+// TestGatherUpdateInputDoesNotEnforceOnRemoveLabel pins that --remove-label
+// is deliberately NOT gated: the direct route in update.go never checks it
+// either (removing a label should always be allowed, undefined or not), and
+// gatherUpdateInput must not diverge from that.
+func TestGatherUpdateInputDoesNotEnforceOnRemoveLabel(t *testing.T) {
+	s, ctx := setupLabelVocabularyTestStore(t)
+	if err := s.SetConfig(ctx, labelsVocabularyConfigKey, labelsVocabularyEnforce); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "update"}
+	cmd.Flags().StringSlice("remove-label", nil, "Remove labels (repeatable)")
+	if err := cmd.ParseFlags([]string{"--remove-label", "undefined-label"}); err != nil {
+		t.Fatalf("parse update flags: %v", err)
+	}
+
+	in, err := gatherUpdateInput(ctx, cmd)
+	if err != nil {
+		t.Fatalf("--remove-label must never be refused by the vocabulary check, got: %v", err)
+	}
+	assertLabels(t, in.removeLabels, []string{"undefined-label"})
 }
