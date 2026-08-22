@@ -1874,6 +1874,12 @@ func TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities(t *testing.T)
 		"ALTER TABLE schema_migrations DROP COLUMN applied_at",
 		"ALTER TABLE issues MODIFY COLUMN close_reason LONGTEXT DEFAULT ''",
 		"ALTER TABLE comments MODIFY COLUMN text LONGTEXT NOT NULL",
+		// Trailing semicolons matter: without them these substrings also
+		// match the quoted DDL inside the source migrations' SET @sql
+		// guards, and the assertion would pass whether or not the direct
+		// statement is in the bundle.
+		"ALTER TABLE issues ADD COLUMN storage_class VARCHAR(16);",
+		"ALTER TABLE wisps ADD COLUMN storage_class VARCHAR(16);",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("AllMigrationsSQL missing direct CLI DDL %q", want)
@@ -1884,6 +1890,10 @@ func TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities(t *testing.T)
 		"ALTER TABLE child_counters DROP FOREIGN KEY fk_counter_parent",
 		"@issues_cr_needs_fix",
 		"@comments_needs_fix",
+		// 0060 guards its ALTERs with PREPARE/EXECUTE for idempotent re-runs
+		// on upgraded databases. Only the main series is bundled, so this
+		// token can only come from that file's source text.
+		"COLUMN_NAME = 'storage_class'",
 	} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("AllMigrationsSQL contains source prepared-DDL guard %q", forbidden)
@@ -1928,6 +1938,8 @@ WHERE table_schema = DATABASE()
 	requireDoltColumnShape(t, dir, "wisps", "no_history", "tinyint(1)", "YES")
 	requireDoltColumnShape(t, dir, "wisps", "started_at", "datetime", "YES")
 	requireDoltColumnShape(t, dir, "wisps", "wisp_type", "varchar(32)", "YES")
+	requireDoltColumnShape(t, dir, "issues", "storage_class", "varchar(16)", "YES")
+	requireDoltColumnShape(t, dir, "wisps", "storage_class", "varchar(16)", "YES")
 }
 
 func runDoltCommand(t *testing.T, dir string, args ...string) {
