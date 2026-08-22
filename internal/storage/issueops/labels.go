@@ -2,6 +2,7 @@ package issueops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -208,13 +209,30 @@ var renameLabelPlanes = [2]struct {
 	{labelTable: "wisp_labels", eventTable: "wisp_events"},
 }
 
+// ErrRenameLabelSameName is returned when RenameLabelInTx is asked to rename
+// a label to itself. Refused before any write: the merge branch below treats
+// every carrier of oldLabel as already carrying newLabel (they are the same
+// string), so "insert the merge row, then drop the stale oldLabel row"
+// degenerates into "insert a row that already exists via INSERT IGNORE, then
+// delete every row carrying this label" -- the label is wiped, not renamed.
+// Compared after trimming so incidental leading/trailing whitespace on one
+// side does not mask the same no-op; the comparison itself stays
+// case-sensitive, matching label identity everywhere else in this store.
+var ErrRenameLabelSameName = errors.New("rename label: old and new label are the same")
+
 // RenameLabelInTx renames a label across every issue and wisp that carries
 // it. An issue that already carries newLabel is a merge: the stale oldLabel
 // row is dropped rather than raising a duplicate-key error, and merged
 // counts the subset of renamed where that happened. oldLabel carried by
 // nothing is an honest no-op (renamed, merged both 0, err nil). ids lists
-// every touched issue and wisp id, both planes concatenated.
+// every touched issue and wisp id, both planes concatenated. oldLabel and
+// newLabel equal after trimming is refused with ErrRenameLabelSameName
+// rather than treated as a no-op -- see that error's doc for why silently
+// proceeding would wipe the label instead of leaving it alone.
 func RenameLabelInTx(ctx context.Context, tx DBTX, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error) {
+	if strings.TrimSpace(oldLabel) == strings.TrimSpace(newLabel) {
+		return 0, 0, nil, ErrRenameLabelSameName
+	}
 	if err := types.CheckFieldLen("label", newLabel); err != nil {
 		return 0, 0, nil, err
 	}
