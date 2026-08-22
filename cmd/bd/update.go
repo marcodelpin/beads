@@ -255,6 +255,9 @@ pointless).`,
 			addLabels, _ := cmd.Flags().GetStringSlice("add-label")
 			added := utils.NormalizeLabels(addLabels)
 			warnLabelsContainingWhitespace(added)
+			if err := checkLabelVocabulary(rootCtx, added); err != nil {
+				return err
+			}
 			updates["add_labels"] = added
 		}
 		if cmd.Flags().Changed("remove-label") {
@@ -265,6 +268,9 @@ pointless).`,
 			setLabels, _ := cmd.Flags().GetStringSlice("set-labels")
 			set := utils.NormalizeLabels(setLabels)
 			warnLabelsContainingWhitespace(set)
+			if err := checkLabelVocabulary(rootCtx, set); err != nil {
+				return err
+			}
 			updates["set_labels"] = set
 		}
 		if cmd.Flags().Changed("parent") {
