@@ -298,6 +298,23 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 		return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
 	}
 	comment := fmt.Sprintf("Renamed label: '%s' to '%s'", oldLabel, newLabel)
+	// KNOWN COST: this loop is O(len(oldIDs)) SQL round trips, not one batch -
+	// InsertDerivedEvent does its own dedup SELECT (a real cross-replica
+	// convergence check, Protocol v0.1 C2.3, not a redundant one this
+	// transaction could skip: two independently-created rows with identical
+	// content must land on the same content-derived id) plus an INSERT, and
+	// RecordEventInTx does its own snapshot SELECT plus an INSERT - up to
+	// four round trips per touched issue, inside one long transaction. On a
+	// huge label population that lengthens the transaction, which raises the
+	// odds an optimistic-concurrency retry has to redo the whole rename from
+	// scratch rather than just its own small write.
+	//
+	// Not batched: no batch primitive exists for this shape anywhere in this
+	// package (issueops), and building one here would be new shared
+	// infrastructure grown for a single caller rather than a mitigation
+	// scoped to this fix - AddLabelInTx/RemoveLabelInTx pay the identical
+	// per-call cost for their one issue today, and this loop is exactly that
+	// cost repeated once per touched issue. Left as a disclosed limitation.
 	for _, id := range oldIDs {
 		if err := InsertDerivedEvent(ctx, tx, eventTable, AuxEvent{
 			IssueID:   id,
