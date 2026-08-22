@@ -414,6 +414,11 @@ type Storage interface {
 	// oldLabel; merged is the subset that already had newLabel; ids lists
 	// every touched id, both planes together. oldLabel carried by nothing is
 	// an honest no-op: renamed and merged are 0, ids is nil, err is nil.
+	// oldLabel and newLabel equal after trimming is refused with
+	// issueops.ErrRenameLabelSameName instead of treated as a no-op - the
+	// merge branch above would otherwise wipe the label instead of leaving
+	// it alone (every carrier already "has newLabel", so the stale-row drop
+	// removes every row).
 	RenameLabel(ctx context.Context, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error)
 
 	// Work queries

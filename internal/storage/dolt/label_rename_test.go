@@ -2,9 +2,11 @@ package dolt
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -224,5 +226,96 @@ func TestRenameLabel_OverLongNewLabelRefused(t *testing.T) {
 	}
 	if len(labels) != 1 || labels[0] != "short" {
 		t.Errorf("GetLabels = %v, want unchanged [short] (refusal must write nothing)", labels)
+	}
+}
+
+// TestRenameLabel_SameNameRefused confirms that renaming a label to itself is
+// refused with ErrRenameLabelSameName rather than treated as a no-op merge.
+// Without the refusal, RenameLabelInTx's merge branch treats every carrier of
+// oldLabel as already carrying newLabel (they are the same string): the
+// INSERT IGNORE no-ops and the unconditional DELETE FROM ... WHERE label = ?
+// then removes every row for that label, wiping it instead of leaving it
+// alone. Covers both label planes (labels and wisp_labels) so a fix scoped to
+// only one plane still fails this test.
+func TestRenameLabel_SameNameRefused(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	issue := &types.Issue{ID: "rename-samename-issue", Title: "Issue", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask}
+	if err := store.CreateIssue(ctx, issue, "tester"); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if err := store.AddLabel(ctx, issue.ID, "dup", "tester"); err != nil {
+		t.Fatalf("add label issue: %v", err)
+	}
+
+	wisp := &types.Issue{
+		ID: "rename-samename-wisp", Title: "Wisp", Status: types.StatusOpen,
+		Priority: 1, IssueType: types.TypeTask, Ephemeral: true,
+	}
+	if err := store.CreateIssue(ctx, wisp, "tester"); err != nil {
+		t.Fatalf("create wisp: %v", err)
+	}
+	if err := store.AddLabel(ctx, wisp.ID, "dup", "tester"); err != nil {
+		t.Fatalf("add label wisp: %v", err)
+	}
+
+	renamed, merged, ids, err := store.RenameLabel(ctx, "dup", "dup", "tester")
+	if !errors.Is(err, issueops.ErrRenameLabelSameName) {
+		t.Fatalf("RenameLabel(same name) err = %v, want ErrRenameLabelSameName", err)
+	}
+	if renamed != 0 || merged != 0 || ids != nil {
+		t.Errorf("RenameLabel(same name) = (%d, %d, %v), want (0, 0, nil)", renamed, merged, ids)
+	}
+
+	labels, err := store.GetLabels(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetLabels(issue): %v", err)
+	}
+	if len(labels) != 1 || labels[0] != "dup" {
+		t.Errorf("GetLabels(issue) = %v, want unchanged [dup] (self-rename must write nothing)", labels)
+	}
+
+	wispLabels, err := store.GetLabels(ctx, wisp.ID)
+	if err != nil {
+		t.Fatalf("GetLabels(wisp): %v", err)
+	}
+	if len(wispLabels) != 1 || wispLabels[0] != "dup" {
+		t.Errorf("GetLabels(wisp) = %v, want unchanged [dup] (self-rename must write nothing on the wisp plane either)", wispLabels)
+	}
+}
+
+// TestRenameLabel_SameNameAfterTrimRefused confirms the same-name refusal
+// compares after trimming: incidental leading/trailing whitespace on one side
+// must not mask what is otherwise the identical wipe-out shape.
+func TestRenameLabel_SameNameAfterTrimRefused(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	issue := &types.Issue{ID: "rename-samename-trim", Title: "Issue", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask}
+	if err := store.CreateIssue(ctx, issue, "tester"); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	if err := store.AddLabel(ctx, issue.ID, "dup", "tester"); err != nil {
+		t.Fatalf("add label: %v", err)
+	}
+
+	_, _, _, err := store.RenameLabel(ctx, "dup", " dup ", "tester")
+	if !errors.Is(err, issueops.ErrRenameLabelSameName) {
+		t.Fatalf("RenameLabel(\"dup\", \" dup \") err = %v, want ErrRenameLabelSameName", err)
+	}
+
+	labels, err := store.GetLabels(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetLabels: %v", err)
+	}
+	if len(labels) != 1 || labels[0] != "dup" {
+		t.Errorf("GetLabels = %v, want unchanged [dup]", labels)
 	}
 }
