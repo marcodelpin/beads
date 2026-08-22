@@ -147,6 +147,14 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) (*updateInput, e
 		addLabels, _ := cmd.Flags().GetStringSlice("add-label")
 		in.addLabels = utils.NormalizeLabels(addLabels)
 		warnLabelsContainingWhitespace(in.addLabels)
+		// This is the proxied-server route's only call site for the
+		// labels.vocabulary write-path check: the direct route enforces it in
+		// update.go's own RunE, and gatherUpdateInput is otherwise reached only
+		// from runUpdateProxiedServer. Without it, `bd update --add-label` on a
+		// proxied deployment silently bypassed enforce mode.
+		if err := checkLabelVocabulary(ctx, in.addLabels); err != nil {
+			return nil, err
+		}
 	}
 	if cmd.Flags().Changed("remove-label") {
 		removeLabels, _ := cmd.Flags().GetStringSlice("remove-label")
@@ -159,6 +167,9 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) (*updateInput, e
 		// pointer to an empty slice, which is the clear instruction.
 		labels = utils.NormalizeLabels(labels)
 		warnLabelsContainingWhitespace(labels)
+		if err := checkLabelVocabulary(ctx, labels); err != nil {
+			return nil, err
+		}
 		in.setLabels = &labels
 	}
 	if cmd.Flags().Changed("parent") {
