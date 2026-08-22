@@ -42,16 +42,16 @@ func resolveLabelTargetProxied(ctx context.Context, id string) (string, error) {
 	return issue.ID, nil
 }
 
-func runLabelListAllProxiedServer(ctx context.Context) error {
-	uw, err := proxiedOpenReadUOW(ctx)
-	if err != nil {
-		return err
-	}
-	defer uw.Close(ctx)
-
+// countAllLabelsProxied tallies every label on every issue in the
+// workspace, partitioning by wisp/permanent plane the same way the direct
+// route's countLabelsAcrossIssues does over a single SearchIssues result.
+// Shared by `bd label list-all` and `bd label defined`, both proxied: see
+// the comment on the loop below for why this is a plain fold over two
+// bulk-label calls rather than a dedicated role.
+func countAllLabelsProxied(ctx context.Context, uw uow.UnitOfWork) (map[string]int, error) {
 	page, err := uw.IssueUseCase().SearchIssues(ctx, "", types.IssueFilter{})
 	if err != nil {
-		return HandleErrorRespectJSON("%v", err)
+		return nil, err
 	}
 
 	var permIDs, wispIDs []string
@@ -80,16 +80,30 @@ func runLabelListAllProxiedServer(ctx context.Context) error {
 	if len(permIDs) > 0 {
 		byIssue, err := uw.LabelUseCase().GetLabelsForIssues(ctx, permIDs) //nolint:forbidigo // label histogram; no role answers the workspace's label vocabulary
 		if err != nil {
-			return HandleErrorRespectJSON("getting labels: %v", err)
+			return nil, fmt.Errorf("getting labels: %w", err)
 		}
 		accumulate(byIssue)
 	}
 	if len(wispIDs) > 0 {
 		byWisp, err := uw.LabelUseCase().GetLabelsForWisps(ctx, wispIDs) //nolint:forbidigo // label histogram; see GetLabelsForIssues above
 		if err != nil {
-			return HandleErrorRespectJSON("getting labels: %v", err)
+			return nil, fmt.Errorf("getting labels: %w", err)
 		}
 		accumulate(byWisp)
+	}
+	return labelCounts, nil
+}
+
+func runLabelListAllProxiedServer(ctx context.Context) error {
+	uw, err := proxiedOpenReadUOW(ctx)
+	if err != nil {
+		return err
+	}
+	defer uw.Close(ctx)
+
+	labelCounts, err := countAllLabelsProxied(ctx, uw)
+	if err != nil {
+		return HandleErrorRespectJSON("%v", err)
 	}
 
 	type labelInfo struct {
