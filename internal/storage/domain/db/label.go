@@ -47,6 +47,19 @@ func (r *labelSQLRepositoryImpl) Insert(ctx context.Context, issueID, label, act
 		return err
 	}
 	table := pickLabelTable(opts.UseWispsTable)
+	// Exclusive label namespaces (labels.exclusive-prefixes, bd-7u5ki): the
+	// raw INSERT IGNORE below never routed through the exclusivity guard the
+	// classic embedded path's issueops.AddLabelInTx uses, so a proxied
+	// server silently accepted a second label in a configured-exclusive
+	// namespace (upstream PR #4757 review blocker B2). Calling the SAME
+	// issueops.EnforceExclusiveLabelInTx primitive AddLabelInTx uses also
+	// picks up the per-(issue,namespace) lock automatically, since the
+	// lock-acquire lives inside EnforceExclusiveLabelInTx itself - r.runner
+	// (db.Runner) is structurally identical to issueops.DBTX, no adapter
+	// needed.
+	if err := issueops.EnforceExclusiveLabelInTx(ctx, r.runner, table, issueID, label); err != nil {
+		return err
+	}
 	//nolint:gosec // G201: table is one of two hardcoded constants
 	result, err := r.runner.ExecContext(ctx,
 		fmt.Sprintf("INSERT IGNORE INTO %s (issue_id, label) VALUES (?, ?)", table),
