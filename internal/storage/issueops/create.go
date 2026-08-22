@@ -10,7 +10,6 @@ import (
 
 	gmssql "github.com/dolthub/go-mysql-server/sql"
 	"github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
 	"github.com/steveyegge/beads/internal/labelns"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/depid"
