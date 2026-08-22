@@ -196,3 +196,147 @@ func RemoveLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issue
 	}
 	return RecordEventInTx(ctx, tx, EventUpdate, issueID)
 }
+
+// renameLabelPlanes pairs each label table with the event table journaling
+// its issues, mirroring WispTableRouting's two known planes. Declared once so
+// RenameLabelInTx sweeps both without hardcoding the pairing twice.
+var renameLabelPlanes = [2]struct {
+	labelTable string
+	eventTable string
+}{
+	{labelTable: "labels", eventTable: "events"},
+	{labelTable: "wisp_labels", eventTable: "wisp_events"},
+}
+
+// RenameLabelInTx renames a label across every issue and wisp that carries
+// it, sweeping the labels table and then the wisp_labels table within an
+// existing transaction. Design: docs/label-taxonomy-best-practices.md Unit A.
+//
+// The rename DEGRADES TO A MERGE, Linear-style: when an issue already
+// carries newLabel, the stale oldLabel row is simply dropped rather than
+// raising a duplicate-key error. merged is the subset of renamed where that
+// happened, so a caller can report "N issues relabeled, M already had <new>"
+// honestly instead of papering over the collision.
+//
+// oldLabel carried by zero issues is an honest no-op: renamed and merged are
+// both 0 and err is nil, matching AddLabelInTx/RemoveLabelInTx's own
+// no-op-is-not-an-error convention for a label edit that changes nothing.
+//
+// ids returns every touched issue and wisp id, both planes concatenated, in
+// the order the sweep found them - for a caller that needs to fire a
+// per-issue side effect (a hook, a dry-run preview) on exactly what changed.
+//
+// Emits one label_renamed event plus one full-snapshot journal row per
+// touched row, the same per-issue journal shape AddLabelInTx and
+// RemoveLabelInTx use (see TestEveryBeadMutatorJournalsOrIsExempt in
+// journal_completeness_test.go). A single batch event was considered and
+// rejected: the journal completeness guard requires every touched
+// work-bead row to be individually replayable, and a batch event has no
+// per-issue row to attach that journal entry to.
+func RenameLabelInTx(ctx context.Context, tx DBTX, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error) {
+	if err := types.CheckFieldLen("label", newLabel); err != nil {
+		return 0, 0, nil, err
+	}
+	for _, plane := range renameLabelPlanes {
+		r, m, planeIDs, err := renameLabelInPlane(ctx, tx, plane.labelTable, plane.eventTable, oldLabel, newLabel, actor)
+		if err != nil {
+			return 0, 0, nil, fmt.Errorf("rename label in %s: %w", plane.labelTable, err)
+		}
+		renamed += r
+		merged += m
+		ids = append(ids, planeIDs...)
+	}
+	return renamed, merged, ids, nil
+}
+
+// renameLabelInPlane sweeps one label table (and its matching event table)
+// for oldLabel and returns the touched-id and already-had-newLabel counts.
+//
+//nolint:gosec // G201: labelTable/eventTable are hardcoded routing constants from renameLabelPlanes ("labels"/"events" or "wisp_labels"/"wisp_events").
+func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error) {
+	oldIDs, err := issueIDsWithLabelInTx(ctx, tx, labelTable, oldLabel)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("query issues carrying %q: %w", oldLabel, err)
+	}
+	if len(oldIDs) == 0 {
+		return 0, 0, nil, nil
+	}
+	newIDs, err := issueIDsWithLabelInTx(ctx, tx, labelTable, newLabel)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("query issues carrying %q: %w", newLabel, err)
+	}
+	alreadyNew := make(map[string]struct{}, len(newIDs))
+	for _, id := range newIDs {
+		alreadyNew[id] = struct{}{}
+	}
+	for _, id := range oldIDs {
+		if _, ok := alreadyNew[id]; ok {
+			merged++
+		}
+	}
+	// INSERT IGNORE so an issue that already carries newLabel silently no-ops
+	// here instead of raising a duplicate-key error - this IS the merge.
+	for start := 0; start < len(oldIDs); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(oldIDs) {
+			end = len(oldIDs)
+		}
+		batch := oldIDs[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)*2)
+		for i, id := range batch {
+			placeholders[i] = "(?, ?)"
+			args = append(args, id, newLabel)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`INSERT IGNORE INTO %s (issue_id, label) VALUES %s`,
+			labelTable, strings.Join(placeholders, ",")), args...); err != nil {
+			return 0, 0, nil, fmt.Errorf("insert renamed label: %w", err)
+		}
+	}
+	// Every id in oldIDs now carries newLabel too - freshly inserted above, or
+	// already present pre-rename - so dropping every oldLabel row in one
+	// DELETE is safe regardless of the merge split computed above.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+		`DELETE FROM %s WHERE label = ?`, labelTable), oldLabel); err != nil {
+		return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
+	}
+	comment := fmt.Sprintf("Renamed label: '%s' to '%s'", oldLabel, newLabel)
+	for _, id := range oldIDs {
+		if err := InsertDerivedEvent(ctx, tx, eventTable, AuxEvent{
+			IssueID:   id,
+			EventType: types.EventLabelRenamed,
+			Actor:     actor,
+			OldValue:  str(oldLabel),
+			NewValue:  str(newLabel),
+			Comment:   str(comment),
+		}); err != nil {
+			return 0, 0, nil, fmt.Errorf("rename label: record event for %s: %w", id, err)
+		}
+		if err := RecordEventInTx(ctx, tx, EventUpdate, id); err != nil {
+			return 0, 0, nil, fmt.Errorf("rename label: journal %s: %w", id, err)
+		}
+	}
+	return len(oldIDs), merged, oldIDs, nil
+}
+
+// issueIDsWithLabelInTx returns every issue/wisp id carrying label in the
+// given label table (unordered).
+//
+//nolint:gosec // G201: labelTable is a hardcoded routing constant ("labels" or "wisp_labels").
+func issueIDsWithLabelInTx(ctx context.Context, tx DBTX, labelTable, label string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT issue_id FROM %s WHERE label = ?`, labelTable), label)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan issue id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
