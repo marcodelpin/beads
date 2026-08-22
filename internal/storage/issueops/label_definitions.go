@@ -22,6 +22,23 @@ import (
 // never hold two case-variant spellings of the same word: the creation-time
 // discipline the vocabulary registry exists to add, without folding any
 // label already stored on an issue (that stays `bd label rename`'s job).
+//
+// The case-insensitive collision is enforced TWICE, deliberately: the
+// rejectLabelCollisionInTx pre-check below is the friendly, common-case path
+// (it can name the exact existing spelling), but a check-then-insert cannot
+// see a row a CONCURRENT transaction has not committed yet. label_folded's
+// UNIQUE constraint (migration 0066) is the backstop that makes "never two
+// case-variant spellings" a property of the SCHEMA rather than a promise this
+// function keeps on its own: when two transactions race to define
+// case-variants of the same word, both can pass the pre-check, but only one
+// INSERT can land -- the loser's duplicate-key error is translated below into
+// the same named-collision error the pre-check would have produced had it run
+// a moment later.
+//
+// strings.ToLower is the ONE folding authority label_folded is populated
+// from, here and in rejectLabelCollisionInTx/UndefineLabelInTx below: no
+// query in this file folds case in SQL (no LOWER()), so the registry's
+// case-insensitive matching can never disagree with itself across call sites.
 func DefineLabelInTx(ctx context.Context, tx DBTX, label, description, actor string) error {
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -33,16 +50,24 @@ func DefineLabelInTx(ctx context.Context, tx DBTX, label, description, actor str
 	if err := types.CheckTextLen("description", description); err != nil {
 		return err
 	}
+	if err := types.CheckFieldLen("created_by", actor); err != nil {
+		return err
+	}
 	if err := rejectLabelCollisionInTx(ctx, tx, label); err != nil {
 		return err
 	}
 
+	folded := strings.ToLower(label)
 	descArg := sql.NullString{String: description, Valid: description != ""}
 	actorArg := sql.NullString{String: actor, Valid: actor != ""}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO label_definitions (label, description, created_by) VALUES (?, ?, ?)`,
-		label, descArg, actorArg,
+		`INSERT INTO label_definitions (label, label_folded, description, created_by) VALUES (?, ?, ?, ?)`,
+		label, folded, descArg, actorArg,
 	); err != nil {
+		if isCreateOnlyDuplicateError(err) {
+			return fmt.Errorf("%w: label %q collides with a definition committed by a concurrent request (case-insensitive); run 'bd label defined' to see the winning spelling, or undefine it first",
+				storage.ErrValidation, label)
+		}
 		return fmt.Errorf("define label: %w", err)
 	}
 	return nil
@@ -52,10 +77,16 @@ func DefineLabelInTx(ctx context.Context, tx DBTX, label, description, actor str
 // label already has a case-insensitive match in label_definitions, and a
 // distinct error when the match is the exact same spelling (already defined).
 // A clean sql.ErrNoRows (no match at all) returns nil.
+//
+// This is a pre-check, not the enforcement: it narrows the race window and
+// gives the common case a friendly, spelling-naming error, but the row it
+// looks for can be committed by another transaction moments after this query
+// returns. DefineLabelInTx's label_folded UNIQUE constraint is what makes the
+// invariant hold regardless.
 func rejectLabelCollisionInTx(ctx context.Context, tx DBTX, label string) error {
 	var existing string
 	err := tx.QueryRowContext(ctx,
-		`SELECT label FROM label_definitions WHERE LOWER(label) = LOWER(?)`, label,
+		`SELECT label FROM label_definitions WHERE label_folded = ?`, strings.ToLower(label),
 	).Scan(&existing)
 	switch {
 	case err == nil:
@@ -90,7 +121,7 @@ func UndefineLabelInTx(ctx context.Context, tx DBTX, label string) error {
 		return fmt.Errorf("%w: label cannot be empty", storage.ErrValidation)
 	}
 	result, err := tx.ExecContext(ctx,
-		`DELETE FROM label_definitions WHERE LOWER(label) = LOWER(?)`, label,
+		`DELETE FROM label_definitions WHERE label_folded = ?`, strings.ToLower(label),
 	)
 	if err != nil {
 		return fmt.Errorf("undefine label: %w", err)
