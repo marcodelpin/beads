@@ -109,6 +109,12 @@ func TestNotifyingUOWWrapsEveryMutatingUseCase(t *testing.T) {
 			"ConfigUseCase": "workspace settings and metadata, not beads: the DoltStorage chain's " +
 				"WorkspaceConfig role passes through undecorated for the same reason (hook_workspace_config.go)",
 			"DoltRemoteUseCase": "Dolt remotes are repository plumbing; no bead changes and no event to name",
+			"LabelVocabularyUseCase": "the label VOCABULARY is definitions, not beads: Define and " +
+				"Undefine write the label-definitions table and change no issue, and the DoltStorage " +
+				"chain fires nothing for them: HookFiringStore decorates label ASSIGNMENT " +
+				"(AddLabel/RemoveLabel/RenameLabel, hook_decorator.go) and carries no label-definition " +
+				"verb at all. An override could not record one either: recorder.record drops any " +
+				"mutation whose issue is nil, and this surface never has an issue to give it (List reads)",
 			"RawSQLUseCase": "the raw escape hatch executes statements this layer cannot read, so it " +
 				"cannot say which bead changed; the DoltStorage chain fires nothing for raw access either",
 			"EventsJournalUseCase": "read-only cursor surface; fires no hooks. Two of its three " +
