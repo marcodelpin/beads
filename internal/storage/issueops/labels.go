@@ -2,6 +2,7 @@ package issueops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -208,6 +209,17 @@ var renameLabelPlanes = [2]struct {
 	{labelTable: "wisp_labels", eventTable: "wisp_events"},
 }
 
+// ErrRenameLabelSameName is returned when RenameLabelInTx is asked to rename
+// a label to itself. Refused before any write: the merge branch below treats
+// every carrier of oldLabel as already carrying newLabel (they are the same
+// string), so "insert the merge row, then drop the stale oldLabel row"
+// degenerates into "insert a row that already exists via INSERT IGNORE, then
+// delete every row carrying this label" -- the label is wiped, not renamed.
+// Compared after trimming so incidental leading/trailing whitespace on one
+// side does not mask the same no-op; the comparison itself stays
+// case-sensitive, matching label identity everywhere else in this store.
+var ErrRenameLabelSameName = errors.New("rename label: old and new label are the same")
+
 // RenameLabelInTx renames a label across every issue and wisp that carries
 // it, sweeping the labels table and then the wisp_labels table within an
 // existing transaction. Design: docs/label-taxonomy-best-practices.md Unit A.
@@ -233,7 +245,15 @@ var renameLabelPlanes = [2]struct {
 // rejected: the journal completeness guard requires every touched
 // work-bead row to be individually replayable, and a batch event has no
 // per-issue row to attach that journal entry to.
+//
+// oldLabel and newLabel equal after trimming is refused with
+// ErrRenameLabelSameName rather than treated as a no-op -- see that error's
+// doc for why silently proceeding would wipe the label instead of leaving
+// it alone.
 func RenameLabelInTx(ctx context.Context, tx DBTX, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error) {
+	if strings.TrimSpace(oldLabel) == strings.TrimSpace(newLabel) {
+		return 0, 0, nil, ErrRenameLabelSameName
+	}
 	if err := types.CheckFieldLen("label", newLabel); err != nil {
 		return 0, 0, nil, err
 	}
@@ -302,6 +322,23 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 		return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
 	}
 	comment := fmt.Sprintf("Renamed label: '%s' to '%s'", oldLabel, newLabel)
+	// KNOWN COST: this loop is O(len(oldIDs)) SQL round trips, not one batch -
+	// InsertDerivedEvent does its own dedup SELECT (a real cross-replica
+	// convergence check, Protocol v0.1 C2.3, not a redundant one this
+	// transaction could skip: two independently-created rows with identical
+	// content must land on the same content-derived id) plus an INSERT, and
+	// RecordEventInTx does its own snapshot SELECT plus an INSERT - up to
+	// four round trips per touched issue, inside one long transaction. On a
+	// huge label population that lengthens the transaction, which raises the
+	// odds an optimistic-concurrency retry has to redo the whole rename from
+	// scratch rather than just its own small write.
+	//
+	// Not batched: no batch primitive exists for this shape anywhere in this
+	// package (issueops), and building one here would be new shared
+	// infrastructure grown for a single caller rather than a mitigation
+	// scoped to this fix - AddLabelInTx/RemoveLabelInTx pay the identical
+	// per-call cost for their one issue today, and this loop is exactly that
+	// cost repeated once per touched issue. Left as a disclosed limitation.
 	for _, id := range oldIDs {
 		if err := InsertDerivedEvent(ctx, tx, eventTable, AuxEvent{
 			IssueID:   id,

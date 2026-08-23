@@ -533,11 +533,15 @@ func runLabelRename(ctx context.Context, args []string, dryRun bool) error {
 	} else {
 		renamed, merged, _, err = store.RenameLabel(ctx, oldLabel, newLabel, actor)
 	}
-	if err != nil {
-		return HandleErrorRespectJSON("label rename: %v", err)
-	}
+	// Recorded from renamed>0 BEFORE the error check: a rename can commit its
+	// SQL side and still return a non-nil err (e.g. the Dolt publication step
+	// failing after the working-set write landed), and the caller's deferred
+	// commit needs to know a write happened either way.
 	if renamed > 0 {
 		commandDidWrite.Store(true)
+	}
+	if err != nil {
+		return HandleErrorRespectJSON("label rename: %v", err)
 	}
 	return reportLabelRename(oldLabel, newLabel, renamed, merged, jsonOutput)
 }
