@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The events journal records WHO performed each mutation.** `bd_events_journal`
+  gains an `actor` column (migration 0066 plus its ignored-series twin 0025, so
+  upgraded workspaces and fresh clones converge on the same shape), stamped
+  inside the mutating transaction with the same identity the audit-events table
+  resolves; on a `comment` row it is the comment's author. `bd events tail` /
+  `bd events export` JSON gains an additive, omit-when-empty `actor` field —
+  empty means the path had no actor (derived maintenance, deletes, rows older
+  than the column), never a user. The input for same-field / different-actor
+  conflict measurement over the journal.
+
 - **`bd` warns when it stores a label containing a space**
   ([#5813](https://github.com/gastownhall/beads/pull/5813)). Such a label is a
   legitimate thing to ask for — `-l 'good first issue'` — and bd stores it as
@@ -42,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   say it.
 
 ### Changed
+
+- **`bd dep add` names the implicit `type=blocks` default, but only to an
+  interactive operator** (#5854). Creating an edge with no `-t/--type` silently
+  produces a `blocks` edge, which drops the dependent out of `bd ready` — the
+  usual surprise when someone meant structural parent/child linkage. `bd dep
+  add` now says so on stderr. Because `blocks` is the documented default and
+  the majority-correct case, the note is gated: it is emitted only when stderr
+  is a TTY, so scripted and agent callers (and CI, and `bd dep add 2>log`)
+  never see it and are not trained to ignore stderr. `--quiet` silences it, as
+  it does the other non-error stderr notices, and `BD_NO_DEP_TYPE_WARNING=1`
+  turns it off for operators who have internalised the default. `--json` output
+  is unchanged.
 
 - **`bd show` labels `created_by` as `Created by:`, not `Owner:`** (be-ss66).
   The text view rendered `created_by` under a label naming a different

@@ -84,7 +84,7 @@ func (r *labelSQLRepositoryImpl) Insert(ctx context.Context, issueID, label, act
 	}
 	// A label is part of the bead snapshot; the idempotent no-op path above
 	// returns without writing and journals nothing.
-	return issueops.RecordEventInTx(ctx, r.runner, issueops.EventUpdate, issueID)
+	return issueops.RecordEventInTx(ctx, r.runner, issueops.EventUpdate, issueID, actor)
 }
 
 // RenameLabel sweeps both label planes (labels and wisp_labels) for oldLabel,
@@ -130,7 +130,7 @@ func (r *labelSQLRepositoryImpl) Delete(ctx context.Context, issueID, label, act
 	}, domain.RecordEventOpts{UseWispsTable: opts.UseWispsTable}); err != nil {
 		return err
 	}
-	return issueops.RecordEventInTx(ctx, r.runner, issueops.EventUpdate, issueID)
+	return issueops.RecordEventInTx(ctx, r.runner, issueops.EventUpdate, issueID, actor)
 }
 
 func (r *labelSQLRepositoryImpl) List(ctx context.Context, issueID string, opts domain.LabelOpts) ([]string, error) {
