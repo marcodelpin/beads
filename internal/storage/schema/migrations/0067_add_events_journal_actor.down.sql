@@ -1,8 +1,8 @@
--- Reverse of 0066: drop the actor column again. The column is additive and the
+-- Reverse of 0067: drop the actor column again. The column is additive and the
 -- table is clone-local (dolt_ignored), so this only forgets attribution on
 -- rows this clone already holds; seq, ordering and every other member are
 -- untouched. Guarded so a workspace that never gained the column no-ops.
--- Pair it with a binary rollback: a 0066-era bd names `actor` in its journal
+-- Pair it with a binary rollback: a 0067-era bd names `actor` in its journal
 -- INSERT and SELECT, so against a downgraded table every journaled mutation
 -- would roll back and `bd events tail` would error.
 SET @has_actor = (

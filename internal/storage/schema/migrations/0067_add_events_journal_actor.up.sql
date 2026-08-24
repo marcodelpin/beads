@@ -1,5 +1,10 @@
--- Migration 0066: record the mutating ACTOR on every events-journal row
+-- Migration 0067: record the mutating ACTOR on every events-journal row
 -- (bd-mbrxm).
+--
+-- FORK NOTE (bda-vtt1): upstream ships this as 0066; our fork's 0066 slot was
+-- already taken by 0066_create_label_definitions, applied and content-hashed
+-- on fleet clones, so the incoming file is re-filed at 0067 per the
+-- fix-forward rule of scripts/check-migration-hygiene.sh. Content unchanged.
 --
 -- bd_events_journal rows record WHAT changed and in what order, but not WHO —
 -- an external consumer reconciling concurrent replicas (an LWW semantic-

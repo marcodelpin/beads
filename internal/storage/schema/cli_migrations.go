@@ -116,7 +116,7 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		// synced the wisp tables must use the frozen source text instead --
 		// see cliSubstituteAssumesWispTables.
 		return cliMigration0065WidenWispCommentsText
-	case "0066_add_events_journal_actor.up.sql":
+	case "0067_add_events_journal_actor.up.sql":
 		// Direct DDL for the same reason as 0060: the source migration's
 		// PREPARE guard (INFORMATION_SCHEMA probe) makes it idempotent on
 		// upgraded databases, and the 2.2.x CLI no-ops the prepared ALTER
@@ -125,7 +125,7 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		// carries the #11345 fix — land it; CI pins 2.2.0). The table
 		// itself is always present here: 0064's prepared RENAME executes on
 		// 2.2.0 (same measurement), so a fresh bundle always needs the column.
-		return cliMigration0066AddEventsJournalActor
+		return cliMigration0067AddEventsJournalActor
 	default:
 		return sqlText
 	}
@@ -203,7 +203,7 @@ const cliMigration0060AddStorageClass = `ALTER TABLE issues ADD COLUMN storage_c
 ALTER TABLE wisps ADD COLUMN storage_class VARCHAR(16);`
 
 const cliMigration0065WidenWispCommentsText = `ALTER TABLE wisp_comments MODIFY COLUMN text LONGTEXT NOT NULL;`
-const cliMigration0066AddEventsJournalActor = `ALTER TABLE bd_events_journal ADD COLUMN actor VARCHAR(255) NOT NULL DEFAULT '';`
+const cliMigration0067AddEventsJournalActor = `ALTER TABLE bd_events_journal ADD COLUMN actor VARCHAR(255) NOT NULL DEFAULT '';`
 
 const cliMigration0041SplitDependenciesTarget = `DELETE FROM dolt_nonlocal_tables;
 CALL DOLT_COMMIT('-Am', 'disable nonlocal tables for fk migrations');
