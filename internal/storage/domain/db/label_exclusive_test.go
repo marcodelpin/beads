@@ -136,11 +136,36 @@ func isSerializationError(err error) bool {
 // internal/storage/dolt.DoltStore.withRetryTx apply in production, inlined
 // here because this test drives *sql.Tx directly instead of through either
 // production retry wrapper.
-func (s *testSuite) addLabelInTxWithRetry(issueID, label string) error {
+// ready/proceed implement the two-phase rendezvous bda-5vzi added: on the
+// FIRST attempt each writer opens its transaction, PINS ITS SNAPSHOT with a
+// read of the labels table (REPEATABLE READ fixes the read view at the first
+// read), signals ready, and only calls AddLabelInTx once EVERY writer has
+// pinned. That removes the scheduler dependence the cross-model review
+// found: without it, nothing stopped one transaction committing before the
+// other had even read, which produces the expected one-winner outcome with
+// no lock involved - a green that proves nothing. With the pin, neither
+// first-attempt check can see the other's commit, so on UNFIXED code both
+// writers pass the check and both commit (red by construction, not by
+// scheduling luck). Retries skip the rendezvous: a retried transaction
+// legitimately reads fresh state and sees the winner.
+func (s *testSuite) addLabelInTxWithRetry(issueID, label string, ready chan<- struct{}, proceed <-chan struct{}) error {
+	first := true
 	for attempt := 0; attempt < 20; attempt++ {
 		tx, err := s.db.BeginTx(s.Ctx(), nil)
 		if err != nil {
 			return fmt.Errorf("begin: %w", err)
+		}
+		if first {
+			var pinned int
+			if scanErr := tx.QueryRowContext(s.Ctx(),
+				"SELECT COUNT(*) FROM labels WHERE issue_id = ?", issueID,
+			).Scan(&pinned); scanErr != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("pin snapshot: %w", scanErr)
+			}
+			ready <- struct{}{}
+			<-proceed
+			first = false
 		}
 		addErr := issueops.AddLabelInTx(s.Ctx(), tx, "labels", "events", issueID, label, "tester")
 		if addErr != nil {
@@ -193,17 +218,22 @@ func (s *testSuite) TestLabelExclusiveConcurrentAddsSerializeToOneWinner() {
 
 			labelsToAdd := []string{"tier:fable", "tier:opus"}
 			errs := make([]error, len(labelsToAdd))
-			start := make(chan struct{})
+			ready := make(chan struct{}, len(labelsToAdd))
+			proceed := make(chan struct{})
 			var wg sync.WaitGroup
 			for i, label := range labelsToAdd {
 				wg.Add(1)
 				go func(i int, label string) {
 					defer wg.Done()
-					<-start
-					errs[i] = s.addLabelInTxWithRetry(issueID, label)
+					errs[i] = s.addLabelInTxWithRetry(issueID, label, ready, proceed)
 				}(i, label)
 			}
-			close(start)
+			// Two-phase barrier: wait until EVERY writer has opened its
+			// transaction and pinned its read view, then release them all.
+			for range labelsToAdd {
+				<-ready
+			}
+			close(proceed)
 			wg.Wait()
 
 			successCount := 0
