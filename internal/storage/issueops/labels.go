@@ -350,7 +350,7 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 		}); err != nil {
 			return 0, 0, nil, fmt.Errorf("rename label: record event for %s: %w", id, err)
 		}
-		if err := RecordEventInTx(ctx, tx, EventUpdate, id); err != nil {
+		if err := RecordEventInTx(ctx, tx, EventUpdate, id, actor); err != nil {
 			return 0, 0, nil, fmt.Errorf("rename label: journal %s: %w", id, err)
 		}
 	}
