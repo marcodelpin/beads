@@ -251,11 +251,27 @@ func legacyServerVersion(version string) bool {
 	return ok && minor >= 55 && minor <= 62
 }
 
+// versionCoreParts strips a leading "v" and any semver prerelease ("-...")
+// or build ("+...") suffix, then splits the remaining core on dots. The
+// suffix tolerance is load-bearing (bda-hcs5, upstream #5675): a witness like
+// "1.2.1-rc.1" split naively yields 4 parts, failed both parsers below, and
+// an unparseable witness classifies as LEGACY - so one suffixed deploy made
+// bd refuse the workspace for every command. Only the suffix is forgiven;
+// a malformed core still fails the 3-part check, which is the deliberate
+// refusal the callers document.
+func versionCoreParts(version string) []string {
+	core := strings.TrimPrefix(version, "v")
+	if i := strings.IndexAny(core, "-+"); i >= 0 {
+		core = core[:i]
+	}
+	return strings.Split(core, ".")
+}
+
 // currentVersionWitness identifies a syntactically valid post-1.0 version
 // marker. A local Dolt root in server mode is ambiguous without it, so that
 // shape must be refused rather than opened as a historical schema.
 func currentVersionWitness(version string) bool {
-	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	parts := versionCoreParts(version)
 	if len(parts) != 3 {
 		return false
 	}
@@ -271,7 +287,7 @@ func currentVersionWitness(version string) bool {
 }
 
 func legacyVersionMinor(version string) (int, bool) {
-	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	parts := versionCoreParts(version)
 	if len(parts) != 3 || parts[0] != "0" {
 		return 0, false
 	}
