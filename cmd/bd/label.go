@@ -526,16 +526,17 @@ func runLabelAdd(ctx context.Context, args []string, replace bool) error {
 // the issue already carries in that namespace instead of tripping the
 // exclusivity guard.
 //
-// TWO Update calls per issue, not one patch carrying Add and Remove together.
-// issueops.ApplyLabelPatch (the direct route) computes the target label SET
-// and physically removes before it adds, so a same-call swap is safe there,
-// but internal/storage/domain/issue.go's ApplyUpdate (the proxied route)
-// applies AddLabels before RemoveLabels, the opposite order. A single patch
-// carrying both would swap cleanly on one backend and trip the exclusivity
-// guard on the other, silently, for a caller who cannot see which backend
-// answered. Removing first in its own call, then adding in a second, is
-// correct on both: the add's own exclusivity check always finds the
-// namespace already clear, because the removal already committed.
+// The swap is ONE update per issue: a single patch carrying both the
+// removals and the add runs in one transaction on either backend, so a
+// failure leaves the issue untouched instead of stripped mid-swap. Both
+// backends apply removals before additions - issueops.ApplyLabelPatch (the
+// direct route) computes the target label set, and domain ApplyUpdate (the
+// proxied route) was reordered to match (bda-fjjb) - so the add's own
+// exclusivity check always finds the namespace already clear. The previous
+// shape here, remove in one Update then add in a second, existed only
+// because the proxied route applied additions first; its failure window
+// (remove committed, add failed) stripped the original label and applied
+// nothing, defeating the exclusivity guarantee --replace exists to keep.
 func applyLabelAddReplace(ctx context.Context, issueIDs []string, labels []string) error {
 	lifecycle, err := openIssueLifecycle()
 	if err != nil {
@@ -560,29 +561,23 @@ func applyLabelAddReplace(ctx context.Context, issueIDs []string, labels []strin
 	prefixes := labelns.ParsePrefixes(raw.Value)
 
 	for _, issueID := range issueIDs {
+		var toRemove []string
 		if len(prefixes) > 0 {
 			details, gerr := reader.Get(ctx, issueops.GetRequest{ID: issueID})
 			if gerr != nil {
 				return HandleErrorRespectJSON("resolving %s: %v", issueID, gerr)
 			}
-			toRemove := conflictingExclusiveLabels(prefixes, labels, details.Labels)
-			if len(toRemove) > 0 {
-				if _, uerr := lifecycle.Update(ctx, issueops.UpdateRequest{
-					Actor:   actor,
-					IssueID: issueID,
-					Patch:   issueops.IssuePatch{Labels: issueops.LabelPatch{Remove: toRemove}},
-				}); uerr != nil {
-					return HandleErrorRespectJSON("label add --replace: removing '%s' on %s: %v",
-						strings.Join(toRemove, "', '"), issueID, uerr)
-				}
-				commandDidWrite.Store(true)
-			}
+			toRemove = conflictingExclusiveLabels(prefixes, labels, details.Labels)
 		}
 		if _, uerr := lifecycle.Update(ctx, issueops.UpdateRequest{
 			Actor:   actor,
 			IssueID: issueID,
-			Patch:   issueops.IssuePatch{Labels: issueops.LabelPatch{Add: labels}},
+			Patch:   issueops.IssuePatch{Labels: issueops.LabelPatch{Add: labels, Remove: toRemove}},
 		}); uerr != nil {
+			if len(toRemove) > 0 {
+				return HandleErrorRespectJSON("label add --replace: swapping '%s' for '%s' on %s: %v",
+					strings.Join(labels, "', '"), strings.Join(toRemove, "', '"), issueID, uerr)
+			}
 			return HandleErrorRespectJSON("label add: adding '%s' on %s: %v",
 				strings.Join(labels, "', '"), issueID, uerr)
 		}

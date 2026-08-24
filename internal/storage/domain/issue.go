@@ -751,16 +751,30 @@ func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec Upda
 			}
 		}
 	}
-	if len(spec.AddLabels) > 0 {
-		if useWisp {
-			if err := u.labelUC.AddWispLabels(ctx, id, spec.AddLabels, actor); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := u.labelUC.AddLabels(ctx, id, spec.AddLabels, actor); err != nil {
-				return nil, err
-			}
+	// Removals apply BEFORE additions so one patch can swap labels inside an
+	// exclusive namespace atomically: the add's exclusivity guard reads the
+	// in-transaction state, and with the old label already removed the
+	// namespace is clear. The direct backend (issueops.ApplyLabelPatch)
+	// already removes before it adds; applying the opposite order here made
+	// the same patch backend-dependent and forced `bd label add --replace`
+	// into a non-atomic two-call swap (bda-fjjb). A label named in BOTH edits
+	// is dropped from the additions first, so removal still wins - the
+	// documented LabelPatch contract - instead of becoming add-wins under the
+	// new order.
+	addLabels := spec.AddLabels
+	if len(addLabels) > 0 && len(spec.RemoveLabels) > 0 {
+		removing := make(map[string]struct{}, len(spec.RemoveLabels))
+		for _, label := range spec.RemoveLabels {
+			removing[label] = struct{}{}
 		}
+		kept := make([]string, 0, len(addLabels))
+		for _, label := range addLabels {
+			if _, gone := removing[label]; gone {
+				continue
+			}
+			kept = append(kept, label)
+		}
+		addLabels = kept
 	}
 	if len(spec.RemoveLabels) > 0 {
 		if useWisp {
@@ -769,6 +783,17 @@ func (u *issueUseCaseImpl) ApplyUpdate(ctx context.Context, id string, spec Upda
 			}
 		} else {
 			if err := u.labelUC.RemoveLabels(ctx, id, spec.RemoveLabels, actor); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(addLabels) > 0 {
+		if useWisp {
+			if err := u.labelUC.AddWispLabels(ctx, id, addLabels, actor); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := u.labelUC.AddLabels(ctx, id, addLabels, actor); err != nil {
 				return nil, err
 			}
 		}
