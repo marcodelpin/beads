@@ -248,3 +248,42 @@ func TestListLabelDefinitions_Empty(t *testing.T) {
 		t.Errorf("expected no definitions on a fresh store, got %v", defs)
 	}
 }
+
+// bda-d1py: define/undefine must create DOLT commits, not just SQL commits.
+// label_definitions is a main-plane table (no dolt_ignore line in migration
+// 0066, unlike C's label_namespace_locks) whose own header calls it the
+// workspace's shared curated vocabulary - rows left in the working set never
+// travel on push/clone, so a peer under labels.vocabulary=enforce runs
+// against an empty or stale registry. Mirrors the discipline the sibling
+// durable label mutations in this package already follow (AddLabel ->
+// doltAddAndCommit).
+func TestDefineUndefineLabelCreateDoltCommits(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	countByMessage := func(msg string) int {
+		var n int
+		if err := store.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM dolt_log WHERE message = ?", msg).Scan(&n); err != nil {
+			t.Fatalf("count dolt_log by message %q: %v", msg, err)
+		}
+		return n
+	}
+
+	if err := store.DefineLabel(ctx, "backend", "server-side work", "tester"); err != nil {
+		t.Fatalf("DefineLabel failed: %v", err)
+	}
+	if got := countByMessage("bd: label define backend"); got != 1 {
+		t.Errorf("dolt_log commits for define = %d, want 1 (rows in the working set do not travel on push/clone)", got)
+	}
+
+	if err := store.UndefineLabel(ctx, "backend"); err != nil {
+		t.Fatalf("UndefineLabel failed: %v", err)
+	}
+	if got := countByMessage("bd: label undefine backend"); got != 1 {
+		t.Errorf("dolt_log commits for undefine = %d, want 1", got)
+	}
+}
