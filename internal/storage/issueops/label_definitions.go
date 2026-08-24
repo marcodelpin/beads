@@ -39,6 +39,19 @@ import (
 // from, here and in rejectLabelCollisionInTx/UndefineLabelInTx below: no
 // query in this file folds case in SQL (no LOWER()), so the registry's
 // case-insensitive matching can never disagree with itself across call sites.
+//
+// WHAT THAT AUTHORITY ACTUALLY DELIVERS (bda-h2yd): strings.ToLower is Go's
+// simple 1:1 Unicode mapping, not full case folding, so the "never two
+// case-variant spellings" discipline holds for ASCII and simply-mapped
+// variants only. Pairs that only full folding unifies - Greek final sigma
+// vs sigma, Turkish dotless i vs i - fold to DIFFERENT keys and can both be
+// defined. Self-consistency is unaffected (store and check share this one
+// function); the bound is on the invariant's breadth, accepted deliberately:
+// real vocabularies are ASCII in practice, and switching to full folding
+// would change the stored label_folded key format under existing rows. The
+// migration 0066 header states the discipline in its strong form; this
+// comment is the authoritative qualification (the applied migration file is
+// content-frozen and cannot be reworded).
 func DefineLabelInTx(ctx context.Context, tx DBTX, label, description, actor string) error {
 	label = strings.TrimSpace(label)
 	if label == "" {
