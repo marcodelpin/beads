@@ -547,6 +547,25 @@ func TestImportIssuesCoreArmsTransactionalStaleGuard(t *testing.T) {
 	}
 }
 
+// bda-bt21: import replays history that may predate labels.exclusive-prefixes
+// (bd-7u5ki), so the classic route must always warn on a namespace conflict
+// rather than hard-fail the whole batch - never dropping the historical
+// labels on data that predates the policy. Pins the severity this route has
+// always set, as the reference the proxied route (issueops.Importer.
+// ImportBatch, internal/storage/uow/importer.go) must match.
+func TestImportIssuesCoreWarnsNotErrorsOnExclusiveLabelConflict(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	issue := []*types.Issue{{ID: "bd-conflict", Title: "snapshot", UpdatedAt: base}}
+
+	store := &fakeImportIssueLookupStore{}
+	if _, err := importIssuesCore(context.Background(), "", store, issue, ImportOptions{}); err != nil {
+		t.Fatalf("importIssuesCore: %v", err)
+	}
+	if len(store.createOpts) != 1 || !store.createOpts[0].ExclusiveLabelConflictWarn {
+		t.Fatalf("createOpts = %#v, want ExclusiveLabelConflictWarn armed by default", store.createOpts)
+	}
+}
+
 // bd-axluy: redirected stdin without "-" (or a file argument) must be an
 // error, not a silent import of the default JSONL. The guard fires before any
 // store access, so these cases need no database; the pass-through cases are
