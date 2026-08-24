@@ -194,7 +194,7 @@ func AddLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issueID,
 // commit-time merge surfaces a 1213/1205 serialization error for the loser -
 // withRetryTx/RunTx replay the WHOLE transaction against a fresh read, which
 // now observes the winner's committed label and correctly rejects it. See
-// migration 0067 (label_namespace_locks) for the full mechanism writeup.
+// migration 0068 (label_namespace_locks) for the full mechanism writeup.
 func EnforceExclusiveLabelInTx(ctx context.Context, tx DBTX, labelTable, issueID, label string) error {
 	raw, err := GetConfigInTx(ctx, tx, labelns.ConfigKey)
 	if err != nil {
