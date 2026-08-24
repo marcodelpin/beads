@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/labelns"
 	"github.com/steveyegge/beads/internal/types"
 	publicops "github.com/steveyegge/beads/issueops"
 )
@@ -213,6 +214,51 @@ func TestImporterUOW(t *testing.T) {
 	t.Run("EmptyActorIsRefused", func(t *testing.T) {
 		if _, err := imp.ImportBatch(ctx, publicops.ImportBatchRequest{Source: "noactor.jsonl"}); err == nil {
 			t.Fatal("ImportBatch with empty actor should be refused")
+		}
+	})
+
+	t.Run("ExclusiveNamespaceViolationWarnsAndKeepsLabels", func(t *testing.T) {
+		// bda-bt21: the proxied importer honors the import contract for
+		// exclusive label namespaces - warn and keep the labels as written -
+		// instead of hard-failing the batch the way interactive creates do.
+		// The policy is installed BEFORE the import so the incoming row
+		// violates it, the historical-data case the contract exists for.
+		if err := kit.SetConfig(ctx, labelns.ConfigKey, "tier:"); err != nil {
+			t.Fatalf("SetConfig(%s): %v", labelns.ConfigKey, err)
+		}
+		defer func() {
+			if err := kit.SetConfig(ctx, labelns.ConfigKey, ""); err != nil {
+				t.Fatalf("reset %s: %v", labelns.ConfigKey, err)
+			}
+		}()
+		when := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+		result, err := imp.ImportBatch(ctx, publicops.ImportBatchRequest{
+			Actor: "importer-test",
+			Issues: []*types.Issue{{
+				ID: "imp-excl", Title: "Historic labels predate the policy", Status: types.StatusOpen,
+				IssueType: types.TypeTask, Priority: 2,
+				Labels:    []string{"tier:fable", "tier:opus"},
+				CreatedAt: when, UpdatedAt: when,
+			}},
+			Source: "importer_uow_test.jsonl",
+		})
+		if err != nil {
+			t.Fatalf("ImportBatch with exclusive-namespace violation: %v (import must warn, not fail)", err)
+		}
+		if result.Created != 1 {
+			t.Errorf("Created = %d, want 1", result.Created)
+		}
+		// The violating labels are KEPT (no silent data loss)...
+		if got := queryInt(t, "SELECT COUNT(*) FROM labels WHERE issue_id = 'imp-excl' AND label LIKE 'tier:%'"); got != 2 {
+			t.Errorf("imp-excl tier labels = %d, want 2 (labels kept as written)", got)
+		}
+		// ...and the violation is REPORTED, in the classic import's format.
+		if len(result.ExclusiveLabelConflicts) != 1 {
+			t.Fatalf("ExclusiveLabelConflicts = %v, want exactly 1 entry", result.ExclusiveLabelConflicts)
+		}
+		want := `imp-excl: namespace "tier:" has tier:fable, tier:opus`
+		if result.ExclusiveLabelConflicts[0] != want {
+			t.Errorf("conflict = %q, want %q", result.ExclusiveLabelConflicts[0], want)
 		}
 	})
 }

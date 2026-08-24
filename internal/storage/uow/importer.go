@@ -3,6 +3,7 @@ package uow
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/storage"
 	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
@@ -60,10 +61,26 @@ func (o *importer) ImportBatch(ctx context.Context, request publicops.ImportBatc
 			}
 			staleRejected := make(map[string]struct{})
 			skippedSeen := make(map[string]struct{})
+			exclusiveSeen := make(map[string]struct{})
 			opts := storage.BatchCreateOptions{
 				SkipPrefixValidation:           request.SkipPrefixValidation,
 				RejectStaleUpserts:             !request.AllowStale,
 				SkipDependencyValidationErrors: true,
+				// Exclusive label namespaces (bd-7u5ki): import replays
+				// history that may predate the labels.exclusive-prefixes
+				// config, so violations warn and keep the labels as written -
+				// the same contract the classic import sets. Without this the
+				// proxied route hard-failed the whole batch where classic
+				// warned.
+				ExclusiveLabelConflictWarn: true,
+				OnExclusiveLabelConflict: func(issueID, prefix string, labels []string) {
+					conflict := fmt.Sprintf("%s: namespace %q has %s", issueID, prefix, strings.Join(labels, ", "))
+					if _, ok := exclusiveSeen[conflict]; ok {
+						return
+					}
+					exclusiveSeen[conflict] = struct{}{}
+					result.ExclusiveLabelConflicts = append(result.ExclusiveLabelConflicts, conflict)
+				},
 				OnSkippedDependency: func(issueID, dependsOnID, reason string) {
 					key := issueID + "\x00" + dependsOnID + "\x00" + reason
 					if _, ok := skippedSeen[key]; ok {

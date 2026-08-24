@@ -155,12 +155,7 @@ func runImportRecordsProxied(ctx context.Context, issues []*types.Issue, memorie
 		for _, dep := range batch.SkippedDependencies {
 			skippedDependencies = append(skippedDependencies, fmt.Sprintf("%s -> %s: %s", dep.IssueID, dep.DependsOnID, dep.Reason))
 		}
-		// The proxied importer (issueops.Importer) does not yet report
-		// exclusive-label-namespace conflicts back through ImportBatchResult -
-		// nil here matches this route's pre-existing behavior (no regression,
-		// bd-7u5ki tracked the direct route's enforcement, not proxied import
-		// reporting parity).
-		applyImportOutcome(&result, assembleImportResult(issues, staleSkippedIDs, changePlan, staleRejectedSet, skippedDependencies, nil))
+		applyImportOutcome(&result, assembleImportResult(issues, staleSkippedIDs, changePlan, staleRejectedSet, skippedDependencies, batch.ExclusiveLabelConflicts))
 	} else {
 		result.Skipped += len(staleSkippedIDs)
 		result.StaleSkippedIDs = append(result.StaleSkippedIDs, staleSkippedIDs...)

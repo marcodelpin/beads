@@ -67,6 +67,11 @@ type ImportBatchResult struct {
 	StaleRejectedIDs []string
 	// SkippedDependencies lists the edges dropped by the batch, deduplicated.
 	SkippedDependencies []SkippedDependency
+	// ExclusiveLabelConflicts lists exclusive-namespace violations the batch
+	// kept as written: import warns instead of failing, because the policy
+	// may postdate the data (bd-7u5ki). Formatted and deduplicated the same
+	// way the classic import reports them.
+	ExclusiveLabelConflicts []string
 	// PrefixSynced reports that the stored issue_prefix was rewritten to
 	// SyncIssuePrefix.
 	PrefixSynced bool
