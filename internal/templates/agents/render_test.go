@@ -519,3 +519,18 @@ func TestReplaceSectionWithOptsDetectsRemoteChange(t *testing.T) {
 		t.Error("replaced content should not contain 'bd dolt push' with HasRemote=false")
 	}
 }
+
+// TestRenderedSectionsNoRetiredMemoryRule pins bda-5uxn for the template path:
+// no rendered profile may teach "do NOT use MEMORY.md files" (see
+// cmd/bd/init_inject_test.go TestBdInjectBlockNoRetiredMemoryRule for why).
+func TestRenderedSectionsNoRetiredMemoryRule(t *testing.T) {
+	for _, p := range []Profile{ProfileFull, ProfileMinimal} {
+		s := RenderSection(p)
+		if !strings.Contains(s, "bd") {
+			t.Fatalf("positive control failed: profile %s rendered empty/degenerate section", p)
+		}
+		if strings.Contains(strings.ToLower(s), "not use memory.md") {
+			t.Errorf("profile %s still carries the retired rule 'do NOT use MEMORY.md files'", p)
+		}
+	}
+}

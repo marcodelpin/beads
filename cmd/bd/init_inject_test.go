@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,3 +188,36 @@ func TestRunInjectAgentsMd(t *testing.T) {
 }
 
 func strPtrInject(s string) *string { return &s }
+
+// TestBdInjectBlockNoRetiredMemoryRule pins bda-5uxn: the injected block must
+// not teach "do NOT use MEMORY.md files". Agent harnesses (Claude Code among
+// them) maintain their own MEMORY.md/memory-dir mechanism; a bd-owned block
+// that forbids it contradicts the host platform it is injected into. The
+// positive control asserts the block still teaches bd remember at all, so an
+// empty block cannot pass this test vacuously.
+// The needle is matched case-insensitively: the retired sentence shipped in two
+// spellings ("do NOT" in the inject block, "Do NOT" in bd prime), and the first
+// sweep keyed on the exact bytes missed the second pair (bda-5uxn).
+func TestBdInjectBlockNoRetiredMemoryRule(t *testing.T) {
+	for name, text := range map[string]string{
+		"init-inject block": bdInjectBlock(),
+		"prime MCP context": capturePrimeText(t, outputMCPContext),
+		"prime CLI context": capturePrimeText(t, outputCLIContext),
+	} {
+		if !strings.Contains(text, "bd remember") {
+			t.Fatalf("positive control failed: %s no longer mentions 'bd remember' at all", name)
+		}
+		if strings.Contains(strings.ToLower(text), "not use memory.md") {
+			t.Errorf("%s still carries the retired rule 'do NOT use MEMORY.md files'", name)
+		}
+	}
+}
+
+func capturePrimeText(t *testing.T, fn func(io.Writer, bool) error) string {
+	t.Helper()
+	var b strings.Builder
+	if err := fn(&b, false); err != nil {
+		t.Fatalf("prime output func: %v", err)
+	}
+	return b.String()
+}

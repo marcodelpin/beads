@@ -709,7 +709,7 @@ func outputMCPContext(w io.Writer, stealthMode bool) error {
 - **Default**: Use beads for ALL task tracking (` + "`bd create`" + `, ` + "`bd ready`" + `, ` + "`bd close`" + `)
 - **Prohibited**: Do NOT use TodoWrite, TaskCreate, or markdown files for task tracking
 - **Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting
-- **Memory**: Use ` + "`bd remember`" + ` for persistent knowledge. Do NOT use MEMORY.md files.
+- **Memory**: Use ` + "`bd remember`" + ` for tracker-scoped persistent knowledge; harness-managed memory (MEMORY.md, memory dirs) is a separate mechanism and stays in use.
 - Persistence you don't need beats lost context
 - ` + profileRule + `
 
@@ -903,7 +903,7 @@ git status                  # Check changed files
 - **Default**: Use beads for ALL task tracking (` + "`bd create`" + `, ` + "`bd ready`" + `, ` + "`bd close`" + `)
 - **Prohibited**: Do NOT use TodoWrite, TaskCreate, or markdown files for task tracking
 - **Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting
-- **Memory**: Use ` + "`bd remember \"insight\"`" + ` for persistent knowledge across sessions. Do NOT use MEMORY.md files — they fragment across accounts. Search with ` + "`bd memories <keyword>`" + `.
+- **Memory**: Use ` + "`bd remember \"insight\"`" + ` for tracker-scoped knowledge across sessions; harness-managed memory (MEMORY.md, memory dirs) is a separate mechanism and stays in use. Search with ` + "`bd memories <keyword>`" + `.
 - Persistence you don't need beats lost context
 - ` + profileRule + `
 - ` + gitWorkflowRule + `
