@@ -253,6 +253,51 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	}
 }
 
+// TestFindExclusiveLabelViolations_StreamingAndEscaping pins the bda-9krh
+// rewrite: the scan streams one issue's labels at a time (the LAST group must
+// still be flushed - two consecutive violating issues catch a dropped final
+// flush) and the prefix pre-filter escapes LIKE metacharacters (a `_` in a
+// prefix must not act as a single-character wildcard).
+func TestFindExclusiveLabelViolations_StreamingAndEscaping(t *testing.T) {
+	ctx := context.Background()
+	st := newExclusiveLabelStore(t)
+
+	seed := []*types.Issue{
+		{ID: "test-s1", Title: "s1", Status: types.StatusOpen, Priority: 2,
+			IssueType: types.TypeTask, Labels: []string{"tier:fable", "tier:opus"}},
+		{ID: "test-s2", Title: "s2", Status: types.StatusOpen, Priority: 2,
+			IssueType: types.TypeTask, Labels: []string{"tier:a", "tier:b"}},
+		// Matches "a_b:" only if the underscore is treated as a wildcard:
+		// with correct escaping this issue is OUTSIDE the namespace.
+		{ID: "test-s3", Title: "s3", Status: types.StatusOpen, Priority: 2,
+			IssueType: types.TypeTask, Labels: []string{"aXb:one", "aXb:two"}},
+	}
+	if err := st.CreateIssuesWithFullOptions(ctx, seed, "importer", storage.BatchCreateOptions{
+		SkipPrefixValidation:       true,
+		ExclusiveLabelConflictWarn: true,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	violations, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), []string{"tier:", "a_b:"})
+	if err != nil {
+		t.Fatalf("FindExclusiveLabelViolations: %v", err)
+	}
+	if len(violations) != 2 {
+		t.Fatalf("expected 2 violations (s1+s2, s3 excluded by LIKE escaping), got %+v", violations)
+	}
+	got := map[string]bool{}
+	for _, v := range violations {
+		got[v.IssueID] = true
+		if v.Prefix != "tier:" {
+			t.Fatalf("unexpected prefix in %+v", v)
+		}
+	}
+	if !got["test-s1"] || !got["test-s2"] {
+		t.Fatalf("last-group flush lost a violation: %+v", violations)
+	}
+}
+
 func TestDropConflictingInheritedLabels(t *testing.T) {
 	prefixes := []string{"tier:"}
 

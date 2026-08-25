@@ -242,6 +242,22 @@ func acquireLabelNamespaceLockInTx(ctx context.Context, tx DBTX, issueID, namesp
 	return nil
 }
 
+// exclusiveLabelPrefixFilter builds the SQL fragment restricting the label
+// scan to the exclusive namespaces: labels outside them can never contribute
+// to a conflict, and on a large corpus they are the overwhelming majority of
+// rows. The fragment holds only fixed `l.label LIKE ?` placeholders; prefix
+// values travel as args, LIKE metacharacters escaped.
+func exclusiveLabelPrefixFilter(prefixes []string) (string, []any) {
+	likeClauses := make([]string, 0, len(prefixes))
+	args := make([]any, 0, len(prefixes))
+	escaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	for _, p := range prefixes {
+		likeClauses = append(likeClauses, `l.label LIKE ?`)
+		args = append(args, escaper.Replace(p)+"%")
+	}
+	return strings.Join(likeClauses, " OR "), args
+}
+
 // ExclusiveLabelViolation reports an issue carrying more than one label in a
 // configured exclusive namespace.
 type ExclusiveLabelViolation struct {
@@ -260,37 +276,49 @@ func FindExclusiveLabelViolations(ctx context.Context, db DBTX, prefixes []strin
 	if len(prefixes) == 0 {
 		return nil, nil
 	}
+	filterSQL, args := exclusiveLabelPrefixFilter(prefixes)
+	//nolint:gosec // G202: the concatenated fragment is built from fixed
+	// `l.label LIKE ?` placeholders only; prefix values travel as args.
 	rows, err := db.QueryContext(ctx, `
 		SELECT l.issue_id, l.label
 		FROM labels l JOIN issues i ON i.id = l.issue_id
-		WHERE i.status != 'closed'
-		ORDER BY l.issue_id, l.label`)
+		WHERE i.status != 'closed' AND (`+filterSQL+`)
+		ORDER BY l.issue_id, l.label`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("scan exclusive labels: %w", err)
 	}
 	defer rows.Close()
 
-	labelsByIssue := make(map[string][]string)
-	var issueOrder []string
+	// The rows arrive grouped by issue_id, so one issue's labels are held at
+	// a time instead of the whole corpus (bda-9krh: the previous map-of-all-
+	// issues made routine `bd doctor` memory scale with total label count).
+	var violations []ExclusiveLabelViolation
+	var curIssue string
+	var curLabels []string
+	flush := func() {
+		for _, c := range labelns.Conflicts(prefixes, curLabels) {
+			violations = append(violations, ExclusiveLabelViolation{IssueID: curIssue, Prefix: c.Prefix, Labels: c.Labels})
+		}
+	}
 	for rows.Next() {
 		var issueID, label string
 		if err := rows.Scan(&issueID, &label); err != nil {
 			return nil, fmt.Errorf("scan exclusive labels: %w", err)
 		}
-		if _, ok := labelsByIssue[issueID]; !ok {
-			issueOrder = append(issueOrder, issueID)
+		if issueID != curIssue {
+			if curIssue != "" {
+				flush()
+			}
+			curIssue = issueID
+			curLabels = curLabels[:0]
 		}
-		labelsByIssue[issueID] = append(labelsByIssue[issueID], label)
+		curLabels = append(curLabels, label)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("scan exclusive labels: %w", err)
 	}
-
-	var violations []ExclusiveLabelViolation
-	for _, issueID := range issueOrder {
-		for _, c := range labelns.Conflicts(prefixes, labelsByIssue[issueID]) {
-			violations = append(violations, ExclusiveLabelViolation{IssueID: issueID, Prefix: c.Prefix, Labels: c.Labels})
-		}
+	if curIssue != "" {
+		flush()
 	}
 	return violations, nil
 }
