@@ -164,7 +164,7 @@ func AddLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issueID,
 	}
 	// A label is part of the bead snapshot, so a label write journals as an
 	// update carrying the complete post-mutation set.
-	return RecordEventInTx(ctx, tx, EventUpdate, issueID)
+	return RecordEventInTx(ctx, tx, EventUpdate, issueID, actor)
 }
 
 // RemoveLabelInTx removes a label from an issue and records an event within
@@ -195,7 +195,7 @@ func RemoveLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issue
 	}); err != nil {
 		return fmt.Errorf("remove label: record event: %w", err)
 	}
-	return RecordEventInTx(ctx, tx, EventUpdate, issueID)
+	return RecordEventInTx(ctx, tx, EventUpdate, issueID, actor)
 }
 
 // renameLabelPlanes pairs each label table with the event table journaling
@@ -357,7 +357,7 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 		}); err != nil {
 			return 0, 0, nil, fmt.Errorf("rename label: record event for %s: %w", id, err)
 		}
-		if err := RecordEventInTx(ctx, tx, EventUpdate, id); err != nil {
+		if err := RecordEventInTx(ctx, tx, EventUpdate, id, actor); err != nil {
 			return 0, 0, nil, fmt.Errorf("rename label: journal %s: %w", id, err)
 		}
 	}
