@@ -115,8 +115,33 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 		fmt.Fprintf(os.Stderr, "warning: auto-import: failed to parse %s: %v\n", jsonlPath, err)
 		return
 	}
-	if len(issues) == 0 {
+	if len(issues) == 0 && len(labelDefs) == 0 {
 		return // nothing to import
+	}
+
+	// Label definitions go FIRST, before the issue import and before any
+	// stamp (bda-os0d): applyLabelDefinitionsClassic is define-if-absent, so
+	// a crash between the definitions and the issue import leaves an empty
+	// database with no stamp, and the next pass genuinely retries both. The
+	// previous order (issues -> stamp -> definitions) made a definitions
+	// failure permanent: the stamp - and the now non-empty database - blocked
+	// every later attempt. A definitions error returns WITHOUT stamping for
+	// the same reason (record-level validation problems are already warnings
+	// inside applyLabelDefinitionsClassic; a hard error here is store-level
+	// and transient).
+	defined, defErr := applyLabelDefinitionsClassic(ctx, s, labelDefs)
+	if defErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: auto-import: label definitions: %v\n", defErr)
+		return
+	}
+	if defined > 0 {
+		commandDidWrite.Store(true)
+	}
+	if len(issues) == 0 {
+		// Definition-only export (bda-we22): the definitions ARE the import.
+		writeAutoImportStamp(beadsDir, info)
+		fmt.Fprintf(os.Stderr, "auto-imported %d label definitions from %s\n", defined, jsonlPath)
+		return
 	}
 
 	// Prefer single-transaction import (embedded mode) to avoid
@@ -135,13 +160,6 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 			writeAutoImportStamp(beadsDir, info)
 			// Signal PersistentPostRun to auto-commit (no explicit DOLT_COMMIT here).
 			commandDidWrite.Store(true)
-			// Label definitions ride outside ImportJSONLData's single
-			// transaction (its jsonlImporter interface predates them); a
-			// crash in between recovers on the next auto-import pass.
-			defined, defErr := applyLabelDefinitionsClassic(ctx, s, labelDefs)
-			if defErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: auto-import: label definitions: %v\n", defErr)
-			}
 			fmt.Fprintf(os.Stderr, "auto-imported %d issues", imported)
 			if len(configEntries) > 0 {
 				fmt.Fprintf(os.Stderr, " and %d config entries", len(configEntries))
