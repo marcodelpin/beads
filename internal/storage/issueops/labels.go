@@ -299,9 +299,34 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 		inserted += int(n)
 	}
 	merged = len(oldIDs) - inserted
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-		`DELETE FROM %s WHERE label = ?`, labelTable), oldLabel); err != nil {
-		return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
+	// The delete is RESTRICTED to the ids this transaction actually renamed,
+	// never `WHERE label = ?` alone: an unrestricted delete's blast radius
+	// depends on the engine's DELETE visibility (a current-read engine could
+	// remove a row a concurrent AddLabel committed after our snapshot -
+	// destroying a label this loop never renamed, counted or journaled),
+	// while the id-scoped form touches exactly the rows the insert above
+	// accounted for on every engine. A concurrent add of oldLabel to an
+	// issue outside oldIDs therefore SURVIVES the rename, which is the same
+	// observable state as that add having happened after this transaction
+	// committed - the only order-independent reading of the race.
+	for start := 0; start < len(oldIDs); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(oldIDs) {
+			end = len(oldIDs)
+		}
+		batch := oldIDs[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, oldLabel)
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`DELETE FROM %s WHERE label = ? AND issue_id IN (%s)`,
+			labelTable, strings.Join(placeholders, ",")), args...); err != nil {
+			return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
+		}
 	}
 	comment := fmt.Sprintf("Renamed label: '%s' to '%s'", oldLabel, newLabel)
 	// KNOWN COST: this loop is O(len(oldIDs)) SQL round trips, not one batch -
