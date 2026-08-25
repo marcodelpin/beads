@@ -55,8 +55,14 @@ func TestRenameLabelInPlane_ConcurrentAddLabelStillCountsMerge(t *testing.T) {
 	mock.ExpectExec(`INSERT IGNORE INTO labels`).
 		WithArgs("i1", "new").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(`DELETE FROM labels WHERE label = \?`).
-		WithArgs("old").
+	// The delete is ID-SCOPED (label AND issue_id IN (...)): an unrestricted
+	// `WHERE label = ?` would let a current-read engine remove a row a
+	// concurrent AddLabel(oldLabel) committed to an issue OUTSIDE the
+	// snapshot - deleting a label the sweep never renamed, counted or
+	// journaled. sqlmock's WithArgs is the pin: a regression back to the
+	// unrestricted form fails on the argument mismatch.
+	mock.ExpectExec(`DELETE FROM labels WHERE label = \? AND issue_id IN`).
+		WithArgs("old", "i1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	expectRenameEventScript(mock, 1)
 
@@ -98,8 +104,8 @@ func TestRenameLabelInPlane_CleanRenameCountsZeroMerges(t *testing.T) {
 	mock.ExpectExec(`INSERT IGNORE INTO labels`).
 		WithArgs("i1", "new", "i2", "new").
 		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec(`DELETE FROM labels WHERE label = \?`).
-		WithArgs("old").
+	mock.ExpectExec(`DELETE FROM labels WHERE label = \? AND issue_id IN`).
+		WithArgs("old", "i1", "i2").
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	expectRenameEventScript(mock, 2)
 
