@@ -750,6 +750,13 @@ func runDiagnostics(path string) doctorResult {
 	labelWhitespaceCheck := convertWithCategory(doctor.CheckLabelWhitespaceWithStore(sharedStore), doctor.CategoryData)
 	result.Checks = append(result.Checks, labelWhitespaceCheck)
 
+	// Check 10e: orphan label_namespace_locks rows (bd-7u5ki follow-up). The
+	// delete paths cascade the lock rows now, but rows orphaned before that
+	// cascade shipped stay forever - the table is working-set-only, so no
+	// merge ever prunes them. Warn-only, one-shot cleanup in the Fix hint.
+	orphanLockCheck := convertWithCategory(doctor.CheckOrphanLabelNamespaceLocksWithStore(sharedStore), doctor.CategoryData)
+	result.Checks = append(result.Checks, orphanLockCheck)
+
 	// Check 11: Claude integration
 	claudeCheck := convertWithCategory(doctor.CheckClaude(path), doctor.CategoryIntegration)
 	result.Checks = append(result.Checks, claudeCheck)
