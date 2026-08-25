@@ -192,3 +192,61 @@ func LabelVocabularySet(defs []types.LabelDefinition) map[string]string {
 	}
 	return set
 }
+
+// ImportLabelDefinitions applies incoming vocabulary definitions (a JSONL
+// import's "_type":"label-definition" records) with define-if-absent
+// semantics, so a restored workspace gets its registry back and a re-import
+// is a no-op. DefineLabelInTx is deliberately a CREATE, and an import
+// replays history that may predate or disagree with the live registry, so
+// the import contract mirrors the exclusive-labels one: never fail the batch
+// on historical data.
+//
+//   - an incoming label already defined under the SAME spelling is skipped
+//     silently (idempotent re-import)
+//   - one that collides only under a DIFFERENT case keeps the existing
+//     definition and reports a warning (strings.ToLower is the registry's
+//     one folding authority - see the label_folded note above)
+//   - an absent one is defined through the caller's define func; a define
+//     refused with storage.ErrValidation (a definition committed by a
+//     concurrent request between the existing read and this write) also
+//     degrades to a warning, any other error fails the import
+//
+// The caller supplies the existing registry and the write primitive, so the
+// same decision logic serves the classic store, the uow batch importer and
+// any future transport. fallbackActor is recorded when a record carries no
+// created_by of its own.
+func ImportLabelDefinitions(ctx context.Context, existing, incoming []types.LabelDefinition, fallbackActor string, define func(ctx context.Context, label, description, actor string) error) (int, []string, error) {
+	set := LabelVocabularySet(existing)
+	defined := 0
+	var warnings []string
+	for _, def := range incoming {
+		if def.Label == "" {
+			continue
+		}
+		folded := strings.ToLower(def.Label)
+		if have, ok := set[folded]; ok {
+			if have != def.Label {
+				warnings = append(warnings, fmt.Sprintf("label definition %q kept as existing %q (case-insensitive collision)", def.Label, have))
+			}
+			continue
+		}
+		description := ""
+		if def.Description != nil {
+			description = *def.Description
+		}
+		actor := fallbackActor
+		if def.CreatedBy != nil && *def.CreatedBy != "" {
+			actor = *def.CreatedBy
+		}
+		if err := define(ctx, def.Label, description, actor); err != nil {
+			if errors.Is(err, storage.ErrValidation) {
+				warnings = append(warnings, fmt.Sprintf("label definition %q not imported: %v", def.Label, err))
+				continue
+			}
+			return defined, warnings, fmt.Errorf("import label definition %q: %w", def.Label, err)
+		}
+		set[folded] = def.Label
+		defined++
+	}
+	return defined, warnings, nil
+}
