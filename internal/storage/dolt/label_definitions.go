@@ -108,7 +108,8 @@ func wrapDefinitionPublish(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("label definition recorded but not yet published to Dolt history "+
-		"(the row is committed in the working set and publishes with the next Dolt commit; "+
-		"a retry reporting already-defined/not-defined confirms it landed): %w", err)
+	return fmt.Errorf("label definition recorded but its publication to Dolt history is INDETERMINATE "+
+		"(the row is committed in the working set; it is published only once a Dolt commit that stages "+
+		"label_definitions succeeds - run 'bd dolt commit' or any labels write to settle it; "+
+		"a retry reporting already-defined/not-defined confirms the row itself landed): %w", err)
 }
