@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/labelns"
 )
 
 func TestCheckConfigSetSideEffects_FederationRemote(t *testing.T) {
