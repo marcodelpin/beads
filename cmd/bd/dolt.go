@@ -1294,6 +1294,11 @@ func isLocalHost(host string) bool {
 func runExternalDoltStatus(beadsDir string, cfg *configfile.Config) {
 	host := cfg.GetDoltServerHost()
 	port := doltserver.DefaultConfig(beadsDir).Port
+	if defaulted := externalStatusPort(port, host); defaulted != port {
+		port = defaulted
+		fmt.Fprintf(os.Stderr, "Info: no Dolt port configured for remote server %s - defaulting to %d (echo <port> > .beads/dolt-server.port to override)\n",
+			host, port)
+	}
 	user := cfg.GetDoltServerUser()
 	database := cfg.GetDoltDatabase()
 	tls := cfg.GetDoltServerTLS()
@@ -2464,4 +2469,20 @@ func logDoltConfigChange(beadsDir, key, value string) {
 	}
 	defer f.Close()
 	_, _ = f.WriteString(entry)
+}
+
+// externalStatusPort resolves the port `bd dolt status` dials for an
+// externally-hosted server. Remote host with no resolved port: dialing
+// host:0 always fails, so the status path used to report the backend DOWN
+// while every data command, applying the shared-server default, succeeded
+// against the same host (bda-guxr). Apply the SAME default the working path
+// applies (internal/storage/dolt store.go, bda-i69): a fresh clone carries
+// dolt_server_host in metadata.json but no gitignored dolt-server.port. A
+// local host keeps 0 - auto-start is local-only and allocates its own port,
+// and defaulting there caused cross-project leakage before (GH#2098).
+func externalStatusPort(resolved int, host string) int {
+	if resolved == 0 && !configfile.IsLocalHostString(host) {
+		return doltserver.DefaultSharedServerPort
+	}
+	return resolved
 }
