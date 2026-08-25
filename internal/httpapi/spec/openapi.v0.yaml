@@ -9009,8 +9009,12 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        An ordered label edit: `replace` first, then `add`, then `remove`, so
-        REMOVAL WINS when the same label appears in more than one member.
+        An ordered label edit: `replace` first, then `remove`, then `add` — a
+        label named in both `remove` and `add` is dropped from the additions,
+        so REMOVAL WINS when the same label appears in more than one member.
+        Removals run before additions so one patch can swap labels inside an
+        exclusive namespace atomically: with the old label already removed,
+        the addition's exclusivity guard sees a clear namespace.
 
 
         It is the full patch rather than `IssuePatchBody.labels`' complete
@@ -10302,7 +10306,8 @@ components:
             It is the REPLACE half of the same ordered edit `ApplyPatchBody`
             spells as `labels.replace`, and `add_labels`/`remove_labels` are the
             other two. All three may travel together and are applied in that
-            order — replace, then add, then remove — so REMOVAL WINS when one
+            order — replace, then remove, then add, with a label named in both
+            edits dropped from the additions — so REMOVAL WINS when one
             label appears in more than one of them. That is the role's own
             algebra, not this operation's arrangement of it.
 
@@ -10350,8 +10355,9 @@ components:
             type: string
             maxLength: 255
           description: >-
-            Labels to remove, applied AFTER `labels` and `add_labels`, so
-            REMOVAL WINS over both.
+            Labels to remove, applied after `labels` and BEFORE `add_labels`;
+            a label also named in `add_labels` is dropped from the additions,
+            so REMOVAL WINS over both.
 
 
             Removing a label the issue does not carry CHANGES NO LABELS; it is

@@ -572,7 +572,7 @@ type ApplyItemResult struct {
 // ApplyItemResultKind Echoes the item's kind, so a caller walking the results does not have to walk the request alongside them.
 type ApplyItemResultKind string
 
-// ApplyLabelPatch An ordered label edit: `replace` first, then `add`, then `remove`, so REMOVAL WINS when the same label appears in more than one member.
+// ApplyLabelPatch An ordered label edit: `replace` first, then `remove`, then `add` — a label named in both `remove` and `add` is dropped from the additions, so REMOVAL WINS when the same label appears in more than one member. Removals run before additions so one patch can swap labels inside an exclusive namespace atomically: with the old label already removed, the addition's exclusivity guard sees a clear namespace.
 //
 // It is the full patch rather than `IssuePatchBody.labels`' complete replacement because a plan edits a set it did not compose: replacing would mean reading the labels back first, and the read this operation exists to avoid is exactly that one.
 //
@@ -644,7 +644,7 @@ type ApplyPatchBody struct {
 	// IssueType The issue type, from this workspace's own configured vocabulary. A type outside it is refused by the ROLE and reaches the client as a `400`.
 	IssueType *string `json:"issue_type,omitempty"`
 
-	// Labels An ordered label edit: `replace` first, then `add`, then `remove`, so REMOVAL WINS when the same label appears in more than one member.
+	// Labels An ordered label edit: `replace` first, then `remove`, then `add` — a label named in both `remove` and `add` is dropped from the additions, so REMOVAL WINS when the same label appears in more than one member. Removals run before additions so one patch can swap labels inside an exclusive namespace atomically: with the old label already removed, the addition's exclusivity guard sees a clear namespace.
 	//
 	// It is the full patch rather than `IssuePatchBody.labels`' complete replacement because a plan edits a set it did not compose: replacing would mean reading the labels back first, and the read this operation exists to avoid is exactly that one.
 	//
@@ -1348,7 +1348,7 @@ type IssuePatchBody struct {
 
 	// Labels COMPLETE REPLACEMENT of the label set. An empty array clears every label.
 	//
-	// It is the REPLACE half of the same ordered edit `ApplyPatchBody` spells as `labels.replace`, and `add_labels`/`remove_labels` are the other two. All three may travel together and are applied in that order — replace, then add, then remove — so REMOVAL WINS when one label appears in more than one of them. That is the role's own algebra, not this operation's arrangement of it.
+	// It is the REPLACE half of the same ordered edit `ApplyPatchBody` spells as `labels.replace`, and `add_labels`/`remove_labels` are the other two. All three may travel together and are applied in that order — replace, then remove, then add, with a label named in both edits dropped from the additions — so REMOVAL WINS when one label appears in more than one of them. That is the role's own algebra, not this operation's arrangement of it.
 	//
 	// THE SHAPE DIFFERS FROM `ApplyPatchBody`'s, which nests the three under one `labels` object, and the difference is historical rather than meaningful. This member shipped as a bare array; nesting it now would RE-TYPE a published member, which is the one kind of change this document has no additive route for. Two flat siblings is the shape that could be added — and it is the shape `notes` and `append_notes` already use for the same replace/increment pair.
 	Labels *[]string `json:"labels,omitempty"`
@@ -1367,7 +1367,7 @@ type IssuePatchBody struct {
 	ParentId *string `json:"parent_id,omitempty"`
 	Priority *int    `json:"priority,omitempty"`
 
-	// RemoveLabels Labels to remove, applied AFTER `labels` and `add_labels`, so REMOVAL WINS over both.
+	// RemoveLabels Labels to remove, applied after `labels` and BEFORE `add_labels`; a label also named in `add_labels` is dropped from the additions, so REMOVAL WINS over both.
 	//
 	// Removing a label the issue does not carry CHANGES NO LABELS; it is not a `404` and not a conflict. Whether the RESPONSE reports `changed: false` is a fact about the whole patch, not about this member — a request that also moved a title changed the row. The same repetition and empty-string rules as `add_labels` apply, and a value longer than the column is refused here as it is there — the length rule is about what a label may BE, not about whether this particular row happens to carry one.
 	RemoveLabels *[]string `json:"remove_labels,omitempty"`
