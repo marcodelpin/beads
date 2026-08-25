@@ -281,9 +281,15 @@ type ExclusiveLabelViolation struct {
 // labels.exclusive-prefixes — write-path enforcement only guards new label
 // additions. Closed issues are skipped (no routing consumer reads them), as
 // are wisp labels (wisps are ephemeral and expire via TTL compaction).
-func FindExclusiveLabelViolations(ctx context.Context, db DBTX, prefixes []string) ([]ExclusiveLabelViolation, error) {
+// retain bounds how many violations are RETAINED for display; the total is
+// always counted in full. retain <= 0 keeps every violation (small corpora,
+// tests). The bound exists because the violation list is the one remaining
+// allocation that scales with corpus damage (bda-9krh): the doctor check
+// shows a fixed number of detail lines and needs only the true total beside
+// them.
+func FindExclusiveLabelViolations(ctx context.Context, db DBTX, prefixes []string, retain int) ([]ExclusiveLabelViolation, int, error) {
 	if len(prefixes) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 	filterSQL, args := exclusiveLabelPrefixFilter(prefixes)
 	//nolint:gosec // G202: the concatenated fragment is built from fixed
@@ -294,7 +300,7 @@ func FindExclusiveLabelViolations(ctx context.Context, db DBTX, prefixes []strin
 		WHERE i.status != 'closed' AND (`+filterSQL+`)
 		ORDER BY l.issue_id, l.label`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("scan exclusive labels: %w", err)
+		return nil, 0, fmt.Errorf("scan exclusive labels: %w", err)
 	}
 	defer rows.Close()
 
@@ -302,17 +308,21 @@ func FindExclusiveLabelViolations(ctx context.Context, db DBTX, prefixes []strin
 	// a time instead of the whole corpus (bda-9krh: the previous map-of-all-
 	// issues made routine `bd doctor` memory scale with total label count).
 	var violations []ExclusiveLabelViolation
+	total := 0
 	var curIssue string
 	var curLabels []string
 	flush := func() {
 		for _, c := range labelns.Conflicts(prefixes, curLabels) {
-			violations = append(violations, ExclusiveLabelViolation{IssueID: curIssue, Prefix: c.Prefix, Labels: c.Labels})
+			total++
+			if retain <= 0 || len(violations) < retain {
+				violations = append(violations, ExclusiveLabelViolation{IssueID: curIssue, Prefix: c.Prefix, Labels: c.Labels})
+			}
 		}
 	}
 	for rows.Next() {
 		var issueID, label string
 		if err := rows.Scan(&issueID, &label); err != nil {
-			return nil, fmt.Errorf("scan exclusive labels: %w", err)
+			return nil, 0, fmt.Errorf("scan exclusive labels: %w", err)
 		}
 		if issueID != curIssue {
 			if curIssue != "" {
@@ -324,12 +334,12 @@ func FindExclusiveLabelViolations(ctx context.Context, db DBTX, prefixes []strin
 		curLabels = append(curLabels, label)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan exclusive labels: %w", err)
+		return nil, 0, fmt.Errorf("scan exclusive labels: %w", err)
 	}
 	if curIssue != "" {
 		flush()
 	}
-	return violations, nil
+	return violations, total, nil
 }
 
 // RemoveLabelInTx removes a label from an issue and records an event within

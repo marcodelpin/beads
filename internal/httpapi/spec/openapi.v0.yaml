@@ -9042,13 +9042,17 @@ components:
           items:
             type: string
             maxLength: 255
-          description: Labels to add after any replacement.
+          description: >-
+            Labels to add, applied after any replacement and after removals; a
+            label also named in `remove` is dropped from the additions.
         remove:
           type: array
           items:
             type: string
             maxLength: 255
-          description: Labels to remove after replacement and addition.
+          description: >-
+            Labels to remove, applied after any replacement and BEFORE
+            additions, so removal wins when a label appears in both edits.
 
     ApplyMetadataPatch:
       type: object

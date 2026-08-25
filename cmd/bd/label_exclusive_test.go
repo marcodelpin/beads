@@ -234,12 +234,12 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	}
 	mustCreateLabeledIssue(t, st, "tier:fable", "area:x")
 
-	violations, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), prefixes)
+	violations, total, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), prefixes, 0)
 	if err != nil {
 		t.Fatalf("FindExclusiveLabelViolations: %v", err)
 	}
-	if len(violations) != 1 {
-		t.Fatalf("expected exactly 1 violation, got %v", violations)
+	if len(violations) != 1 || total != 1 {
+		t.Fatalf("expected exactly 1 violation (total 1), got %v total %d", violations, total)
 	}
 	v := violations[0]
 	if v.IssueID != "test-v1" || v.Prefix != "tier:" || len(v.Labels) != 2 {
@@ -247,9 +247,9 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	}
 
 	// No prefixes configured: nothing to scan.
-	none, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), nil)
-	if err != nil || none != nil {
-		t.Fatalf("expected nil, nil for empty prefixes, got %v, %v", none, err)
+	none, noneTotal, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), nil, 0)
+	if err != nil || none != nil || noneTotal != 0 {
+		t.Fatalf("expected nil, 0, nil for empty prefixes, got %v, %d, %v", none, noneTotal, err)
 	}
 }
 
@@ -308,12 +308,24 @@ func TestFindExclusiveLabelViolations_StreamingAndEscaping(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	violations, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), []string{"tier:", "a_b:"})
+	// retain=1 with two real violations also pins the bda-9krh cap: one
+	// retained for display, the TOTAL still counted in full.
+	violations, total, err := storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), []string{"tier:", "a_b:"}, 1)
 	if err != nil {
 		t.Fatalf("FindExclusiveLabelViolations: %v", err)
 	}
-	if len(violations) != 2 {
-		t.Fatalf("expected 2 violations (s1+s2, s3 excluded by LIKE escaping), got %+v", violations)
+	if total != 2 {
+		t.Fatalf("expected total 2 (s1+s2, s3 excluded by LIKE escaping), got %d (%+v)", total, violations)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("retain=1 must keep exactly 1 violation, got %+v", violations)
+	}
+	violations, total, err = storeops.FindExclusiveLabelViolations(ctx, st.UnderlyingDB(), []string{"tier:", "a_b:"}, 0)
+	if err != nil {
+		t.Fatalf("FindExclusiveLabelViolations (retain=0): %v", err)
+	}
+	if len(violations) != 2 || total != 2 {
+		t.Fatalf("expected 2 violations total 2, got %d total %d", len(violations), total)
 	}
 	got := map[string]bool{}
 	for _, v := range violations {

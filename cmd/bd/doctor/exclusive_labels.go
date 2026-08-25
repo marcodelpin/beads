@@ -54,7 +54,9 @@ func checkExclusiveLabelNamespaces(ctx context.Context, store *dolt.DoltStore) D
 			Message: "No exclusive label namespaces configured (" + labelns.ConfigKey + ")",
 		}
 	}
-	violations, err := issueops.FindExclusiveLabelViolations(ctx, store.UnderlyingDB(), prefixes)
+	// Retain only what the detail section can show; the scan still counts the
+	// full total, so memory no longer scales with corpus damage (bda-9krh).
+	violations, total, err := issueops.FindExclusiveLabelViolations(ctx, store.UnderlyingDB(), prefixes, maxExclusiveLabelDetailLines)
 	if err != nil {
 		return DoctorCheck{
 			Name:    ExclusiveLabelsCheckName,
@@ -63,7 +65,7 @@ func checkExclusiveLabelNamespaces(ctx context.Context, store *dolt.DoltStore) D
 			Detail:  err.Error(),
 		}
 	}
-	if len(violations) == 0 {
+	if total == 0 {
 		return DoctorCheck{
 			Name:    ExclusiveLabelsCheckName,
 			Status:  StatusOK,
@@ -71,17 +73,16 @@ func checkExclusiveLabelNamespaces(ctx context.Context, store *dolt.DoltStore) D
 		}
 	}
 	lines := make([]string, 0, maxExclusiveLabelDetailLines+1)
-	for i, v := range violations {
-		if i == maxExclusiveLabelDetailLines {
-			lines = append(lines, fmt.Sprintf("... and %d more", len(violations)-maxExclusiveLabelDetailLines))
-			break
-		}
+	for _, v := range violations {
 		lines = append(lines, fmt.Sprintf("%s: %s", v.IssueID, strings.Join(v.Labels, ", ")))
+	}
+	if total > len(violations) {
+		lines = append(lines, fmt.Sprintf("... and %d more", total-len(violations)))
 	}
 	return DoctorCheck{
 		Name:    ExclusiveLabelsCheckName,
 		Status:  StatusWarning,
-		Message: fmt.Sprintf("%d issue(s) carry more than one label in an exclusive namespace — routing filters may silently exclude them", len(violations)),
+		Message: fmt.Sprintf("%d issue(s) carry more than one label in an exclusive namespace — routing filters may silently exclude them", total),
 		Detail:  strings.Join(lines, "\n"),
 		Fix:     "Remove the extra label: bd label remove <id> <label>, or swap with: bd label add --replace <id> <label>",
 	}

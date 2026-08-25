@@ -578,10 +578,10 @@ type ApplyItemResultKind string
 //
 // Repetition is free in both directions — a label named twice in one member is applied once, and removing a label the issue does not carry is a no-op. An EMPTY-STRING entry is dropped rather than refused: a label row holding "" renders as nothing and matches nothing, so refusing the whole request for one stray entry would fail an otherwise-good edit.
 type ApplyLabelPatch struct {
-	// Add Labels to add after any replacement.
+	// Add Labels to add, applied after any replacement and after removals; a label also named in `remove` is dropped from the additions.
 	Add *[]string `json:"add,omitempty"`
 
-	// Remove Labels to remove after replacement and addition.
+	// Remove Labels to remove, applied after any replacement and BEFORE additions, so removal wins when a label appears in both edits.
 	Remove *[]string `json:"remove,omitempty"`
 
 	// Replace The complete starting label set. An empty array CLEARS every label; omitting the member leaves the current set as the starting point.

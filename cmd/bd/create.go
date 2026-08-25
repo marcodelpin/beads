@@ -481,12 +481,17 @@ var createCmd = &cobra.Command{
 		}
 
 		var exclusivePrefixes []string
-		if store != nil {
+		if parentLookupStore != nil {
 			// Surface a config read failure instead of treating the policy as
 			// absent (bda-r5yo): a discarded error made --dry-run report a
 			// conflicting create as valid while the real create - which reads
-			// the policy transactionally at persist - would fail.
-			raw, err := store.GetConfig(rootCtx, labelns.ConfigKey)
+			// the policy transactionally at persist - would fail. The policy
+			// is read from parentLookupStore, not store: on a cross-repo
+			// --dry-run --repo the TARGET workspace's exclusive namespaces
+			// are the ones the real create will enforce (codex re-verify
+			// 2026-08-25); for the ordinary same-repo path the two are the
+			// same handle.
+			raw, err := parentLookupStore.GetConfig(rootCtx, labelns.ConfigKey)
 			if err != nil {
 				return HandleError("failed to read %s: %v", labelns.ConfigKey, err)
 			}
