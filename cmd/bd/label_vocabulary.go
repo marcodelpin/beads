@@ -29,7 +29,7 @@ var (
 // undefined label is accepted silently (open, the default -- zero behavior
 // change from before this registry existed), warned about (warn), or
 // refused (enforce). See docs/core-concepts/labels.md.
-const labelsVocabularyConfigKey = "labels.vocabulary"
+const labelsVocabularyConfigKey = issueops.LabelsVocabularyConfigKey
 
 const (
 	labelsVocabularyOpen    = "open"
