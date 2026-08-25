@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	storageissueops "github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -147,14 +148,6 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) (*updateInput, e
 		addLabels, _ := cmd.Flags().GetStringSlice("add-label")
 		in.addLabels = utils.NormalizeLabels(addLabels)
 		warnLabelsContainingWhitespace(in.addLabels)
-		// This is the proxied-server route's only call site for the
-		// labels.vocabulary write-path check: the direct route enforces it in
-		// update.go's own RunE, and gatherUpdateInput is otherwise reached only
-		// from runUpdateProxiedServer. Without it, `bd update --add-label` on a
-		// proxied deployment silently bypassed enforce mode.
-		if err := checkLabelVocabulary(ctx, in.addLabels); err != nil {
-			return nil, err
-		}
 	}
 	if cmd.Flags().Changed("remove-label") {
 		removeLabels, _ := cmd.Flags().GetStringSlice("remove-label")
@@ -167,10 +160,24 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) (*updateInput, e
 		// pointer to an empty slice, which is the clear instruction.
 		labels = utils.NormalizeLabels(labels)
 		warnLabelsContainingWhitespace(labels)
-		if err := checkLabelVocabulary(ctx, labels); err != nil {
+		in.setLabels = &labels
+	}
+	// Proxied-server route's only call site for the labels.vocabulary
+	// write-path check (the direct route enforces it in update.go's RunE).
+	// The check runs ONCE over the labels the patch would WRITE, computed
+	// the same way the guarded layer computes them (removal wins): a
+	// per-flag check refused `--add-label X --remove-label X`, a patch the
+	// in-transaction guard accepts because X never lands.
+	{
+		var replace []string
+		replaceSet := in.setLabels != nil
+		if replaceSet {
+			replace = *in.setLabels
+		}
+		candidates := storageissueops.GuardedLabelPatchCandidates(replaceSet, replace, in.addLabels, in.removeLabels)
+		if err := checkLabelVocabulary(ctx, candidates); err != nil {
 			return nil, err
 		}
-		in.setLabels = &labels
 	}
 	if cmd.Flags().Changed("parent") {
 		parent, _ := cmd.Flags().GetString("parent")
