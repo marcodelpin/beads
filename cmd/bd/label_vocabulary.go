@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/debug"
@@ -20,9 +21,8 @@ import (
 // this command family uses (ui.RenderPass/RenderWarn/RenderAccent elsewhere
 // in cmd/bd, e.g. label.go's reportLabelEdit and labelListAllCmd).
 var (
-	glyphCheck = string(rune(0x2713))  // U+2713 CHECK MARK
-	glyphWarn  = string(rune(0x26A0))  // U+26A0 WARNING SIGN
-	glyphTag   = string(rune(0x1F3F7)) // U+1F3F7 LABEL
+	glyphCheck = string(rune(0x2713)) // U+2713 CHECK MARK
+	glyphWarn  = string(rune(0x26A0)) // U+26A0 WARNING SIGN
 )
 
 // labelsVocabularyConfigKey is the config knob controlling whether an
@@ -56,16 +56,32 @@ func validateLabelsVocabularyConfig(value string) error {
 // not recognize (treated as open) rather than erroring on a write path:
 // validateLabelsVocabularyConfig is the place a bad value is caught, at `bd
 // config set` time. A write path that encountered one anyway (a config
-// written before this knob existed to validate it, or edited by hand) must
-// fail open, not block every future label write.
+// written before this knob existed to validate it, edited by hand, or set by
+// a NEWER client that knows a mode this build does not) must fail open, not
+// block every future label write - but not SILENTLY (bda-1735): the operator
+// who configured `strict` on a newer client deserves one line saying this
+// build reads it as open, or enforcement appears to be on while every write
+// sails through.
 func normalizeLabelsVocabularyMode(value string) string {
 	switch value {
 	case labelsVocabularyWarn, labelsVocabularyEnforce:
 		return value
+	case "", labelsVocabularyOpen:
+		return labelsVocabularyOpen
 	default:
+		unknownVocabularyModeWarnOnce.Do(func() {
+			if !debug.IsQuiet() {
+				fmt.Fprintf(os.Stderr, "warning: unrecognized %s value %q (set by a newer client, or a hand edit?) - treating as %s\n",
+					labelsVocabularyConfigKey, value, labelsVocabularyOpen)
+			}
+		})
 		return labelsVocabularyOpen
 	}
 }
+
+// unknownVocabularyModeWarnOnce keeps the unrecognized-mode warning to one
+// line per process: the normalizer runs on every label write in a batch.
+var unknownVocabularyModeWarnOnce sync.Once
 
 // checkLabelVocabulary is the write-path enforcement entry point for the
 // labels.vocabulary knob. It is called from the INTERACTIVE label-write call
@@ -351,7 +367,10 @@ func renderLabelDefinedRows(rows []labelDefinedInfo) error {
 		fmt.Println("\nNo labels defined. Define one with: bd label define <label>")
 		return nil
 	}
-	fmt.Printf("\n%s Defined labels (%d):\n", ui.RenderAccent(glyphTag), len(rows))
+	// No glyph on the header: U+1F3F7 LABEL is an emoji blob, which the CLI
+	// visual design system prohibits (AGENT_INSTRUCTIONS.md: "Small Unicode
+	// symbols only; avoid emoji blobs") - codex cross-model finding, bda-1735.
+	fmt.Printf("\n%s\n", ui.RenderAccent(fmt.Sprintf("Defined labels (%d):", len(rows))))
 	maxLen := 0
 	for _, row := range rows {
 		if len(row.Label) > maxLen {
