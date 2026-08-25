@@ -421,8 +421,16 @@ bd config set labels.vocabulary enforce   # write is refused
   remedy.
 
 The check only runs on interactive label writes -- `bd create -l`,
-`bd update --add-label`/`--set-labels`, `bd label add`, `bd tag`, and
-`bd q --labels`. **It never runs on import** (`bd import`, JSONL replay):
+`bd update --add-label`/`--set-labels`, `bd label add`, `bd label propagate`,
+`bd tag`, and `bd q --labels`. It judges the labels the write would actually
+LAND: removal wins, so `--add-label X --remove-label X` passes even when `X`
+is undefined, because `X` never reaches the issue.
+
+Two failure modes deliberately fail OPEN (the write proceeds as if the mode
+were `open`): a config read error, and a vocabulary registry read error. We
+chose availability over enforcement on storage faults -- a broken registry
+must not lock every label write in the workspace. **It never runs on
+import** (`bd import`, JSONL replay):
 an imported issue keeps every label it arrives with, defined or not,
 regardless of the configured mode. This keeps `enforce` mode safe to turn on
 for a team's day-to-day writes without it ever blocking a migration or a
