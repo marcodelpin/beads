@@ -12,6 +12,8 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/steveyegge/beads/internal/doltserver"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // TestIsServerProbablyRunningReportsDeadPIDWithLingeringHandle guards the
@@ -29,9 +31,7 @@ func TestIsServerProbablyRunningReportsDeadPIDWithLingeringHandle(t *testing.T) 
 	// the #5191 port: upstream rewrote the WaitForSingleObject arm (it now asserts
 	// WAIT_OBJECT_0, which is stricter and is kept), and taking their side wholesale
 	// dropped this skip. Both belong. (bda-9l1, sys-iogddl)
-	if testing.Short() {
-		t.Skip("spawns a real child process to probe Windows handle liveness; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns a real child process to probe Windows handle liveness; skipped in -short (bda-9l1)")
 	cmd := exec.Command("cmd.exe", "/c", "exit")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start child: %v", err)

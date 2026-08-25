@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/cmd/bd/doctor"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // TestSetupGitExclude_Worktree verifies that setupGitExclude writes to the main
 // repo's .git/info/exclude, not the worktree's .git/worktrees/<name>/info/exclude.
 // This is the fix for GH#1053.
 func TestSetupGitExclude_Worktree(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (add, commit, worktree add); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (add, commit, worktree add); skipped in -short (bda-9l1)")
 	// Create main repo
 	mainDir := newGitRepo(t)
 
@@ -86,9 +86,7 @@ func TestSetupGitExclude_Worktree(t *testing.T) {
 // TestSetupForkExclude_Worktree verifies that setupForkExclude writes to the main
 // repo's .git/info/exclude, not the worktree's path. This is part of GH#1053.
 func TestSetupForkExclude_Worktree(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (add, commit, worktree add); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (add, commit, worktree add); skipped in -short (bda-9l1)")
 	// Create main repo
 	mainDir := newGitRepo(t)
 

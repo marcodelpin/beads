@@ -20,12 +20,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestAutoExportGitAddFailureExitsNonZero(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -95,9 +95,7 @@ func TestAutoExportGitAddFailureExitsNonZero(t *testing.T) {
 // to skip staging entirely (the file content on disk is still correct).
 
 func TestAutoExportSkipsEmptyExportOverPopulatedJSONL(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 	env := autoExportDataLossTestEnv(dir)
@@ -142,9 +140,7 @@ func TestAutoExportSkipsEmptyExportOverPopulatedJSONL(t *testing.T) {
 }
 
 func TestAutoExportSkipsWhenExistingJSONLHasIDsMissingFromStore(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 	env := autoExportDataLossTestEnv(dir)

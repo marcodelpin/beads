@@ -19,12 +19,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestInitNonInteractiveAutoExportDefaultOffAndOptIn(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 

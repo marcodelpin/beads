@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestTruncateForBox(t *testing.T) {
@@ -96,9 +98,7 @@ func TestGitCmdInDirSuppressesHooksViaGitConfig(t *testing.T) {
 // TestResolveWorktreePathByName verifies that resolveWorktreePath can find
 // worktrees by name (basename) when they're in subdirectories like .worktrees/
 func TestResolveWorktreePathByName(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (add, commit, worktree add/remove); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (add, commit, worktree add/remove); skipped in -short (bda-9l1)")
 	// Create a temp directory for the main repo
 	mainDir := newGitRepo(t)
 

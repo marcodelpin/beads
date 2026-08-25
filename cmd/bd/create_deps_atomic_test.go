@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // createDepsTestEnv returns a hermetic environment for the subprocess bd
@@ -124,9 +126,7 @@ func createDepsExtractID(t *testing.T, out string) string {
 }
 
 func TestCreateDepsAtomicity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly against a real workspace; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly against a real workspace; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 	dir := t.TempDir()
 	runCreateDepsBD(t, bd, dir, "init", "--backend", "dolt", "--prefix", "test",

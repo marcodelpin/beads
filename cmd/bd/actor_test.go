@@ -7,14 +7,14 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/config"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // TestGetActorWithGit tests the actor resolution fallback chain.
 // Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > git config user.name > $USER > "unknown"
 func TestGetActorWithGit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a real git subprocess; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns a real git subprocess; skipped in -short (bda-9l1)")
 	// Save original environment and actor variable
 	origActor := actor
 	origBdActor, bdActorSet := os.LookupEnv("BD_ACTOR")

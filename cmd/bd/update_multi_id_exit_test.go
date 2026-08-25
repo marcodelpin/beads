@@ -34,6 +34,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // multiIDUpdateEnv returns a hermetic environment for bd subprocess runs:
@@ -140,9 +142,7 @@ func showMultiIDUpdatePriority(t *testing.T, bd, dir, id string) int {
 const bogusMultiIDUpdateID = "test-zzzzzzzzzz"
 
 func TestMultiIDUpdatePartialFailureExitsNonzero(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd, dir := setupMultiIDUpdateDB(t)
 	id1 := createMultiIDUpdateIssue(t, bd, dir, "first issue")
 	id2 := createMultiIDUpdateIssue(t, bd, dir, "second issue")
@@ -164,9 +164,7 @@ func TestMultiIDUpdatePartialFailureExitsNonzero(t *testing.T) {
 }
 
 func TestMultiIDUpdatePartialFailureJSONReportsFailedIDs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd, dir := setupMultiIDUpdateDB(t)
 	id1 := createMultiIDUpdateIssue(t, bd, dir, "first issue")
 	id2 := createMultiIDUpdateIssue(t, bd, dir, "second issue")
@@ -222,9 +220,7 @@ func TestMultiIDUpdatePartialFailureJSONReportsFailedIDs(t *testing.T) {
 }
 
 func TestMultiIDUpdateAllFailStillExitsNonzero(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd, dir := setupMultiIDUpdateDB(t)
 
 	stdout, stderr, code := runBDMultiID(t, bd, dir, "update", bogusMultiIDUpdateID, "--priority", "0")
@@ -237,9 +233,7 @@ func TestMultiIDUpdateAllFailStillExitsNonzero(t *testing.T) {
 }
 
 func TestMultiIDUpdateAllGoodPathUnchanged(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd, dir := setupMultiIDUpdateDB(t)
 	id1 := createMultiIDUpdateIssue(t, bd, dir, "first issue")
 	id2 := createMultiIDUpdateIssue(t, bd, dir, "second issue")

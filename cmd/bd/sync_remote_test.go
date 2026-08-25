@@ -9,6 +9,8 @@ import (
 
 	internalbeads "github.com/steveyegge/beads/internal/beads"
 	internalgit "github.com/steveyegge/beads/internal/git"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestNormalizeRemoteURL(t *testing.T) {
@@ -49,9 +51,7 @@ func TestNormalizeRemoteURL(t *testing.T) {
 }
 
 func TestCommitBeadsConfigSkipsGitHooks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses; skipped in -short (bda-9l1)")
 	repo := t.TempDir()
 
 	// Pin bd's repo resolution to this temp repo. commitBeadsConfig resolves the

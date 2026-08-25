@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/git"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestDetectExistingHooks(t *testing.T) {
@@ -753,9 +755,7 @@ func TestUninstallHooksRemovesEmptyFile(t *testing.T) {
 // TestConfigureBeadsHooksPath_AbsolutePath verifies that core.hooksPath is set to
 // an absolute path so that git worktrees can find the hooks directory (GH#2414).
 func TestConfigureBeadsHooksPath_AbsolutePath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses; skipped in -short (bda-9l1)")
 	tmpDir := newGitRepo(t)
 	runInDir(t, tmpDir, func() {
 		// Create .beads/hooks/ directory
@@ -790,9 +790,7 @@ func TestConfigureBeadsHooksPath_AbsolutePath(t *testing.T) {
 // TestInstallHooksBeads_WorktreeAccess verifies that hooks installed with --beads
 // are accessible from a git worktree (GH#2414).
 func TestInstallHooksBeads_WorktreeAccess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (commit, worktree add/remove); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (commit, worktree add/remove); skipped in -short (bda-9l1)")
 	tmpDir := newGitRepo(t)
 	runInDir(t, tmpDir, func() {
 		// Create .beads/ directory with metadata.json (needed for FindBeadsDir)
@@ -887,9 +885,7 @@ func setupBeadsDir(t *testing.T, repoDir string) string {
 // a local core.hooksPath that shadows the global one, silently killing global
 // hooks. The fix copies hooks from the effective directory before overriding.
 func TestInstallHooksBeads_PreservesGlobalHooks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))
@@ -953,9 +949,7 @@ func TestInstallHooksBeads_PreservesGlobalHooks(t *testing.T) {
 // default .git/hooks/ directory (both managed and non-managed) are preserved
 // when beads redirects core.hooksPath to .beads/hooks/.
 func TestInstallHooksBeads_PreservesDefaultGitHooks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses; skipped in -short (bda-9l1)")
 	repoDir := newGitRepo(t)
 	runInDir(t, repoDir, func() {
 		hooksDir := filepath.Join(repoDir, ".git", "hooks")
@@ -1163,9 +1157,7 @@ func TestHooksNeedUpdate(t *testing.T) {
 // directory is symlinked when hooks are preserved from a husky-managed directory.
 // GH#3132 Bug 1: without this, hooks that source $(dirname "$0")/_/husky.sh fail.
 func TestInstallHooksBeads_HuskyV8Helper(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))
@@ -1253,9 +1245,7 @@ func TestInstallHooksBeads_HuskyV8Helper(t *testing.T) {
 // GH#3132 Bug 2: husky v9's h dispatcher uses dirname(dirname($0)) which breaks
 // when hooks are relocated from .husky/_/ to .beads/hooks/.
 func TestInstallHooksBeads_HuskyV9Shims(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (config --global, init); skipped in -short (bda-9l1)")
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))

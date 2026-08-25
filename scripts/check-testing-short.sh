@@ -15,9 +15,13 @@ internal/storage/dolt/lease_test.go::TestConcurrentHeartbeatReclaimClose
 internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentMergeOps_NoLostUpdate
 cmd/bd/prune_bench_test.go::TestPruneLargeFixture
 cmd/bd/update_metadata_race_test.go::TestUpdateSetMetadata_ConcurrentProcesses_NoLostKeys
+internal/testutil/short.go::SkipIfShort
 cmd/bd/note_race_test.go::TestNote_ConcurrentProcesses_NoLostNotes
 internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentMergeOps_NoLostUpdate
 internal/workapi/sweep_test.go::TestCandidateIDMatcherLargeFixture
+internal/spool/replay_test.go::TestDrainStress1000
+internal/storage/uow/lostupdate_dolt_test.go::TestUOW_ConcurrentDistinctIssues_NoLostUpdate
+internal/storage/uow/lostupdate_distinct_interleave_test.go::TestUOW_DeterministicDistinctInterleave_NoLostUpdate
 EOF
 )
 

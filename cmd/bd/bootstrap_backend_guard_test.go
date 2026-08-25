@@ -11,12 +11,12 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/configfile"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestBootstrapRejectsRemovedBackendsBeforeWorkspaceWrites(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 
 	for _, backend := range []string{configfile.BackendPostgres, configfile.BackendMySQL, configfile.BackendSQLite} {
@@ -70,9 +70,7 @@ func TestBootstrapRejectsRemovedBackendsBeforeWorkspaceWrites(t *testing.T) {
 }
 
 func TestBootstrapRejectsUnknownBackendBeforeWorkspaceWrites(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 
 	for _, args := range [][]string{{"bootstrap", "--dry-run"}, {"bootstrap", "--yes"}} {
@@ -121,9 +119,7 @@ func TestBootstrapRejectsUnknownBackendBeforeWorkspaceWrites(t *testing.T) {
 }
 
 func TestBootstrapRejectsCorruptMetadataBeforeWorkspaceWrites(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary repeatedly; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 
 	for _, args := range [][]string{{"bootstrap", "--dry-run"}, {"bootstrap", "--yes"}} {
@@ -172,9 +168,7 @@ func TestBootstrapRejectsCorruptMetadataBeforeWorkspaceWrites(t *testing.T) {
 }
 
 func TestBootstrapDoesNotConvertExistingSQLiteWorkspace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "builds+spawns the bd binary and real git subprocesses; skipped in -short (bda-9l1)")
 	bd := buildBDForInitTests(t)
 
 	for _, args := range [][]string{{"bootstrap", "--dry-run"}, {"bootstrap", "--yes"}} {

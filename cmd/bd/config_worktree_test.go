@@ -8,12 +8,12 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/git"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestFindBeadsRepoRoot_WorktreeFallback(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
 	tmpDir, err := os.MkdirTemp("", "beads-worktree-cfg-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -88,9 +88,7 @@ func TestFindBeadsRepoRoot_WorktreeFallback(t *testing.T) {
 }
 
 func TestBeadsPollutionCheck_WorktreeSkips(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
-	}
+	testutil.SkipIfShort(t, "spawns real git subprocesses (init, worktree add/remove); skipped in -short (bda-9l1)")
 	tmpDir, err := os.MkdirTemp("", "beads-worktree-preflight-test-*")
 	if err != nil {
 		t.Fatal(err)
