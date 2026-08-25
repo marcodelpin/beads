@@ -25,7 +25,8 @@ func (s *DoltStore) DefineLabel(ctx context.Context, label, description, actor s
 		}); err != nil {
 			return err
 		}
-		return s.doltAddAndCommit(ctx, []string{"label_definitions"}, fmt.Sprintf("bd: label define %s", label))
+		return wrapDefinitionPublish(
+			s.doltAddAndCommit(ctx, []string{"label_definitions"}, fmt.Sprintf("bd: label define %s", label)))
 	})
 }
 
@@ -64,8 +65,8 @@ func (s *DoltStore) ImportLabelDefinitions(ctx context.Context, incoming []types
 		if defined == 0 {
 			return nil // exact re-import: nothing changed, no commit to mint
 		}
-		return s.doltAddAndCommit(ctx, []string{"label_definitions"},
-			fmt.Sprintf("bd: import %d label definitions", defined))
+		return wrapDefinitionPublish(s.doltAddAndCommit(ctx, []string{"label_definitions"},
+			fmt.Sprintf("bd: import %d label definitions", defined)))
 	})
 	return defined, warnings, err
 }
@@ -79,7 +80,8 @@ func (s *DoltStore) UndefineLabel(ctx context.Context, label string) error {
 		}); err != nil {
 			return err
 		}
-		return s.doltAddAndCommit(ctx, []string{"label_definitions"}, fmt.Sprintf("bd: label undefine %s", label))
+		return wrapDefinitionPublish(
+			s.doltAddAndCommit(ctx, []string{"label_definitions"}, fmt.Sprintf("bd: label undefine %s", label)))
 	})
 }
 
@@ -93,4 +95,20 @@ func (s *DoltStore) ListLabelDefinitions(ctx context.Context) ([]types.LabelDefi
 		return err
 	})
 	return defs, err
+}
+
+// wrapDefinitionPublish makes a publication failure DETERMINATE in its message
+// (bda-ahxf): the vocabulary row's SQL transaction has already committed when
+// doltAddAndCommit runs, so a failure here is NOT a failed definition - the
+// row exists in the working set and travels with the next Dolt commit, and a
+// retry correctly reports already-defined/not-defined. Without this wrap the
+// caller reads an error, retries, hits the validation refusal, and cannot
+// tell which of the two operations actually took effect.
+func wrapDefinitionPublish(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("label definition recorded but not yet published to Dolt history "+
+		"(the row is committed in the working set and publishes with the next Dolt commit; "+
+		"a retry reporting already-defined/not-defined confirms it landed): %w", err)
 }
