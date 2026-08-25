@@ -197,6 +197,7 @@ func newUpdateLabelFlagsCommand(t *testing.T, args ...string) *cobra.Command {
 	cmd := &cobra.Command{Use: "update"}
 	cmd.Flags().StringSlice("add-label", nil, "Add labels (repeatable)")
 	cmd.Flags().StringSlice("set-labels", nil, "Set labels, replacing all existing (repeatable)")
+	cmd.Flags().StringSlice("remove-label", nil, "Remove labels (repeatable)")
 	if err := cmd.ParseFlags(args); err != nil {
 		t.Fatalf("parse update flags: %v", err)
 	}
@@ -291,4 +292,46 @@ func TestGatherUpdateInputDoesNotEnforceOnRemoveLabel(t *testing.T) {
 		t.Fatalf("--remove-label must never be refused by the vocabulary check, got: %v", err)
 	}
 	assertLabels(t, in.removeLabels, []string{"undefined-label"})
+}
+
+// TestGatherUpdateInputAcceptsRemovalWinsOverlap pins the contract shared
+// with the in-transaction guard (GuardedLabelPatchCandidates): removal wins,
+// so a label named in both --add-label and --remove-label never lands and
+// must not be judged. A per-flag check refused this patch while the guarded
+// layer accepted it - the CLI edge and the transaction disagreed on the same
+// write.
+func TestGatherUpdateInputAcceptsRemovalWinsOverlap(t *testing.T) {
+	s, ctx := setupLabelVocabularyTestStore(t)
+	if err := s.SetConfig(ctx, labelsVocabularyConfigKey, labelsVocabularyEnforce); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	cmd := newUpdateLabelFlagsCommand(t, "--add-label", "undefined-label", "--remove-label", "undefined-label")
+	in, err := gatherUpdateInput(ctx, cmd)
+	if err != nil {
+		t.Fatalf("removal-wins overlap must pass enforce mode (the label never lands), got: %v", err)
+	}
+	if len(in.addLabels) != 1 || len(in.removeLabels) != 1 {
+		t.Fatalf("both flags must still reach the patch: add=%v remove=%v", in.addLabels, in.removeLabels)
+	}
+}
+
+// TestGatherUpdateInputRefusesUndefinedSetMinusRemove is the discriminating
+// sibling: --set-labels with an undefined label NOT covered by a removal must
+// still be refused, so the overlap acceptance above cannot come from the
+// check being skipped wholesale.
+func TestGatherUpdateInputRefusesUndefinedSetMinusRemove(t *testing.T) {
+	s, ctx := setupLabelVocabularyTestStore(t)
+	if err := s.SetConfig(ctx, labelsVocabularyConfigKey, labelsVocabularyEnforce); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	cmd := newUpdateLabelFlagsCommand(t, "--set-labels", "undefined-label", "--remove-label", "other-label")
+	_, err := gatherUpdateInput(ctx, cmd)
+	if err == nil {
+		t.Fatal("an undefined label in --set-labels not removed by --remove-label must still be refused")
+	}
+	if !strings.Contains(err.Error(), "undefined-label") {
+		t.Errorf("expected the error to name the label, got: %v", err)
+	}
 }
