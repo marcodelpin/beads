@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 // =============================================================================
@@ -246,5 +247,94 @@ func TestListLabelDefinitions_Empty(t *testing.T) {
 	}
 	if len(defs) != 0 {
 		t.Errorf("expected no definitions on a fresh store, got %v", defs)
+	}
+}
+
+// bda-d1py: define/undefine must create DOLT commits, not just SQL commits.
+// label_definitions is a main-plane table (no dolt_ignore line in migration
+// 0066, unlike C's label_namespace_locks) whose own header calls it the
+// workspace's shared curated vocabulary - rows left in the working set never
+// travel on push/clone, so a peer under labels.vocabulary=enforce runs
+// against an empty or stale registry. Mirrors the discipline the sibling
+// durable label mutations in this package already follow (AddLabel ->
+// doltAddAndCommit).
+func TestDefineUndefineLabelCreateDoltCommits(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	countByMessage := func(msg string) int {
+		var n int
+		if err := store.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM dolt_log WHERE message = ?", msg).Scan(&n); err != nil {
+			t.Fatalf("count dolt_log by message %q: %v", msg, err)
+		}
+		return n
+	}
+
+	if err := store.DefineLabel(ctx, "backend", "server-side work", "tester"); err != nil {
+		t.Fatalf("DefineLabel failed: %v", err)
+	}
+	if got := countByMessage("bd: label define backend"); got != 1 {
+		t.Errorf("dolt_log commits for define = %d, want 1 (rows in the working set do not travel on push/clone)", got)
+	}
+
+	if err := store.UndefineLabel(ctx, "backend"); err != nil {
+		t.Fatalf("UndefineLabel failed: %v", err)
+	}
+	if got := countByMessage("bd: label undefine backend"); got != 1 {
+		t.Errorf("dolt_log commits for undefine = %d, want 1", got)
+	}
+}
+
+// TestImportLabelDefinitions_SingleCommitBatch pins the bda-o5gq contract:
+// a batch of vocabulary records lands in ONE transaction and ONE Dolt commit
+// (the per-record DefineLabel loop minted one commit each), and an exact
+// re-import defines nothing and mints no commit at all.
+func TestImportLabelDefinitions_SingleCommitBatch(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	incoming := []types.LabelDefinition{
+		{Label: "backend"},
+		{Label: "frontend"},
+		{Label: "infra"},
+	}
+	before := doltCommitCount(ctx, t, store)
+	defined, warnings, err := store.ImportLabelDefinitions(ctx, incoming, "tester")
+	if err != nil {
+		t.Fatalf("ImportLabelDefinitions: %v", err)
+	}
+	if defined != 3 || len(warnings) != 0 {
+		t.Fatalf("expected 3 defined, 0 warnings; got %d, %v", defined, warnings)
+	}
+	after := doltCommitCount(ctx, t, store)
+	if got := after - before; got != 1 {
+		t.Fatalf("batch of 3 definitions minted %d commit(s); the contract is exactly 1", got)
+	}
+	if !doltHasCommitMessage(ctx, t, store, "bd: import 3 label definitions") {
+		t.Fatal("batch commit message missing from dolt_log")
+	}
+	defs, err := store.ListLabelDefinitions(ctx)
+	if err != nil || len(defs) != 3 {
+		t.Fatalf("expected 3 definitions listed, got %d (%v)", len(defs), err)
+	}
+
+	// Exact re-import: define-if-absent finds nothing new, and no empty
+	// commit is minted.
+	defined2, warnings2, err := store.ImportLabelDefinitions(ctx, incoming, "tester")
+	if err != nil {
+		t.Fatalf("re-import: %v", err)
+	}
+	if defined2 != 0 || len(warnings2) != 0 {
+		t.Fatalf("re-import expected 0 defined, 0 warnings; got %d, %v", defined2, warnings2)
+	}
+	if got := doltCommitCount(ctx, t, store); got != after {
+		t.Fatalf("exact re-import minted %d extra commit(s)", got-after)
 	}
 }
