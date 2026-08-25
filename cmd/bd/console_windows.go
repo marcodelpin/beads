@@ -29,7 +29,7 @@ import "syscall"
 var (
 	kernel32          = syscall.NewLazyDLL("kernel32.dll")
 	procAttachConsole = kernel32.NewProc("AttachConsole")
-	attachParentPID   = uintptr(^uintptr(0)) // (DWORD)-1
+	attachParentPID   = ^uintptr(0) // (DWORD)-1
 )
 
 func attachParentConsole() {
