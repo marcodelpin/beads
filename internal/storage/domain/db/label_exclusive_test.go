@@ -463,3 +463,86 @@ func (s *testSuite) TestLabelExclusivePersistPathSerializesWithConcurrentWriters
 		})
 	}
 }
+
+// proxiedInsertWithRetry is addLabelInTxWithRetry's sibling through the
+// PROXIED repository path (bda-5vzi half 2): the writer drives
+// labelSQLRepositoryImpl.Insert bound to its own *sql.Tx - the exact
+// entry point a proxied 'bd label add' reaches through the UOW - instead
+// of calling the embedded issueops.AddLabelInTx directly. Same two-phase
+// snapshot-pin rendezvous, same whole-transaction serialization retry;
+// only the guarded path under test differs, which is the point: the two
+// write stacks share issueops.EnforceExclusiveLabelInTx, and this test is
+// what notices if the proxied stack ever stops routing through it.
+func (s *testSuite) proxiedInsertWithRetry(issueID, label string, ready chan<- struct{}, proceed <-chan struct{}) error {
+	first := true
+	for attempt := 0; attempt < 20; attempt++ {
+		tx, err := s.db.BeginTx(s.Ctx(), nil)
+		if err != nil {
+			return fmt.Errorf("begin: %w", err)
+		}
+		if first {
+			var pinned int
+			if scanErr := tx.QueryRowContext(s.Ctx(),
+				"SELECT COUNT(*) FROM labels WHERE issue_id = ?", issueID,
+			).Scan(&pinned); scanErr != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("pin snapshot: %w", scanErr)
+			}
+			ready <- struct{}{}
+			<-proceed
+			first = false
+		}
+		addErr := NewLabelSQLRepository(tx).Insert(s.Ctx(), issueID, label, "tester", domain.LabelOpts{})
+		if addErr != nil {
+			_ = tx.Rollback()
+			if isSerializationError(addErr) {
+				continue
+			}
+			return addErr
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			if isSerializationError(commitErr) {
+				continue
+			}
+			return fmt.Errorf("commit: %w", commitErr)
+		}
+		return nil
+	}
+	return fmt.Errorf("proxiedInsertWithRetry: exhausted retries for %s/%s", issueID, label)
+}
+
+// TestLabelExclusiveConcurrentProxiedInsertsSerializeToOneWinner is the
+// proxied-route twin of TestLabelExclusiveConcurrentAddsSerializeToOneWinner.
+// The direct-route test proves the lock serializes issueops.AddLabelInTx;
+// this one proves the SAME property for the repository Insert the proxied
+// server uses. Run 5x per determinism-gate-before-green, same as the twin.
+func (s *testSuite) TestLabelExclusiveConcurrentProxiedInsertsSerializeToOneWinner() {
+	s.setExclusivePrefixes("tier:,review:")
+	defer s.clearExclusivePrefixes()
+
+	for rep := 0; rep < 5; rep++ {
+		s.Run(fmt.Sprintf("rep%d", rep), func() {
+			issueID := fmt.Sprintf("bd-lbl-proxrace-%d", rep)
+			s.seedIssueRow(issueID)
+
+			labelsToAdd := []string{"tier:fable", "tier:opus"}
+			errs := make([]error, len(labelsToAdd))
+			ready := make(chan struct{}, len(labelsToAdd))
+			proceed := make(chan struct{})
+			var wg sync.WaitGroup
+			for i, label := range labelsToAdd {
+				wg.Add(1)
+				go func(i int, label string) {
+					defer wg.Done()
+					errs[i] = s.proxiedInsertWithRetry(issueID, label, ready, proceed)
+				}(i, label)
+			}
+			for range labelsToAdd {
+				<-ready
+			}
+			close(proceed)
+			wg.Wait()
+			s.assertOneTierWinner(issueID, errs)
+		})
+	}
+}
