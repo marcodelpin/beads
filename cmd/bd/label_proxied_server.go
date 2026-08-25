@@ -148,7 +148,7 @@ func runLabelRenameProxiedServer(ctx context.Context, oldLabel, newLabel string)
 
 	err = uow.RunTx(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
 		var rerr error
-		renamed, merged, _, rerr = uw.LabelUseCase().RenameLabel(ctx, oldLabel, newLabel, actor)
+		renamed, merged, _, rerr = uw.LabelUseCase().RenameLabel(ctx, oldLabel, newLabel, actor) //nolint:forbidigo // bulk rename; no role serves it, and Patch.Labels would reintroduce the per-issue add/remove event divergence this delegation replaced
 		if rerr != nil {
 			return "", fmt.Errorf("rename label '%s' -> '%s': %w", oldLabel, newLabel, rerr)
 		}
