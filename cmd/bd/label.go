@@ -418,6 +418,14 @@ var labelPropagateCmd = &cobra.Command{
 			return HandleErrorRespectJSON("'provides:' labels are reserved for cross-project capabilities. Hint: use 'bd ship %s' instead", strings.TrimPrefix(label, "provides:"))
 		}
 
+		// Vocabulary check (bda-1735): propagate is an interactive label-write
+		// command and joins the same advertised enforcement set as create,
+		// update, label add, tag and quick - it was the one interactive writer
+		// missing from it (codex cross-model finding).
+		if err := checkLabelVocabulary(ctx, []string{label}); err != nil {
+			return HandleErrorRespectJSON("label propagate: %v", err)
+		}
+
 		children, err := store.SearchIssues(ctx, "", types.IssueFilter{ParentID: &parentID})
 		if err != nil {
 			return HandleErrorRespectJSON("searching children of %s: %v", parentID, err)

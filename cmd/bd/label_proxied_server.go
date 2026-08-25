@@ -154,6 +154,12 @@ func runLabelPropagateProxiedServer(ctx context.Context, args []string) error {
 	if strings.HasPrefix(label, "provides:") {
 		return HandleErrorRespectJSON("'provides:' labels are reserved for cross-project capabilities. Hint: use 'bd ship %s' instead", strings.TrimPrefix(label, "provides:"))
 	}
+	// Vocabulary check (bda-1735): same interactive-edge check the classic
+	// route runs - propagate joins the advertised enforcement set on both
+	// routes (mirrors runQuickProxiedServer's placement).
+	if err := checkLabelVocabulary(ctx, []string{label}); err != nil {
+		return HandleErrorRespectJSON("label propagate: %v", err)
+	}
 	if uowProvider == nil {
 		return HandleError("proxied-server UOW provider not initialized")
 	}
