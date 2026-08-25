@@ -644,6 +644,24 @@ The remote must already exist (see 'bd dolt remote add').`,
 		} else if adopted {
 			fmt.Println("Configured Dolt remote origin from git origin.")
 		}
+		// Ask whether a DESTINATION exists before pushing at all (bda-wgjr):
+		// on a server-mode rig st.Push can succeed as a no-op with zero
+		// remotes configured, so the error-path no-remote guidance below
+		// never fired and the command printed "Push complete." for a publish
+		// that had no destination. Checked AFTER the adopt attempt, which may
+		// have just configured the remote from git origin. Exit stays 0 - the
+		// same deliberate exit-0 skip hasNoRemoteConfigured's doc records for
+		// solo rigs, but now with an honest message instead of a false one.
+		if hasNoRemoteConfigured(ctx, st) {
+			if jsonOutput {
+				if err := outputJSONRaw(map[string]string{"status": "skipped", "reason": "no-remote-configured"}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
+				return nil
+			}
+			printNoRemoteGuidance()
+			return nil
+		}
 		fmt.Println("Pushing to Dolt remote...")
 
 		pushErr := runDoltPushWithRetry(ctx, "push", func(c context.Context) error {
