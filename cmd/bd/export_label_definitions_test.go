@@ -93,11 +93,25 @@ func TestExportImportLabelDefinitionsRoundTrip(t *testing.T) {
 	}
 
 	// The definition records follow the issues, sorted by label.
+	//
+	// COMPAT PIN (bda-t63c): default export now always contains non-issue
+	// records, which is a deliberate contract change the PR body must flag.
+	// What consumers may rely on: EVERY line carries a non-empty _type to
+	// dispatch on, and with memories excluded (the default) the only
+	// non-issue type is label-definition. A consumer that unmarshals every
+	// default-export line as an issue was never guaranteed anything better.
 	var defLabels []string
 	for _, line := range lines {
 		var rec map[string]interface{}
 		if err := json.Unmarshal(line, &rec); err != nil {
 			t.Fatalf("parse line: %v", err)
+		}
+		typ, _ := rec["_type"].(string)
+		if typ == "" {
+			t.Fatalf("default-export line without a dispatchable _type: %s", line)
+		}
+		if typ != "issue" && typ != "label-definition" {
+			t.Fatalf("default export (memories excluded) carried unexpected _type %q: %s", typ, line)
 		}
 		if rec["_type"] == "label-definition" {
 			defLabels = append(defLabels, rec["label"].(string))
