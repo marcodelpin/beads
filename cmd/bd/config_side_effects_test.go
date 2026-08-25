@@ -154,3 +154,17 @@ func TestPrintConfigSideEffects(t *testing.T) {
 		{Message: "with command", Command: "bd apply"},
 	})
 }
+
+func TestCheckConfigSetSideEffects_ExclusivePrefixesEnable(t *testing.T) {
+	effects := checkConfigSetSideEffects(labelns.ConfigKey, "tier:")
+	if len(effects) != 1 {
+		t.Fatalf("expected 1 side effect, got %d", len(effects))
+	}
+	if effects[0].Command != "bd doctor" {
+		t.Fatalf("expected the doctor hint, got %+v", effects[0])
+	}
+	// Clearing the policy needs no hint.
+	if effects := checkConfigSetSideEffects(labelns.ConfigKey, ""); len(effects) != 0 {
+		t.Fatalf("clearing the key must produce no hint, got %+v", effects)
+	}
+}

@@ -195,6 +195,15 @@ func AddLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issueID,
 // withRetryTx/RunTx replay the WHOLE transaction against a fresh read, which
 // now observes the winner's committed label and correctly rejects it. See
 // migration 0066 (label_namespace_locks) for the full mechanism writeup.
+//
+// KNOWN WINDOW (bda-uu6j): a write whose snapshot predates a concurrent
+// `bd config set labels.exclusive-prefixes` enable reads no prefixes here,
+// returns before touching the namespace lock, and can commit a violation
+// just after enforcement turned on. Closing it would take a global
+// config-vs-label-write rendezvous - the whole-row contention the
+// per-(issue,namespace) lock exists to avoid - so the window is DISCLOSED
+// instead: the config-set side-effect hint and bd doctor's
+// FindExclusiveLabelViolations are the detection path.
 func EnforceExclusiveLabelInTx(ctx context.Context, tx DBTX, labelTable, issueID, label string) error {
 	raw, err := GetConfigInTx(ctx, tx, labelns.ConfigKey)
 	if err != nil {

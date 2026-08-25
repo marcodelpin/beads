@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/labelns"
 )
 
 // configSideEffect describes a hint or warning to show after a config change.
@@ -17,6 +19,18 @@ func checkConfigSetSideEffects(key, value string) []configSideEffect {
 	var effects []configSideEffect
 
 	switch {
+	case key == labelns.ConfigKey && value != "":
+		// bda-uu6j: enforcement gates NEW label writes only, and a writer
+		// whose transaction snapshot predates this set can still commit a
+		// violation just after it (its enforcement read saw no prefixes, so
+		// it never touched the namespace lock). Prevention would need a
+		// global config-vs-label-write rendezvous; detection is the doctor
+		// check's job.
+		effects = append(effects, configSideEffect{
+			Message: "Exclusive namespaces guard new label writes only. Pre-existing violations - and writes that raced this enable - are found by the doctor check.",
+			Command: "bd doctor",
+		})
+
 	case key == "federation.remote":
 		effects = append(effects, configSideEffect{
 			Message: fmt.Sprintf("To activate, ensure a Dolt remote matches this URL: %s", value),
