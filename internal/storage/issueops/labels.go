@@ -281,21 +281,20 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 	if len(oldIDs) == 0 {
 		return 0, 0, nil, nil
 	}
-	newIDs, err := issueIDsWithLabelInTx(ctx, tx, labelTable, newLabel)
-	if err != nil {
-		return 0, 0, nil, fmt.Errorf("query issues carrying %q: %w", newLabel, err)
-	}
-	alreadyNew := make(map[string]struct{}, len(newIDs))
-	for _, id := range newIDs {
-		alreadyNew[id] = struct{}{}
-	}
-	for _, id := range oldIDs {
-		if _, ok := alreadyNew[id]; ok {
-			merged++
-		}
-	}
 	// INSERT IGNORE so an issue that already carries newLabel silently no-ops
 	// here instead of raising a duplicate-key error - this IS the merge.
+	//
+	// merged is MEASURED from what the insert actually affected, never
+	// predicted from a prior SELECT: INSERT IGNORE reports one affected row
+	// per id it really inserted, so an id whose (issue_id, newLabel) row
+	// already exists - including one committed by a concurrent AddLabel
+	// after this transaction's snapshot was taken - contributes zero, and
+	// len(oldIDs) - inserted is exactly the merge count. The previous
+	// check-then-insert shape computed merged from a snapshot read of
+	// newLabel's carriers taken before the insert, so a concurrent
+	// AddLabel(newLabel) made the reported count schedule-dependent while
+	// the stored data stayed correct.
+	inserted := 0
 	for start := 0; start < len(oldIDs); start += queryBatchSize {
 		end := start + queryBatchSize
 		if end > len(oldIDs) {
@@ -308,18 +307,47 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 			placeholders[i] = "(?, ?)"
 			args = append(args, id, newLabel)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(
 			`INSERT IGNORE INTO %s (issue_id, label) VALUES %s`,
-			labelTable, strings.Join(placeholders, ",")), args...); err != nil {
+			labelTable, strings.Join(placeholders, ",")), args...)
+		if err != nil {
 			return 0, 0, nil, fmt.Errorf("insert renamed label: %w", err)
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, 0, nil, fmt.Errorf("count inserted renamed-label rows: %w", err)
+		}
+		inserted += int(n)
 	}
-	// Every id in oldIDs now carries newLabel too - freshly inserted above, or
-	// already present pre-rename - so dropping every oldLabel row in one
-	// DELETE is safe regardless of the merge split computed above.
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-		`DELETE FROM %s WHERE label = ?`, labelTable), oldLabel); err != nil {
-		return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
+	merged = len(oldIDs) - inserted
+	// The delete is RESTRICTED to the ids this transaction actually renamed,
+	// never `WHERE label = ?` alone: an unrestricted delete's blast radius
+	// depends on the engine's DELETE visibility (a current-read engine could
+	// remove a row a concurrent AddLabel committed after our snapshot -
+	// destroying a label this loop never renamed, counted or journaled),
+	// while the id-scoped form touches exactly the rows the insert above
+	// accounted for on every engine. A concurrent add of oldLabel to an
+	// issue outside oldIDs therefore SURVIVES the rename, which is the same
+	// observable state as that add having happened after this transaction
+	// committed - the only order-independent reading of the race.
+	for start := 0; start < len(oldIDs); start += queryBatchSize {
+		end := start + queryBatchSize
+		if end > len(oldIDs) {
+			end = len(oldIDs)
+		}
+		batch := oldIDs[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, oldLabel)
+		for i, id := range batch {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`DELETE FROM %s WHERE label = ? AND issue_id IN (%s)`,
+			labelTable, strings.Join(placeholders, ",")), args...); err != nil {
+			return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
+		}
 	}
 	comment := fmt.Sprintf("Renamed label: '%s' to '%s'", oldLabel, newLabel)
 	// KNOWN COST: this loop is O(len(oldIDs)) SQL round trips, not one batch -
