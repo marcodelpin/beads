@@ -307,6 +307,10 @@ var wispAuxCascadeTables = []struct{ table, column string }{
 	{"wisp_events", "issue_id"},
 	{"wisp_comments", "issue_id"},
 	{"wisp_child_counters", "parent_id"},
+	// Exclusive-namespace CAS rows (bda-dhcf): meaningless once the wisp is
+	// gone, and nothing else ever deletes them - without this cascade the
+	// lock table grows with every historical labeled id.
+	{"label_namespace_locks", "issue_id"},
 }
 
 // deleteWispAuxRowsInTx removes every row the given wisp ids own across

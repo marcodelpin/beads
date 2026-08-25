@@ -83,6 +83,13 @@ func deleteIssueRowInTx(ctx context.Context, tx *sql.Tx, id string, isWisp bool)
 		// A deleted issue holds no lease.
 		return err
 	}
+	// A deleted issue's exclusive-namespace CAS rows are meaningless and
+	// nothing else removes them (bda-dhcf). Plane-agnostic: the lock table
+	// keys on issue_id regardless of wisp routing.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM label_namespace_locks WHERE issue_id = ?`, id); err != nil {
+		return fmt.Errorf("delete label namespace locks: %w", err)
+	}
 	return nil
 }
 
@@ -327,6 +334,13 @@ func DeleteResolvedSetInTx(ctx context.Context, tx *sql.Tx, set DeletionSet, dry
 			fmt.Sprintf(`DELETE FROM leases WHERE issue_id IN (%s)`, batchInClause),
 			batchArgs...); err != nil {
 			return nil, fmt.Errorf("delete leases: %w", err)
+		}
+		// Nor exclusive-namespace CAS rows (bda-dhcf).
+		//nolint:gosec // G201: batchInClause contains only ? markers
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM label_namespace_locks WHERE issue_id IN (%s)`, batchInClause),
+			batchArgs...); err != nil {
+			return nil, fmt.Errorf("delete label namespace locks: %w", err)
 		}
 	}
 	result.DeletedCount = totalRegularsDeleted + len(set.WispIDs)

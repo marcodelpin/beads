@@ -253,6 +253,35 @@ func TestFindExclusiveLabelViolations(t *testing.T) {
 	}
 }
 
+// TestDeleteCleansLabelNamespaceLocks pins the bda-dhcf cascade: the
+// per-(issue,namespace) CAS rows are meaningless once their issue is gone,
+// and nothing else deletes them, so DeleteIssue must - else the lock table
+// grows with every historical labeled id.
+func TestDeleteCleansLabelNamespaceLocks(t *testing.T) {
+	ctx := context.Background()
+	st := newExclusiveLabelStore(t)
+	issue := mustCreateLabeledIssue(t, st, "tier:fable")
+
+	countLocks := func() int {
+		t.Helper()
+		var n int
+		if err := st.UnderlyingDB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM label_namespace_locks WHERE issue_id = ?`, issue.ID).Scan(&n); err != nil {
+			t.Fatalf("count locks: %v", err)
+		}
+		return n
+	}
+	if got := countLocks(); got == 0 {
+		t.Fatalf("positive control failed: creating a tier: label left no lock row - the probe cannot discriminate")
+	}
+	if err := st.DeleteIssue(ctx, issue.ID); err != nil {
+		t.Fatalf("DeleteIssue: %v", err)
+	}
+	if got := countLocks(); got != 0 {
+		t.Fatalf("delete left %d orphan lock row(s) for %s", got, issue.ID)
+	}
+}
+
 // TestFindExclusiveLabelViolations_StreamingAndEscaping pins the bda-9krh
 // rewrite: the scan streams one issue's labels at a time (the LAST group must
 // still be flushed - two consecutive violating issues catch a dropped final
