@@ -986,17 +986,34 @@ type labelDefinitionRecord struct {
 // issueops.ImportLabelDefinitions, shared with the uow batch importer).
 // Warnings - case-insensitive collisions kept as the existing definition -
 // go to stderr and never fail the import.
+// labelDefinitionsBatchImporter is the single-tx, single-Dolt-commit batch
+// surface DoltStore provides (bda-o5gq). Stores without it fall back to the
+// per-record define loop.
+type labelDefinitionsBatchImporter interface {
+	ImportLabelDefinitions(ctx context.Context, incoming []types.LabelDefinition, actor string) (int, []string, error)
+}
+
 func applyLabelDefinitionsClassic(ctx context.Context, st storage.LabelVocabularyStore, defs []labelDefinitionRecord) (int, error) {
 	if len(defs) == 0 {
 		return 0, nil
 	}
-	existing, err := st.ListLabelDefinitions(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("import label definitions: read registry: %w", err)
-	}
 	incoming := make([]types.LabelDefinition, 0, len(defs))
 	for _, d := range defs {
 		incoming = append(incoming, types.LabelDefinition{Label: d.Label, Description: d.Description, CreatedBy: d.CreatedBy})
+	}
+	if bi, ok := st.(labelDefinitionsBatchImporter); ok {
+		// One transaction, one Dolt commit (bda-o5gq): a later issue-import
+		// failure no longer leaves per-record published definitions behind,
+		// and a large input does not mint one history commit per record.
+		defined, warnings, err := bi.ImportLabelDefinitions(ctx, incoming, getActorWithGit())
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+		}
+		return defined, err
+	}
+	existing, err := st.ListLabelDefinitions(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("import label definitions: read registry: %w", err)
 	}
 	defined, warnings, err := issueops.ImportLabelDefinitions(ctx, existing, incoming, getActorWithGit(), st.DefineLabel)
 	for _, w := range warnings {
