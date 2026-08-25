@@ -109,7 +109,7 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 	}
 
 	// Parse the JSONL file without touching the store.
-	issues, configEntries, err := parseJSONLFile(jsonlPath)
+	issues, configEntries, labelDefs, err := parseJSONLFile(jsonlPath)
 	if err != nil {
 		writeAutoImportStamp(beadsDir, info)
 		fmt.Fprintf(os.Stderr, "warning: auto-import: failed to parse %s: %v\n", jsonlPath, err)
@@ -135,9 +135,19 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 			writeAutoImportStamp(beadsDir, info)
 			// Signal PersistentPostRun to auto-commit (no explicit DOLT_COMMIT here).
 			commandDidWrite.Store(true)
+			// Label definitions ride outside ImportJSONLData's single
+			// transaction (its jsonlImporter interface predates them); a
+			// crash in between recovers on the next auto-import pass.
+			defined, defErr := applyLabelDefinitionsClassic(ctx, s, labelDefs)
+			if defErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: auto-import: label definitions: %v\n", defErr)
+			}
 			fmt.Fprintf(os.Stderr, "auto-imported %d issues", imported)
 			if len(configEntries) > 0 {
 				fmt.Fprintf(os.Stderr, " and %d config entries", len(configEntries))
+			}
+			if defined > 0 {
+				fmt.Fprintf(os.Stderr, " and %d label definitions", defined)
 			}
 			fmt.Fprintf(os.Stderr, " from %s\n", jsonlPath)
 		}
