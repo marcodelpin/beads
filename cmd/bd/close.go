@@ -248,11 +248,26 @@ the flags appear in the command line.`,
 				closedIssue.Dependencies = nil
 			}
 
+			// GH#4816: a no-op re-close must not read as a fresh success -
+			// the new --reason was dropped (first close wins) and nothing
+			// changed. The #5191 port restored the pre-4816 success line by
+			// accident (upstream also lost the tests pinning this); the fork
+			// keeps the truthful stderr notice on BOTH output modes. The
+			// --json payload keeps #4911's array parity unchanged: the
+			// already-closed issue stays in the array, and this notice is the
+			// only already-closed signal.
+			if !res.Changed {
+				kept := ""
+				if closedIssue != nil {
+					kept = closedIssue.CloseReason
+				}
+				fmt.Fprintf(os.Stderr, "%s already closed (close_reason kept: %q)\n", id, kept)
+			}
 			if jsonOutput {
 				if closedIssue != nil {
 					closedIssues = append(closedIssues, closedIssue)
 				}
-			} else {
+			} else if res.Changed {
 				debug.PrintNormal("%s Closed %s: %s\n", ui.RenderPass("✓"), formatFeedbackID(id, issueTitleOrEmpty(issue)), reason)
 			}
 		}

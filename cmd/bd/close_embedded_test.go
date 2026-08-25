@@ -481,26 +481,32 @@ func TestEmbeddedClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("re-close --json failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		}
+		// RE-POINTED (bda-4myc root-cause, clause-219 discipline): this test
+		// was written against GH#4816's {closed, already_closed} object shape;
+		// upstream #4911 replaced the --json contract with array parity (see
+		// close_json_mixed_batch_includes_already_closed, which pins it) and
+		// the #5191 port kept that. The PROPERTY this test guards survives on
+		// different channels: the truthful already-closed signal moved to
+		// stderr (both output modes), and first-close-wins stays observable in
+		// the payload itself. Asserting the old object shape here would just
+		// contradict the sibling parity test.
 		s := stdout.String()
-		start := strings.Index(s, "{")
+		start := strings.Index(s, "[")
 		if start < 0 {
-			t.Fatalf("no JSON object in output (want already_closed indicator): %s", s)
+			t.Fatalf("no JSON array in output (want #4911 parity shape): %s", s)
 		}
-		var payload struct {
-			Closed        []*types.Issue `json:"closed"`
-			AlreadyClosed []*types.Issue `json:"already_closed"`
-		}
-		if err := json.Unmarshal([]byte(s[start:]), &payload); err != nil {
+		var issues []*types.Issue
+		if err := json.Unmarshal([]byte(s[start:]), &issues); err != nil {
 			t.Fatalf("parse JSON: %v\n%s", err, s[start:])
 		}
-		if len(payload.Closed) != 0 {
-			t.Errorf("closed = %d issues, want 0 for a no-op re-close", len(payload.Closed))
+		if len(issues) != 1 || issues[0].ID != issue.ID {
+			t.Fatalf("issues = %+v, want exactly [%s] (parity: the no-op still reports the issue)", issues, issue.ID)
 		}
-		if len(payload.AlreadyClosed) != 1 || payload.AlreadyClosed[0].ID != issue.ID {
-			t.Errorf("already_closed = %+v, want exactly [%s]", payload.AlreadyClosed, issue.ID)
+		if issues[0].CloseReason != "FIRST" {
+			t.Errorf("close_reason = %q in payload, want %q (first close wins, SECOND dropped)", issues[0].CloseReason, "FIRST")
 		}
-		if len(payload.AlreadyClosed) == 1 && payload.AlreadyClosed[0].CloseReason != "FIRST" {
-			t.Errorf("already_closed[0].close_reason = %q, want %q", payload.AlreadyClosed[0].CloseReason, "FIRST")
+		if !strings.Contains(stderr.String(), "already closed") {
+			t.Errorf("expected the truthful already-closed notice on stderr in --json mode too, got:\n%s", stderr.String())
 		}
 	})
 
