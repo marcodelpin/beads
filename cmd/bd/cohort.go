@@ -62,14 +62,13 @@ Fork-only — bda-9pc.`,
 		xrefs := findCrossRefs(ctx, target.ID, excluded)
 
 		if jsonOutput {
-			outputJSON(map[string]any{
+			return outputJSON(map[string]any{
 				"target":        target,
 				"ancestors":     ancestors,
 				"descendants":   descendants,
 				"siblings":      siblings,
 				"referenced_by": xrefs,
 			})
-			return nil
 		}
 		displayCohort(target, ancestors, descendants, siblings, xrefs)
 		return nil

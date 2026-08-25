@@ -397,7 +397,7 @@ func (ss *SeenSet) AppendDurable(opID string) error {
 	if ss.path == "" {
 		return nil
 	}
-	f, err := os.OpenFile(ss.path+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) // #nosec G304 - internal spool path
+	f, err := os.OpenFile(ss.path+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 - internal spool path
 	if err != nil {
 		return err
 	}

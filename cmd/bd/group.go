@@ -265,11 +265,10 @@ var groupCreateCmd = &cobra.Command{
 		warnIfCyclesExist(store)
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			return outputJSON(map[string]interface{}{
 				"gate": gate, "focus": focus, "members": len(members),
 				"wired_new": wiredNew, "already": already,
 			})
-			return nil
 		}
 		fmt.Printf("%s gate=%s focus=%s members=%d wired_new=%d already=%d\n",
 			ui.RenderPass("✓"), gate, focus, len(members), wiredNew, already)
@@ -360,8 +359,7 @@ var groupReleaseCmd = &cobra.Command{
 		commandDidWrite.Store(true)
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{"gate": gate, "focus": focus, "released": len(members)})
-			return nil
+			return outputJSON(map[string]interface{}{"gate": gate, "focus": focus, "released": len(members)})
 		}
 		fmt.Printf("%s closed gate %s → %d members unblocked (focus:%s)\n",
 			ui.RenderPass("✓"), gate, len(members), focus)
@@ -386,8 +384,7 @@ var groupStatusCmd = &cobra.Command{
 			return HandleErrorRespectJSON("listing parked members: %v", err)
 		}
 		if jsonOutput {
-			outputJSON(map[string]interface{}{"gate": gate, "focus": focus, "parked": members})
-			return nil
+			return outputJSON(map[string]interface{}{"gate": gate, "focus": focus, "parked": members})
 		}
 		if gate == "" {
 			fmt.Printf("no gate for focus:%s\n", focus)

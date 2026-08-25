@@ -77,7 +77,7 @@ Fork-only — bda-c7h.`,
 		stats := computeSnapshotStats()
 
 		if jsonOutput {
-			outputJSON(map[string]any{
+			return outputJSON(map[string]any{
 				"window_hours":    windowHours,
 				"now":             now.UTC().Format(time.RFC3339),
 				"in_progress":     ipIssues,
@@ -86,7 +86,6 @@ Fork-only — bda-c7h.`,
 				"stats":           stats,
 				"in_progress_cap": capN,
 			})
-			return nil
 		}
 		displaySnapshot(ipIssues, closedIssues, createdIssues, stats, windowHours, now)
 		return nil

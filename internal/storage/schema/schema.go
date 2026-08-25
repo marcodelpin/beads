@@ -43,7 +43,7 @@ func defaultStderr() io.Writer {
 // and wrong for exactly one: a pass slow enough that the operator concludes
 // the process is wedged. sys-fzjf03 is that case. A Dolt sql-server holding
 // ~160 databases answers every INFORMATION_SCHEMA.COLUMNS query in ~8.5s
-// regardless of its WHERE clause (Dolt materialises the whole table across
+// regardless of its WHERE clause (Dolt materializes the whole table across
 // all databases; a TABLE_SCHEMA/TABLE_NAME filter does not push down), and
 // the migration series guards its DDL with ~200 such lookups. A correct
 // `bd init --server` against that server therefore runs ~9 minutes with no

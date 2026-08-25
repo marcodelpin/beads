@@ -299,7 +299,7 @@ func (s *Spool) PullBatch(startOffset int64, batchSize int) ([]Entry, int64, int
 // Best-effort: a quarantine failure must not block the drain; the warning
 // in PullBatch is the operator's signal either way.
 func (s *Spool) quarantinePoison(line string) {
-	f, err := os.OpenFile(s.poisonFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) // #nosec G304 - internal spool path
+	f, err := os.OpenFile(s.poisonFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 - internal spool path
 	if err != nil {
 		return
 	}
@@ -351,7 +351,7 @@ func (s *Spool) Compact(cur *Cursor) error {
 			return fmt.Errorf("seek queue for compact: %w", err)
 		}
 		tmp := s.queueFile + ".tmp"
-		out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // #nosec G304 - internal spool path
+		out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 - internal spool path
 		if err != nil {
 			_ = f.Close()
 			return fmt.Errorf("create queue tmp: %w", err)

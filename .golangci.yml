@@ -400,6 +400,31 @@ linters:
         text: 'do not write a filter here'
         linters:
           - forbidigo
+      # `bd cohort` is a read-only relationship explorer that asks storage three
+      # questions of its own: label-siblings (LabelsAny), description-contains
+      # and notes-contains cross-references. The contains pair has no workapi
+      # builder at all, and the sibling scan is a one-shot label union no role
+      # answers. It is not on the reader role and does not claim to be; the
+      # filters it names are the whole of what the command is.
+      - path: '^cmd/bd/cohort\.go$'
+        text: 'do not write a filter here'
+        linters:
+          - forbidigo
+      # `bd group` resolves its own machinery rows, not a listing: the active
+      # GATE for a focus (exact label AND-join) and the focus's parked members.
+      # Both are exact-label lookups on labels the command itself minted; no
+      # role or builder answers "the gate wisp for focus:X".
+      - path: '^cmd/bd/group\.go$'
+        text: 'do not write a filter here'
+        linters:
+          - forbidigo
+      # `bd snapshot` is a read-only dashboard: three fixed one-shot listings
+      # (in_progress now, closed/created inside the window) feeding one render.
+      # It asks its own question each time and is not on the reader role.
+      - path: '^cmd/bd/snapshot\.go$'
+        text: 'do not write a filter here'
+        linters:
+          - forbidigo
       # Everything below this point is a command that is NOT one of the three
       # shared reads. Each asks storage its own question and builds the filter
       # that question needs; none is on the reader role or claims to be. They
