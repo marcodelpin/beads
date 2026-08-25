@@ -2284,22 +2284,6 @@ func buildServerDSN(cfg *Config, database string) string {
 	if cfg.PoolWriteTimeout > 0 {
 		parsed.WriteTimeout = cfg.PoolWriteTimeout
 	}
-	// Fork (sys-9np6d): upstream added the same knob under a DIFFERENT env name
-	// (BEADS_DOLT_POOL_READ_TIMEOUT, routed through cfg in open.go) and a 10s
-	// default. Keep the documented fork name working and keep the raised 120s
-	// default for the shared remote server; the cfg path above still wins when set.
-	if cfg.PoolReadTimeout == 0 {
-		readTimeout := 120 * time.Second
-		if v := os.Getenv("BEADS_DOLT_READ_TIMEOUT"); v != "" {
-			if d, err := time.ParseDuration(v); err == nil {
-				readTimeout = d
-			}
-		}
-		parsed.ReadTimeout = readTimeout
-	}
-	if cfg.PoolWriteTimeout == 0 {
-		parsed.WriteTimeout = 120 * time.Second
-	}
 	return parsed.FormatDSN()
 }
 

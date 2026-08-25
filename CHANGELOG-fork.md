@@ -61,7 +61,9 @@ local dolt binary. `bd init --server --server-host=<remote>` no longer spawns a 
 (bda-4sl); `DoltStore.BackupDatabase` is a no-op against a remote server, stopping the
 server-side `/var/lib/dolt/S:/...` garbage tree that grew 15G on LXC 258 (sys-c8066); fresh
 clones missing the gitignored `.beads/dolt-server.port` default to 3308 instead of dialing `:0`
-(bda-i69). Operational timeouts: `BEADS_DOLT_READ_TIMEOUT` env var (read path, sys-9np6d) and
+(bda-i69). Operational timeouts: pool deadlines follow upstream (`BEADS_DOLT_POOL_READ_TIMEOUT` /
+`dolt.pool-read-timeout` config; the fork's `BEADS_DOLT_READ_TIMEOUT` alias and 120s fallback were
+RETIRED by bda-dtgj stage 3 on 2026-08-25 - shared-server repos carry 120s in .beads/config.yaml) and
 bounded timeout + exponential-backoff retry for `bd dolt push` via `dolt.push-timeout`
 (default 90s) / `dolt.push-retries` (default 2) config keys (sys-t9tlx). bda-68f adapts fork
 code in gc.go to upstream's `isEmbeddedMode`→`usesSQLServer` rename. Upstream assumes
