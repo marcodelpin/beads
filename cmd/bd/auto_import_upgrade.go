@@ -138,6 +138,17 @@ func maybeAutoImportJSONL(ctx context.Context, s storage.DoltStorage, beadsDir s
 		commandDidWrite.Store(true)
 	}
 	if len(issues) == 0 {
+		if len(configEntries) > 0 {
+			// Config/memory records without issues: the issue importers are
+			// the only paths that apply configEntries, and neither runs on an
+			// empty issue set (this was true before bda-we22 too). Do NOT
+			// stamp - stamping here would permanently suppress a retry of
+			// records this pass could not apply (codex re-verify 2026-08-25).
+			fmt.Fprintf(os.Stderr, "auto-imported %d label definitions from %s; "+
+				"%d config/memory record(s) were NOT applied (auto-import applies them only alongside issues) - "+
+				"run: bd import -i %s\n", defined, jsonlPath, len(configEntries), jsonlPath)
+			return
+		}
 		// Definition-only export (bda-we22): the definitions ARE the import.
 		writeAutoImportStamp(beadsDir, info)
 		fmt.Fprintf(os.Stderr, "auto-imported %d label definitions from %s\n", defined, jsonlPath)

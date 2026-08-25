@@ -349,6 +349,34 @@ func TestMaybeAutoImportJSONL_DefinitionOnlyExportApplies(t *testing.T) {
 	}
 }
 
+// TestMaybeAutoImportJSONL_DefsPlusConfigDoesNotStamp pins the codex
+// re-verify regression: config/memory records without issues cannot be
+// applied by auto-import (only the issue importers carry configEntries), so
+// stamping a defs+config file would permanently suppress their retry. The
+// definitions apply; the stamp must NOT be written.
+func TestMaybeAutoImportJSONL_DefsPlusConfigDoesNotStamp(t *testing.T) {
+	dir := t.TempDir()
+	lines := `{"_type":"label-definition","label":"tier:fable","description":"model tier"}` + "\n" +
+		`{"_type":"memory","key":"note","value":"remember me"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	count := swapFallbackImporter(t, errors.New("test importer must not run without issues"))
+
+	store := &fakeVocabStore{fakeFallbackStore: fakeFallbackStore{statsTotalIssues: 0}}
+	maybeAutoImportJSONL(context.Background(), store, dir)
+
+	if len(store.defined) != 1 {
+		t.Fatalf("definitions must still apply, defined=%v", store.defined)
+	}
+	if got := count.Load(); got != 0 {
+		t.Fatalf("issue importer invoked %d time(s) without issues; expected 0", got)
+	}
+	if _, err := os.Stat(autoImportStampPath(dir)); err == nil {
+		t.Fatal("defs+config input was stamped - the unapplied config/memory records can never be retried")
+	}
+}
+
 // TestMaybeAutoImportJSONL_DefinitionErrorLeavesNoStamp pins bda-os0d: a
 // store-level definitions failure must leave NO stamp and must not proceed to
 // the issue import, so the next pass - database still empty - retries both.
