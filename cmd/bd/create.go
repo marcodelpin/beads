@@ -482,7 +482,14 @@ var createCmd = &cobra.Command{
 
 		var exclusivePrefixes []string
 		if store != nil {
-			raw, _ := store.GetConfig(rootCtx, labelns.ConfigKey)
+			// Surface a config read failure instead of treating the policy as
+			// absent (bda-r5yo): a discarded error made --dry-run report a
+			// conflicting create as valid while the real create - which reads
+			// the policy transactionally at persist - would fail.
+			raw, err := store.GetConfig(rootCtx, labelns.ConfigKey)
+			if err != nil {
+				return HandleError("failed to read %s: %v", labelns.ConfigKey, err)
+			}
 			exclusivePrefixes = labelns.ParsePrefixes(raw)
 		}
 		inheritedLabels = dropConflictingInheritedLabels(labels, inheritedLabels, exclusivePrefixes)
