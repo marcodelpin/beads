@@ -29,6 +29,47 @@ func (s *DoltStore) DefineLabel(ctx context.Context, label, description, actor s
 	})
 }
 
+// ImportLabelDefinitions applies a batch of vocabulary records in ONE
+// transaction and ONE Dolt commit (bda-o5gq). The per-record DefineLabel loop
+// the classic import used published every definition independently - a
+// failing issue import after N definitions left N already-public rows, a
+// retry was not the same atomic operation, and a large input minted one Dolt
+// history commit per record. Decision logic stays in
+// issueops.ImportLabelDefinitions (the one authority); this method only
+// scopes it to a single tx + commit.
+func (s *DoltStore) ImportLabelDefinitions(ctx context.Context, incoming []types.LabelDefinition, actor string) (int, []string, error) {
+	if len(incoming) == 0 {
+		return 0, nil, nil
+	}
+	var defined int
+	var warnings []string
+	err := s.withCircuitWrite(ctx, func(ctx context.Context) error {
+		if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
+			existing, err := issueops.ListLabelDefinitionsInTx(ctx, tx)
+			if err != nil {
+				return err
+			}
+			// withRetryTx may re-run the closure: reset the outputs so a
+			// retried attempt cannot double-count.
+			defined, warnings = 0, nil
+			d, w, err := issueops.ImportLabelDefinitions(ctx, existing, incoming, actor,
+				func(ctx context.Context, label, description, defActor string) error {
+					return issueops.DefineLabelInTx(ctx, tx, label, description, defActor)
+				})
+			defined, warnings = d, w
+			return err
+		}); err != nil {
+			return err
+		}
+		if defined == 0 {
+			return nil // exact re-import: nothing changed, no commit to mint
+		}
+		return s.doltAddAndCommit(ctx, []string{"label_definitions"},
+			fmt.Sprintf("bd: import %d label definitions", defined))
+	})
+	return defined, warnings, err
+}
+
 // UndefineLabel removes a row from the label vocabulary registry (bd label
 // undefine). Dolt-commits for the same reason DefineLabel does.
 func (s *DoltStore) UndefineLabel(ctx context.Context, label string) error {
