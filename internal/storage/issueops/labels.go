@@ -251,6 +251,41 @@ func acquireLabelNamespaceLockInTx(ctx context.Context, tx DBTX, issueID, namesp
 	return nil
 }
 
+// lockExclusiveNamespacesForSetInTx acquires the per-(issueID, namespace)
+// lock for every configured-exclusive namespace present in labels. Promotion
+// copies a whole never-enforced wisp label set into the enforced labels
+// table in one statement; refusing the copy is not an option (a port of
+// existing workspace state must not be refused by a policy configured after
+// it was written), but WITHOUT the lock the copy never collides with a
+// concurrent AddLabelInTx on the same issue, so that writer's "no violation"
+// read stays true while the copy lands a conflicting label. Locking the
+// namespaces makes the two transactions collide at commit; the loser
+// replays and re-reads. Violations already INSIDE the copied set are
+// disclosed, not blocked: bd doctor's FindExclusiveLabelViolations is the
+// detection path (same posture as the config-enable window above).
+func lockExclusiveNamespacesForSetInTx(ctx context.Context, tx DBTX, issueID string, labels []string) error {
+	raw, err := GetConfigInTx(ctx, tx, labelns.ConfigKey)
+	if err != nil {
+		return err
+	}
+	prefixes := labelns.ParsePrefixes(raw)
+	if len(prefixes) == 0 {
+		return nil
+	}
+	locked := make(map[string]bool, 1)
+	for _, label := range labels {
+		prefix := labelns.Match(prefixes, label)
+		if prefix == "" || locked[prefix] {
+			continue
+		}
+		locked[prefix] = true
+		if err := acquireLabelNamespaceLockInTx(ctx, tx, issueID, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // exclusiveLabelPrefixFilter builds the SQL fragment restricting the label
 // scan to the exclusive namespaces: labels outside them can never contribute
 // to a conflict, and on a large corpus they are the overwhelming majority of

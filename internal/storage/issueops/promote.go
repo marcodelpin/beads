@@ -57,6 +57,17 @@ func PromoteFromEphemeralInTx(ctx context.Context, tx DBTX, id string, actor str
 		return fmt.Errorf("promote wisp to issues: %w", err)
 	}
 
+	// The copy below materializes a never-enforced wisp label set into the
+	// enforced labels table. Lock the exclusive namespaces it touches so a
+	// concurrent AddLabelInTx on this id collides at commit instead of
+	// committing a "no violation" read the copy just invalidated (bda-qvff).
+	wispLabels, err := GetLabelsInTx(ctx, tx, "wisp_labels", id)
+	if err != nil {
+		return fmt.Errorf("read labels for promoted wisp %s: %w", id, err)
+	}
+	if err := lockExclusiveNamespacesForSetInTx(ctx, tx, id, wispLabels); err != nil {
+		return fmt.Errorf("promote wisp %s: %w", id, err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT IGNORE INTO labels (issue_id, label)
 		SELECT issue_id, label FROM wisp_labels WHERE issue_id = ?
