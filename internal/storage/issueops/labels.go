@@ -260,21 +260,20 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 	if len(oldIDs) == 0 {
 		return 0, 0, nil, nil
 	}
-	newIDs, err := issueIDsWithLabelInTx(ctx, tx, labelTable, newLabel)
-	if err != nil {
-		return 0, 0, nil, fmt.Errorf("query issues carrying %q: %w", newLabel, err)
-	}
-	alreadyNew := make(map[string]struct{}, len(newIDs))
-	for _, id := range newIDs {
-		alreadyNew[id] = struct{}{}
-	}
-	for _, id := range oldIDs {
-		if _, ok := alreadyNew[id]; ok {
-			merged++
-		}
-	}
 	// INSERT IGNORE so an issue that already carries newLabel silently no-ops
 	// here instead of raising a duplicate-key error - this IS the merge.
+	//
+	// merged is MEASURED from what the insert actually affected, never
+	// predicted from a prior SELECT: INSERT IGNORE reports one affected row
+	// per id it really inserted, so an id whose (issue_id, newLabel) row
+	// already exists - including one committed by a concurrent AddLabel
+	// after this transaction's snapshot was taken - contributes zero, and
+	// len(oldIDs) - inserted is exactly the merge count. The previous
+	// check-then-insert shape computed merged from a snapshot read of
+	// newLabel's carriers taken before the insert, so a concurrent
+	// AddLabel(newLabel) made the reported count schedule-dependent while
+	// the stored data stayed correct.
+	inserted := 0
 	for start := 0; start < len(oldIDs); start += queryBatchSize {
 		end := start + queryBatchSize
 		if end > len(oldIDs) {
@@ -287,12 +286,19 @@ func renameLabelInPlane(ctx context.Context, tx DBTX, labelTable, eventTable, ol
 			placeholders[i] = "(?, ?)"
 			args = append(args, id, newLabel)
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(
 			`INSERT IGNORE INTO %s (issue_id, label) VALUES %s`,
-			labelTable, strings.Join(placeholders, ",")), args...); err != nil {
+			labelTable, strings.Join(placeholders, ",")), args...)
+		if err != nil {
 			return 0, 0, nil, fmt.Errorf("insert renamed label: %w", err)
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, 0, nil, fmt.Errorf("count inserted renamed-label rows: %w", err)
+		}
+		inserted += int(n)
 	}
+	merged = len(oldIDs) - inserted
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 		`DELETE FROM %s WHERE label = ?`, labelTable), oldLabel); err != nil {
 		return 0, 0, nil, fmt.Errorf("delete old label rows: %w", err)
