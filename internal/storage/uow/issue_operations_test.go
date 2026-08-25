@@ -498,6 +498,15 @@ func (s createConfigUseCaseStub) LoadCreateContext(context.Context) (domain.Crea
 	return s.context, s.err
 }
 
+// GetConfig answers the guarded-write vocabulary probe (bda-yxac): the
+// Create/Update chokepoint now reads labels.vocabulary before persisting
+// labels, and an unset key means enforcement is off - which is what these
+// retry/hydration tests want. Without this the embedded nil interface
+// panics the moment a stubbed create carries a label.
+func (s createConfigUseCaseStub) GetConfig(context.Context, string) (string, error) {
+	return "", nil
+}
+
 type operationIssueUseCaseStub struct {
 	domain.IssueUseCase
 	getIssue func(context.Context, string) (*types.Issue, error)
