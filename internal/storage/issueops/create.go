@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -799,9 +800,43 @@ func PersistLabels(ctx context.Context, tx DBTX, bc *BatchContext, issue *types.
 // history that may predate the namespace config, so each violation is
 // reported through the callback and the labels are kept as-is (no silent
 // data loss - bd doctor surfaces the violations for cleanup).
+//
+// ACQUIRES THE PER-(issue, namespace) LOCK for every exclusive namespace the
+// INCOMING labels touch, BEFORE reading existing labels - the same discipline
+// EnforceExclusiveLabelInTx applies on the bd-label-add path. The lock row
+// only serializes writers who BOTH rewrite it: before this, PersistLabels
+// never touched label_namespace_locks, so a create/import upsert could not
+// collide with a concurrent AddLabelInTx (or another upsert) and both
+// commits landed two labels into one exclusive namespace with neither writer
+// seeing a violation. The lock is taken in warn mode too: a warn-mode import
+// that skips it would let an ENFORCING peer's "no violation" read stay true
+// forever, landing a second label with no refusal and no warning recorded -
+// serialized, the loser retries against a fresh read and either refuses
+// (enforce) or reports the violation through the callback (warn). Namespaces
+// implicated only by EXISTING labels are not locked: this write adds nothing
+// there, so it cannot create a new violation in them.
 func checkExclusiveLabelsForPersist(ctx context.Context, tx DBTX, bc *BatchContext, issue *types.Issue, labelTable string) error {
 	if bc == nil || len(bc.ExclusiveLabelPrefixes) == 0 {
 		return nil
+	}
+	var namespaces []string
+	seen := make(map[string]struct{})
+	for _, label := range issue.Labels {
+		prefix := labelns.Match(bc.ExclusiveLabelPrefixes, label)
+		if prefix == "" {
+			continue
+		}
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		namespaces = append(namespaces, prefix)
+	}
+	sort.Strings(namespaces)
+	for _, ns := range namespaces {
+		if err := acquireLabelNamespaceLockInTx(ctx, tx, issue.ID, ns); err != nil {
+			return fmt.Errorf("check exclusive labels for %s: %w", issue.ID, err)
+		}
 	}
 	existing, err := GetLabelsInTx(ctx, tx, labelTable, issue.ID)
 	if err != nil {

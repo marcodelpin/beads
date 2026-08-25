@@ -9,8 +9,10 @@ import (
 	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/steveyegge/beads/internal/labelns"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 // TestLabelSQLRepositoryExclusiveNamespaces pins the proxied/UOW write
@@ -258,6 +260,206 @@ func (s *testSuite) TestLabelExclusiveConcurrentAddsSerializeToOneWinner() {
 				}
 			}
 			s.Equal(1, tierLabels, "expected exactly 1 tier: label after the race, got %v", labels)
+		})
+	}
+}
+
+// persistLabelsInTxWithRetry runs issueops.PersistLabels (the create/import
+// chokepoint) in its OWN fresh transaction with the same whole-transaction
+// serialization-retry + two-phase snapshot-pin rendezvous discipline as
+// addLabelInTxWithRetry above. Returns the warn-callback count from the
+// attempt that COMMITTED - callbacks fired by rolled-back attempts are
+// discarded, mirroring the "callers should dedup" contract on
+// storage.BatchCreateOptions.OnExclusiveLabelConflict.
+func (s *testSuite) persistLabelsInTxWithRetry(issueID string, labels []string, warn bool, ready chan<- struct{}, proceed <-chan struct{}) (int, error) {
+	first := true
+	for attempt := 0; attempt < 20; attempt++ {
+		tx, err := s.db.BeginTx(s.Ctx(), nil)
+		if err != nil {
+			return 0, fmt.Errorf("begin: %w", err)
+		}
+		if first {
+			var pinned int
+			if scanErr := tx.QueryRowContext(s.Ctx(),
+				"SELECT COUNT(*) FROM labels WHERE issue_id = ?", issueID,
+			).Scan(&pinned); scanErr != nil {
+				_ = tx.Rollback()
+				return 0, fmt.Errorf("pin snapshot: %w", scanErr)
+			}
+			ready <- struct{}{}
+			<-proceed
+			first = false
+		}
+		warned := 0
+		bc := &issueops.BatchContext{
+			ExclusiveLabelPrefixes: labelns.ParsePrefixes("tier:,review:"),
+			Opts: storage.BatchCreateOptions{
+				ExclusiveLabelConflictWarn: warn,
+				OnExclusiveLabelConflict:   func(string, string, []string) { warned++ },
+			},
+		}
+		issue := &types.Issue{ID: issueID, Labels: labels}
+		if _, persistErr := issueops.PersistLabels(s.Ctx(), tx, bc, issue, "tester", "events"); persistErr != nil {
+			_ = tx.Rollback()
+			if isSerializationError(persistErr) {
+				continue
+			}
+			return 0, persistErr
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			if isSerializationError(commitErr) {
+				continue
+			}
+			return 0, fmt.Errorf("commit: %w", commitErr)
+		}
+		return warned, nil
+	}
+	return 0, fmt.Errorf("persistLabelsInTxWithRetry: exhausted retries for %s", issueID)
+}
+
+// assertOneTierWinner is the shared postcondition for the enforce-mode
+// two-writer scenarios: exactly one writer succeeded, the loser failed with
+// the exclusive-namespace rejection, and exactly one tier: label survives.
+func (s *testSuite) assertOneTierWinner(issueID string, errs []error) {
+	s.T().Helper()
+	successCount := 0
+	var loserErr error
+	for _, err := range errs {
+		if err == nil {
+			successCount++
+		} else {
+			loserErr = err
+		}
+	}
+	s.Equal(1, successCount, "expected exactly 1 of 2 concurrent writers to succeed, errs=%v", errs)
+	s.Require().Error(loserErr, "expected the losing writer to fail")
+	s.Contains(loserErr.Error(), "exclusive", "the loser must fail with the exclusive-namespace rejection, not some other error")
+	s.Equal(1, s.countTierLabels(issueID), "expected exactly 1 tier: label after the race")
+}
+
+func (s *testSuite) countTierLabels(issueID string) int {
+	s.T().Helper()
+	labels, err := s.labelRepo().List(s.Ctx(), issueID, domain.LabelOpts{})
+	s.Require().NoError(err)
+	tierLabels := 0
+	for _, l := range labels {
+		if strings.HasPrefix(l, "tier:") {
+			tierLabels++
+		}
+	}
+	return tierLabels
+}
+
+// TestLabelExclusivePersistPathSerializesWithConcurrentWriters is the
+// two-writer regression for the SECOND half of the #4757 review finding
+// (bda-e5b1): the label_namespace_locks row only serializes writers who BOTH
+// rewrite it, and checkExclusiveLabelsForPersist - on the PersistLabels
+// chokepoint EVERY bd create and EVERY import row goes through - never
+// touched it. A create/import upsert therefore could not collide with a
+// concurrent AddLabelInTx ("mixed", the exact interleaving the cross-model
+// review constructed) or with another upsert ("upsert-upsert"), and both
+// commits landed two labels into one exclusive namespace with neither writer
+// seeing a violation. Same two-phase snapshot-pin rendezvous as
+// TestLabelExclusiveConcurrentAddsSerializeToOneWinner, so the pre-fix
+// outcome is red by construction, not by scheduling luck; same 5x repetition
+// per determinism-gate-before-green.
+//
+// "warn-vs-enforce" pins the WARN-MODE half of the fix: an import-mode
+// (warn) upsert must take the lock too, else an ENFORCING peer both lands
+// its label and records nothing - the invariant is "no silent violation":
+// either one tier: label survives (the peer was refused) or two survive AND
+// the warn writer reported the conflict through its callback.
+func (s *testSuite) TestLabelExclusivePersistPathSerializesWithConcurrentWriters() {
+	s.setExclusivePrefixes("tier:,review:")
+	defer s.clearExclusivePrefixes()
+
+	for rep := 0; rep < 5; rep++ {
+		s.Run(fmt.Sprintf("mixed-rep%d", rep), func() {
+			issueID := fmt.Sprintf("bd-lbl-prace-m%d", rep)
+			s.seedIssueRow(issueID)
+			var persistErr, addErr error
+			ready := make(chan struct{}, 2)
+			proceed := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, persistErr = s.persistLabelsInTxWithRetry(issueID, []string{"tier:fable"}, false, ready, proceed)
+			}()
+			go func() {
+				defer wg.Done()
+				addErr = s.addLabelInTxWithRetry(issueID, "tier:opus", ready, proceed)
+			}()
+			<-ready
+			<-ready
+			close(proceed)
+			wg.Wait()
+			s.assertOneTierWinner(issueID, []error{persistErr, addErr})
+		})
+
+		s.Run(fmt.Sprintf("upsert-upsert-rep%d", rep), func() {
+			issueID := fmt.Sprintf("bd-lbl-prace-u%d", rep)
+			s.seedIssueRow(issueID)
+			labelsToAdd := []string{"tier:fable", "tier:opus"}
+			errs := make([]error, len(labelsToAdd))
+			ready := make(chan struct{}, len(labelsToAdd))
+			proceed := make(chan struct{})
+			var wg sync.WaitGroup
+			for i, label := range labelsToAdd {
+				wg.Add(1)
+				go func(i int, label string) {
+					defer wg.Done()
+					_, errs[i] = s.persistLabelsInTxWithRetry(issueID, []string{label}, false, ready, proceed)
+				}(i, label)
+			}
+			for range labelsToAdd {
+				<-ready
+			}
+			close(proceed)
+			wg.Wait()
+			s.assertOneTierWinner(issueID, errs)
+		})
+
+		s.Run(fmt.Sprintf("warn-vs-enforce-rep%d", rep), func() {
+			issueID := fmt.Sprintf("bd-lbl-prace-w%d", rep)
+			s.seedIssueRow(issueID)
+			var warned int
+			var persistErr, addErr error
+			ready := make(chan struct{}, 2)
+			proceed := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				warned, persistErr = s.persistLabelsInTxWithRetry(issueID, []string{"tier:fable"}, true, ready, proceed)
+			}()
+			go func() {
+				defer wg.Done()
+				addErr = s.addLabelInTxWithRetry(issueID, "tier:opus", ready, proceed)
+			}()
+			<-ready
+			<-ready
+			close(proceed)
+			wg.Wait()
+
+			// The warn-mode writer never hard-fails on a conflict.
+			s.Require().NoError(persistErr, "warn-mode upsert must not hard-fail")
+			switch s.countTierLabels(issueID) {
+			case 1:
+				// The enforcing peer lost the lock-cell collision, retried
+				// against a fresh read and was correctly refused.
+				s.Require().Error(addErr, "with 1 surviving tier: label the enforcing add must have been refused")
+				s.Contains(addErr.Error(), "exclusive")
+			case 2:
+				// The warn writer lost, retried, saw the peer's label and kept
+				// its own AS WRITTEN - permitted, but only WITH the violation
+				// reported. Two labels with warned==0 is the pre-fix silent
+				// double-land this scenario exists to catch.
+				s.Require().NoError(addErr)
+				s.GreaterOrEqual(warned, 1, "two tier: labels may only coexist when the warn-mode writer REPORTED the violation")
+			default:
+				s.Failf("unexpected tier: label count", "issue %s", issueID)
+			}
 		})
 	}
 }
