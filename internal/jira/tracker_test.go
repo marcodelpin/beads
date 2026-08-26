@@ -756,9 +756,6 @@ func (s *configStore) UpdateIssueChecked(_ context.Context, _ string, _ map[stri
 func (s *configStore) ReopenIssue(_ context.Context, _, _, _ string) error     { return nil }
 func (s *configStore) UpdateIssueType(_ context.Context, _, _, _ string) error { return nil }
 func (s *configStore) CloseIssue(_ context.Context, _, _, _, _ string) error   { return nil }
-func (s *configStore) CloseIssueWithResult(_ context.Context, _, _, _, _ string) (*storage.CloseResult, error) {
-	return nil, nil
-}
 
 func (s *configStore) CloseIssueChecked(_ context.Context, _, _ string, _ storage.CloseIssueOptions) (storage.CloseIssueResult, error) {
 	return storage.CloseIssueResult{}, nil

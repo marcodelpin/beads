@@ -569,32 +569,19 @@ func (s *DoltStore) UpdateIssueType(ctx context.Context, id string, issueType st
 }
 
 // CloseIssue closes an issue with a reason.
-func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error {
-	_, err := s.CloseIssueWithResult(ctx, id, reason, actor, session)
-	return err
-}
-
-// CloseIssueWithResult closes an issue with a reason and reports whether the
-// row actually changed (storage.CloseResult.AlreadyClosed).
 // Delegates SQL work to issueops.CloseIssueInTx; handles Dolt-specific concerns
-// (wisp routing, DOLT_ADD/COMMIT, cache invalidation).
-// The fork keeps the result-reporting surface (CloseIssueWithResult,
-// GH#4818/#4819) and layers upstream's circuit-breaker on it: upstream wraps
-// its CloseIssue body in withCircuitWrite, and CloseIssue here delegates to
-// this method, so wrapping here protects both entrances.
-func (s *DoltStore) CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
-	var res *storage.CloseResult
-	err := s.withCircuitWrite(ctx, func(ctx context.Context) error {
-		var cerr error
-		res, cerr = s.closeIssueWithResult(ctx, id, reason, actor, session)
-		return cerr
+// (wisp routing, DOLT_ADD/COMMIT, cache invalidation). Wrapped in
+// withCircuitWrite so upstream's circuit-breaker covers this entrance the same
+// way it covers CloseIssueChecked.
+func (s *DoltStore) CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error {
+	return s.withCircuitWrite(ctx, func(ctx context.Context) error {
+		return s.closeIssue(ctx, id, reason, actor, session)
 	})
-	return res, err
 }
 
-// closeIssueWithResult is the circuit-free body - upstream's
-// CloseIssue -> closeIssue split, carrying the fork's result shape.
-func (s *DoltStore) closeIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
+// closeIssue is the circuit-free body - upstream's CloseIssue -> closeIssue
+// split.
+func (s *DoltStore) closeIssue(ctx context.Context, id string, reason string, actor string, session string) error {
 	// Route ephemeral IDs to wisps table (falls through for promoted wisps).
 	// Wisps skip DOLT_COMMIT since they live in dolt_ignored tables.
 	if s.isActiveWisp(ctx, id) {
@@ -604,24 +591,17 @@ func (s *DoltStore) closeIssueWithResult(ctx context.Context, id string, reason 
 	// Wrap in withRetryTx so a concurrent writer that loses Dolt's optimistic
 	// commit-time merge (MySQL 1213/1205, guaranteed server-side rollback) is
 	// retried rather than surfaced as a hard failure. Dolt has no real row
-	// locking — FOR UPDATE / SKIP LOCKED are parse-only no-ops
-	// (https://www.dolthub.com/blog/2023-10-23-hold-my-beer/) — so retry is the
+	// locking - FOR UPDATE / SKIP LOCKED are parse-only no-ops
+	// (https://www.dolthub.com/blog/2023-10-23-hold-my-beer/) - so retry is the
 	// only safety net. withRetryTx owns BeginTx and the final Commit.
-	var out *storage.CloseResult
-	err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
-		res, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
-		if err != nil {
+	return s.withRetryTx(ctx, func(tx *sql.Tx) error {
+		if _, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session); err != nil {
 			return err
 		}
-		out = &storage.CloseResult{AlreadyClosed: res.AlreadyClosed}
 
 		commitMsg := fmt.Sprintf("bd: close %s", id)
 		return s.doltAddAndCommitInTx(ctx, tx, []string{"issues", "events"}, commitMsg)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // CloseIssueChecked closes an issue but refuses with storage.ErrCloseBlocked

@@ -30,13 +30,13 @@ type fakeHookStore struct {
 	updateCheckedErr       error
 	transactionReopenError error
 	transactionAddLabelErr error
-	// closeAlreadyClosed drives the fork-side CloseIssueWithResult fake:
-	// true reports an already-closed no-op (fork spool/GH#4816 seam tests).
+	// closeAlreadyClosed drives the CloseIssueChecked fake: true reports an
+	// already-closed no-op (Unchanged=true), for hook-firing-parity tests.
 	closeAlreadyClosed bool
 }
 
-func (s fakeHookStore) CloseIssueWithResult(_ context.Context, _, _, _, _ string) (*CloseResult, error) {
-	return &CloseResult{AlreadyClosed: s.closeAlreadyClosed}, nil
+func (s fakeHookStore) CloseIssueChecked(_ context.Context, _, _ string, _ CloseIssueOptions) (CloseIssueResult, error) {
+	return CloseIssueResult{Unchanged: s.closeAlreadyClosed}, nil
 }
 
 func (s fakeHookStore) CreateIssue(_ context.Context, issue *types.Issue, _ string) error {
@@ -483,17 +483,17 @@ func TestHookFiringStoreCreateIssuesSkipsUnpersistedDependencies(t *testing.T) {
 	}
 }
 
-func TestHookFiringStoreCloseIssueWithResultFiresOnRealClose(t *testing.T) {
+func TestHookFiringStoreCloseIssueCheckedFiresOnRealClose(t *testing.T) {
 	runner := &recordingHookRunner{}
 	inner := fakeHookStore{issues: map[string]*types.Issue{"c1": {ID: "c1"}}}
 	store := &HookFiringStore{DoltStorage: inner, inner: inner, runner: runner}
 
-	res, err := store.CloseIssueWithResult(context.Background(), "c1", "done", "a", "s")
+	res, err := store.CloseIssueChecked(context.Background(), "c1", "a", CloseIssueOptions{Reason: "done", Session: "s"})
 	if err != nil {
-		t.Fatalf("CloseIssueWithResult: %v", err)
+		t.Fatalf("CloseIssueChecked: %v", err)
 	}
-	if res == nil || res.AlreadyClosed {
-		t.Fatalf("result = %+v, want AlreadyClosed=false", res)
+	if res.Unchanged {
+		t.Fatalf("result = %+v, want Unchanged=false", res)
 	}
 	wantEvents := []string{hooks.EventClose}
 	if !reflect.DeepEqual(runner.events, wantEvents) {
@@ -501,20 +501,25 @@ func TestHookFiringStoreCloseIssueWithResultFiresOnRealClose(t *testing.T) {
 	}
 }
 
-func TestHookFiringStoreCloseIssueWithResultSkipsHookOnAlreadyClosed(t *testing.T) {
+// CloseIssueChecked deliberately differs from the deleted with-result close
+// API it replaced here: it fires on_close on ANY success, re-close included (see
+// the "THE SINGLE-CLOSE PATHS DELIBERATELY DIFFER" note on hookBatchCloser and
+// the doc comment on HookFiringStore.CloseIssueChecked itself).
+func TestHookFiringStoreCloseIssueCheckedFiresEvenOnAlreadyClosed(t *testing.T) {
 	runner := &recordingHookRunner{}
 	inner := fakeHookStore{issues: map[string]*types.Issue{"c1": {ID: "c1"}}, closeAlreadyClosed: true}
 	store := &HookFiringStore{DoltStorage: inner, inner: inner, runner: runner}
 
-	res, err := store.CloseIssueWithResult(context.Background(), "c1", "again", "a", "s")
+	res, err := store.CloseIssueChecked(context.Background(), "c1", "a", CloseIssueOptions{Reason: "again", Session: "s"})
 	if err != nil {
-		t.Fatalf("CloseIssueWithResult: %v", err)
+		t.Fatalf("CloseIssueChecked: %v", err)
 	}
-	if res == nil || !res.AlreadyClosed {
-		t.Fatalf("result = %+v, want AlreadyClosed=true", res)
+	if !res.Unchanged {
+		t.Fatalf("result = %+v, want Unchanged=true", res)
 	}
-	if len(runner.events) != 0 {
-		t.Fatalf("events = %v, want none (no-op close must not fire on_close)", runner.events)
+	wantEvents := []string{hooks.EventClose}
+	if !reflect.DeepEqual(runner.events, wantEvents) {
+		t.Fatalf("events = %v, want %v (CloseIssueChecked fires even on an idempotent re-close)", runner.events, wantEvents)
 	}
 }
 

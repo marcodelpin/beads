@@ -251,22 +251,6 @@ func (h *HookFiringStore) CloseIssue(ctx context.Context, id string, reason stri
 	return nil
 }
 
-// NOTE(fork): CloseIssueWithResult is fork-carried (GH#4818/#4819); upstream
-// replaced it with CloseIssueChecked (#4893). Both coexist until the fork's
-// spool close path (cmd/bd/close.go) migrates to the checked API.
-// CloseIssueWithResult closes an issue and fires on_close only when the close
-// actually happened; an already-closed no-op fires no hook.
-func (h *HookFiringStore) CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*CloseResult, error) {
-	res, err := h.inner.CloseIssueWithResult(ctx, id, reason, actor, session)
-	if err != nil {
-		return nil, err
-	}
-	if res == nil || !res.AlreadyClosed {
-		h.fireHookByID(ctx, hooks.EventClose, id)
-	}
-	return res, nil
-}
-
 // CloseIssueChecked closes an issue under the is_blocked guard and fires
 // on_close on success — mirroring CloseIssue, this includes the idempotent
 // no-op when the issue was already closed (res.Unchanged). A guard rejection

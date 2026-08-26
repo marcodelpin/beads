@@ -240,25 +240,21 @@ func (s *DoltStore) updateWispChecked(ctx context.Context, id string, updates ma
 // closeWisp closes a wisp in the wisps table.
 // Delegates SQL work to issueops.CloseIssueInTx; no Dolt versioning needed
 // since wisps live in dolt_ignored tables.
-func (s *DoltStore) closeWisp(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
+func (s *DoltStore) closeWisp(ctx context.Context, id string, reason string, actor string, session string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	clearJournalScope := s.scopeEventsJournalTransaction(tx)
 	defer clearJournalScope()
 
-	res, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
-	if err != nil {
-		return nil, err
+	if _, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session); err != nil {
+		return err
 	}
 
-	if err := s.commitSQLTx(ctx, "commit close wisp", tx); err != nil {
-		return nil, err
-	}
-	return &storage.CloseResult{AlreadyClosed: res.AlreadyClosed}, nil
+	return s.commitSQLTx(ctx, "commit close wisp", tx)
 }
 
 // closeWispChecked closes a wisp with the is_blocked guard, mirroring closeWisp

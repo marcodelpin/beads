@@ -155,26 +155,10 @@ func (s *EmbeddedDoltStore) UpdateIssueType(ctx context.Context, id string, issu
 // CloseIssue closes an issue with a reason.
 // Delegates SQL work to issueops; EmbeddedDolt auto-commits the transaction.
 func (s *EmbeddedDoltStore) CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error {
-	_, err := s.CloseIssueWithResult(ctx, id, reason, actor, session)
-	return err
-}
-
-// CloseIssueWithResult closes an issue with a reason and reports whether the
-// row actually changed (storage.CloseResult.AlreadyClosed).
-func (s *EmbeddedDoltStore) CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
-	var out *storage.CloseResult
-	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
-		res, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
-		if err != nil {
-			return err
-		}
-		out = &storage.CloseResult{AlreadyClosed: res.AlreadyClosed}
-		return nil
+	return s.withConn(ctx, true, func(tx *sql.Tx) error {
+		_, err := issueops.CloseIssueInTx(ctx, tx, id, reason, actor, session)
+		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // CloseIssueChecked closes an issue but refuses with storage.ErrCloseBlocked

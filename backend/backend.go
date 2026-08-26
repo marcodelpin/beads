@@ -136,11 +136,6 @@ type (
 // issue-status enum from the domain types.
 type VCStatus = storage.Status
 
-// CloseResult reports what a CloseIssueWithResult call actually did.
-// Fork-carried (GH#4818/#4819): the result-reporting close surface lives on
-// the storage interface, so its type joins the public backend contract.
-type CloseResult = storage.CloseResult
-
 // Backend describes a registered storage backend: how to open its workspace
 // store. See the field docs on the aliased struct.
 type Backend = backends.Backend

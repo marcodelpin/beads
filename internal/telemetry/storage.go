@@ -223,17 +223,6 @@ func (s *InstrumentedStorage) CloseIssue(ctx context.Context, id string, reason 
 	return err
 }
 
-func (s *InstrumentedStorage) CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*storage.CloseResult, error) {
-	attrs := []attribute.KeyValue{
-		attribute.String("bd.issue.id", id),
-		attribute.String("bd.actor", actor),
-	}
-	ctx, span, t := s.op(ctx, "CloseIssueWithResult", attrs...)
-	res, err := s.inner.CloseIssueWithResult(ctx, id, reason, actor, session)
-	s.done(ctx, span, t, err, attrs...)
-	return res, err
-}
-
 func (s *InstrumentedStorage) CloseIssueChecked(ctx context.Context, id string, actor string, opts storage.CloseIssueOptions) (storage.CloseIssueResult, error) {
 	attrs := []attribute.KeyValue{
 		attribute.String("bd.issue.id", id),

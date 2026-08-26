@@ -85,21 +85,6 @@ const (
 	NotClaimableStatusFragment = ": status "
 )
 
-// CloseResult reports what a CloseIssueWithResult call actually did.
-//
-// FORK-ONLY and deliberately NOT aliased. Measured 2026-08-10 (sys-iogddl):
-// upstream's storage package declares no CloseResult at all, so keeping ours
-// collides with nothing; its top-level issueops.CloseResult has a DIFFERENT
-// shape (Issue/Changed/OpenChildren, no AlreadyClosed); and
-// internal/storage/issueops - whose CloseResult does carry AlreadyClosed -
-// imports this package, so aliasing that one would be an import cycle.
-type CloseResult struct {
-	// AlreadyClosed is true when the issue was already closed and the call
-	// was a no-op: the stored close_reason is unchanged (first close wins)
-	// and no new EventClosed row was recorded (GH#4025).
-	AlreadyClosed bool
-}
-
 // CommentPageCursor is the resume position for a keyset page of an issue's
 // comments: the (created_at, id) of the last comment already returned. The zero
 // value starts a walk from the beginning of the thread.
@@ -376,11 +361,6 @@ type Storage interface {
 	UnclaimIssueIfAssignee(ctx context.Context, id string, actor string, expectedAssignee string) error
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
-	// CloseIssueWithResult is CloseIssue plus a report of what actually
-	// happened, so callers can distinguish a real close from the idempotent
-	// already-closed no-op (GH#4816) without weakening the GH#4025 contract
-	// (nil error, first reason wins, no duplicate EventClosed).
-	CloseIssueWithResult(ctx context.Context, id string, reason string, actor string, session string) (*CloseResult, error)
 
 	// CloseIssueChecked closes an issue, but refuses with ErrCloseOpenChildren
 	// when it has open parent-child dependents, or ErrCloseBlocked when it has a
