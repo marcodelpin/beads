@@ -228,7 +228,7 @@ Examples:
 		if usesProxiedServer() {
 			return runRememberProxied(cmd, args)
 		}
-		CheckReadonly("remember")
+		CheckReadonly("remember") // also covers CheckMigrationFreeze (dc-6jaq)
 
 		evt := metrics.NewCommandEvent("remember")
 		defer func() {
