@@ -185,6 +185,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxied-server route share the banner. A workspace-less directory, and a
   healthy store with no memories, stay silent as before.
 
+- **`bd` no longer serializes every invocation behind the schema-init advisory
+  lock.** The schema-init probe ran entirely inside the database-scoped
+  `GET_LOCK('bd_schema_init:<db>', 5)`, so on a shared Dolt server every `bd`
+  process queued behind every other one to discover that it had nothing to
+  migrate. Measured on an 18-seat rig: 1500 `is_free_lock` samples over 14s
+  found the lock held 96.7% of the time, held runs had a 673ms median and a
+  4.2s max, and free gaps had a 0ms median — the lock was handed straight from
+  holder to holder. That queue was 0.4-2.4s of pure waiting on every claim,
+  heartbeat, list, comment and mail check. `MigrateUpWithLock` now answers the
+  steady-state question first, without the lock — it puts the session on the
+  target database (proving the database exists before issuing any statement
+  that could fail, so a fresh bootstrap still falls through to the locked
+  `CREATE DATABASE`; callers whose pool already names the database inject
+  nothing and the probe simply declines a session that is elsewhere), then
+  asks whether both migration cursors are at this
+  binary's latest with the content-hash column and custom-status/type backfills
+  done, whether all the canonical `dolt_ignore` patterns are present, and
+  finally whether the migration lock is free — and takes `GET_LOCK` only on the
+  path that can actually migrate. That last term is what keeps the probe honest
+  while a peer is mid-pass: the cursors land before the backfills and rekeys
+  finish, so a held lock, not the cursors alone, is the proof that nobody is
+  rewriting the tables underneath this caller. The probe issues no writes —
+  its one session mutation is the `USE` that pins the target database — and fails
+  closed: any error, any unreadable state, and anything short of provably
+  converged falls through to the locked path unchanged, as does any caller
+  carrying fresh-bootstrap heal authority.
+
 - **Incremental auto-export now actually takes the incremental path**
   ([#5806](https://github.com/gastownhall/beads/pull/5806)). Change detection
   compared `GetStateHash()` values — a hash of the entire database plus
