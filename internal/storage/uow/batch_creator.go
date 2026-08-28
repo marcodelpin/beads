@@ -98,6 +98,10 @@ func createBatchItem(ctx context.Context, uw UnitOfWork, request publicops.Creat
 	if !prepared.Issue.Ephemeral && !prepared.Issue.NoHistory && createContext.InfraTypes[string(prepared.Issue.IssueType)] {
 		prepared.Issue.Ephemeral = true
 	}
+	// A wisp_type is a claim of ephemerality, same as every other create path.
+	if !prepared.Issue.Ephemeral && !prepared.Issue.NoHistory && prepared.Issue.WispType != "" {
+		prepared.Issue.Ephemeral = true
+	}
 	// Vocabulary enforcement (bda-yxac): same caller-named-labels check as the
 	// single guarded create.
 	if prepared.Issue != nil {

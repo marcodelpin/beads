@@ -59,6 +59,13 @@ func ExecuteCreate(ctx context.Context, tx *sql.Tx, request publicops.CreateRequ
 	if !issue.Ephemeral && !issue.NoHistory && ResolveInfraTypesInTx(ctx, tx)[string(issue.IssueType)] {
 		issue.Ephemeral = true
 	}
+	// A wisp_type IS a claim of ephemerality: a typed wisp minted without the
+	// flag lands in the issues plane where no TTL, GC, or purge tier owns it
+	// (858 such rows / 7.3 MB survived every sweep in one production DB before
+	// this line). NoHistory keeps its own retention mode, same as above.
+	if !issue.Ephemeral && !issue.NoHistory && issue.WispType != "" {
+		issue.Ephemeral = true
+	}
 	// Vocabulary enforcement (bda-yxac): judge only the labels the CALLER
 	// named. Labels inherited from the parent below are already stored, so a
 	// legacy parent label must not fail its child's create under enforce.
