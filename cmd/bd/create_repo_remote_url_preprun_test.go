@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+
+	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/git"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,14 +49,24 @@ func TestCreateRemoteRepoSkipsLocalDatabaseGuard(t *testing.T) {
 		t.Fatalf("test setup: %s unexpectedly has a .beads dir", noBeadsCwd)
 	}
 
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(noBeadsCwd); err != nil {
-		t.Fatalf("chdir(%q): %v", noBeadsCwd, err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+	t.Chdir(noBeadsCwd)
+	t.Setenv("BEADS_DIR", "")
+	t.Setenv("BEADS_DB", "")
+
+	// A sibling test that touched git while the process cwd was still inside
+	// the real checkout leaves internal/git's process-wide gitContext cache
+	// pointing at that repo root. FindBeadsDir then resolves the checkout's
+	// .beads from this test's temp cwd and the create goes to a configured
+	// Dolt server (host from the real metadata.json, port from the test
+	// container's process-wide BEADS_DOLT_SERVER_PORT) instead of the
+	// remote-cache path under test. Reset the caches on entry and on exit,
+	// same pattern as backup_restore_test.go.
+	beads.ResetCaches()
+	git.ResetCaches()
+	t.Cleanup(func() {
+		beads.ResetCaches()
+		git.ResetCaches()
+	})
 
 	// Hide the `dolt` CLI so remotecache.Ensure fails fast and
 	// deterministically in CGO-enabled builds, without attempting a real network
