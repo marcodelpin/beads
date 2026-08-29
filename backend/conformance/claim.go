@@ -163,9 +163,11 @@ func testReclaimExpiredLease(t *testing.T, f Factory) {
 
 	// Reclaim with a cutoff past the lease horizon: a negative olderThan moves the
 	// cutoff (now - olderThan) into the future, so even the fresh lease counts as
-	// expired. This exercises the revert path deterministically with no wall-clock
-	// wait; ReclaimSkipsFreshLease (olderThan 0) pins the other side of the cutoff.
-	reclaimed, err := s.ReclaimExpiredLeases(ctx(), -time.Hour, types.ReclaimFilter{}, "reaper")
+	// expired. Derive the margin from DefaultLeaseTTL so the cutoff clears the
+	// horizon whatever the TTL is (a fixed -1h silently stopped clearing it when
+	// the TTL grew past an hour). Deterministic, no wall-clock wait;
+	// ReclaimSkipsFreshLease (olderThan 0) pins the other side of the cutoff.
+	reclaimed, err := s.ReclaimExpiredLeases(ctx(), -(issueops.DefaultLeaseTTL + time.Minute), types.ReclaimFilter{}, "reaper")
 	must(t, err)
 	found := false
 	for _, r := range reclaimed {

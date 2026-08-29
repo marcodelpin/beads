@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -18,7 +19,8 @@ import (
 // issueops.ReclaimExpiredLeasesInTx + sqlbuild.ReclaimScopeSQL answers it the
 // same way; one with a reclaim path of its own is what this case measures.
 //
-// The whole test runs one reaper cutoff (-time.Hour), so every fresh lease is
+// The whole test runs one reaper cutoff derived from DefaultLeaseTTL (so it
+// clears the lease horizon whatever the TTL is), and every fresh lease is
 // already "expired": scoping, not staleness, decides what each call reclaims.
 func testReclaimScoped(t *testing.T, f Factory) {
 	s := f(t)
@@ -40,7 +42,7 @@ func testReclaimScoped(t *testing.T, f Factory) {
 	// reclaim runs a scoped reaper and returns the sorted set of reclaimed IDs.
 	reclaim := func(filter types.ReclaimFilter) []string {
 		t.Helper()
-		got, err := s.ReclaimExpiredLeases(ctx(), -time.Hour, filter, "reaper")
+		got, err := s.ReclaimExpiredLeases(ctx(), -(issueops.DefaultLeaseTTL + time.Minute), filter, "reaper")
 		must(t, err)
 		ids := make([]string, 0, len(got))
 		for _, r := range got {
@@ -92,7 +94,7 @@ func testReclaimScoped(t *testing.T, f Factory) {
 	}
 
 	// --label-any: OR-set matches rs-a2 via lane-a; the previous owner is reported.
-	got, err := s.ReclaimExpiredLeases(ctx(), -time.Hour, types.ReclaimFilter{LabelsAny: []string{"lane-a", "lane-z"}}, "reaper")
+	got, err := s.ReclaimExpiredLeases(ctx(), -(issueops.DefaultLeaseTTL + time.Minute), types.ReclaimFilter{LabelsAny: []string{"lane-a", "lane-z"}}, "reaper")
 	must(t, err)
 	if len(got) != 1 || got[0].ID != "rs-a2" || got[0].PreviousOwner != "wa" {
 		t.Fatalf("reclaim(--label-any lane-a,lane-z) = %+v, want [rs-a2 held by wa]", got)
