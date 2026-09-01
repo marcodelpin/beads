@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,16 @@ type fakeImportIssueLookupStore struct {
 
 func (f *fakeImportIssueLookupStore) GetIssuesByIDs(_ context.Context, _ []string) ([]*types.Issue, error) {
 	return f.issues, nil
+}
+
+// The embedded nil storage.DoltStorage would satisfy importRelationLookup and
+// panic on call; opt the plain fake out explicitly so tie rows are rewritten.
+func (f *fakeImportIssueLookupStore) GetCommentsForIssues(_ context.Context, _ []string) (map[string][]*types.Comment, error) {
+	return nil, errImportRelationsUnavailable
+}
+
+func (f *fakeImportIssueLookupStore) GetDependencyRecordsForIssues(_ context.Context, _ []string) (map[string][]*types.Dependency, error) {
+	return nil, errImportRelationsUnavailable
 }
 
 func (f *fakeImportIssueLookupStore) CreateIssuesWithFullOptions(_ context.Context, issues []*types.Issue, _ string, opts storage.BatchCreateOptions) error {
@@ -629,4 +640,149 @@ func TestRunImportInnerRejectsRedirectedStdinWithoutSource(t *testing.T) {
 			t.Fatalf("err = %v, want a non-guard error (no workspace here)", err)
 		}
 	})
+}
+
+// fakeImportRelationStore adds the optional bulk aux loaders the resume fast
+// path (wy-sbgucn) proves rows unchanged with.
+type fakeImportRelationStore struct {
+	fakeImportIssueLookupStore
+	comments map[string][]*types.Comment
+	deps     map[string][]*types.Dependency
+	loads    int
+}
+
+func (f *fakeImportRelationStore) GetCommentsForIssues(_ context.Context, _ []string) (map[string][]*types.Comment, error) {
+	f.loads++
+	return f.comments, nil
+}
+
+func (f *fakeImportRelationStore) GetDependencyRecordsForIssues(_ context.Context, _ []string) (map[string][]*types.Dependency, error) {
+	f.loads++
+	return f.deps, nil
+}
+
+// wy-sbgucn: a re-run of an interrupted chunked import must not rewrite the
+// committed prefix. A tie row (same updated_at, same columns) whose labels,
+// comments and dependencies are all already stored is provably a no-op write
+// and leaves the write set; any aux row not yet stored keeps the row in.
+func TestFilterStaleImportIssuesSkipsProvenUnchangedRowsOnResume(t *testing.T) {
+	base := time.Date(2026, 8, 31, 14, 0, 0, 0, time.UTC)
+	commentAt := base.Add(-time.Hour)
+	mk := func(id string) *types.Issue {
+		return &types.Issue{
+			ID: id, Title: "row " + id, UpdatedAt: base,
+			Labels:       []string{"lane:beads", "tier:fable"},
+			Comments:     []*types.Comment{{ID: "c-" + id, Author: "cat", Text: "drill", CreatedAt: commentAt}},
+			Dependencies: []*types.Dependency{{IssueID: id, DependsOnID: "bd-root", Type: types.DepBlocks}},
+		}
+	}
+	incoming := []*types.Issue{mk("bd-same"), mk("bd-nocomment"), mk("bd-nodep"), mk("bd-nolabel"), mk("bd-new")}
+	local := func(id string, labels ...string) *types.Issue {
+		return &types.Issue{ID: id, Title: "row " + id, UpdatedAt: base, Labels: labels}
+	}
+	storedComment := []*types.Comment{{ID: "other-id", IssueID: "x", Author: "cat", Text: "drill", CreatedAt: commentAt.Add(500 * time.Millisecond)}}
+	storedDep := []*types.Dependency{{DependsOnID: "bd-root", Type: types.DepBlocks}}
+	store := &fakeImportRelationStore{
+		fakeImportIssueLookupStore: fakeImportIssueLookupStore{issues: []*types.Issue{
+			local("bd-same", "tier:fable", "lane:beads"),
+			local("bd-nocomment", "lane:beads", "tier:fable"),
+			local("bd-nodep", "lane:beads", "tier:fable"),
+			local("bd-nolabel", "lane:beads"),
+		}},
+		comments: map[string][]*types.Comment{"bd-same": storedComment, "bd-nodep": storedComment, "bd-nolabel": storedComment},
+		deps:     map[string][]*types.Dependency{"bd-same": storedDep, "bd-nocomment": storedDep, "bd-nolabel": storedDep},
+	}
+
+	filtered, skippedIDs, plan, err := filterStaleImportIssues(context.Background(), store, incoming)
+	if err != nil {
+		t.Fatalf("filterStaleImportIssues: %v", err)
+	}
+	if len(skippedIDs) != 0 {
+		t.Fatalf("skippedIDs = %#v, want none (nothing is stale)", skippedIDs)
+	}
+	var kept []string
+	for _, issue := range filtered {
+		kept = append(kept, issue.ID)
+	}
+	want := []string{"bd-nocomment", "bd-nodep", "bd-nolabel", "bd-new"}
+	if strings.Join(kept, ",") != strings.Join(want, ",") {
+		t.Fatalf("write set = %v, want %v (only the provably stored row leaves it, order preserved)", kept, want)
+	}
+	if len(plan.Unchanged) != 1 || plan.Unchanged[0] != "bd-same" {
+		t.Fatalf("plan.Unchanged = %#v, want [bd-same]", plan.Unchanged)
+	}
+	if len(plan.TieKeptLocal) != 0 || len(plan.Updates) != 0 {
+		t.Fatalf("plan = %+v, want no tie conflicts or updates", plan)
+	}
+	if store.loads != 2 {
+		t.Fatalf("aux loads = %d, want exactly one comment load + one dependency load", store.loads)
+	}
+}
+
+// A fresh import (no local match) must not pay for the aux loads at all, and
+// a store without the bulk loaders keeps the pre-wy-sbgucn behavior: every
+// tie row stays in the write set.
+func TestFilterStaleImportIssuesResumeFastPathIsOptIn(t *testing.T) {
+	base := time.Date(2026, 8, 31, 14, 0, 0, 0, time.UTC)
+	incoming := []*types.Issue{{ID: "bd-tie", Title: "t", UpdatedAt: base}, {ID: "bd-new", Title: "n", UpdatedAt: base}}
+
+	fresh := &fakeImportRelationStore{}
+	filtered, _, plan, err := filterStaleImportIssues(context.Background(), fresh, incoming)
+	if err != nil {
+		t.Fatalf("fresh: %v", err)
+	}
+	if len(filtered) != 2 || fresh.loads != 0 || len(plan.Unchanged) != 0 {
+		t.Fatalf("fresh import: kept %d rows, %d aux loads, unchanged %v; want 2 rows, 0 loads, none", len(filtered), fresh.loads, plan.Unchanged)
+	}
+
+	plain := &fakeImportIssueLookupStore{issues: []*types.Issue{{ID: "bd-tie", Title: "t", UpdatedAt: base}}}
+	filtered, _, plan, err = filterStaleImportIssues(context.Background(), plain, incoming)
+	if err != nil {
+		t.Fatalf("plain: %v", err)
+	}
+	if len(filtered) != 2 || len(plan.Unchanged) != 0 {
+		t.Fatalf("store without bulk loaders: kept %d rows, unchanged %v; want both rows rewritten", len(filtered), plan.Unchanged)
+	}
+
+	// A real read failure is not an opt-out: it stops the import.
+	broken := &failingImportRelationStore{fakeImportIssueLookupStore: plain}
+	if _, _, _, err := filterStaleImportIssues(context.Background(), broken, incoming); err == nil || !strings.Contains(err.Error(), "check existing comments before import") {
+		t.Fatalf("read failure: err = %v, want the comment-load failure surfaced", err)
+	}
+}
+
+type failingImportRelationStore struct{ *fakeImportIssueLookupStore }
+
+func (f *failingImportRelationStore) GetCommentsForIssues(_ context.Context, _ []string) (map[string][]*types.Comment, error) {
+	return nil, errors.New("connection lost")
+}
+
+// The real import's result carries the skipped-as-unchanged count so the
+// resume reports what it did not have to rewrite.
+func TestImportIssuesCoreReportsUnchangedRowsOnResume(t *testing.T) {
+	base := time.Date(2026, 8, 31, 14, 0, 0, 0, time.UTC)
+	incoming := []*types.Issue{{ID: "bd-same", Title: "t", UpdatedAt: base}, {ID: "bd-new", Title: "n", UpdatedAt: base}}
+	store := &fakeImportRelationStore{fakeImportIssueLookupStore: fakeImportIssueLookupStore{issues: []*types.Issue{{ID: "bd-same", Title: "t", UpdatedAt: base}}}}
+	result, err := importIssuesCore(context.Background(), "", store, incoming, ImportOptions{SkipPrefixValidation: true})
+	if err != nil {
+		t.Fatalf("importIssuesCore: %v", err)
+	}
+	if result.Created != 1 || result.Unchanged != 1 || len(result.ImportedIDs) != 1 || result.ImportedIDs[0] != "bd-new" {
+		t.Fatalf("result = %+v, want Created 1 (bd-new), Unchanged 1", result)
+	}
+	if len(store.created) != 1 || store.created[0].ID != "bd-new" {
+		t.Fatalf("written rows = %v, want only bd-new", store.created)
+	}
+}
+
+func TestBulkLoadPoolReadTimeoutOnlyForImport(t *testing.T) {
+	if got := bulkLoadPoolReadTimeout(importCmd); got != importPoolReadTimeout {
+		t.Fatalf("import fallback = %v, want %v", got, importPoolReadTimeout)
+	}
+	if got := bulkLoadPoolReadTimeout(exportCmd); got != 0 {
+		t.Fatalf("export fallback = %v, want 0 (pool default)", got)
+	}
+	if got := bulkLoadPoolReadTimeout(nil); got != 0 {
+		t.Fatalf("nil cmd fallback = %v, want 0", got)
+	}
 }

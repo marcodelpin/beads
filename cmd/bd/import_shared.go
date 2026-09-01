@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -112,6 +114,27 @@ type importIssueLookup interface {
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
 }
 
+// importRelationLookup is the OPTIONAL read seam behind the resume fast path
+// (wy-sbgucn). A re-run of an interrupted chunked import used to rewrite every
+// row from the first chunk, so under any bounded wall clock (a timeout wrapper,
+// a session budget) each attempt re-spent its whole budget reaching the same
+// chunk and the import never converged — the rollback drill's "deterministic
+// chunk 44" (wy-9we0jf). The pre-filter now proves a tie row unchanged when its
+// columns, labels, comments and dependencies are all already stored, and leaves
+// it out of the write set. Proof needs the aux rows, hence these bulk loaders;
+// a store without them (the proxied unit of work, test fakes) keeps the old
+// behavior and rewrites every tie row.
+type importRelationLookup interface {
+	GetCommentsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Comment, error)
+	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
+}
+
+// errImportRelationsUnavailable is the typed opt-out a lookup returns from
+// either bulk loader when it cannot supply aux rows: the fast path then proves
+// nothing and every tie row is rewritten (safe — it is the pre-fast-path
+// behavior). Any other error is a real read failure and stops the import.
+var errImportRelationsUnavailable = errors.New("import relation lookup unavailable")
+
 // importIssuesCore imports issues into the Dolt store.
 // This is a bridge function that delegates to the Dolt store's batch creation.
 func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, issues []*types.Issue, opts ImportOptions) (*ImportResult, error) {
@@ -136,7 +159,7 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		staleSkippedIDs = skipped
 		changePlan = plan
 		if len(issues) == 0 {
-			return &ImportResult{Skipped: len(staleSkippedIDs), StaleSkippedIDs: staleSkippedIDs}, nil
+			return &ImportResult{Skipped: len(staleSkippedIDs), StaleSkippedIDs: staleSkippedIDs, Unchanged: len(changePlan.Unchanged)}, nil
 		}
 	}
 
@@ -207,6 +230,7 @@ func assembleImportResult(issues []*types.Issue, staleSkippedIDs []string, chang
 	return &ImportResult{
 		Created:             len(importedIDs),
 		Updated:             updatedCount,
+		Unchanged:           len(changePlan.Unchanged),
 		Skipped:             len(staleSkippedIDs),
 		ImportedIDs:         importedIDs,
 		StaleSkippedIDs:     staleSkippedIDs,
@@ -659,6 +683,12 @@ type importChangePlan struct {
 	// every stored column for these (second-granularity timestamp tie),
 	// while their aux data still merges.
 	TieKeptLocal []string
+	// Unchanged lists incoming rows proven identical to the stored row —
+	// same updated_at, same columns, and every incoming label, comment and
+	// dependency already stored — and therefore left out of the write set
+	// (wy-sbgucn). This is what lets a re-run of an interrupted import skip
+	// the committed prefix instead of rewriting it.
+	Unchanged []string
 	// NewIDs lists incoming rows with no local match (would-create), deduped
 	// by ID for display and excluding title-only rows that carry no ID at
 	// all. NewCount is the authoritative row count for those same rows: it
@@ -736,6 +766,9 @@ func filterStaleImportIssues(ctx context.Context, store importIssueLookup, issue
 
 	filtered := make([]*types.Issue, 0, len(issues))
 	skippedIDs := make([]string, 0)
+	// Positions in filtered whose row ties the local one with identical
+	// columns; proveUnchangedImportRows decides which of them leave the set.
+	tieIdentical := make(map[int]struct{})
 	for _, issue := range issues {
 		if issue == nil {
 			filtered = append(filtered, issue)
@@ -778,10 +811,127 @@ func filterStaleImportIssues(ctx context.Context, store importIssueLookup, issue
 			} else {
 				plan.Updates = append(plan.Updates, ImportChange{ID: issue.ID, Changes: summary})
 			}
+		} else if incomingAt.Equal(localAt) {
+			// Same second, same columns: a candidate for the resume fast
+			// path, decided below once the aux rows are loaded.
+			tieIdentical[len(filtered)] = struct{}{}
 		}
 		filtered = append(filtered, issue)
 	}
-	return filtered, skippedIDs, plan, nil
+	if len(tieIdentical) == 0 {
+		return filtered, skippedIDs, plan, nil
+	}
+	unchanged, err := proveUnchangedImportRows(ctx, store, filtered, tieIdentical, localByID)
+	if err != nil {
+		return nil, nil, plan, err
+	}
+	if len(unchanged) == 0 {
+		return filtered, skippedIDs, plan, nil
+	}
+	kept := make([]*types.Issue, 0, len(filtered)-len(unchanged))
+	for pos, issue := range filtered {
+		if _, skip := unchanged[pos]; skip {
+			plan.Unchanged = append(plan.Unchanged, issue.ID)
+			continue
+		}
+		kept = append(kept, issue)
+	}
+	return kept, skippedIDs, plan, nil
+}
+
+// proveUnchangedImportRows returns the positions in filtered (drawn from the
+// candidate set) whose incoming row is provably a no-op write: the tie already
+// proved the columns equal, and every incoming label, comment and dependency
+// is already stored. The aux writes are all additive (INSERT IGNORE labels,
+// existence-checked comments, dedup'd dependency rows), so incoming ⊆ stored
+// is exactly the condition under which the rewrite would change nothing.
+// Anything short of proof — a store without bulk loaders, a comment with no
+// timestamp, an untyped dependency, an aux row not yet stored — keeps the row
+// in the write set, i.e. today's behavior. Comments are keyed the way
+// PersistComments checks existence (author, created_at as stored, text).
+func proveUnchangedImportRows(ctx context.Context, store importIssueLookup, filtered []*types.Issue, candidates map[int]struct{}, localByID map[string]*types.Issue) (map[int]struct{}, error) {
+	rel, ok := store.(importRelationLookup)
+	if !ok {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for pos := range candidates {
+		id := filtered[pos].ID
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	comments, err := rel.GetCommentsForIssues(ctx, ids)
+	if errors.Is(err, errImportRelationsUnavailable) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check existing comments before import: %w", err)
+	}
+	deps, err := rel.GetDependencyRecordsForIssues(ctx, ids)
+	if errors.Is(err, errImportRelationsUnavailable) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check existing dependencies before import: %w", err)
+	}
+	unchanged := make(map[int]struct{})
+	for pos := range candidates {
+		issue := filtered[pos]
+		local := localByID[issue.ID]
+		if local == nil {
+			continue
+		}
+		if importAuxAlreadyStored(issue, local, comments[issue.ID], deps[issue.ID]) {
+			unchanged[pos] = struct{}{}
+		}
+	}
+	return unchanged, nil
+}
+
+func importAuxAlreadyStored(incoming, local *types.Issue, storedComments []*types.Comment, storedDeps []*types.Dependency) bool {
+	stored := make(map[string]struct{}, len(local.Labels))
+	for _, l := range local.Labels {
+		stored[l] = struct{}{}
+	}
+	for _, l := range incoming.Labels {
+		if _, ok := stored[l]; !ok {
+			return false
+		}
+	}
+	commentKey := func(c *types.Comment) string {
+		return c.Author + "\x00" + issueops.FormatAuxTime(c.CreatedAt) + "\x00" + c.Text
+	}
+	stored = make(map[string]struct{}, len(storedComments))
+	for _, c := range storedComments {
+		stored[commentKey(c)] = struct{}{}
+	}
+	for _, c := range incoming.Comments {
+		if c == nil || c.CreatedAt.IsZero() {
+			return false // would be stamped live on write: not provably a no-op
+		}
+		if _, ok := stored[commentKey(c)]; !ok {
+			return false
+		}
+	}
+	depKey := func(d *types.Dependency) string { return d.DependsOnID + "\x00" + string(d.Type) }
+	stored = make(map[string]struct{}, len(storedDeps))
+	for _, d := range storedDeps {
+		stored[depKey(d)] = struct{}{}
+	}
+	for _, d := range incoming.Dependencies {
+		if d == nil || d.Type == "" {
+			return false
+		}
+		if _, ok := stored[depKey(d)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // classifyImportIssuesExistence classifies incoming rows as created or
@@ -879,7 +1029,7 @@ func classifyDryRunImport(ctx context.Context, store importIssueLookup, issues [
 	return &ImportResult{
 		Created:         created,
 		Updated:         updated,
-		Unchanged:       len(filtered) - created - updated,
+		Unchanged:       len(filtered) - created - updated + len(plan.Unchanged),
 		Skipped:         len(staleSkippedIDs),
 		ImportedIDs:     plan.NewIDs,
 		StaleSkippedIDs: staleSkippedIDs,
@@ -1176,7 +1326,9 @@ func importFromLocalJSONLWithOpts(ctx context.Context, store storage.DoltStorage
 		if err != nil {
 			return nil, err
 		}
-		result.Issues = importResult.Created
+		// Rows the resume fast path proved already present count as imported
+		// here: this is "rows the file put in the store", not "rows written".
+		result.Issues = importResult.Created + importResult.Unchanged
 	}
 
 	return result, nil

@@ -1476,6 +1476,9 @@ var rootCmd = &cobra.Command{
 			DisableAutoStart: policy.disableAutoStart,
 			BeadsDir:         beadsDir,
 			LenientOpen:      isWorkingSetReconcileCommand(cmd),
+			// Bulk loads outlive the pool's 10s fast-fail on every server
+			// pause (wy-sbgucn); explicit env/config settings still win.
+			PoolReadTimeoutFallback: bulkLoadPoolReadTimeout(cmd),
 		}
 
 		// Load config to get database name and server connection settings.
