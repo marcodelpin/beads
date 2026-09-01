@@ -300,6 +300,11 @@ func TestMacOSTestJobsReuseWorkspaceBDBinary(t *testing.T) {
 		buildCommand      = "go build -v -tags gms_pure_go ./cmd/bd"
 		prTestCommand     = "go test -tags gms_pure_go -v -race -short -skip '^TestEmbedded' ./..."
 		mainTestCommand   = "go test -tags gms_pure_go ${{ matrix.test-flags }} -skip '^TestEmbedded' ./..."
+		// The macOS leg is the only consumer of main.yml's matrix test-flags (the
+		// ubuntu leg's coverage step hardcodes its own), and it carries an explicit
+		// per-package -timeout because go test's 10m default is what made the ubuntu
+		// leg flaky (wy-5b5fbl). Keep the two legs' deadlines in step when either moves.
+		mainMacOSTestFlags = "-v -race -short -timeout=25m"
 	)
 
 	workflows := map[string]ciWorkflow{
@@ -331,8 +336,8 @@ func TestMacOSTestJobsReuseWorkspaceBDBinary(t *testing.T) {
 	}
 	if got := mainTest.Strategy.Matrix.Include; len(got) != 2 ||
 		got[0].OS != "ubuntu-latest" || !got[0].Coverage ||
-		got[1].OS != macOSRunner || got[1].Coverage || got[1].TestFlags != "-v -race -short" {
-		t.Errorf("main test matrix include = %+v, want macOS non-coverage entry with -v -race -short", got)
+		got[1].OS != macOSRunner || got[1].Coverage || got[1].TestFlags != mainMacOSTestFlags {
+		t.Errorf("main test matrix include = %+v, want macOS non-coverage entry with %s", got, mainMacOSTestFlags)
 	}
 	assertStepEnvValue(t, mainTest, "Test", "BEADS_TEST_BD_BINARY", workspaceBDBinary)
 
