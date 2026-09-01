@@ -841,14 +841,18 @@ func filterStaleImportIssues(ctx context.Context, store importIssueLookup, issue
 
 // proveUnchangedImportRows returns the positions in filtered (drawn from the
 // candidate set) whose incoming row is provably a no-op write: the tie already
-// proved the columns equal, and every incoming label, comment and dependency
-// is already stored. The aux writes are all additive (INSERT IGNORE labels,
-// existence-checked comments, dedup'd dependency rows), so incoming ⊆ stored
-// is exactly the condition under which the rewrite would change nothing.
-// Anything short of proof — a store without bulk loaders, a comment with no
-// timestamp, an untyped dependency, an aux row not yet stored — keeps the row
-// in the write set, i.e. today's behavior. Comments are keyed the way
-// PersistComments checks existence (author, created_at as stored, text).
+// proved the columns equal, the ephemeral lease row would be left exactly as
+// it is (importLeaseAlreadyReconciled — the rewrite's RestoreLeaseOnImportInTx
+// is skipped along with the row, so it must have had nothing to do), and every
+// incoming label, comment and dependency is already stored. The aux writes are
+// all additive (INSERT IGNORE labels, existence-checked comments, dedup'd
+// dependency rows), so incoming ⊆ stored is exactly the condition under which
+// the rewrite would change nothing. Anything short of proof — a store without
+// bulk loaders, a comment with no timestamp, an untyped dependency, an aux row
+// not yet stored, a lease row the rewrite would insert, replace or drop —
+// keeps the row in the write set, i.e. today's behavior. Comments are keyed
+// the way PersistComments checks existence (author, created_at as stored,
+// text).
 func proveUnchangedImportRows(ctx context.Context, store importIssueLookup, filtered []*types.Issue, candidates map[int]struct{}, localByID map[string]*types.Issue) (map[int]struct{}, error) {
 	rel, ok := store.(importRelationLookup)
 	if !ok {
@@ -886,11 +890,56 @@ func proveUnchangedImportRows(ctx context.Context, store importIssueLookup, filt
 		if local == nil {
 			continue
 		}
-		if importAuxAlreadyStored(issue, local, comments[issue.ID], deps[issue.ID]) {
+		if importLeaseAlreadyReconciled(issue, local) && importAuxAlreadyStored(issue, local, comments[issue.ID], deps[issue.ID]) {
 			unchanged[pos] = struct{}{}
 		}
 	}
 	return unchanged, nil
+}
+
+// importLeaseAlreadyReconciled reports whether RestoreLeaseOnImportInTx would
+// leave the local lease row untouched if it ran over this tie row — the
+// condition under which skipping the rewrite (and with it the lease
+// reconciliation) changes nothing. The tie already proved status and assignee
+// equal, so the stored row the restore keys off is the local one. Local lease
+// state is the leases.* overlay every issue read carries (sqlbuild.LeaseJoin);
+// holder is not part of it, so a live claim is taken to hold its own lease
+// row (the UpsertLeaseInTx invariant: lease row ⇔ live claim).
+//
+//   - reconcile drops a lease row whose issue is no longer a live claim: a
+//     local lease on a row that is not in_progress+assigned is an orphan the
+//     rewrite would delete — not a no-op.
+//   - restore fires only when the snapshot carries a lease AND the stored row
+//     is a live claim. It inserts a missing row (not a no-op), leaves a live
+//     local lease alone, and replaces an expired one with the snapshot's
+//     values. Rather than reason about the clock, the proof requires the
+//     local lease to already equal the snapshot's (expiry, heartbeat, granting
+//     node, at the store's second granularity) — then the upsert is a no-op
+//     whichever branch it takes. A snapshot with no heartbeat would be
+//     stamped live on write, so it never proves.
+func importLeaseAlreadyReconciled(incoming, local *types.Issue) bool {
+	liveClaim := local.Status == types.StatusInProgress && local.Assignee != ""
+	if local.LeaseExpiresAt != nil && !liveClaim {
+		return false // reconcile would drop the orphaned lease row
+	}
+	if incoming.LeaseExpiresAt == nil || !liveClaim {
+		return true // nothing to restore; a live claim keeps its local row
+	}
+	if local.LeaseExpiresAt == nil || incoming.HeartbeatAt == nil {
+		return false // restore would insert the row / stamp a live heartbeat
+	}
+	return timePtrEqualSecond(local.LeaseExpiresAt, incoming.LeaseExpiresAt) &&
+		timePtrEqualSecond(local.HeartbeatAt, incoming.HeartbeatAt) &&
+		local.LeaseGrantedNode == incoming.LeaseGrantedNode
+}
+
+// timePtrEqualSecond compares two optional timestamps at the DATETIME(0)
+// granularity the leases table stores them with.
+func timePtrEqualSecond(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.UTC().Truncate(time.Second).Equal(b.UTC().Truncate(time.Second))
 }
 
 func importAuxAlreadyStored(incoming, local *types.Issue, storedComments []*types.Comment, storedDeps []*types.Dependency) bool {
