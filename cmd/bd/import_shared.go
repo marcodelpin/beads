@@ -190,11 +190,12 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 	var err error
 	if len(issues) <= importChunkSize && !hasCrossBucketBatchEdge(issues) {
 		// Small import: one transaction, dependencies inline — exactly the
-		// pre-chunking behavior. A batch carrying a regular<->wisp edge takes
-		// the chunked path instead: the engine's per-batch cross-bucket filter
-		// (issueops.filterCreateIssuesMixedBucketDependencies) skip-reports
-		// such an edge whenever both endpoints are rows of one mixed batch, so
-		// it needs the single-plane dependency pass.
+		// pre-chunking behavior. A batch carrying a regular<->wisp edge still
+		// takes the chunked path: until wy-a648lq the engine's per-batch
+		// cross-bucket filter skip-reported such an edge whenever both
+		// endpoints were rows of one mixed batch, so it needed the single-plane
+		// dependency pass; the engine now writes it inline, and wy-y52syc
+		// retires this routing.
 		err = store.CreateIssuesWithFullOptions(ctx, issues, actor, batchOpts)
 	} else {
 		err = importIssuesChunked(ctx, store, issues, actor, batchOpts)
@@ -272,10 +273,11 @@ func assembleImportResult(issues []*types.Issue, staleSkippedIDs []string, chang
 // member is left spuriously ready — can differ from the single-transaction
 // import, which checks the whole cycle in file order), non-readiness edges
 // (related, discovered-from) that point at a later chunk, and regular<->wisp
-// edges whose target is first written in the same chunk: the engine's
-// per-batch cross-bucket filter (issueops.filterCreateIssuesMixedBucketDependencies)
-// skip-reports any regular<->wisp edge whose endpoints are both rows of one
-// mixed batch, whatever the transaction layout. Deferring such an edge opens
+// edges whose target is first written in the same chunk: until wy-a648lq the
+// engine's per-batch cross-bucket filter skip-reported any regular<->wisp edge
+// whose endpoints were both rows of one mixed batch, whatever the transaction
+// layout (it now writes such an edge under SkipDependencyValidationErrors, and
+// wy-y52syc retires this deferral). Deferring such an edge opens
 // a ready window like a cycle member's deferred edge — and a common one, since
 // Kahn's order tends to place a blocker directly before its dependent, i.e. in
 // the same chunk; dropping it — the import's former policy — lost it for good,
@@ -303,13 +305,14 @@ func assembleImportResult(issues []*types.Issue, staleSkippedIDs []string, chang
 // regular<->wisp readiness edges); every other readiness edge commits with its
 // row.
 func importIssuesChunked(ctx context.Context, store storage.DoltStorage, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
-	// Cross-bucket (regular<->wisp) edges are deliberately NOT filtered out
-	// up front. The engine's per-batch filter skip-reports such an edge only
-	// when both endpoints are rows of one mixed batch, so
-	// partitionChunkedImportDeps defers one whose target lands in the same or
-	// a later chunk to the single-plane dependency pass and wires one into an
-	// earlier chunk inline (its target is then a committed row outside the
-	// batch). See the ordering notes above.
+	// Cross-bucket (regular<->wisp) edges are never filtered: since wy-a648lq
+	// the engine writes an in-batch one under SkipDependencyValidationErrors
+	// (every row of both planes is on the chunk's one tx before its dependency
+	// pass). partitionChunkedImportDeps still defers one whose target is first
+	// written in the SAME chunk to the single-plane dependency pass — the
+	// wy-4276q8 workaround for the per-batch filter the engine no longer
+	// applies, retired by wy-y52syc — and wires one into an earlier chunk
+	// inline (its target is then a committed row). See the ordering notes above.
 	ordered := orderImportIssuesForChunking(issues)
 
 	// Partitioning narrows each issue's dependency slice to its inline subset in
@@ -380,7 +383,7 @@ type deferredImportEdges struct {
 func partitionChunkedImportDeps(ordered []*types.Issue) []deferredImportEdges {
 	firstChunkOf := make(map[string]int, len(ordered))
 	// Last row wins for the bucket, mirroring the engine's own per-batch
-	// cross-bucket check (issueops.filterCreateIssuesMixedBucketDependencies).
+	// plane check (issueops.validateCreateIssuesMixedBucketDependencies).
 	wispByID := make(map[string]bool, len(ordered))
 	for pos, issue := range ordered {
 		if issue.ID == "" {
@@ -410,11 +413,12 @@ func partitionChunkedImportDeps(ordered []*types.Issue) []deferredImportEdges {
 // into edges that can be wired inline and edges that must be deferred: the
 // target is first written in a later chunk, or the edge crosses the
 // regular/wisp bucket boundary and its target is first written in the SAME
-// chunk. The engine's per-batch cross-bucket filter skip-reports a
-// regular<->wisp edge whose endpoints are both rows of one mixed batch, and
-// the import would lose it (wy-4276q8). A cross-bucket edge into an earlier
-// chunk points at a committed row outside the batch and rides inline like any
-// other.
+// chunk. Until wy-a648lq the engine's per-batch cross-bucket filter
+// skip-reported a regular<->wisp edge whose endpoints were both rows of one
+// mixed batch, and the import lost it (wy-4276q8); the engine now writes such
+// an edge, and this deferral is kept only until wy-y52syc retires it. A
+// cross-bucket edge into an earlier chunk points at a committed row outside
+// the batch and rides inline like any other.
 func splitDepsByChunk(deps []*types.Dependency, rowChunk int, rowIsWisp bool, firstChunkOf map[string]int, wispByID map[string]bool) (inline, later []*types.Dependency) {
 	for _, dep := range deps {
 		if dep == nil {
@@ -450,10 +454,11 @@ func crossesBucket(dep *types.Dependency, rowIsWisp bool, wispByID map[string]bo
 }
 
 // hasCrossBucketBatchEdge reports whether any row's dependency points at
-// another row of the same batch on the other plane (regular<->wisp). The
-// engine's per-batch cross-bucket filter would skip-report such an edge, so an
-// import carrying one must take the chunked path and defer it to the
-// single-plane dependency pass.
+// another row of the same batch on the other plane (regular<->wisp). Until
+// wy-a648lq the engine's per-batch cross-bucket filter skip-reported such an
+// edge, so an import carrying one takes the chunked path and defers it to the
+// single-plane dependency pass; the engine now writes it inline, and
+// wy-y52syc retires this routing.
 func hasCrossBucketBatchEdge(issues []*types.Issue) bool {
 	wispByID := make(map[string]bool, len(issues))
 	for _, issue := range issues {
@@ -524,12 +529,12 @@ func wireDeferredImportDeps(ctx context.Context, store storage.DoltStorage, defe
 	// whose phase-1 write committed.
 	depOpts.OnStaleRejected = nil
 	// Regular-source rows and wisp-source rows go in separate transactions.
-	// The engine's per-batch cross-bucket filter
-	// (issueops.filterCreateIssuesMixedBucketDependencies) skip-reports a
-	// regular<->wisp edge whose target row is in the same mixed batch, and a
-	// deferred cross-bucket edge's target may itself carry deferred edges — a
-	// mixed batch could re-trigger exactly the skip this pass exists to avoid.
-	// The filter short-circuits on a single-plane batch, so with every batch
+	// Until wy-a648lq the engine's per-batch cross-bucket filter skip-reported
+	// a regular<->wisp edge whose target row was in the same mixed batch, and
+	// a deferred cross-bucket edge's target may itself carry deferred edges —
+	// a mixed batch could re-trigger exactly the skip this pass existed to
+	// avoid. (The engine now writes such an edge; wy-y52syc retires the split.)
+	// That filter short-circuited on a single-plane batch, so with every batch
 	// on one plane nothing can be filtered, and every target is a committed
 	// phase-1 row.
 	depTotal := len(depRows)
