@@ -188,9 +188,13 @@ func importIssuesCore(ctx context.Context, _ string, store storage.DoltStorage, 
 		},
 	}
 	var err error
-	if len(issues) <= importChunkSize {
+	if len(issues) <= importChunkSize && !hasCrossBucketBatchEdge(issues) {
 		// Small import: one transaction, dependencies inline — exactly the
-		// pre-chunking behavior.
+		// pre-chunking behavior. A batch carrying a regular<->wisp edge takes
+		// the chunked path instead: the engine's per-batch cross-bucket filter
+		// (issueops.filterCreateIssuesMixedBucketDependencies) skip-reports
+		// such an edge whenever both endpoints are rows of one mixed batch, so
+		// it needs the single-plane dependency pass.
 		err = store.CreateIssuesWithFullOptions(ctx, issues, actor, batchOpts)
 	} else {
 		err = importIssuesChunked(ctx, store, issues, actor, batchOpts)
@@ -253,20 +257,30 @@ func assembleImportResult(issues []*types.Issue, staleSkippedIDs []string, chang
 // or an earlier chunk — Kahn's order for the acyclic majority, plus a
 // cycle-breaking fallback that still emits each cycle member before the rows it
 // blocks — so that edge rides inline with its row and both commit in one
-// transaction. Only a force-emitted cycle member can carry a readiness edge into
-// the deferred pass, and that is the already-tolerated corrupt/legacy-cycle
-// window. A concurrent reader therefore never observes a non-cycle imported bead
-// without the blocking edges its import file declares —
-// `bd ready` mid-import cannot offer blocked work for dispatch, and a crash
-// mid-import cannot freeze a bead in a spuriously-ready state.
+// transaction. Only a force-emitted cycle member — or a row whose blocker is a
+// same-chunk row on the other plane (regular<->wisp, see below) — can carry a
+// readiness edge into the deferred pass. Outside those two cases a concurrent
+// reader never observes an imported bead without the blocking edges its
+// import file declares; for the cross-bucket case the window lasts until the
+// dependency pass, and a crash before it leaves the bead spuriously ready until
+// the import is re-run (which backfills the edge).
 //
 // Only edges that cannot be satisfied when their row commits are deferred to
 // a final dependency pass: edges into an intra-batch dependency cycle
 // (invalid for blocking types; still broken and skip-reported at wire time,
 // though for a cycle of length >=3 the specific edge dropped — and thus which
 // member is left spuriously ready — can differ from the single-transaction
-// import, which checks the whole cycle in file order) and non-readiness edges
-// (related, discovered-from) that point at a later chunk. The dependency pass submits
+// import, which checks the whole cycle in file order), non-readiness edges
+// (related, discovered-from) that point at a later chunk, and regular<->wisp
+// edges whose target is first written in the same chunk: the engine's
+// per-batch cross-bucket filter (issueops.filterCreateIssuesMixedBucketDependencies)
+// skip-reports any regular<->wisp edge whose endpoints are both rows of one
+// mixed batch, whatever the transaction layout. Deferring such an edge opens
+// a ready window like a cycle member's deferred edge — and a common one, since
+// Kahn's order tends to place a blocker directly before its dependent, i.e. in
+// the same chunk; dropping it — the import's former policy — lost it for good,
+// and a re-run could never backfill it (wy-4276q8: every regular<->wisp
+// `blocks` edge of a wyvern export was lost on restore). The dependency pass submits
 // row copies stripped to those deferred edges with ConflictSkip set, so an
 // existing row is never rewritten: a concurrent update landing between a
 // row's chunk and the dependency pass cannot stale-reject the pass and drop
@@ -285,16 +299,17 @@ func assembleImportResult(issues []*types.Issue, staleSkippedIDs []string, chang
 // still-unwired deferred edges), reported in StaleSkippedIDs. That is the
 // same local-wins outcome the single-transaction import gave a rival update
 // racing a crashed import, and it can only affect deferred edges (non-readiness
-// edges, plus the readiness edges of force-emitted cycle members); every
-// non-cycle row's readiness edges commit with their row.
+// edges, the readiness edges of force-emitted cycle members, and same-chunk
+// regular<->wisp readiness edges); every other readiness edge commits with its
+// row.
 func importIssuesChunked(ctx context.Context, store storage.DoltStorage, issues []*types.Issue, actor string, opts storage.BatchCreateOptions) error {
-	// Apply the cross-bucket dependency policy over the full set up front:
-	// the engine's per-batch filter only sees one chunk, so it could no
-	// longer detect an edge whose endpoints land in different chunks.
-	issues, err := issueops.FilterCreateIssuesMixedBucketDependencies(issues, opts)
-	if err != nil {
-		return err
-	}
+	// Cross-bucket (regular<->wisp) edges are deliberately NOT filtered out
+	// up front. The engine's per-batch filter skip-reports such an edge only
+	// when both endpoints are rows of one mixed batch, so
+	// partitionChunkedImportDeps defers one whose target lands in the same or
+	// a later chunk to the single-plane dependency pass and wires one into an
+	// earlier chunk inline (its target is then a committed row outside the
+	// batch). See the ordering notes above.
 	ordered := orderImportIssuesForChunking(issues)
 
 	// Partitioning narrows each issue's dependency slice to its inline subset in
@@ -360,9 +375,13 @@ type deferredImportEdges struct {
 // chunk, so only non-readiness edges (related, discovered-from) into a later
 // chunk and the readiness edges of force-emitted cycle members (their own cyclic
 // edges, plus any acyclic blocker they were emitted ahead of) are ever deferred
-// here.
+// here — plus regular<->wisp edges whose target is first written in the same
+// chunk (see splitDepsByChunk).
 func partitionChunkedImportDeps(ordered []*types.Issue) []deferredImportEdges {
 	firstChunkOf := make(map[string]int, len(ordered))
+	// Last row wins for the bucket, mirroring the engine's own per-batch
+	// cross-bucket check (issueops.filterCreateIssuesMixedBucketDependencies).
+	wispByID := make(map[string]bool, len(ordered))
 	for pos, issue := range ordered {
 		if issue.ID == "" {
 			continue // ID assigned by the engine at insert; nothing can reference it yet
@@ -370,13 +389,14 @@ func partitionChunkedImportDeps(ordered []*types.Issue) []deferredImportEdges {
 		if _, ok := firstChunkOf[issue.ID]; !ok {
 			firstChunkOf[issue.ID] = pos / importChunkSize
 		}
+		wispByID[issue.ID] = issueops.IsWisp(issue)
 	}
 	var deferred []deferredImportEdges
 	for pos, issue := range ordered {
 		if len(issue.Dependencies) == 0 {
 			continue
 		}
-		inline, later := splitDepsByChunk(issue.Dependencies, pos/importChunkSize, firstChunkOf)
+		inline, later := splitDepsByChunk(issue.Dependencies, pos/importChunkSize, issueops.IsWisp(issue), firstChunkOf, wispByID)
 		if len(later) == 0 {
 			continue
 		}
@@ -387,17 +407,74 @@ func partitionChunkedImportDeps(ordered []*types.Issue) []deferredImportEdges {
 }
 
 // splitDepsByChunk partitions one row's dependencies (the row lands in rowChunk)
-// into edges that can be wired inline and edges whose target is first written in
-// a later chunk and so must be deferred.
-func splitDepsByChunk(deps []*types.Dependency, rowChunk int, firstChunkOf map[string]int) (inline, later []*types.Dependency) {
+// into edges that can be wired inline and edges that must be deferred: the
+// target is first written in a later chunk, or the edge crosses the
+// regular/wisp bucket boundary and its target is first written in the SAME
+// chunk. The engine's per-batch cross-bucket filter skip-reports a
+// regular<->wisp edge whose endpoints are both rows of one mixed batch, and
+// the import would lose it (wy-4276q8). A cross-bucket edge into an earlier
+// chunk points at a committed row outside the batch and rides inline like any
+// other.
+func splitDepsByChunk(deps []*types.Dependency, rowChunk int, rowIsWisp bool, firstChunkOf map[string]int, wispByID map[string]bool) (inline, later []*types.Dependency) {
 	for _, dep := range deps {
-		if targetChunk, inBatch := firstChunkOf[dep.DependsOnID]; inBatch && targetChunk > rowChunk {
+		if dep == nil {
+			inline = append(inline, dep)
+			continue
+		}
+		targetChunk, inBatch := firstChunkOf[dep.DependsOnID]
+		if inBatch && targetChunk > rowChunk {
+			later = append(later, dep)
+			continue
+		}
+		if inBatch && targetChunk == rowChunk && crossesBucket(dep, rowIsWisp, wispByID) {
 			later = append(later, dep)
 			continue
 		}
 		inline = append(inline, dep)
 	}
 	return inline, later
+}
+
+// crossesBucket reports whether dep joins a regular issue and a wisp. The
+// source bucket is the owning row's unless the edge names another batch row
+// as its source, mirroring the engine's per-batch check; the target must be a
+// batch row (wispByID is keyed by batch IDs), so callers check membership.
+func crossesBucket(dep *types.Dependency, rowIsWisp bool, wispByID map[string]bool) bool {
+	sourceIsWisp := rowIsWisp
+	if dep.IssueID != "" {
+		if isWisp, ok := wispByID[dep.IssueID]; ok {
+			sourceIsWisp = isWisp
+		}
+	}
+	return sourceIsWisp != wispByID[dep.DependsOnID]
+}
+
+// hasCrossBucketBatchEdge reports whether any row's dependency points at
+// another row of the same batch on the other plane (regular<->wisp). The
+// engine's per-batch cross-bucket filter would skip-report such an edge, so an
+// import carrying one must take the chunked path and defer it to the
+// single-plane dependency pass.
+func hasCrossBucketBatchEdge(issues []*types.Issue) bool {
+	wispByID := make(map[string]bool, len(issues))
+	for _, issue := range issues {
+		if issue != nil && issue.ID != "" {
+			wispByID[issue.ID] = issueops.IsWisp(issue)
+		}
+	}
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		for _, dep := range issue.Dependencies {
+			if dep == nil {
+				continue
+			}
+			if _, inBatch := wispByID[dep.DependsOnID]; inBatch && crossesBucket(dep, issueops.IsWisp(issue), wispByID) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // writeImportRowChunks writes the ordered rows (dependencies already narrowed to
@@ -446,17 +523,56 @@ func wireDeferredImportDeps(ctx context.Context, store storage.DoltStorage, defe
 	// callback unset keeps a phase-2 signal from ever misreporting a row
 	// whose phase-1 write committed.
 	depOpts.OnStaleRejected = nil
+	// Regular-source rows and wisp-source rows go in separate transactions.
+	// The engine's per-batch cross-bucket filter
+	// (issueops.filterCreateIssuesMixedBucketDependencies) skip-reports a
+	// regular<->wisp edge whose target row is in the same mixed batch, and a
+	// deferred cross-bucket edge's target may itself carry deferred edges — a
+	// mixed batch could re-trigger exactly the skip this pass exists to avoid.
+	// The filter short-circuits on a single-plane batch, so with every batch
+	// on one plane nothing can be filtered, and every target is a committed
+	// phase-1 row.
 	depTotal := len(depRows)
-	depChunks := (depTotal + importChunkSize - 1) / importChunkSize
-	for start, chunk := 0, 1; start < depTotal; start, chunk = start+importChunkSize, chunk+1 {
-		end := min(start+importChunkSize, depTotal)
-		pacer.beforeTx()
-		if err := store.CreateIssuesWithFullOptions(ctx, depRows[start:end], actor, depOpts); err != nil {
-			return fmt.Errorf("import dependency pass chunk %d/%d failed (all %d issue rows are committed; re-run the import to resume — it converges): %w", chunk, depChunks, rowTotal, err)
+	planes := splitDepRowsByBucket(depRows)
+	depChunks := 0
+	for _, plane := range planes {
+		depChunks += (len(plane) + importChunkSize - 1) / importChunkSize
+	}
+	wired, chunk := 0, 1
+	for _, plane := range planes {
+		for start := 0; start < len(plane); start += importChunkSize {
+			end := min(start+importChunkSize, len(plane))
+			pacer.beforeTx()
+			if err := store.CreateIssuesWithFullOptions(ctx, plane[start:end], actor, depOpts); err != nil {
+				return fmt.Errorf("import dependency pass chunk %d/%d failed (all %d issue rows are committed; re-run the import to resume — it converges): %w", chunk, depChunks, rowTotal, err)
+			}
+			wired += end - start
+			chunk++
+			fmt.Fprintf(importProgress, "bd import: deferred dependencies wired for %d/%d issues\n", wired, depTotal) //nolint:gosec // G705: stderr, not a browser context
 		}
-		fmt.Fprintf(importProgress, "bd import: deferred dependencies wired for %d/%d issues\n", end, depTotal) //nolint:gosec // G705: stderr, not a browser context
 	}
 	return nil
+}
+
+// splitDepRowsByBucket partitions dependency-pass rows into the regular plane
+// and the wisp plane, each in its original order; an empty plane is omitted.
+func splitDepRowsByBucket(rows []*types.Issue) [][]*types.Issue {
+	var regular, wisp []*types.Issue
+	for _, row := range rows {
+		if issueops.IsWisp(row) {
+			wisp = append(wisp, row)
+		} else {
+			regular = append(regular, row)
+		}
+	}
+	var planes [][]*types.Issue
+	if len(regular) > 0 {
+		planes = append(planes, regular)
+	}
+	if len(wisp) > 0 {
+		planes = append(planes, wisp)
+	}
+	return planes
 }
 
 // orderImportIssuesForChunking returns the issues reordered so that every valid
