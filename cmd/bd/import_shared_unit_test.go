@@ -799,11 +799,18 @@ func TestFilterStaleImportIssuesResumeKeepsRowsNeedingLeaseReconciliation(t *tes
 	expires := base.Add(30 * time.Minute)
 	beat := base.Add(-time.Minute)
 	otherExpires := expires.Add(time.Hour)
+	otherBeat := beat.Add(-time.Minute)
 	claimed := func(id string, leaseExpires, heartbeat *time.Time, node string) *types.Issue {
 		return &types.Issue{
 			ID: id, Title: "row " + id, UpdatedAt: base,
 			Status: types.StatusInProgress, Assignee: "plato",
 			LeaseExpiresAt: leaseExpires, HeartbeatAt: heartbeat, LeaseGrantedNode: node,
+		}
+	}
+	unassigned := func(id string, leaseExpires, heartbeat *time.Time) *types.Issue {
+		return &types.Issue{
+			ID: id, Title: "row " + id, UpdatedAt: base, Status: types.StatusInProgress,
+			LeaseExpiresAt: leaseExpires, HeartbeatAt: heartbeat,
 		}
 	}
 	open := func(id string, leaseExpires, heartbeat *time.Time) *types.Issue {
@@ -817,9 +824,11 @@ func TestFilterStaleImportIssuesResumeKeepsRowsNeedingLeaseReconciliation(t *tes
 		claimed("bd-lease-equal", &expires, &beat, "studio"),   // lease row already identical
 		claimed("bd-lease-differs", &expires, &beat, "studio"), // local lease differs (expiry)
 		claimed("bd-lease-node", &expires, &beat, "studio"),    // local lease differs (granting node)
+		claimed("bd-lease-beat", &expires, &beat, "studio"),    // local lease differs (heartbeat only)
 		claimed("bd-lease-nobeat", &expires, nil, "studio"),    // snapshot heartbeat would be stamped live
 		claimed("bd-lease-local-only", nil, nil, ""),           // live claim keeps its local lease
 		open("bd-lease-orphan", nil, nil),                      // reconcile would DROP the orphaned lease row
+		unassigned("bd-lease-unassigned", nil, nil),            // in_progress but unassigned: the lease row is an orphan too
 		open("bd-lease-none", nil, nil),                        // nothing on either side
 		open("bd-lease-snapshot-open", &expires, &beat),        // restore only fires for a live claim
 	}
@@ -829,9 +838,11 @@ func TestFilterStaleImportIssuesResumeKeepsRowsNeedingLeaseReconciliation(t *tes
 			claimed("bd-lease-equal", &expires, &beat, "studio"),
 			claimed("bd-lease-differs", &otherExpires, &beat, "studio"),
 			claimed("bd-lease-node", &expires, &beat, "mini"),
+			claimed("bd-lease-beat", &expires, &otherBeat, "studio"),
 			claimed("bd-lease-nobeat", &expires, &beat, "studio"),
 			claimed("bd-lease-local-only", &expires, &beat, "studio"),
 			open("bd-lease-orphan", &expires, &beat),
+			unassigned("bd-lease-unassigned", &expires, &beat),
 			open("bd-lease-none", nil, nil),
 			open("bd-lease-snapshot-open", nil, nil),
 		}},
@@ -848,7 +859,7 @@ func TestFilterStaleImportIssuesResumeKeepsRowsNeedingLeaseReconciliation(t *tes
 	for _, issue := range filtered {
 		kept = append(kept, issue.ID)
 	}
-	wantKept := []string{"bd-lease-missing", "bd-lease-differs", "bd-lease-node", "bd-lease-nobeat", "bd-lease-orphan"}
+	wantKept := []string{"bd-lease-missing", "bd-lease-differs", "bd-lease-node", "bd-lease-beat", "bd-lease-nobeat", "bd-lease-orphan", "bd-lease-unassigned"}
 	if strings.Join(kept, ",") != strings.Join(wantKept, ",") {
 		t.Fatalf("write set = %v, want %v (every row whose lease row the rewrite would touch)", kept, wantKept)
 	}
