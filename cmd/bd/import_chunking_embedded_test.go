@@ -566,21 +566,16 @@ func TestImportChunkedStaleRejectedRowKeepsDeferredDepsOut(t *testing.T) {
 	}
 }
 
-// Cross-bucket (regular<->wisp) edges across a chunk boundary. The engine's
-// per-batch cross-bucket filter (issueops.filterCreateIssuesMixedBucketDependencies)
-// skip-reports a regular<->wisp edge whose endpoints are both rows of one mixed
-// batch and short-circuits on a single-plane batch. The import used to apply
-// that filter over the FULL set up front and so dropped every such edge; it now
-// defers the edge to a single-plane dependency pass. This exercises it end to
-// end against the real engine: a regular -> wisp edge straddling a chunk
-// boundary must be wired, not skip-reported, and a same-bucket wisp -> wisp
-// edge straddling the same boundary must survive as before.
-// A regular<->wisp edge between two rows of the import is never dropped: the
-// engine's per-batch cross-bucket filter would skip-report it when both
-// endpoints are rows of one mixed batch, so the import defers it to a
-// single-plane dependency pass where the target is a committed row outside
-// the batch (wy-4276q8). Pre-fix the up-front cross-bucket filter dropped
-// it and skip-reported it, and every export→import lost such edges for good.
+// Cross-bucket (regular<->wisp) edges across a chunk boundary. Pre-wy-4276q8
+// the import applied the engine's per-batch cross-bucket filter over the FULL
+// set up front and so dropped every such edge; it now defers a same-chunk one
+// to a single-plane dependency pass (a workaround the engine no longer needs
+// since wy-a648lq, which writes in-batch cross-plane edges under
+// SkipDependencyValidationErrors; wy-y52syc retires it). This exercises the
+// outcome end to end against the real engine: a regular -> wisp edge
+// straddling a chunk boundary must be wired, not skip-reported, and a
+// same-bucket wisp -> wisp edge straddling the same boundary must survive as
+// before. Every export→import used to lose such edges for good.
 func TestImportChunkedMixedRegularWispCrossBucketEdgesWired(t *testing.T) {
 	requireEmbeddedDolt(t)
 	setImportChunkSize(t, 5)
