@@ -90,6 +90,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -891,6 +892,26 @@ func testRenameLabel(t *testing.T, f Factory) {
 	labels, _ = s.GetLabels(ctx(), "rl-2")
 	if len(labels) != 1 || labels[0] != "new" {
 		t.Errorf("rl-2 labels (merged) = %v, want [new]", labels)
+	}
+
+	// Same-name rename is REFUSED, not treated as a no-op: internal/storage
+	// storage.go documents the sentinel as the contract, so an external
+	// backend that silently succeeds here is non-conforming.
+	renamed, merged, ids, err = s.RenameLabel(ctx(), "new", "new", "a")
+	if !errors.Is(err, issueops.ErrRenameLabelSameName) {
+		t.Errorf("RenameLabel(same name) err = %v, want ErrRenameLabelSameName", err)
+	}
+	if renamed != 0 || merged != 0 || ids != nil {
+		t.Errorf("RenameLabel(same name) = (%d, %d, %v), want (0, 0, nil)", renamed, merged, ids)
+	}
+
+	// A label no issue carries renames to nothing and is not an error.
+	renamed, merged, ids, err = s.RenameLabel(ctx(), "absent", "also-absent", "a")
+	if err != nil {
+		t.Errorf("RenameLabel(zero carriers): %v", err)
+	}
+	if renamed != 0 || merged != 0 || len(ids) != 0 {
+		t.Errorf("RenameLabel(zero carriers) = (%d, %d, %v), want (0, 0, empty)", renamed, merged, ids)
 	}
 }
 
