@@ -176,7 +176,7 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) (*updateInput, e
 		}
 		candidates := storageissueops.GuardedLabelPatchCandidates(replaceSet, replace, in.addLabels, in.removeLabels)
 		if err := checkLabelVocabulary(ctx, candidates); err != nil {
-			return nil, err
+			return nil, HandleErrorRespectJSON("%v", err)
 		}
 	}
 	if cmd.Flags().Changed("parent") {

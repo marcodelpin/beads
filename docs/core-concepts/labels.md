@@ -426,6 +426,24 @@ The check only runs on interactive label writes -- `bd create -l`,
 LAND: removal wins, so `--add-label X --remove-label X` passes even when `X`
 is undefined, because `X` never reaches the issue.
 
+**This edge check is advisory, and it is not the only place `enforce` is
+checked -- but it is the only place for every writer.** `bd create`,
+`bd update --add-label`/`--set-labels`, and `bd label add` (which applies as
+an update patch) all land through the same guarded mutation transaction on
+every backend, direct or proxied, and that transaction re-verifies
+`enforce` on its own before committing -- the edge check above is early,
+named feedback for those three, not the only thing standing between an
+undefined label and the database. `bd label propagate` and `bd tag` write
+labels through a lower-level path that never enters that guarded
+transaction, so for those two the edge check above *is* the only
+enforcement: a write that reached the same underlying label write without
+going through this CLI would not be refused. `bd cook --persist` goes
+further -- it does not call the edge check either, so a cooked formula's
+labels are written exactly as given, in every mode, including `enforce`.
+This is the current, deliberate scope of the guard, not an oversight still
+to be found; `bd doctor` reports the resulting drift (undefined labels in
+use, case-variant clusters) no matter which of these paths wrote it.
+
 Two failure modes deliberately fail OPEN (the write proceeds as if the mode
 were `open`): a config read error, and a vocabulary registry read error. We
 chose availability over enforcement on storage faults -- a broken registry
