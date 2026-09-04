@@ -252,7 +252,7 @@ func TestListLabelDefinitions_Empty(t *testing.T) {
 
 // bda-d1py: define/undefine must create DOLT commits, not just SQL commits.
 // label_definitions is a main-plane table (no dolt_ignore line in migration
-// 0066, unlike C's label_namespace_locks) whose own header calls it the
+// 0067, unlike C's label_namespace_locks) whose own header calls it the
 // workspace's shared curated vocabulary - rows left in the working set never
 // travel on push/clone, so a peer under labels.vocabulary=enforce runs
 // against an empty or stale registry. Mirrors the discipline the sibling

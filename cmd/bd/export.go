@@ -40,6 +40,12 @@ Memories (from 'bd remember') are excluded by default because they may
 contain sensitive agent context. Use --include-memories or --all to
 include them.
 
+Every line carries a "_type" discriminator: "issue", "memory", or
+"label-definition". Label vocabulary definitions ('bd label define') are
+exported whenever the registry is non-empty, including from a bare
+'bd export': they are shared workspace policy rather than agent context, so
+no flag gates them and none suppresses them.
+
 EXAMPLES:
   bd export                              # Export issues to stdout
   bd export -o issues.jsonl              # Export issues to file

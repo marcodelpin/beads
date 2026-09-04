@@ -987,8 +987,10 @@ type labelDefinitionRecord struct {
 // Warnings - case-insensitive collisions kept as the existing definition -
 // go to stderr and never fail the import.
 // labelDefinitionsBatchImporter is the single-tx, single-Dolt-commit batch
-// surface DoltStore provides (bda-o5gq). Stores without it fall back to the
-// per-record define loop.
+// surface DoltStore provides (bda-o5gq). Stores without it -- today that is
+// EmbeddedDoltStore -- fall back to the per-record define loop below, which
+// makes the same decisions (both routes call issueops.ImportLabelDefinitions)
+// but publishes each definition in its own transaction and Dolt commit.
 type labelDefinitionsBatchImporter interface {
 	ImportLabelDefinitions(ctx context.Context, incoming []types.LabelDefinition, actor string) (int, []string, error)
 }

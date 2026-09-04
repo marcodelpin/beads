@@ -30,9 +30,19 @@ silently import the default file instead. This is the incremental counterpart to
 'bd export': new issues are created and existing issues are updated (upsert
 semantics).
 
+Lines are dispatched on their "_type" discriminator: "issue" (or absent),
+"memory", and "label-definition".
+
 Memory records (lines with "_type":"memory") are automatically detected and
 imported as persistent memories (equivalent to 'bd remember'). This makes
 'bd export | bd import' a full round-trip for both issues and memories.
+
+Label vocabulary records (lines with "_type":"label-definition") are applied
+to the opt-in curated vocabulary registry ('bd label define'), define-if-
+absent: an existing definition is kept and a case-insensitive collision with
+one warns on stderr without failing the import. Import itself never consults
+the registry, so an issue carrying an undefined label still imports whatever
+labels.vocabulary is set to.
 
 Each JSONL line should map to an issue. The importer accepts every field
 'bd export' emits — see 'bd export' output for the canonical schema. Only

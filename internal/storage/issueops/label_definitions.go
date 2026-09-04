@@ -27,7 +27,7 @@ import (
 // rejectLabelCollisionInTx pre-check below is the friendly, common-case path
 // (it can name the exact existing spelling), but a check-then-insert cannot
 // see a row a CONCURRENT transaction has not committed yet. label_folded's
-// UNIQUE constraint (migration 0066) is the backstop that makes "never two
+// UNIQUE constraint (migration 0067) is the backstop that makes "never two
 // case-variant spellings" a property of the SCHEMA rather than a promise this
 // function keeps on its own: when two transactions race to define
 // case-variants of the same word, both can pass the pre-check, but only one
@@ -49,7 +49,7 @@ import (
 // function); the bound is on the invariant's breadth, accepted deliberately:
 // real vocabularies are ASCII in practice, and switching to full folding
 // would change the stored label_folded key format under existing rows. The
-// migration 0066 header states the discipline in its strong form; this
+// migration 0067 header states the discipline in its strong form; this
 // comment is the authoritative qualification (the applied migration file is
 // content-frozen and cannot be reworded).
 func DefineLabelInTx(ctx context.Context, tx DBTX, label, description, actor string) error {

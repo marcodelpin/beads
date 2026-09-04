@@ -16,7 +16,7 @@ import (
 
 // TestDefineLabelInTx_ConcurrentCollisionAtInsertIsTranslated is the
 // deterministic regression test for the DB-level backstop label_folded's
-// UNIQUE constraint adds (migration 0066): a check-then-insert cannot see a
+// UNIQUE constraint adds (migration 0067): a check-then-insert cannot see a
 // row a concurrent transaction has not committed yet, so the pre-check
 // (rejectLabelCollisionInTx) can pass for BOTH of two racing callers. This
 // pins what happens to the loser: its INSERT hits the label_folded UNIQUE
