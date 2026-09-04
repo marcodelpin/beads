@@ -233,6 +233,7 @@ func RunAll(t *testing.T, factory Factory) {
 	t.Run("Labels", func(t *testing.T) { testLabels(t, factory) })
 	t.Run("LabelIdempotent", func(t *testing.T) { testLabelIdempotent(t, factory) })
 	t.Run("GetIssuesByLabel", func(t *testing.T) { testGetIssuesByLabel(t, factory) })
+	t.Run("RenameLabel", func(t *testing.T) { testRenameLabel(t, factory) })
 
 	// Comments
 	t.Run("Comments", func(t *testing.T) { testComments(t, factory) })
@@ -856,6 +857,40 @@ func testGetIssuesByLabel(t *testing.T, f Factory) {
 	issues, _ := s.GetIssuesByLabel(ctx(), "shared")
 	if len(issues) != 2 {
 		t.Errorf("GetIssuesByLabel: len = %d", len(issues))
+	}
+}
+
+// testRenameLabel exercises both branches RenameLabel documents: a plain
+// carrier of oldLabel is renamed outright (rl-1), and a carrier that already
+// has newLabel is a merge - the stale oldLabel row is dropped rather than
+// raising a duplicate-key error (rl-2). renamed counts every carrier of
+// oldLabel; merged is the subset of those that already had newLabel.
+func testRenameLabel(t *testing.T, f Factory) {
+	s := f(t)
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "rl-1", Title: "A"}), "a"))
+	must(t, s.CreateIssue(ctx(), withDefaults(&types.Issue{ID: "rl-2", Title: "B"}), "a"))
+	must(t, s.AddLabel(ctx(), "rl-1", "old", "a"))
+	must(t, s.AddLabel(ctx(), "rl-2", "old", "a"))
+	must(t, s.AddLabel(ctx(), "rl-2", "new", "a"))
+
+	renamed, merged, ids, err := s.RenameLabel(ctx(), "old", "new", "a")
+	if err != nil {
+		t.Fatalf("RenameLabel: %v", err)
+	}
+	if renamed != 2 || merged != 1 {
+		t.Errorf("RenameLabel: renamed=%d merged=%d, want renamed=2 merged=1", renamed, merged)
+	}
+	if len(ids) != 2 {
+		t.Errorf("RenameLabel: ids = %v, want 2 entries", ids)
+	}
+
+	labels, _ := s.GetLabels(ctx(), "rl-1")
+	if len(labels) != 1 || labels[0] != "new" {
+		t.Errorf("rl-1 labels = %v, want [new]", labels)
+	}
+	labels, _ = s.GetLabels(ctx(), "rl-2")
+	if len(labels) != 1 || labels[0] != "new" {
+		t.Errorf("rl-2 labels (merged) = %v, want [new]", labels)
 	}
 }
 
