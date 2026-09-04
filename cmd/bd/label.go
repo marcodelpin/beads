@@ -471,8 +471,13 @@ var labelRenameCmd = &cobra.Command{
 	Short: "Rename a label across every issue and wisp that carries it",
 	Long: "Rename a label everywhere it appears. An issue that already carries " +
 		"the new label keeps it and drops the old one instead of erroring - a " +
-		"merge, reported honestly. Pass --dry-run to preview the blast radius " +
-		"(a count and the first issues) without writing anything.",
+		"merge, reported honestly (the write path measures merged from what " +
+		"the insert actually affected, never from a snapshot check, so its " +
+		"count is correct under concurrent writes). Pass --dry-run to preview " +
+		"the blast radius (a count and the first issues) without writing " +
+		"anything; the preview's merged count is a plain snapshot intersection " +
+		"of two separate reads, so treat it as an estimate, not the number the " +
+		"rename itself will report.",
 	Args:          cobra.ExactArgs(2),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -541,6 +546,14 @@ func runLabelRename(ctx context.Context, args []string, dryRun bool) error {
 		commandDidWrite.Store(true)
 	}
 	if err != nil {
+		// A partial rename is real state: report what landed before
+		// failing, the same shape ResolveConflictRows' caller uses in
+		// conflicts.go - renamed>0 here means the SQL side committed (see
+		// the commandDidWrite comment above), so an error-only message
+		// would hide a write that already happened.
+		if renamed > 0 {
+			return HandleErrorRespectJSON("label rename: renamed %d issue(s) (%d merged) before failing: %v", renamed, merged, err)
+		}
 		return HandleErrorRespectJSON("label rename: %v", err)
 	}
 	return reportLabelRename(oldLabel, newLabel, renamed, merged, jsonOutput)
@@ -588,6 +601,15 @@ func runLabelRenameDryRun(ctx context.Context, oldLabel, newLabel string) error 
 		return HandleErrorRespectJSON("label rename --dry-run: %v", err)
 	}
 
+	// A preview-only snapshot intersection of two independent reads, NOT the
+	// write path's measured count: renameLabelInPlane derives merged from
+	// what its INSERT IGNORE actually affected, specifically to avoid the
+	// schedule-dependent count a check-then-insert shape used to produce
+	// under a concurrent AddLabel/RemoveLabel between the two reads (see the
+	// comment on that function). This dry-run has no insert to measure
+	// against, so it falls back to exactly that check-then-count shape - an
+	// acceptable estimate for a preview, but callers must not treat it as
+	// authoritative. The flag help and command Long text say so too.
 	alreadyNew := make(map[string]struct{}, len(newIssues))
 	for _, issue := range newIssues {
 		alreadyNew[issue.ID] = struct{}{}
@@ -674,7 +696,7 @@ func init() {
 	labelListCmd.ValidArgsFunction = issueIDCompletion
 	labelPropagateCmd.ValidArgsFunction = issueIDCompletion
 
-	labelRenameCmd.Flags().Bool("dry-run", false, "Preview the blast radius without renaming anything")
+	labelRenameCmd.Flags().Bool("dry-run", false, "Preview the blast radius without renaming anything (merged count is a snapshot intersection, not authoritative - see --help)")
 
 	labelCmd.AddCommand(labelAddCmd)
 	labelCmd.AddCommand(labelRemoveCmd)
