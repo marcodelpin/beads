@@ -665,8 +665,6 @@ func runLabelRenameDryRun(ctx context.Context, oldLabel, newLabel string) error 
 	return nil
 }
 
-// reportLabelRename prints what a (non-dry-run) rename landed: an honest
-// zero-issues no-op, or the count plus how many of those were merges.
 // labelRenamePartialFailureMessage phrases a failed rename as an UPPER BOUND.
 // Both routes assign the counts inside the transaction closure, so on a Commit
 // failure or retry exhaustion they still hold the rolled-back attempt's numbers
@@ -679,6 +677,8 @@ func labelRenamePartialFailureMessage(renamed, merged int, err error) string {
 		renamed, merged, err)
 }
 
+// reportLabelRename prints what a (non-dry-run) rename landed: an honest
+// zero-issues no-op, or the count plus how many of those were merges.
 func reportLabelRename(oldLabel, newLabel string, renamed, merged int, jsonOut bool) error {
 	if jsonOut {
 		return outputJSON(map[string]interface{}{
