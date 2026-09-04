@@ -546,13 +546,17 @@ func runLabelRename(ctx context.Context, args []string, dryRun bool) error {
 		commandDidWrite.Store(true)
 	}
 	if err != nil {
-		// A partial rename is real state: report what landed before
-		// failing, the same shape ResolveConflictRows' caller uses in
-		// conflicts.go - renamed>0 here means the SQL side committed (see
-		// the commandDidWrite comment above), so an error-only message
-		// would hide a write that already happened.
+		// The counts are assigned INSIDE the transaction closure on both
+		// routes (label_proxied_server.go RunTx, dolt/labels.go
+		// withRetryTx), so a Commit failure or retry exhaustion returns
+		// them still holding the rolled-back attempt's numbers - nothing
+		// landed. Only doltAddAndCommit failing after the SQL tx committed
+		// is a genuine partial, and renamed>0 cannot discriminate the two.
+		// Report an UPPER BOUND rather than assert a write that may not
+		// have happened; commandDidWrite above shares the premise but is
+		// fail-safe in the other direction, this message is not.
 		if renamed > 0 {
-			return HandleErrorRespectJSON("label rename: renamed %d issue(s) (%d merged) before failing: %v", renamed, merged, err)
+			return HandleErrorRespectJSON("label rename: up to %d issue(s) (%d merged) may have been renamed before failing: %v", renamed, merged, err)
 		}
 		return HandleErrorRespectJSON("label rename: %v", err)
 	}
