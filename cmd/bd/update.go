@@ -277,7 +277,7 @@ pointless).`,
 			set, setChanged := updates["set_labels"].([]string)
 			candidates := storageissueops.GuardedLabelPatchCandidates(setChanged, set, added, removed)
 			if err := checkLabelVocabulary(rootCtx, candidates); err != nil {
-				return err
+				return HandleErrorRespectJSON("%v", err)
 			}
 		}
 		if cmd.Flags().Changed("parent") {

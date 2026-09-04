@@ -23,7 +23,7 @@ func runQuickProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	labels = utils.NormalizeLabels(labels)
 	warnLabelsContainingWhitespace(labels)
 	if err := checkLabelVocabulary(ctx, labels); err != nil {
-		return err
+		return HandleErrorRespectJSON("%v", err)
 	}
 	parentID, _ := cmd.Flags().GetString("parent")
 

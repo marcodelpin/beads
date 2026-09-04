@@ -219,12 +219,20 @@ func TestGatherUpdateInputEnforcesLabelVocabulary_AddLabel(t *testing.T) {
 	}
 
 	cmd := newUpdateLabelFlagsCommand(t, "--add-label", "undefined-label")
-	_, err := gatherUpdateInput(ctx, cmd)
+	// gatherUpdateInput's refusal now goes through HandleErrorRespectJSON
+	// (the --json parity fix), which PRINTS the message and returns the
+	// opaque *exitError sentinel rather than the message-bearing error --
+	// the same contract every other checkLabelVocabulary call site already
+	// has. The label name is asserted on the captured print, not err.Error().
+	var err error
+	stderr := captureStderr(t, func() {
+		_, err = gatherUpdateInput(ctx, cmd)
+	})
 	if err == nil {
 		t.Fatal("enforce mode must refuse an undefined --add-label via gatherUpdateInput, got nil")
 	}
-	if !strings.Contains(err.Error(), "undefined-label") {
-		t.Errorf("expected the error to name the label, got: %v", err)
+	if !strings.Contains(stderr, "undefined-label") {
+		t.Errorf("expected stderr to name the label, got: %q", stderr)
 	}
 }
 
@@ -238,12 +246,17 @@ func TestGatherUpdateInputEnforcesLabelVocabulary_SetLabels(t *testing.T) {
 	}
 
 	cmd := newUpdateLabelFlagsCommand(t, "--set-labels", "undefined-label")
-	_, err := gatherUpdateInput(ctx, cmd)
+	// See TestGatherUpdateInputEnforcesLabelVocabulary_AddLabel: the refusal
+	// message is printed via HandleErrorRespectJSON, not carried in err.Error().
+	var err error
+	stderr := captureStderr(t, func() {
+		_, err = gatherUpdateInput(ctx, cmd)
+	})
 	if err == nil {
 		t.Fatal("enforce mode must refuse an undefined --set-labels via gatherUpdateInput, got nil")
 	}
-	if !strings.Contains(err.Error(), "undefined-label") {
-		t.Errorf("expected the error to name the label, got: %v", err)
+	if !strings.Contains(stderr, "undefined-label") {
+		t.Errorf("expected stderr to name the label, got: %q", stderr)
 	}
 }
 
@@ -327,11 +340,16 @@ func TestGatherUpdateInputRefusesUndefinedSetMinusRemove(t *testing.T) {
 	}
 
 	cmd := newUpdateLabelFlagsCommand(t, "--set-labels", "undefined-label", "--remove-label", "other-label")
-	_, err := gatherUpdateInput(ctx, cmd)
+	// See TestGatherUpdateInputEnforcesLabelVocabulary_AddLabel: the refusal
+	// message is printed via HandleErrorRespectJSON, not carried in err.Error().
+	var err error
+	stderr := captureStderr(t, func() {
+		_, err = gatherUpdateInput(ctx, cmd)
+	})
 	if err == nil {
 		t.Fatal("an undefined label in --set-labels not removed by --remove-label must still be refused")
 	}
-	if !strings.Contains(err.Error(), "undefined-label") {
-		t.Errorf("expected the error to name the label, got: %v", err)
+	if !strings.Contains(stderr, "undefined-label") {
+		t.Errorf("expected stderr to name the label, got: %q", stderr)
 	}
 }

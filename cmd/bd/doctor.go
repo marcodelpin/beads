@@ -749,6 +749,14 @@ func runDiagnostics(path string) doctorResult {
 	// regardless of mode. Warn-only, same reasoning as 10c/10d: neither is
 	// auto-fixable, and this ships into workspaces that may already carry
 	// both.
+	//
+	// CALLED OUT, not fixed here: this is the one place labels.vocabulary's
+	// "no behavior change when unconfigured" claim does not hold. Every `bd
+	// doctor` run does a full, unfiltered label census (labelCountsWithStore
+	// -- one SearchIssues over the whole workspace) to build the case-variant
+	// clusters, whether or not the vocabulary registry has ever been touched.
+	// A workspace that never ran `bd label define` still pays that scan on
+	// every doctor invocation.
 	labelVocabularyCheck := convertWithCategory(doctor.CheckLabelVocabularyWithStore(sharedStore), doctor.CategoryData)
 	result.Checks = append(result.Checks, labelVocabularyCheck)
 
