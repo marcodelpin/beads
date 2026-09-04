@@ -556,7 +556,7 @@ func runLabelRename(ctx context.Context, args []string, dryRun bool) error {
 		// have happened; commandDidWrite above shares the premise but is
 		// fail-safe in the other direction, this message is not.
 		if renamed > 0 {
-			return HandleErrorRespectJSON("label rename: up to %d issue(s) (%d merged) may have been renamed before failing: %v", renamed, merged, err)
+			return HandleErrorRespectJSON("%s", labelRenamePartialFailureMessage(renamed, merged, err))
 		}
 		return HandleErrorRespectJSON("label rename: %v", err)
 	}
@@ -667,6 +667,18 @@ func runLabelRenameDryRun(ctx context.Context, oldLabel, newLabel string) error 
 
 // reportLabelRename prints what a (non-dry-run) rename landed: an honest
 // zero-issues no-op, or the count plus how many of those were merges.
+// labelRenamePartialFailureMessage phrases a failed rename as an UPPER BOUND.
+// Both routes assign the counts inside the transaction closure, so on a Commit
+// failure or retry exhaustion they still hold the rolled-back attempt's numbers
+// and nothing landed; only doltAddAndCommit failing after the SQL transaction
+// committed is a genuine partial, and renamed > 0 cannot tell the two apart.
+// Every number in the sentence is therefore hedged - a definite count here would
+// assert a write that may never have happened.
+func labelRenamePartialFailureMessage(renamed, merged int, err error) string {
+	return fmt.Sprintf("label rename: up to %d issue(s) (of which up to %d merged) may have been renamed before failing: %v",
+		renamed, merged, err)
+}
+
 func reportLabelRename(oldLabel, newLabel string, renamed, merged int, jsonOut bool) error {
 	if jsonOut {
 		return outputJSON(map[string]interface{}{
