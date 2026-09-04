@@ -38,6 +38,15 @@ func (s *DoltStore) DefineLabel(ctx context.Context, label, description, actor s
 // history commit per record. Decision logic stays in
 // issueops.ImportLabelDefinitions (the one authority); this method only
 // scopes it to a single tx + commit.
+//
+// SCOPE: this guarantee is DoltStore's alone. The caller
+// (cmd/bd.applyLabelDefinitionsClassic) reaches it through an optional
+// interface assertion, and EmbeddedDoltStore does not implement this method,
+// so embedded mode still takes the per-record DefineLabel loop -- one
+// transaction and one Dolt commit per definition, as before. That is a
+// weaker atomicity story, not a wrong one: the loop's own decision logic is
+// the same issueops.ImportLabelDefinitions, so which definitions land and
+// which warn is identical either way; only the batching differs.
 func (s *DoltStore) ImportLabelDefinitions(ctx context.Context, incoming []types.LabelDefinition, actor string) (int, []string, error) {
 	if len(incoming) == 0 {
 		return 0, nil, nil
