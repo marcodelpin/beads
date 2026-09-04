@@ -183,7 +183,7 @@ var createCmd = &cobra.Command{
 		labels = utils.NormalizeLabels(labels)
 		warnLabelsContainingWhitespace(labels)
 		if err := checkLabelVocabulary(rootCtx, labels); err != nil {
-			return err
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		explicitID, _ := cmd.Flags().GetString("id")
