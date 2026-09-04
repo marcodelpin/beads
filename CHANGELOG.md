@@ -61,9 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   specifically so a concurrent label add between two reads can't skew the
   count, and the preview has no insert to measure against. Treat the
   dry-run number as an estimate — the flag's own help text says so now too.
-  A rename that fails partway through (a Dolt publication failure after the
-  SQL side already committed, say) reports how many issues were renamed and
-  merged before the failure, rather than only the error.
+  A rename that fails partway through reports an UPPER BOUND - up to how many
+  issues may have been renamed, and up to how many of those were merges -
+  rather than only the error. It cannot be a landed count: both routes assign
+  those numbers inside the transaction, so a rollback or an exhausted retry
+  returns them still describing an attempt that landed nothing. Only a Dolt
+  publication failure after the SQL side already committed is a genuine
+  partial, and the count alone cannot tell the two apart.
 
 - **`bd stale` and `bd blocked` gain `--label`, `--label-any` and
   `--exclude-label`** ([#5822](https://github.com/gastownhall/beads/pull/5822)),
