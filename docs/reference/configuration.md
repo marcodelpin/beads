@@ -112,6 +112,7 @@ Any key whose name contains `api_key`, `api-key`, `secret`, `token`, or `passwor
 | `dolt.auto-push-timeout` | — | `BD_DOLT_AUTO_PUSH_TIMEOUT` | `30s` | Timeout for a single auto-push attempt |
 | `dolt.shared-server` | `--shared-server` | `BEADS_DOLT_SHARED_SERVER` | `false` | Share one Dolt server at `~/.beads/shared-server/` |
 | `dolt.max-conns` | — | `BEADS_DOLT_MAX_CONNS` | `10` | Connection pool size |
+| `dolt.open-retry-budget` | — | — | `0` (off) | How long to retry the connectivity probe when opening an **external** Dolt server (duration like `30s`/`2m`, or a bare number of seconds). `0` or unset keeps today's fail-fast open. Ignored in embedded mode, in socket mode, and for a bd-managed localhost server — see [Troubleshooting](/reference/troubleshooting#external-server-restarts-make-commands-fail-instantly) |
 | `git.author` | — | `BD_GIT_AUTHOR` | (none) | Override commit author for beads commits |
 | `git.no-gpg-sign` | — | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `create.require-description` | — | `BD_CREATE_REQUIRE_DESCRIPTION` | `false` | Require description on `bd create` |

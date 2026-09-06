@@ -276,6 +276,34 @@ dolt sql-server --host 127.0.0.1 --port 3307 --data-dir /path/to/your/dolt/data
 If you want auto-start behavior, remove `dolt_server_port` from
 `.beads/metadata.json`.
 
+### External server restarts make commands fail instantly
+
+**Symptom (external server mode):** while the external Dolt server restarts,
+`bd` commands fail in a few tens of milliseconds with "Dolt server unreachable
+at `host:port`", even though the server is back moments later. Commands that
+were already running ride the restart out; a command that has to *open* the
+store does not.
+
+**Cause:** the open path probes the endpoint once and fails fast by design, so
+a genuinely misconfigured endpoint reports immediately instead of hanging.
+
+**Fix:** give the open a bounded retry budget. This is opt-in and off by
+default:
+
+```bash
+bd config set dolt.open-retry-budget 30s
+```
+
+Accepts a duration (`30s`, `2m`, `1m30s`) or a bare number of seconds (`30`);
+`0` or unset restores the fail-fast open. Only *transient* failures are
+retried (connection refused, i/o timeout, connection reset) — a DNS or
+configuration error still fails immediately.
+
+The budget applies to external servers only. Embedded mode never opens a
+connection, socket mode targets a server you manage directly, and a bd-managed
+localhost server recovers by auto-starting rather than by waiting, so none of
+them honor the setting.
+
 ### Port conflicts with multiple projects
 
 **Symptom (server mode):** Commands in a second project fail or connect to the

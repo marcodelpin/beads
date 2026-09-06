@@ -670,6 +670,26 @@ func TestValidateYamlConfigValue_DoltDebug(t *testing.T) {
 	}
 }
 
+func TestValidateYamlConfigValue_DoltOpenRetryBudget(t *testing.T) {
+	valid := []string{"0", "30", "30s", "2m", "1m30s", "500ms"}
+	for _, v := range valid {
+		if err := validateYamlConfigValue("dolt.open-retry-budget", v); err != nil {
+			t.Errorf("expected %q to be valid: %v", v, err)
+		}
+	}
+	// An unparseable or negative value would be read as "off" by the storage
+	// layer, so it must be rejected here rather than silently doing nothing.
+	invalid := []string{"30 seconds", "soon", "-5s", "-5", ""}
+	for _, v := range invalid {
+		if err := validateYamlConfigValue("dolt.open-retry-budget", v); err == nil {
+			t.Errorf("expected %q to be invalid", v)
+		}
+	}
+	if !IsYamlOnlyKey("dolt.open-retry-budget") {
+		t.Error("dolt.open-retry-budget must be stored in config.yaml, not the database")
+	}
+}
+
 func TestValidateYamlConfigValue_DoltMode(t *testing.T) {
 	if err := validateYamlConfigValue("dolt.mode", "server"); err != nil {
 		t.Errorf("expected 'server' to be valid: %v", err)
