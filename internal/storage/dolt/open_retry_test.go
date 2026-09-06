@@ -443,12 +443,15 @@ func TestOpenRetryBudgetDoesNotEngageInManagedModes(t *testing.T) {
 		cfg  *Config
 	}{
 		{
-			// Embedded: the store factory routes these to
-			// internal/storage/embeddeddolt and they never reach
-			// newServerMode. An embedded config's shape -- no configured
-			// host, auto-start on, a local data path -- is a bd-managed
-			// local server, so the gate is false even if one arrived here.
-			name: "embedded shape (no host, auto-start, local path)",
+			// Belt and braces for embedded mode, NOT the routing claim: an
+			// embedded open never reaches newServerMode at all, and that is
+			// a fact about cmd/bd's store factory, asserted there by
+			// TestNewDoltStore_EmbeddedRoutingNeverReachesTheOpenRetryPath.
+			// What this case says is narrower and still worth saying: if a
+			// config with an embedded SHAPE -- no configured host, auto-start
+			// on, a local data path -- did arrive here, the gate would still
+			// be false.
+			name: "embedded-shaped config (no host, auto-start, local path)",
 			cfg: &Config{
 				ServerHost:      "",
 				Path:            "/tmp/does-not-matter/.beads/dolt",
@@ -952,6 +955,83 @@ func TestNew_AmbientBudgetAppliesWhenProjectIsSilent(t *testing.T) {
 	}
 	if rec.attempts != 2 {
 		t.Errorf("expected the ambient budget to buy exactly one retry, got %d dial attempts", rec.attempts)
+	}
+}
+
+// newManagedBeadsDir writes a .beads/config.yaml for a bd-MANAGED localhost
+// server: auto-start on, and a budget configured. The budget being present is
+// the point -- the assertion below is that a CONFIGURED budget still buys no
+// retry in this mode.
+func newManagedBeadsDir(t *testing.T, budget string) string {
+	t.Helper()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "dolt:\n  auto-start: true\n  open-retry-budget: " + budget + "\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	return beadsDir
+}
+
+// The maintainer's mode-exclusion ask, taken through the REAL managed-open
+// path rather than through a config shaped like one: a budget-configured
+// localhost open that reaches EnsureRunningDetailed must make exactly the two
+// bare dials it has always made -- the fail-fast preflight and the
+// post-auto-start retry -- and no retry-loop dial at all.
+//
+// ensureRunningDetailed is stubbed (as port_provenance_test.go does) so no
+// dolt sql-server is spawned.
+func TestNew_ManagedLocalhostOpenThroughEnsureRunningMakesNoRetryDials(t *testing.T) {
+	isolateOpenEnv(t)
+	beadsDir := newManagedBeadsDir(t, "30s")
+
+	cfg := &Config{
+		ServerMode: true,
+		BeadsDir:   beadsDir,
+		Path:       filepath.Join(beadsDir, "dolt"),
+		Database:   "openretry_probe",
+		ServerHost: "127.0.0.1",
+		ServerPort: externalTestPort,
+		AutoStart:  true,
+	}
+	// Same port back: no retarget branch, so this open walks the ordinary
+	// auto-start recovery.
+	stubEnsureRunningDetailed(t, externalTestPort, false, nil)
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	start := time.Now()
+	_, err := New(context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the open to fail: nothing is listening")
+	}
+	// Positive control. Without this the whole test would pass on a budget
+	// that was never configured, which is the failure mode it exists to rule
+	// out: New resolves the key onto cfg, so a non-zero value here proves the
+	// budget WAS live for this open.
+	if cfg.OpenRetryBudget != 30*time.Second {
+		t.Fatalf("precondition: New must have resolved the configured budget, got %s", cfg.OpenRetryBudget)
+	}
+	if openRetryEnabled(cfg) {
+		t.Error("a bd-managed localhost open must not enable the budget")
+	}
+	// The preflight probe and the post-auto-start retry: two bare dials, both
+	// on the legacy dialer, and nothing from the retry loop.
+	if rec.ctxAware != 0 {
+		t.Errorf("expected no retry-loop dial in a managed open, got %d", rec.ctxAware)
+	}
+	if rec.legacy != 2 {
+		t.Errorf("expected exactly 2 bare dials (preflight + post-auto-start), got %d", rec.legacy)
+	}
+	if !strings.Contains(err.Error(), "auto-started but still unreachable") {
+		t.Errorf("expected the post-auto-start failure, got %v", err)
+	}
+	// A single backoff sleep would be >=250ms.
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected no backoff sleep in a managed open, took %s", elapsed)
 	}
 }
 
