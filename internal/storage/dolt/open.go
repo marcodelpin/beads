@@ -387,10 +387,21 @@ func openRetryBeadsDir(cfg *Config) string {
 //
 //  1. an explicit cfg.OpenRetryBudget -- a caller (a test, an embedder) that
 //     set the field means it;
-//  2. <beadsDir>/config.yaml, the project actually being opened. An explicit
-//     "0" here disables the budget even when the ambient config carries one,
-//     so a workspace can opt out of an inherited default;
+//  2. <beadsDir>/config.yaml, the project actually being opened. What decides
+//     here is the key's PRESENCE, not its value: an explicit "0" (or any
+//     value that does not parse to a positive duration) disables the budget
+//     even when the ambient config carries one, so a workspace can opt out of
+//     an inherited default. Both spellings YAML permits are honoured -- the
+//     nested "dolt:\n  open-retry-budget: 0" and the flat
+//     "dolt.open-retry-budget: 0" -- because config.yaml is hand-edited and
+//     an operator who writes the flat form to turn the budget OFF must not
+//     silently keep it on. A key present with no value at all is read as
+//     unset, and inherits;
 //  3. the initialized config (config.Initialize's project-then-global merge).
+//     A target directory that says NOTHING inherits this, so a global
+//     dolt.open-retry-budget remains a default for every workspace that has
+//     not overridden it. Step 2 is a precedence rule, not a replacement for
+//     the global default.
 //
 // Reading the target directory BEFORE the process-wide config is what makes
 // this correct for library and multi-workspace callers: the viper singleton is
@@ -404,8 +415,14 @@ func resolveOpenRetryBudget(cfg *Config, beadsDir string) time.Duration {
 		return cfg.OpenRetryBudget
 	}
 	if beadsDir != "" {
-		if raw := strings.TrimSpace(config.GetStringFromDir(beadsDir, doltOpenRetryBudgetKey)); raw != "" {
-			return parseTimeout(raw, 0)
+		// config.WorkspaceYamlValue, not config.GetStringFromDir: the latter
+		// only descends nested mappings, so it reports a flat
+		// "dolt.open-retry-budget: 0" as absent and lets another workspace's
+		// budget win through the fallback below.
+		if raw, present := config.WorkspaceYamlValue(beadsDir, doltOpenRetryBudgetKey); present {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				return parseTimeout(trimmed, 0)
+			}
 		}
 	}
 	return parseTimeout(config.GetString(doltOpenRetryBudgetKey), 0)

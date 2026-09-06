@@ -601,6 +601,26 @@ func newBeadsDir(t *testing.T, budget string) string {
 	return beadsDir
 }
 
+// newBeadsDirFlat is newBeadsDir with the key written in the FLAT dotted form
+// ("dolt.open-retry-budget: 0") instead of the nested one. config.yaml is
+// hand-edited and YAML accepts both, so an operator turning the budget off has
+// two correct spellings and neither may be ignored.
+func newBeadsDirFlat(t *testing.T, budget string) string {
+	t.Helper()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "dolt:\n  auto-start: false\n"
+	if budget != "" {
+		body += "dolt.open-retry-budget: " + budget + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	return beadsDir
+}
+
 // productionCfg is what cmd/bd hands dolt.New for an unmanaged server: a
 // beadsDir, a data path under it, an explicit endpoint, and no auto-start.
 // OpenRetryBudget is deliberately left unset -- New must resolve it.
@@ -711,6 +731,56 @@ func TestNew_ProjectConfigZeroOverridesAmbientBudget(t *testing.T) {
 	}
 }
 
+// (c2) The same precedence with the target's key written FLAT. This is the
+// spelling config.GetStringFromDir cannot see, and reading it as absent would
+// hand the open the other workspace's 30s.
+func TestNew_FlatProjectConfigZeroOverridesAmbientBudget(t *testing.T) {
+	isolateOpenEnv(t)
+	otherWorkspace := newBeadsDir(t, "30s")
+	t.Setenv("BEADS_DIR", otherWorkspace)
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("config.Initialize: %v", err)
+	}
+	if got := config.GetString("dolt.open-retry-budget"); got != "30s" {
+		t.Fatalf("precondition: ambient config should carry 30s, got %q", got)
+	}
+
+	target := newBeadsDirFlat(t, "0")
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	_, err := New(context.Background(), productionCfg(target))
+	if err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+	if rec.attempts != 1 {
+		t.Errorf("a flat explicit 0 in the opened project must disable the budget, got %d dial attempts", rec.attempts)
+	}
+	if strings.Contains(err.Error(), "open-retry-budget") {
+		t.Errorf("a disabled budget must not appear in the error: %v", err)
+	}
+}
+
+// (c3) And the flat spelling ENABLES too, so the fix is a reader change and
+// not a special case for the value 0.
+func TestNew_FlatProjectConfigEnablesBudget(t *testing.T) {
+	isolateOpenEnv(t)
+	target := newBeadsDirFlat(t, "1200ms")
+	// The second attempt fails non-retryably, so the loop ends there instead
+	// of spending the whole budget.
+	rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+
+	_, err := New(context.Background(), productionCfg(target))
+	if err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+	if !errors.Is(err, errNoSuchHost) {
+		t.Errorf("expected the second attempt's error to surface, got %v", err)
+	}
+	if rec.attempts != 2 {
+		t.Errorf("expected a flat budget to buy exactly one retry, got %d dial attempts", rec.attempts)
+	}
+}
+
 // The mirror of (c): with nothing configured in the opened project, the
 // ambient budget still applies, so the directory read is a precedence rule and
 // not a replacement for the global default.
@@ -757,6 +827,12 @@ func TestResolveOpenRetryBudgetPrecedence(t *testing.T) {
 		{"directory value is used", &Config{}, dirWith30s, 30 * time.Second},
 		{"directory zero disables", &Config{}, dirWithZero, 0},
 		{"silent directory falls through", &Config{}, dirSilent, 0},
+		// The flat dotted spelling is as valid as the nested one, and the
+		// disabling case is the one that must not be missed: reading it as
+		// absent lets another workspace's budget win.
+		{"flat directory value is used", &Config{}, newBeadsDirFlat(t, "30s"), 30 * time.Second},
+		{"flat directory zero disables", &Config{}, newBeadsDirFlat(t, "0"), 0},
+		{"flat directory off disables", &Config{}, newBeadsDirFlat(t, "off"), 0},
 		{"bare seconds are accepted", &Config{}, newBeadsDir(t, "45"), 45 * time.Second},
 		{"unparseable reads as off", &Config{}, newBeadsDir(t, "\"soon\""), 0},
 		{"no directory at all", &Config{}, "", 0},
