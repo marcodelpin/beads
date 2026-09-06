@@ -189,6 +189,24 @@ func getADOConfig() ADOConfig {
 	return cfg
 }
 
+// adoFallbackStoreConfig builds the config for the short-lived store this file
+// opens when the command's own store is not up yet.
+//
+// The path is all this caller has, and a path is not a project: dbPath can be
+// the .beads directory itself, and in shared-server mode or with a custom
+// dolt_data_dir it is somewhere else entirely. Without the project directory,
+// dolt.open-retry-budget would resolve from the user-level default alone and
+// skip the opened project's own setting -- including an explicit 0 -- so each
+// of these config reads could sit in a retry loop the project had opted out
+// of. resolveBeadsDirForDBPath is the same dbPath-to-.beads resolver the
+// store-reopen path uses, and it returns "" when it cannot tell, which is
+// exactly what the budget resolution treats as "no project directory".
+func adoFallbackStoreConfig(dbPath string) *dolt.Config {
+	cfg := &dolt.Config{Path: dbPath}
+	dolt.ApplyOpenRetryConfigDir(resolveBeadsDirForDBPath(dbPath), cfg)
+	return cfg
+}
+
 // getADOConfigValue reads an Azure DevOps configuration value from store or environment.
 func getADOConfigValue(ctx context.Context, key string) string {
 	// Try to read from store (works in direct mode)
@@ -198,7 +216,7 @@ func getADOConfigValue(ctx context.Context, key string) string {
 			return value
 		}
 	} else if dbPath != "" {
-		tempStore, err := dolt.New(ctx, &dolt.Config{Path: dbPath})
+		tempStore, err := dolt.New(ctx, adoFallbackStoreConfig(dbPath))
 		if err == nil {
 			defer func() { _ = tempStore.Close() }()
 			value, _ := tempStore.GetConfig(ctx, key)

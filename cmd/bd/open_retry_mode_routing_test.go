@@ -104,3 +104,54 @@ func TestNewDoltStore_EmbeddedRoutingNeverReachesTheOpenRetryPath(t *testing.T) 
 		}
 	})
 }
+
+// The short-lived store this package opens when the command's own store is not
+// up yet must still know which project it is about, or dolt.open-retry-budget
+// resolves from the user-level default and skips the project's own setting.
+//
+// The path is the only thing that caller has, and it is not a project
+// directory: it can be the .beads directory itself, and with a custom
+// dolt_data_dir or in shared-server mode it is somewhere else entirely.
+func TestADOFallbackStoreConfigCarriesTheProjectDirForOpenRetry(t *testing.T) {
+	root := t.TempDir()
+	beadsDir := filepath.Join(root, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	// resolveBeadsDirForDBPath keys on metadata.json, so the fixture needs one.
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		dbPath string
+	}{
+		{"default data path", filepath.Join(beadsDir, "dolt")},
+		{"the .beads directory itself", beadsDir},
+		{"an embedded store path", filepath.Join(beadsDir, "embeddeddolt")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := adoFallbackStoreConfig(tc.dbPath)
+			if cfg.Path != tc.dbPath {
+				t.Errorf("Path = %q, want %q", cfg.Path, tc.dbPath)
+			}
+			if cfg.OpenRetryConfigDir != beadsDir {
+				t.Errorf("OpenRetryConfigDir = %q, want %q", cfg.OpenRetryConfigDir, beadsDir)
+			}
+		})
+	}
+
+	// Control: a path with no .beads anywhere above it resolves to nothing,
+	// and nothing is the correct answer -- the budget then falls back on the
+	// user-level default rather than on a stranger's project. Without this the
+	// assertions above could be passing on a resolver that returns the same
+	// directory for any input.
+	t.Run("no project above the path", func(t *testing.T) {
+		orphan := filepath.Join(t.TempDir(), "somewhere", "dolt")
+		if got := adoFallbackStoreConfig(orphan).OpenRetryConfigDir; got != "" {
+			t.Errorf("OpenRetryConfigDir = %q, want empty for a path with no project above it", got)
+		}
+	})
+}

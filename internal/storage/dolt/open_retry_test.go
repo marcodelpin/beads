@@ -1951,3 +1951,76 @@ func TestNew_OpenRetryConfigDirIsRetargetableByHand(t *testing.T) {
 		t.Errorf("clearing the field must fall through to BeadsDir, got %d dial attempts", rec3.attempts)
 	}
 }
+
+// blackholeAddr is a TEST-NET-1 address (RFC 5737): routable in form, answered
+// by nobody, so a TCP connect to it hangs in SYN retransmit rather than
+// failing fast. That is the only shape in which a dial TIMEOUT is observable.
+const blackholeAddr = "192.0.2.1:9"
+
+// The production dialer must honour the per-attempt timeout it is handed.
+//
+// Every budget test stubs both dial vars, and the two tests that do call the
+// real ones drive them with an ALREADY-CANCELLED context, which returns before
+// the timeout can matter. So the timeout itself had no coverage: removing
+// `Timeout: timeout` from the dialer left the whole suite green while
+// defeating the budget on exactly the endpoint it exists for -- one that never
+// answers, where without a dial timeout the first probe runs to the OS connect
+// timeout (minutes) and the budget bounds nothing.
+//
+// The context here is deliberately uncancelled and deadline-free: the timeout
+// is the only thing that can end this dial.
+func TestOpenRetryProductionDialHonoursItsTimeout(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	// The dial runs off the test goroutine and is WAITED ON with a bound. A
+	// dialer that ignores its timeout does not fail this test, it HANGS -- and
+	// an unbounded wait would burn the whole package's `go test` timeout and
+	// report as a panic in whatever test happened to be running. Bounding it
+	// here makes that failure a named assertion instead.
+	type dialResult struct {
+		conn    net.Conn
+		err     error
+		elapsed time.Duration
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		start := time.Now()
+		conn, err := serverDial(context.Background(), "tcp", blackholeAddr, timeout)
+		done <- dialResult{conn: conn, err: err, elapsed: time.Since(start)}
+	}()
+
+	var got dialResult
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the dial did not return within 5s against a %s timeout: the production dialer is not honouring it", timeout)
+	}
+	conn, err, elapsed := got.conn, got.err, got.elapsed
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatalf("precondition: %s must not be connectable", blackholeAddr)
+	}
+	if err == nil {
+		t.Fatalf("precondition: expected a dial error against %s", blackholeAddr)
+	}
+
+	// Fixture control. A network that rejects this address outright (no route,
+	// a filtering middlebox answering RST) fails in microseconds and cannot
+	// exhibit a timeout at all, so the measurement below would be about the
+	// network rather than about the dialer. Skip rather than assert, and say
+	// what was measured -- a green here must never mean "the address answered
+	// too quickly to tell".
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Skipf("this network does not blackhole %s (err after %s: %v), so a dial timeout is not observable here",
+			blackholeAddr, elapsed.Round(time.Millisecond), err)
+	}
+
+	// The upper bound is the select above -- a dialer that ignored its timeout
+	// would still be in SYN retransmit, since the OS connect timeout is on the
+	// order of minutes. What is left to check is that it did not return EARLY
+	// either, which would mean the timeout is being shortened somewhere and a
+	// retry gets less than the budget allows.
+	if elapsed < timeout {
+		t.Errorf("the dial returned after %s, before its own %s timeout", elapsed.Round(time.Millisecond), timeout)
+	}
+}
