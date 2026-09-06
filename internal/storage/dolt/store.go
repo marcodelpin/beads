@@ -1764,16 +1764,26 @@ var ensureRunningDetailed = doltserver.EnsureRunningDetailed
 // dolt sql-server process.
 var stopRejectedAutoStartedServer = doltserver.Stop
 
-// serverDial opens newServerMode's pre-dial probe connection. Declared as a
-// var (matching dialProbe and ensureRunningDetailed above) so unit tests can
-// drive the open path -- including the open-retry budget -- without a live
-// dolt sql-server.
+// serverDialLegacy is newServerMode's ORIGINAL dial: net.DialTimeout, with no
+// context. Every call site that must stay byte for byte what it was before the
+// open-retry budget existed uses THIS one -- the budget-off pre-dial probe and
+// the post-auto-start retry. Declared as a var (matching dialProbe and
+// ensureRunningDetailed above) so unit tests can drive the open path without a
+// live dolt sql-server.
 //
-// The context is honoured. For an uncancelled context this is exactly what
-// net.DialTimeout does (net.DialTimeout is Dialer.Timeout plus a background
-// context), so the fail-fast open is unchanged; a cancelled or expired
-// context now ends the dial instead of being ignored, which is what lets the
-// retry loop below be governed by its caller.
+// Keeping it separate is what makes "the default is untouched" a property of
+// the code rather than a claim about the caller's context: net.DialTimeout
+// ignores context by construction, so a cancelled or short-deadline ctx cannot
+// change the fail-fast open's behaviour or its error text through this path.
+var serverDialLegacy = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout(network, addr, timeout)
+}
+
+// serverDial is the context-aware dial, used ONLY by the open-retry loop --
+// the opt-in path, where a caller that cancels an open must be able to end a
+// dial in flight rather than wait out its timeout. For an uncancelled context
+// it is exactly what net.DialTimeout does (net.DialTimeout is Dialer.Timeout
+// plus a background context).
 var serverDial = func(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{Timeout: timeout}
 	return d.DialContext(ctx, network, addr)
@@ -1859,7 +1869,7 @@ func openRetryCancelled(ctxErr, lastErr error, attempts int, budget time.Duratio
 // less patient than the fail-fast open it replaces.
 func dialServerPreflight(ctx context.Context, cfg *Config, network, addr string, timeout time.Duration) (net.Conn, error) {
 	if !openRetryEnabled(cfg) {
-		return serverDial(ctx, network, addr, timeout)
+		return serverDialLegacy(network, addr, timeout)
 	}
 
 	budget := cfg.OpenRetryBudget
@@ -2072,10 +2082,12 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 				breaker = maybeNewCircuitBreaker(cfg.ServerHost, cfg.ServerPort, cfg.Database)
 			}
 			// Retry connection with longer timeout (server just started).
-			// Deliberately a bare serverDial, not dialServerPreflight: this is
-			// the localhost-managed path, which recovers by starting a server
-			// rather than by waiting, and openRetryEnabled excludes it anyway.
-			conn, dialErr = serverDial(ctx, "tcp", addr, 2*time.Second)
+			// Deliberately a bare serverDialLegacy, not dialServerPreflight:
+			// this is the localhost-managed path, which recovers by starting a
+			// server rather than by waiting, and openRetryEnabled excludes it
+			// anyway. The legacy dialer keeps it what it was before the budget
+			// existed, down to the ignored context.
+			conn, dialErr = serverDialLegacy("tcp", addr, 2*time.Second)
 			if dialErr != nil {
 				// Release auto-start ref on connection failure
 				if autoStartedDir != "" {

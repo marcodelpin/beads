@@ -66,11 +66,15 @@ func (c *recordingConn) drained() bool {
 	return c.closes > 0 && c.reads > 0 && c.readDeadlines > 0
 }
 
-// dialRecord is what a stubbed dial saw: how many times it was called and the
-// per-attempt timeout it was handed. The timeouts are what prove the budget is
-// a deadline rather than a sleep bound.
+// dialRecord is what a stubbed dial saw: how many times it was called, the
+// per-attempt timeout it was handed, and WHICH dial var it came through. The
+// timeouts are what prove the budget bounds the retries; the legacy/ctxAware
+// split is what proves the budget-off path still runs the original
+// net.DialTimeout call and not the context-aware one the retry loop uses.
 type dialRecord struct {
 	attempts int
+	legacy   int
+	ctxAware int
 	timeouts []time.Duration
 }
 
@@ -78,12 +82,13 @@ type dialRecord struct {
 // succeeding. A negative failures count never succeeds. sleep, when positive,
 // is how long each attempt blocks before answering, capped at the timeout it
 // was given, so a stub can imitate an unresponsive endpoint.
+// Both dial vars are stubbed from one record, so an assertion on the attempt
+// COUNT cannot be fooled by a call that took the other route, and an
+// assertion on rec.legacy / rec.ctxAware says which route it took.
 func stubServerDial(t *testing.T, failures int, err error, sleep time.Duration) *dialRecord {
 	t.Helper()
-	orig := serverDial
-	t.Cleanup(func() { serverDial = orig })
 	rec := &dialRecord{}
-	serverDial = func(ctx context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
+	answer := func(ctx context.Context, timeout time.Duration) (net.Conn, error) {
 		rec.attempts++
 		rec.timeouts = append(rec.timeouts, timeout)
 		if sleep > 0 {
@@ -93,10 +98,14 @@ func stubServerDial(t *testing.T, failures int, err error, sleep time.Duration) 
 			}
 			timer := time.NewTimer(block)
 			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-timer.C:
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-timer.C:
+				}
+			} else {
+				<-timer.C
 			}
 		}
 		if failures < 0 || rec.attempts <= failures {
@@ -104,7 +113,25 @@ func stubServerDial(t *testing.T, failures int, err error, sleep time.Duration) 
 		}
 		return &recordingConn{}, nil
 	}
+	installDialStubs(t, rec, answer)
 	return rec
+}
+
+// installDialStubs points BOTH dial vars at answer and tags each call with
+// the var it arrived through. answer receives a nil context for the legacy
+// dialer, which by construction has none.
+func installDialStubs(t *testing.T, rec *dialRecord, answer func(context.Context, time.Duration) (net.Conn, error)) {
+	t.Helper()
+	origCtx, origLegacy := serverDial, serverDialLegacy
+	t.Cleanup(func() { serverDial, serverDialLegacy = origCtx, origLegacy })
+	serverDial = func(ctx context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
+		rec.ctxAware++
+		return answer(ctx, timeout)
+	}
+	serverDialLegacy = func(_, _ string, timeout time.Duration) (net.Conn, error) {
+		rec.legacy++
+		return answer(nil, timeout) //nolint:staticcheck // the legacy dialer has no context, by design
+	}
 }
 
 // stubServerDialErrs replaces serverDial with one that returns errs[i] for
@@ -113,10 +140,8 @@ func stubServerDial(t *testing.T, failures int, err error, sleep time.Duration) 
 // without paying for the whole budget.
 func stubServerDialErrs(t *testing.T, errs ...error) *dialRecord {
 	t.Helper()
-	orig := serverDial
-	t.Cleanup(func() { serverDial = orig })
 	rec := &dialRecord{}
-	serverDial = func(_ context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
+	installDialStubs(t, rec, func(_ context.Context, timeout time.Duration) (net.Conn, error) {
 		rec.attempts++
 		rec.timeouts = append(rec.timeouts, timeout)
 		i := rec.attempts - 1
@@ -124,7 +149,7 @@ func stubServerDialErrs(t *testing.T, errs ...error) *dialRecord {
 			i = len(errs) - 1
 		}
 		return nil, errs[i]
-	}
+	})
 	return rec
 }
 
@@ -170,6 +195,70 @@ func TestOpenRetryBudgetOff_SingleAttemptErrorUnchanged(t *testing.T) {
 			// The probe timeout is passed through untouched when the budget is
 			// off; only an enabled budget may shorten it.
 			if len(rec.timeouts) != 1 || rec.timeouts[0] != time.Millisecond {
+				t.Errorf("expected the caller's probe timeout unchanged, got %v", rec.timeouts)
+			}
+			// ...and through the ORIGINAL dialer. Routing the disabled path
+			// through the retry loop's context-aware dial would keep the
+			// count at 1 while changing what a cancelled or short-deadline
+			// context does to a default open.
+			if rec.legacy != 1 || rec.ctxAware != 0 {
+				t.Errorf("expected the budget-off probe on the legacy dialer, got legacy=%d ctx-aware=%d", rec.legacy, rec.ctxAware)
+			}
+		})
+	}
+}
+
+// The default open must not acquire context semantics it never had. Base
+// newServerMode dialled with net.DialTimeout, which ignores context: with the
+// budget off, an already-cancelled or already-expired context must still
+// produce exactly one dial and the dial's own error, not the context's.
+func TestOpenRetryBudgetOff_KeepsLegacyDialSemantics(t *testing.T) {
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	t.Cleanup(cancelExpired)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"already cancelled", cancelled},
+		{"deadline already passed", expired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &dialRecord{}
+			// The context-aware stub HONOURS the context, exactly as
+			// net.Dialer.DialContext does. The legacy one cannot see it.
+			installDialStubs(t, rec, func(ctx context.Context, timeout time.Duration) (net.Conn, error) {
+				rec.attempts++
+				rec.timeouts = append(rec.timeouts, timeout)
+				if ctx != nil {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+				}
+				return nil, errConnRefused
+			})
+
+			conn, err := dialServerPreflight(tc.ctx, unmanagedCfg(0), "tcp", externalAddr, 250*time.Millisecond)
+
+			if conn != nil {
+				t.Errorf("expected no connection, got %v", conn)
+			}
+			if rec.attempts != 1 {
+				t.Fatalf("expected exactly 1 dial with the budget off, got %d", rec.attempts)
+			}
+			if rec.legacy != 1 || rec.ctxAware != 0 {
+				t.Errorf("expected the legacy dialer, got legacy=%d ctx-aware=%d", rec.legacy, rec.ctxAware)
+			}
+			// The load-bearing assertion: base returned the DIAL error here.
+			if err != errConnRefused {
+				t.Errorf("expected the dial error unchanged by the context, got %v", err)
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("the default open must not surface a context error, got %v", err)
+			}
+			if len(rec.timeouts) != 1 || rec.timeouts[0] != 250*time.Millisecond {
 				t.Errorf("expected the caller's probe timeout unchanged, got %v", rec.timeouts)
 			}
 		})
@@ -232,6 +321,12 @@ func TestOpenRetryBudgetOn_ExhaustsBudget(t *testing.T) {
 	// not a slow machine.
 	if rec.attempts > 12 {
 		t.Errorf("expected a bounded attempt count, got %d", rec.attempts)
+	}
+	// The ENABLED path is the context-aware one: an opt-in wait a caller
+	// cannot cancel would be worse than the fail-fast open it replaces.
+	if rec.ctxAware != rec.attempts || rec.legacy != 0 {
+		t.Errorf("expected every retry-loop dial on the context-aware dialer, got legacy=%d ctx-aware=%d of %d",
+			rec.legacy, rec.ctxAware, rec.attempts)
 	}
 	// The budget is a DEADLINE on the whole probe: at worst it overruns by the
 	// last dial's own timeout plus scheduling slack. A stray sleep after
@@ -385,6 +480,9 @@ func TestOpenRetryBudgetDoesNotEngageInManagedModes(t *testing.T) {
 			}
 			if err != errConnRefused {
 				t.Errorf("expected the fail-fast error unchanged, got %v", err)
+			}
+			if rec.legacy != 1 || rec.ctxAware != 0 {
+				t.Errorf("expected the excluded mode on the legacy dialer, got legacy=%d ctx-aware=%d", rec.legacy, rec.ctxAware)
 			}
 			// A retry would have cost at least one backoff sleep (>=250ms).
 			if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
