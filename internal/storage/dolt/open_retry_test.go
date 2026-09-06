@@ -1489,10 +1489,10 @@ func TestNew_OpenRetryResolvedBudgetIsNotACallerOverride(t *testing.T) {
 	// Same Config object, retargeted at a project that opted out -- through
 	// the function that actually retargets one on a second
 	// NewFromConfigWithOptions call. It rewrites cfg.Path and
-	// cfg.resolvedBeadsDir on EVERY open but fills cfg.BeadsDir just once,
+	// cfg.OpenRetryConfigDir on EVERY open but fills cfg.BeadsDir just once,
 	// when empty, so the stale first-project value is still sitting in
 	// BeadsDir: an open that resolved its budget from BeadsDir, or from a
-	// resolvedBeadsDir that were also only filled when empty, would read the
+	// OpenRetryConfigDir that were also only filled when empty, would read the
 	// FIRST project's config.yaml and retry against a project that said 0.
 	if err := applyResolvedConfig(context.Background(), optedOut, fileCfg, cfg); err != nil {
 		t.Fatalf("applyResolvedConfig: %v", err)
@@ -1734,8 +1734,8 @@ func TestOpenRetryBeadsDirPrefersTheDirectoryThisOpenResolvedFrom(t *testing.T) 
 		{"relative custom data dir path only", &Config{Path: filepath.Join(project, "fastdata")}, project},
 		{"BeadsDir beats a shared-server path", &Config{BeadsDir: project, Path: "/home/u/.beads/shared-server/dolt"}, project},
 		{"BeadsDir beats a custom data dir", &Config{BeadsDir: project, Path: "/mnt/fast/beads-dolt-data"}, project},
-		{"resolvedBeadsDir beats a stale BeadsDir", &Config{resolvedBeadsDir: project, BeadsDir: stale, Path: filepath.Join(stale, "dolt")}, project},
-		{"resolvedBeadsDir beats the path", &Config{resolvedBeadsDir: project, Path: "/mnt/fast/beads-dolt-data"}, project},
+		{"OpenRetryConfigDir beats a stale BeadsDir", &Config{OpenRetryConfigDir: project, BeadsDir: stale, Path: filepath.Join(stale, "dolt")}, project},
+		{"OpenRetryConfigDir beats the path", &Config{OpenRetryConfigDir: project, Path: "/mnt/fast/beads-dolt-data"}, project},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1746,7 +1746,7 @@ func TestOpenRetryBeadsDirPrefersTheDirectoryThisOpenResolvedFrom(t *testing.T) 
 	}
 }
 
-// applyResolvedConfig must set resolvedBeadsDir on EVERY call -- the whole
+// applyResolvedConfig must set OpenRetryConfigDir on EVERY call -- the whole
 // point of a field that tracks the open -- while leaving the documented
 // cfg.BeadsDir caller override alone.
 func TestApplyResolvedConfigOpenRetryDirTracksEveryOpen(t *testing.T) {
@@ -1763,8 +1763,8 @@ func TestApplyResolvedConfigOpenRetryDirTracksEveryOpen(t *testing.T) {
 	if err := applyResolvedConfig(context.Background(), first, fileCfg, cfg); err != nil {
 		t.Fatalf("applyResolvedConfig: %v", err)
 	}
-	if cfg.resolvedBeadsDir != first {
-		t.Fatalf("first open: resolvedBeadsDir = %q, want %q", cfg.resolvedBeadsDir, first)
+	if cfg.OpenRetryConfigDir != first {
+		t.Fatalf("first open: OpenRetryConfigDir = %q, want %q", cfg.OpenRetryConfigDir, first)
 	}
 	if cfg.BeadsDir != first {
 		t.Fatalf("first open: BeadsDir = %q, want %q", cfg.BeadsDir, first)
@@ -1773,8 +1773,8 @@ func TestApplyResolvedConfigOpenRetryDirTracksEveryOpen(t *testing.T) {
 	if err := applyResolvedConfig(context.Background(), second, fileCfg, cfg); err != nil {
 		t.Fatalf("applyResolvedConfig: %v", err)
 	}
-	if cfg.resolvedBeadsDir != second {
-		t.Errorf("second open: resolvedBeadsDir = %q, want %q -- it must be rewritten every time", cfg.resolvedBeadsDir, second)
+	if cfg.OpenRetryConfigDir != second {
+		t.Errorf("second open: OpenRetryConfigDir = %q, want %q -- it must be rewritten every time", cfg.OpenRetryConfigDir, second)
 	}
 	if cfg.BeadsDir != first {
 		t.Errorf("second open: BeadsDir = %q, want the caller override %q left alone", cfg.BeadsDir, first)
@@ -1890,5 +1890,64 @@ func TestNew_OpenRetryCallerDeadlineDuringOpenRecordsNoCircuitFailure(t *testing
 	}
 	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
 		t.Errorf("control: an open with a healthy caller must record exactly 1 failure, got %d", failures)
+	}
+}
+
+// A hand-built Config can be RETARGETED at another project, including the
+// directory the budget is read from. The field applyResolvedConfig writes is
+// public for exactly this reason: a caller that reuses one Config across two
+// opens updates Path, BeadsDir and OpenRetryConfigDir together, on the same
+// terms, and the second open must honour the second project's setting.
+func TestNew_OpenRetryConfigDirIsRetargetableByHand(t *testing.T) {
+	isolateOpenEnv(t)
+	withoutUserGlobalBudget(t)
+	retrying := newBeadsDir(t, "1200ms")
+	optedOut := newBeadsDir(t, "0")
+
+	// First open, through applyResolvedConfig, exactly as a
+	// NewFromConfigWithOptions caller reaches it.
+	cfg := productionCfg(retrying)
+	fileCfg := &configfile.Config{Backend: configfile.BackendDolt}
+	if err := applyResolvedConfig(context.Background(), retrying, fileCfg, cfg); err != nil {
+		t.Fatalf("applyResolvedConfig: %v", err)
+	}
+	rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+	if _, err := New(context.Background(), cfg); err == nil {
+		t.Fatal("expected the first open to fail")
+	}
+	if rec.attempts != 2 {
+		t.Fatalf("precondition: the first project's budget must retry, got %d dial attempts", rec.attempts)
+	}
+	if cfg.OpenRetryConfigDir != retrying {
+		t.Fatalf("precondition: the first open must have recorded its own directory, got %q", cfg.OpenRetryConfigDir)
+	}
+
+	// Retargeted BY HAND -- no applyResolvedConfig this time -- and then
+	// opened through New directly, which is the caller shape that could not
+	// reach this field while it was unexported.
+	cfg.Path = filepath.Join(optedOut, "dolt")
+	cfg.BeadsDir = optedOut
+	cfg.OpenRetryConfigDir = optedOut
+	rec2 := stubServerDial(t, -1, errConnRefused, 0)
+	_, err := New(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected the second open to fail")
+	}
+	if rec2.attempts != 1 {
+		t.Errorf("the retargeted open must honour the new project's explicit 0, got %d dial attempts", rec2.attempts)
+	}
+	if strings.Contains(err.Error(), "open-retry-budget") {
+		t.Errorf("a disabled budget must not appear in the error: %v", err)
+	}
+
+	// ...and clearing the field is always safe: resolution falls through to
+	// BeadsDir, which the same retarget updated.
+	cfg.OpenRetryConfigDir = ""
+	rec3 := stubServerDial(t, -1, errConnRefused, 0)
+	if _, err := New(context.Background(), cfg); err == nil {
+		t.Fatal("expected the third open to fail")
+	}
+	if rec3.attempts != 1 {
+		t.Errorf("clearing the field must fall through to BeadsDir, got %d dial attempts", rec3.attempts)
 	}
 }

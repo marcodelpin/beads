@@ -482,18 +482,28 @@ type Config struct {
 	resolvedOpenRetryBudget time.Duration
 	openRetryResolved       bool
 
-	// resolvedBeadsDir is the .beads directory THIS open was resolved from:
-	// the beadsDir applyResolvedConfig was called with, which is where the
-	// metadata.json and config.yaml governing this open live. It is rewritten
-	// on EVERY open, exactly like Path.
+	// OpenRetryConfigDir names the .beads directory whose config.yaml governs
+	// dolt.open-retry-budget for this open. It is the first thing
+	// openRetryBeadsDir consults, and it exists because neither of the other
+	// two fields can answer that question on its own:
 	//
-	// BeadsDir cannot serve that purpose. It is a documented CALLER OVERRIDE
-	// that applyResolvedConfig fills in only when empty, so a Config reused
-	// for a second project still carries the first project's value -- and a
-	// per-directory setting resolved from it would read the wrong project's
-	// config.yaml. Unexported so a Config literal cannot set it and so it is
-	// re-derived on every open. See openRetryBeadsDir.
-	resolvedBeadsDir string
+	//   - BeadsDir is a documented CALLER OVERRIDE that applyResolvedConfig
+	//     fills in only when empty, so a Config reused for a second project
+	//     still carries the first project's value. Some callers also leave it
+	//     unset deliberately, because its other consumers (project-identity
+	//     verification, local-data-dir resolution) change behaviour.
+	//   - Path is the DATA directory, which is inside the project's .beads
+	//     only in the default layout: shared-server mode puts it under
+	//     ~/.beads/shared-server, and a custom absolute dolt_data_dir puts it
+	//     wherever the operator chose.
+	//
+	// applyResolvedConfig rewrites this on EVERY open, exactly as it rewrites
+	// Path, so an open that goes through it never answers for the previous
+	// project. A caller that builds a Config by hand and RETARGETS it at
+	// another project must update this field alongside Path and BeadsDir, on
+	// the same terms as those two; leaving it empty is always safe and simply
+	// falls through to them.
+	OpenRetryConfigDir string
 
 	// MaxOpenConns overrides the connection pool size (0 = default 10).
 	// Set to 1 for branch isolation in tests (DOLT_CHECKOUT is session-level).

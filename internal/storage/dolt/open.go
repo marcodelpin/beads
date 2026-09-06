@@ -59,6 +59,28 @@ func ApplyCLIAutoStart(beadsDir string, cfg *Config) {
 	cfg.AutoStart = resolveAutoStart(true, autoStartCfg, mode)
 }
 
+// ApplyOpenRetryConfigDir records which project a HAND-BUILT Config is about,
+// for the sake of dolt.open-retry-budget resolution alone.
+//
+// It is the third of the Apply*(beadsDir, cfg) helpers a caller that does not
+// go through applyResolvedConfig needs, and it exists as its own helper rather
+// than as "just set cfg.BeadsDir" because BeadsDir is read by several other
+// things -- project-identity verification, local-data-dir resolution, the
+// auto-started-server bookkeeping -- and a caller that deliberately leaves it
+// empty is deliberately opting out of those. Setting only this field changes
+// nothing except which directory the budget is read from.
+//
+// Without it, a Config whose data path is outside the project (a custom
+// absolute dolt_data_dir, shared-server mode) has no directory to resolve
+// from, and the budget falls back on the user-level default -- so a project's
+// explicit "0" would not be honoured for that open.
+func ApplyOpenRetryConfigDir(beadsDir string, cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenRetryConfigDir = beadsDir
+}
+
 // ApplyResolvedServerPort fills cfg's server port from doltserver's
 // precedence chain (env > port file > dolt config.yaml > beads config.yaml >
 // metadata.json), and — the part that is easy to drop — records WHICH of those
@@ -266,7 +288,7 @@ func GetBackendFromConfig(beadsDir string) string {
 // error only when a configured server credential command fails (fail-closed).
 func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfile.Config, cfg *Config) error {
 	cfg.Path = fileCfg.DatabasePath(beadsDir)
-	// resolvedBeadsDir tracks this open the way Path does -- rewritten
+	// OpenRetryConfigDir tracks this open the way Path does -- rewritten
 	// unconditionally, every time -- because it is the ONE authoritative
 	// answer to "which .beads directory is this open about". BeadsDir is a
 	// documented caller override filled in only when empty, so on a reused
@@ -274,7 +296,7 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 	// since DatabasePath returns a custom absolute dolt_data_dir and the
 	// shared-server data directory, neither of which sits inside this
 	// project's .beads. See openRetryBeadsDir.
-	cfg.resolvedBeadsDir = beadsDir
+	cfg.OpenRetryConfigDir = beadsDir
 	if cfg.BeadsDir == "" {
 		cfg.BeadsDir = beadsDir
 	}
@@ -377,16 +399,16 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 //
 // Precedence, and why each rung is where it is:
 //
-//  1. cfg.resolvedBeadsDir -- what applyResolvedConfig was called with, set
-//     unconditionally on every open. Authoritative when present.
+//  1. cfg.OpenRetryConfigDir -- what applyResolvedConfig was called with, set
+//     unconditionally on every open, and what a hand-built Config sets through
+//     ApplyOpenRetryConfigDir. Authoritative when present.
 //  2. cfg.BeadsDir -- the caller override, which the direct dolt.New callers
 //     (the CLI root pre-run, bootstrap, the migration planning store) set to
 //     the project directory while setting Path to doltserver.ResolveDoltDir,
 //     a path that in shared-server mode is ~/.beads/shared-server/dolt.
 //  3. cfg.Path, ONLY when it sits directly inside a .beads directory.
-//     Callers that set neither directory field (bd doctor's federation checks,
-//     the ADO config reader) leave this as the only signal, and it is a sound
-//     one whenever the data lives in the project.
+//     Callers that set neither directory field leave this as the only signal,
+//     and it is a sound one whenever the data lives in the project.
 //
 // Deriving from Path unconditionally -- which this did -- is wrong for exactly
 // the layouts rung 3 excludes: DatabasePath returns a custom absolute
@@ -398,8 +420,8 @@ func openRetryBeadsDir(cfg *Config) string {
 	if cfg == nil {
 		return ""
 	}
-	if cfg.resolvedBeadsDir != "" {
-		return cfg.resolvedBeadsDir
+	if cfg.OpenRetryConfigDir != "" {
+		return cfg.OpenRetryConfigDir
 	}
 	if cfg.BeadsDir != "" {
 		return cfg.BeadsDir

@@ -45,6 +45,14 @@ func doltServerConfig(beadsDir, doltPath string) *dolt.Config {
 		cfg.ServerPassword = bcfg.GetDoltServerPasswordForPort(cfg.ServerPort)
 	}
 	dolt.ApplyCLIAutoStart(beadsDir, cfg)
+	// Which project's config.yaml governs dolt.open-retry-budget for this
+	// open. doltPath is not that answer: getDatabasePath returns a custom
+	// absolute dolt_data_dir verbatim, and in shared-server mode the data
+	// lives under ~/.beads/shared-server. Deliberately NOT cfg.BeadsDir,
+	// which these read-only diagnostic opens leave empty on purpose --
+	// setting it would also switch on project-identity verification and
+	// local-data-dir resolution, which is a different change.
+	dolt.ApplyOpenRetryConfigDir(beadsDir, cfg)
 	return cfg
 }
 
