@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -93,6 +94,9 @@ var YamlOnlyKeys = map[string]bool{
 	"dolt.pool-read-timeout":  true, // Pool per-I/O read deadline override (default 10s, bd-vz0y9)
 	"dolt.pool-write-timeout": true, // Pool per-I/O write deadline override (default 10s, bd-vz0y9)
 	"dolt.debug":              true, // Debug-mode dolt sql-server: --loglevel=debug + --prof cpu
+	// Bounded retry budget for the pre-dial probe when opening an EXTERNAL
+	// dolt sql-server (duration or bare seconds; absent/0 = off, GH#4379).
+	"dolt.open-retry-budget": true,
 
 	// Secrets: tokens and API keys must NOT be stored in the Dolt database
 	// because that data is pushed to remotes, triggering secret-scanning
@@ -894,6 +898,22 @@ func validateYamlConfigValue(key, value string) error {
 		lower := strings.ToLower(value)
 		if lower != "true" && lower != "false" {
 			return fmt.Errorf("dolt.debug must be \"true\" or \"false\", got %q", value)
+		}
+	case "dolt.open-retry-budget":
+		// Duration string ("30s", "2m") or bare seconds ("30"); "0" disables.
+		// Validated here because a value the reader cannot parse -- or a
+		// negative one -- is read as "off" and would otherwise silently do
+		// nothing while looking configured.
+		budget, err := time.ParseDuration(value)
+		if err != nil {
+			secs, numErr := strconv.Atoi(value)
+			if numErr != nil {
+				return fmt.Errorf("dolt.open-retry-budget must be a duration (e.g. \"30s\", \"2m\") or a number of seconds, got %q", value)
+			}
+			budget = time.Duration(secs) * time.Second
+		}
+		if budget < 0 {
+			return fmt.Errorf("dolt.open-retry-budget must not be negative, got %q", value)
 		}
 	case "dolt.mode":
 		lower := strings.ToLower(value)

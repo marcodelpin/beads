@@ -453,6 +453,19 @@ type Config struct {
 	// defaults would enable it. Diagnostic paths use this to stay read-only.
 	DisableAutoStart bool
 
+	// OpenRetryBudget bounds an optional retry loop around the fail-fast
+	// pre-dial probe in newServerMode (config key dolt.open-retry-budget).
+	// Zero -- the default -- keeps today's behaviour exactly: one dial
+	// attempt, and the dial error returned unwrapped.
+	//
+	// The budget applies to EXTERNAL server mode only: dolt_mode: server
+	// with a non-local dolt.host and no unix socket, i.e. a server whose
+	// lifecycle bd does not own and cannot repair by starting one. Embedded
+	// mode never reaches newServerMode, and the localhost-managed path
+	// already recovers through auto-start (EnsureRunningDetailed), so
+	// neither honors this budget -- see openRetryEnabled.
+	OpenRetryBudget time.Duration
+
 	// MaxOpenConns overrides the connection pool size (0 = default 10).
 	// Set to 1 for branch isolation in tests (DOLT_CHECKOUT is session-level).
 	MaxOpenConns int
@@ -603,9 +616,25 @@ func fsckTimeoutDuration() time.Duration {
 // brief network issues, server restarts).
 const serverRetryMaxElapsed = 30 * time.Second
 
-func newServerRetryBackoff() backoff.BackOff {
+// newServerRetryBackoff returns the shared server-retry schedule. The concrete
+// type is returned (rather than the backoff.BackOff interface) so callers that
+// need a different elapsed-time ceiling -- newOpenRetryBackoff -- can set one
+// without re-deriving the schedule.
+func newServerRetryBackoff() *backoff.ExponentialBackOff {
 	bo := backoff.NewExponentialBackOff()
 	bo.MaxElapsedTime = serverRetryMaxElapsed
+	return bo
+}
+
+// newOpenRetryBackoff returns the same schedule as newServerRetryBackoff with
+// the caller's budget as the elapsed-time ceiling. A non-positive budget is
+// not a caller error here -- openRetryEnabled already rejects it -- but is
+// mapped back to the default ceiling so no path can produce an unbounded loop.
+func newOpenRetryBackoff(budget time.Duration) *backoff.ExponentialBackOff {
+	bo := newServerRetryBackoff()
+	if budget > 0 {
+		bo.MaxElapsedTime = budget
+	}
 	return bo
 }
 
@@ -1723,6 +1752,94 @@ var ensureRunningDetailed = doltserver.EnsureRunningDetailed
 // dolt sql-server process.
 var stopRejectedAutoStartedServer = doltserver.Stop
 
+// serverDial opens newServerMode's pre-dial probe connection. Declared as a
+// var (matching dialProbe and ensureRunningDetailed above) so unit tests can
+// drive the open path -- including the open-retry budget -- without a live
+// dolt sql-server.
+var serverDial = net.DialTimeout
+
+// openRetryEnabled reports whether the config-gated open-retry budget
+// (dolt.open-retry-budget) applies to this open. All four conditions are
+// required, and each one names the mode it excludes:
+//
+//   - OpenRetryBudget > 0: the feature is opt-in. Unset, zero or unparseable
+//     leaves today's fail-fast behaviour untouched.
+//   - cfg.ServerMode: embedded opens are routed to internal/storage/embeddeddolt
+//     by the store factory and never reach newServerMode. Requiring the flag
+//     here makes the budget inert for embedded mode by construction rather
+//     than by routing.
+//   - cfg.ServerSocket == "": a unix socket is a local server the operator
+//     manages directly; the budget targets a network endpoint.
+//   - isExternalServerHost(cfg.ServerHost): the budget exists for a server bd
+//     does not own and cannot repair by starting one. This is also what keeps
+//     the budget off the localhost-managed auto-start path: that path's own
+//     precondition (serverOpenCanAutoStart) requires isLocalHost, and no host
+//     satisfies both isLocalHost and isExternalServerHost, so a config that
+//     enables the budget can never reach EnsureRunningDetailed.
+func openRetryEnabled(cfg *Config) bool {
+	return cfg != nil &&
+		cfg.OpenRetryBudget > 0 &&
+		cfg.ServerMode &&
+		cfg.ServerSocket == "" &&
+		isExternalServerHost(cfg.ServerHost)
+}
+
+// dialServerPreflight performs newServerMode's fail-fast connectivity check.
+//
+// With the budget off -- the default, and every mode openRetryEnabled
+// excludes -- this is exactly one serverDial call whose result, connection or
+// error, is returned untouched. That keeps the fail-fast error text byte for
+// byte what it is today.
+//
+// With the budget on, a RETRYABLE dial failure is retried on the shared
+// server backoff (newServerRetryBackoff's schedule, bounded by the budget)
+// until the server answers or the budget is spent. A non-retryable failure
+// returns immediately and unwrapped: the budget buys time for a restarting or
+// briefly unreachable server, not for a misconfigured one. When the budget is
+// spent the last error is wrapped with the attempt count and the budget, so an
+// operator can tell an exhausted 30s retry from a 0.04s fail-fast.
+func dialServerPreflight(ctx context.Context, cfg *Config, network, addr string, timeout time.Duration) (net.Conn, error) {
+	conn, err := serverDial(network, addr, timeout)
+	if err == nil || !openRetryEnabled(cfg) || !isRetryableError(err) {
+		return conn, err
+	}
+
+	budget := cfg.OpenRetryBudget
+	debug.Logf("dolt: %s %s unreachable (%v); retrying open within dolt.open-retry-budget=%s\n",
+		network, addr, err, budget)
+
+	attempts := 1
+	lastErr := err
+	bo := backoff.WithContext(newOpenRetryBackoff(budget), ctx)
+	retryErr := backoff.Retry(func() error {
+		attempts++
+		conn, lastErr = serverDial(network, addr, timeout)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryableError(lastErr) {
+			return backoff.Permanent(lastErr)
+		}
+		debug.Logf("dolt: open attempt %d for %s %s failed: %v\n", attempts, network, addr, lastErr)
+		return lastErr
+	}, bo)
+	if retryErr == nil {
+		debug.Logf("dolt: %s %s reachable after %d open attempts\n", network, addr, attempts)
+		return conn, nil
+	}
+	// backoff.Retry unwraps a Permanent error, so classify the last dial
+	// error rather than the returned one: a non-retryable failure ended the
+	// budget early and must surface exactly as it would have without it.
+	if !isRetryableError(lastErr) {
+		return nil, lastErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("%w (open retry cancelled after %d attempts: %v)", lastErr, attempts, ctxErr)
+	}
+	return nil, fmt.Errorf("%w (still unreachable after %d attempts within dolt.open-retry-budget=%s)",
+		lastErr, attempts, budget)
+}
+
 // newServerMode creates a DoltStore connected to a running dolt sql-server.
 // This path is pure Go and does not require CGO.
 func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
@@ -1757,10 +1874,10 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	var dialErr error
 	if cfg.ServerSocket != "" {
 		addr = cfg.ServerSocket
-		conn, dialErr = net.DialTimeout("unix", cfg.ServerSocket, 500*time.Millisecond)
+		conn, dialErr = dialServerPreflight(ctx, cfg, "unix", cfg.ServerSocket, 500*time.Millisecond)
 	} else {
 		addr = net.JoinHostPort(cfg.ServerHost, fmt.Sprintf("%d", cfg.ServerPort))
-		conn, dialErr = net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		conn, dialErr = dialServerPreflight(ctx, cfg, "tcp", addr, 500*time.Millisecond)
 	}
 	if dialErr != nil {
 		// Auto-start: if enabled and connecting locally via TCP, start a server.
@@ -1865,8 +1982,11 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 				addr = net.JoinHostPort(cfg.ServerHost, fmt.Sprintf("%d", cfg.ServerPort))
 				breaker = maybeNewCircuitBreaker(cfg.ServerHost, cfg.ServerPort, cfg.Database)
 			}
-			// Retry connection with longer timeout (server just started)
-			conn, dialErr = net.DialTimeout("tcp", addr, 2*time.Second)
+			// Retry connection with longer timeout (server just started).
+			// Deliberately a bare serverDial, not dialServerPreflight: this is
+			// the localhost-managed path, which recovers by starting a server
+			// rather than by waiting, and openRetryEnabled excludes it anyway.
+			conn, dialErr = serverDial("tcp", addr, 2*time.Second)
 			if dialErr != nil {
 				// Release auto-start ref on connection failure
 				if autoStartedDir != "" {

@@ -12,6 +12,15 @@ import (
 	"github.com/steveyegge/beads/internal/doltserver"
 )
 
+// doltOpenRetryBudgetKey is the config.yaml key holding the open-retry
+// budget: how long a failing pre-dial probe against an EXTERNAL dolt
+// sql-server may keep retrying before the open fails (GH#4379).
+//
+// Grammar (parseTimeout): a Go duration string ("30s", "2m", "1m30s") or a
+// bare number read as seconds ("30"). Absent, empty, "0" or unparseable all
+// mean OFF -- one dial attempt, today's fail-fast error.
+const doltOpenRetryBudgetKey = "dolt.open-retry-budget"
+
 // ServerMode is re-exported from doltserver for convenience.
 type ServerMode = doltserver.ServerMode
 
@@ -345,6 +354,19 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 	}
 	if cfg.PoolWriteTimeout == 0 {
 		cfg.PoolWriteTimeout = parseTimeout(config.GetString("dolt.pool-write-timeout"), 0)
+	}
+
+	// Open-retry budget: caller override > project config.yaml > global
+	// config.yaml > 0 (off). Zero keeps the fail-fast pre-dial probe exactly
+	// as it is; a positive budget lets an EXTERNAL server's open ride out a
+	// restart instead of failing in 40ms (GH#4379). See openRetryEnabled for
+	// which modes honor it -- embedded and localhost-managed opens do not.
+	if cfg.OpenRetryBudget == 0 {
+		raw := config.GetString(doltOpenRetryBudgetKey)
+		if raw == "" {
+			raw = config.GetStringFromDir(beadsDir, doltOpenRetryBudgetKey)
+		}
+		cfg.OpenRetryBudget = parseTimeout(raw, 0)
 	}
 
 	return nil
