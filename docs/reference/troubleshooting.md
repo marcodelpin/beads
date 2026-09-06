@@ -299,10 +299,21 @@ Accepts a duration (`30s`, `2m`, `1m30s`) or a bare number of seconds (`30`);
 retried (connection refused, i/o timeout, connection reset) — a DNS or
 configuration error still fails immediately.
 
-The budget is a **deadline over the whole probe**, measured from before the
-first connection attempt: `30s` bounds how long `bd` waits, not just how long
-it sleeps between attempts. One consequence is worth knowing: a budget smaller
-than the 500 ms probe timeout also shortens the probe itself.
+**What the budget bounds.** It bounds the **retries**, not the first probe.
+The open's first connectivity probe is the fail-fast probe, unchanged: it keeps
+its own 500 ms timeout and is never shortened by this setting. Every retry
+after it is capped by what is left of the budget, and no retry starts once the
+budget is spent — so `30s` bounds how long `bd` waits in total, not just how
+long it sleeps between attempts.
+
+Two consequences worth knowing:
+
+- the worst case is the budget plus the one probe timeout the open would have
+  cost anyway, because the clock starts before the first probe;
+- a budget too small to buy a retry (`1ns`, or a value already spent by the
+  time the first probe returns) degrades to exactly the fail-fast open: one
+  probe, no retries. No value you can set here makes `bd` less patient than the
+  default.
 
 **Which opens honour it.** The budget is for a server whose lifecycle bd does
 not own, where waiting is the only remedy. That includes an externally managed
@@ -320,8 +331,23 @@ server on `127.0.0.1` — one pinned with `dolt_server_port` in
 **Where the value is read.** Highest priority first:
 
 1. the `.beads/config.yaml` of the project being opened — an explicit `0` here
-   disables the budget even when a wider default sets one;
-2. the merged project + user configuration.
+   disables the budget even when a wider default sets one. Both YAML spellings
+   are honoured, the nested one and the flat dotted one:
+
+   ```yaml
+   # nested
+   dolt:
+     open-retry-budget: 0
+   ```
+
+   ```yaml
+   # flat — equally valid, and equally disabling
+   dolt.open-retry-budget: 0
+   ```
+
+2. the merged project + user configuration. A project that does not mention the
+   key at all inherits this, so a user-global `dolt.open-retry-budget` stays a
+   default for every workspace that has not overridden it.
 
 The project directory is consulted first on purpose: a long-lived process that
 opens several workspaces must not apply the first workspace's budget to the

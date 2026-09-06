@@ -906,6 +906,15 @@ func validateYamlConfigValue(key, value string) error {
 		// Validated here because a value the reader cannot parse -- or a
 		// negative one -- is read as "off" and would otherwise silently do
 		// nothing while looking configured.
+		//
+		// The value bounds the RETRIES that follow the open's first
+		// connectivity probe; the first probe itself keeps its own timeout
+		// and is never shortened by this budget. A value too small to buy a
+		// retry therefore degrades to exactly today's fail-fast open -- one
+		// probe, no retries -- so no setting here can make bd less patient
+		// than the default. An explicit "0" in the project being opened
+		// disables the budget even when a wider default sets one; a project
+		// that does not mention the key inherits that wider default.
 		budget, err := time.ParseDuration(value)
 		if err != nil {
 			secs, numErr := strconv.Atoi(value)

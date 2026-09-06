@@ -336,17 +336,21 @@ func TestOpenRetryBudgetOn_ExhaustsBudget(t *testing.T) {
 	}
 }
 
-// The deadline covers the DIALS, not only the sleeps between them. With an
-// endpoint that swallows every connection until its timeout, a budget smaller
-// than the probe timeout must still be respected: the loop may not spend a
-// full probe timeout per attempt on top of the budget.
-func TestOpenRetryBudgetOn_DeadlineCapsEachDial(t *testing.T) {
+// The deadline rule, stated once and asserted here: the budget bounds the
+// RETRIES. The first probe keeps the caller's full timeout; every dial after
+// it is capped by what is left of the budget.
+//
+// A probe timeout LARGER than the whole budget makes both halves observable
+// without depending on the jittered backoff: the first dial must be handed the
+// full timeout, and every retry must be handed strictly less.
+func TestOpenRetryBudgetOn_FirstProbeFullThenRetriesCapped(t *testing.T) {
 	const (
-		budget       = 200 * time.Millisecond
-		probeTimeout = 500 * time.Millisecond
+		budget       = 900 * time.Millisecond
+		probeTimeout = 2 * time.Second
 	)
-	// Every attempt blocks for as long as it is allowed to.
-	rec := stubServerDial(t, -1, errConnRefused, time.Hour)
+	// Instant failures: the elapsed time below is spent in backoff sleeps
+	// alone, so it measures the budget and nothing else.
+	rec := stubServerDial(t, -1, errConnRefused, 0)
 	start := time.Now()
 	_, err := dialServerPreflight(context.Background(), unmanagedCfg(budget), "tcp", externalAddr, probeTimeout)
 	elapsed := time.Since(start)
@@ -354,20 +358,64 @@ func TestOpenRetryBudgetOn_DeadlineCapsEachDial(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected failure once the budget is spent")
 	}
-	if rec.attempts == 0 {
-		t.Fatal("expected at least one dial attempt")
+	if rec.attempts < 2 {
+		t.Fatalf("expected the budget to buy at least one retry, got %d attempts", rec.attempts)
 	}
-	for i, to := range rec.timeouts {
-		if to > probeTimeout {
-			t.Errorf("attempt %d got timeout %s, above the caller's %s", i+1, to, probeTimeout)
-		}
+	// Half one: the first probe is the fail-fast probe, untouched.
+	if rec.timeouts[0] != probeTimeout {
+		t.Errorf("expected the first probe to keep the caller's full %s timeout, got %s", probeTimeout, rec.timeouts[0])
+	}
+	// Half two: every RETRY is bounded by what is left of the budget, so none
+	// of them may be handed the full probe timeout.
+	for i, to := range rec.timeouts[1:] {
 		if to <= 0 {
-			t.Errorf("attempt %d got a non-positive timeout %s, which means NO timeout at all", i+1, to)
+			t.Errorf("retry %d got a non-positive timeout %s, which means NO timeout at all", i+1, to)
+		}
+		if to >= probeTimeout {
+			t.Errorf("retry %d got timeout %s, not capped by the remaining budget (%s)", i+1, to, budget)
+		}
+		if to > budget {
+			t.Errorf("retry %d got timeout %s, above the whole budget %s", i+1, to, budget)
 		}
 	}
-	// Without a deadline over the dials this costs at least 2 x 500ms.
 	if ceiling := budget + 250*time.Millisecond; elapsed > ceiling {
-		t.Errorf("expected the probe to end within %s (budget %s), took %s", ceiling, budget, elapsed)
+		t.Errorf("expected the retries to end within %s (budget %s), took %s", ceiling, budget, elapsed)
+	}
+}
+
+// The other end of the same rule: a budget too small to buy anything degrades
+// to EXACTLY the fail-fast open -- one probe with its full timeout, zero
+// retries -- rather than to an open that never contacts the server. An enabled
+// budget must never be less patient than the default it replaces.
+func TestOpenRetryBudgetOn_TinyBudgetIsOneFullProbeZeroRetries(t *testing.T) {
+	const probeTimeout = 500 * time.Millisecond
+	// The endpoint swallows the connection until the timeout it was given, so
+	// the elapsed time below reports how long the first probe was allowed.
+	rec := stubServerDial(t, -1, errConnRefused, time.Hour)
+	start := time.Now()
+	_, err := dialServerPreflight(context.Background(), unmanagedCfg(time.Nanosecond), "tcp", externalAddr, probeTimeout)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the probe to fail")
+	}
+	if !errors.Is(err, errConnRefused) {
+		t.Errorf("expected the dial error to remain in the chain, got %v", err)
+	}
+	// Exactly one probe: a whole-probe deadline would have made this ZERO.
+	if rec.attempts != 1 {
+		t.Fatalf("expected exactly 1 probe and no retry, got %d attempts", rec.attempts)
+	}
+	if rec.timeouts[0] != probeTimeout {
+		t.Errorf("expected the probe to keep its full %s timeout, got %s", probeTimeout, rec.timeouts[0])
+	}
+	// ...and it really got that long: a capped first dial would return in
+	// nanoseconds against this endpoint.
+	if elapsed < probeTimeout/2 {
+		t.Errorf("expected the probe to be allowed its full %s, it returned after %s", probeTimeout, elapsed)
+	}
+	if ceiling := probeTimeout + 250*time.Millisecond; elapsed > ceiling {
+		t.Errorf("expected the probe to end within %s, took %s", ceiling, elapsed)
 	}
 }
 

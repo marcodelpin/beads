@@ -1860,13 +1860,27 @@ func openRetryCancelled(ctxErr, lastErr error, attempts int, budget time.Duratio
 // immediately and unwrapped: the budget buys time for a restarting or briefly
 // unreachable server, not for a misconfigured one.
 //
-// The budget is a DEADLINE over the whole probe, and the clock starts before
-// the first dial. Each dial is capped by what is left of it, so an operator
-// who configures 30s waits at most about 30s, not 30s plus a dial timeout per
-// attempt. One consequence is worth stating: a budget SMALLER than the 500ms
-// probe timeout also shortens the probe. The first dial is exempt -- it keeps
-// the full timeout once the budget is spent -- so an enabled budget is never
-// less patient than the fail-fast open it replaces.
+// DEADLINE SEMANTICS, stated once because the code, the help text for
+// dolt.open-retry-budget and docs/reference/configuration.md must agree:
+//
+//	The budget bounds the RETRIES. The first probe is the fail-fast probe,
+//	unchanged: it keeps the caller's full timeout and is never shortened by
+//	the budget. Every dial AFTER it is capped by what is left of the budget,
+//	and no retry starts once the budget is spent.
+//
+// The clock starts before the first probe, so an operator who configures 30s
+// waits at most about 30s plus the one probe timeout the open would have cost
+// anyway -- not 30s plus a fresh dial timeout per attempt. A budget already
+// spent by the time the first probe returns simply means no retry.
+//
+// The alternative rule -- a deadline over the WHOLE probe, first dial included
+// -- was rejected for two reasons. It contradicts the setting's name: a retry
+// budget is a budget for retrying. And it makes small values a footgun:
+// "1ns" would mean ZERO dials, an open that never contacts the server at all,
+// which is less patient than the fail-fast open the budget is supposed to make
+// MORE patient. Under the rule above, "1ns" degrades to exactly the fail-fast
+// open: one probe, no retries. An enabled budget can therefore never make bd
+// try less than the default does, whatever value it is given.
 func dialServerPreflight(ctx context.Context, cfg *Config, network, addr string, timeout time.Duration) (net.Conn, error) {
 	if !openRetryEnabled(cfg) {
 		return serverDialLegacy(network, addr, timeout)
@@ -1883,13 +1897,17 @@ func dialServerPreflight(ctx context.Context, cfg *Config, network, addr string,
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, openRetryCancelled(ctxErr, lastErr, attempts, budget)
 		}
-		remaining := time.Until(deadline)
-		if attempts > 0 && remaining <= 0 {
-			break
-		}
+		// The first probe is the fail-fast probe: full timeout, and it runs
+		// whatever the budget is. Only the RETRIES are bounded by it.
 		dialTimeout := timeout
-		if remaining > 0 && remaining < dialTimeout {
-			dialTimeout = remaining
+		if attempts > 0 {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			if remaining < dialTimeout {
+				dialTimeout = remaining
+			}
 		}
 
 		attempts++
