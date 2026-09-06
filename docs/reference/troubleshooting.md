@@ -276,13 +276,13 @@ dolt sql-server --host 127.0.0.1 --port 3307 --data-dir /path/to/your/dolt/data
 If you want auto-start behavior, remove `dolt_server_port` from
 `.beads/metadata.json`.
 
-### External server restarts make commands fail instantly
+### Server restarts make commands fail instantly
 
-**Symptom (external server mode):** while the external Dolt server restarts,
-`bd` commands fail in a few tens of milliseconds with "Dolt server unreachable
-at `host:port`", even though the server is back moments later. Commands that
-were already running ride the restart out; a command that has to *open* the
-store does not.
+**Symptom (server mode):** while a Dolt server that bd does not manage
+restarts, `bd` commands fail in a few tens of milliseconds with "Dolt server
+unreachable at `host:port`", even though the server is back moments later.
+Commands that were already running ride the restart out; a command that has to
+*open* the store does not.
 
 **Cause:** the open path probes the endpoint once and fails fast by design, so
 a genuinely misconfigured endpoint reports immediately instead of hanging.
@@ -299,10 +299,33 @@ Accepts a duration (`30s`, `2m`, `1m30s`) or a bare number of seconds (`30`);
 retried (connection refused, i/o timeout, connection reset) — a DNS or
 configuration error still fails immediately.
 
-The budget applies to external servers only. Embedded mode never opens a
-connection, socket mode targets a server you manage directly, and a bd-managed
-localhost server recovers by auto-starting rather than by waiting, so none of
-them honor the setting.
+The budget is a **deadline over the whole probe**, measured from before the
+first connection attempt: `30s` bounds how long `bd` waits, not just how long
+it sleeps between attempts. One consequence is worth knowing: a budget smaller
+than the 500 ms probe timeout also shortens the probe itself.
+
+**Which opens honour it.** The budget is for a server whose lifecycle bd does
+not own, where waiting is the only remedy. That includes an externally managed
+server on `127.0.0.1` — one pinned with `dolt_server_port` in
+`.beads/metadata.json`, which suppresses auto-start. It excludes:
+
+| Mode | Why | Its own remedy |
+|------|-----|----------------|
+| Embedded | never opens a connection | — |
+| Unix socket | a local server you manage directly | start it yourself |
+| Proxied server | owns its own connection lifecycle | — |
+| bd-managed localhost | recovers by starting a server | auto-start (`dolt.auto-start`) |
+| `bd --readonly` (strict) and the diagnostic opens | suppress every implicit recovery, and waiting is one | — |
+
+**Where the value is read.** Highest priority first:
+
+1. the `.beads/config.yaml` of the project being opened — an explicit `0` here
+   disables the budget even when a wider default sets one;
+2. the merged project + user configuration.
+
+The project directory is consulted first on purpose: a long-lived process that
+opens several workspaces must not apply the first workspace's budget to the
+rest.
 
 ### Port conflicts with multiple projects
 

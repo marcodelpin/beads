@@ -94,8 +94,10 @@ var YamlOnlyKeys = map[string]bool{
 	"dolt.pool-read-timeout":  true, // Pool per-I/O read deadline override (default 10s, bd-vz0y9)
 	"dolt.pool-write-timeout": true, // Pool per-I/O write deadline override (default 10s, bd-vz0y9)
 	"dolt.debug":              true, // Debug-mode dolt sql-server: --loglevel=debug + --prof cpu
-	// Bounded retry budget for the pre-dial probe when opening an EXTERNAL
-	// dolt sql-server (duration or bare seconds; absent/0 = off, GH#4379).
+	// Deadline for retrying the pre-dial probe when opening a dolt
+	// sql-server bd does not manage (duration or bare seconds; absent/0 =
+	// off, GH#4379). Read from the opened project's config.yaml first, so a
+	// workspace can opt out of a wider default with an explicit 0.
 	"dolt.open-retry-budget": true,
 
 	// Secrets: tokens and API keys must NOT be stored in the Dolt database
