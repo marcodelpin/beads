@@ -317,8 +317,10 @@ Two consequences worth knowing:
 
 **Which opens honour it.** The budget is for a server whose lifecycle bd does
 not own, where waiting is the only remedy. That includes an externally managed
-server on `127.0.0.1` — one pinned with `dolt_server_port` in
-`.beads/metadata.json`, which suppresses auto-start. It excludes:
+server on `127.0.0.1`: a workspace whose `.beads/metadata.json` selects the
+server store and pins `dolt_server_port`, which suppresses auto-start. A port
+on its own is not enough — a `dolt_server_port` with no `dolt_mode` still opens
+the embedded store, and the budget follows the store. It excludes:
 
 | Mode | Why | Its own remedy |
 |------|-----|----------------|

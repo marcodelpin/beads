@@ -2275,6 +2275,48 @@ func TestNewFromConfig_OpenRetryHonoursTheOpenedWorkspace(t *testing.T) {
 		}
 	})
 
+	t.Run("a workspace pinned only by a server port is embedded, and gets no budget", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withUserGlobalBudget(t, "30s")
+		beadsDir := newBeadsDir(t, "30s")
+		// The boundary the two resolvers disagree about in the OTHER
+		// direction: an explicit dolt_server_port with no dolt_mode makes the
+		// LIFECYCLE resolver report External (nobody here starts that server,
+		// so auto-start is suppressed), while the STORE FACTORY still opens
+		// the workspace with the embedded backend, because a port is not a
+		// mode. The budget follows the store, deliberately: a workspace whose
+		// issues live in embeddeddolt has no server open for waiting to
+		// improve, and declining to wait is what this open did before the
+		// budget existed.
+		meta := &configfile.Config{
+			Backend:        configfile.BackendDolt,
+			DoltServerPort: externalTestPort,
+			DoltDatabase:   "openretry_probe",
+		}
+		if err := meta.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata.json: %v", err)
+		}
+		if got := doltserver.ResolveServerMode(beadsDir); got != doltserver.ServerModeExternal {
+			t.Fatalf("precondition: the lifecycle resolver must report External here, got %v", got)
+		}
+		mode, err := configfile.ResolveStorageMode(beadsDir)
+		if err != nil {
+			t.Fatalf("resolve storage mode: %v", err)
+		}
+		if mode != configfile.StorageModeEmbedded {
+			t.Fatalf("precondition: the store factory's predicate must report embedded here, got %v", mode)
+		}
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		cfg := &Config{}
+		if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, cfg); err == nil {
+			t.Fatal("expected the open to fail")
+		}
+		if rec.attempts != 1 {
+			t.Errorf("a port-only workspace opens embedded and must not wait, got %d dial attempts", rec.attempts)
+		}
+	})
+
 	t.Run("an embedded workspace never waits", func(t *testing.T) {
 		isolateOpenEnv(t)
 		withUserGlobalBudget(t, "30s")
