@@ -352,6 +352,13 @@ server on `127.0.0.1` — one pinned with `dolt_server_port` in
    `dolt.open-retry-budget` stays a default for every workspace that has not
    overridden it.
 
+"The project being opened" means the project's `.beads` directory, not
+wherever its Dolt data happens to live. That distinction matters in the two
+layouts where the two are different places: shared-server mode
+(`dolt.shared-server`), where every project's data sits under
+`~/.beads/shared-server/dolt`, and a custom absolute `dolt_data_dir`. In both,
+the budget still comes from the project's own `.beads/config.yaml`.
+
 What is deliberately *not* consulted is the merged process-wide configuration.
 That view carries the project settings of whichever workspace `bd` resolved
 first, so a long-lived process that opened one workspace with a `30s` budget
