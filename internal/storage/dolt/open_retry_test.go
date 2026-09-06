@@ -2,6 +2,7 @@ package dolt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1032,6 +1033,70 @@ func TestNew_ManagedLocalhostOpenThroughEnsureRunningMakesNoRetryDials(t *testin
 	// A single backoff sleep would be >=250ms.
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("expected no backoff sleep in a managed open, took %s", elapsed)
+	}
+}
+
+// The circuit breaker counts OPENS, not dials. An exhausted budget is one
+// failed open, so it must record exactly one failure however many attempts it
+// made -- otherwise a single 30s open trips a breaker whose threshold is five
+// failures, and the budget an operator configured to ride out a restart would
+// instead fail-fast every command after it.
+//
+// The other production-path tests here run with BEADS_TEST_MODE=1, which
+// disables the breaker outright, so this invariant had no coverage at all.
+// This one turns the breaker ON and reads the count back off its own state
+// file.
+func TestNew_ExhaustedBudgetRecordsExactlyOneCircuitFailure(t *testing.T) {
+	circuitDir := t.TempDir()
+	// Redirects both the current and the legacy breaker state paths, so this
+	// test never reads or writes the machine's real breaker files.
+	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
+	// Deliberately NOT BEADS_TEST_MODE=1: that is what disables the breaker.
+	t.Setenv("BEADS_TEST_MODE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+
+	beadsDir := newBeadsDir(t, "1200ms")
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	_, err := New(context.Background(), productionCfg(beadsDir))
+	if err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+	// Positive control: the budget really was live, so the attempt count
+	// below is a retry count and not a fail-fast open.
+	if rec.attempts < 2 {
+		t.Fatalf("precondition: expected the budget to retry, got %d dial attempts", rec.attempts)
+	}
+
+	entries, globErr := filepath.Glob(filepath.Join(circuitDir, "*.json"))
+	if globErr != nil {
+		t.Fatalf("glob circuit state: %v", globErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 circuit-breaker state file, got %d: %v", len(entries), entries)
+	}
+	raw, readErr := os.ReadFile(entries[0])
+	if readErr != nil {
+		t.Fatalf("read circuit state: %v", readErr)
+	}
+	var state circuitState
+	if jsonErr := json.Unmarshal(raw, &state); jsonErr != nil {
+		t.Fatalf("parse circuit state %s: %v", raw, jsonErr)
+	}
+	// The invariant. Recording inside the retry loop instead would put
+	// rec.attempts here -- and at five, trip the breaker.
+	if state.Failures != 1 {
+		t.Errorf("expected exactly 1 recorded circuit failure for one exhausted open, got %d (after %d dial attempts)",
+			state.Failures, rec.attempts)
+	}
+	if state.State != circuitClosed {
+		t.Errorf("one failed open must not trip the breaker, got state %q", state.State)
 	}
 }
 
