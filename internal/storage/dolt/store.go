@@ -1825,8 +1825,23 @@ var serverDialLegacy = func(network, addr string, timeout time.Duration) (net.Co
 // it is exactly what net.DialTimeout does (net.DialTimeout is Dialer.Timeout
 // plus a background context).
 var serverDial = func(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
-	d := net.Dialer{Timeout: timeout}
-	return d.DialContext(ctx, network, addr)
+	return newServerDialer(timeout).DialContext(ctx, network, addr)
+}
+
+// newServerDialer builds the dialer serverDial uses. It exists as its own
+// function so that "the per-attempt timeout reaches the dialer" is checkable
+// without a network: a test can read the field back for two different
+// timeouts, which is the only form of this check that cannot be satisfied by
+// the environment. Measuring it against an address instead makes the assertion
+// depend on whether the network blackholes or rejects that address, and a
+// rejecting network cannot exhibit a timeout at all.
+//
+// The timeout is per ATTEMPT, and the retry loop is what bounds the whole
+// open: dropping it here would leave a single attempt in SYN retransmit for
+// the OS connect timeout -- minutes -- and a retry would get less than the
+// budget allows, or none at all.
+var newServerDialer = func(timeout time.Duration) *net.Dialer {
+	return &net.Dialer{Timeout: timeout}
 }
 
 // openRetryEnabled reports whether the config-gated open-retry budget

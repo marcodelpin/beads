@@ -2019,6 +2019,61 @@ const blackholeAddr = "192.0.2.1:9"
 //
 // The context here is deliberately uncancelled and deadline-free: the timeout
 // is the only thing that can end this dial.
+// The deterministic half of "the retry loop's dialer honours its per-attempt
+// timeout". It reads the field back from the production dialer builder for two
+// different timeouts, so it fails the same way on every machine: removing
+// `Timeout:` leaves a zero value, and hardcoding any constant fails the arm
+// whose timeout is not that constant.
+//
+// Two values, not one: a single arm passes on a dialer that ignores its
+// argument and always returns the timeout that arm happens to ask for.
+func TestOpenRetryProductionDialerCarriesItsTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{300 * time.Millisecond, 7 * time.Second} {
+		d := newServerDialer(timeout)
+		if d == nil {
+			t.Fatalf("newServerDialer(%s) returned nil", timeout)
+		}
+		if d.Timeout != timeout {
+			t.Errorf("the production dialer must carry the per-attempt timeout it was given: want %s, got %s", timeout, d.Timeout)
+		}
+	}
+}
+
+// And the wiring: serverDial -- the retry loop's own dial -- must be built by
+// that function rather than by a second, unchecked net.Dialer literal. A dial
+// against a closed local port returns in microseconds, so this arm needs no
+// network behaviour at all; what it proves is that the timeout the caller
+// passes reaches the dialer serverDial actually uses.
+func TestOpenRetryServerDialUsesTheProductionDialer(t *testing.T) {
+	var gotTimeout time.Duration
+	seen := false
+	original := newServerDialer
+	newServerDialer = func(timeout time.Duration) *net.Dialer {
+		gotTimeout = timeout
+		seen = true
+		return original(timeout)
+	}
+	t.Cleanup(func() { newServerDialer = original })
+
+	const timeout = 1234 * time.Millisecond
+	// A closed port on the loopback interface: refused immediately, which is
+	// all this arm needs. It asserts on what the dialer was BUILT with, not on
+	// how long the dial took.
+	conn, err := serverDial(context.Background(), "tcp", "127.0.0.1:1", timeout)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Skip("127.0.0.1:1 accepted a connection here, so this arm cannot observe the dial it needs")
+	}
+	if !seen {
+		t.Fatal("serverDial did not build its dialer through newServerDialer")
+	}
+	if gotTimeout != timeout {
+		t.Errorf("serverDial passed %s to the dialer builder, want %s", gotTimeout, timeout)
+	}
+}
+
 func TestOpenRetryProductionDialHonoursItsTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	// The dial runs off the test goroutine and is WAITED ON with a bound. A
@@ -2061,17 +2116,25 @@ func TestOpenRetryProductionDialHonoursItsTimeout(t *testing.T) {
 	// too quickly to tell".
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
-		t.Skipf("this network does not blackhole %s (err after %s: %v), so a dial timeout is not observable here",
+		t.Skipf("this network does not blackhole %s (err after %s: %v), so a dial timeout is not observable here -- "+
+			"TestOpenRetryProductionDialerCarriesItsTimeout is the network-independent guard",
 			blackholeAddr, elapsed.Round(time.Millisecond), err)
 	}
 
-	// The upper bound is the select above -- a dialer that ignored its timeout
-	// would still be in SYN retransmit, since the OS connect timeout is on the
-	// order of minutes. What is left to check is that it did not return EARLY
-	// either, which would mean the timeout is being shortened somewhere and a
-	// retry gets less than the budget allows.
+	// Both bounds are tied to the SUPPLIED timeout, not to a constant this
+	// test picked. Too early means the timeout is being shortened somewhere
+	// and a retry gets less than the budget allows; too late means the dialer
+	// is honouring some other duration, which is what a hardcoded timeout
+	// looks like from out here. The slack absorbs scheduling jitter on a
+	// loaded machine; the exact-value check is
+	// TestOpenRetryProductionDialerCarriesItsTimeout, which needs no network.
+	const slack = time.Second
 	if elapsed < timeout {
 		t.Errorf("the dial returned after %s, before its own %s timeout", elapsed.Round(time.Millisecond), timeout)
+	}
+	if elapsed > timeout+slack {
+		t.Errorf("the dial returned after %s against a %s timeout: it is honouring some other duration",
+			elapsed.Round(time.Millisecond), timeout)
 	}
 }
 
