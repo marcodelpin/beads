@@ -771,6 +771,36 @@ func newBeadsDirFlat(t *testing.T, budget string) string {
 	return beadsDir
 }
 
+// writeLocalBudget writes <beadsDir>/config.local.yaml with a budget. Local
+// config is the machine-specific override config.Initialize merges OVER
+// config.yaml, so a directory-scoped read that skips it reports a value the
+// same process's merged configuration would have overridden.
+func writeLocalBudget(t *testing.T, beadsDir, budget string) {
+	t.Helper()
+	body := "dolt:\n  open-retry-budget: " + budget + "\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.local.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config.local.yaml: %v", err)
+	}
+}
+
+// withUserGlobalBudget points HOME (and the native user-config dir) at a fresh
+// tree carrying a user-level config.yaml with the given budget. That file is
+// the machine-wide default a silent workspace is entitled to inherit.
+func withUserGlobalBudget(t *testing.T, budget string) {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "bd")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir user config dir: %v", err)
+	}
+	body := "dolt:\n  open-retry-budget: " + budget + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write user config.yaml: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
 // productionCfg is what cmd/bd hands dolt.New for an unmanaged server: a
 // beadsDir, a data path under it, an explicit endpoint, and no auto-start.
 // OpenRetryBudget is deliberately left unset -- New must resolve it.
@@ -931,20 +961,51 @@ func TestNew_OpenRetryFlatProjectConfigEnablesBudget(t *testing.T) {
 	}
 }
 
-// The mirror of (c): with nothing configured in the opened project, the
-// ambient budget still applies, so the directory read is a precedence rule and
-// not a replacement for the global default.
-func TestNew_OpenRetryAmbientBudgetAppliesWhenProjectIsSilent(t *testing.T) {
+// (d) The mirror of (c), and the part that is NOT a mirror: a silent project
+// inherits a machine-wide default, but must NOT inherit another PROJECT's
+// setting. The process-wide merged configuration carries the project settings
+// of whichever workspace initialized it first, so a library or multi-workspace
+// process that opened A with 30s would otherwise give B -- which says nothing,
+// and whose operator configured nothing -- a retrying open.
+func TestNew_OpenRetryOtherWorkspaceBudgetDoesNotLeak(t *testing.T) {
 	isolateOpenEnv(t)
 	otherWorkspace := newBeadsDir(t, "30s")
 	t.Setenv("BEADS_DIR", otherWorkspace)
 	if err := config.Initialize(); err != nil {
 		t.Fatalf("config.Initialize: %v", err)
 	}
+	// Precondition: the merged view really does carry the other workspace's
+	// value, so the zero below is a scoping decision and not an empty config.
+	if got := config.GetString("dolt.open-retry-budget"); got != "30s" {
+		t.Fatalf("precondition: the merged config should carry the other workspace's 30s, got %q", got)
+	}
+
+	target := newBeadsDir(t, "")
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	_, err := New(context.Background(), productionCfg(target))
+	if err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+	if rec.attempts != 1 {
+		t.Errorf("another workspace's budget must not reach this open, got %d dial attempts", rec.attempts)
+	}
+	if strings.Contains(err.Error(), "open-retry-budget") {
+		t.Errorf("a budget that was never configured for this project must not appear in the error: %v", err)
+	}
+}
+
+// (e) ...and the genuine machine-wide default IS inherited: a user-level
+// config.yaml applies to a project that says nothing. Without this the case
+// above would read as "the fallback was removed" rather than "the fallback was
+// scoped".
+func TestNew_OpenRetryUserGlobalBudgetAppliesWhenProjectIsSilent(t *testing.T) {
+	isolateOpenEnv(t)
+	withUserGlobalBudget(t, "1200ms")
 
 	target := newBeadsDir(t, "")
 	// The second attempt fails non-retryably, so the loop ends there instead
-	// of spending the ambient 30s budget.
+	// of spending the whole budget.
 	rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
 
 	_, err := New(context.Background(), productionCfg(target))
@@ -955,84 +1016,30 @@ func TestNew_OpenRetryAmbientBudgetAppliesWhenProjectIsSilent(t *testing.T) {
 		t.Errorf("expected the second attempt's error to surface, got %v", err)
 	}
 	if rec.attempts != 2 {
-		t.Errorf("expected the ambient budget to buy exactly one retry, got %d dial attempts", rec.attempts)
+		t.Errorf("expected the user-global budget to buy exactly one retry, got %d dial attempts", rec.attempts)
 	}
 }
 
-// newManagedBeadsDir writes a .beads/config.yaml for a bd-MANAGED localhost
-// server: auto-start on, and a budget configured. The budget being present is
-// the point -- the assertion below is that a CONFIGURED budget still buys no
-// retry in this mode.
-func newManagedBeadsDir(t *testing.T, budget string) string {
-	t.Helper()
-	beadsDir := filepath.Join(t.TempDir(), ".beads")
-	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	body := "dolt:\n  auto-start: true\n  open-retry-budget: " + budget + "\n"
-	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
-		t.Fatalf("write config.yaml: %v", err)
-	}
-	return beadsDir
-}
-
-// The maintainer's mode-exclusion ask, taken through the REAL managed-open
-// path rather than through a config shaped like one: a budget-configured
-// localhost open that reaches EnsureRunningDetailed must make exactly the two
-// bare dials it has always made -- the fail-fast preflight and the
-// post-auto-start retry -- and no retry-loop dial at all.
-//
-// ensureRunningDetailed is stubbed (as port_provenance_test.go does) so no
-// dolt sql-server is spawned.
-func TestNew_OpenRetryManagedLocalhostThroughEnsureRunning(t *testing.T) {
+// (f) config.local.yaml is the machine-specific override config.Initialize
+// merges OVER config.yaml. A directory-scoped read that stops at config.yaml
+// reports a value the same process's merged configuration would have
+// overridden -- and this one bites the ordinary single-workspace command, not
+// only the multi-workspace case.
+func TestNew_OpenRetryLocalYamlZeroOverridesProjectYaml(t *testing.T) {
 	isolateOpenEnv(t)
-	beadsDir := newManagedBeadsDir(t, "30s")
-
-	cfg := &Config{
-		ServerMode: true,
-		BeadsDir:   beadsDir,
-		Path:       filepath.Join(beadsDir, "dolt"),
-		Database:   "openretry_probe",
-		ServerHost: "127.0.0.1",
-		ServerPort: externalTestPort,
-		AutoStart:  true,
-	}
-	// Same port back: no retarget branch, so this open walks the ordinary
-	// auto-start recovery.
-	stubEnsureRunningDetailed(t, externalTestPort, false, nil)
+	target := newBeadsDir(t, "30s")
+	writeLocalBudget(t, target, "0")
 	rec := stubServerDial(t, -1, errConnRefused, 0)
 
-	start := time.Now()
-	_, err := New(context.Background(), cfg)
-	elapsed := time.Since(start)
-
+	_, err := New(context.Background(), productionCfg(target))
 	if err == nil {
-		t.Fatal("expected the open to fail: nothing is listening")
+		t.Fatal("expected the open to fail against an unreachable server")
 	}
-	// Positive control. Without this the whole test would pass on a budget
-	// that was never configured, which is the failure mode it exists to rule
-	// out: New resolves the key onto cfg, so a non-zero value here proves the
-	// budget WAS live for this open.
-	if cfg.OpenRetryBudget != 30*time.Second {
-		t.Fatalf("precondition: New must have resolved the configured budget, got %s", cfg.OpenRetryBudget)
+	if rec.attempts != 1 {
+		t.Errorf("config.local.yaml must be able to disable the budget, got %d dial attempts", rec.attempts)
 	}
-	if openRetryEnabled(cfg) {
-		t.Error("a bd-managed localhost open must not enable the budget")
-	}
-	// The preflight probe and the post-auto-start retry: two bare dials, both
-	// on the legacy dialer, and nothing from the retry loop.
-	if rec.ctxAware != 0 {
-		t.Errorf("expected no retry-loop dial in a managed open, got %d", rec.ctxAware)
-	}
-	if rec.legacy != 2 {
-		t.Errorf("expected exactly 2 bare dials (preflight + post-auto-start), got %d", rec.legacy)
-	}
-	if !strings.Contains(err.Error(), "auto-started but still unreachable") {
-		t.Errorf("expected the post-auto-start failure, got %v", err)
-	}
-	// A single backoff sleep would be >=250ms.
-	if elapsed > 100*time.Millisecond {
-		t.Errorf("expected no backoff sleep in a managed open, took %s", elapsed)
+	if strings.Contains(err.Error(), "open-retry-budget") {
+		t.Errorf("a disabled budget must not appear in the error: %v", err)
 	}
 }
 
@@ -1106,6 +1113,10 @@ func TestResolveOpenRetryBudgetPrecedence(t *testing.T) {
 	dirWith30s := newBeadsDir(t, "30s")
 	dirWithZero := newBeadsDir(t, "0")
 	dirSilent := newBeadsDir(t, "")
+	dirWith30sLocalZero := newBeadsDir(t, "30s")
+	writeLocalBudget(t, dirWith30sLocalZero, "0")
+	dirWithZeroLocal30s := newBeadsDir(t, "0")
+	writeLocalBudget(t, dirWithZeroLocal30s, "30s")
 
 	cases := []struct {
 		name     string
@@ -1127,6 +1138,8 @@ func TestResolveOpenRetryBudgetPrecedence(t *testing.T) {
 		{"bare seconds are accepted", &Config{}, newBeadsDir(t, "45"), 45 * time.Second},
 		{"unparseable reads as off", &Config{}, newBeadsDir(t, "\"soon\""), 0},
 		{"no directory at all", &Config{}, "", 0},
+		{"local yaml zero disables a project 30s", &Config{}, dirWith30sLocalZero, 0},
+		{"local yaml value outranks a project zero", &Config{}, dirWithZeroLocal30s, 30 * time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

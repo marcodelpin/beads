@@ -330,9 +330,11 @@ server on `127.0.0.1` — one pinned with `dolt_server_port` in
 
 **Where the value is read.** Highest priority first:
 
-1. the `.beads/config.yaml` of the project being opened — an explicit `0` here
-   disables the budget even when a wider default sets one. Both YAML spellings
-   are honoured, the nested one and the flat dotted one:
+1. the `.beads/config.local.yaml` of the project being opened, then its
+   `.beads/config.yaml` — local first, because that is the order `bd` merges
+   them in everywhere else. An explicit `0` in either disables the budget even
+   when a wider default sets one. Both YAML spellings are honoured, the nested
+   one and the flat dotted one:
 
    ```yaml
    # nested
@@ -345,13 +347,17 @@ server on `127.0.0.1` — one pinned with `dolt_server_port` in
    dolt.open-retry-budget: 0
    ```
 
-2. the merged project + user configuration. A project that does not mention the
-   key at all inherits this, so a user-global `dolt.open-retry-budget` stays a
-   default for every workspace that has not overridden it.
+2. the **user-level** `config.yaml` (`~/.config/bd/config.yaml`). A project that
+   does not mention the key at all inherits this, so a user-global
+   `dolt.open-retry-budget` stays a default for every workspace that has not
+   overridden it.
 
-The project directory is consulted first on purpose: a long-lived process that
-opens several workspaces must not apply the first workspace's budget to the
-rest.
+What is deliberately *not* consulted is the merged process-wide configuration.
+That view carries the project settings of whichever workspace `bd` resolved
+first, so a long-lived process that opened one workspace with a `30s` budget
+would otherwise give a second workspace — which says nothing, and whose owner
+configured nothing — a retrying open. A per-project setting falls back on a
+machine-wide default, never on another project's.
 
 ### Port conflicts with multiple projects
 

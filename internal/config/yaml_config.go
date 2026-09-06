@@ -370,6 +370,41 @@ func WorkspaceYamlValue(beadsDir, key string) (string, bool) {
 	return readYamlValueAtPath(filepath.Join(beadsDir, "config.yaml"), key)
 }
 
+// WorkspaceLocalYamlValue is WorkspaceYamlValue for the machine-local override
+// file, <beadsDir>/config.local.yaml. Initialize merges that file OVER
+// config.yaml, so a caller reading one workspace's settings directly has to
+// consult it first or it will report a value the same process's merged
+// configuration would have overridden.
+func WorkspaceLocalYamlValue(beadsDir, key string) (string, bool) {
+	if beadsDir == "" {
+		return "", false
+	}
+	return readYamlValueAtPath(filepath.Join(beadsDir, "config.local.yaml"), key)
+}
+
+// UserGlobalYamlValue reads a single dotted key from the USER-level config.yaml
+// only, in the same order Initialize gives those files -- documented
+// (<home>/.config/bd), then native (os.UserConfigDir()/bd), then legacy
+// (<home>/.beads) -- returning ("", false) when no user-level file carries it.
+//
+// It is the counterpart of WorkspaceYamlValue for the other end of a
+// directory-scoped lookup: a setting resolved per workspace must be able to
+// fall back on a genuine machine-wide default WITHOUT falling back on the
+// merged process-wide configuration, which carries the project settings of
+// whichever workspace initialized it first.
+func UserGlobalYamlValue(key string) (string, bool) {
+	candidates := currentUserConfigYamlCandidates()
+	for _, path := range []string{candidates.documented, candidates.native, candidates.legacy} {
+		if path == "" {
+			continue
+		}
+		if raw, ok := readYamlValueAtPath(path, key); ok {
+			return raw, true
+		}
+	}
+	return "", false
+}
+
 func readYamlValueAtPath(path, key string) (string, bool) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is a resolved config.yaml path, not user input
 	if err != nil {
