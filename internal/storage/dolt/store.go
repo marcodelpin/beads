@@ -467,9 +467,20 @@ type Config struct {
 	// through auto-start (EnsureRunningDetailed), so neither honors this
 	// budget -- see openRetryEnabled.
 	//
+	// Set by a CALLER that means it. New never writes here -- it stores what
+	// it resolved in resolvedOpenRetryBudget instead, so a Config reused for a
+	// second open does not carry the first open's resolved value in as an
+	// explicit override.
+	//
 	// Resolved once per open by New, via resolveOpenRetryBudget: a nonzero
 	// value here is a caller override that outranks every config file.
 	OpenRetryBudget time.Duration
+
+	// resolvedOpenRetryBudget is what New resolved for THIS open, and
+	// openRetryResolved says New did the resolving. Unexported so a Config
+	// literal cannot set them and so they are re-derived on every New.
+	resolvedOpenRetryBudget time.Duration
+	openRetryResolved       bool
 
 	// MaxOpenConns overrides the connection pool size (0 = default 10).
 	// Set to 1 for branch isolation in tests (DOLT_CHECKOUT is session-level).
@@ -1595,7 +1606,13 @@ func New(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	// open through applyResolvedConfig and then New. Resolving it inside
 	// applyResolvedConfig alone would leave `bd config set
 	// dolt.open-retry-budget` inert for ordinary commands.
-	cfg.OpenRetryBudget = resolveOpenRetryBudget(cfg, openRetryBeadsDir(cfg))
+	// Written to a SEPARATE field, not back onto cfg.OpenRetryBudget: that one
+	// means "a caller set this explicitly", and a Config reused across opens --
+	// retargeted to another project, or reopened after its config.yaml changed
+	// -- would otherwise present the first open's resolved value as an
+	// override and ignore the new project's opt-out.
+	cfg.resolvedOpenRetryBudget = resolveOpenRetryBudget(cfg, openRetryBeadsDir(cfg))
+	cfg.openRetryResolved = true
 
 	// Hard guard: tests must NEVER connect to the production Dolt server.
 	// applyConfigDefaults rewrites a production port to 1 in BEADS_TEST_MODE=1
@@ -1819,8 +1836,22 @@ var serverDial = func(ctx context.Context, network, addr string, timeout time.Du
 // to ServerModeExternal and suppresses auto-start -- is a server bd does not
 // own, and is exactly the case the budget is for. Only a bd-MANAGED localhost
 // server is excluded.
+// effectiveOpenRetryBudget is the budget this open should use: what New
+// resolved when New ran, and the caller's own field otherwise -- the direct
+// entry points (dialServerPreflight in a unit test, an embedder driving
+// newServerMode) never go through New.
+func effectiveOpenRetryBudget(cfg *Config) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.openRetryResolved {
+		return cfg.resolvedOpenRetryBudget
+	}
+	return cfg.OpenRetryBudget
+}
+
 func openRetryEnabled(cfg *Config) bool {
-	if cfg == nil || cfg.OpenRetryBudget <= 0 {
+	if cfg == nil || effectiveOpenRetryBudget(cfg) <= 0 {
 		return false
 	}
 	if cfg.ServerSocket != "" || cfg.ProxiedServer || cfg.DisableAutoStart {
@@ -1835,9 +1866,8 @@ func openRetryEnabled(cfg *Config) bool {
 	return true
 }
 
-// openWasCancelledByCaller reports an open that ended because ITS CALLER's
-// context was cancelled or expired, rather than because the server failed to
-// answer.
+// openEndedByCaller reports an open that ended because ITS CALLER's context was
+// cancelled or expired, rather than because the server failed to answer.
 //
 // The distinction is the circuit breaker's: the breaker exists to fail fast
 // when a server is known to be down, so only evidence ABOUT THE SERVER may
@@ -1847,10 +1877,15 @@ func openRetryEnabled(cfg *Config) bool {
 // opens inside the failure window would otherwise trip the breaker against a
 // perfectly healthy server and fail every open after them for the cooldown.
 //
-// A dial that timed out on its OWN timeout is a different error
-// (os.ErrDeadlineExceeded, "i/o timeout") and stays countable.
-func openWasCancelledByCaller(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+// The question is asked of the CONTEXT, never of the error, because the error
+// cannot answer it: net.DialTimeout's own timeout returns net's timeoutError,
+// whose Is method reports true for context.DeadlineExceeded (net/net.go). An
+// error-identity test would therefore stop counting ordinary server timeouts on
+// the DEFAULT path, which is the opposite of what this guard is for. The
+// context is unambiguous: if the caller's context is not done, whatever went
+// wrong was not the caller ending the open.
+func openEndedByCaller(ctx context.Context) bool {
+	return ctx != nil && ctx.Err() != nil
 }
 
 // openRetryCancelled reports a retry loop ended by its context. Both causes
@@ -1904,7 +1939,7 @@ func dialServerPreflight(ctx context.Context, cfg *Config, network, addr string,
 		return serverDialLegacy(network, addr, timeout)
 	}
 
-	budget := cfg.OpenRetryBudget
+	budget := effectiveOpenRetryBudget(cfg)
 	bo := newOpenRetryBackoff(budget)
 	bo.Reset()
 	deadline := time.Now().Add(budget)
@@ -2138,7 +2173,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 		} else {
 			// A caller that cancelled its own open says nothing about the
 			// server, so it must not count towards the breaker.
-			if breaker != nil && !openWasCancelledByCaller(dialErr) {
+			if breaker != nil && !openEndedByCaller(ctx) {
 				breaker.RecordFailure()
 			}
 			var hint string

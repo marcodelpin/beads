@@ -34,6 +34,20 @@ var errConnRefused = errors.New("dial tcp 10.0.0.9:3306: connect: connection ref
 // errNoSuchHost is NOT retryable: no substring isRetryableError recognizes.
 var errNoSuchHost = errors.New("dial tcp: lookup dolt.example.internal: no such host")
 
+// errIOTimeout reproduces what net.DialTimeout returns when its own timeout
+// expires: an "i/o timeout" whose Is method reports true for
+// context.DeadlineExceeded (net's unexported timeoutError, net/net.go). It is a
+// SERVER failure -- the endpoint never answered -- that any guard written as an
+// errors.Is(err, context.DeadlineExceeded) test would misread as the caller
+// giving up.
+type errIOTimeout struct{}
+
+func (errIOTimeout) Error() string { return "dial tcp 10.0.0.9:3306: i/o timeout" }
+
+func (errIOTimeout) Timeout() bool { return true }
+
+func (errIOTimeout) Is(target error) bool { return target == context.DeadlineExceeded }
+
 // recordingConn is a net.Conn that records what was done to it before it was
 // closed. It exists to tell a bare Close() apart from a
 // doltserver.DrainAndCloseProbe: only the latter sets a read deadline and
@@ -1061,6 +1075,83 @@ func TestNew_OpenRetryLocalYamlZeroOverridesProjectYaml(t *testing.T) {
 	}
 }
 
+// newManagedBeadsDir writes a .beads/config.yaml for a bd-MANAGED localhost
+// server: auto-start on, and a budget configured. The budget being present is
+// the point -- the assertion below is that a CONFIGURED budget still buys no
+// retry in this mode.
+func newManagedBeadsDir(t *testing.T, budget string) string {
+	t.Helper()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "dolt:\n  auto-start: true\n  open-retry-budget: " + budget + "\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	return beadsDir
+}
+
+// The maintainer's mode-exclusion ask, taken through the REAL managed-open
+// path rather than through a config shaped like one: a budget-configured
+// localhost open that reaches EnsureRunningDetailed must make exactly the two
+// bare dials it has always made -- the fail-fast preflight and the
+// post-auto-start retry -- and no retry-loop dial at all.
+//
+// ensureRunningDetailed is stubbed (as port_provenance_test.go does) so no
+// dolt sql-server is spawned.
+func TestNew_OpenRetryManagedLocalhostThroughEnsureRunning(t *testing.T) {
+	isolateOpenEnv(t)
+	beadsDir := newManagedBeadsDir(t, "30s")
+
+	cfg := &Config{
+		ServerMode: true,
+		BeadsDir:   beadsDir,
+		Path:       filepath.Join(beadsDir, "dolt"),
+		Database:   "openretry_probe",
+		ServerHost: "127.0.0.1",
+		ServerPort: externalTestPort,
+		AutoStart:  true,
+	}
+	// Same port back: no retarget branch, so this open walks the ordinary
+	// auto-start recovery.
+	stubEnsureRunningDetailed(t, externalTestPort, false, nil)
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	start := time.Now()
+	_, err := New(context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the open to fail: nothing is listening")
+	}
+	// Positive control. Without this the whole test would pass on a budget
+	// that was never configured, which is the failure mode it exists to rule
+	// out: New resolves the key onto cfg, so a non-zero value here proves the
+	// budget WAS live for this open.
+	if got := effectiveOpenRetryBudget(cfg); got != 30*time.Second {
+		t.Fatalf("precondition: New must have resolved the configured budget, got %s", got)
+	}
+	if openRetryEnabled(cfg) {
+		t.Error("a bd-managed localhost open must not enable the budget")
+	}
+	// The preflight probe and the post-auto-start retry: two bare dials, both
+	// on the legacy dialer, and nothing from the retry loop.
+	if rec.ctxAware != 0 {
+		t.Errorf("expected no retry-loop dial in a managed open, got %d", rec.ctxAware)
+	}
+	if rec.legacy != 2 {
+		t.Errorf("expected exactly 2 bare dials (preflight + post-auto-start), got %d", rec.legacy)
+	}
+	if !strings.Contains(err.Error(), "auto-started but still unreachable") {
+		t.Errorf("expected the post-auto-start failure, got %v", err)
+	}
+	// A single backoff sleep would be >=250ms.
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected no backoff sleep in a managed open, took %s", elapsed)
+	}
+}
+
 // The circuit breaker counts OPENS, not dials. An exhausted budget is one
 // failed open, so it must record exactly one failure however many attempts it
 // made -- otherwise a single 30s open trips a breaker whose threshold is five
@@ -1201,6 +1292,118 @@ func TestNew_OpenRetryCallerCancelledOpenRecordsNoCircuitFailure(t *testing.T) {
 	}
 	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
 		t.Errorf("control: an uncancelled failed open must record exactly 1 failure, got %d", failures)
+	}
+}
+
+// A SERVER timeout must still count towards the breaker with the budget off.
+// The guard that keeps caller-cancelled opens out of the breaker cannot be an
+// error-identity test: net.DialTimeout's own timeout returns net's
+// timeoutError, whose Is method reports true for context.DeadlineExceeded, so
+// an errors.Is guard silently stops counting ordinary server timeouts on the
+// DEFAULT path -- the exact inverse of what the guard is for.
+func TestNew_OpenRetryServerTimeoutStillCountsTowardsBreaker(t *testing.T) {
+	circuitDir := t.TempDir()
+	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
+	t.Setenv("BEADS_TEST_MODE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+
+	// No budget configured: this is the DEFAULT open, on the legacy dialer.
+	beadsDir := newBeadsDir(t, "")
+	rec := stubServerDial(t, -1, errIOTimeout{}, 0)
+
+	_, err := New(context.Background(), productionCfg(beadsDir))
+	if err == nil {
+		t.Fatal("expected the open to fail against a server that never answers")
+	}
+	if rec.attempts != 1 {
+		t.Fatalf("precondition: the default open makes exactly 1 probe, got %d", rec.attempts)
+	}
+	// Precondition, and the whole reason this test exists: the error really
+	// does satisfy the identity test a naive guard would have used.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("precondition: a net dial timeout satisfies errors.Is(err, context.DeadlineExceeded); got %v", err)
+	}
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
+		t.Errorf("a server timeout must count towards the breaker, got %d recorded failures", failures)
+	}
+}
+
+// A Config reused across opens must not carry the first open's RESOLVED budget
+// into the second as if a caller had set it. Retargeting one Config at another
+// project -- or reopening after that project's config.yaml changed -- has to
+// honour the project it is now pointing at.
+func TestNew_OpenRetryResolvedBudgetIsNotACallerOverride(t *testing.T) {
+	isolateOpenEnv(t)
+	retrying := newBeadsDir(t, "1200ms")
+	optedOut := newBeadsDir(t, "0")
+
+	cfg := productionCfg(retrying)
+	rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+	if _, err := New(context.Background(), cfg); err == nil {
+		t.Fatal("expected the first open to fail")
+	}
+	if rec.attempts != 2 {
+		t.Fatalf("precondition: the first project's budget must retry, got %d dial attempts", rec.attempts)
+	}
+	if cfg.OpenRetryBudget != 0 {
+		t.Errorf("New must not write its resolved budget into the caller's field, got %s", cfg.OpenRetryBudget)
+	}
+
+	// Same Config object, retargeted at a project that opted out.
+	cfg.BeadsDir = optedOut
+	cfg.Path = filepath.Join(optedOut, "dolt")
+	rec2 := stubServerDial(t, -1, errConnRefused, 0)
+	_, err := New(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected the second open to fail")
+	}
+	if rec2.attempts != 1 {
+		t.Errorf("the retargeted open must honour the new project's explicit 0, got %d dial attempts", rec2.attempts)
+	}
+	if strings.Contains(err.Error(), "open-retry-budget") {
+		t.Errorf("a disabled budget must not appear in the error: %v", err)
+	}
+}
+
+// The project beats the machine-wide default, in every spelling. Without a
+// POSITIVE user-global fixture beside each project zero, inverting the lookup
+// order -- user-global first -- would survive the suite: the other precedence
+// tests pair a project zero with another PROJECT's config, which this
+// implementation ignores by design.
+func TestResolveOpenRetryBudgetProjectZeroBeatsUserGlobal(t *testing.T) {
+	isolateOpenEnv(t)
+	withUserGlobalBudget(t, "30s")
+
+	nestedZero := newBeadsDir(t, "0")
+	flatZero := newBeadsDirFlat(t, "0")
+	localZero := newBeadsDir(t, "30s")
+	writeLocalBudget(t, localZero, "0")
+	silent := newBeadsDir(t, "")
+
+	cases := []struct {
+		name     string
+		beadsDir string
+		want     time.Duration
+	}{
+		// The control: the user-global default is real and reachable, so the
+		// zeros below are a precedence result and not an empty config.
+		{"silent project inherits the user-global default", silent, 30 * time.Second},
+		{"nested project zero beats the user-global default", nestedZero, 0},
+		{"flat project zero beats the user-global default", flatZero, 0},
+		{"local-file project zero beats the user-global default", localZero, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveOpenRetryBudget(&Config{}, tc.beadsDir); got != tc.want {
+				t.Errorf("resolveOpenRetryBudget = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

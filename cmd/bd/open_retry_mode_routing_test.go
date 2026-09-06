@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
@@ -72,10 +71,6 @@ func TestNewDoltStore_EmbeddedRoutingNeverReachesTheOpenRetryPath(t *testing.T) 
 				t.Errorf("an embedded open must not reach the server path (%q): %v", forbidden, err)
 			}
 		}
-		// The budget was configured and did not travel with the open.
-		if cfg.OpenRetryBudget != 0 {
-			t.Errorf("an embedded open must not resolve an open-retry budget, got %s", cfg.OpenRetryBudget)
-		}
 	})
 
 	// Positive control: the SAME beadsDir and the SAME budget, with the one
@@ -89,21 +84,23 @@ func TestNewDoltStore_EmbeddedRoutingNeverReachesTheOpenRetryPath(t *testing.T) 
 			BeadsDir:   beadsDir,
 			Path:       filepath.Join(beadsDir, "dolt"),
 			Database:   "openretry_probe",
-			// A .invalid host fails name resolution, which is not retryable,
-			// so this arm costs one lookup and not the budget.
-			ServerHost: "dolt.example.invalid",
+			// A closed local port refuses the connection, which IS retryable,
+			// so a resolved budget shows up in the error text. That makes this
+			// arm prove two things from outside the package: the open reached
+			// dolt.New, and the SAME config.yaml the embedded arm used did
+			// configure a budget there.
+			ServerHost: "127.0.0.1",
 			ServerPort: externalTestPort,
 		}
 
 		_, err := newDoltStore(t.Context(), cfg)
 		if err == nil {
-			t.Fatal("expected the server open to fail against an unresolvable host")
+			t.Fatal("expected the server open to fail against a closed port")
 		}
-		if !strings.Contains(err.Error(), "Dolt server unreachable") {
-			t.Fatalf("expected the server open's error, got %v", err)
-		}
-		if cfg.OpenRetryBudget != 200*time.Millisecond {
-			t.Errorf("expected the server open to resolve the configured budget, got %s", cfg.OpenRetryBudget)
+		for _, want := range []string{"Dolt server unreachable", "dolt.open-retry-budget=200ms"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("expected the server open's error to contain %q, got %v", want, err)
+			}
 		}
 	})
 }
