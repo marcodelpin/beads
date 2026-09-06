@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,7 +33,38 @@ var errConnRefused = errors.New("dial tcp 10.0.0.9:3306: connect: connection ref
 // errNoSuchHost is NOT retryable: no substring isRetryableError recognizes.
 var errNoSuchHost = errors.New("dial tcp: lookup dolt.example.internal: no such host")
 
-type fakeConn struct{ net.Conn }
+// recordingConn is a net.Conn that records what was done to it before it was
+// closed. It exists to tell a bare Close() apart from a
+// doltserver.DrainAndCloseProbe: only the latter sets a read deadline and
+// reads the handshake greeting, and only the latter closes a probe the way
+// dolt sql-server tolerates (gastownhall/beads#4132, #4133).
+type recordingConn struct {
+	net.Conn
+	reads         int
+	readDeadlines int
+	closes        int
+}
+
+func (c *recordingConn) Read(b []byte) (int, error) {
+	c.reads++
+	return 0, io.EOF
+}
+
+func (c *recordingConn) SetReadDeadline(time.Time) error {
+	c.readDeadlines++
+	return nil
+}
+
+func (c *recordingConn) Close() error {
+	c.closes++
+	return nil
+}
+
+// drained reports whether this connection was discarded through
+// DrainAndCloseProbe rather than closed bare.
+func (c *recordingConn) drained() bool {
+	return c.closes > 0 && c.reads > 0 && c.readDeadlines > 0
+}
 
 // dialRecord is what a stubbed dial saw: how many times it was called and the
 // per-attempt timeout it was handed. The timeouts are what prove the budget is
@@ -70,7 +102,7 @@ func stubServerDial(t *testing.T, failures int, err error, sleep time.Duration) 
 		if failures < 0 || rec.attempts <= failures {
 			return nil, err
 		}
-		return &fakeConn{}, nil
+		return &recordingConn{}, nil
 	}
 	return rec
 }
@@ -474,6 +506,54 @@ func TestOpenRetryBudgetOn_CancellationDuringLoopStops(t *testing.T) {
 	// Far below the 30s budget: the loop stopped on the context, not on it.
 	if elapsed > 5*time.Second {
 		t.Errorf("expected prompt cancellation, took %s", elapsed)
+	}
+}
+
+// A dial that lands after the context was cancelled must not report success --
+// and the connection it produced must be discarded the way every other probe
+// close in this package is: through doltserver.DrainAndCloseProbe. A bare
+// Close() on a probe that never read the handshake greeting makes the OS send
+// RST instead of FIN, which dolt sql-server can die on when it happens often
+// enough (gastownhall/beads#4132, #4133) -- and a retry loop is precisely the
+// repeated-probe shape that documents that risk.
+func TestOpenRetryBudgetOn_CancellationAfterSuccessDrainsProbe(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	conn := &recordingConn{}
+	orig := serverDial
+	t.Cleanup(func() { serverDial = orig })
+	dials := 0
+	serverDial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		dials++
+		// The open is cancelled while this dial is in flight, so the loop
+		// finds a live connection and a cancelled context together.
+		cancel()
+		return conn, nil
+	}
+
+	got, err := dialServerPreflight(ctx, unmanagedCfg(30*time.Second), "tcp", externalAddr, time.Millisecond)
+
+	if dials != 1 {
+		t.Fatalf("expected exactly 1 dial, got %d", dials)
+	}
+	if got != nil {
+		t.Errorf("a cancelled open must not hand back a connection, got %v", got)
+	}
+	if err == nil {
+		t.Fatal("expected an error when the context is cancelled after a successful dial")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected errors.Is(err, context.Canceled), got %v", err)
+	}
+	if conn.closes != 1 {
+		t.Errorf("expected the connection closed exactly once, got %d closes", conn.closes)
+	}
+	// The load-bearing assertion: a bare Close() leaves reads == 0 and
+	// readDeadlines == 0, so reverting to one turns this red.
+	if !conn.drained() {
+		t.Errorf("expected the probe drained before close (DrainAndCloseProbe), got %d reads / %d read deadlines / %d closes",
+			conn.reads, conn.readDeadlines, conn.closes)
 	}
 }
 

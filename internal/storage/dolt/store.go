@@ -1886,8 +1886,15 @@ func dialServerPreflight(ctx context.Context, cfg *Config, network, addr string,
 		conn, err := serverDial(ctx, network, addr, dialTimeout)
 		if err == nil {
 			// A dial that lands after cancellation must not report success.
+			// The connection is discarded through DrainAndCloseProbe, not
+			// Close: a bare Close on a probe that has not read the server's
+			// handshake greeting makes the OS send RST instead of FIN, and
+			// dolt sql-server can crash on enough of those (gastownhall/beads
+			// #4132, #4133). A retry loop is exactly the repeated-probe shape
+			// that documents that risk, so this discard has to use the same
+			// helper newServerMode's success path uses.
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				_ = conn.Close()
+				doltserver.DrainAndCloseProbe(conn)
 				return nil, openRetryCancelled(ctxErr, lastErr, attempts, budget)
 			}
 			if attempts > 1 {
