@@ -855,7 +855,7 @@ func TestNew_WithoutOpenRetryBudgetDialsOnce(t *testing.T) {
 // (c) Precedence: an ambient budget from the config singleton (initialized
 // from a DIFFERENT workspace, via BEADS_DIR) must not override an explicit
 // "0" in the directory actually being opened.
-func TestNew_ProjectConfigZeroOverridesAmbientBudget(t *testing.T) {
+func TestNew_OpenRetryProjectConfigZeroOverridesAmbient(t *testing.T) {
 	isolateOpenEnv(t)
 	otherWorkspace := newBeadsDir(t, "30s")
 	t.Setenv("BEADS_DIR", otherWorkspace)
@@ -884,7 +884,7 @@ func TestNew_ProjectConfigZeroOverridesAmbientBudget(t *testing.T) {
 // (c2) The same precedence with the target's key written FLAT. This is the
 // spelling config.GetStringFromDir cannot see, and reading it as absent would
 // hand the open the other workspace's 30s.
-func TestNew_FlatProjectConfigZeroOverridesAmbientBudget(t *testing.T) {
+func TestNew_OpenRetryFlatProjectConfigZeroOverridesAmbient(t *testing.T) {
 	isolateOpenEnv(t)
 	otherWorkspace := newBeadsDir(t, "30s")
 	t.Setenv("BEADS_DIR", otherWorkspace)
@@ -912,7 +912,7 @@ func TestNew_FlatProjectConfigZeroOverridesAmbientBudget(t *testing.T) {
 
 // (c3) And the flat spelling ENABLES too, so the fix is a reader change and
 // not a special case for the value 0.
-func TestNew_FlatProjectConfigEnablesBudget(t *testing.T) {
+func TestNew_OpenRetryFlatProjectConfigEnablesBudget(t *testing.T) {
 	isolateOpenEnv(t)
 	target := newBeadsDirFlat(t, "1200ms")
 	// The second attempt fails non-retryably, so the loop ends there instead
@@ -934,7 +934,7 @@ func TestNew_FlatProjectConfigEnablesBudget(t *testing.T) {
 // The mirror of (c): with nothing configured in the opened project, the
 // ambient budget still applies, so the directory read is a precedence rule and
 // not a replacement for the global default.
-func TestNew_AmbientBudgetAppliesWhenProjectIsSilent(t *testing.T) {
+func TestNew_OpenRetryAmbientBudgetAppliesWhenProjectIsSilent(t *testing.T) {
 	isolateOpenEnv(t)
 	otherWorkspace := newBeadsDir(t, "30s")
 	t.Setenv("BEADS_DIR", otherWorkspace)
@@ -984,7 +984,7 @@ func newManagedBeadsDir(t *testing.T, budget string) string {
 //
 // ensureRunningDetailed is stubbed (as port_provenance_test.go does) so no
 // dolt sql-server is spawned.
-func TestNew_ManagedLocalhostOpenThroughEnsureRunningMakesNoRetryDials(t *testing.T) {
+func TestNew_OpenRetryManagedLocalhostThroughEnsureRunning(t *testing.T) {
 	isolateOpenEnv(t)
 	beadsDir := newManagedBeadsDir(t, "30s")
 
@@ -1046,7 +1046,7 @@ func TestNew_ManagedLocalhostOpenThroughEnsureRunningMakesNoRetryDials(t *testin
 // disables the breaker outright, so this invariant had no coverage at all.
 // This one turns the breaker ON and reads the count back off its own state
 // file.
-func TestNew_ExhaustedBudgetRecordsExactlyOneCircuitFailure(t *testing.T) {
+func TestNew_OpenRetryExhaustedBudgetRecordsOneCircuitFailure(t *testing.T) {
 	circuitDir := t.TempDir()
 	// Redirects both the current and the legacy breaker state paths, so this
 	// test never reads or writes the machine's real breaker files.
