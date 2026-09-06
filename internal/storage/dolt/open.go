@@ -356,10 +356,14 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 		cfg.PoolWriteTimeout = parseTimeout(config.GetString("dolt.pool-write-timeout"), 0)
 	}
 
-	// Open-retry budget: caller override > project config.yaml > global
-	// config.yaml > 0 (off). Zero keeps the fail-fast pre-dial probe exactly
-	// as it is; a positive budget lets an EXTERNAL server's open ride out a
-	// restart instead of failing in 40ms (GH#4379). See openRetryEnabled for
+	// Open-retry budget: caller override > initialized config (project
+	// config.yaml, then global) > a direct read of <beadsDir>/config.yaml
+	// for library consumers that never called config.Initialize > 0 (off).
+	// Same two-step read as dolt.auto-start above, for the same reason.
+	//
+	// Zero keeps the fail-fast pre-dial probe exactly as it is; a positive
+	// budget lets an EXTERNAL server's open ride out a restart instead of
+	// failing in tens of milliseconds (GH#4379). See openRetryEnabled for
 	// which modes honor it -- embedded and localhost-managed opens do not.
 	if cfg.OpenRetryBudget == 0 {
 		raw := config.GetString(doltOpenRetryBudgetKey)
