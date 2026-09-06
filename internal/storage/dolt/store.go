@@ -482,6 +482,19 @@ type Config struct {
 	resolvedOpenRetryBudget time.Duration
 	openRetryResolved       bool
 
+	// resolvedBeadsDir is the .beads directory THIS open was resolved from:
+	// the beadsDir applyResolvedConfig was called with, which is where the
+	// metadata.json and config.yaml governing this open live. It is rewritten
+	// on EVERY open, exactly like Path.
+	//
+	// BeadsDir cannot serve that purpose. It is a documented CALLER OVERRIDE
+	// that applyResolvedConfig fills in only when empty, so a Config reused
+	// for a second project still carries the first project's value -- and a
+	// per-directory setting resolved from it would read the wrong project's
+	// config.yaml. Unexported so a Config literal cannot set it and so it is
+	// re-derived on every open. See openRetryBeadsDir.
+	resolvedBeadsDir string
+
 	// MaxOpenConns overrides the connection pool size (0 = default 10).
 	// Set to 1 for branch isolation in tests (DOLT_CHECKOUT is session-level).
 	MaxOpenConns int

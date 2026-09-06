@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // The open-retry budget (dolt.open-retry-budget, GH#4379) wraps newServerMode's
@@ -890,6 +892,51 @@ func withUserGlobalBudget(t *testing.T, budget string) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 }
 
+// withoutUserGlobalBudget points HOME (and the native user-config dir) at an
+// EMPTY tree. An arm that must observe NO machine-wide default has to install
+// that absence: without it the arm would be reading whatever the host running
+// the test happens to keep in ~/.config/bd/config.yaml, and a pass would say
+// nothing about the fixture.
+func withoutUserGlobalBudget(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
+// newSharedServerDoltPath builds the data path a shared-server open carries:
+// <home>/.beads/shared-server/dolt (doltserver.SharedDoltDir). Its parent is
+// ~/.beads/shared-server, NOT the project's .beads -- which is the whole point
+// of the fixture.
+func newSharedServerDoltPath(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), ".beads", "shared-server", "dolt")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir shared dolt dir: %v", err)
+	}
+	return dir
+}
+
+// newCustomDoltDataPath builds an absolute dolt_data_dir on another
+// filesystem, which configfile.DatabasePath returns verbatim. Nothing about
+// this path names a .beads directory.
+func newCustomDoltDataPath(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "fastfs", "beads-dolt-data")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir custom dolt data dir: %v", err)
+	}
+	return dir
+}
+
+// cfgWithDataPath is productionCfg with the data path decoupled from the
+// project directory, the way every non-default layout has it.
+func cfgWithDataPath(beadsDir, dataPath string) *Config {
+	cfg := productionCfg(beadsDir)
+	cfg.Path = dataPath
+	return cfg
+}
+
 // productionCfg is what cmd/bd hands dolt.New for an unmanaged server: a
 // beadsDir, a data path under it, an explicit endpoint, and no auto-start.
 // OpenRetryBudget is deliberately left unset -- New must resolve it.
@@ -1438,7 +1485,16 @@ func TestNew_OpenRetryResolvedBudgetIsNotACallerOverride(t *testing.T) {
 	retrying := newBeadsDir(t, "1200ms")
 	optedOut := newBeadsDir(t, "0")
 
+	// Both opens go through applyResolvedConfig, which is what a caller
+	// reusing one Config across two NewFromConfigWithOptions calls does. The
+	// first call is not decoration: a field filled only when empty looks
+	// correct on the first open and stale on every one after it, so a test
+	// that skips the first call cannot see the difference.
 	cfg := productionCfg(retrying)
+	fileCfg := &configfile.Config{Backend: configfile.BackendDolt}
+	if err := applyResolvedConfig(context.Background(), retrying, fileCfg, cfg); err != nil {
+		t.Fatalf("applyResolvedConfig: %v", err)
+	}
 	rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
 	if _, err := New(context.Background(), cfg); err == nil {
 		t.Fatal("expected the first open to fail")
@@ -1450,12 +1506,23 @@ func TestNew_OpenRetryResolvedBudgetIsNotACallerOverride(t *testing.T) {
 		t.Errorf("New must not write its resolved budget into the caller's field, got %s", cfg.OpenRetryBudget)
 	}
 
-	// Same Config object, retargeted at a project that opted out -- by
-	// rewriting cfg.Path ONLY, which is exactly what applyResolvedConfig does
-	// on a second NewFromConfigWithOptions call: it fills cfg.BeadsDir just
-	// once, when empty, so the stale first-project value is still sitting
-	// there. Resolving from BeadsDir would read the first project's config.
-	cfg.Path = filepath.Join(optedOut, "dolt")
+	// Same Config object, retargeted at a project that opted out -- through
+	// the function that actually retargets one on a second
+	// NewFromConfigWithOptions call. It rewrites cfg.Path and
+	// cfg.resolvedBeadsDir on EVERY open but fills cfg.BeadsDir just once,
+	// when empty, so the stale first-project value is still sitting in
+	// BeadsDir: an open that resolved its budget from BeadsDir, or from a
+	// resolvedBeadsDir that were also only filled when empty, would read the
+	// FIRST project's config.yaml and retry against a project that said 0.
+	if err := applyResolvedConfig(context.Background(), optedOut, fileCfg, cfg); err != nil {
+		t.Fatalf("applyResolvedConfig: %v", err)
+	}
+	if cfg.BeadsDir != retrying {
+		t.Fatalf("precondition: cfg.BeadsDir must still hold the FIRST project, got %q", cfg.BeadsDir)
+	}
+	if cfg.Path != filepath.Join(optedOut, "dolt") {
+		t.Fatalf("precondition: cfg.Path must be retargeted, got %q", cfg.Path)
+	}
 	rec2 := stubServerDial(t, -1, errConnRefused, 0)
 	_, err := New(context.Background(), cfg)
 	if err == nil {
@@ -1545,5 +1612,191 @@ func TestResolveOpenRetryBudgetPrecedence(t *testing.T) {
 				t.Errorf("resolveOpenRetryBudget = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// The data path is not the project directory in two supported layouts, and in
+// both of them deriving the config directory from the data path reads someone
+// else's settings:
+//
+//   - shared-server mode, where doltserver.ResolveDoltDir returns
+//     ~/.beads/shared-server/dolt for every project on the machine;
+//   - a custom absolute dolt_data_dir, which configfile.DatabasePath returns
+//     verbatim (the WSL "put the data on ext4" case).
+//
+// Both directions are asserted, because the two failure modes are opposite and
+// only one of them is loud: a project's explicit "0" silently skipped while a
+// machine-wide default enables retries it opted out of, and a project's own
+// budget silently ignored so the feature never engages for a project that
+// asked for it.
+
+// sharedServerDataPathIsNotAProjectPath is the tie between the fixtures below
+// and production: it asserts that what doltserver actually returns in
+// shared-server mode has the shape the fixtures imitate, so the fixtures are
+// not an invented path shape that happens to fail isProjectDoltDataPath.
+func TestOpenRetrySharedServerDataPathIsNotAProjectPath(t *testing.T) {
+	isolateOpenEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
+
+	project := newBeadsDir(t, "0")
+	shared := doltserver.ResolveDoltDir(project)
+
+	// Positive control: the per-project layout MUST pass, or a passing
+	// negative below would only be saying isProjectDoltDataPath rejects
+	// everything.
+	if !isProjectDoltDataPath(filepath.Join(project, "dolt")) {
+		t.Fatalf("control: the default layout %q must read as a project data path",
+			filepath.Join(project, "dolt"))
+	}
+	if shared == filepath.Join(project, "dolt") {
+		t.Fatalf("precondition: shared-server mode must not resolve to the project dir, got %q", shared)
+	}
+	if isProjectDoltDataPath(shared) {
+		t.Errorf("the shared-server data path %q must not read as a project data path", shared)
+	}
+	if filepath.Dir(shared) == project {
+		t.Errorf("the shared-server data path's parent is not the project .beads, got %q", filepath.Dir(shared))
+	}
+}
+
+// The shared-server data path must not decide which project's config.yaml the
+// budget comes from.
+func TestNew_OpenRetrySharedServerDataPathUsesProjectConfig(t *testing.T) {
+	t.Run("project zero is honoured against a positive user-global default", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withUserGlobalBudget(t, "30s")
+		project := newBeadsDir(t, "0")
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		_, err := New(context.Background(), cfgWithDataPath(project, newSharedServerDoltPath(t)))
+		if err == nil {
+			t.Fatal("expected the open to fail against an unreachable server")
+		}
+		if rec.attempts != 1 {
+			t.Errorf("the opened project's explicit 0 must disable the budget, got %d dial attempts", rec.attempts)
+		}
+		if strings.Contains(err.Error(), "open-retry-budget") {
+			t.Errorf("a disabled budget must not appear in the error: %v", err)
+		}
+	})
+
+	t.Run("project-only budget still enables the retry", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withoutUserGlobalBudget(t)
+		project := newBeadsDir(t, "1200ms")
+		rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+
+		if _, err := New(context.Background(), cfgWithDataPath(project, newSharedServerDoltPath(t))); err == nil {
+			t.Fatal("expected the open to fail against an unreachable server")
+		}
+		if rec.attempts != 2 {
+			t.Errorf("the opened project's own budget must enable the retry, got %d dial attempts", rec.attempts)
+		}
+	})
+}
+
+// A custom absolute dolt_data_dir must not decide it either.
+func TestNew_OpenRetryCustomDataDirUsesProjectConfig(t *testing.T) {
+	t.Run("project zero is honoured against a positive user-global default", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withUserGlobalBudget(t, "30s")
+		project := newBeadsDir(t, "0")
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		_, err := New(context.Background(), cfgWithDataPath(project, newCustomDoltDataPath(t)))
+		if err == nil {
+			t.Fatal("expected the open to fail against an unreachable server")
+		}
+		if rec.attempts != 1 {
+			t.Errorf("the opened project's explicit 0 must disable the budget, got %d dial attempts", rec.attempts)
+		}
+	})
+
+	t.Run("project-only budget still enables the retry", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withoutUserGlobalBudget(t)
+		project := newBeadsDir(t, "1200ms")
+		rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+
+		if _, err := New(context.Background(), cfgWithDataPath(project, newCustomDoltDataPath(t))); err == nil {
+			t.Fatal("expected the open to fail against an unreachable server")
+		}
+		if rec.attempts != 2 {
+			t.Errorf("the opened project's own budget must enable the retry, got %d dial attempts", rec.attempts)
+		}
+	})
+}
+
+// The resolution order itself, at the unit, including the case the two layouts
+// above cannot reach: a Config carrying NEITHER directory field, which is what
+// bd doctor's federation checks and the ADO config reader hand dolt.New. For a
+// non-project data path there the honest answer is "no target directory", so
+// the budget falls back on the user-level default and never on the settings of
+// whatever project happens to own that path's parent.
+func TestOpenRetryBeadsDirPrefersTheDirectoryThisOpenResolvedFrom(t *testing.T) {
+	project := filepath.Join("/w", ".beads")
+	stale := filepath.Join("/other", ".beads")
+
+	cases := []struct {
+		name string
+		cfg  *Config
+		want string
+	}{
+		{"nil config", nil, ""},
+		{"empty config", &Config{}, ""},
+		{"default layout, path only", &Config{Path: filepath.Join(project, "dolt")}, project},
+		{"shared-server path only", &Config{Path: "/home/u/.beads/shared-server/dolt"}, ""},
+		{"custom absolute data dir path only", &Config{Path: "/mnt/fast/beads-dolt-data"}, ""},
+		{"embedded store path only", &Config{Path: filepath.Join(project, "embeddeddolt")}, project},
+		{"relative custom data dir path only", &Config{Path: filepath.Join(project, "fastdata")}, project},
+		{"BeadsDir beats a shared-server path", &Config{BeadsDir: project, Path: "/home/u/.beads/shared-server/dolt"}, project},
+		{"BeadsDir beats a custom data dir", &Config{BeadsDir: project, Path: "/mnt/fast/beads-dolt-data"}, project},
+		{"resolvedBeadsDir beats a stale BeadsDir", &Config{resolvedBeadsDir: project, BeadsDir: stale, Path: filepath.Join(stale, "dolt")}, project},
+		{"resolvedBeadsDir beats the path", &Config{resolvedBeadsDir: project, Path: "/mnt/fast/beads-dolt-data"}, project},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openRetryBeadsDir(tc.cfg); got != tc.want {
+				t.Errorf("openRetryBeadsDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// applyResolvedConfig must set resolvedBeadsDir on EVERY call -- the whole
+// point of a field that tracks the open -- while leaving the documented
+// cfg.BeadsDir caller override alone.
+func TestApplyResolvedConfigOpenRetryDirTracksEveryOpen(t *testing.T) {
+	first := filepath.Join(t.TempDir(), ".beads")
+	second := filepath.Join(t.TempDir(), ".beads")
+	for _, d := range []string{first, second} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	fileCfg := &configfile.Config{Backend: configfile.BackendDolt}
+	cfg := &Config{}
+
+	if err := applyResolvedConfig(context.Background(), first, fileCfg, cfg); err != nil {
+		t.Fatalf("applyResolvedConfig: %v", err)
+	}
+	if cfg.resolvedBeadsDir != first {
+		t.Fatalf("first open: resolvedBeadsDir = %q, want %q", cfg.resolvedBeadsDir, first)
+	}
+	if cfg.BeadsDir != first {
+		t.Fatalf("first open: BeadsDir = %q, want %q", cfg.BeadsDir, first)
+	}
+
+	if err := applyResolvedConfig(context.Background(), second, fileCfg, cfg); err != nil {
+		t.Fatalf("applyResolvedConfig: %v", err)
+	}
+	if cfg.resolvedBeadsDir != second {
+		t.Errorf("second open: resolvedBeadsDir = %q, want %q -- it must be rewritten every time", cfg.resolvedBeadsDir, second)
+	}
+	if cfg.BeadsDir != first {
+		t.Errorf("second open: BeadsDir = %q, want the caller override %q left alone", cfg.BeadsDir, first)
 	}
 }

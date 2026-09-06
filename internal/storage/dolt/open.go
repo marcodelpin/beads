@@ -266,6 +266,15 @@ func GetBackendFromConfig(beadsDir string) string {
 // error only when a configured server credential command fails (fail-closed).
 func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfile.Config, cfg *Config) error {
 	cfg.Path = fileCfg.DatabasePath(beadsDir)
+	// resolvedBeadsDir tracks this open the way Path does -- rewritten
+	// unconditionally, every time -- because it is the ONE authoritative
+	// answer to "which .beads directory is this open about". BeadsDir is a
+	// documented caller override filled in only when empty, so on a reused
+	// Config it still holds the previous project; Path is not it either,
+	// since DatabasePath returns a custom absolute dolt_data_dir and the
+	// shared-server data directory, neither of which sits inside this
+	// project's .beads. See openRetryBeadsDir.
+	cfg.resolvedBeadsDir = beadsDir
 	if cfg.BeadsDir == "" {
 		cfg.BeadsDir = beadsDir
 	}
@@ -361,26 +370,60 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 	return nil
 }
 
-// openRetryBeadsDir returns the .beads directory a config is rooted at, using
-// the same fallback newServerMode uses for its own server-dir resolution
-// (cfg.Path is <beadsDir>/dolt).
+// openRetryBeadsDir returns the .beads directory whose config.yaml governs
+// THIS open, or "" when no directory can be established -- in which case
+// resolveOpenRetryBudget consults the user-level default only, and never some
+// other project's settings.
+//
+// Precedence, and why each rung is where it is:
+//
+//  1. cfg.resolvedBeadsDir -- what applyResolvedConfig was called with, set
+//     unconditionally on every open. Authoritative when present.
+//  2. cfg.BeadsDir -- the caller override, which the direct dolt.New callers
+//     (the CLI root pre-run, bootstrap, the migration planning store) set to
+//     the project directory while setting Path to doltserver.ResolveDoltDir,
+//     a path that in shared-server mode is ~/.beads/shared-server/dolt.
+//  3. cfg.Path, ONLY when it sits directly inside a .beads directory.
+//     Callers that set neither directory field (bd doctor's federation checks,
+//     the ADO config reader) leave this as the only signal, and it is a sound
+//     one whenever the data lives in the project.
+//
+// Deriving from Path unconditionally -- which this did -- is wrong for exactly
+// the layouts rung 3 excludes: DatabasePath returns a custom absolute
+// dolt_data_dir verbatim, and ResolveDoltDir returns the shared-server data
+// directory. Their parents are not the project's .beads, so the project's own
+// explicit "0" was skipped and a positive user-global budget enabled retries
+// it had opted out of (and a project-only budget was ignored).
 func openRetryBeadsDir(cfg *Config) string {
 	if cfg == nil {
 		return ""
 	}
-	// cfg.Path before cfg.BeadsDir, because Path is the field that tracks the
-	// open. applyResolvedConfig rewrites cfg.Path on EVERY open but fills in
-	// cfg.BeadsDir only when it is empty, so a Config reused for a second
-	// project keeps the FIRST project's BeadsDir -- and reading that would
-	// resolve this project's budget out of another project's config.yaml,
-	// ignoring an explicit 0 here. The two agree except when a Config is
-	// reused, and there Path is the fresh one. cfg.Path is <beadsDir>/dolt, so
-	// its parent is the .beads directory (the same derivation newServerMode
-	// uses for resolvedBeadsDir).
-	if cfg.Path != "" {
+	if cfg.resolvedBeadsDir != "" {
+		return cfg.resolvedBeadsDir
+	}
+	if cfg.BeadsDir != "" {
+		return cfg.BeadsDir
+	}
+	if isProjectDoltDataPath(cfg.Path) {
 		return filepath.Dir(cfg.Path)
 	}
-	return cfg.BeadsDir
+	return ""
+}
+
+// isProjectDoltDataPath reports whether path sits DIRECTLY inside a .beads
+// directory, the condition under which the data path's parent IS the project
+// config directory. It holds for every project-rooted layout -- .beads/dolt,
+// .beads/embeddeddolt, a relative dolt_data_dir -- and fails for the two that
+// leave the project: ~/.beads/shared-server/dolt, whose parent is
+// shared-server, and a custom ABSOLUTE dolt_data_dir, whose parent is wherever
+// the operator put it. Testing the parent rather than the leaf name is what
+// makes that split the one that matters: the leaf says which store, the parent
+// says whose.
+func isProjectDoltDataPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	return filepath.Base(filepath.Dir(path)) == ".beads"
 }
 
 // resolveOpenRetryBudget resolves dolt.open-retry-budget for the store rooted
