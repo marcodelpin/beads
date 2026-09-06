@@ -951,6 +951,26 @@ func productionCfg(beadsDir string) *Config {
 	}
 }
 
+// isolateBreakerEnv is isolateOpenEnv for a test that needs the circuit
+// breaker LIVE: same isolation, minus BEADS_TEST_MODE=1, which is what
+// disables the breaker outright. BEADS_TEST_CIRCUIT_DIR redirects both the
+// current and the legacy breaker state paths, so no test here reads or writes
+// the machine's real breaker files.
+func isolateBreakerEnv(t *testing.T) string {
+	t.Helper()
+	circuitDir := t.TempDir()
+	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
+	t.Setenv("BEADS_TEST_MODE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+	return circuitDir
+}
+
 // isolateOpenEnv keeps New's guards and the config singleton away from any
 // real server or user config.
 func isolateOpenEnv(t *testing.T) {
@@ -1267,19 +1287,7 @@ func TestNew_OpenRetryManagedLocalhostThroughEnsureRunning(t *testing.T) {
 // This one turns the breaker ON and reads the count back off its own state
 // file.
 func TestNew_OpenRetryExhaustedBudgetRecordsOneCircuitFailure(t *testing.T) {
-	circuitDir := t.TempDir()
-	// Redirects both the current and the legacy breaker state paths, so this
-	// test never reads or writes the machine's real breaker files.
-	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
-	// Deliberately NOT BEADS_TEST_MODE=1: that is what disables the breaker.
-	t.Setenv("BEADS_TEST_MODE", "")
-	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
-	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
-	config.ResetForTesting()
-	t.Cleanup(config.ResetForTesting)
+	circuitDir := isolateBreakerEnv(t)
 
 	beadsDir := newBeadsDir(t, "1200ms")
 	rec := stubServerDial(t, -1, errConnRefused, 0)
@@ -1357,17 +1365,7 @@ func readCircuitState(t *testing.T, dir string) (circuitState, bool) {
 // opens inside the failure window would trip the breaker against a healthy
 // server, failing every open after them for the cooldown.
 func TestNew_OpenRetryCallerCancelledOpenRecordsNoCircuitFailure(t *testing.T) {
-	circuitDir := t.TempDir()
-	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
-	// Deliberately NOT BEADS_TEST_MODE=1: that is what disables the breaker.
-	t.Setenv("BEADS_TEST_MODE", "")
-	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
-	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
-	config.ResetForTesting()
-	t.Cleanup(config.ResetForTesting)
+	circuitDir := isolateBreakerEnv(t)
 
 	beadsDir := newBeadsDir(t, "30s")
 	rec := stubServerDial(t, -1, errConnRefused, 0)
@@ -1406,16 +1404,7 @@ func TestNew_OpenRetryCallerCancelledOpenRecordsNoCircuitFailure(t *testing.T) {
 // an errors.Is guard silently stops counting ordinary server timeouts on the
 // DEFAULT path -- the exact inverse of what the guard is for.
 func TestNew_OpenRetryServerTimeoutStillCountsTowardsBreaker(t *testing.T) {
-	circuitDir := t.TempDir()
-	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
-	t.Setenv("BEADS_TEST_MODE", "")
-	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
-	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
-	config.ResetForTesting()
-	t.Cleanup(config.ResetForTesting)
+	circuitDir := isolateBreakerEnv(t)
 
 	// No budget configured: this is the DEFAULT open, on the legacy dialer.
 	beadsDir := newBeadsDir(t, "")
@@ -1443,16 +1432,7 @@ func TestNew_OpenRetryServerTimeoutStillCountsTowardsBreaker(t *testing.T) {
 // so its failure is server evidence whatever state the caller's context is in.
 // Exempting it would change base breaker accounting on the default open.
 func TestNew_OpenRetryCancelledContextStillCountsWithBudgetOff(t *testing.T) {
-	circuitDir := t.TempDir()
-	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
-	t.Setenv("BEADS_TEST_MODE", "")
-	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
-	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
-	config.ResetForTesting()
-	t.Cleanup(config.ResetForTesting)
+	circuitDir := isolateBreakerEnv(t)
 
 	beadsDir := newBeadsDir(t, "") // no budget: the default open
 	rec := stubServerDial(t, -1, errConnRefused, 0)
@@ -1798,5 +1778,117 @@ func TestApplyResolvedConfigOpenRetryDirTracksEveryOpen(t *testing.T) {
 	}
 	if cfg.BeadsDir != first {
 		t.Errorf("second open: BeadsDir = %q, want the caller override %q left alone", cfg.BeadsDir, first)
+	}
+}
+
+// The breaker guard, exercised on the path it actually guards.
+//
+// The guard is `!(openRetryEnabled(cfg) && openEndedByCaller(ctx))`, so with
+// the budget OFF it short-circuits before openEndedByCaller is reached: the
+// budget-off server-timeout test above pins the DEFAULT path and says nothing
+// about how "who ended this open" is decided. These two arms turn the budget
+// ON and separate the two answers, which is where an errors.Is guard and a
+// context guard disagree:
+//
+//   - the server never answers (errIOTimeout on every dial, which satisfies
+//     errors.Is(err, context.DeadlineExceeded)) while the caller's context is
+//     perfectly healthy -- server evidence, ONE recorded failure;
+//   - the caller's own deadline expires mid-dial -- caller evidence, ZERO.
+//
+// An errors.Is guard reports "the caller ended it" for both, so it silently
+// stops counting a dead server towards the breaker on the enabled path.
+func TestNew_OpenRetryEnabledServerTimeoutCountsTowardsBreaker(t *testing.T) {
+	circuitDir := isolateBreakerEnv(t)
+
+	beadsDir := newBeadsDir(t, "1200ms")
+	rec := stubServerDial(t, -1, errIOTimeout{}, 0)
+
+	cfg := productionCfg(beadsDir)
+	ctx := context.Background()
+	_, err := New(ctx, cfg)
+	if err == nil {
+		t.Fatal("expected the open to fail against a server that never answers")
+	}
+
+	// Positive control: the budget really was live for this open, so this is
+	// the ENABLED path and not the fail-fast one the budget-off test covers.
+	if got := effectiveOpenRetryBudget(cfg); got != 1200*time.Millisecond {
+		t.Fatalf("precondition: New must have resolved the configured budget, got %s", got)
+	}
+	if !openRetryEnabled(cfg) {
+		t.Fatal("precondition: this open must be on the enabled path")
+	}
+	if rec.attempts < 2 {
+		t.Fatalf("precondition: expected the budget to retry, got %d dial attempts", rec.attempts)
+	}
+	// The caller is healthy throughout: whatever ended this open, it was not
+	// the caller. Asserted rather than assumed, because it is the ONE input
+	// the guard is allowed to read.
+	if ctx.Err() != nil {
+		t.Fatalf("precondition: the caller's context must be healthy, got %v", ctx.Err())
+	}
+	// ...and the error nonetheless satisfies the identity test a naive guard
+	// would have used. Without this the arm would pass against a guard that
+	// happens never to fire.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("precondition: a net dial timeout satisfies errors.Is(err, context.DeadlineExceeded); got %v", err)
+	}
+
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
+		t.Errorf("a server that never answers must record exactly 1 failure on the enabled path, got %d (after %d dial attempts)",
+			failures, rec.attempts)
+	}
+}
+
+// The other direction: the caller's deadline expires while a dial is in
+// flight. That is evidence about the caller, so nothing may be recorded --
+// five such opens inside the failure window would otherwise trip the breaker
+// against a healthy server.
+func TestNew_OpenRetryCallerDeadlineDuringOpenRecordsNoCircuitFailure(t *testing.T) {
+	circuitDir := isolateBreakerEnv(t)
+
+	// A budget far longer than the caller's deadline, so the open is still
+	// mid-retry when the deadline lands: the caller wins the race by
+	// construction, not by timing luck.
+	beadsDir := newBeadsDir(t, "30s")
+	// Every dial blocks for the whole probe timeout (the stub caps its sleep
+	// at the timeout it was handed), so the 250ms deadline lands INSIDE a
+	// dial rather than between two of them.
+	rec := stubServerDial(t, -1, errConnRefused, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := New(ctx, productionCfg(beadsDir))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected the open to fail once the caller's deadline expired")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the caller's deadline to stay identifiable in the error, got %v", err)
+	}
+	// Preconditions: the open really reached a dial (so this is not a
+	// zero-dial open passing vacuously), and it ended on the CALLER's
+	// deadline rather than on the 30s budget.
+	if rec.attempts < 1 {
+		t.Fatalf("precondition: expected the open to reach a dial, got %d attempts", rec.attempts)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("precondition: the open must end on the caller's deadline, not the budget; took %s", elapsed)
+	}
+
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 0 {
+		t.Errorf("an open ended by the caller's deadline must not count towards the breaker, got %d recorded failures", failures)
+	}
+
+	// Positive control, same breaker directory and same config: an open with
+	// no caller deadline DOES record one. Without it the zero above is
+	// indistinguishable from a breaker that was never live.
+	if _, err := New(context.Background(), productionCfg(newBeadsDir(t, "600ms"))); err == nil {
+		t.Fatal("expected the uncancelled open to fail against an unreachable server")
+	}
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
+		t.Errorf("control: an open with a healthy caller must record exactly 1 failure, got %d", failures)
 	}
 }
