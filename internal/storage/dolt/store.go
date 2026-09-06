@@ -1835,6 +1835,24 @@ func openRetryEnabled(cfg *Config) bool {
 	return true
 }
 
+// openWasCancelledByCaller reports an open that ended because ITS CALLER's
+// context was cancelled or expired, rather than because the server failed to
+// answer.
+//
+// The distinction is the circuit breaker's: the breaker exists to fail fast
+// when a server is known to be down, so only evidence ABOUT THE SERVER may
+// count towards it. A caller that cancels is evidence about the caller. Before
+// the open-retry budget the pre-dial probe ignored context entirely and could
+// not produce such an error at all; the retry loop can, and five cancelled
+// opens inside the failure window would otherwise trip the breaker against a
+// perfectly healthy server and fail every open after them for the cooldown.
+//
+// A dial that timed out on its OWN timeout is a different error
+// (os.ErrDeadlineExceeded, "i/o timeout") and stays countable.
+func openWasCancelledByCaller(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // openRetryCancelled reports a retry loop ended by its context. Both causes
 // stay identifiable with errors.Is: the dial failure that made the loop retry,
 // and the context error that ended it.
@@ -2118,7 +2136,9 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 					"Check logs: %s", addr, dialErr, doltserver.LogPath(resolvedBeadsDir))
 			}
 		} else {
-			if breaker != nil {
+			// A caller that cancelled its own open says nothing about the
+			// server, so it must not count towards the breaker.
+			if breaker != nil && !openWasCancelledByCaller(dialErr) {
 				breaker.RecordFailure()
 			}
 			var hint string

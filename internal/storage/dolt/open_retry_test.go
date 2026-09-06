@@ -77,6 +77,14 @@ type dialRecord struct {
 	legacy   int
 	ctxAware int
 	timeouts []time.Duration
+	// offsets[i] is how long after the stub was installed attempt i STARTED.
+	// offset+timeout is the wall-clock instant an attempt is allowed to run
+	// until, which is the only way a test can check a per-attempt timeout
+	// against the budget REMAINING at that attempt rather than against the
+	// whole budget -- the difference between a real deadline and a
+	// min(probeTimeout, budget) cap that overruns it.
+	offsets []time.Duration
+	t0      time.Time
 }
 
 // stubServerDial replaces serverDial with one that fails failures times before
@@ -125,12 +133,15 @@ func installDialStubs(t *testing.T, rec *dialRecord, answer func(context.Context
 	t.Helper()
 	origCtx, origLegacy := serverDial, serverDialLegacy
 	t.Cleanup(func() { serverDial, serverDialLegacy = origCtx, origLegacy })
+	rec.t0 = time.Now()
 	serverDial = func(ctx context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
 		rec.ctxAware++
+		rec.offsets = append(rec.offsets, time.Since(rec.t0))
 		return answer(ctx, timeout)
 	}
 	serverDialLegacy = func(_, _ string, timeout time.Duration) (net.Conn, error) {
 		rec.legacy++
+		rec.offsets = append(rec.offsets, time.Since(rec.t0))
 		return answer(nil, timeout) //nolint:staticcheck // the legacy dialer has no context, by design
 	}
 }
@@ -366,17 +377,24 @@ func TestOpenRetryBudgetOn_FirstProbeFullThenRetriesCapped(t *testing.T) {
 	if rec.timeouts[0] != probeTimeout {
 		t.Errorf("expected the first probe to keep the caller's full %s timeout, got %s", probeTimeout, rec.timeouts[0])
 	}
-	// Half two: every RETRY is bounded by what is left of the budget, so none
-	// of them may be handed the full probe timeout.
+	// Half two: every RETRY is bounded by what is left of the budget AT THAT
+	// ATTEMPT, not by the budget as a whole. Checking start-offset + timeout
+	// against the deadline is what separates a real remaining-time cap from a
+	// min(probeTimeout, budget) cap: the latter hands every retry the full
+	// budget however late it starts, so it overruns the deadline while still
+	// producing timeouts that are individually "within the budget".
+	const slack = 75 * time.Millisecond
 	for i, to := range rec.timeouts[1:] {
+		attempt := i + 1
 		if to <= 0 {
-			t.Errorf("retry %d got a non-positive timeout %s, which means NO timeout at all", i+1, to)
+			t.Errorf("retry %d got a non-positive timeout %s, which means NO timeout at all", attempt, to)
 		}
 		if to >= probeTimeout {
-			t.Errorf("retry %d got timeout %s, not capped by the remaining budget (%s)", i+1, to, budget)
+			t.Errorf("retry %d got timeout %s, not capped at all (caller's probe timeout is %s)", attempt, to, probeTimeout)
 		}
-		if to > budget {
-			t.Errorf("retry %d got timeout %s, above the whole budget %s", i+1, to, budget)
+		if end := rec.offsets[attempt] + to; end > budget+slack {
+			t.Errorf("retry %d started at %s with a %s timeout, so it may run until %s -- past the %s budget",
+				attempt, rec.offsets[attempt], to, end, budget)
 		}
 	}
 	if ceiling := budget + 250*time.Millisecond; elapsed > ceiling {
@@ -1081,12 +1099,50 @@ func TestNew_OpenRetryExhaustedBudgetRecordsOneCircuitFailure(t *testing.T) {
 		t.Fatalf("precondition: expected the budget to retry, got %d dial attempts", rec.attempts)
 	}
 
-	entries, globErr := filepath.Glob(filepath.Join(circuitDir, "*.json"))
+	// The invariant. Recording inside the retry loop instead would put
+	// rec.attempts here -- and at five, trip the breaker.
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
+		t.Errorf("expected exactly 1 recorded circuit failure for one exhausted open, got %d (after %d dial attempts)",
+			failures, rec.attempts)
+	}
+	if state := circuitStateRecorded(t, circuitDir); state != circuitClosed {
+		t.Errorf("one failed open must not trip the breaker, got state %q", state)
+	}
+}
+
+// circuitFailuresRecorded reads the failure count the breaker persisted in dir.
+// No state file at all means nothing was ever recorded, which is a count of 0
+// rather than a test error -- that is exactly the outcome one of the callers
+// asserts.
+func circuitFailuresRecorded(t *testing.T, dir string) int {
+	t.Helper()
+	state, ok := readCircuitState(t, dir)
+	if !ok {
+		return 0
+	}
+	return state.Failures
+}
+
+func circuitStateRecorded(t *testing.T, dir string) string {
+	t.Helper()
+	state, ok := readCircuitState(t, dir)
+	if !ok {
+		return circuitClosed
+	}
+	return state.State
+}
+
+func readCircuitState(t *testing.T, dir string) (circuitState, bool) {
+	t.Helper()
+	entries, globErr := filepath.Glob(filepath.Join(dir, "*.json"))
 	if globErr != nil {
 		t.Fatalf("glob circuit state: %v", globErr)
 	}
+	if len(entries) == 0 {
+		return circuitState{}, false
+	}
 	if len(entries) != 1 {
-		t.Fatalf("expected exactly 1 circuit-breaker state file, got %d: %v", len(entries), entries)
+		t.Fatalf("expected at most 1 circuit-breaker state file, got %d: %v", len(entries), entries)
 	}
 	raw, readErr := os.ReadFile(entries[0])
 	if readErr != nil {
@@ -1096,14 +1152,55 @@ func TestNew_OpenRetryExhaustedBudgetRecordsOneCircuitFailure(t *testing.T) {
 	if jsonErr := json.Unmarshal(raw, &state); jsonErr != nil {
 		t.Fatalf("parse circuit state %s: %v", raw, jsonErr)
 	}
-	// The invariant. Recording inside the retry loop instead would put
-	// rec.attempts here -- and at five, trip the breaker.
-	if state.Failures != 1 {
-		t.Errorf("expected exactly 1 recorded circuit failure for one exhausted open, got %d (after %d dial attempts)",
-			state.Failures, rec.attempts)
+	return state, true
+}
+
+// ...and the mirror of that invariant: an open the CALLER cancelled says
+// nothing about the server, so it must not count towards the breaker at all.
+// The budget introduced this hazard -- before it, the pre-dial probe ignored
+// context and could not return a cancellation error -- and five cancelled
+// opens inside the failure window would trip the breaker against a healthy
+// server, failing every open after them for the cooldown.
+func TestNew_OpenRetryCallerCancelledOpenRecordsNoCircuitFailure(t *testing.T) {
+	circuitDir := t.TempDir()
+	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
+	// Deliberately NOT BEADS_TEST_MODE=1: that is what disables the breaker.
+	t.Setenv("BEADS_TEST_MODE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+
+	beadsDir := newBeadsDir(t, "30s")
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New(ctx, productionCfg(beadsDir))
+	if err == nil {
+		t.Fatal("expected a cancelled open to fail")
 	}
-	if state.State != circuitClosed {
-		t.Errorf("one failed open must not trip the breaker, got state %q", state.State)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the cancellation to stay identifiable, got %v", err)
+	}
+	if rec.attempts != 0 {
+		t.Fatalf("expected no dial on an already-cancelled open, got %d", rec.attempts)
+	}
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 0 {
+		t.Errorf("a caller-cancelled open must not count towards the breaker, got %d recorded failures", failures)
+	}
+
+	// Positive control, in the same breaker directory: a genuine unreachable
+	// server on the SAME config does record one. Without it, the zero above
+	// would be indistinguishable from a breaker that was never live.
+	if _, err := New(context.Background(), productionCfg(beadsDir)); err == nil {
+		t.Fatal("expected the uncancelled open to fail against an unreachable server")
+	}
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
+		t.Errorf("control: an uncancelled failed open must record exactly 1 failure, got %d", failures)
 	}
 }
 
