@@ -2138,6 +2138,119 @@ func TestOpenRetryProductionDialHonoursItsTimeout(t *testing.T) {
 	}
 }
 
+// Three properties of the workspace classification the budget's mode gate
+// performs on EVERY open, including the ones that have no budget at all: it
+// must not change the workspace, it must agree with the CLI about
+// shared-server mode, and it must not hand a budget to a proxied workspace.
+func TestNew_OpenRetryClassificationDoesNotMigrateLegacyConfig(t *testing.T) {
+	isolateOpenEnv(t)
+	withoutUserGlobalBudget(t)
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A pre-metadata.json workspace. configfile.Load MIGRATES one of these --
+	// it writes metadata.json and deletes config.json -- so classifying the
+	// workspace through Load would rewrite it as a side effect of asking, on
+	// an open that configures no budget and is otherwise byte for byte what
+	// it was before this feature existed.
+	legacy := filepath.Join(beadsDir, "config.json")
+	if err := os.WriteFile(legacy, []byte(`{"backend":"dolt","dolt_mode":"server"}`), 0o644); err != nil {
+		t.Fatalf("write legacy config.json: %v", err)
+	}
+	stubServerDial(t, -1, errConnRefused, 0)
+
+	if _, err := New(context.Background(), productionCfg(beadsDir)); err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+
+	if _, err := os.Stat(legacy); err != nil {
+		t.Errorf("the legacy config.json must survive an open that configures no budget: %v", err)
+	}
+	if _, err := os.Stat(configfile.ConfigPath(beadsDir)); err == nil {
+		t.Errorf("classifying the workspace must not write %s", configfile.ConfigPath(beadsDir))
+	}
+}
+
+// Shared-server mode set in config.yaml rather than in the environment. The
+// CLI treats it as server mode whatever metadata.json says, so the budget must
+// too: configfile reads only the env half of that setting.
+func TestNew_OpenRetrySharedServerFromYamlKeepsItsBudget(t *testing.T) {
+	isolateOpenEnv(t)
+	withoutUserGlobalBudget(t)
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "dolt:\n  auto-start: false\n  shared-server: true\n  open-retry-budget: 1200ms\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	// metadata.json says EMBEDDED, which is the case cmd/bd/main.go overrides:
+	// "shared server mode is a form of server mode; override metadata.json if
+	// it still says embedded".
+	meta := &configfile.Config{
+		Backend:      configfile.BackendDolt,
+		DoltMode:     configfile.DoltModeEmbedded,
+		DoltDatabase: "openretry_probe",
+	}
+	if err := meta.Save(beadsDir); err != nil {
+		t.Fatalf("save metadata.json: %v", err)
+	}
+	t.Setenv("BEADS_DIR", beadsDir)
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("config.Initialize: %v", err)
+	}
+	// Preconditions: the flag is live in config.yaml and NOT in the
+	// environment, which is the half configfile can see on its own.
+	if !doltserver.IsSharedServerMode() {
+		t.Fatal("precondition: dolt.shared-server must be live for this fixture")
+	}
+	if os.Getenv("BEADS_DOLT_SHARED_SERVER") != "" {
+		t.Fatal("precondition: the env half must be unset, or this arm proves nothing")
+	}
+	rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+
+	if _, err := New(context.Background(), productionCfg(beadsDir)); err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+	if rec.attempts != 2 {
+		t.Errorf("a shared-server open must honour its budget, got %d dial attempts", rec.attempts)
+	}
+}
+
+// A proxied-server workspace opened from metadata alone. applyResolvedConfig
+// never sets cfg.ProxiedServer, so openRetryEnabled's proxied exclusion cannot
+// fire on this path and the workspace classification is what excludes it.
+func TestNewFromConfig_OpenRetryProxiedWorkspaceNeverWaits(t *testing.T) {
+	isolateOpenEnv(t)
+	withUserGlobalBudget(t, "30s")
+	beadsDir := newBeadsDir(t, "30s")
+	meta := &configfile.Config{
+		Backend:        configfile.BackendDolt,
+		DoltMode:       configfile.DoltModeProxiedServer,
+		DoltServerPort: externalTestPort,
+		DoltDatabase:   "openretry_probe",
+	}
+	if err := meta.Save(beadsDir); err != nil {
+		t.Fatalf("save metadata.json: %v", err)
+	}
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	cfg := &Config{}
+	if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, cfg); err == nil {
+		t.Fatal("expected the open to fail")
+	}
+	// The precondition IS the finding: the field the mode exclusion reads is
+	// false on this path, so nothing downstream would have excluded it.
+	if cfg.ProxiedServer {
+		t.Fatal("precondition: applyResolvedConfig must leave ProxiedServer false, or another exclusion does this arm's work")
+	}
+	if rec.attempts != 1 {
+		t.Errorf("a proxied workspace must not wait out a budget, got %d dial attempts", rec.attempts)
+	}
+}
+
 // The public constructors, which no other test here drives.
 //
 // Every positive retry fixture in this file builds a Config directly and sets

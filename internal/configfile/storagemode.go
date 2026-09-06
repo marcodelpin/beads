@@ -68,13 +68,20 @@ func (c *Config) StorageMode() StorageMode {
 // beadsDir, for callers that hold a directory rather than a loaded
 // configuration.
 //
-// An unreadable metadata.json is returned as an error rather than as a mode:
+// It reads through LoadForDiscovery, NOT Load: classifying a workspace must
+// not CHANGE it. Load carries a migration side effect -- a legacy config.json
+// is parsed, written back out as metadata.json and then deleted -- so a caller
+// that merely asks "which store does this directory use" would rewrite the
+// workspace as a side effect of asking. Both functions read the same two files
+// in the same order, so the answer is the same; only the writing differs.
+//
+// An unreadable configuration is returned as an error rather than as a mode:
 // the caller that is about to OPEN it will refuse the open anyway (a
 // present-but-unloadable metadata.json is a hard error, never a silent
 // embedded fallback), and a caller merely asking about the workspace must be
 // able to tell "embedded" from "I could not tell".
 func ResolveStorageMode(beadsDir string) (StorageMode, error) {
-	cfg, err := Load(beadsDir)
+	cfg, err := LoadForDiscovery(beadsDir)
 	if err != nil {
 		return StorageModeEmbedded, fmt.Errorf("load %s: %w", ConfigPath(beadsDir), err)
 	}

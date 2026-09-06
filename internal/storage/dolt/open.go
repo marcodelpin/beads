@@ -545,11 +545,26 @@ func resolveOpenRetryBudget(cfg *Config, beadsDir string) time.Duration {
 // configfile.StorageMode predicate so the failure mode (an unreadable
 // metadata.json) is stated once, at the one place that has to choose one.
 func isServerBackedWorkspace(beadsDir string) bool {
+	// Shared-server mode is configured OUTSIDE metadata.json -- an env var or
+	// config.yaml's dolt.shared-server -- and the CLI treats it as server mode
+	// even when the metadata still says embedded (cmd/bd/main.go overrides it
+	// there for exactly that reason). configfile reads only the env half, to
+	// avoid importing doltserver, so ask doltserver here as the lifecycle
+	// resolver does; otherwise a shared-server workspace whose metadata says
+	// nothing would be classified embedded and lose its budget.
+	if doltserver.IsSharedServerMode() {
+		return true
+	}
 	mode, err := configfile.ResolveStorageMode(beadsDir)
 	if err != nil {
 		return false
 	}
-	return mode != configfile.StorageModeEmbedded
+	// StorageModeServer only. A proxied server owns its own connection
+	// details and lifecycle, and applyResolvedConfig does not set
+	// cfg.ProxiedServer, so openRetryEnabled's proxied exclusion never fires
+	// on an open driven by metadata alone: this is where that mode is
+	// excluded.
+	return mode == configfile.StorageModeServer
 }
 
 // applyCentralConfigDefaults loads the central server config from
