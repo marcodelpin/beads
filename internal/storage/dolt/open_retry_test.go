@@ -584,12 +584,18 @@ func TestOpenRetryBudgetEngagesForExternallyManagedLocalhost(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "localhost", "::1"} {
 		t.Run(host, func(t *testing.T) {
 			cfg := &Config{
-				ServerMode:      true,
-				ServerHost:      host,
-				ServerPort:      3307,
-				Path:            "/tmp/does-not-matter/.beads/dolt",
-				AutoStart:       false, // resolveAutoStart: mode == ServerModeExternal
-				OpenRetryBudget: 750 * time.Millisecond,
+				ServerMode: true,
+				ServerHost: host,
+				ServerPort: 3307,
+				Path:       "/tmp/does-not-matter/.beads/dolt",
+				AutoStart:  false, // resolveAutoStart: mode == ServerModeExternal
+				// Comfortably above the backoff's first interval, which is
+				// JITTERED over [250ms, 750ms]: a budget of 750ms lets a wait
+				// at the top of that range end the loop before the retry this
+				// test is about, which is a flake at roughly 1 run in 100
+				// (caught by -count=5). The budget is not what this test
+				// measures -- the gate is -- so give it room.
+				OpenRetryBudget: 5 * time.Second,
 			}
 			if !openRetryEnabled(cfg) {
 				t.Fatal("an externally managed localhost server must honour the budget")
