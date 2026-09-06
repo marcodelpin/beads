@@ -950,13 +950,21 @@ func validateYamlConfigValue(key, value string) error {
 		// than the default. An explicit "0" in the project being opened
 		// disables the budget even when a wider default sets one; a project
 		// that does not mention the key inherits that wider default.
+		//
+		// Bare seconds go through ParseDuration too, on value+"s", because
+		// that is the primitive the RUNTIME reader uses (dolt.parseTimeout).
+		// Multiplying a strconv.Atoi result by time.Second accepts values it
+		// rejects: 18446744074 wraps to a positive 290ms and -9223372037
+		// wraps to a positive 2562047h, so a validator built that way passes
+		// a value the runtime then resolves to zero -- and passes a NEGATIVE
+		// one past the check below.
 		budget, err := time.ParseDuration(value)
 		if err != nil {
-			secs, numErr := strconv.Atoi(value)
-			if numErr != nil {
+			var secErr error
+			budget, secErr = time.ParseDuration(value + "s")
+			if secErr != nil {
 				return fmt.Errorf("dolt.open-retry-budget must be a duration (e.g. \"30s\", \"2m\") or a number of seconds, got %q", value)
 			}
-			budget = time.Duration(secs) * time.Second
 		}
 		if budget < 0 {
 			return fmt.Errorf("dolt.open-retry-budget must not be negative, got %q", value)

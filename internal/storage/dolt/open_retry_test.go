@@ -888,20 +888,35 @@ func withUserGlobalBudget(t *testing.T, budget string) {
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write user config.yaml: %v", err)
 	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	redirectUserConfigHome(t, home)
 }
 
-// withoutUserGlobalBudget points HOME (and the native user-config dir) at an
-// EMPTY tree. An arm that must observe NO machine-wide default has to install
-// that absence: without it the arm would be reading whatever the host running
-// the test happens to keep in ~/.config/bd/config.yaml, and a pass would say
-// nothing about the fixture.
+// withoutUserGlobalBudget points the user-config lookup at an EMPTY tree. An
+// arm that must observe NO machine-wide default has to install that absence:
+// without it the arm would be reading whatever the host running the test
+// happens to keep in its user config, and a pass would say nothing about the
+// fixture.
 func withoutUserGlobalBudget(t *testing.T) {
 	t.Helper()
-	home := t.TempDir()
+	redirectUserConfigHome(t, t.TempDir())
+}
+
+// redirectUserConfigHome points BOTH resolvers the user-level config lookup
+// goes through -- os.UserHomeDir and os.UserConfigDir -- at home.
+//
+// HOME and XDG_CONFIG_HOME alone are a Linux/macOS answer: on Windows those
+// two read USERPROFILE and APPDATA, so a fixture that sets only the POSIX pair
+// installs its config where nothing looks for it and leaves the real user's
+// config visible. The failure is asymmetric -- the "inherits the default" arms
+// go red, the "sees no default" arms go green for the wrong reason -- so it
+// cannot be caught by reading the arms. Same pattern as
+// internal/config/user_config_path_test.go.
+func redirectUserConfigHome(t *testing.T, home string) {
+	t.Helper()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, ".config"))
 }
 
 // newSharedServerDoltPath builds the data path a shared-server open carries:
@@ -1616,9 +1631,9 @@ func TestResolveOpenRetryBudgetPrecedence(t *testing.T) {
 // not an invented path shape that happens to fail isProjectDoltDataPath.
 func TestOpenRetrySharedServerDataPathIsNotAProjectPath(t *testing.T) {
 	isolateOpenEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// SharedServerPath resolves through the user home, so this fixture needs
+	// the same redirect the user-config ones do -- on every platform.
+	redirectUserConfigHome(t, t.TempDir())
 	t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
 
 	project := newBeadsDir(t, "0")
@@ -2023,4 +2038,107 @@ func TestOpenRetryProductionDialHonoursItsTimeout(t *testing.T) {
 	if elapsed < timeout {
 		t.Errorf("the dial returned after %s, before its own %s timeout", elapsed.Round(time.Millisecond), timeout)
 	}
+}
+
+// The public constructors, which no other test here drives.
+//
+// Every positive retry fixture in this file builds a Config directly and sets
+// ServerMode -- the field the CLI's store factory sets and applyResolvedConfig
+// does not. So the whole file would survive re-adding `!cfg.ServerMode` to the
+// exclusion guard, which is exactly the defect the first review round found:
+// it makes the feature unreachable for library and `bd doctor` opens, whose
+// ServerMode stays false even against a genuinely remote server.
+//
+// These arms go in through NewFromConfigWithOptions with an EXTERNAL server in
+// metadata.json and no caller overrides at all, so what decides is the
+// workspace on disk.
+func TestNewFromConfig_OpenRetryHonoursTheOpenedWorkspace(t *testing.T) {
+	writeExternalWorkspace := func(t *testing.T, budget string) string {
+		t.Helper()
+		beadsDir := newBeadsDir(t, budget)
+		// dolt_server_host is a NON-localhost name, which is what makes this
+		// an externally managed server: bd cannot start it, so waiting is the
+		// only remedy it has -- the case the budget exists for.
+		meta := &configfile.Config{
+			Backend:        configfile.BackendDolt,
+			DoltMode:       "server",
+			DoltServerHost: externalHost,
+			DoltServerPort: externalTestPort,
+			DoltDatabase:   "openretry_probe",
+		}
+		if err := meta.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata.json: %v", err)
+		}
+		return beadsDir
+	}
+
+	t.Run("project budget enables the retry", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withoutUserGlobalBudget(t)
+		beadsDir := writeExternalWorkspace(t, "1200ms")
+		rec := stubServerDialErrs(t, errConnRefused, errNoSuchHost)
+
+		if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, nil); err == nil {
+			t.Fatal("expected the open to fail against an unreachable server")
+		}
+		// The discriminator: ServerMode is never set on this path, so a guard
+		// keyed on it would report exactly one attempt here.
+		if rec.attempts != 2 {
+			t.Errorf("a public-constructor open on an external workspace must retry, got %d dial attempts", rec.attempts)
+		}
+	})
+
+	t.Run("project zero disables it against a positive user-global default", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withUserGlobalBudget(t, "30s")
+		beadsDir := writeExternalWorkspace(t, "0")
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, nil); err == nil {
+			t.Fatal("expected the open to fail against an unreachable server")
+		}
+		if rec.attempts != 1 {
+			t.Errorf("the opened workspace's explicit 0 must disable the budget, got %d dial attempts", rec.attempts)
+		}
+	})
+
+	t.Run("an embedded workspace never waits", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withUserGlobalBudget(t, "30s")
+		beadsDir := newBeadsDir(t, "30s")
+		// An explicitly embedded workspace with a leftover local server
+		// endpoint: the version-maintenance probes open one of these with
+		// NewFromConfig* and reach the server path. There is no server for
+		// waiting to help, so the budget must not engage however it is
+		// configured.
+		meta := &configfile.Config{
+			Backend:      configfile.BackendDolt,
+			DoltMode:     "embedded",
+			DoltDatabase: "openretry_probe",
+		}
+		if err := meta.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata.json: %v", err)
+		}
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		// No DisableAutoStart here, deliberately: that flag is its OWN
+		// exclusion, so passing it would make this arm pass whether or not
+		// the embedded exclusion exists. The workspace's own
+		// "dolt.auto-start: false" (newBeadsDir writes it) is what leaves the
+		// open reaching the gate with nothing else excluding it.
+		cfg := &Config{}
+		if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, cfg); err == nil {
+			t.Fatal("expected the open to fail")
+		}
+		if cfg.AutoStart {
+			t.Fatalf("precondition: the workspace's auto-start: false must survive, or another exclusion is doing this arm's work")
+		}
+		if cfg.DisableAutoStart || cfg.ServerSocket != "" || cfg.ProxiedServer {
+			t.Fatalf("precondition: no OTHER exclusion may apply here (DisableAutoStart=%v socket=%q proxied=%v)",
+				cfg.DisableAutoStart, cfg.ServerSocket, cfg.ProxiedServer)
+		}
+		if rec.attempts != 1 {
+			t.Errorf("an embedded workspace must not wait out a budget, got %d dial attempts", rec.attempts)
+		}
+	})
 }

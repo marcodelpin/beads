@@ -679,7 +679,16 @@ func TestValidateYamlConfigValue_DoltOpenRetryBudget(t *testing.T) {
 	}
 	// An unparseable or negative value would be read as "off" by the storage
 	// layer, so it must be rejected here rather than silently doing nothing.
-	invalid := []string{"30 seconds", "soon", "-5s", "-5", ""}
+	//
+	// The last two are the overflow cases, and they are the reason bare
+	// seconds go through time.ParseDuration(v+"s") rather than through
+	// strconv.Atoi multiplied by time.Second: 18446744074 wraps to a positive
+	// 290ms and -9223372037 wraps to a positive 2562047h, so the multiplying
+	// form ACCEPTS both -- one a value the runtime reader then resolves to
+	// zero, the other a NEGATIVE input walking straight past the sign check.
+	// A validator and the reader it guards have to use the same primitive or
+	// they answer different questions.
+	invalid := []string{"30 seconds", "soon", "-5s", "-5", "", "18446744074", "-9223372037", "9223372037"}
 	for _, v := range invalid {
 		if err := validateYamlConfigValue("dolt.open-retry-budget", v); err == nil {
 			t.Errorf("expected %q to be invalid", v)
