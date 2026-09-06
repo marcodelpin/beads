@@ -328,6 +328,11 @@ server on `127.0.0.1` — one pinned with `dolt_server_port` in
 | bd-managed localhost | recovers by starting a server | auto-start (`dolt.auto-start`) |
 | `bd --readonly` (strict) and the diagnostic opens | suppress every implicit recovery, and waiting is one | — |
 
+"Embedded" here is whatever the store factory opens with the embedded backend,
+which is any workspace whose `.beads/metadata.json` does not select a server —
+including one that says nothing at all about a server, not only one that says
+`dolt_mode: embedded`.
+
 **Where the value is read.** Highest priority first:
 
 1. the `.beads/config.local.yaml` of the project being opened, then its
