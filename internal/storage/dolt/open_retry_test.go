@@ -319,7 +319,12 @@ func TestOpenRetryBudgetOn_SucceedsOnLaterAttempt(t *testing.T) {
 // still wrapping the underlying dial error.
 func TestOpenRetryBudgetOn_ExhaustsBudget(t *testing.T) {
 	const (
-		budget       = 750 * time.Millisecond
+		// Comfortably above the backoff's first interval, which is jittered
+		// over [250ms, 750ms]: a budget equal to the TOP of that range lets a
+		// long first wait end the loop after one attempt, which the "at least
+		// one retry" assertion below then fails. Same jitter hazard as
+		// TestOpenRetryBudgetEngagesForExternallyManagedLocalhost.
+		budget       = 2500 * time.Millisecond
 		probeTimeout = time.Millisecond
 	)
 	rec := stubServerDial(t, -1, errConnRefused, 0)
@@ -742,6 +747,52 @@ func TestOpenRetryBudgetOn_CancellationAfterSuccessDrainsProbe(t *testing.T) {
 	if !conn.drained() {
 		t.Errorf("expected the probe drained before close (DrainAndCloseProbe), got %d reads / %d read deadlines / %d closes",
 			conn.reads, conn.readDeadlines, conn.closes)
+	}
+}
+
+// The PRODUCTION dialer must honour the caller's context. Every other
+// cancellation test here stubs serverDial, so all of them survive replacing the
+// real closure's ctx with context.Background() -- which would make an in-flight
+// probe ignore an open its caller has abandoned. This one calls the real var.
+func TestOpenRetryProductionDialHonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	// A 30s dial timeout against a black-hole address: only the context can
+	// end this quickly. The address is never actually contacted -- DialContext
+	// returns on an already-cancelled context before touching the network.
+	conn, err := serverDial(ctx, "tcp", "10.255.255.1:9", 30*time.Second)
+	elapsed := time.Since(start)
+
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("expected no connection from a cancelled dial")
+	}
+	if err == nil {
+		t.Fatal("expected an error from a cancelled dial")
+	}
+	// The load-bearing assertion: only a context-aware dial can produce this.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected errors.Is(err, context.Canceled) from the production dialer, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("expected the cancelled dial to return promptly, took %s", elapsed)
+	}
+}
+
+// ...and the legacy dialer must NOT honour it: that is what keeps the
+// budget-off open byte-for-byte what it was. Asserted on the real closure for
+// the same reason as above.
+func TestOpenRetryLegacyDialIgnoresCancellation(t *testing.T) {
+	// A closed local port refuses immediately, so this costs nothing and the
+	// error is the dial's own rather than a timeout.
+	_, err := serverDialLegacy("tcp", "127.0.0.1:9", 250*time.Millisecond)
+	if err == nil {
+		t.Skip("something is listening on 127.0.0.1:9; cannot assert the refusal")
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Errorf("the legacy dialer has no context and must never report cancellation, got %v", err)
 	}
 }
 
@@ -1340,6 +1391,44 @@ func TestNew_OpenRetryServerTimeoutStillCountsTowardsBreaker(t *testing.T) {
 	}
 }
 
+// The cancellation exemption must be confined to the ENABLED path. With the
+// budget off the probe is net.DialTimeout, which cannot see the context at all,
+// so its failure is server evidence whatever state the caller's context is in.
+// Exempting it would change base breaker accounting on the default open.
+func TestNew_OpenRetryCancelledContextStillCountsWithBudgetOff(t *testing.T) {
+	circuitDir := t.TempDir()
+	t.Setenv(testCircuitBreakerDirEnv, circuitDir)
+	t.Setenv("BEADS_TEST_MODE", "")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_SOCKET", "")
+	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+
+	beadsDir := newBeadsDir(t, "") // no budget: the default open
+	rec := stubServerDial(t, -1, errConnRefused, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New(ctx, productionCfg(beadsDir))
+	if err == nil {
+		t.Fatal("expected the open to fail against an unreachable server")
+	}
+	// Precondition: the legacy dialer ran and ignored the context, exactly as
+	// net.DialTimeout does, so this really is a server refusal.
+	if rec.legacy != 1 || rec.ctxAware != 0 {
+		t.Fatalf("precondition: the default open dials once on the legacy dialer, got legacy=%d ctx-aware=%d", rec.legacy, rec.ctxAware)
+	}
+	if !errors.Is(err, errConnRefused) {
+		t.Fatalf("precondition: expected the refusal to surface, got %v", err)
+	}
+	if failures := circuitFailuresRecorded(t, circuitDir); failures != 1 {
+		t.Errorf("a server refusal on the default open must count towards the breaker regardless of the caller's context, got %d recorded failures", failures)
+	}
+}
+
 // A Config reused across opens must not carry the first open's RESOLVED budget
 // into the second as if a caller had set it. Retargeting one Config at another
 // project -- or reopening after that project's config.yaml changed -- has to
@@ -1361,8 +1450,11 @@ func TestNew_OpenRetryResolvedBudgetIsNotACallerOverride(t *testing.T) {
 		t.Errorf("New must not write its resolved budget into the caller's field, got %s", cfg.OpenRetryBudget)
 	}
 
-	// Same Config object, retargeted at a project that opted out.
-	cfg.BeadsDir = optedOut
+	// Same Config object, retargeted at a project that opted out -- by
+	// rewriting cfg.Path ONLY, which is exactly what applyResolvedConfig does
+	// on a second NewFromConfigWithOptions call: it fills cfg.BeadsDir just
+	// once, when empty, so the stale first-project value is still sitting
+	// there. Resolving from BeadsDir would read the first project's config.
 	cfg.Path = filepath.Join(optedOut, "dolt")
 	rec2 := stubServerDial(t, -1, errConnRefused, 0)
 	_, err := New(context.Background(), cfg)

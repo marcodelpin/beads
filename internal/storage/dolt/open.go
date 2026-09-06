@@ -368,13 +368,19 @@ func openRetryBeadsDir(cfg *Config) string {
 	if cfg == nil {
 		return ""
 	}
-	if cfg.BeadsDir != "" {
-		return cfg.BeadsDir
-	}
+	// cfg.Path before cfg.BeadsDir, because Path is the field that tracks the
+	// open. applyResolvedConfig rewrites cfg.Path on EVERY open but fills in
+	// cfg.BeadsDir only when it is empty, so a Config reused for a second
+	// project keeps the FIRST project's BeadsDir -- and reading that would
+	// resolve this project's budget out of another project's config.yaml,
+	// ignoring an explicit 0 here. The two agree except when a Config is
+	// reused, and there Path is the fresh one. cfg.Path is <beadsDir>/dolt, so
+	// its parent is the .beads directory (the same derivation newServerMode
+	// uses for resolvedBeadsDir).
 	if cfg.Path != "" {
 		return filepath.Dir(cfg.Path)
 	}
-	return ""
+	return cfg.BeadsDir
 }
 
 // resolveOpenRetryBudget resolves dolt.open-retry-budget for the store rooted

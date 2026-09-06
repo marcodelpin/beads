@@ -2172,8 +2172,12 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 			}
 		} else {
 			// A caller that cancelled its own open says nothing about the
-			// server, so it must not count towards the breaker.
-			if breaker != nil && !openEndedByCaller(ctx) {
+			// server, so it must not count towards the breaker -- but ONLY on
+			// the enabled path. With the budget off the dial is
+			// net.DialTimeout, which cannot see the context at all, so its
+			// result is server evidence whatever state the context is in.
+			// Exempting the default path would change base breaker accounting.
+			if breaker != nil && !(openRetryEnabled(cfg) && openEndedByCaller(ctx)) {
 				breaker.RecordFailure()
 			}
 			var hint string
