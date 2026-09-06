@@ -824,8 +824,35 @@ func TestNewOpenRetryBackoffIsAlwaysBounded(t *testing.T) {
 // resolution from New, turns them red.
 // ---------------------------------------------------------------------------
 
+// writeServerWorkspace gives beadsDir a metadata.json that says "server".
+//
+// Every positive fixture in this file opens with productionCfg, i.e. with
+// ServerMode set -- the field the CLI store factory sets when, and only when,
+// the workspace's own metadata.json selects the server store. The budget's
+// mode gate asks that same question (configfile.StorageMode) of the directory,
+// so a fixture that models a server open has to SAY so on disk; a workspace
+// with no metadata.json at all is an embedded one, and an embedded workspace
+// deliberately gets no budget however its config.yaml is written.
+//
+// dolt_mode alone, with no host or port: the mode is what makes it a server
+// workspace, and leaving the endpoint out keeps the fixture usable by the
+// localhost arms too, which model a bd-managed server on 127.0.0.1.
+func writeServerWorkspace(t *testing.T, beadsDir string) {
+	t.Helper()
+	meta := &configfile.Config{
+		Backend:      configfile.BackendDolt,
+		DoltMode:     configfile.DoltModeServer,
+		DoltDatabase: "openretry_probe",
+	}
+	if err := meta.Save(beadsDir); err != nil {
+		t.Fatalf("save metadata.json: %v", err)
+	}
+}
+
 // newBeadsDir writes <dir>/config.yaml with the given dolt.open-retry-budget
-// value (empty means no key at all) and returns the .beads directory.
+// value (empty means no key at all) and returns the .beads directory. The
+// directory is a SERVER workspace (see writeServerWorkspace); the arms that
+// need an embedded one overwrite metadata.json themselves.
 func newBeadsDir(t *testing.T, budget string) string {
 	t.Helper()
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
@@ -839,6 +866,7 @@ func newBeadsDir(t *testing.T, budget string) string {
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
 	}
+	writeServerWorkspace(t, beadsDir)
 	return beadsDir
 }
 
@@ -859,6 +887,7 @@ func newBeadsDirFlat(t *testing.T, budget string) string {
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
 	}
+	writeServerWorkspace(t, beadsDir)
 	return beadsDir
 }
 
@@ -1228,6 +1257,12 @@ func newManagedBeadsDir(t *testing.T, budget string) string {
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
 	}
+	// A bd-MANAGED server is still a server workspace: beads owns its
+	// lifecycle, but the store it opens is the sql-server one. The budget
+	// therefore RESOLVES here and is excluded a step later, by
+	// openRetryEnabled, because auto-start is the remedy this mode has --
+	// which is exactly what the test asserts.
+	writeServerWorkspace(t, beadsDir)
 	return beadsDir
 }
 
@@ -2099,6 +2134,81 @@ func TestNewFromConfig_OpenRetryHonoursTheOpenedWorkspace(t *testing.T) {
 		}
 		if rec.attempts != 1 {
 			t.Errorf("the opened workspace's explicit 0 must disable the budget, got %d dial attempts", rec.attempts)
+		}
+	})
+
+	t.Run("a workspace with no dolt_mode never waits", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withUserGlobalBudget(t, "30s")
+		beadsDir := newBeadsDir(t, "30s")
+		// The plain workspace: metadata.json with a backend and a database
+		// and NOTHING about a server -- no dolt_mode, no host, no port. This
+		// is what `bd init` leaves behind for an ordinary embedded project,
+		// and the store factory opens it with embeddeddolt.
+		meta := &configfile.Config{
+			Backend:      configfile.BackendDolt,
+			DoltDatabase: "openretry_probe",
+		}
+		if err := meta.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata.json: %v", err)
+		}
+		// The precondition IS the finding this arm exists for: the two
+		// resolvers disagree about this directory. The lifecycle resolver
+		// says Owned -- "if there were a server here, beads would own it" --
+		// so a gate keyed on "not ServerModeEmbedded" lets the budget through
+		// on a workspace that has no server at all.
+		if got := doltserver.ResolveServerMode(beadsDir); got != doltserver.ServerModeOwned {
+			t.Fatalf("precondition: the lifecycle resolver must report Owned here, got %v", got)
+		}
+		mode, err := configfile.ResolveStorageMode(beadsDir)
+		if err != nil {
+			t.Fatalf("resolve storage mode: %v", err)
+		}
+		if mode != configfile.StorageModeEmbedded {
+			t.Fatalf("precondition: the store factory's predicate must report embedded here, got %v", mode)
+		}
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		cfg := &Config{}
+		if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, cfg); err == nil {
+			t.Fatal("expected the open to fail")
+		}
+		if cfg.AutoStart || cfg.DisableAutoStart || cfg.ServerSocket != "" || cfg.ProxiedServer {
+			t.Fatalf("precondition: no OTHER exclusion may apply here (autoStart=%v disableAutoStart=%v socket=%q proxied=%v)",
+				cfg.AutoStart, cfg.DisableAutoStart, cfg.ServerSocket, cfg.ProxiedServer)
+		}
+		if rec.attempts != 1 {
+			t.Errorf("a workspace the store factory opens embedded must not wait out a budget, got %d dial attempts", rec.attempts)
+		}
+	})
+
+	t.Run("an explicit caller budget does not reopen the mode gate", func(t *testing.T) {
+		isolateOpenEnv(t)
+		withoutUserGlobalBudget(t)
+		beadsDir := newBeadsDir(t, "")
+		meta := &configfile.Config{
+			Backend:      configfile.BackendDolt,
+			DoltMode:     configfile.DoltModeEmbedded,
+			DoltDatabase: "openretry_probe",
+		}
+		if err := meta.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata.json: %v", err)
+		}
+		rec := stubServerDial(t, -1, errConnRefused, 0)
+
+		// An explicit Config.OpenRetryBudget is a caller choosing the VALUE.
+		// It is not a caller choosing WHICH WORKSPACES the feature applies
+		// to, so it must not carry the budget onto an embedded store, where
+		// there is no server for the waiting to help.
+		cfg := &Config{OpenRetryBudget: 30 * time.Second}
+		if _, err := NewFromConfigWithOptions(context.Background(), beadsDir, cfg); err == nil {
+			t.Fatal("expected the open to fail")
+		}
+		if got := effectiveOpenRetryBudget(cfg); got != 0 {
+			t.Errorf("the mode gate must zero an explicit caller budget on an embedded workspace, got %s", got)
+		}
+		if rec.attempts != 1 {
+			t.Errorf("an explicit caller budget must not wait on an embedded workspace, got %d dial attempts", rec.attempts)
 		}
 	})
 

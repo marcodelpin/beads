@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
@@ -79,6 +80,21 @@ func TestNewDoltStore_EmbeddedRoutingNeverReachesTheOpenRetryPath(t *testing.T) 
 	// anywhere.
 	t.Run("server mode does reach dolt.New", func(t *testing.T) {
 		beadsDir := newOpenRetryBeadsDir(t, "200ms")
+		// The workspace has to SAY server, not just the caller: the budget's
+		// mode gate asks configfile.StorageMode of the directory -- the store
+		// factory's own routing predicate -- and a directory with no
+		// metadata.json is an embedded workspace, which deliberately gets no
+		// budget. The embedded arm above leaves its directory exactly as it
+		// is, which is why the two arms differ in the workspace as well as in
+		// the caller's ServerMode.
+		meta := &configfile.Config{
+			Backend:      configfile.BackendDolt,
+			DoltMode:     configfile.DoltModeServer,
+			DoltDatabase: "openretry_probe",
+		}
+		if err := meta.Save(beadsDir); err != nil {
+			t.Fatalf("save metadata.json: %v", err)
+		}
 		cfg := &dolt.Config{
 			ServerMode: true,
 			BeadsDir:   beadsDir,

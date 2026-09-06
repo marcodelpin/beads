@@ -482,25 +482,40 @@ func resolveOpenRetryBudget(cfg *Config, beadsDir string) time.Duration {
 	if cfg == nil {
 		return 0
 	}
+	// An EMBEDDED workspace gets no budget, whatever its config.yaml says and
+	// whatever the caller passed. openRetryEnabled excludes the modes that
+	// have another remedy, but it reasons about the Config, and an embedded
+	// workspace can still reach the server open through a caller that does
+	// not go through the CLI's store factory -- the version-maintenance
+	// probes, which open with NewFromConfig* on whatever workspace the
+	// command is in. Those probes were already dialling and already failing;
+	// without this they would now WAIT the operator's budget first, on a
+	// workspace that has no server for the waiting to help.
+	//
+	// The predicate is configfile.StorageMode -- the store factory's OWN
+	// routing decision, shared rather than respelled, so "which store does
+	// this directory open with" has one answer. It is deliberately not
+	// doltserver.ResolveServerMode: that resolver answers the LIFECYCLE
+	// question and reports ServerModeOwned for a workspace with no dolt_mode,
+	// no host and no port -- the plain embedded workspace the factory opens
+	// with embeddeddolt -- so gating on "not Embedded" left exactly that
+	// workspace retrying.
+	//
+	// It runs BEFORE the explicit-field return below because an explicit
+	// cfg.OpenRetryBudget is a caller overriding the VALUE, never the set of
+	// workspaces the feature applies to: a test or an embedder that sets the
+	// field is asking for a different budget, not for a budget on a store
+	// that has no server to wait for.
+	//
+	// A metadata.json that cannot be read yields no budget either. That open
+	// is going to fail anyway -- a present-but-unloadable metadata.json is a
+	// hard error on every path that opens one -- and failing it in
+	// milliseconds is what it did before this feature existed.
+	if beadsDir != "" && !isServerBackedWorkspace(beadsDir) {
+		return 0
+	}
 	if cfg.OpenRetryBudget != 0 {
 		return cfg.OpenRetryBudget
-	}
-	// A workspace that DECLARES itself embedded gets no budget, whatever its
-	// config.yaml says. openRetryEnabled excludes the modes that have another
-	// remedy, but it reasons about the Config, and an embedded workspace can
-	// still reach the server open through a caller that does not go through
-	// the CLI's store factory -- the version-maintenance probes, which open
-	// with NewFromConfig* on whatever workspace the command is in. Those
-	// probes were already dialling and already failing; without this they
-	// would now WAIT the operator's budget first, on a workspace that has no
-	// server for the waiting to help.
-	//
-	// doltserver.ResolveServerMode is the lifecycle resolver auto-start
-	// already uses, so this decision and that one cannot disagree; it reports
-	// Embedded only for an explicit dolt_mode="embedded" in metadata.json,
-	// never for an absent or host-inferred one.
-	if beadsDir != "" && doltserver.ResolveServerMode(beadsDir) == doltserver.ServerModeEmbedded {
-		return 0
 	}
 	// config.WorkspaceYamlValue, not config.GetStringFromDir: the latter only
 	// descends nested mappings, so it reports a flat
@@ -522,6 +537,19 @@ func resolveOpenRetryBudget(cfg *Config, beadsDir string) time.Duration {
 		return parseTimeout(strings.TrimSpace(raw), 0)
 	}
 	return 0
+}
+
+// isServerBackedWorkspace reports whether the workspace rooted at beadsDir
+// opens through a SERVER store -- the only kind of open for which waiting out
+// a restart is a remedy at all. It is a thin wrapper over the shared
+// configfile.StorageMode predicate so the failure mode (an unreadable
+// metadata.json) is stated once, at the one place that has to choose one.
+func isServerBackedWorkspace(beadsDir string) bool {
+	mode, err := configfile.ResolveStorageMode(beadsDir)
+	if err != nil {
+		return false
+	}
+	return mode != configfile.StorageModeEmbedded
 }
 
 // applyCentralConfigDefaults loads the central server config from

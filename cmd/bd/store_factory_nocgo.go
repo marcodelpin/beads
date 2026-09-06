@@ -82,7 +82,11 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.Dol
 	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
 		return backend.Open(ctx, beadsDir)
 	}
-	if cfg != nil && cfg.IsDoltProxiedServerMode() {
+	// Same routing predicate as the CGO build: configfile.StorageMode, asked
+	// once, so the two builds cannot disagree about which store a directory
+	// opens with.
+	switch cfg.StorageMode() {
+	case configfile.StorageModeProxiedServer:
 		// TODO: this needs to be uow provider
 		return nil, fmt.Errorf("proxy server store should be uow provider")
 		// 	return newProxiedServerStore(ctx, &dolt.Config{
@@ -90,8 +94,7 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.Dol
 		// 		Database:      cfg.GetDoltDatabase(),
 		// 		ProxiedServer: true,
 		// 	})
-	}
-	if cfg != nil && cfg.IsDoltServerMode() {
+	case configfile.StorageModeServer:
 		return dolt.NewFromConfig(ctx, beadsDir)
 	}
 	return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)
@@ -113,7 +116,8 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
 		return backend.OpenReadOnly(ctx, beadsDir)
 	}
-	if cfg != nil && cfg.IsDoltProxiedServerMode() {
+	switch cfg.StorageMode() {
+	case configfile.StorageModeProxiedServer:
 		// TODO: this needs to be uow provider
 		return nil, fmt.Errorf("proxy server store needs to be uow provider")
 		// return newProxiedServerStore(ctx, &dolt.Config{
@@ -122,8 +126,7 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 		// 	ProxiedServer: true,
 		// 	ReadOnly:      true,
 		// })
-	}
-	if cfg != nil && cfg.IsDoltServerMode() {
+	case configfile.StorageModeServer:
 		return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
 	}
 	return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)

@@ -159,7 +159,12 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.Dol
 	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
 		return backend.Open(ctx, beadsDir)
 	}
-	if cfg != nil && cfg.IsDoltProxiedServerMode() {
+	// configfile.StorageMode is THE routing predicate, shared rather than
+	// respelled: internal/storage/dolt asks the same question when it decides
+	// whether a workspace can honour the open-retry budget, and the two must
+	// not be able to disagree about which store a directory opens with.
+	switch cfg.StorageMode() {
+	case configfile.StorageModeProxiedServer:
 		// TODO: this needs to be uow provider
 		return nil, fmt.Errorf("proxy server store should be uow provider")
 		// 	return newProxiedServerStore(ctx, &dolt.Config{
@@ -167,8 +172,7 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.Dol
 		// 		Database:      cfg.GetDoltDatabase(),
 		// 		ProxiedServer: true,
 		// 	})
-	}
-	if cfg != nil && cfg.IsDoltServerMode() {
+	case configfile.StorageModeServer:
 		return dolt.NewFromConfig(ctx, beadsDir)
 	}
 	database := configfile.DefaultDoltDatabase
@@ -267,7 +271,8 @@ func openNonMutatingStoreFromConfig(ctx context.Context, beadsDir string, previe
 	if backend, ok := backends.Lookup(cfg.GetBackend()); ok {
 		return backend.OpenReadOnly(ctx, beadsDir)
 	}
-	if cfg != nil && cfg.IsDoltProxiedServerMode() {
+	switch cfg.StorageMode() {
+	case configfile.StorageModeProxiedServer:
 		// TODO: this needs to be uow provider
 		return nil, fmt.Errorf("proxy server store needs to be uow provider")
 		// return newProxiedServerStore(ctx, &dolt.Config{
@@ -276,8 +281,7 @@ func openNonMutatingStoreFromConfig(ctx context.Context, beadsDir string, previe
 		// 	ProxiedServer: true,
 		// 	ReadOnly:      true,
 		// })
-	}
-	if cfg != nil && cfg.IsDoltServerMode() {
+	case configfile.StorageModeServer:
 		return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
 	}
 	database := configfile.DefaultDoltDatabase
