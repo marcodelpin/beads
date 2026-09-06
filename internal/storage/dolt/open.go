@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
@@ -13,8 +15,8 @@ import (
 )
 
 // doltOpenRetryBudgetKey is the config.yaml key holding the open-retry
-// budget: how long a failing pre-dial probe against an EXTERNAL dolt
-// sql-server may keep retrying before the open fails (GH#4379).
+// budget: how long a failing pre-dial probe against a dolt sql-server bd does
+// not manage may keep retrying before the open fails (GH#4379).
 //
 // Grammar (parseTimeout): a Go duration string ("30s", "2m", "1m30s") or a
 // bare number read as seconds ("30"). Absent, empty, "0" or unparseable all
@@ -356,24 +358,57 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 		cfg.PoolWriteTimeout = parseTimeout(config.GetString("dolt.pool-write-timeout"), 0)
 	}
 
-	// Open-retry budget: caller override > initialized config (project
-	// config.yaml, then global) > a direct read of <beadsDir>/config.yaml
-	// for library consumers that never called config.Initialize > 0 (off).
-	// Same two-step read as dolt.auto-start above, for the same reason.
-	//
-	// Zero keeps the fail-fast pre-dial probe exactly as it is; a positive
-	// budget lets an EXTERNAL server's open ride out a restart instead of
-	// failing in tens of milliseconds (GH#4379). See openRetryEnabled for
-	// which modes honor it -- embedded and localhost-managed opens do not.
-	if cfg.OpenRetryBudget == 0 {
-		raw := config.GetString(doltOpenRetryBudgetKey)
-		if raw == "" {
-			raw = config.GetStringFromDir(beadsDir, doltOpenRetryBudgetKey)
-		}
-		cfg.OpenRetryBudget = parseTimeout(raw, 0)
-	}
-
 	return nil
+}
+
+// openRetryBeadsDir returns the .beads directory a config is rooted at, using
+// the same fallback newServerMode uses for its own server-dir resolution
+// (cfg.Path is <beadsDir>/dolt).
+func openRetryBeadsDir(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.BeadsDir != "" {
+		return cfg.BeadsDir
+	}
+	if cfg.Path != "" {
+		return filepath.Dir(cfg.Path)
+	}
+	return ""
+}
+
+// resolveOpenRetryBudget resolves dolt.open-retry-budget for the store rooted
+// at beadsDir. Zero -- the default -- keeps the fail-fast pre-dial probe
+// exactly as it is; a positive budget lets an open ride out a restart of a
+// server bd does not manage instead of failing in tens of milliseconds
+// (GH#4379). openRetryEnabled decides which modes honour it.
+//
+// Precedence, highest first:
+//
+//  1. an explicit cfg.OpenRetryBudget -- a caller (a test, an embedder) that
+//     set the field means it;
+//  2. <beadsDir>/config.yaml, the project actually being opened. An explicit
+//     "0" here disables the budget even when the ambient config carries one,
+//     so a workspace can opt out of an inherited default;
+//  3. the initialized config (config.Initialize's project-then-global merge).
+//
+// Reading the target directory BEFORE the process-wide config is what makes
+// this correct for library and multi-workspace callers: the viper singleton is
+// initialized once, from whichever workspace ran first, and would otherwise
+// decide the budget for every other directory opened in the same process.
+func resolveOpenRetryBudget(cfg *Config, beadsDir string) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.OpenRetryBudget != 0 {
+		return cfg.OpenRetryBudget
+	}
+	if beadsDir != "" {
+		if raw := strings.TrimSpace(config.GetStringFromDir(beadsDir, doltOpenRetryBudgetKey)); raw != "" {
+			return parseTimeout(raw, 0)
+		}
+	}
+	return parseTimeout(config.GetString(doltOpenRetryBudgetKey), 0)
 }
 
 // applyCentralConfigDefaults loads the central server config from
