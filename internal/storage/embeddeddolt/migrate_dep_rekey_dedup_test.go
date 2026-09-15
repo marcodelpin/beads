@@ -35,19 +35,37 @@ import (
 // plain rename leave a stale primary key behind.
 
 // depRekeyMarkerVersion is ignored migration 0026, the clone-local marker whose
-// pending state forces the one repair pass.
+// pending state forces the one repair pass. It is pinned here permanently: the
+// marker shipped inside the v1.3.0 tag, so field stores have already recorded it
+// at ordinal 26 and it can never move. Ignored migrations now sit above it --
+// 0027 is main's add_wisps_current_revision, which the v1.3.0 forward-port
+// renumbered out of the way after both branches independently claimed 0026. Do
+// not chase the newest ordinal with this constant; it names one specific marker.
 const depRekeyMarkerVersion = 26
 
-// TestDepRekeyMarkerIsLatestIgnored keeps the fixtures in this file honest. They
-// force the repair pass by unrecording the marker, which only works while the
-// pass is genuinely pending afterwards. If a later ignored migration lands, this
-// fails first with an actionable message instead of the marker-driven tests
-// failing with assertions that indict the repair code.
-func TestDepRekeyMarkerIsLatestIgnored(t *testing.T) {
-	if got := schema.LatestIgnoredVersion(); got != depRekeyMarkerVersion {
-		t.Fatalf("latest ignored migration is %d, not the dep-rekey marker %d; "+
-			"if you added ignored %d, point depRekeyMarkerVersion at 0026 anyway and confirm "+
-			"unrecordIgnoredVersionsFrom still leaves the marker pending", got, depRekeyMarkerVersion, got)
+// TestDepRekeyMarkerStillInIgnoredSeries keeps the fixtures in this file honest.
+// They force the repair pass by unrecording from the marker, which only works
+// while the pass is genuinely pending afterwards.
+//
+// The marker does not have to be the NEWEST ignored migration for that to hold,
+// and since the forward-port it is not. unrecordIgnoredVersionsFrom deletes the
+// cursor rows from the marker upward, so the cursor -- COALESCE(MAX(version), 0)
+// -- falls below 26 and migrate re-applies the whole tail: 0026 comes back
+// pending no matter how many versions sit above it. The cost of the range delete
+// is that those later versions re-run too, so they have to stay re-runnable;
+// ignored 0027 guards its ALTER on INFORMATION_SCHEMA for exactly that reason.
+//
+// What the fixtures cannot survive is the marker leaving the series. Renumbered
+// or dropped, the unrecord would target an ordinal nothing owns, no pass would be
+// forced, and the marker-driven tests below would fail with assertions that
+// indict the repair code. This fails first, and says what actually broke.
+func TestDepRekeyMarkerStillInIgnoredSeries(t *testing.T) {
+	if got := schema.LatestIgnoredVersion(); got < depRekeyMarkerVersion {
+		t.Fatalf("ignored series ends at %d, below the dep-rekey marker %d; the marker shipped "+
+			"in the v1.3.0 tag and cannot move, so a series that no longer reaches it means 0026 "+
+			"was renumbered or dropped -- restore it, or unrecordIgnoredVersionsFrom leaves no "+
+			"marker pending and the fixtures below stop exercising the repair",
+			got, depRekeyMarkerVersion)
 	}
 }
 
