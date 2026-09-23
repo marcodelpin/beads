@@ -394,8 +394,12 @@ var proxyCapabilityRegistry = []capabilityRow{
 	// the --dolt arm has a proxied route (runCompactDoltProxiedServer). The
 	// --dolt arm is decided by flag VALUE, so the gate keeps a value-aware
 	// branch for it and lands here when the flag is off.
+	// The wording names the real command path. "compact --dolt" reads as the
+	// root `bd compact`, a different command with no --dolt flag and its own
+	// proxied route; compact.go's RunE fallback carries the same corrected
+	// string so the gate and the fallback cannot drift apart.
 	refusedPath("admin compact", "proxy.compact.unsupported", ProxyReasonUnimplemented, trackLongTail).
-		withMessage("only 'compact --dolt' is supported in proxied-server mode"),
+		withMessage("only 'bd admin compact --dolt' is supported in proxied-server mode"),
 	// `bd restore` recovers a COMPACTED ISSUE's original text, not a backup —
 	// the backup verb is `bd backup restore`. Its snapshot read is ordinary
 	// CRUD; only its fallback path (reconstructing from Dolt history when no
@@ -580,8 +584,18 @@ func capabilityRowFor(cmd *cobra.Command) (capabilityRow, bool) {
 }
 
 // commandRegistryPath is the registry key for a command: its full path with the
-// root name removed, for example "dolt remote add".
+// root name removed, for example "dolt remote add", "ready" for `bd ready`, and
+// "" for the bare root.
+//
+// Both halves of the front door key on this rather than on cobra's Name(),
+// which is only the leaf: two commands in different subtrees can share one, and
+// `bd ready` and `bd mol ready --gated` do. A Name()-keyed rule silently applies
+// to both, so a refusal written for one command lands on an unrelated command
+// that no policy row authorizes.
 func commandRegistryPath(cmd *cobra.Command) string {
+	if cmd == nil {
+		return ""
+	}
 	return strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()))
 }
 

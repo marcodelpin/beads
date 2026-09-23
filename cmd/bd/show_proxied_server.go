@@ -95,6 +95,9 @@ func runShowProxiedServer(cmd *cobra.Command, ctx context.Context, args []string
 	in := gatherShowProxiedInput(cmd, args)
 
 	if in.watchMode {
+		// Defense in depth, like create's --repo fallback: the pre-provider
+		// gate refuses `show --watch` first. Typed so all three refusals render
+		// identically if one ever becomes reachable.
 		return HandleProxyCapabilityError(AssertProxyCommandCapability("show", ProxyModeProxied, ProxyCapWatch))
 	}
 

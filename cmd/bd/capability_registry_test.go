@@ -177,7 +177,7 @@ var inlineProxiedRefusal = regexp.MustCompile(`HandleErrorRespectJSON\("([^"]*pr
 // proxied mode without being a capability refusal at all. Keeping both explicit
 // is what lets the scan below be exhaustive rather than best-effort.
 var inlineProxiedMessages = map[string]string{
-	"only 'compact --dolt' is supported in proxied-server mode": "admin compact",
+	"only 'bd admin compact --dolt' is supported in proxied-server mode": "admin compact",
 	// Not a refusal: --database is the flag that only MAKES SENSE on a proxied
 	// workspace, so this fires on the direct topologies.
 	"--database (or a --db value naming a database) is only supported in proxied-server mode": "",

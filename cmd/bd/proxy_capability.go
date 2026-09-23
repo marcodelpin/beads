@@ -126,9 +126,10 @@ func honored() proxyCapabilityRule {
 func notApplicable() proxyCapabilityRule { return proxyCapabilityRule{Outcome: ProxyOutcomeNA} }
 
 // ProxyCapabilityKey identifies a command's flag/argument on a topology.
-// Argument is intentionally explicit (for example, "--watch"), allowing
-// callers and tests to distinguish a command that lacks a flag (N/A) from one
-// that refuses it.
+// Command is the command's path below the root ("dep tree", "mol ready"),
+// never its cobra leaf name — see commandRegistryPath. Argument is intentionally
+// explicit (for example, "--watch"), allowing callers and tests to
+// distinguish a command that lacks a flag (N/A) from one that refuses it.
 type ProxyCapabilityKey struct {
 	Command  string
 	Argument string
@@ -169,6 +170,11 @@ var (
 	// `list --watch` is routed, so watching is possible over the provider;
 	// nothing else has been wired to it.
 	watchRefusal = refused("proxy.watch.unsupported", "watch mode not supported in proxied-server mode", ProxyReasonUnimplemented, trackLongTail)
+	// --repo routes to another workspace, bypassing the proxied root entirely,
+	// which is why it is design rather than a gap. `bd list` honors a repo
+	// override and refuses it at runtime, so its row specializes this rule
+	// instead of claiming the flag is absent.
+	repoRefusal = refused("proxy.repo.unsupported", "--repo is not supported with --proxied-server", ProxyReasonDesign, "")
 )
 
 // proxyCapabilityMatrix is the flag-keyed half of the policy; the path-keyed
@@ -192,15 +198,24 @@ var proxyCapabilityMatrix = map[ProxyMode]map[ProxyCapability]proxyCapabilityRul
 		ProxyCapReadonly: refused("proxy.readonly.unsupported", "strict readonly is unavailable for dolt proxied-server backend; refusing to open a store that cannot guarantee mutation-free access", ProxyReasonDesign, "1.4 candidate: read-only SQL principal on the backend"),
 		ProxyCapMaxRows:  maxRowsRefusal,
 		ProxyCapWatch:    watchRefusal,
-		ProxyCapRepo:     refused("proxy.repo.unsupported", "--repo is not supported with --proxied-server", ProxyReasonDesign, ""),
+		ProxyCapRepo:     repoRefusal,
 	},
 }
 
+// proxyCommandCapabilities overrides the mode-wide default for one command.
+// Keys are command paths (commandRegistryPath), so a row lands on the command it
+// was written for and on nothing else. The "mol ready" row is a documentation
+// pin rather than the guard: path keying is what stops `bd mol ready --gated`
+// from inheriting the refusal `bd ready` carries on their shared leaf name
+// "ready", and the row records that the command has no --max-rows flag to
+// refuse. TestProxyCapabilityPolicyKeysResolveInRealCommandTree keeps the pin
+// honest by failing if the path it names stops existing.
 var proxyCommandCapabilities = map[string]map[ProxyMode]map[ProxyCapability]proxyCapabilityRule{
 	"show":            {ProxyModeProxied: {ProxyCapWatch: watchRefusal}},
-	"list":            {ProxyModeProxied: {ProxyCapWatch: honored(), ProxyCapMaxRows: honored(), ProxyCapRepo: notApplicable()}},
+	"list":            {ProxyModeProxied: {ProxyCapWatch: honored(), ProxyCapMaxRows: honored(), ProxyCapRepo: repoRefusal}},
 	"dep tree":        {ProxyModeProxied: {ProxyCapMaxRows: honored()}},
 	"ready":           {ProxyModeProxied: {ProxyCapMaxRows: maxRowsRefusal}},
+	"mol ready":       {ProxyModeProxied: {ProxyCapMaxRows: notApplicable()}},
 	"graph":           {ProxyModeProxied: {ProxyCapMaxRows: maxRowsRefusal}},
 	"find-duplicates": {ProxyModeProxied: {ProxyCapMaxRows: maxRowsRefusal}},
 }
@@ -264,33 +279,53 @@ func AssertProxyCapability(mode ProxyMode, capability ProxyCapability) error {
 	return AssertProxyCommandCapability("", mode, capability)
 }
 
+// proxyCapabilityAllowed reports whether an outcome lets the invocation
+// proceed. ProxyOutcomeNA means the command does not have the flag at all
+// (see ProxyCapabilityKey), which is a fact about the command rather than a
+// policy objection: there is nothing to refuse, so it asserts successfully.
+func proxyCapabilityAllowed(outcome ProxyCapabilityOutcome) bool {
+	return outcome == ProxyOutcomeHonored || outcome == ProxyOutcomeDelegated || outcome == ProxyOutcomeNA
+}
+
+// proxyCapabilityRuleError renders a non-allowing rule as an error. A rule
+// with neither a code nor a message would otherwise produce an error whose
+// Error() is the empty string, which the CLI prints as a bare "Error: " with
+// exit 1 — the least debuggable failure available — so it falls back to a
+// generic message no matter how a future rule is written.
+// It builds the typed error through proxyCapabilityErrorFor so a rule's Reason
+// reaches the JSON refusal here exactly as it does from the registry half; a
+// local struct literal would silently drop it.
+func proxyCapabilityRuleError(rule proxyCapabilityRule, capability ProxyCapability, mode ProxyMode) error {
+	if rule.Code != "" {
+		if rule.Message == "" {
+			// rule is a copy, so this fills the fallback in for this render
+			// only and never edits the policy table.
+			rule.Message = fmt.Sprintf("%s is not supported in %s mode", capability, mode)
+		}
+		return proxyCapabilityErrorFor(rule)
+	}
+	if rule.Message != "" {
+		return fmt.Errorf("%s", rule.Message)
+	}
+	return fmt.Errorf("%s is not supported in %s mode", capability, mode)
+}
+
 // AssertProxyCommandCapability checks a command-specific capability rule.
+// command is a command path (commandRegistryPath), not a cobra leaf name.
 func AssertProxyCommandCapability(command string, mode ProxyMode, capability ProxyCapability) error {
 	if commands, ok := proxyCommandCapabilities[command]; ok {
 		if modes, ok := commands[mode]; ok {
 			if rule, ok := modes[capability]; ok {
-				// N/A means the command has no such flag, which is not a
-				// refusal. Without it, a future assert call site on an N/A row
-				// would return a non-nil error carrying an empty message.
-				if rule.Outcome == ProxyOutcomeHonored || rule.Outcome == ProxyOutcomeDelegated || rule.Outcome == ProxyOutcomeNA {
+				if proxyCapabilityAllowed(rule.Outcome) {
 					return nil
 				}
-				if rule.Code != "" {
-					return proxyCapabilityErrorFor(rule)
-				}
-				return fmt.Errorf("%s", rule.Message)
+				return proxyCapabilityRuleError(rule, capability, mode)
 			}
 		}
 	}
 	rule, ok := LookupProxyCapability(mode, capability)
-	if !ok || (rule.Outcome != ProxyOutcomeHonored && rule.Outcome != ProxyOutcomeDelegated) {
-		if rule.Code != "" {
-			return proxyCapabilityErrorFor(rule)
-		}
-		if rule.Message != "" {
-			return fmt.Errorf("%s", rule.Message)
-		}
-		return fmt.Errorf("%s is not supported in %s mode", capability, mode)
+	if !ok || !proxyCapabilityAllowed(rule.Outcome) {
+		return proxyCapabilityRuleError(rule, capability, mode)
 	}
 	return nil
 }
@@ -301,31 +336,38 @@ func validateProxyCapabilitiesBeforeProvider(cmd *cobra.Command) error {
 	if cmd == nil {
 		return nil
 	}
-	name := cmd.Name()
-	if name == "create" && cmd.Flags().Changed("repo") {
+	path := commandRegistryPath(cmd)
+	if path == "create" && cmd.Flags().Changed("repo") {
 		return HandleProxyCapabilityError(AssertProxyCapability(ProxyModeProxied, ProxyCapRepo))
 	}
-	if name == "show" {
+	if path == "show" {
 		if watch, _ := cmd.Flags().GetBool("watch"); watch {
-			return HandleProxyCapabilityError(AssertProxyCommandCapability("show", ProxyModeProxied, ProxyCapWatch))
+			return HandleProxyCapabilityError(AssertProxyCommandCapability(path, ProxyModeProxied, ProxyCapWatch))
 		}
 	}
-	if name == "ready" {
-		maxRows, _, err := resolveMaxRows(cmd)
+	if path == "ready" {
+		// --claim is NOT exempt. The proxied ready role cannot enforce a row
+		// cap on either arm, and ready.go refuses a positive cap on both (see
+		// its comment above rejectMaxRowsUnderProxiedServer) — so exempting
+		// the claim here would not have let it through, only downgraded the
+		// same refusal to an untyped one raised after the provider opened.
+		// A malformed or negative value is still rejected here, before any
+		// provider work, which is what the claim path gained.
+		maxRows, err := resolveMaxRowsQuiet(cmd)
 		if err != nil {
 			return err
 		}
 		if maxRows > 0 {
-			return HandleProxyCapabilityError(AssertProxyCommandCapability(name, ProxyModeProxied, ProxyCapMaxRows))
+			return HandleProxyCapabilityError(AssertProxyCommandCapability(path, ProxyModeProxied, ProxyCapMaxRows))
 		}
 	}
-	if name == "graph" || name == "find-duplicates" {
-		maxRows, _, err := resolveMaxRows(cmd)
+	if path == "graph" || path == "find-duplicates" {
+		maxRows, err := resolveMaxRowsQuiet(cmd)
 		if err != nil {
 			return err
 		}
 		if maxRows > 0 {
-			return HandleProxyCapabilityError(AssertProxyCommandCapability(name, ProxyModeProxied, ProxyCapMaxRows))
+			return HandleProxyCapabilityError(AssertProxyCommandCapability(path, ProxyModeProxied, ProxyCapMaxRows))
 		}
 	}
 	return nil
