@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   network from its own environment, which is the same credential question the
   next slice has to answer for `dolt push`.
 
+  Backups on this topology are **explicit only**. Auto-backup has no
+  post-command hook on the proxied path, so `backup.enabled=true` does nothing
+  there; `bd backup status` and `bd backup` help now say so instead of
+  attributing the OFF to a missing git remote, which was never the reason on a
+  server topology. Wiring an auto-backup hook through the new routes is left to
+  a later slice.
+
 ### Changed
 
 - **Proxied-server refusals now say *why* they refuse.** The JSON a refused
