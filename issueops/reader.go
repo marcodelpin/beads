@@ -140,6 +140,22 @@ type ListRequest struct {
 	Assignee    string
 	TitleSearch string
 	SpecPrefix  string
+	// Search is the free-text term `bd search` takes as its argument, asked of
+	// a LISTING instead: same matcher, same rows, and the whole list
+	// vocabulary (status, labels, type, dates, sort, paging, --json) available
+	// around it. TitleSearch above is the narrower neighbour and stays what it
+	// is: a title substring, blind to ids.
+	//
+	// A BARE Search SPANS EVERY STATUS, closed included, the way `bd search`
+	// does and the way PinnedFlag drops the same exclusions: the question a
+	// free-text search usually asks is "does this already exist", and the
+	// listing's default closed-and-pinned exclusions turn that into a silent
+	// no. An explicit Status, AllFlag or `--status all` still decides.
+	//
+	// It is REFUSED under ReadyFlag rather than dropped, because the
+	// blocker-aware ready query is not reached through the matcher that
+	// renders it (readyScopeFields).
+	Search string
 	// IDFilter is a comma-separated id set.
 	IDFilter string
 

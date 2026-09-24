@@ -406,6 +406,7 @@ func init() {
 	listCmd.Flags().StringSlice("exclude-label", []string{}, "Exclude issues that have ANY of these labels")
 	listCmd.Flags().String("label-pattern", "", "Filter by label glob pattern (e.g., 'tech-*' matches tech-debt, tech-legacy)")
 	listCmd.Flags().String("label-regex", "", "Filter by label regex pattern (e.g., 'tech-(debt|legacy)')")
+	listCmd.Flags().String("search", "", "Free-text search, the same matcher `bd search` uses: title substring OR id, with exact/prefix matching when the term looks like an issue ID. Unlike --title it also matches IDs; unlike `bd search` it keeps the whole list vocabulary (--status, --sort, --json, tree output). Spans ALL statuses including closed - like `bd search`, so \"was this already filed?\" cannot silently answer no; narrow with --status. Not valid with --ready.")
 	listCmd.Flags().String("title", "", "Filter by title text (case-insensitive substring match)")
 	listCmd.Flags().String("spec", "", "Filter by spec_id prefix")
 	listCmd.Flags().String("id", "", "Filter by specific issue IDs (comma-separated, e.g., bd-1,bd-5,bd-10)")

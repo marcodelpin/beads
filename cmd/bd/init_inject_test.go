@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/templates/agents"
 )
 
 // TestInjectBdBlock covers the four required acceptance scenarios:
@@ -189,15 +191,18 @@ func TestRunInjectAgentsMd(t *testing.T) {
 
 func strPtrInject(s string) *string { return &s }
 
-// TestBdInjectBlockNoRetiredMemoryRule pins bda-5uxn: the injected block must
-// not teach "do NOT use MEMORY.md files". Agent harnesses (Claude Code among
-// them) maintain their own MEMORY.md/memory-dir mechanism; a bd-owned block
-// that forbids it contradicts the host platform it is injected into. The
-// positive control asserts the block still teaches bd remember at all, so an
-// empty block cannot pass this test vacuously.
-// The needle is matched case-insensitively: the retired sentence shipped in two
-// spellings ("do NOT" in the inject block, "Do NOT" in bd prime), and the first
-// sweep keyed on the exact bytes missed the second pair (bda-5uxn).
+// TestBdInjectBlockNoRetiredMemoryRule pins bda-5uxn and bda-atiw: the injected
+// block must not teach that harness memory files are forbidden. Agent harnesses
+// (Claude Code among them) maintain their own MEMORY.md/memory-dir mechanism; a
+// bd-owned block that forbids it contradicts the host platform it is injected
+// into. The positive control asserts the block still teaches bd remember at
+// all, so an empty block cannot pass this test vacuously.
+//
+// Matching runs against agents.RetiredMemoryNeedles, the single authority the
+// template tests use too. That list is why it is a list: the retired claim
+// shipped in several spellings ("do NOT use MEMORY.md files" here and in bd
+// prime, "do not create ad hoc memory files" in the Codex template), and a
+// sweep keyed on one of them reports the others as clean (bda-atiw).
 func TestBdInjectBlockNoRetiredMemoryRule(t *testing.T) {
 	for name, text := range map[string]string{
 		"init-inject block": bdInjectBlock(),
@@ -207,8 +212,8 @@ func TestBdInjectBlockNoRetiredMemoryRule(t *testing.T) {
 		if !strings.Contains(text, "bd remember") {
 			t.Fatalf("positive control failed: %s no longer mentions 'bd remember' at all", name)
 		}
-		if strings.Contains(strings.ToLower(text), "not use memory.md") {
-			t.Errorf("%s still carries the retired rule 'do NOT use MEMORY.md files'", name)
+		if needle := agents.FindRetiredMemoryRule(text); needle != "" {
+			t.Errorf("%s still carries the retired memory rule (needle %q)", name, needle)
 		}
 	}
 }

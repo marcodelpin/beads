@@ -239,7 +239,18 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 		}
 	}
 
-	if len(statusParts) == 0 && !in.AllFlag && !in.ReadyFlag && !in.PinnedFlag {
+	// A BARE --search DROPS THE DEFAULT EXCLUSIONS, the way PinnedFlag does.
+	// `bd search` answers across every status for a stated reason: the dominant
+	// query is "was this already filed or fixed?", and hiding closed rows makes
+	// that answer a silent no. A --search that inherited the listing's
+	// closed-and-pinned exclusions would reproduce exactly the defect the flag
+	// was added to remove (bda-nldy) - quieter, because the rows that prove it
+	// wrong are the ones withheld.
+	//
+	// An EXPLICIT selector still wins: --status open, --status all and --all all
+	// reach the branches above and this one never runs, so narrowing a search is
+	// one flag away and widening it is the default.
+	if len(statusParts) == 0 && !in.AllFlag && !in.ReadyFlag && !in.PinnedFlag && in.Search == "" {
 		excludeStatuses := []types.Status{types.StatusClosed, types.StatusPinned}
 		for _, cs := range cfg.CustomStatuses {
 			if cs.Category == types.CategoryDone || cs.Category == types.CategoryFrozen {
@@ -286,6 +297,14 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	}
 	if in.TitleSearch != "" {
 		filter.TitleSearch = in.TitleSearch
+	}
+	// The free-text term rides ON the filter (types.IssueFilter.Query) so every
+	// door the listing reaches its rows through renders it: the two
+	// implementations of issueops.Reader, the --watch poll loop and the
+	// hierarchical --parent walk all consume this filter, and only the first
+	// two call a function that takes a query argument.
+	if in.Search != "" {
+		filter.Query = in.Search
 	}
 	if in.IDFilter != "" {
 		ids := utils.NormalizeLabels(strings.Split(in.IDFilter, ","))

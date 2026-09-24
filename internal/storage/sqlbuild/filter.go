@@ -65,16 +65,20 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 	var whereClauses []string
 	var args []any
 
-	if query != "" {
-		lowerQuery := strings.ToLower(query)
-		if LooksLikeIssueID(query) {
-			whereClauses = append(whereClauses, "(id = ? OR id LIKE ? OR LOWER(title) LIKE ? OR LOWER(external_ref) LIKE ?)")
-			args = append(args, lowerQuery, lowerQuery+"%", "%"+lowerQuery+"%", "%"+lowerQuery+"%")
-		} else {
-			whereClauses = append(whereClauses, "(LOWER(title) LIKE ? OR id LIKE ?)")
-			pattern := "%" + lowerQuery + "%"
-			args = append(args, pattern, pattern)
+	// THE FREE-TEXT TERM ARRIVES THROUGH TWO CHANNELS AND IS RENDERED ONCE.
+	// `bd search` passes it as the argument; `bd list --search` carries it on
+	// the filter, because the listing reaches its rows through doors that take
+	// no query argument (see types.IssueFilter.Query). Both spell the term the
+	// same way here, so the flag and the verb cannot select different rows.
+	// They did before, and a second rendering is exactly how they would again.
+	// Both set is an intersection.
+	for _, term := range []string{query, filter.Query} {
+		if term == "" {
+			continue
 		}
+		clause, clauseArgs := freeTextQueryClause(term)
+		whereClauses = append(whereClauses, clause)
+		args = append(args, clauseArgs...)
 	}
 
 	if filter.TitleSearch != "" {
@@ -391,6 +395,23 @@ func globToLikePattern(pattern string) string {
 		}
 	}
 	return b.String()
+}
+
+// freeTextQueryClause renders one free-text search term: the single authority
+// for what `bd search <term>` and `bd list --search=<term>` match.
+//
+// An ID-LIKE term takes the exact/prefix path and also reaches external_ref,
+// which is what makes `bd search bd-5q` a partial-id lookup rather than a
+// title scan. Anything else is a case-insensitive substring of the title or of
+// the id.
+func freeTextQueryClause(term string) (string, []any) {
+	lower := strings.ToLower(term)
+	if LooksLikeIssueID(term) {
+		return "(id = ? OR id LIKE ? OR LOWER(title) LIKE ? OR LOWER(external_ref) LIKE ?)",
+			[]any{lower, lower + "%", "%" + lower + "%", "%" + lower + "%"}
+	}
+	pattern := "%" + lower + "%"
+	return "(LOWER(title) LIKE ? OR id LIKE ?)", []any{pattern, pattern}
 }
 
 // LooksLikeIssueID returns true if the query string looks like a beads issue ID.

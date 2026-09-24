@@ -1867,10 +1867,31 @@ type IssueFilter struct {
 	LabelPattern  string   // Glob pattern for label matching (e.g., "tech-*")
 	LabelRegex    string   // Regex pattern for label matching (e.g., "tech-(debt|legacy)")
 	TitleSearch   string
-	IDs           []string // Filter by specific issue IDs
-	IDPrefix      string   // Filter by ID prefix (e.g., "bd-" to match "bd-abc123")
-	SpecIDPrefix  string   // Filter by spec_id prefix
-	Limit         int
+
+	// Query is the free-text search term, carried ON the filter for the
+	// callers that have no second parameter to put it in.
+	//
+	// It is the SAME term SearchIssues takes as its `query` argument and it is
+	// rendered by the same clause builder, so `bd list --search X` and
+	// `bd search X` select the same rows: title substring OR id substring,
+	// with the exact/prefix fast path when the term looks like an issue id
+	// (sqlbuild.BuildIssueFilterClauses).
+	//
+	// WHY A FIELD AND NOT ANOTHER ARGUMENT: `bd list` reaches its rows through
+	// four doors: the two implementations of issueops.Reader, the --watch
+	// poll loop and the hierarchical --parent walk. Only the first two
+	// call a function with a query parameter. A term threaded as an argument
+	// would have been dropped by the other two SILENTLY, which is the defect
+	// this field was added to fix (bda-nldy), reproduced one layer down.
+	//
+	// Both channels are ANDed when both are set. No CLI path sets both today;
+	// ANDing is stated so a future caller that does gets an intersection
+	// rather than a silently discarded half.
+	Query        string
+	IDs          []string // Filter by specific issue IDs
+	IDPrefix     string   // Filter by ID prefix (e.g., "bd-" to match "bd-abc123")
+	SpecIDPrefix string   // Filter by spec_id prefix
+	Limit        int
 
 	// Pattern matching
 	TitleContains       string

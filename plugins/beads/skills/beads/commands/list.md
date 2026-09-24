@@ -19,6 +19,7 @@ List beads issues with optional filtering.
 ## Advanced Filters
 
 ### Pattern Matching
+- **--search**: Free-text search, the same matcher `bd search` uses - title substring OR ID, with exact/prefix matching when the term looks like an issue ID. Use this before filing a new issue: unlike `--title` it also matches IDs, and unlike `bd search` it keeps the rest of the list vocabulary (`--status`, `--sort`, `--json`, tree output). Spans ALL statuses including closed (like `bd search`), so an already-fixed issue cannot read as absent; narrow with `--status`. Not valid with `--ready`, which is refused rather than answered with the unfiltered ready set.
 - **--title-contains**: Search for text in title (case-insensitive)
 - **--desc-contains**: Search for text in description (case-insensitive)
 - **--notes-contains**: Search for text in notes (case-insensitive)
@@ -49,6 +50,8 @@ List beads issues with optional filtering.
 - `bd list --title "auth"`: Issues with "auth" in the title
 
 ### Advanced Usage
+- `bd list --search "auth"`: Anti-duplicate check before filing - closed issues included, so "was this already filed?" cannot silently answer no
+- `bd list --search "auth" --status open --type bug --json`: The same search, narrowed and machine-readable
 - `bd list --title-contains "auth" --status open`: Search open issues for auth-related work
 - `bd list --priority-min 0 --priority-max 1`: Critical and high priority issues only
 - `bd list --created-after 2025-01-01 --status open`: Recent open issues

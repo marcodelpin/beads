@@ -2,6 +2,8 @@ package agents
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -520,17 +522,61 @@ func TestReplaceSectionWithOptsDetectsRemoteChange(t *testing.T) {
 	}
 }
 
-// TestRenderedSectionsNoRetiredMemoryRule pins bda-5uxn for the template path:
-// no rendered profile may teach "do NOT use MEMORY.md files" (see
-// cmd/bd/init_inject_test.go TestBdInjectBlockNoRetiredMemoryRule for why).
-func TestRenderedSectionsNoRetiredMemoryRule(t *testing.T) {
-	for _, p := range []Profile{ProfileFull, ProfileMinimal} {
-		s := RenderSection(p)
-		if !strings.Contains(s, "bd") {
-			t.Fatalf("positive control failed: profile %s rendered empty/degenerate section", p)
-		}
-		if strings.Contains(strings.ToLower(s), "not use memory.md") {
-			t.Errorf("profile %s still carries the retired rule 'do NOT use MEMORY.md files'", p)
-		}
+// AssertNoRetiredMemoryRule fails when text carries any retired spelling of the
+// superseded memory rule. The needle list itself lives in retired_rules.go so
+// that cmd/bd's injection tests match on exactly the same set.
+func AssertNoRetiredMemoryRule(t *testing.T, name, text string) {
+	t.Helper()
+	if needle := FindRetiredMemoryRule(text); needle != "" {
+		t.Errorf("%s still carries the retired memory rule (needle %q)", name, needle)
 	}
+}
+
+// TestREADMESnippetNoRetiredMemoryRule pins bda-atiw for the third producer:
+// README.md ships a copy-paste "minimal AGENTS.md section" for agents that
+// `bd setup` does not cover. A human pasting it re-creates exactly the carrier
+// the templates were fixed for, so the snippet is held to the same rule.
+//
+// The path is resolved relative to this package (repo root is three levels up)
+// and guarded by a positive control, so a moved README fails loudly instead of
+// reporting a clean zero it never measured.
+func TestREADMESnippetNoRetiredMemoryRule(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("positive control failed: cannot read README.md: %v", err)
+	}
+	readme := string(raw)
+	if !strings.Contains(readme, "This project uses bd (beads) for issue tracking.") {
+		t.Fatalf("positive control failed: README.md no longer carries the copy-paste AGENTS.md snippet; re-point this test")
+	}
+	AssertNoRetiredMemoryRule(t, "README.md copy-paste snippet", readme)
+}
+
+// TestRenderedSectionsNoRetiredMemoryRule pins bda-5uxn and bda-atiw for the
+// template path: no body bd writes into a repository may teach that harness
+// memory files are forbidden. Every embedded template is covered, the Codex one
+// included - it reaches repositories through CodexSectionBody (called from
+// cmd/bd/setup/codex.go) and never through RenderSection, so a loop over the
+// Profile values alone leaves that template untested. That gap plus the
+// spelling gap above is exactly why bda-atiw survived bda-5uxn.
+func TestRenderedSectionsNoRetiredMemoryRule(t *testing.T) {
+	t.Run("rendered profiles", func(t *testing.T) {
+		for _, p := range []Profile{ProfileFull, ProfileMinimal} {
+			s := RenderSection(p)
+			if !strings.Contains(s, "bd ") {
+				t.Fatalf("positive control failed: profile %s rendered empty/degenerate section", p)
+			}
+			AssertNoRetiredMemoryRule(t, "profile "+string(p), s)
+		}
+	})
+
+	t.Run("codex section body", func(t *testing.T) {
+		body := CodexSectionBody()
+		// Positive control: the corrected line must still TEACH bd remember.
+		// Deleting the memory line would silence the needles vacuously.
+		if !strings.Contains(body, "bd remember") {
+			t.Fatalf("positive control failed: codex body no longer mentions 'bd remember' at all")
+		}
+		AssertNoRetiredMemoryRule(t, "codex section body", body)
+	})
 }

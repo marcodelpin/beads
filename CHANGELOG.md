@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bd list --search=TERM`**, the free-text search `bd search` performs, asked
+  of a listing. It is rendered by the same clause builder the verb uses, so the
+  two select the same rows: a title substring or an id, with exact/prefix
+  matching (and `external_ref`) when the term looks like an issue id. What the
+  flag adds is the rest of the list vocabulary around it - `--status`, `--type`,
+  the label filters, `--sort`, `--json`, tree output - which the verb does not
+  carry. A bare `--search` spans EVERY status, closed included, exactly as the
+  verb does and for the verb's stated reason: the dominant query is "was this
+  already filed or fixed?", and the listing's default closed-row exclusion turns
+  that into a silent no. An explicit `--status` still narrows it.
+
+  `--ready --search` is REFUSED and the refusal names the flag. The
+  blocker-aware ready query is not reached through the matcher that renders the
+  term, so honoring it would answer with every ready issue while the command
+  line read like a search.
+
+  Previously `bd list --search` was not a flag at all. It failed correctly -
+  `Error: unknown flag: --search`, exit 1 - but tooling that prescribed it as a
+  pre-filing duplicate check ran it with stderr discarded, where an error and an
+  empty result are the same zero, and the check became a duplicate generator on
+  exactly the recurring shapes where an issue most likely already exists.
+
 - **`bd count` supports repeatable `--metadata-field key=value` filters**
   ([#6023](https://github.com/gastownhall/beads/issues/6023)), so callers can
   count the same metadata-scoped set `bd list` returns without fetching every
