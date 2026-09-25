@@ -55,11 +55,7 @@ func TestUOW_DeterministicDistinctInterleave_NoLostUpdate(t *testing.T) {
 
 	storeRootDir := t.TempDir()
 	shutdownOnInterrupt(t, storeRootDir)
-	t.Cleanup(func() {
-		if err := proxy.Shutdown(storeRootDir); err != nil {
-			t.Logf("proxy.Shutdown(%s): %v", storeRootDir, err)
-		}
-	})
+	verifiedShutdownCleanup(t, storeRootDir)
 	logPath := filepath.Join(t.TempDir(), "server.log")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

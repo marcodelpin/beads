@@ -41,6 +41,8 @@ var (
 	// Mirrors --plan's read-only contract (zero writes).
 	gcPlanSummary bool
 	gcOnly        string
+	// gcFull runs Dolt GC over all generations (upstream #5907).
+	gcFull bool
 )
 
 var gcCmd = &cobra.Command{
@@ -57,12 +59,19 @@ Runs three phases in sequence:
 Each phase can be skipped individually. Use --dry-run to preview all phases
 without making changes.
 
+Phase 3 runs Dolt's default, generational GC: it only examines data written
+since the last GC. Data that survived an earlier GC lives in the old generation
+and is never revisited, so on a long-lived store the space freed by decay may
+not be reclaimed. Use --full to collect all generations (slower on large
+stores).
+
 Examples:
   bd gc                              # Full GC with defaults (90 day decay)
   bd gc --dry-run                    # Preview what would happen
   bd gc --older-than 30              # Decay issues closed 30+ days ago
   bd gc --skip-decay                 # Skip issue deletion, just compact+GC
   bd gc --skip-dolt                  # Skip Dolt GC, just decay+compact
+  bd gc --full                       # Collect all storage generations
   bd gc --force                      # Skip confirmation prompt
 
 Fork safety net (mitigates upstream gastownhall/beads#3543):
@@ -338,7 +347,11 @@ Consent flow (recommended):
 				results = append(results, phaseResult{name: "Dolt GC", detail: "not supported"})
 			} else if gcDryRun {
 				if !jsonOutput {
-					fmt.Println("  Would run DOLT_GC()")
+					if gcFull {
+						fmt.Println("  Would run a full DOLT_GC() (all storage generations)")
+					} else {
+						fmt.Println("  Would run DOLT_GC()")
+					}
 				}
 				results = append(results, phaseResult{name: "Dolt GC", detail: "dry-run"})
 			} else {
@@ -348,7 +361,11 @@ Consent flow (recommended):
 				// (bd-agctw). Sizes are reported so a no-op reclaim is visible.
 				sizeBefore := storeSizeBytes(ctx)
 				remoteRefs, tags := listRemoteRefsAndTags(ctx)
-				if err := gc.DoltGC(ctx); err != nil {
+				if gcFull && !jsonOutput {
+					fmt.Println("  Running full Dolt GC (all generations; can take minutes on large stores)...")
+				}
+				gcMode, err := runDoltGCPass(ctx, gc, gcFull)
+				if err != nil {
 					WarnError("dolt gc failed: %v", err)
 					results = append(results, phaseResult{name: "Dolt GC", detail: "failed"})
 				} else {
@@ -359,6 +376,9 @@ Consent flow (recommended):
 					}
 					if !jsonOutput {
 						fmt.Printf("  Done (%s)\n", detail)
+						if gcMode != gcModeFull && suggestFullGC(sizeBefore, sizeAfter) {
+							printFullGCHint()
+						}
 						if len(remoteRefs)+len(tags) > 0 {
 							fmt.Printf("  Note: %d remote-tracking ref(s) and %d tag(s) anchor history;\n", len(remoteRefs), len(tags))
 							fmt.Printf("  after a history squash, use bd flatten / bd compact so they are pruned first.\n")
@@ -368,6 +388,7 @@ Consent flow (recommended):
 					gcSizeInfo = map[string]interface{}{
 						"remote_refs": len(remoteRefs),
 						"tags":        len(tags),
+						"mode":        gcMode,
 					}
 					addGCSizeJSON(gcSizeInfo, sizeBefore, sizeAfter)
 				}
@@ -430,6 +451,7 @@ func init() {
 	gcCmd.Flags().BoolVar(&gcPlan, "plan", false, "Emit a JSON plan of the candidates that WOULD be deleted (closed issues + expired memories) without modifying anything. Mutually exclusive with --force. Use the plan to drive a per-item consent flow, then re-invoke with --force --only=ID1,key2,ID3.")
 	gcCmd.Flags().BoolVar(&gcPlanSummary, "plan-summary", false, "Emit a human-readable tabular view of GC candidates instead of JSON (fork-only, read-only, mutex with --plan/--force). Sorted by age desc.")
 	gcCmd.Flags().StringVar(&gcOnly, "only", "", "Comma-separated allowlist of issue IDs and/or memory keys. When set, gc deletes ONLY items in this list. Use after `bd gc --plan` to commit a curated subset.")
+	gcCmd.Flags().BoolVar(&gcFull, "full", false, "Run a full Dolt GC (all generations; slower, reclaims space default passes cannot)")
 
 	rootCmd.AddCommand(gcCmd)
 }

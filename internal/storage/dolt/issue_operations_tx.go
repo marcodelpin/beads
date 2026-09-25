@@ -43,6 +43,15 @@ func (s *DoltStore) runIssueOperationTx(ctx context.Context, commitMsg string, f
 // inversion). The only cost of a swallowed failure is a missing dolt-log
 // audit line until the next commit.
 //
+// Caller contract (non-verified batch mutators): CreateBatch, ApplyBatch, and
+// CloseBatch route through here and, unlike the claim paths, have no
+// verify-by-re-read recovery — so for them a nil error means "data durable in
+// the branch working set; the trailing Dolt history commit may be deferred and
+// is observable only via bd.db.post_tx_commit_dropped." That is the conscious,
+// documented contract: a nil return is not a retry signal, and propagating a
+// publish-failure sentinel to those callers would reintroduce the double-apply
+// inversion this reorder exists to prevent.
+//
 // Audit-trail caveat (server mode): sessions on one branch share the working
 // set, so a concurrent writer's DOLT_COMMIT can absorb this operation's rows
 // under its own message; this operation's commit then degrades to
@@ -61,15 +70,16 @@ func (s *DoltStore) runIssueOperationTxWithMessage(ctx context.Context, fn func(
 		return err
 	})
 	if err != nil {
-		// Includes ErrCommitIndeterminate (ambiguous commit loss; upstream calls it errCommitPhase): NO post-tx dolt
-		// commit is attempted there. If the ambiguous commit actually landed,
-		// its audit entry is lost (the change rides the next dolt commit) —
-		// accepted, because attempting one would stage the SHARED branch
-		// working set, and when the commit actually rolled back that mints a
-		// dolt commit of a concurrent writer's pending rows under THIS
-		// operation's message (phantom audit evidence), fires even for
+		// Includes ErrCommitIndeterminate (ambiguous commit loss): NO post-tx
+		// dolt commit is attempted there. If the ambiguous commit actually
+		// landed, its audit entry is lost (the change rides the next dolt
+		// commit) — accepted, because attempting one would stage the SHARED
+		// branch working set, and when the commit actually rolled back that
+		// mints a dolt commit of a concurrent writer's pending rows under
+		// THIS operation's message (phantom audit evidence), fires even for
 		// definite rollbacks (a caller cancellation during tx.Commit is also
-		// tagged indeterminate), and delays the claim-verify re-read.
+		// tagged indeterminate), and delays the claim-verify re-read that
+		// resolves the true outcome.
 		return err
 	}
 	staged := sortedDirtyTables(tables)

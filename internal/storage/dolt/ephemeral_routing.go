@@ -424,15 +424,27 @@ const (
 // (runIssueOperationTxWithMessage logs and swallows the failure for exactly
 // that reason — see the failure-mode note there).
 //
-// The retry classifier must accept everything withRetryTx retried when the
-// dolt commit still ran in-tx: transient connection errors plus Dolt's
-// rollback-guaranteed commit conflicts (1213/1205 serialization, 1105
-// autocommit rollback), which are routine under the concurrent-writer load
-// this path exists for. Retrying the whole sequence is safe: re-staging is
-// idempotent, and a replayed DOLT_COMMIT whose first attempt actually landed
-// degrades to nothing-to-commit, which doltAddAndCommit swallows. Plain
-// backoff, no circuit breaker: a failure here is benign to the data and must
-// not fail-fast unrelated operations.
+// Division of labor with doltAddAndCommit (#5740 review, blocking item 3):
+// that helper owns everything about publishing — deferral (VersionCommitDeferred),
+// the pinned connection (GH#2455), the staged-set guard, circuit admission,
+// and publication-failure accounting via recordDoltPublicationFailure. This
+// wrapper adds exactly two things and no second copy of any of them: a
+// detached context, and a retry over the conflicts that helper does not
+// retry.
+//
+// The retry is deliberately narrower than withRetryTx's classifier was when
+// the dolt commit still ran in-tx. It covers only Dolt's rollback-guaranteed
+// commit conflicts (1213/1205 serialization, 1105 autocommit rollback) —
+// routine under the concurrent-writer load this path exists for, carrying no
+// breaker accounting of their own, and safe to replay because re-staging is
+// idempotent and a replayed DOLT_COMMIT whose first attempt actually landed
+// degrades to nothing-to-commit, which doltAddAndCommit swallows. Connection
+// losses are NOT retried here: doltAddAndCommit has already recorded them
+// against the circuit breaker, so replaying would count one failed
+// publication through the breaker several times and could trip it for
+// unrelated operations — for a trailing commit whose data is already
+// durable. Those failures go straight back to the caller, which swallows and
+// counts them once (bd.db.post_tx_commit_dropped).
 func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string, commitMsg string) error {
 	// Detach from the caller's cancellation: the data transaction has already
 	// committed, so a request deadline or shutdown landing in this window
@@ -452,15 +464,11 @@ func (s *DoltStore) doltAddAndCommitPostTx(ctx context.Context, tables []string,
 			return nil
 		}
 		lastErr = err
-		// Mirror withRetryTx's accounting so conflict pressure on this path
-		// stays visible to the same counters that tracked it in-tx.
+		// Mirror withRetryTx's accounting so conflict pressure that moved out
+		// of it stays visible on the same counters.
 		if isSerializationError(err) || isDoltAutocommitRollbackError(err) {
 			doltMetrics.serializationErrors.Add(ctx, 1)
 			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "serialization")))
-			return err
-		}
-		if isRetryableError(err) {
-			doltMetrics.writeRetries.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "connection")))
 			return err
 		}
 		return backoff.Permanent(err)

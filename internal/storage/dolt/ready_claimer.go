@@ -85,7 +85,7 @@ func (c *readyClaimer) ClaimNext(ctx context.Context, request issueops.ClaimNext
 				// store's own ClaimReadyIssue wrote before the claim moved here.
 				// Post-tx ordering caveat: a concurrent writer's commit can absorb
 				// this one (nothing-to-commit), in which case the claim appears
-				// under the OTHER writer's message - the grep is best-effort
+				// under the OTHER writer's message — the grep is best-effort
 				// evidence of a claim, and its absence is not proof of failure.
 				return tables, storageissueops.ClaimNextCommitMessage(attempt.Claimed.ID), nil
 			})
