@@ -119,6 +119,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bd mol burn`, `bd duplicates --merge`, and the wisp writes — closes,
   updates, deletes and demote-to-wisp.
 
+- **`bd close` now exits non-zero when any issue in a batch fails to close**
+  ([#6648](https://github.com/gastownhall/beads/issues/6648)). A batch with one
+  refused id used to exit 0 as long as another id closed, so scripts could not
+  tell that part of the batch was left open. The closable ids still close, the
+  refusals are still printed, and a final `Error: N of M issues failed to close`
+  line is added; ids that were already closed still count as success. Both the
+  direct and proxied-server routes behave this way for ids the close policy or
+  the engine refuses. (An id that cannot be *resolved* at all is unchanged and
+  still differs by route: the direct route aborts the whole command before any
+  close runs, while the proxied route refuses that argument and closes the
+  rest.) In `--json` mode the summary is instead a compact JSON line on stderr
+  naming the failed ids, matching `bd update`'s partial-failure report, while
+  stdout keeps the usual closed-issues array. `--claim-next` still claims when
+  part of the batch closed — the claim commits inside the batch's own
+  transaction and a sibling's refusal does not roll it back — so the summary
+  names the claimed id rather than leaving it silently assigned.
+
 ## [1.3.1] - 2026-09-16
 
 ### Changed
