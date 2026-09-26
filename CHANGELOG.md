@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bd dolt pull`, which is what opting out means). Pulling before the first
   open after upgrading avoids the state entirely.
 
+- **A `--format` typed on `bd list` now beats a `json: true` config default**
+  ([#6278](https://github.com/gastownhall/beads/issues/6278)). With `json: true`
+  in `config.yaml` (or the environment), `bd list --format digraph`, `dot` or a
+  template printed the JSON listing instead, because `bd list`'s own `--format`
+  flag shadows the root one the config-precedence check looks at. A typed
+  `--format` now wins over the config default; an explicit `--json` still wins
+  over `--format`.
+
 ### Added
 
 - **`bd backup` works on a proxied-server workspace bd runs the Dolt server
@@ -372,6 +380,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deliberately no optional-interface fallback — a store that cannot size the
   ready set should fail to compile rather than silently fall back to an
   unbounded query.
+
+- **Push `--dry-run` now honors `--create-only`**
+  ([#6337](https://github.com/gastownhall/beads/issues/6337)). The sequential
+  tracker push previewed "Would update" for every already-linked issue, even
+  though a real `--create-only` run skips them, so the preview over-reported
+  updates and under-reported skips. This affected `bd jira sync` and
+  `bd linear sync` with `--push --create-only --dry-run`. The dry-run now
+  applies the same `--create-only` gate as the real run. Linear's dry-run also
+  no longer counts an issue its batch filter skipped (create-only, a `ShouldPush`
+  hook, parent, type, or conflict) as skipped twice. Notion's batch dry-run was already correct.
 
 ## [1.3.0] - 2026-09-15
 
