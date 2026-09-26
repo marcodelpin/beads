@@ -257,22 +257,11 @@ var createCmd = &cobra.Command{
 		var metadata json.RawMessage
 		if cmd.Flags().Changed("metadata") {
 			metadataValue, _ := cmd.Flags().GetString("metadata")
-			var metadataJSON string
-			if strings.HasPrefix(metadataValue, "@") {
-				filePath := metadataValue[1:]
-				// #nosec G304 -- user explicitly provides file path via @file.json syntax
-				data, err := os.ReadFile(filePath)
-				if err != nil {
-					return HandleError("failed to read metadata file %s: %v", filePath, err)
-				}
-				metadataJSON = string(data)
-			} else {
-				metadataJSON = metadataValue
+			parsed, err := readMetadataFlag(metadataValue)
+			if err != nil {
+				return HandleError("%v", err)
 			}
-			if !json.Valid([]byte(metadataJSON)) {
-				return HandleError("invalid JSON in --metadata: must be valid JSON")
-			}
-			metadata = json.RawMessage(metadataJSON)
+			metadata = parsed
 		}
 
 		validateTemplate, _ := cmd.Flags().GetBool("validate")
@@ -961,7 +950,7 @@ func init() {
 	//   --defer=tomorrow    Hidden until tomorrow
 	createCmd.Flags().String("due", "", "Due date/time. Formats: +6h, +1d, +2w, tomorrow, next monday, 2025-01-15")
 	createCmd.Flags().String("defer", "", "Defer until date (issue hidden from bd ready until then). Same formats as --due")
-	createCmd.Flags().String("metadata", "", "Set custom metadata (JSON string or @file.json to read from file)")
+	createCmd.Flags().String("metadata", "", "Set custom metadata (JSON object, or @file.json to read from file)")
 	// Note: --json flag is defined as a persistent flag in main.go, not here
 	rootCmd.AddCommand(createCmd)
 }
