@@ -148,6 +148,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backend_managed` is false on external proxied topologies, where the dolt
   server is not bd's process to report on.
 
+- **`bd create --metadata` and `bd update --metadata` now require a JSON
+  object** ([#6035](https://github.com/gastownhall/beads/issues/6035)). Both
+  checked only that the value was valid JSON, so `bd create --metadata
+  '"oops"'` stored a bare string (or an array or number) as the issue's
+  metadata, while `bd update` refused the same value only late, in the
+  storage merge, with an internal unmarshal error. A shared check now refuses
+  a string, number, boolean, array or `null` up front on every create and
+  update path with `invalid --metadata: must be a JSON object`; `{}` is still
+  accepted. `null` is the one value update handled differently before: the
+  storage merge accepted it as a no-op and exited 0, so `bd update --metadata
+  null` now exits 1 where it used to silently change nothing. Values inside
+  the object stay opaque, so a string value that looks like JSON is kept as
+  written.
+
 - **`bd mol ready --gated` no longer refuses under `--proxied-server` when
   `BEADS_MAX_ROWS` is set**
   ([#6293](https://github.com/gastownhall/beads/pull/6293)). The proxied
@@ -156,6 +170,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written for the former also refused the latter — a proxy-supported command
   with no `--max-rows` flag to refuse. Rules are keyed on the full command
   path now.
+
+- **`bd init` no longer tells you not to run `bd init` when it refuses a
+  foreign database** ([#5558](https://github.com/gastownhall/beads/issues/5558)).
+  When `bd init` opens a server database that already exists and belongs to a
+  different project — for example when `--server-host`/`--server-port`/
+  `--database` point it somewhere other than this workspace's own server — it
+  correctly refuses with `PROJECT IDENTITY MISMATCH`, but the refusal was the
+  one written for ordinary opens, ending in "Do NOT run 'bd init'". The
+  init-time refusal now names the database and points at remedies that work
+  from there: point `bd init` at this project's server
+  (`--server-host`/`--server-port`) or an unused database name
+  (`--database`), or run `bd doctor --fix` / `bd bootstrap` if `metadata.json`
+  is the stale side. Only `bd init`'s own open gets this wording; every other
+  open, including the library API, `bd doctor --fix` and `bd bootstrap`, keeps
+  the existing message.
 
 ### Changed
 
@@ -206,6 +235,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "only 'compact --dolt'", which names the root `bd compact` — a different
   command, with no `--dolt` flag and its own proxied route. Scripts matching
   the old text need updating.
+- **`bd query` no longer silently stops at 50 rows when its output is piped**
+  ([#6229](https://github.com/gastownhall/beads/issues/6229)). `bd list` has
+  treated piped stdout as unlimited since GH#4094, but `bd query` read its
+  `--limit` default of 50 straight through, so `bd query '...' | consumer`
+  dropped every row past 50 with no hint. An unflagged `bd query` now resolves
+  through the same policy as `bd list`: an explicit `--limit` wins, piped
+  stdout is unlimited, agent mode on a terminal gets 20, and a terminal gets 50.
+
 - **`bd preflight` honors the `json` config default**
   ([#6293](https://github.com/gastownhall/beads/pull/6293)). Its `--json` flag
   is bound to the same global every sibling command binds, so `json: true` in
@@ -252,6 +289,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spelling), where commenting the key out would leave the body behind as a value
   of its own. Unsetting a key that is not set remains a successful no-op in
   every shape.
+- **A self-hosted GitLab no longer re-creates its own issues on every push**
+  ([#6735](https://github.com/gastownhall/beads/issues/6735)). The tracker
+  decided whether a stored `external_ref` was one of its own by looking for
+  the substring "gitlab" in the URL, so an instance whose hostname does not
+  contain it — `https://nova.teachx.ai`, say — had its own issue and
+  work-item URLs classified as foreign. `bd gitlab push` then took the
+  create-not-update path for issues that were already synced, and pull
+  reconciliation and conflict detection skipped them. Such a URL is now also
+  recognized when its host, and base path for a GitLab served from a
+  sub-path, match the configured `gitlab.url`.
+
+  Recognition only widens: every ref the substring check already claimed is
+  classified exactly as before, so no existing link changes meaning. Two
+  limits are worth knowing. Matching is host-scoped, not project-scoped — with
+  GitLab at the host root, a ref pointing at another project on the same host
+  now counts as this tracker's, as has always been the case for `gitlab.com`.
+  And the host is compared literally, so `gitlab.url` must name it the way
+  GitLab spells it in the `web_url`s it returns; writing an explicit default
+  port (`https://host:443`) matches none of them and leaves the old behavior
+  in place.
 
 ### Changed
 
