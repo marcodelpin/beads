@@ -1968,33 +1968,41 @@ func TestEnsureProjectGitignore_AppendsToExisting(t *testing.T) {
 }
 
 func TestEnsureProjectGitignore_PreservesAppendLineEndings(t *testing.T) {
-	lfBlock := "\n" + ProjectGitignoreHeader + "\n" + strings.Join(ProjectGitignorePatterns, "\n") + "\n"
+	lfSection := ProjectGitignoreHeader + "\n" + strings.Join(ProjectGitignorePatterns, "\n") + "\n"
+	lfBlock := "\n" + lfSection
 	crlfBlock := "\r\n" + ProjectGitignoreHeader + "\r\n" + strings.Join(ProjectGitignorePatterns, "\r\n") + "\r\n"
 	partial := ProjectGitignoreHeader + "\r\n" + ProjectGitignorePatterns[0] + "\r\n"
 	remaining := "\r\n" + ProjectGitignoreHeader + "\r\n" + strings.Join(ProjectGitignorePatterns[1:], "\r\n") + "\r\n"
 	complete := ProjectGitignoreHeader + "\r\n" + strings.Join(ProjectGitignorePatterns, "\r\n")
 	for _, tc := range []struct {
 		name, existing, want string
+		missing              bool
 	}{
-		{"empty", "", lfBlock},
-		{"delimiter-free", "local", "local\n" + lfBlock},
-		{"LF", "local\n", "local\n" + lfBlock},
-		{"CRLF", "local\r\n", "local\r\n" + crlfBlock},
-		{"CRLF unterminated", "local\r\nlast", "local\r\nlast\r\n" + crlfBlock},
-		{"CRLF trailing CR", "local\r\nlast\r", "local\r\nlast\r\n" + crlfBlock},
-		{"LF trailing CR", "local\nlast\r", "local\nlast\r\n" + lfBlock},
-		{"only trailing CR", "local\r", "local\r\n" + lfBlock},
-		{"mixed majority CRLF", "a\r\nb\r\nc\n", "a\r\nb\r\nc\n" + lfBlock},
+		{"empty", "", lfSection, false},
+		{"missing", "", lfSection, true},
+		{"whitespace", " \t", " \t\n" + lfBlock, false},
+		{"blank LF", "\n", "\n" + lfBlock, false},
+		{"blank CRLF", "\r\n", "\r\n" + crlfBlock, false},
+		{"delimiter-free", "local", "local\n" + lfBlock, false},
+		{"LF", "local\n", "local\n" + lfBlock, false},
+		{"CRLF", "local\r\n", "local\r\n" + crlfBlock, false},
+		{"CRLF unterminated", "local\r\nlast", "local\r\nlast\r\n" + crlfBlock, false},
+		{"CRLF trailing CR", "local\r\nlast\r", "local\r\nlast\r\n" + crlfBlock, false},
+		{"LF trailing CR", "local\nlast\r", "local\nlast\r\n" + lfBlock, false},
+		{"only trailing CR", "local\r", "local\r\n" + lfBlock, false},
+		{"mixed majority CRLF", "a\r\nb\r\nc\n", "a\r\nb\r\nc\n" + lfBlock, false},
 		// Re-emitting an existing header is pre-existing behavior, preserved here.
-		{"partial with header", partial, partial + remaining},
-		{"complete unterminated", complete, complete},
-		{"complete CRLF", complete + "\r\n", complete + "\r\n"},
+		{"partial with header", partial, partial + remaining, false},
+		{"complete unterminated", complete, complete, false},
+		{"complete CRLF", complete + "\r\n", complete + "\r\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, ".gitignore")
-			if err := os.WriteFile(path, []byte(tc.existing), 0600); err != nil {
-				t.Fatal(err)
+			if !tc.missing {
+				if err := os.WriteFile(path, []byte(tc.existing), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			for call := 1; call <= 2; call++ {
 				if err := EnsureProjectGitignore(dir); err != nil {
