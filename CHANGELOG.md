@@ -1097,7 +1097,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Storage for an opt-in curated label vocabulary**
   ([#6008](https://github.com/gastownhall/beads/pull/6008)). A new
-  `label_definitions` table (migration 0068) holds a workspace-shared list of
+  `label_definitions` table (migration 0069) holds a workspace-shared list of
   label names, with a `label_folded` UNIQUE constraint so two case-variant
   spellings of one word can never both land. The table is inert on its own:
   nothing in this change consults it when a label is written, and a workspace
