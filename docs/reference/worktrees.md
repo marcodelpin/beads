@@ -25,6 +25,12 @@ and the `.beads` database discovery probes in `internal/beads`, so those
 variables can still select which workspace `bd` opens. Clearing those variables
 from the `bd` process environment applies only to `bd worktree` commands.
 
+`GIT_CEILING_DIRECTORIES` is scrubbed along with the redirects. That removes a
+*bound* rather than a redirect, so discovery from the working directory is
+widened, not narrowed: run in a directory that is not itself a repository, `bd`
+can select a containing parent repository that an inherited ceiling would have
+hidden.
+
 ```
 project/
 ├── .git/                 # Shared Git directory

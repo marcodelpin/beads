@@ -4,10 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
+	"github.com/steveyegge/beads/internal/gitenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1534,6 +1536,93 @@ func TestMetricsNoticeShownResolvesUserGlobalOnly(t *testing.T) {
 		}
 		if !MetricsNoticeShownByUserConfig() {
 			t.Errorf("MetricsNoticeShownByUserConfig() = false; user-global true must win over project false")
+		}
+	})
+}
+
+// TestCheckSecretKeyGitSafety_RoutedCheckout covers the call site's two
+// environment shapes. The guard is fail-open — a probe that cannot answer reads
+// as "not tracked" reads as "allow the secret write" — so each shape has to be
+// pinned separately: neither probe alone answers both, and the existing tests
+// above are all in-tree-repo, which is the one shape that never needed either.
+func TestCheckSecretKeyGitSafety_RoutedCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("routed checkout fixture requires Git")
+	}
+	for _, entry := range os.Environ() {
+		key := gitenv.EntryKey(entry)
+		if gitenv.IsRoutingKeyForOS(key, runtime.GOOS) {
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	runGit := func(t *testing.T, dir string, env []string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir, cmd.Env = dir, env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("fixture git %v: %v: %s", args, err, out)
+		}
+	}
+	writeConfig := func(t *testing.T, workTree string) string {
+		t.Helper()
+		beadsDir := filepath.Join(workTree, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		configPath := filepath.Join(beadsDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("json: false\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return configPath
+	}
+
+	// The routed layout the scrub-only probe cannot see: the repository lives
+	// outside the work tree and is reachable only through GIT_DIR/GIT_WORK_TREE,
+	// so there is no in-tree .git for a scrubbed probe to discover from.
+	t.Run("legitimate routing refuses a tracked config", func(t *testing.T) {
+		root := t.TempDir()
+		gitDir, workTree := filepath.Join(root, "repo.git"), filepath.Join(root, "work")
+		if err := os.MkdirAll(workTree, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		clean := gitenv.ScrubRoutingAndSuppression(os.Environ())
+		runGit(t, root, clean, "init", "--quiet", "--bare", gitDir)
+		configPath := writeConfig(t, workTree)
+		routed := append(clean, "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
+		runGit(t, workTree, routed, "add", "--", ".beads/config.yaml")
+
+		t.Setenv("GIT_DIR", gitDir)
+		t.Setenv("GIT_WORK_TREE", workTree)
+		err := checkSecretGitTracked(configPath, "linear.api_key")
+		if err == nil {
+			t.Fatal("secret write allowed into a tracked config: the guard lost its only view of the repository")
+		}
+		if !strings.Contains(err.Error(), "refusing to write secret key") {
+			t.Fatalf("expected a refusal, got: %v", err)
+		}
+	})
+
+	// The poisoned layout the inherited probe cannot see. Pinned alongside so
+	// the fallback above cannot be widened into a way around the scrub.
+	t.Run("poisoned routing still refuses a tracked config", func(t *testing.T) {
+		root, decoy := t.TempDir(), t.TempDir()
+		clean := gitenv.ScrubRoutingAndSuppression(os.Environ())
+		runGit(t, root, clean, "init", "--quiet")
+		runGit(t, decoy, clean, "init", "--quiet")
+		configPath := writeConfig(t, root)
+		runGit(t, root, clean, "add", "--", ".beads/config.yaml")
+
+		t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+		t.Setenv("GIT_WORK_TREE", decoy)
+		err := checkSecretGitTracked(configPath, "linear.api_key")
+		if err == nil {
+			t.Fatal("secret write allowed into a tracked config: an inherited GIT_DIR hid the file behind a decoy repository")
+		}
+		if !strings.Contains(err.Error(), "refusing to write secret key") {
+			t.Fatalf("expected a refusal, got: %v", err)
 		}
 	})
 }

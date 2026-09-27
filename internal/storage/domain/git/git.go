@@ -21,6 +21,8 @@ func NewGitRepository(workDir string) domain.GitRepository {
 
 // NewInitGitRepository binds init artifact operations to the selected workDir.
 // The generic constructor retains inherited routing for its existing callers.
+// beads.role reads and writes re-scrub this captured environment for config
+// suppression as well; see roleAuthorityEnv for why that is not optional here.
 func NewInitGitRepository(workDir string) domain.GitRepository {
 	return &gitRepositoryImpl{workDir: workDir, env: gitenv.ScrubRouting(os.Environ())}
 }
@@ -102,13 +104,33 @@ func (r *gitRepositoryImpl) Init(ctx context.Context) error {
 	return nil
 }
 
+// roleAuthorityEnv returns the environment for a beads.role read or write.
+// The role grants privilege, so this boundary drops the explicit config
+// suppression that ScrubRouting deliberately preserves: an inherited
+// GIT_CONFIG_GLOBAL=/dev/null blinds the lookup, and the proxied init tail
+// answers a missing role by persisting "maintainer" into repository-local
+// config, where it then outranks the global value for every later read.
+//
+// The strict scrub applies to whichever environment this repository already
+// carries, not to os.Environ(), so a captured environment keeps its own HOME
+// and loses only the suppression entries. Testing r.env for nil instead would
+// leave the arm dead on the one production role path, which always arrives
+// through NewInitGitRepository and therefore always carries a captured env.
+func (r *gitRepositoryImpl) roleAuthorityEnv() []string {
+	env := r.env
+	if env == nil {
+		env = os.Environ()
+	}
+	return gitenv.ScrubRoutingAndSuppression(env)
+}
+
 func (r *gitRepositoryImpl) GetConfig(ctx context.Context, key string) (string, bool, error) {
 	if key == "" {
 		return "", false, fmt.Errorf("git: GetConfig: key must not be empty")
 	}
 	cmd := r.gitCmd(ctx, "config", "--get", key)
-	if key == "beads.role" && r.env == nil {
-		cmd.Env = gitenv.ScrubRouting(os.Environ())
+	if key == domain.BeadsRoleConfigKey {
+		cmd.Env = r.roleAuthorityEnv()
 	}
 	out, err := cmd.Output()
 	if err != nil {
@@ -134,8 +156,8 @@ func (r *gitRepositoryImpl) SetConfig(ctx context.Context, key, value string) er
 		return fmt.Errorf("git: SetConfig: key must not be empty")
 	}
 	cmd := r.gitCmd(ctx, "config", key, value)
-	if key == "beads.role" && r.env == nil {
-		cmd.Env = gitenv.ScrubRouting(os.Environ())
+	if key == domain.BeadsRoleConfigKey {
+		cmd.Env = r.roleAuthorityEnv()
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

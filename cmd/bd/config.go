@@ -119,12 +119,15 @@ var forceGitTracked bool
 
 // newRoleConfigWriter captures fresh cwd and scrubbed routing once per write
 // operation. The process-wide Git cache and Beads storage do not select it.
+// Routing is scrubbed along with the suppression ScrubRouting deliberately
+// keeps: beads.role is an authority value, and the reader it feeds treats a
+// missing value as maintainer, so a suppressed config file would fail open.
 func newRoleConfigWriter() (func(...string) error, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	env := gitenv.ScrubRouting(os.Environ())
+	env := gitenv.ScrubRoutingAndSuppression(os.Environ())
 	probe := exec.Command("git", "rev-parse", "--git-common-dir")
 	probe.Dir, probe.Env = dir, env
 	out, err := probe.Output()
@@ -237,12 +240,14 @@ var configSetCmd = &cobra.Command{
 			}
 			// bd config's own beads.role reads and writes ignore inherited Git
 			// routing, including GIT_CONFIG_GLOBAL, so the value lands in the
-			// repository this command selected. The scope is this command set,
-			// not role resolution as a whole: routing.DetectUserRole,
-			// `bd config show`, `bd doctor` and `bd hooks uninstall` still
-			// resolve beads.role through the inherited environment, and
-			// beads.RepoContext.Role pins GIT_DIR/GIT_WORK_TREE last-wins but
-			// still inherits GIT_CONFIG_*.
+			// repository this command selected. beads.role is an authority
+			// value and the reader it feeds treats a missing value as
+			// maintainer, so these planes also discard the explicit suppression
+			// ScrubRouting deliberately keeps -- otherwise a blinded read fails
+			// open instead of erroring. That boundary is uniform across
+			// routing.DetectUserRole, `bd config show`, `bd doctor`,
+			// `bd hooks uninstall` and beads.RepoContext.Role, which re-pins
+			// GIT_DIR/GIT_WORK_TREE last-wins on top of it.
 			write, err := newRoleConfigWriter()
 			if err != nil {
 				return HandleError("setting beads.role in git config: %v", err)
@@ -567,8 +572,9 @@ var configGetCmd = &cobra.Command{
 		}
 
 		if key == "beads.role" {
+			// Same role-authority boundary as `bd config set` above.
 			cmd := exec.Command("git", "config", "--get", "beads.role")
-			cmd.Env = gitenv.ScrubRouting(os.Environ())
+			cmd.Env = gitenv.ScrubRoutingAndSuppression(os.Environ())
 			output, err := cmd.Output()
 			value := strings.TrimSpace(string(output))
 			if err != nil {
@@ -845,6 +851,9 @@ var configUnsetCmd = &cobra.Command{
 		}
 
 		if key == "beads.role" {
+			// Same role-authority boundary as `bd config set`/`get` above: every
+			// spelling of a beads.role mutation resolves the repository the same
+			// way, so the next reader has one boundary to reason about.
 			write, err := newRoleConfigWriter()
 			if err != nil {
 				return HandleError("unsetting beads.role in git config: %v", err)
@@ -1140,6 +1149,8 @@ Examples:
 		}
 
 		if len(gitPairs) > 0 {
+			// set-many is the batch alias for `bd config set`, so it runs on the
+			// same role-authority boundary that verb does.
 			write, err := newRoleConfigWriter()
 			if err != nil {
 				return HandleError("setting beads.role in git config: %v", err)

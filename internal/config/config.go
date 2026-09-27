@@ -1031,9 +1031,9 @@ func ResolveExternalProjectPath(projectName string) string {
 //  3. git config user.name
 //  4. hostname
 //
-// The Git lookup discards inherited routing overrides, including
-// GIT_CONFIG_GLOBAL. Set user.name in the default global config location
-// rather than selecting a different file through that environment override.
+// The Git lookup discards custom GIT_CONFIG_GLOBAL paths and other routing
+// overrides, while retaining explicit config suppression. Set user.name in
+// the default global config location when global config is enabled.
 func GetIdentity(flagValue string) string {
 	// 1. Command-line flag takes precedence
 	if flagValue != "" {

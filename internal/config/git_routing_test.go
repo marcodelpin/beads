@@ -36,6 +36,10 @@ func TestGetIdentityIgnoresInheritedGitRouting(t *testing.T) {
 	if err := os.WriteFile(poisonConfig, []byte("[user]\n\tname = injected-user\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		t.Fatalf("hostname fixture: %q, %v", hostname, err)
+	}
 	for _, tc := range []struct {
 		name       string
 		env        map[string]string
@@ -45,8 +49,11 @@ func TestGetIdentityIgnoresInheritedGitRouting(t *testing.T) {
 		{name: "repository", env: map[string]string{"GIT_DIR": filepath.Join(decoy, ".git")}, want: "target-user"},
 		{name: "inline config", env: map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "injected-user"}, want: "target-user"},
 		{name: "global config", env: map[string]string{"GIT_CONFIG_GLOBAL": poisonConfig}, clearLocal: true, want: "home-user"},
+		{name: "null config suppression", env: map[string]string{"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}, clearLocal: true, want: hostname},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Keep each removal case independent of the preceding case.
+			runConfigProbeGit(t, target, "config", "--local", "user.name", "target-user")
 			if tc.clearLocal {
 				runConfigProbeGit(t, target, "config", "--local", "--unset", "user.name")
 			}

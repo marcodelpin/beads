@@ -347,6 +347,9 @@ func autoConfigureForkContributor(ctx context.Context, store storage.DoltStorage
 		return fmt.Errorf("failed to set sync.remote: %w", err)
 	}
 
+	// setBeadsRole carries the shared role-authority boundary: an inherited
+	// GIT_DIR or a suppressed config file would otherwise land this write in a
+	// different repository than every beads.role reader consults.
 	if err := setBeadsRole("contributor"); err != nil && !quiet {
 		fmt.Fprintf(os.Stderr, "Warning: failed to set beads.role=contributor: %v\n", err)
 	}
