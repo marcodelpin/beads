@@ -98,6 +98,9 @@ func TestScrubRoutingUsesHostKeySemantics(t *testing.T) {
 		"GIT_DIR=canonical", "git_dir=mixed", "GİT_DİR=conservative",
 		"GIT_WORK_TREE=lookup-alias", "gİt_config_count=conservative",
 		"GıT_DIR=distinct", "GIT_ſHALLOW_FILE=distinct", "GIT_CONFIG",
+		// A legitimate discovery ceiling is scrubbed too: it can fence off the
+		// working directory's own repository, so IsRoutingKeyForOS counts it.
+		"GIT_CEILING_DIRECTORIES=/fence",
 		"KEEP=first", "KEEP=second", "KEEP=GIT_DIR=value",
 		"GIT_OPTIONAL_LOCKS=1", "GIT_NO_REPLACE_OBJECTS=1", "MALFORMED", `=C:=C:\work`,
 	}

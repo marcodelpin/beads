@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -112,6 +113,20 @@ func TestGitCmdInDirSuppressesHooksViaGitConfig(t *testing.T) {
 	}
 	if !hasOptionalLocks {
 		t.Fatal("cmd.Env did not preserve GIT_OPTIONAL_LOCKS")
+	}
+}
+
+func TestScrubWorktreeRemovalGitEnvUsesSharedWindowsKeyIdentity(t *testing.T) {
+	// os/exec identifies Windows keys with ToLower, which keeps the dotless i
+	// distinct. A ToUpper fold would map GıT_OPTIONAL_LOCKS onto
+	// GIT_OPTIONAL_LOCKS and strip an unrelated variable from the child.
+	input := []string{
+		"GıT_OPTIONAL_LOCKS=1", "git_optional_locks=1",
+		"GIT_NO_REPLACE_OBJECTS=1", "KEEP=value",
+	}
+	want := []string{"GıT_OPTIONAL_LOCKS=1", "KEEP=value"}
+	if got := scrubWorktreeRemovalGitEnvForOS(input, "windows"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("scrubWorktreeRemovalGitEnvForOS(windows) = %q, want %q", got, want)
 	}
 }
 
