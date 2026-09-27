@@ -43,7 +43,7 @@ export PATH := $(GIT_WINDOWS_ROOT)/usr/bin;$(PATH)
 endif
 endif
 
-.PHONY: all build doctor-build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration corpus-regen bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short
+.PHONY: all build doctor-build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration corpus-regen githooks-regen bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-complexity ci-complexity-diff ci-complexity-check ci-package-mcp ci-package-npm
 .PHONY: api-gen api-check
 
@@ -287,6 +287,15 @@ test-migration: build
 corpus-regen:
 	@echo "Regenerating contract corpus..."
 	go test -tags "$(BUILD_TAGS)" ./cmd/bd/protocol -run TestCorpusGolden -corpus.update -count=1
+
+# The tracked .githooks/* carry the managed section cmd/bd/hooks.go generates;
+# TestTrackedManagedHookSectionsMatchGenerator holds them byte-equal. Run this
+# after changing the generator or after bumping Version in cmd/bd/version.go
+# (the section markers carry the version), then commit the regenerated hooks
+# alongside it.
+githooks-regen:
+	@echo "Regenerating managed sections in .githooks/*..."
+	BD_UPDATE_HOOKS_GOLDEN=1 go test -tags "$(BUILD_TAGS)" ./cmd/bd -run TestTrackedManagedHookSectionsMatchGenerator -count=1
 
 
 # Run performance benchmarks against Dolt storage backend
