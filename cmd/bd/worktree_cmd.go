@@ -709,8 +709,10 @@ func worktreeGitEnvKey(entry string) string {
 
 // clearWorktreeGitRoutingEnv establishes the command working directory as the
 // repository-selection boundary without changing process identity or signal
-// semantics. Startup config discovery applies the same boundary to its one
-// pre-hook Git probe.
+// semantics. Startup config discovery applies the same scrub to its pre-hook
+// config-path probe only; the .beads database discovery probes in
+// internal/beads still honor inherited routing, so the two planes can resolve
+// different repositories.
 func clearWorktreeGitRoutingEnv(cmd *cobra.Command) error {
 	if !hasWorktreeCommandAncestor(cmd) {
 		return nil

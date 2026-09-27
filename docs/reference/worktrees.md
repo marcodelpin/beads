@@ -15,10 +15,15 @@ override discovery with `BEADS_DIR`.
 Startup *config* discovery — the `rev-parse` probe in `internal/config`'s
 `gitDirsForRepo`, which locates a linked worktree's shared `.beads` config —
 scrubs inherited Git routing variables such as `GIT_DIR` and `GIT_WORK_TREE`
-from its subprocess environment. Other startup Git probes still honor inherited
-routing, including `internal/git`'s process-cached repository context. Clearing
-those variables from the `bd` process environment applies only to `bd worktree`
-commands.
+from its subprocess environment whenever it runs. The scrub is unconditional for
+that probe, but the probe is a fallback, not a per-command step: it runs only
+when nothing earlier in startup has already resolved a config path
+(`internal/config/config.go`), so an ancestor `.beads/config.yaml` or an
+explicit `BEADS_DIR` short-circuits it. Other startup Git probes still honor
+inherited routing, including `internal/git`'s process-cached repository context
+and the `.beads` database discovery probes in `internal/beads`, so those
+variables can still select which workspace `bd` opens. Clearing those variables
+from the `bd` process environment applies only to `bd worktree` commands.
 
 ```
 project/
