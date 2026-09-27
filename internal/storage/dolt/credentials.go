@@ -637,7 +637,7 @@ func (s *DoltStore) prepareCLIRouteForPeerCredentials(ctx context.Context, peer 
 	}
 	for _, r := range remotes {
 		if r.Name == peer {
-			if err := s.ensureMatchingCLIRemote(peer, r.URL); err != nil {
+			if err := s.ensureMatchingCLIRemote(peer, r.URL, r.Ref); err != nil {
 				return false, fmt.Errorf("peer remote %q has credentials and requires CLI routing: %w", peer, err)
 			}
 			return true, nil
@@ -687,7 +687,7 @@ func (s *DoltStore) prepareCLIRouteForCredentials(ctx context.Context, remote st
 	}
 	for _, r := range remotes {
 		if r.Name == remote {
-			if err := s.ensureMatchingCLIRemote(remote, r.URL); err != nil {
+			if err := s.ensureMatchingCLIRemote(remote, r.URL, r.Ref); err != nil {
 				return false, fmt.Errorf("remote %q has credentials and requires CLI routing: %w", remote, err)
 			}
 			return true, nil
@@ -713,7 +713,7 @@ func (s *DoltStore) shouldUseCLIForLocalRemoteWithError(ctx context.Context, rem
 	}
 	for _, r := range sqlRemotes {
 		if r.Name == remote {
-			return s.hasMatchingCLIRemote(remote, r.URL), nil
+			return s.hasMatchingCLIRemote(remote, r.URL, r.Ref), nil
 		}
 	}
 	return false, nil
@@ -806,10 +806,11 @@ func (s *DoltStore) prepareCLIRouteForCloudAuth(ctx context.Context, remote stri
 	if err != nil {
 		return false, fmt.Errorf("list Dolt remotes before cloud-auth routing for remote %q: %w", remote, err)
 	}
-	var remoteURL string
+	var remoteURL, remoteRef string
 	for _, r := range remotes {
 		if r.Name == remote {
 			remoteURL = r.URL
+			remoteRef = r.Ref
 			break
 		}
 	}
@@ -821,7 +822,7 @@ func (s *DoltStore) prepareCLIRouteForCloudAuth(ctx context.Context, remote stri
 		return false, nil // unknown scheme — not a cloud remote
 	}
 	if execenv.ContainsKeyWithPrefix(os.Environ(), prefixes...) {
-		if err := s.ensureMatchingCLIRemote(remote, remoteURL); err != nil {
+		if err := s.ensureMatchingCLIRemote(remote, remoteURL, remoteRef); err != nil {
 			return false, fmt.Errorf("remote %q has cloud credentials and requires CLI routing: %w", remote, err)
 		}
 		return true, nil
