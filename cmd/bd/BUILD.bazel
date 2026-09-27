@@ -297,6 +297,7 @@ go_library(
         "storage_chain.go",
         "store_factory.go",
         "store_factory_nocgo.go",
+        "store_factory_server_mode.go",
         "store_reopen.go",
         "swarm.go",
         "swarm_proxied_server.go",
@@ -455,8 +456,28 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
+# The bd that subprocess tests exec, injected through BEADS_TEST_BD_BINARY
+# (bazeltest.PrebuiltBD) instead of a per-package `go build`. Never race
+# instrumented, even under --config=prcore: it matches the non-race
+# gms_pure_go binary pr-core's tests build today. Named bd, like that binary.
+go_binary(
+    name = "bd_for_tests",
+    out = "bd_for_tests/bd",
+    embed = [":bd_lib"],
+    race = "off",
+    visibility = [
+        "//cmd/bd:__subpackages__",
+        "//internal/beads:__pkg__",
+        "//internal/storage/uow:__pkg__",
+        "//test/conformance:__pkg__",
+    ],
+)
+
 go_test(
     name = "bd_test",
+    # -race -short runs ~10 min (pr-core gives go test -timeout=30m).
+    size = "large",
+    timeout = "long",
     srcs = [
         "aaa_stdio_baseline_test.go",
         "actor_test.go",
@@ -869,6 +890,7 @@ go_test(
         "prime_gemini_hook_test.go",
         "prime_memory_caps_test.go",
         "prime_proxied_integration_test.go",
+        "prime_shared_server_test.go",
         "prime_test.go",
         "promote_embedded_test.go",
         "promote_proxied_integration_test.go",
@@ -1094,8 +1116,20 @@ go_test(
         "write_verbs_parity_test.go",
         "zz_stdio_leak_guard_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + [
+        ":bd_for_tests",
+        ":go_srcs",
+        "//:bd_test_files",
+        "//cmd/bd/doctor:go_srcs",
+        "//cmd/bd/doctor/fix:go_srcs",
+        "//internal/storage/embeddeddolt/cmd:go_srcs",
+        "@go_sdk//:bin/gofmt",
+    ],
     embed = [":bd_lib"],
+    env = {
+        "BEADS_TEST_BD_BINARY": "$(rlocationpath :bd_for_tests)",
+        "BEADS_TEST_GOFMT": "$(rlocationpath @go_sdk//:bin/gofmt)",
+    },
     deps = [
         "//:beads",
         "//cmd/bd/doctor",
@@ -1143,6 +1177,7 @@ go_test(
         "//internal/storage/versioncontrolops",
         "//internal/telemetry",
         "//internal/testutil",
+        "//internal/testutil/bazeltest",
         "//internal/tracker",
         "//internal/types",
         "//internal/ui",
@@ -1221,3 +1256,16 @@ exports_files(
     ["init_safety_help.go"],
     visibility = ["//test/docsync:__pkg__"],
 )
+
+# --- begin go_srcs (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        allow_empty = True,
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+# --- end go_srcs ---
