@@ -23,6 +23,7 @@ on:
       - 'cmd/bd/proxied_server*.go'
       - 'cmd/bd/dolt*.go'
       - 'cmd/bd/*_proxied_server.go'
+      - 'cmd/bd/purge*.go'
       - 'cmd/bd/db_proxy_child.go'
       - 'cmd/bd/init*.go'
       - 'cmd/bd/proxied_integration_helpers_test.go'
@@ -42,6 +43,7 @@ on:
       - 'cmd/bd/proxied_server*.go'
       - 'cmd/bd/dolt*.go'
       - 'cmd/bd/*_proxied_server.go'
+      - 'cmd/bd/purge*.go'
       - 'cmd/bd/db_proxy_child.go'
       - 'cmd/bd/init*.go'
       - 'cmd/bd/proxied_integration_helpers_test.go'
@@ -110,7 +112,8 @@ jobs:
             TestManagedLocalProxiedDoltStatusReportsLiveTopology \
             TestManagedLocalProxiedDoltStartRefusesOverLiveProxy \
             TestManagedLocalProxiedDoltStartRefusesWithProxyDown \
-            TestManagedLocalProxiedDoltLifecycleLeavesOtherTopologiesAlone
+            TestManagedLocalProxiedDoltLifecycleLeavesOtherTopologiesAlone \
+            TestManagedLocalProxiedPurgeWispsPlaneRetention
           do
             if ! grep -qx "$test_name" <<<"$listed"; then
               echo "managed-local lifecycle test $test_name is missing; got: '$listed'" >&2
