@@ -1,0 +1,42 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "spool",
+    srcs = [
+        "append.go",
+        "canonical.go",
+        "entry.go",
+        "lock.go",
+        "lock_unix.go",
+        "lock_windows.go",
+        "replay.go",
+        "spool.go",
+    ],
+    importpath = "github.com/steveyegge/beads/internal/spool",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_zeebo_blake3//:blake3",
+    ] + select({
+        "@rules_go//go/platform:windows": [
+            "@org_golang_x_sys//windows",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+go_test(
+    name = "spool_test",
+    srcs = [
+        "append_test.go",
+        "canonical_test.go",
+        "crash_test.go",
+        "diskcap_test.go",
+        "entry_test.go",
+        "fakedolt_test.go",
+        "lock_test.go",
+        "parity_test.go",
+        "replay_test.go",
+        "spool_test.go",
+    ],
+    embed = [":spool"],
+)

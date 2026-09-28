@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/execx"
+	"github.com/steveyegge/beads/internal/gitenv"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/workapi"
 )
@@ -334,6 +335,7 @@ func collectGitConfigEntries() []configEntry {
 
 	// beads.role is the only git config key currently
 	cmd := execx.GitCommand("config", "--get", "beads.role")
+	cmd.Env = gitenv.ScrubRoutingAndSuppression(os.Environ())
 	output, err := cmd.Output()
 	if err == nil {
 		value := strings.TrimSpace(string(output))

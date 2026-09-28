@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
-
-	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/git"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/git"
 )
 
 // TestCreateRemoteRepoSkipsLocalDatabaseGuard is a regression test for a gap
@@ -49,23 +49,27 @@ func TestCreateRemoteRepoSkipsLocalDatabaseGuard(t *testing.T) {
 		t.Fatalf("test setup: %s unexpectedly has a .beads dir", noBeadsCwd)
 	}
 
-	t.Chdir(noBeadsCwd)
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(noBeadsCwd); err != nil {
+		t.Fatalf("chdir(%q): %v", noBeadsCwd, err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
 	t.Setenv("BEADS_DIR", "")
 	t.Setenv("BEADS_DB", "")
-
-	// A sibling test that touched git while the process cwd was still inside
-	// the real checkout leaves internal/git's process-wide gitContext cache
-	// pointing at that repo root. FindBeadsDir then resolves the checkout's
-	// .beads from this test's temp cwd and the create goes to a configured
-	// Dolt server (host from the real metadata.json, port from the test
-	// container's process-wide BEADS_DOLT_SERVER_PORT) instead of the
-	// remote-cache path under test. Reset the caches on entry and on exit,
-	// same pattern as backup_restore_test.go.
-	beads.ResetCaches()
+	// git and beads cache the cwd's repository and workspace process-wide. Start
+	// from caches that describe noBeadsCwd: a cache an earlier test filled from
+	// the package directory (a checkout, or a worktree whose main repository has
+	// a .beads) would hand create that workspace instead. Reset again on the
+	// way out, before the cwd is restored, so the next test does not inherit
+	// this directory's answers.
 	git.ResetCaches()
+	beads.ResetCaches()
 	t.Cleanup(func() {
-		beads.ResetCaches()
 		git.ResetCaches()
+		beads.ResetCaches()
 	})
 
 	// Hide the `dolt` CLI so remotecache.Ensure fails fast and

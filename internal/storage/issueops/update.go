@@ -378,14 +378,14 @@ type UpdateResult struct {
 //
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
 func UpdateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string]interface{}, actor string) (*UpdateResult, error) {
-	return updateIssueInTx(ctx, tx, id, updates, actor, true, false)
+	return updateIssueInTx(ctx, tx, id, updates, actor, true, false, true)
 }
 
 // UpdateIssueWithoutEventInTx applies normal update semantics without recording
 // an intermediate event. Demotion uses this to preserve the historical event
 // stream: create/update history is copied, then a single demotion event is added.
 func UpdateIssueWithoutEventInTx(ctx context.Context, tx DBTX, id string, updates map[string]interface{}, actor string) (*UpdateResult, error) {
-	return updateIssueInTx(ctx, tx, id, updates, actor, false, false)
+	return updateIssueInTx(ctx, tx, id, updates, actor, false, false, true)
 }
 
 // UpdateClaimedIssueInTx applies normal update semantics for a patch that
@@ -397,10 +397,19 @@ func UpdateIssueWithoutEventInTx(ctx context.Context, tx DBTX, id string, update
 // left the lease ClaimIssueInTx had just granted deleted microseconds later
 // by this same call's generic clearLease path (be-z4ows).
 func UpdateClaimedIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string]interface{}, actor string) (*UpdateResult, error) {
-	return updateIssueInTx(ctx, tx, id, updates, actor, true, true)
+	return updateIssueInTx(ctx, tx, id, updates, actor, true, true, true)
 }
 
-func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string]interface{}, actor string, recordEvent bool, isClaim bool) (*UpdateResult, error) {
+// updateIssueInTx is the body behind the exported update entry points.
+// recordEvent gates the human-facing audit event only. isClaim marks a patch
+// riding the claim verb, so a still-claimed result re-arms the lease instead
+// of clearing it. mintVersion controls whether an accepted update mints its
+// own version row: every exported entry point always does, while
+// ExecuteUpdate - which applies label, parent and persistence patches AFTER
+// the row write in the same call - passes false and mints once after the
+// last patch, so the version's durable_state carries the patched labels and
+// edges rather than the pre-patch row.
+func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string]interface{}, actor string, recordEvent bool, isClaim bool, mintVersion bool) (*UpdateResult, error) {
 	updates = cloneUpdateFields(updates)
 	// Pop the override before anything reads the map as a set of columns. It
 	// has to come out ahead of the no-op filter too: the filter keeps every key
@@ -603,6 +612,9 @@ func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string
 			}
 			updateResult.IssueRowsChanged = !isWisp || recompute.IssueRowsChanged
 			updateResult.WispRowsChanged = isWisp || recompute.WispRowsChanged
+			if !newActive {
+				noteBlockedRecheck(tx, statusChangeRecheckLabel(id, newStatus), []string{id}, affectedIssues, affectedWisps)
+			}
 		}
 	}
 
@@ -612,6 +624,11 @@ func updateIssueInTx(ctx context.Context, tx DBTX, id string, updates map[string
 	// must never have a hole punched in it by an audit-suppressing caller.
 	if err := RecordEventInTx(ctx, tx, EventUpdate, id, actor); err != nil {
 		return nil, err
+	}
+	if mintVersion {
+		if err := RecordVersionInTx(ctx, tx, id, actor); err != nil {
+			return nil, err
+		}
 	}
 	return updateResult, nil
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/subosito/gotenv"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/ceiling"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
@@ -810,7 +811,8 @@ func resolveCommandBeadsDir(dbPath string) string {
 		return beadsDir
 	}
 
-	for dir := filepath.Dir(dbPath); dir != "" && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+	bound := ceiling.For(filepath.Dir(dbPath))
+	for dir := filepath.Dir(dbPath); dir != "" && dir != filepath.Dir(dir) && !bound.Excludes(dir); dir = filepath.Dir(dir) {
 		candidate := filepath.Join(dir, ".beads")
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return candidate
@@ -911,7 +913,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&sandboxMode, "sandbox", false, "Sandbox mode: disables Dolt auto-push")
 	rootCmd.PersistentFlags().BoolVar(&readonlyMode, "readonly", false, "Read-only mode: block write operations (for worker sandboxes)")
 	rootCmd.PersistentFlags().BoolVar(&globalFlag, "global", false, "Use the global shared-server database (beads_global)")
-	rootCmd.PersistentFlags().StringVar(&doltAutoCommit, "dolt-auto-commit", "", "Dolt auto-commit policy (off|on|batch). 'on': commit after each write. 'batch': defer commits to bd dolt commit; uncommitted changes persist in the working set until then (a live batch-mode bd process also flushes on SIGTERM/SIGHUP). Applies to embedded and direct SQL-server modes; proxied-server routes are unaffected. Default: on. Override via config key dolt.auto-commit")
+	rootCmd.PersistentFlags().StringVar(&doltAutoCommit, "dolt-auto-commit", "", "Dolt auto-commit policy (off|on|batch). 'on': commit after each write. 'batch': defer commits to bd dolt commit; uncommitted changes persist in the working set until then (a live batch-mode bd process also flushes on SIGTERM/SIGHUP, except in proxied-server mode, where bd dolt commit is the only flush point). In proxied-server mode the deferral covers the writes the CLI makes on that route, including config and version metadata; explicit commit points (bd batch, bd mol bond/pour/squash, bd mol wisp create, and the wisp half of bd mol burn) still commit, and a bd serve process on the same database is unaffected. Default: on. Override via config key dolt.auto-commit")
 	rootCmd.PersistentFlags().BoolVar(&cpuProfileEnabled, "cpu-profile", false, "Generate CPU profile for performance analysis")
 	rootCmd.PersistentFlags().StringVar(&memProfilePath, "mem-profile", "", "Write heap profile to FILE on exit (also respects BEADS_MEM_PROFILE)")
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "Enable verbose/debug output")
@@ -1030,6 +1032,9 @@ var rootCmd = &cobra.Command{
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) (retErr error) {
+		if err := clearWorktreeGitRoutingEnv(cmd); err != nil {
+			return err
+		}
 		applyNoColorFlag()
 
 		// Initialize CommandContext to hold runtime state (replaces scattered globals)
@@ -1879,6 +1884,16 @@ var rootCmd = &cobra.Command{
 				uowSinks.Hook = hookRunner
 			}
 			uowProvider = wireExternalDependencyUOWProvider(uow.NewNotifyingProvider(p, uowSinks))
+
+			// Honor dolt.auto-commit for proxied writes the same way
+			// issueOpsContext already does for the direct/SQL-server routes
+			// (bd-4wamg): batch/off defer the Dolt version commit rather than
+			// minting one per write (GH#4995). uow.issueOperations reads this
+			// off the context for every Create/Update/Close/Reopen it runs.
+			rootCtx, err = issueOpsContext(rootCtx)
+			if err != nil {
+				return HandleError("failed to resolve dolt auto-commit policy: %v", err)
+			}
 
 			if !previewMode {
 				reconcileVersionProxiedServer(rootCtx)

@@ -275,3 +275,8 @@ tmp/docs/CLI_REFERENCE.md
 # restate the default and add a tracked file for no gain.
 !.beads/metadata.json
 docs/sessions/
+# Bazel: output symlinks and machine-local rc files (remote executor endpoint,
+# TLS credentials). Never commit these.
+/bazel-*
+/.bazelrc.local
+/user.bazelrc
