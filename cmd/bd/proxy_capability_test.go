@@ -17,12 +17,12 @@ import (
 // #6575 proxied data-behind guidance is written against: the consent command
 // that guidance prescribes is NOT refused at the proxied front door.
 //
-// The refusal table keys on the full command path. It has rows for the bare
-// `migrate` verb and for `migrate hooks` / `migrate issues` / `migrate sync`,
-// but none for `migrate schema` — so that path falls through
-// validateProxyMaintenanceBeforeProvider's multi-word arm to `bd migrate
-// schema`'s own proxied arm, which reports the migration the provider open
-// already applied under this verb's consent.
+// The capability registry keys on the full command path. It refuses the bare
+// `migrate` verb and `migrate hooks` / `migrate issues` / `migrate sync`, but
+// permits `migrate schema` — so that path passes
+// validateProxyRegistryBeforeProvider to `bd migrate schema`'s own proxied
+// arm, which reports the migration the provider open already applied under
+// this verb's consent.
 //
 // An earlier revision of that guidance asserted the opposite on three runtime
 // surfaces and nothing failed, because no test called this function with this
@@ -51,7 +51,7 @@ func TestProxyMaintenanceAllowsTheSharedConsentVerb(t *testing.T) {
 
 	var allowErr error
 	out := captureStdout(t, func() error {
-		allowErr = validateProxyMaintenanceBeforeProvider(target)
+		allowErr = validateProxyRegistryBeforeProvider(target, ProxyTopologyManagedLocal)
 		return nil
 	})
 	if allowErr != nil {
@@ -70,7 +70,7 @@ func TestProxyMaintenanceAllowsTheSharedConsentVerb(t *testing.T) {
 	}
 	var bareErr error
 	refusal := captureStdout(t, func() error {
-		bareErr = validateProxyMaintenanceBeforeProvider(bare)
+		bareErr = validateProxyRegistryBeforeProvider(bare, ProxyTopologyManagedLocal)
 		return nil
 	})
 	if bareErr == nil {
