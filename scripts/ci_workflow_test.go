@@ -2,6 +2,7 @@ package scripts_test
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -322,6 +324,14 @@ func TestStorageDomainUOWJobsUseNestedTimeoutBudgets(t *testing.T) {
 			assertStepRunsExactly(t, job, "Test doctor/fix (Dolt-backed, hard-require container)", doctorCommand)
 		})
 	}
+
+	// pr.yml's job is the one lane with both the image and the pinned dolt
+	// CLI, so it is where the container and local test servers are compared.
+	job := readCIWorkflow(t, "pr.yml").job(t, "test-domain-uow")
+	const fingerprintStep = "Test Dolt server fingerprint (container + local)"
+	assertStepRunsExactly(t, job, fingerprintStep,
+		"go test -tags gms_pure_go -count=1 -timeout 5m -v -run '^TestDoltServerFingerprint$' ./internal/testutil/")
+	assertStepEnvValue(t, job, fingerprintStep, "BEADS_TEST_REQUIRE_DOLT_CONTAINER", "1")
 
 	gate := readCIWorkflow(t, "pr.yml").job(t, "ci-gate")
 	gateEnv := gate.step(t, "Evaluate CI gate").Env
@@ -1170,6 +1180,7 @@ type ciWorkflowJob struct {
 	ContinueOnError bool                 `yaml:"continue-on-error"`
 	TimeoutMinutes  int                  `yaml:"timeout-minutes"`
 	Strategy        ciWorkflowStrategy   `yaml:"strategy"`
+	Env             map[string]string    `yaml:"env"`
 }
 
 type ciWorkflowStrategy struct {
@@ -1423,6 +1434,9 @@ func captureOne(t *testing.T, pattern, body, source string) string {
 const (
 	bazelWorkflowName   = "bazel.yml"
 	bazelJobName        = "bazel-test"
+	bazelPureJobName    = "bazel-pure"
+	bazelDoltJobName    = "bazel-doltserver"
+	bazelEmbedJobName   = "bazel-embedded"
 	setupBazelActionDir = ".github/actions/setup-bazel"
 	uploadArtifactSHA   = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 	downloadArtifactSHA = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
@@ -1435,6 +1449,10 @@ const (
 	bazelCacheSaveIf = "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && " +
 		"steps.bazel.outcome == 'success' && steps.bazel.outputs.cache-hit != 'true' }}"
 )
+
+// bazel.yml's jobs: the --config=ci lane, and one job per pr.yml job a Bazel
+// config mirrors.
+var bazelJobNames = []string{bazelDoltJobName, bazelEmbedJobName, bazelPureJobName, bazelJobName}
 
 // The only triggers bazel.yml may have. pull_request_target (and
 // workflow_run) would run with secrets in the context of fork PRs.
@@ -1468,17 +1486,58 @@ func readSetupBazelAction(t *testing.T) ciCompositeAction {
 // it: no ci-gate may need it or list it in CI_GATE_REQUIRED.
 func TestBazelWorkflowIsAdvisory(t *testing.T) {
 	workflow := readCIWorkflow(t, bazelWorkflowName)
-	if len(workflow.Jobs) != 1 {
-		t.Errorf("%s jobs = %d, want only %q", bazelWorkflowName, len(workflow.Jobs), bazelJobName)
+	var names []string
+	for name, job := range workflow.Jobs {
+		names = append(names, name)
+		if job.ContinueOnError {
+			t.Errorf("%s continue-on-error hides failures; the lane is advisory by staying out of ci-gate", name)
+		}
+		if job.TimeoutMinutes == 0 {
+			t.Errorf("%s has no timeout-minutes", name)
+		}
 	}
-	job := workflow.job(t, bazelJobName)
-	// The farm admits the Blacksmith pool only; forks (no secrets) and rbe=off
+	sort.Strings(names)
+	if !reflect.DeepEqual(names, bazelJobNames) {
+		t.Errorf("%s jobs = %v, want %v", bazelWorkflowName, names, bazelJobNames)
+	}
+	// Every job uses setup-bazel's remote executor when secrets allow. The
+	// farm admits the Blacksmith pool only; forks (no secrets) and rbe=off
 	// build locally on the GitHub-hosted runner.
-	if want := "${{ (inputs.rbe || 'on') != 'off' && github.event.pull_request.head.repo.fork != true && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"; job.RunsOn != want {
-		t.Errorf("%s runs-on = %q, want %q", bazelJobName, job.RunsOn, want)
+	const wantRunsOn = "${{ (inputs.rbe || 'on') != 'off' && github.event.pull_request.head.repo.fork != true && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
+	// rbe-west (instance "oss") is switched on by the repo variable
+	// RBE_WEST_WORKERS; until then same-repo runs are skipped and only fork
+	// PRs and rbe=off dispatches run, locally.
+	const wantIf = "${{ vars.RBE_WEST_WORKERS == 'true' || inputs.rbe == 'off' || github.event.pull_request.head.repo.fork == true }}"
+	// Except bazel-embedded: remote only. Run locally, its 27 race test
+	// processes would take an hour or more of a GitHub-hosted runner per fork
+	// PR, for tests pr-risk.yml's embedded jobs already run there.
+	wantIfs := map[string]string{
+		bazelEmbedJobName: "${{ vars.RBE_WEST_WORKERS == 'true' && (inputs.rbe || 'on') != 'off' && github.event.pull_request.head.repo.fork != true }}",
 	}
-	if job.ContinueOnError {
-		t.Errorf("%s continue-on-error hides failures; the lane is advisory by staying out of ci-gate", bazelJobName)
+	gate := "(inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && "
+	wantSetupEnv := map[string]string{
+		"BAZEL_REMOTE_EXECUTOR": "${{ " + gate + "secrets.RBE_WEST_EXECUTOR || '' }}",
+		"RBE_TLS_CERT":          "${{ " + gate + "secrets.RBE_TLS_CERT || '' }}",
+		"RBE_TLS_KEY":           "${{ " + gate + "secrets.RBE_TLS_KEY || '' }}",
+		"RBE_TLS_CA":            "${{ " + gate + "secrets.RBE_TLS_CA || '' }}",
+		"RBE_INSTANCE":          "${{ " + gate + "'oss' || '' }}",
+	}
+	for name, job := range workflow.Jobs {
+		if job.RunsOn != wantRunsOn {
+			t.Errorf("%s runs-on = %q, want %q", name, job.RunsOn, wantRunsOn)
+		}
+		want, ok := wantIfs[name]
+		if !ok {
+			want = wantIf
+		}
+		if job.If != want {
+			t.Errorf("%s if = %q, want %q", name, job.If, want)
+		}
+		for _, step := range job.Steps {
+			if step.Uses == "./"+setupBazelActionDir && !reflect.DeepEqual(step.Env, wantSetupEnv) {
+				t.Errorf("%s setup-bazel env = %v, want %v", name, step.Env, wantSetupEnv)
+			}
+		}
 	}
 	for _, name := range []string{"pr.yml", "pr-risk.yml"} {
 		for jobName, j := range readCIWorkflow(t, name).Jobs {
@@ -1504,10 +1563,13 @@ func TestBazelWorkflowIsAdvisory(t *testing.T) {
 // here too (restore everywhere, save only where the topology says).
 func TestBazelWorkflowActionsArePinned(t *testing.T) {
 	steps := map[string][]ciWorkflowStep{
-		bazelWorkflowName:                   readCIWorkflow(t, bazelWorkflowName).job(t, bazelJobName).Steps,
 		setupBazelActionDir + "/action.yml": readSetupBazelAction(t).Runs.Steps,
 	}
+	for name, job := range readCIWorkflow(t, bazelWorkflowName).Jobs {
+		steps[bazelWorkflowName+" "+name] = job.Steps
+	}
 	want := map[string]string{
+		setupNodeActionFamily:       setupNodeSHA,
 		"actions/checkout":          checkoutSHA,
 		setupGoActionFamily:         setupGoSHA,
 		cacheRestoreActionFamily:    cacheSHA,
@@ -1538,8 +1600,8 @@ func TestBazelWorkflowActionsArePinned(t *testing.T) {
 			if family == setupGoActionFamily && step.With["cache"] != "false" {
 				t.Errorf("%s setup-go cache = %q, want false", file, step.With["cache"])
 			}
-			if family == cacheSaveActionFamily && file != bazelWorkflowName {
-				t.Errorf("%s step %q saves a cache; only %s's push-to-main step may", file, step.Name, bazelWorkflowName)
+			if family == cacheSaveActionFamily && file != bazelWorkflowName+" "+bazelJobName {
+				t.Errorf("%s step %q saves a cache; only %s's push-to-main step may", file, step.Name, bazelJobName)
 			}
 		}
 		for _, step := range list {
@@ -1631,6 +1693,512 @@ func TestBazelWorkflowRunsCIConfigWithReports(t *testing.T) {
 		if !strings.Contains(sync.Run, required) {
 			t.Errorf("sync step does not contain %q:\n%s", required, sync.Run)
 		}
+	}
+}
+
+// bazel.yml publishes a Bazel-built bd under pr.yml's build-artifacts contract
+// (artifact name, file names, checksum file, retention), so the jobs that
+// download ci-build-artifacts can switch to it without other edits.
+func TestBazelWorkflowPublishesBuildArtifacts(t *testing.T) {
+	var prUpload ciWorkflowStep
+	for _, step := range readCIWorkflow(t, "pr.yml").job(t, "build-artifacts").Steps {
+		if actionFamily(step.Uses) == "actions/upload-artifact" {
+			prUpload = step
+		}
+	}
+	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelJobName)
+	pkg := job.step(t, "Package bd (ci-build-artifacts layout)")
+	upload := job.step(t, "Upload build artifacts")
+	if prUpload.With["name"] != "ci-build-artifacts" || upload.With["name"] != prUpload.With["name"] {
+		t.Errorf("artifact name = %q, want pr.yml's %q (ci-build-artifacts)", upload.With["name"], prUpload.With["name"])
+	}
+	for _, key := range []string{"retention-days", "if-no-files-found"} {
+		if upload.With[key] != prUpload.With[key] {
+			t.Errorf("upload %s = %q, want pr.yml's %q", key, upload.With[key], prUpload.With[key])
+		}
+	}
+	if pkg.ID == "" || upload.If != "${{ always() && steps."+pkg.ID+".outcome == 'success' }}" {
+		t.Errorf("upload if = %q; want it gated on the package step's success", upload.If)
+	}
+	// The commands live in a script that sources .buildflags itself, so the
+	// build-tag scan (scripts/check-build-tags.sh) still covers bazel.yml.
+	const script = "scripts/ci/package-bazel-bd.sh"
+	if pkg.Run != "./"+script+` "$RUNNER_TEMP/bd-artifacts"` {
+		t.Errorf("package step = %q, want %s", pkg.Run, script)
+	}
+	if strings.Contains(readPolicyFile(t, bazelPolicyRoot(t), ".github/workflows/"+bazelWorkflowName), ".buildflags") {
+		t.Errorf("%s mentions .buildflags; sourcing it would exempt the whole file from the build-tag scan", bazelWorkflowName)
+	}
+	body := readPolicyFile(t, bazelPolicyRoot(t), script)
+	for _, required := range []string{
+		"set -euo pipefail", "source ./.buildflags",
+		"/bin/cmd/bd/bd_for_tests/bd", "bd-linux-gms-pure", "sha256sum bd-linux-gms-pure > SHA256SUMS",
+		"build-manifest.txt", "commit=", "go_version=", "build_tags=", "artifact=bd-linux-gms-pure",
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("%s does not contain %q", script, required)
+		}
+	}
+	// test:ci must download the binary under --remote_download_minimal.
+	if !strings.Contains(readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc"), "test:ci --remote_download_regex=.*/bin/cmd/bd/bd_for_tests/bd$") {
+		t.Error(".bazelrc test:ci does not download //cmd/bd:bd_for_tests")
+	}
+}
+
+// bazel-doltserver replaces pr.yml's container-backed jobs: --config=doltserver
+// (hermetic dolt sql-servers, remote-executable) by default, and a dolt-server
+// target in every package those jobs run. --config=docker stays reachable as
+// the A/B control (dispatch dolt-lane=docker), with the jobs' image pull.
+func TestBazelDoltJobMirrorsContainerJobs(t *testing.T) {
+	pr := readCIWorkflow(t, "pr.yml")
+	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelDoltJobName)
+	pull := job.step(t, "Pull Dolt sql-server image")
+	for _, name := range []string{"test-domain-uow", "contract-corpus"} {
+		if want := pr.job(t, name).step(t, "Pull Dolt sql-server image").Run; pull.Run != want {
+			t.Errorf("%s pulls the dolt image differently from %s (%q)", bazelDoltJobName, name, want)
+		}
+	}
+	if pull.If != "${{ env.BAZEL_DOLT_LANE == 'docker' }}" {
+		t.Errorf("%s pulls the dolt image with if %q; only the docker lane needs it", bazelDoltJobName, pull.If)
+	}
+	if got := job.Env["BAZEL_DOLT_LANE"]; got != "${{ inputs.dolt-lane || 'doltserver' }}" {
+		t.Errorf("%s BAZEL_DOLT_LANE = %q, want the doltserver lane unless dispatched otherwise", bazelDoltJobName, got)
+	}
+	test := job.step(t, "bazel test //... --config=doltserver")
+	if !strings.Contains(test.Run, `bazel test //... "--config=$BAZEL_DOLT_LANE"`) || !strings.Contains(test.Run, "set -o pipefail") {
+		t.Errorf("dolt lane step does not run the lane over //...:\n%s", test.Run)
+	}
+	if strings.Contains(test.Run, "--config=remote-exec") {
+		t.Errorf("dolt lane step selects remote-exec itself; setup-bazel's rc does that only when secrets are present")
+	}
+	assertTestStepKeepsExitStatus(t, test)
+
+	rc := readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc")
+	for _, want := range []string{"test:doltserver --test_tag_filters=dolt-server", "test:docker --test_tag_filters=requires-docker"} {
+		if !strings.Contains(rc, want+"\n") {
+			t.Errorf(".bazelrc lacks %q", want)
+		}
+	}
+
+	// The packages those jobs run (test-domain-uow: domain/..., uow,
+	// tracker/... and doctor/fix; contract-corpus: protocol) each need a
+	// dolt-server target. Every such target, checked on its own, picks the
+	// local backend and fails closed, so a broken backend fails rather than
+	// skipping into a cached pass; the ones whose TestMain owns a server also
+	// set the package's own REQUIRE switch. Only under go test: scripts_test's
+	// runfiles hold no other package's BUILD.
+	if os.Getenv("TEST_SRCDIR") != "" {
+		return
+	}
+	root := sourceRepoRoot(t)
+	for pkg, docker := range map[string]bool{
+		"internal/storage/domain":      false,
+		"internal/storage/domain/db":   true,
+		"internal/storage/domain/fs":   false,
+		"internal/storage/domain/git":  false,
+		"internal/storage/uow":         true,
+		"internal/tracker":             true,
+		"internal/tracker/conformance": false,
+		"cmd/bd/doctor/fix":            true,
+		"cmd/bd/protocol":              true,
+	} {
+		build := readPolicyFile(t, root, pkg+"/BUILD.bazel")
+		for _, err := range checkDoltServerRules(pkg, build) {
+			t.Error(err)
+		}
+		if docker && !strings.Contains(build, `"requires-docker"`) {
+			t.Errorf("%s/BUILD.bazel has no requires-docker variant for the docker A/B lane", pkg)
+		}
+	}
+}
+
+// doltServerRuleEnv is the rule env every dolt-server target must set, and
+// doltServerExtraEnv what particular targets need on top: the TestMain
+// switches that turn a server which cannot start into a failure.
+var (
+	doltServerRuleEnv  = []string{`"BEADS_TEST_DOLT_SERVER": "local"`, `"BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1"`}
+	doltServerExtraEnv = map[string][]string{
+		"fix_dolt_test":      {`"BEADS_FIX_REQUIRE_DOLT": "1"`},
+		"protocol_dolt_test": {`"BEADS_PROTOCOL_REQUIRE_DOLT": "1"`},
+	}
+	bazelRuleNameRe = regexp.MustCompile(`(?m)^\s*name\s*=\s*"([^"]+)"`)
+)
+
+// bazelTopRules splits a BUILD file into its top-level calls: each starts at
+// a line matching bazelTopRuleRe and ends at the next line that is just ")".
+func bazelTopRules(build string) []string {
+	var rules []string
+	var cur []string
+	in := false
+	for _, line := range strings.Split(build, "\n") {
+		if !in && bazelTopRuleRe.MatchString(line) {
+			in, cur = true, nil
+		}
+		if in {
+			cur = append(cur, line)
+			if line == ")" || (len(cur) == 1 && strings.HasSuffix(strings.TrimSpace(line), ")")) {
+				rules = append(rules, strings.Join(cur, "\n"))
+				in = false
+			}
+		}
+	}
+	return rules
+}
+
+// checkDoltServerRules checks each rule tagged dolt-server in one package's
+// BUILD file on its own (a file-wide search would accept another target's
+// env), and that the package has at least one.
+func checkDoltServerRules(pkg, build string) []error {
+	var errs []error
+	found := 0
+	for _, rule := range bazelTopRules(stripStarlarkComments(build)) {
+		if !strings.Contains(rule, `"dolt-server"`) {
+			continue
+		}
+		found++
+		name := "?"
+		if m := bazelRuleNameRe.FindStringSubmatch(rule); m != nil {
+			name = m[1]
+		}
+		where := "//" + pkg + ":" + name
+		for _, env := range append(append([]string{}, doltServerRuleEnv...), doltServerExtraEnv[name]...) {
+			if !strings.Contains(rule, env) {
+				errs = append(errs, errors.New(where+" (dolt-server) lacks rule env "+env))
+			}
+		}
+		if strings.Contains(rule, `"no-remote-exec"`) {
+			errs = append(errs, errors.New(where+" (dolt-server) is tagged no-remote-exec; the lane runs on remote workers"))
+		}
+	}
+	if found == 0 {
+		errs = append(errs, errors.New(pkg+"/BUILD.bazel has no dolt-server target for the dolt-server lane"))
+	}
+	return errs
+}
+
+// A dolt-server rule is checked on its own: another target in the same file
+// (the docker variant) carrying the env must not cover for it.
+func TestCheckDoltServerRulesPerTarget(t *testing.T) {
+	const docker = `sh_test(
+    name = "uow_docker_test",
+    env = {
+        "BEADS_TEST_DOLT_SERVER": "container",
+        "BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1",
+    },
+    tags = ["requires-docker", "no-remote-exec"],
+)
+`
+	good := `load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+` + docker + `
+# Tags:
+#   dolt-server: lane.
+sh_test(
+    name = "uow_dolt_test",
+    env = {
+        "BEADS_TEST_DOLT_SERVER": "local",
+        "BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1",
+    },
+    tags = ["dolt-server"],
+)
+`
+	if errs := checkDoltServerRules("p", good); len(errs) != 0 {
+		t.Errorf("good BUILD: %v", errs)
+	}
+	for name, bad := range map[string]string{
+		"no require":      strings.Replace(good, "        \"BEADS_TEST_REQUIRE_DOLT_CONTAINER\": \"1\",\n    },\n    tags = [\"dolt-server\"]", "    },\n    tags = [\"dolt-server\"]", 1),
+		"container":       strings.Replace(good, `"local"`, `"container"`, 1),
+		"no-remote-exec":  strings.Replace(good, `tags = ["dolt-server"]`, `tags = ["dolt-server", "no-remote-exec"]`, 1),
+		"no target":       docker,
+		"fix switch":      strings.Replace(good, `"uow_dolt_test"`, `"fix_dolt_test"`, 1),
+		"protocol switch": strings.Replace(good, `"uow_dolt_test"`, `"protocol_dolt_test"`, 1),
+	} {
+		if bad == good {
+			t.Fatalf("%s: mutation did not apply", name)
+		}
+		if errs := checkDoltServerRules("p", bad); len(errs) == 0 {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// The default shard manifest of a PR Risk shard script.
+var shardManifestDefault = regexp.MustCompile(`\$\{BEADS_TEST_SHARD_MANIFEST:-([^}]+)\}`)
+
+// bazelAttrBlock returns the text of a list attribute (`    name = [` up to
+// its closing `    ],`) of a rule block from bazelRuleBlock, or "".
+func bazelAttrBlock(rule, name string) string {
+	i := strings.Index(rule, "\n    "+name+" = [")
+	if i < 0 {
+		return ""
+	}
+	end := strings.Index(rule[i:], "\n    ],\n")
+	if end < 0 {
+		return rule[i:]
+	}
+	return rule[i : i+end+7]
+}
+
+// bazelRuleBlock returns the text of the top-level rule named name in a
+// BUILD file, or "" if there is none.
+func bazelRuleBlock(build, name string) string {
+	i := strings.Index(build, "\n    name = \""+name+"\",\n")
+	if i < 0 {
+		return ""
+	}
+	start := strings.LastIndex(build[:i], "\n") + 1
+	end := strings.Index(build[i:], "\n)\n")
+	if end < 0 {
+		return build[start:]
+	}
+	return build[start : i+end+3]
+}
+
+// bazel-embedded replaces pr-risk.yml's embedded-Dolt tier: --config=embedded
+// runs the embedded variants race like the jobs' binaries, with the jobs'
+// parallelism; each shard variant runs its job's shard script with the job's
+// shard total, and the conformance variants pass the jobs' exact selectors.
+func TestBazelEmbeddedJobMirrorsEmbeddedTier(t *testing.T) {
+	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelEmbedJobName)
+	test := job.step(t, "bazel test //... --config=embedded")
+	if !strings.Contains(test.Run, "bazel test //... --config=embedded") || !strings.Contains(test.Run, "set -o pipefail") {
+		t.Errorf("embedded step does not run --config=embedded over //...:\n%s", test.Run)
+	}
+	if strings.Contains(test.Run, "--config=remote-exec") {
+		t.Errorf("embedded step selects remote-exec itself; setup-bazel's rc does that only when secrets are present")
+	}
+	assertTestStepKeepsExitStatus(t, test)
+	// A shard with no tests assigned, or a selector that matches nothing,
+	// exits 0; the job fails on any target or shard whose test.xml lists none.
+	if !strings.Contains(test.Run, `--build_event_json_file="$RUNNER_TEMP/bazel-bep.json"`) {
+		t.Errorf("embedded step writes no BEP for the test-count check:\n%s", test.Run)
+	}
+	count := job.step(t, "Every target and shard ran tests")
+	if strings.TrimSpace(count.Run) != `python3 tools/bazel/check_testcases.py --bep "$RUNNER_TEMP/bazel-bep.json"` ||
+		count.If != "${{ always() && steps.test.outcome != 'skipped' }}" ||
+		(count.ContinueOnError != nil && count.ContinueOnError != false) {
+		t.Errorf("test-count step: if=%q continue-on-error=%v run=%q", count.If, count.ContinueOnError, count.Run)
+	}
+
+	rc := map[string]bool{}
+	for _, line := range strings.Split(readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc"), "\n") {
+		rc[strings.TrimSpace(line)] = true
+	}
+	for _, want := range []string{
+		"test:embedded --@rules_go//go/config:race",
+		"test:embedded --test_tag_filters=embedded",
+		// The jobs pass no -parallel: GOMAXPROCS on 4-vCPU ubuntu-latest.
+		"test:embedded --test_arg=-test.parallel=4",
+	} {
+		if !rc[want] {
+			t.Errorf(".bazelrc lacks %q", want)
+		}
+	}
+	for line := range rc {
+		if strings.HasPrefix(line, "test:embedded ") && (strings.Contains(line, "-test.short") || strings.Contains(line, "BEADS_TEST_SKIP")) {
+			t.Errorf(".bazelrc %q: the embedded jobs run without -short and BEADS_TEST_SKIP", line)
+		}
+	}
+
+	risk := readCIWorkflow(t, "pr-risk.yml")
+	build := risk.job(t, "build-embedded")
+	for step, want := range map[string]string{
+		"Build embedded bd binary":           "go build -tags gms_pure_go -race -o /tmp/bd-embedded-test ./cmd/bd/",
+		"Build embedded storage test binary": "go test -tags gms_pure_go -race -c -o /tmp/embeddeddolt-test ./internal/storage/embeddeddolt/",
+		"Build embedded cmd test binary":     "go test -tags gms_pure_go -race -c -o /tmp/bd-cmd-test ./cmd/bd/",
+	} {
+		if got := strings.TrimSpace(build.step(t, step).Run); got != want {
+			t.Errorf("pr-risk.yml %q = %q, want %q (the race build --config=embedded mirrors)", step, got, want)
+		}
+	}
+
+	sharded := []struct {
+		job, script, pkg, target string
+	}{
+		{"test-embedded-cmd", ".github/scripts/embedded-test-shard.sh", "cmd/bd", "bd_embedded_test"},
+		{"test-embedded-storage", ".github/scripts/embedded-storage-test-shard.sh", "internal/storage/embeddeddolt", "embeddeddolt_embedded_test"},
+	}
+	for _, c := range sharded {
+		j := risk.job(t, c.job)
+		shards := len(j.Strategy.Matrix.Shard)
+		step := j.step(t, "Test")
+		if want := "bash " + c.script + " ${{ matrix.shard }} " + strconv.Itoa(shards); strings.TrimSpace(step.Run) != want {
+			t.Errorf("pr-risk.yml %s runs %q, want %q", c.job, step.Run, want)
+		}
+		if step.Env["BEADS_TEST_EMBEDDED_DOLT"] != "1" {
+			t.Errorf("pr-risk.yml %s no longer sets BEADS_TEST_EMBEDDED_DOLT=1; update %s", c.job, c.target)
+		}
+		if os.Getenv("TEST_SRCDIR") != "" {
+			continue // scripts_test's runfiles hold no other package's BUILD
+		}
+		root := sourceRepoRoot(t)
+		rule := bazelRuleBlock(readPolicyFile(t, root, c.pkg+"/BUILD.bazel"), c.target)
+		for _, want := range []string{
+			`srcs = ["//tools/bazel:go_test_manifest_shard.sh"],`,
+			`"$(rootpath //:` + c.script + `)",`,
+			"shard_count = " + strconv.Itoa(shards) + ",",
+			`"BEADS_TEST_EMBEDDED_DOLT": "1"`,
+			`"embedded"`,
+		} {
+			if !strings.Contains(rule, want) {
+				t.Errorf("%s:%s does not contain %q (pr-risk.yml %s):\n%s", c.pkg, c.target, want, c.job, rule)
+			}
+		}
+		// The script and its manifest must be in the runfiles: without the
+		// manifest the script silently falls back to hash assignment, so
+		// every shard still passes but no longer runs its job's tests.
+		m := shardManifestDefault.FindStringSubmatch(readPolicyFile(t, root, c.script))
+		if m == nil {
+			t.Fatalf("%s has no ${BEADS_TEST_SHARD_MANIFEST:-...} default manifest", c.script)
+		}
+		data := bazelAttrBlock(rule, "data")
+		for _, file := range []string{c.script, m[1]} {
+			if !strings.Contains(data, `"//:`+file+`",`) {
+				t.Errorf("%s:%s data lacks //:%s:\n%s", c.pkg, c.target, file, data)
+			}
+		}
+	}
+	if os.Getenv("TEST_SRCDIR") == "" {
+		// The cmd jobs' subprocess bd is the race build, as //cmd/bd:bd is
+		// under --config=embedded (bd_for_tests never is).
+		rule := bazelRuleBlock(readPolicyFile(t, sourceRepoRoot(t), "cmd/bd/BUILD.bazel"), "bd_embedded_test")
+		if !strings.Contains(rule, `"BEADS_TEST_BD_BINARY": "$(rlocationpath :bd)"`) {
+			t.Errorf("cmd/bd:bd_embedded_test must run the race //cmd/bd:bd as BEADS_TEST_BD_BINARY:\n%s", rule)
+		}
+		// The script's -test.timeout=20m equals Bazel's 1200s action limit,
+		// which kills without a goroutine dump; 19m lets Go's fire first.
+		if !strings.Contains(bazelAttrBlock(rule, "args"), `"-test.timeout=19m",`) {
+			t.Errorf("cmd/bd:bd_embedded_test must pass -test.timeout=19m after the script's own:\n%s", rule)
+		}
+	}
+
+	conformance := risk.job(t, "test-embedded-conformance")
+	if conformance.Env["BEADS_TEST_EMBEDDED_DOLT"] != "1" {
+		t.Error("pr-risk.yml test-embedded-conformance no longer sets BEADS_TEST_EMBEDDED_DOLT=1")
+	}
+	quoted := regexp.MustCompile(`(-test\.[a-z]+) '([^']*)'|(-test\.[a-z]+=\S+|-test\.v)`)
+	for partition, target := range map[string]string{"core": "embeddeddolt_conformance_core_test", "audit": "embeddeddolt_conformance_audit_test"} {
+		run := conformance.step(t, "Test "+partition+" conformance").Run
+		fields := strings.Fields(run)
+		if len(fields) == 0 || fields[0] != "/tmp/embeddeddolt-test" {
+			t.Fatalf("pr-risk.yml %s conformance no longer runs /tmp/embeddeddolt-test: %q", partition, run)
+		}
+		var want []string
+		for _, m := range quoted.FindAllStringSubmatch(run, -1) {
+			switch {
+			case m[1] != "":
+				want = append(want, `"`+m[1]+"="+strings.ReplaceAll(m[2], "$", "$$")+`",`)
+			case strings.HasPrefix(m[3], "-test.timeout="):
+				// Documented deviation: Bazel kills at 1200s without a
+				// goroutine dump, so the variant's Go timeout is 19m.
+				if m[3] != "-test.timeout=30m" {
+					t.Errorf("pr-risk.yml %s conformance timeout is now %q; revisit the variant's -test.timeout=19m", partition, m[3])
+				}
+				want = append(want, `"-test.timeout=19m",`)
+			default:
+				want = append(want, `"`+m[3]+`",`)
+			}
+		}
+		if len(want) < 4 {
+			t.Fatalf("parsed only %v from pr-risk.yml %s conformance %q", want, partition, run)
+		}
+		if os.Getenv("TEST_SRCDIR") != "" {
+			continue
+		}
+		rule := bazelRuleBlock(readPolicyFile(t, sourceRepoRoot(t), "internal/storage/embeddeddolt/BUILD.bazel"), target)
+		for _, w := range append(want, `"BEADS_TEST_EMBEDDED_DOLT": "1"`, `"embedded"`) {
+			if !strings.Contains(rule, w) {
+				t.Errorf("embeddeddolt:%s does not contain %q (pr-risk.yml %s conformance):\n%s", target, w, partition, rule)
+			}
+		}
+	}
+}
+
+// bazel-pure replaces pr.yml's check-cmd-bd-puregeo-tests job: the same pure
+// cmd/bd test selector, the same pure build set, and the js/wasm hook test
+// under the same exact-count guard.
+func TestBazelPureJobMirrorsPureGoJob(t *testing.T) {
+	pr := readCIWorkflow(t, "pr.yml").job(t, "check-cmd-bd-puregeo-tests")
+	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelPureJobName)
+
+	prSubset := pr.step(t, "Run pure-Go cmd/bd test subset (CGO_ENABLED=0)").Run
+	m := regexp.MustCompile(`-run '([^']+)' \./cmd/bd`).FindStringSubmatch(prSubset)
+	if m == nil {
+		t.Fatalf("cannot find the -run selector in pr.yml's pure subset step:\n%s", prSubset)
+	}
+	if job.Env["PURE_CMD_BD_TESTS"] != m[1] || !strings.Contains(prSubset, "-short") {
+		t.Errorf("%s PURE_CMD_BD_TESTS = %q, want pr.yml's -short -run selector %q", bazelPureJobName, job.Env["PURE_CMD_BD_TESTS"], m[1])
+	}
+	run := job.step(t, "Run pure-Go cmd/bd test subset (--config=pure)").Run
+	for _, required := range []string{"bazel test --config=pure //cmd/bd:bd_test", `"--test_arg=-test.run=$PURE_CMD_BD_TESTS"`, "(( n > 0 ))"} {
+		if !strings.Contains(run, required) {
+			t.Errorf("pure subset step does not contain %q:\n%s", required, run)
+		}
+	}
+	if !strings.Contains(readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc"), "test:pure --test_arg=-test.short") {
+		t.Error(".bazelrc test:pure does not pass -test.short like the pr.yml subset")
+	}
+
+	build := job.step(t, "Build cmd/bd and pure-Go test binaries (--config=pure)").Run
+	prBuild := pr.step(t, "Build cmd/bd (CGO_ENABLED=0, gms_pure_go)").Run + pr.step(t, "Compile pure-Go test binaries (CGO_ENABLED=0, gms_pure_go)").Run
+	for pkg, target := range map[string]string{
+		"go build -tags gms_pure_go -o /tmp/bd-puregeo ./cmd/bd":               "//cmd/bd:bd",
+		"-o /tmp/bd-cmd-puregeo-test ./cmd/bd":                                 "//cmd/bd:bd_test",
+		"-o /tmp/bd-embeddeddolt-puregeo-test ./internal/storage/embeddeddolt": "//internal/storage/embeddeddolt:embeddeddolt_test",
+		"-o /tmp/bd-tracker-puregeo-test ./internal/tracker":                   "//internal/tracker:tracker_test",
+	} {
+		if !strings.Contains(prBuild, pkg) {
+			t.Errorf("pr.yml pure build steps no longer contain %q; update %s to match", pkg, bazelPureJobName)
+		}
+		if !strings.Contains(build, target) || !strings.Contains(build, "bazel build --config=pure") {
+			t.Errorf("pure build step does not build %s:\n%s", target, build)
+		}
+	}
+
+	// `go build` rejects a pure binary that imports gozstd at compile time;
+	// Bazel compiles gozstd's stubs, whose init panics, so the lane must start
+	// every pure artifact (bd_test starts in the subset step above).
+	start := job.step(t, "Start every pure-Go artifact (gozstd contamination check)").Run
+	for _, required := range []string{
+		"set -euo pipefail",
+		"bazel run --config=pure //cmd/bd:bd -- version",
+		"bazel test --config=pure",
+		"//internal/storage/embeddeddolt:embeddeddolt_test",
+		"//internal/tracker:tracker_test",
+		"'--test_arg=-test.run=^$'",
+	} {
+		if !strings.Contains(start, required) {
+			t.Errorf("pure artifact start step does not contain %q:\n%s", required, start)
+		}
+	}
+	if os.Getenv("TEST_SRCDIR") == "" {
+		patch := readPolicyFile(t, sourceRepoRoot(t), "third_party/patches/gozstd_nocgo.patch")
+		if !strings.Contains(patch, "+func init() { panic(") {
+			t.Error("gozstd_nocgo.patch stubs no longer panic in init; a contaminated pure binary would start")
+		}
+	}
+
+	prWasm := pr.step(t, "Run js/wasm hook boundary").Run
+	wasm := job.step(t, "Run js/wasm hook boundary").Run
+	for _, required := range []string{"bazel build --config=js-wasm //internal/hooks:hooks_test", "go_js_wasm_exec"} {
+		if !strings.Contains(wasm, required) {
+			t.Errorf("js/wasm step does not contain %q:\n%s", required, wasm)
+		}
+	}
+	// The selector and everything from the count guard on are pr.yml's.
+	const selector = "run '^TestRunHookReportsUnsupportedExecution$'"
+	if !strings.Contains(prWasm, " -"+selector) || !strings.Contains(wasm, " -test."+selector) {
+		t.Errorf("js/wasm selector drifted from pr.yml's %q", selector)
+	}
+	guard := func(script string) string {
+		i := strings.Index(script, "run_count=0")
+		if i < 0 {
+			return ""
+		}
+		return script[i:]
+	}
+	if guard(wasm) == "" || guard(wasm) != guard(prWasm) {
+		t.Errorf("js/wasm count guard differs from pr.yml's:\n--- pr.yml\n%s\n--- %s\n%s", guard(prWasm), bazelPureJobName, guard(wasm))
 	}
 }
 
@@ -1787,13 +2355,17 @@ func TestBazelWorkflowSecretsAndFailureSurface(t *testing.T) {
 	}
 
 	setupSteps := map[string]bool{}
-	for i, step := range readCIWorkflow(t, bazelWorkflowName).job(t, bazelJobName).Steps {
-		if step.Uses == "./"+setupBazelActionDir {
-			setupSteps[fmt.Sprintf(".jobs.%s.steps[%d].env.", bazelJobName, i)] = true
+	for name, job := range readCIWorkflow(t, bazelWorkflowName).Jobs {
+		n := 0
+		for i, step := range job.Steps {
+			if step.Uses == "./"+setupBazelActionDir {
+				setupSteps[fmt.Sprintf(".jobs.%s.steps[%d].env.", name, i)] = true
+				n++
+			}
 		}
-	}
-	if len(setupSteps) != 1 {
-		t.Errorf("%s has %d setup-bazel steps, want 1", bazelWorkflowName, len(setupSteps))
+		if n != 1 {
+			t.Errorf("%s job %s has %d setup-bazel steps, want 1", bazelWorkflowName, name, n)
+		}
 	}
 	secretRef := regexp.MustCompile(`\bsecrets\s*(\.|\[)`)
 	walkYAML(root, "", func(path string, key bool, value string) {

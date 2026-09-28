@@ -675,8 +675,12 @@ var allowedBazelTestTags = map[string]string{
 	"no-remote-exec":  "must run on the Bazel client's host, never on a remote worker",
 	"no-remote-cache": "result depends on the host, so it is neither read from nor uploaded to the remote cache",
 	"requires-docker": "needs a docker daemon; excluded from --config=prcore/ci, run by --config=docker",
-	"embedded":        "embedded-Dolt tier variant; its own config",
-	"manual":          "repro/bench harness; never part of //...",
+	// No no-remote-exec: the target starts its own dolt sql-server from the
+	// pinned dolt in its runfiles, so it runs on any worker, and a server that
+	// cannot start fails it rather than skipping, so its cached result holds.
+	"dolt-server": "starts hermetic dolt sql-servers (or completes the lane's job without -short); excluded from --config=prcore/ci, run by --config=doltserver",
+	"embedded":    "embedded-Dolt tier variant; its own config",
+	"manual":      "never part of //...: a repro/bench harness, or a build input only another target needs",
 }
 
 // bazelTagsRequiring maps tags whose targets depend on the host to the tags
@@ -854,7 +858,7 @@ func checkBazelrcPrcoreTagFilter(bazelrc string) error {
 		for _, f := range strings.Split(strings.TrimPrefix(o.flag, "--test_tag_filters="), ",") {
 			filters[f] = true
 		}
-		for _, tag := range []string{"requires-docker", "embedded", "manual"} {
+		for _, tag := range []string{"requires-docker", "dolt-server", "embedded", "manual"} {
 			if !filters["-"+tag] {
 				return errors.New(o.config + " --test_tag_filters does not exclude " + tag)
 			}
@@ -871,8 +875,9 @@ func TestBazelrcPrcoreExcludesNonPRTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, rc := range map[string]string{
-		"missing":   "test:ci --keep_going\n",
-		"no docker": "test:prcore --test_tag_filters=-embedded,-manual\n",
+		"missing":        "test:ci --keep_going\n",
+		"no docker":      "test:prcore --test_tag_filters=-dolt-server,-embedded,-manual\n",
+		"no dolt-server": "test:prcore --test_tag_filters=-requires-docker,-embedded,-manual\n",
 		"ci override": "test:prcore --test_tag_filters=-requires-docker,-embedded,-manual\n" +
 			"test:ci --config=prcore\ntest:ci --test_tag_filters=requires-docker\n",
 		"second prcore line": "test:prcore --test_tag_filters=-requires-docker,-embedded,-manual\n" +
@@ -882,6 +887,57 @@ func TestBazelrcPrcoreExcludesNonPRTags(t *testing.T) {
 	} {
 		if err := checkBazelrcPrcoreTagFilter(rc); err == nil {
 			t.Errorf("%s: expected an error for .bazelrc fixture:\n%s", name, rc)
+		}
+	}
+}
+
+// TestBazelrcPrcoreRequiresExcludePermission keeps test:prcore in step with
+// pr.yml's PR Core step (TestPRCoreRequiresExcludeReadPermissionCoverage):
+// without the variable, TestAddExcludePatternsRefusesReadErrors skips on a
+// root executor instead of failing.
+func TestBazelrcPrcoreRequiresExcludePermission(t *testing.T) {
+	const want = "test:prcore --test_env=BEADS_TEST_REQUIRE_EXCLUDE_PERMISSION=1"
+	for _, line := range strings.Split(readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc"), "\n") {
+		if strings.TrimSpace(line) == want {
+			return
+		}
+	}
+	t.Fatalf(".bazelrc lacks %q", want)
+}
+
+// TestBazelrcPrcoreMatchesPRCoreParallel keeps test:prcore's -test.parallel
+// equal to pr-core.sh's -parallel default: without it Go uses GOMAXPROCS, the
+// executor's core count, and runs far more tests at once than PR Core does.
+func TestBazelrcPrcoreMatchesPRCoreParallel(t *testing.T) {
+	root := bazelPolicyRoot(t)
+	m := regexp.MustCompile(`(?m)^GO_TEST_PARALLEL="\$\{GO_TEST_PARALLEL:-(\d+)\}"$`).FindStringSubmatch(readPolicyFile(t, root, "scripts/ci/pr-core.sh"))
+	if m == nil {
+		t.Fatal("scripts/ci/pr-core.sh has no GO_TEST_PARALLEL default")
+	}
+	want := "test:prcore --test_arg=-test.parallel=" + m[1]
+	for _, line := range strings.Split(readPolicyFile(t, root, ".bazelrc"), "\n") {
+		if strings.TrimSpace(line) == want {
+			return
+		}
+	}
+	t.Fatalf(".bazelrc lacks %q (pr-core.sh runs go test -parallel %s)", want, m[1])
+}
+
+// Docker-lane results depend on host state no action key sees (daemon, dolt
+// image, network), so they must always execute, like the container jobs'
+// -count=1; and no remote-exec run may upload a locally executed result to
+// the shared cache.
+func TestBazelrcDockerLaneNeverCached(t *testing.T) {
+	lines := map[string]bool{}
+	for _, line := range strings.Split(readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc"), "\n") {
+		lines[strings.TrimSpace(line)] = true
+	}
+	for _, want := range []string{
+		"test:docker --nocache_test_results",
+		"build:remote-exec --noremote_upload_local_results",
+	} {
+		if !lines[want] {
+			t.Errorf(".bazelrc lacks %q", want)
 		}
 	}
 }
