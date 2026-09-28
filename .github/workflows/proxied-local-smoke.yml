@@ -23,6 +23,7 @@ on:
       - 'cmd/bd/proxied_server*.go'
       - 'cmd/bd/dolt*.go'
       - 'cmd/bd/*_proxied_server.go'
+      - 'cmd/bd/backup*.go'
       - 'cmd/bd/purge*.go'
       - 'cmd/bd/*managed_local*'
       - 'cmd/bd/proxied_outage_reconnect_integration_test.go'
@@ -50,6 +51,7 @@ on:
       - 'cmd/bd/proxied_server*.go'
       - 'cmd/bd/dolt*.go'
       - 'cmd/bd/*_proxied_server.go'
+      - 'cmd/bd/backup*.go'
       - 'cmd/bd/purge*.go'
       - 'cmd/bd/*managed_local*'
       - 'cmd/bd/proxied_outage_reconnect_integration_test.go'
@@ -128,6 +130,9 @@ jobs:
             TestManagedLocalProxiedDoltStartRefusesWithProxyDown \
             TestManagedLocalProxiedDoltLifecycleLeavesOtherTopologiesAlone \
             TestManagedLocalProxiedTrackerUOWConformance \
+            TestManagedLocalProxiedBackupRoundTrip \
+            TestManagedLocalProxiedAutoBackup \
+            TestManagedLocalProxiedBackupRestoreRefusedWhileAttached \
             TestManagedLocalProxiedPurgeWispsPlaneRetention
           do
             if ! grep -qx "$test_name" <<<"$listed"; then
