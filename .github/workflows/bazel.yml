@@ -23,7 +23,8 @@
 # write the runner cache. In place: secrets are referenced by the setup step
 # alone and never by a workflow- or job-level env (policy-tested), decoded key
 # material is masked in logs, and CI uploads only remotely executed results
-# (--noremote_upload_local_results in the generated rc), and the certificate
+# (--noremote_upload_local_results in .bazelrc's remote-exec config and in
+# the generated rc), and the certificate
 # is issued to beads CI alone, so it can be revoked without affecting other
 # clients. Maintainers decided (2026-09-28) that same-repo PRs keep remote
 # execution under this model. Still open: a beads-only RBE_INSTANCE and
@@ -173,6 +174,25 @@ jobs:
           echo >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
+      # pr.yml's build-artifacts job, built by Bazel: the same artifact name
+      # and layout (bd-linux-gms-pure, SHA256SUMS, build-manifest.txt), so its
+      # consumers (PR Core, domain+uow, the package gates) can switch to it.
+      # None does yet. The script documents which binary and how it differs
+      # from `go build`'s.
+      - name: Package bd (ci-build-artifacts layout)
+        id: bd-artifact
+        if: ${{ always() && steps.test.outcome != 'skipped' }}
+        run: ./scripts/ci/package-bazel-bd.sh "$RUNNER_TEMP/bd-artifacts"
+
+      - name: Upload build artifacts
+        if: ${{ always() && steps.bd-artifact.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-build-artifacts
+          path: ${{ runner.temp }}/bd-artifacts/
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Critical-path report
         if: ${{ always() && steps.test.outcome != 'skipped' }}
         env:
@@ -248,3 +268,177 @@ jobs:
         with:
           path: ${{ runner.temp }}/bazel-ci-cache
           key: bazel-repo-v2-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}
+
+  # pr.yml's check-cmd-bd-puregeo-tests job ("Check pure-Go and js/wasm
+  # boundaries (CGO_ENABLED=0)") with Bazel-built binaries: --config=pure
+  # builds bd and the job's three pure test binaries and runs its -short
+  # cmd/bd subset (PURE_CMD_BD_TESTS, kept equal to the job's -run selector by
+  # scripts/ci_workflow_test.go); --config=js-wasm builds the hooks test for
+  # js/wasm, which the Go SDK's go_js_wasm_exec runs under node with the job's
+  # exact pass-count guard.
+  bazel-pure:
+    name: Bazel / pure-Go and js/wasm (advisory)
+    # Same runner, rbe-west gate and skip rule as bazel-test.
+    runs-on: ${{ (inputs.rbe || 'on') != 'off' && github.event.pull_request.head.repo.fork != true && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    if: ${{ vars.RBE_WEST_WORKERS == 'true' || inputs.rbe == 'off' || github.event.pull_request.head.repo.fork == true }}
+    timeout-minutes: 90
+    env:
+      PURE_CMD_BD_TESTS: '^Test(Help|CheckRemoteSafety|FormatDestroyToken|ShouldWireInitRemote|ExtractPrefix|IsNumericID|GetWorktreeGitDir|DriftItemStatuses|RunDriftChecks|IsServerProbablyRunning|CheckHooksDriftNotGitRepo|CheckServerDriftNoBeadsDir|CheckRemoteDriftNoBeadsDir|NocgoFactoriesHonorSharedServer|NocgoNewDoltStoreFromConfig_ErrorSuggestsCorrectFlag|NocgoNewReadOnlyStoreFromConfig_ErrorSuggestsCorrectFlag)'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      # Only for go_js_wasm_exec and wasm_exec_node.js, which must match the
+      # Go version Bazel compiles with (go.mod's; policy-tested).
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: '24'
+
+      - name: Set up Bazel
+        id: bazel
+        uses: ./.github/actions/setup-bazel
+        env:
+          BAZEL_REMOTE_EXECUTOR: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_WEST_EXECUTOR || '' }}
+          RBE_TLS_CERT: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_TLS_CERT || '' }}
+          RBE_TLS_KEY: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_TLS_KEY || '' }}
+          RBE_TLS_CA: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_TLS_CA || '' }}
+          RBE_INSTANCE: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && 'oss' || '' }}
+
+      - name: Run js/wasm hook boundary
+        run: |
+          set -euo pipefail
+          bazel build --config=js-wasm //internal/hooks:hooks_test
+          bin="$(bazel cquery --config=js-wasm --output=files //internal/hooks:hooks_test)"
+          cd internal/hooks
+
+          # Same selector and count guard as pr.yml's job.
+          test_status=0
+          # wasm_exec.js caps argv+env size; the Blacksmith runner's environment
+          # exceeds it, so run with only what the hook test needs.
+          wasm_exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec"
+          test_output="$(env -i PATH="$PATH" HOME="$HOME" TMPDIR="$RUNNER_TEMP" \
+            BD_DISABLE_METRICS=1 BD_DISABLE_EVENT_FLUSH=1 \
+            "$wasm_exec" "$GITHUB_WORKSPACE/$bin" \
+            -test.run '^TestRunHookReportsUnsupportedExecution$' \
+            -test.v 2>&1)" || test_status=$?
+          printf '%s\n' "$test_output"
+          (( test_status == 0 )) || exit "$test_status"
+
+          run_count=0
+          pass_count=0
+          nonpass_count=0
+          pass_pattern='^--- PASS: TestRunHookReportsUnsupportedExecution \([0-9.]+s\)$'
+          nonpass_pattern='^[[:space:]]*--- (FAIL|SKIP): '
+          while IFS= read -r line; do
+            if [[ "$line" == "=== RUN   TestRunHookReportsUnsupportedExecution" ]]; then
+              ((run_count += 1))
+            fi
+            if [[ "$line" =~ $pass_pattern ]]; then
+              ((pass_count += 1))
+            fi
+            if [[ "$line" =~ $nonpass_pattern ]]; then
+              ((nonpass_count += 1))
+            fi
+          done <<< "$test_output"
+          if (( run_count != 1 || pass_count != 1 || nonpass_count != 0 )); then
+            printf 'expected one exact js/wasm hook test run and pass with no failures or skips; got runs=%s passes=%s nonpasses=%s\n' \
+              "$run_count" "$pass_count" "$nonpass_count" >&2
+            exit 1
+          fi
+
+      - name: Build cmd/bd and pure-Go test binaries (--config=pure)
+        run: >-
+          bazel build --config=pure
+          //cmd/bd:bd
+          //cmd/bd:bd_test
+          //internal/storage/embeddeddolt:embeddeddolt_test
+          //internal/tracker:tracker_test
+
+      # `go build` with CGO_ENABLED=0 rejects a pure binary whose imports reach
+      # dolt's cgo-only store/nbs (gozstd). Bazel compiles gozstd's pure stubs
+      # instead, whose init panics (third_party/patches/gozstd_nocgo.patch), so
+      # the check happens here: every pure artifact is started once. bd_test
+      # starts in the next step. -test.run=^$ runs no test (TestMain still
+      # runs; BEADS_TEST_SKIP=dolt keeps tracker's from starting a container).
+      - name: Start every pure-Go artifact (gozstd contamination check)
+        run: |
+          set -euo pipefail
+          bazel run --config=pure //cmd/bd:bd -- version
+          bazel test --config=pure \
+            //internal/storage/embeddeddolt:embeddeddolt_test \
+            //internal/tracker:tracker_test \
+            --test_sharding_strategy=disabled \
+            '--test_arg=-test.run=^$' \
+            --test_env=BEADS_TEST_SKIP=dolt
+
+      # One unsharded process, like `go test -run`; the test.xml check keeps a
+      # selector that matches nothing from passing.
+      - name: Run pure-Go cmd/bd test subset (--config=pure)
+        run: |
+          set -euo pipefail
+          bazel test --config=pure //cmd/bd:bd_test \
+            --test_sharding_strategy=disabled \
+            "--test_arg=-test.run=$PURE_CMD_BD_TESTS"
+          n="$(grep -c '<testcase ' bazel-testlogs/cmd/bd/bd_test/test.xml || true)"
+          echo "pure cmd/bd subset: $n test cases"
+          (( n > 0 ))
+
+  # pr.yml's container-backed jobs, "Test (storage domain + uow)" and
+  # "Contract corpus", as Bazel's docker lane: --config=docker runs the
+  # requires-docker variants (domain/db, uow, tracker, doctor/fix, protocol)
+  # on this runner against its docker daemon (they are no-remote-exec);
+  # builds still execute remotely when configured. The other packages of the
+  # domain+uow job pass identically under bazel-test's --config=ci. The lane
+  # is named in one variable, so a hermetic dolt-server lane can replace it.
+  bazel-docker:
+    name: Bazel / docker lane (advisory)
+    # Same runner, rbe-west gate and skip rule as bazel-test.
+    runs-on: ${{ (inputs.rbe || 'on') != 'off' && github.event.pull_request.head.repo.fork != true && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    if: ${{ vars.RBE_WEST_WORKERS == 'true' || inputs.rbe == 'off' || github.event.pull_request.head.repo.fork == true }}
+    timeout-minutes: 90
+    env:
+      BAZEL_DOCKER_LANE: docker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Bazel
+        id: bazel
+        uses: ./.github/actions/setup-bazel
+        env:
+          BAZEL_REMOTE_EXECUTOR: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_WEST_EXECUTOR || '' }}
+          RBE_TLS_CERT: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_TLS_CERT || '' }}
+          RBE_TLS_KEY: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_TLS_KEY || '' }}
+          RBE_TLS_CA: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && secrets.RBE_TLS_CA || '' }}
+          RBE_INSTANCE: ${{ (inputs.rbe || 'on') != 'off' && vars.RBE_WEST_WORKERS == 'true' && 'oss' || '' }}
+
+      # As in the mirrored jobs; tests fail rather than skip without it.
+      - name: Pull Dolt sql-server image
+        run: ./scripts/ci/pull-dolt-image.sh
+
+      - name: bazel test //... --config=docker
+        id: test
+        timeout-minutes: 80
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          rc=0
+          bazel test //... "--config=$BAZEL_DOCKER_LANE" 2>&1 | tee "$RUNNER_TEMP/bazel-test.log" || rc=$?
+          echo "bazel test --config=$BAZEL_DOCKER_LANE: exit $rc, $(( $(date +%s) - start ))s wall" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Upload test logs
+        if: ${{ failure() && steps.test.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bazel-docker-testlogs
+          path: |
+            bazel-testlogs/**/test.log
+            bazel-testlogs/**/test.xml
+          if-no-files-found: ignore
+          retention-days: 7
