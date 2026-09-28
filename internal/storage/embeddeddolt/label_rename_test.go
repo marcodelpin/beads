@@ -114,3 +114,71 @@ func TestRenameLabel(t *testing.T) {
 		}
 	})
 }
+
+// TestRenameLabelMintsOneVersionPerTouchedBead pins the versioned-history law
+// (#6135 FR-1/FR-2/FR-5) for a rename. Every bead whose label set the rename
+// changed mints exactly one version row - a plain rename and a merge alike,
+// since both drop oldLabel. A bead that never carried oldLabel mints none, a
+// rename nobody carries mints none, and current_revision stays equal to the
+// row count. issueops' TestEveryBeadMutatorMintsOrIsExempt only proves
+// statically that RenameLabelInTx reaches RecordVersionInTx; this is its
+// runtime twin, on the same probe TestEmbeddedEveryAcceptedLifecycleMutationMintsOneVersion uses.
+func TestRenameLabelMintsOneVersionPerTouchedBead(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	te := newTestEnv(t, "rlver")
+	ctx := t.Context()
+	p := newVersionProbe(t, te, "rlver")
+
+	plain := p.kit.IssuePrefix + "-plain"
+	merge := p.kit.IssuePrefix + "-merge"
+	untouched := p.kit.IssuePrefix + "-untouched"
+	seed := map[string][]string{
+		plain:     {"old"},
+		merge:     {"old", "new"},
+		untouched: {"other"},
+	}
+	for _, id := range []string{plain, merge, untouched} {
+		if err := p.kit.CreateIssue(ctx, &types.Issue{
+			ID: id, Title: id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask,
+		}, "seed"); err != nil {
+			t.Fatalf("CreateIssue(%s): %v", id, err)
+		}
+		for _, label := range seed[id] {
+			if err := te.store.AddLabel(ctx, id, label, "seed"); err != nil {
+				t.Fatalf("AddLabel(%s, %s): %v", id, label, err)
+			}
+		}
+	}
+	np, nm, nu := p.rows(plain), p.rows(merge), p.rows(untouched)
+
+	renamed, merged, _, err := te.store.RenameLabel(ctx, "old", "new", "actor")
+	if err != nil {
+		t.Fatalf("RenameLabel: %v", err)
+	}
+	if renamed != 2 || merged != 1 {
+		t.Fatalf("RenameLabel counts = (renamed %d, merged %d), want (2, 1)", renamed, merged)
+	}
+	np = p.expect("rename (plain)", plain, np, 1)
+	nm = p.expect("rename (merge)", merge, nm, 1)
+	nu = p.expect("rename (untouched)", untouched, nu, 0)
+	for _, id := range []string{plain, merge} {
+		if labels := labelsOf(p.latestState(id)); len(labels) != 1 || labels[0] != "new" {
+			t.Fatalf("rename: latest durable_state labels for %s = %v, want [new]", id, labels)
+		}
+	}
+
+	// The no-op shape: nothing carries oldLabel any more.
+	renamed, _, _, err = te.store.RenameLabel(ctx, "old", "new", "actor")
+	if err != nil {
+		t.Fatalf("RenameLabel (no carriers): %v", err)
+	}
+	if renamed != 0 {
+		t.Fatalf("RenameLabel (no carriers): renamed = %d, want 0", renamed)
+	}
+	p.expect("no-op rename (plain)", plain, np, 0)
+	p.expect("no-op rename (merge)", merge, nm, 0)
+	p.expect("no-op rename (untouched)", untouched, nu, 0)
+	for _, id := range []string{plain, merge, untouched} {
+		p.revisionMatchesRows(id)
+	}
+}
