@@ -20,23 +20,6 @@ import (
 const migration0067Up = "0067_add_versioned_beads_schema.up.sql"
 const migration0067Down = "0067_add_versioned_beads_schema.down.sql"
 
-// TestLatestVersionIncludesMigration0067 pins the highest claimed slot as a
-// deliberate hardcoded literal, not a comparison against another derived
-// value: schema.LatestVersion() drifting for the wrong reason (an unrelated
-// migration landing first) should still be caught by this test failing, and
-// whoever bumps it has to explain why the new top slot is what it is.
-//
-// Bumped 67 -> 68 by the label-vocabulary registry, which claims 0068
-// (0068_create_label_definitions). 0067 is still the versioned-beads slot
-// this file otherwise tests; it is simply no longer the last one, and the
-// twin in migration_0068_label_definitions_test.go names the new top.
-func TestLatestVersionIncludesMigration0067(t *testing.T) {
-	const want = 68
-	if got := LatestVersion(); got != want {
-		t.Fatalf("LatestVersion() = %d, want %d (0067 = issue_versions/store_epoch/issues.current_revision, be-hs42e.2; 0068 = label_definitions, the current top slot)", got, want)
-	}
-}
-
 // TestMigration0067AddsVersionedBeadsSchema is a pure-Go, DB-independent
 // check of the frozen migration bytes themselves — it runs even where no
 // `dolt` binary is available.
