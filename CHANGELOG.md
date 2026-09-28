@@ -39,6 +39,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server topology. Wiring an auto-backup hook through the new routes is left to
   a later slice.
 
+- **Auto-backup runs on a managed-local proxied-server workspace.** The
+  proxied arm of the post-command hook now calls auto-backup, so an explicit
+  `backup.enabled=true` (or `BD_BACKUP_ENABLED=1`) takes the same throttled,
+  change-detected Dolt-native backup into `.beads/backup` it takes in direct
+  mode, through the proxied provider's non-transactional seam. Before this the
+  opt-in was inert on every proxied workspace and `bd backup status` said so.
+  The default stays OFF, as on every server-mode workspace: many bd clients
+  share one server. It is honored exactly where `bd backup sync` is — a
+  proxied server bd started itself — and stays inert on an external or
+  team-server topology, strict `--readonly`, `bd serve`, a preview
+  (`--dry-run`/`--inspect`) and a migration freeze. A command that opened no
+  provider (e.g. `bd dolt stop`) backs nothing up rather than relaunching the
+  server to do so. `bd backup status` now reports the proxied default as
+  `auto: off in proxied-server mode; set backup.enabled=true to opt in`.
+
+- **Auto-backup and `bd backup sync` no longer overlap.** A per-workspace
+  backup lock (`.beads/backup.lock`) serializes them in every mode:
+  auto-backup skips when another backup holds it, and `bd backup sync` waits
+  up to 5 seconds (the bound restore uses for the workspace gate) and then
+  fails with "another backup is running for this workspace".
+
 - **`bd purge` covers an orchestrator's wisp retention sweep.** Three changes
   that together let `bd purge --wisps-plane --older-than 168h --force` replace
   a raw `DELETE FROM wisps` retention step:
