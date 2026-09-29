@@ -52,6 +52,10 @@ endif
 all: build
 
 BUILD_DIR := .
+# bda-5u7 (fork): the output name follows the build TARGET ($(GOOS_EFFECTIVE), defined below),
+# not the build host, so build/install/test targets agree on a GOOS=windows cross-compile.
+# Recursive (=) on purpose: GOOS_EFFECTIVE is assigned further down.
+BD_BUILD_OUTPUT = $(BUILD_DIR)/bd$(if $(filter windows,$(GOOS_EFFECTIVE)),.exe)
 GIT_BUILD := $(shell git rev-parse --short HEAD)
 ifeq ($(OS),Windows_NT)
 INSTALL_DIR := $(USERPROFILE)/.local/bin
@@ -117,11 +121,11 @@ GOOS_EFFECTIVE := $(shell go env GOOS)
 build:
 	@echo "Building bd..."
 ifeq ($(GOOS_EFFECTIVE),windows)
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -H=windowsgui" -o $(BUILD_DIR)/bd.exe ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -H=windowsgui" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd
 else
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd
 ifeq ($(shell uname),Darwin)
-	@codesign -s - -f $(BUILD_DIR)/bd 2>/dev/null || true
+	@codesign -s - -f "$(BD_BUILD_OUTPUT)" 2>/dev/null || true
 	@echo "Signed bd for macOS"
 endif
 endif
@@ -255,7 +259,7 @@ test-regression:
 # Override version: ./scripts/upgrade-smoke-test.sh v0.62.0
 test-upgrade: build
 	@echo "Running upgrade smoke tests..."
-	@CANDIDATE_BIN=./bd ./scripts/upgrade-smoke-test.sh
+	@CANDIDATE_BIN="$(BD_BUILD_OUTPUT)" ./scripts/upgrade-smoke-test.sh
 
 
 # Run cross-version smoke tests (last 30 tags → candidate).
@@ -264,14 +268,14 @@ test-upgrade: build
 # All from v0.30.0: ./scripts/cross-version-smoke-test.sh --from v0.30.0
 test-cross-version: build
 	@echo "Running cross-version smoke tests..."
-	@CANDIDATE_BIN=./bd ./scripts/cross-version-smoke-test.sh
+	@CANDIDATE_BIN="$(BD_BUILD_OUTPUT)" ./scripts/cross-version-smoke-test.sh
 
 # Run the authenticated historical upgrade corpus with strict fidelity checks.
 # All qualified versions: ./scripts/migration-test/run.sh
 # Single version: ./scripts/migration-test/run.sh --version v0.49.6
 test-migration: build
 	@echo "Running migration test harness..."
-	@CANDIDATE_BIN=./bd ./scripts/migration-test/run.sh
+	@CANDIDATE_BIN="$(BD_BUILD_OUTPUT)" ./scripts/migration-test/run.sh
 
 # Regenerate the golden-JSON contract corpus (cmd/bd/protocol/testdata/corpus/).
 # Run after any deliberate bd --json wire change; review the diff, then commit.
@@ -342,10 +346,10 @@ install install-force: build
 	@mkdir -p "$(INSTALL_DIR)"
 ifeq ($(OS),Windows_NT)
 	@rm -f "$(INSTALL_DIR)/bd" "$(INSTALL_DIR)/bd.exe"
-	@cp "$(BUILD_DIR)/bd.exe" "$(INSTALL_DIR)/bd.exe"
+	@cp "$(BD_BUILD_OUTPUT)" "$(INSTALL_DIR)/bd.exe"
 	@echo "Installed bd.exe to $(INSTALL_DIR)/bd.exe"
 else
-	@cp "$(BUILD_DIR)/bd" "$(INSTALL_DIR)/.bd.install.tmp.$$$$" && mv -f "$(INSTALL_DIR)/.bd.install.tmp.$$$$" "$(INSTALL_DIR)/bd"
+	@cp "$(BD_BUILD_OUTPUT)" "$(INSTALL_DIR)/.bd.install.tmp.$$$$" && mv -f "$(INSTALL_DIR)/.bd.install.tmp.$$$$" "$(INSTALL_DIR)/bd"
 	@echo "Installed bd to $(INSTALL_DIR)/bd"
 	@ln -sfn bd "$(INSTALL_DIR)/.beads.install.tmp.$$$$" && mv -f "$(INSTALL_DIR)/.beads.install.tmp.$$$$" "$(INSTALL_DIR)/beads"
 	@echo "Created 'beads' alias -> bd"
@@ -367,7 +371,7 @@ fmt-check:
 # Validate documentation references against actual CLI flags
 check-docs:
 	@echo "Building bd for docs checks..."
-	@CGO_ENABLED=0 go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd ./cmd/bd
+	@CGO_ENABLED=0 go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o "$(BUILD_DIR)/bd" ./cmd/bd
 	@./scripts/check-doc-flags.sh ./bd
 	@./scripts/check-doc-freshness.sh
 	@go test -tags=gms_pure_go ./test/docsync
