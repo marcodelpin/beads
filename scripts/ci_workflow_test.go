@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2536,4 +2537,372 @@ func TestSetupBazelRCWriter(t *testing.T) {
 			t.Errorf("want failure for a secret dir inside the workspace:\n%s", out)
 		}
 	})
+}
+
+const (
+	bazelAutofixWorkflowName = "bazel-autofix.yml"
+	bazelAutofixPushScript   = "scripts/bazel-autofix-push.sh"
+	bazelSyncPatchScript     = "scripts/ci/bazel-sync-patch.sh"
+	bazelSyncStepName        = "BUILD files in sync (gazelle, go_srcs, MODULE.bazel)"
+)
+
+// bazel.yml's sync step stays red on drift but leaves the allowlisted part of
+// the fix as the bazel-sync-patch artifact, from PR-head code that sees no
+// secrets; bazel-autofix.yml is the only consumer.
+func TestBazelSyncStepPublishesPatch(t *testing.T) {
+	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelJobName)
+	sync := job.step(t, bazelSyncStepName)
+	if sync.ID != "sync" {
+		t.Errorf("sync step id = %q, want sync", sync.ID)
+	}
+	patchCmd := "./" + bazelSyncPatchScript + ` "$RUNNER_TEMP/bazel-sync-patch"`
+	for _, required := range []string{"make bazel-sync-check || check=$?", patchCmd, "exit 1", `exit "$check"`} {
+		if !strings.Contains(sync.Run, required) {
+			t.Errorf("sync step does not contain %q:\n%s", required, sync.Run)
+		}
+	}
+	if i, j := strings.Index(sync.Run, patchCmd), strings.Index(sync.Run, "exit 1"); j < i {
+		t.Errorf("sync step must write the patch before failing")
+	}
+	for key, value := range sync.Env {
+		if strings.Contains(value, "secrets") {
+			t.Errorf("sync step env %s reads secrets; it runs PR-head code", key)
+		}
+	}
+	upload := job.step(t, "Upload BUILD sync patch")
+	if upload.If != "${{ always() && steps.sync.outcome == 'failure' }}" {
+		t.Errorf("patch upload if = %q; want it gated on the sync step's failure", upload.If)
+	}
+	if upload.With["name"] != "bazel-sync-patch" || upload.With["path"] != "${{ runner.temp }}/bazel-sync-patch/" ||
+		upload.With["if-no-files-found"] != "ignore" {
+		t.Errorf("patch upload with = %v", upload.With)
+	}
+	if job.stepIndex(t, "Upload BUILD sync patch") != job.stepIndex(t, bazelSyncStepName)+1 {
+		t.Errorf("patch upload must directly follow the sync step")
+	}
+}
+
+// bazel-autofix.yml runs with write permissions via workflow_run, so it must
+// never check out or execute PR code: the base branch's checkout, one trusted
+// script, the artifact as data, no expressions in run bodies, and the push
+// token visible only to the push step.
+func TestBazelAutofixWorkflowSecurity(t *testing.T) {
+	rel := filepath.Join(".github", "workflows", bazelAutofixWorkflowName)
+	root := readYAMLNode(t, rel)
+
+	if got := yamlMapKeys(root, "on"); !reflect.DeepEqual(got, []string{"workflow_run"}) {
+		t.Errorf("triggers = %v, want exactly [workflow_run] (never pull_request_target)", got)
+	}
+	var doc struct {
+		On struct {
+			WorkflowRun struct {
+				Workflows []string `yaml:"workflows"`
+				Types     []string `yaml:"types"`
+			} `yaml:"workflow_run"`
+		} `yaml:"on"`
+		Permissions map[string]string `yaml:"permissions"`
+	}
+	if err := root.Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	// Only "Bazel" (bazel.yml on pull_request) uploads bazel-sync-patch. Any
+	// other trigger would only ever be a no-op run (and, with a shared
+	// concurrency group, could get in a real fix's way).
+	if want := []string{"Bazel"}; !reflect.DeepEqual(doc.On.WorkflowRun.Workflows, want) {
+		t.Errorf("workflow_run.workflows = %v, want %v", doc.On.WorkflowRun.Workflows, want)
+	}
+	requireWorkflowProducesArtifact(t, bazelWorkflowName, "Bazel", "bazel-sync-patch")
+	if !reflect.DeepEqual(doc.On.WorkflowRun.Types, []string{"completed"}) {
+		t.Errorf("workflow_run.types = %v, want [completed]", doc.On.WorkflowRun.Types)
+	}
+	wantPerms := map[string]string{"contents": "write", "pull-requests": "write", "actions": "read"}
+	if !reflect.DeepEqual(doc.Permissions, wantPerms) {
+		t.Errorf("permissions = %v, want exactly %v", doc.Permissions, wantPerms)
+	}
+
+	workflow := readCIWorkflow(t, bazelAutofixWorkflowName)
+	if len(workflow.Jobs) != 1 {
+		t.Fatalf("%s has %d jobs, want 1", bazelAutofixWorkflowName, len(workflow.Jobs))
+	}
+	job := workflow.job(t, "autofix")
+	for _, cond := range []string{"github.event.workflow_run.event == 'pull_request'", "github.event.workflow_run.conclusion == 'failure'"} {
+		if !strings.Contains(job.If, cond) {
+			t.Errorf("job if = %q lacks %q", job.If, cond)
+		}
+	}
+	if job.TimeoutMinutes == 0 {
+		t.Error("autofix job has no timeout-minutes")
+	}
+
+	var checkouts int
+	for _, step := range job.Steps {
+		if step.Uses != "" {
+			family, sha, _ := strings.Cut(step.Uses, "@")
+			if family != "actions/checkout" || sha != checkoutSHA {
+				t.Errorf("step %q uses %q; only actions/checkout@%s is allowed", step.Name, step.Uses, checkoutSHA)
+			}
+			if !reflect.DeepEqual(step.With, map[string]string{"persist-credentials": "false"}) {
+				t.Errorf("checkout has with %v; want only persist-credentials: false (base default branch, never a PR ref, no token on disk)", step.With)
+			}
+			checkouts++
+		}
+		// Event fields (branch names, commit messages) are attacker text:
+		// pass them through env, never interpolate them into a script.
+		if strings.Contains(step.Run, "${{") {
+			t.Errorf("step %q interpolates an expression into run", step.Name)
+		}
+		if regexp.MustCompile(`\bgit\s+(checkout|fetch|clone|worktree)\b|\bgh\s+pr\s+checkout\b|\bmake\b|\bgo\s+(run|build|test)\b`).MatchString(step.Run) {
+			t.Errorf("step %q fetches or runs code in the workflow itself:\n%s", step.Name, step.Run)
+		}
+	}
+	if checkouts != 1 {
+		t.Errorf("want exactly one checkout step, got %d", checkouts)
+	}
+	push := job.step(t, "Push sync commit or leave apply recipe")
+	if strings.TrimSpace(push.Run) != "./"+bazelAutofixPushScript {
+		t.Errorf("push step run = %q, want ./%s", push.Run, bazelAutofixPushScript)
+	}
+	download := job.step(t, "Download BUILD sync patch (if any)")
+	if !strings.Contains(download.Run, `select(.name == "bazel-sync-patch")`) ||
+		!strings.Contains(download.Run, "bazel-sync.patch bazel-sync-meta.txt -d") {
+		t.Errorf("download step must fetch bazel-sync-patch and extract only its two files:\n%s", download.Run)
+	}
+	for key, want := range map[string]string{
+		"HEAD_REPO":          "${{ github.event.workflow_run.head_repository.full_name }}",
+		"HEAD_BRANCH":        "${{ github.event.workflow_run.head_branch }}",
+		"HEAD_SHA":           "${{ github.event.workflow_run.head_sha }}",
+		"GH_TOKEN":           "${{ github.token }}",
+		"PUSH_TOKEN":         "${{ secrets.DOCS_AUTOFIX_TOKEN || github.token }}",
+		"AUTOFIX_TOKEN_KIND": "${{ secrets.DOCS_AUTOFIX_TOKEN && 'pat' || 'default' }}",
+	} {
+		if got := push.Env[key]; got != want {
+			t.Errorf("push step env %s = %q, want %q", key, got, want)
+		}
+	}
+
+	// Secrets: only the push step's PUSH_TOKEN / AUTOFIX_TOKEN_KIND, and only
+	// the docs autofix token that this workflow shares.
+	pushIndex := job.stepIndex(t, push.Name)
+	secretRef := regexp.MustCompile(`\bsecrets\s*(\.|\[)`)
+	allowed := map[string]bool{
+		fmt.Sprintf(".jobs.autofix.steps[%d].env.PUSH_TOKEN", pushIndex):         true,
+		fmt.Sprintf(".jobs.autofix.steps[%d].env.AUTOFIX_TOKEN_KIND", pushIndex): true,
+	}
+	walkYAML(root, "", func(path string, key bool, value string) {
+		if key || !secretRef.MatchString(value) {
+			return
+		}
+		if !allowed[path] {
+			t.Errorf("%s: %s reads secrets (%q)", bazelAutofixWorkflowName, path, value)
+		}
+		if refs := regexp.MustCompile(`secrets\.([A-Za-z0-9_]+)`).FindAllStringSubmatch(value, -1); len(refs) == 0 {
+			t.Errorf("%s: %s uses a non-literal secrets reference", bazelAutofixWorkflowName, path)
+		} else {
+			for _, ref := range refs {
+				if ref[1] != "DOCS_AUTOFIX_TOKEN" {
+					t.Errorf("%s: %s reads secret %s; only DOCS_AUTOFIX_TOKEN is shared with this workflow", bazelAutofixWorkflowName, path, ref[1])
+				}
+			}
+		}
+	})
+}
+
+// requireWorkflowProducesArtifact: the workflow a workflow_run trigger names
+// runs on pull_request and uploads the artifact the autofix job consumes.
+func requireWorkflowProducesArtifact(t *testing.T, file, name, artifact string) {
+	t.Helper()
+	node := readYAMLNode(t, filepath.Join(".github", "workflows", file))
+	if got := yamlScalar(node, "name"); got != name {
+		t.Errorf("%s name = %q, want %q (the workflow_run trigger names it)", file, got, name)
+	}
+	if !slices.Contains(yamlMapKeys(node, "on"), "pull_request") {
+		t.Errorf("%s has no pull_request trigger; the autofix job only acts on PR runs", file)
+	}
+	var uploads bool
+	for _, job := range readCIWorkflow(t, file).Jobs {
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && step.With["name"] == artifact {
+				uploads = true
+			}
+		}
+	}
+	if !uploads {
+		t.Errorf("%s never uploads %s; the workflow_run trigger on it would be dead", file, artifact)
+	}
+}
+
+// Both autofix workflows push to the same PR branches. Job-level concurrency
+// (skipped runs take no part) in ONE group per head branch, never cancelling:
+// they queue instead of racing, and an unrelated completion cannot cancel a
+// fix in flight.
+func TestAutofixWorkflowsShareConcurrency(t *testing.T) {
+	const group = "autofix-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}"
+	for _, file := range []string{bazelAutofixWorkflowName, "docs-autofix.yml"} {
+		root := readYAMLNode(t, filepath.Join(".github", "workflows", file))
+		if slices.ContainsFunc(root.Content, func(n *yaml.Node) bool { return n.Value == "concurrency" }) {
+			t.Errorf("%s has workflow-level concurrency; it must be on the job so skipped runs take no part", file)
+		}
+		var doc struct {
+			Jobs map[string]struct {
+				Concurrency struct {
+					Group            string `yaml:"group"`
+					CancelInProgress *bool  `yaml:"cancel-in-progress"`
+				} `yaml:"concurrency"`
+				TimeoutMinutes int              `yaml:"timeout-minutes"`
+				Steps          []ciWorkflowStep `yaml:"steps"`
+			} `yaml:"jobs"`
+		}
+		if err := root.Decode(&doc); err != nil {
+			t.Fatal(err)
+		}
+		job, ok := doc.Jobs["autofix"]
+		if !ok || len(doc.Jobs) != 1 {
+			t.Fatalf("%s: want exactly one job, autofix", file)
+		}
+		if job.Concurrency.Group != group {
+			t.Errorf("%s job concurrency group = %q, want %q", file, job.Concurrency.Group, group)
+		}
+		if job.Concurrency.CancelInProgress == nil || *job.Concurrency.CancelInProgress {
+			t.Errorf("%s job concurrency must set cancel-in-progress: false", file)
+		}
+		// A hung run holds the shared, non-cancelling group: bound it.
+		if job.TimeoutMinutes != 10 {
+			t.Errorf("%s autofix job timeout-minutes = %d, want 10", file, job.TimeoutMinutes)
+		}
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/checkout@") && step.With["persist-credentials"] != "false" {
+				t.Errorf("%s checkout keeps the workflow token in .git/config; set persist-credentials: false", file)
+			}
+		}
+	}
+	requireWorkflowProducesArtifact(t, "pr.yml", "PR", "cli-docs-freshness-patch")
+}
+
+// The two push scripts share their security-critical functions verbatim, and
+// both apply the same hardening.
+func TestAutofixScriptsShareGuards(t *testing.T) {
+	root := sourceRepoRoot(t)
+	bazel := readPolicyFile(t, root, bazelAutofixPushScript)
+	docs := readPolicyFile(t, root, "scripts/docs-autofix-push.sh")
+	for _, name := range []string{"git_", "validate_patch", "check_staged", "post_or_update_comment", "head_branch_protected"} {
+		re := regexp.MustCompile(`(?ms)^` + regexp.QuoteMeta(name) + `\(\) \{\n.*?^\}\n`)
+		a, b := re.FindString(bazel), re.FindString(docs)
+		if a == "" || a != b {
+			t.Errorf("%s() differs between %s and docs-autofix-push.sh (or is missing)", name, bazelAutofixPushScript)
+		}
+	}
+	validator := regexp.MustCompile(`(?ms)^validate_patch\(\) \{\n.*?^\}\n`).FindString(bazel)
+	for _, want := range []string{
+		// Any rename/copy header, including legacy "rename old/new".
+		`rename |copy |`,
+		// Every index line, not only hex ones.
+		`grep -E '^index ' "$file" | grep -qvE '^index [0-9a-f]+\.\.[0-9a-f]+( 100644)?$'`,
+		`git apply --summary "$file"`,
+		`git apply --numstat -z "$file"`,
+	} {
+		if !strings.Contains(validator, want) {
+			t.Errorf("validate_patch lacks %q", want)
+		}
+	}
+	for script, body := range map[string]string{bazelAutofixPushScript: bazel, "scripts/docs-autofix-push.sh": docs} {
+		for _, want := range []string{
+			`select(.user.login == \"$COMMENT_AUTHOR\" and`,
+			`COMMENT_AUTHOR="github-actions[bot]"`,
+			`"--force-with-lease=refs/heads/$HEAD_BRANCH:$HEAD_SHA"`,
+			`gh api "repos/$BASE_REPO/branches/$enc"`,
+			`gh api "repos/$BASE_REPO/rules/branches/$enc"`,
+			`(.base.repo.full_name // "") == $base`,
+			"export GIT_LFS_SKIP_SMUDGE=1",
+			"git -c core.hooksPath=/dev/null",
+			// Only the branches the run needs, never a whole-repo clone.
+			"git_ init --quiet --bare",
+			"fetch --quiet --no-tags --filter=blob:none origin",
+			`"+refs/heads/$HEAD_BRANCH:refs/autofix/head"`,
+			// The circuit breaker reads the fetched commit and fails closed.
+			`if ! HEAD_SUBJECT="$(git_ log -1 --format=%s "$HEAD_SHA")" || [[ "$HEAD_SUBJECT" == "$AUTOFIX_SUBJECT"* ]]; then`,
+			`if length == 1 then .[0]`,
+			`git_ read-tree "$HEAD_SHA"`,
+			"apply --cached",
+			`check_staged "$HEAD_SHA"`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s lacks %q", script, want)
+			}
+		}
+		// Heredocs hold the human recipe (git apply --index, git push), not
+		// commands this script runs.
+		code := regexp.MustCompile(`(?ms)<<'?EOF'?\n.*?^EOF\n`).ReplaceAllString(body, "")
+		if regexp.MustCompile(`\bgit_?\s+(-c\s+\S+\s+)*(checkout|switch|worktree|restore|reset|stash)\b|apply --index`).MatchString(code) {
+			t.Errorf("%s writes the PR tree to disk; apply to the index only", script)
+		}
+		if strings.Index(code, "if head_branch_protected;") > strings.Index(code, "push --quiet") {
+			t.Errorf("%s must check branch protection before pushing", script)
+		}
+		if regexp.MustCompile(`(?m)^\s*[^#\s][^#\n]*(\bclone\b|/commits/)`).MatchString(code) {
+			t.Errorf("%s clones the whole repository or reads commits through the API", script)
+		}
+		if strings.Contains(code, "fetch") && strings.Count(code, " fetch ") != 1 {
+			t.Errorf("%s: want exactly one fetch (head, plus base for attribution)", script)
+		}
+		// Every git command goes through git_ (no hooks), except the
+		// repository-free `git apply --summary/--numstat` of the validator.
+		for _, m := range regexp.MustCompile(`(?m)(?:^\s*|[;&|!(]\s*|\$\(\s*)git\s+(\S+)`).FindAllStringSubmatch(code, -1) {
+			if m[1] != "apply" && m[1] != "-c" {
+				t.Errorf("%s: git %s runs without the git_ wrapper", script, m[1])
+			}
+		}
+		if n, m := strings.Count(code, "git -c "), strings.Count(code, "git -c core.hooksPath=/dev/null "); n != 1 || m != 1 {
+			t.Errorf("%s: want exactly one raw `git -c` call, git_'s core.hooksPath=/dev/null; got %d", script, n)
+		}
+	}
+}
+
+// The producer (PR code) and the consumer (base-branch code) must agree on
+// the allowlist, or every patch would be refused; the consumer's copy is the
+// one that is enforced.
+func TestBazelAutofixAllowlistsMatch(t *testing.T) {
+	re := regexp.MustCompile(`(?m)^BUILD_FILE_RE='([^']+)'$`)
+	caseRe := regexp.MustCompile(`(?m)^\s+(MODULE\.bazel \| MODULE\.bazel\.lock\) return 0 ;;\n\s+third_party/\*\) return 1 ;;)$`)
+	want := `^([A-Za-z0-9_+-][A-Za-z0-9_.+-]*/)*BUILD\.bazel$`
+	for _, script := range []string{bazelAutofixPushScript, bazelSyncPatchScript} {
+		body := readPolicyFile(t, sourceRepoRoot(t), script)
+		m := re.FindStringSubmatch(body)
+		if m == nil || m[1] != want {
+			t.Errorf("%s BUILD_FILE_RE = %v, want %q", script, m, want)
+		}
+		if !caseRe.MatchString(body) {
+			t.Errorf("%s lacks the MODULE.bazel / third_party cases of path_allowed", script)
+		}
+	}
+	compiled := regexp.MustCompile(want)
+	for path, ok := range map[string]bool{
+		"BUILD.bazel":                       true,
+		"cmd/bd/BUILD.bazel":                true,
+		"internal/storage/dolt/BUILD.bazel": true,
+		"a_b/c-d/e.f/BUILD.bazel":           true,
+		".github/BUILD.bazel":               false,
+		"a/../BUILD.bazel":                  false,
+		"../BUILD.bazel":                    false,
+		"/BUILD.bazel":                      false,
+		"a//BUILD.bazel":                    false,
+		"a/.hidden/BUILD.bazel":             false,
+		"BUILD.bazel.go":                    false,
+		"xBUILD.bazel":                      false,
+		"a/BUILD":                           false,
+		"a b/BUILD.bazel":                   false,
+		`"a\tb/BUILD.bazel"`:                false,
+	} {
+		if compiled.MatchString(path) != ok {
+			t.Errorf("BUILD_FILE_RE matches %q = %v, want %v", path, !ok, ok)
+		}
+	}
+}
+
+func yamlScalar(node *yaml.Node, key string) string {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1].Value
+		}
+	}
+	return ""
 }
