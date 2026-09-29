@@ -7,10 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1-rc.2] - 2026-09-29
+
+Second release candidate for 1.3.1, still a patch line on top of 1.3.0 with
+**no schema migration**: upgrading from 1.3.0 or 1.3.1-rc.1 is a binary swap.
+It adds the proxied-server `bd backup` family and opt-in auto-backup on
+managed-local workspaces, a `bd purge` that can run an orchestrator's wisp
+retention sweep, and fixes for the #6716 fan-in stall, partial batch closes,
+`bd sql` result sets, `bd show --watch`, `bd types`, `BEADS_DIR` discovery and
+proxy liveness, plus eleven fixes from `main` ([#6653](https://github.com/gastownhall/beads/pull/6653)) and the smart-gate
+data-behind stop ([#6659](https://github.com/gastownhall/beads/pull/6659), [#6695](https://github.com/gastownhall/beads/pull/6695)). Engineering notes for embedders
+reading proxied-server surfaces are in `engdocs/` ([#6652](https://github.com/gastownhall/beads/pull/6652)).
+
+### Upgrade notes
+
+These behaviour changes can affect scripts; each is detailed below.
+
+- `bd show --watch <id>` exits 1 when the id cannot be found (it used to exit
+  0), on both the direct and proxied routes.
+- `bd sql` in direct server mode prints `OK` / `{"status":"ok"}` for a
+  multi-statement write or a write the parser cannot classify, instead of
+  `OK, N rows affected` / `{"rows_affected":N}`. `bd sql --readonly` refuses
+  statements it cannot parse (for example `PRAGMA`) instead of running them
+  as reads.
+- A failure to read the custom issue types now fails `bd types`,
+  `bd create --graph` and `bd config set storage-class.*` instead of being
+  treated as "no custom types".
+- `BEADS_DIR` must point at the `.beads` directory itself. A `BEADS_DIR` that
+  names a project root, or a `.beads` that does not exist yet, now fails with
+  "no beads database found" instead of silently resolving to the nearest
+  workspace above the current directory.
+- `bd purge` always keeps closed beads a live bead depends on
+  (`live_dependent_skipped`); there is no flag to turn this off.
+- `--older-than` on `bd purge` and `bd prune` is exact at hour precision:
+  `12h` no longer rounds up to a day, so `bd prune --older-than 12h` deletes
+  rows it used to keep.
+- `bd close` with several ids exits non-zero when any of them fails to close.
+- Unflagged piped `bd query` is no longer capped at 50 rows.
+- On a proxied workspace with `dolt.auto-commit` set to `batch` or `off`,
+  writes are no longer committed to Dolt history one by one; run
+  `bd dolt commit` to flush them.
+- `bd backup sync` fails after waiting 5 seconds if another backup of the same
+  workspace is running.
+- `bd ready` / `bd list --ready` include issues in custom `active`-category
+  statuses, and a store open against an unreachable Dolt server on a
+  proxied-server workspace or under `bd serve` retries for up to ~40s before
+  failing. Both come from [#6653](https://github.com/gastownhall/beads/pull/6653); see **Changed**.
+
 ### Added
 
 - **`bd backup` works on a proxied-server workspace bd runs the Dolt server
-  for.** `bd backup init`, `sync`, `remove`, `status` and `restore` are routed
+  for** ([#6584](https://github.com/gastownhall/beads/pull/6584)). `bd backup init`, `sync`, `remove`, `status` and `restore` are routed
   over the proxied provider; before this, a proxied workspace — the default
   topology since 1.3.0 — had no backup path at all. `bd backup restore` stops
   the proxy and its Dolt child before replacing the database and leaves the
@@ -32,14 +79,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   network from its own environment, which is the same credential question the
   next slice has to answer for `dolt push`.
 
-  Backups on this topology are **explicit only**. Auto-backup has no
-  post-command hook on the proxied path, so `backup.enabled=true` does nothing
-  there; `bd backup status` and `bd backup` help now say so instead of
-  attributing the OFF to a missing git remote, which was never the reason on a
-  server topology. Wiring an auto-backup hook through the new routes is left to
-  a later slice.
+  `bd backup status` and `bd backup` help no longer attribute auto-backup being
+  OFF on a server topology to a missing git remote, which was never the reason
+  there ([#6694](https://github.com/gastownhall/beads/pull/6694)). Auto-backup
+  itself is opt-in on this topology; see the next entry.
 
-- **Auto-backup runs on a managed-local proxied-server workspace.** The
+- **Auto-backup runs on a managed-local proxied-server workspace**
+  ([#6879](https://github.com/gastownhall/beads/pull/6879)). The
   proxied arm of the post-command hook now calls auto-backup, so an explicit
   `backup.enabled=true` (or `BD_BACKUP_ENABLED=1`) takes the same throttled,
   change-detected Dolt-native backup into `.beads/backup` it takes in direct
@@ -60,7 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   up to 5 seconds (the bound restore uses for the workspace gate) and then
   fails with "another backup is running for this workspace".
 
-- **`bd purge` covers an orchestrator's wisp retention sweep.** Three changes
+- **`bd purge` covers an orchestrator's wisp retention sweep**
+  ([#6883](https://github.com/gastownhall/beads/pull/6883)). Three changes
   that together let `bd purge --wisps-plane --older-than 168h --force` replace
   a raw `DELETE FROM wisps` retention step:
   - **Live-dependent protection, always on.** `bd purge` no longer deletes a
@@ -94,7 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Proxied-server refusals now say *why* they refuse.** The JSON a refused
+- **Proxied-server refusals now say *why* they refuse** ([#6582](https://github.com/gastownhall/beads/pull/6582)). The JSON a refused
   command prints gains a `reason` field next to the existing `code`, `error`
   and `mutates`: `design` for a refusal that is expected to stay (shared
   history, multi-repo routing, destructive admin, strict `--readonly`) and
@@ -118,209 +165,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the message followed by `Error: exit code 1` and the full usage
   text. Exit statuses are unchanged; this applies on every topology.
 
-- **`bd purge` keeps closed beads a live bead depends on.** A closed bead
-  that a not-done bead depends on through `parent-child`, `tracks` or
-  `blocks` is no longer purged (reported as `live_dependent_skipped`), so a
-  purge that used to delete a closed molecule root under a live step now
-  leaves it. See the `--wisps-plane` entry under Added.
+- **`bd purge` keeps closed beads a live bead depends on, always**
+  ([#6883](https://github.com/gastownhall/beads/pull/6883)). A closed bead that a not-done bead depends on through
+  `parent-child`, `tracks` or `blocks` is no longer purged (reported as
+  `live_dependent_skipped`), so a purge that used to delete a closed molecule
+  root under a live step now leaves it. There is no flag to turn this off.
+  See the `--wisps-plane` entry under Added.
 
-### Fixed
+- **`--older-than` on `bd purge` and `bd prune` is taken at hour precision**
+  ([#6883](https://github.com/gastownhall/beads/pull/6883)). An `Nh` value is no longer rounded to whole days: `12h` used to
+  round UP to one day and now means 12 hours, so `bd prune --older-than 12h`
+  deletes rows closed 12–24 hours ago that it used to keep; `36h` used to floor
+  to one day and now means 36 hours. Day values (`7`, `7d`, `2w`) are
+  unchanged. See the `bd purge` entry under Added.
 
-- **An explicit `BEADS_DIR` is authoritative during workspace discovery.**
-  When `BEADS_DIR` named a directory without project files yet (missing,
-  empty, or not initialized), discovery ignored it and walked up from the
-  current directory instead, then rebound `BEADS_DIR` to whatever ancestor
-  workspace it found. `bd init` refused with "already initialized" because of
-  the parent workspace, and data commands such as `bd create` and `bd list`
-  read and wrote the parent's store. Discovery now reports no workspace for
-  such a `BEADS_DIR`, so `bd init` initializes the named directory and other
-  commands fail with "no beads database found". `bd import`/`bd setup` and
-  `bd bootstrap` target the named directory when they create a workspace.
-  Behaviour with `BEADS_DIR` unset is unchanged. **Behaviour change:** a
-  `BEADS_DIR` that points at a project root rather than its `.beads`
-  directory (for example `BEADS_DIR=$repo` instead of `BEADS_DIR=$repo/.beads`),
-  or at a `.beads` that does not exist yet, used to work by accident because
-  discovery walked up to the nearest workspace; it now fails with "no beads
-  database found". Point `BEADS_DIR` at the `.beads` directory itself.
-  ([#6938](https://github.com/gastownhall/beads/pull/6938))
-
-- **A proxied workspace's proxy retires when its Dolt backend exits
-  cleanly.** The proxy noticed its `dolt sql-server` child exiting only when
-  the exit status was non-zero. A backend that shut down gracefully (for
-  example on SIGTERM) left the proxy up and adoptable in front of a dead store:
-  with `--proxied-server-idle-timeout 0` it never went away, `bd dolt status`
-  called it running, and every command failed until `bd dolt stop`. The proxy
-  now retires on any backend exit, as it already did on a crash, so the next bd
-  command (including `bd ping`) starts a fresh proxy and backend. `bd dolt
-  status` no longer reports a proxy whose managed backend is gone as running:
-  the text says "not serving" and the JSON reports `running: false` (with
-  `proxy_pid` still set), including for a stranded proxy started by an older
-  bd. ([#6937](https://github.com/gastownhall/beads/pull/6937))
-
-- **`bd show --watch` works under `--proxied-server`.** It was refused with
-  `proxy.watch.unsupported` although the provider can answer the poll the way
-  `bd list --watch` already does, so every proxied workspace — the default
-  transport for managed-local setups — had no way to watch a bead. The proxied
-  route now shares the direct route's loop: render once, re-read every 2s,
-  redraw only when the issue's status or `updated_at` changes, stop cleanly on
-  Ctrl+C/SIGTERM, and require exactly one id. Each poll opens its own short
-  unit of work, so a long watch never pins a transaction, and a poll that
-  fails (the issue was deleted, the backend blipped) keeps the last render
-  without printing, as on the direct route. On both routes a watch whose id
-  cannot be found now exits non-zero instead of 0.
-
-- **A server-mode workspace with an empty `.beads/dolt` is no longer refused
-  as legacy**
-  ([#5682](https://github.com/gastownhall/beads/issues/5682),
-  [#6935](https://github.com/gastownhall/beads/pull/6935)). bd creates `.beads/dolt` on use even when the data lives on an
-  external Dolt server, and leaves it empty. When the gitignored
-  `.local_version` witness was missing — after a fresh checkout, or when a
-  provisioner created the empty root before `bd init --server --external` —
-  the legacy-upgrade guard refused every command, `bd init` included, as a
-  "legacy Dolt server workspace", and no bd command could repair it. An empty
-  root holds nothing a legacy release could have left, so the guard now admits
-  it: `bd init` writes the witness, and an existing workspace in that state
-  re-seeds it on the next command. A pre-1.0 witness, or a `.beads/dolt` that
-  holds anything, is still refused.
-
-- **`bd types` now lists exactly the types `bd create --type` accepts**
-  ([#6934](https://github.com/gastownhall/beads/pull/6934)). The two resolved
-  the type set through different code and could disagree: a server-mode
-  workspace's `bd types` dropped `.beads/config.yaml` `types.custom` entries
-  once the database had any custom type, although create accepts them; in
-  proxied mode `bd config set storage-class.<type>` checked `config.yaml` alone
-  and refused custom types registered in the database; and the built-in system
-  types `message`, `molecule`, `gate` and `event` were never listed. Every
-  mode now composes custom types by one rule (the `custom_types` table, else
-  the `types.custom` config row, always unioned with `config.yaml`). `bd types`
-  gains a "System types" section, and `bd types --json` an additive
-  `system_types` field; `core_types` and `custom_types` are unchanged. A
-  failure to read the custom types now fails `bd types`, `bd create --graph`
-  and `bd config set storage-class.*` instead of being silently treated as "no
-  custom types".
-
-- **`bd sql` no longer drops the rows of CTE queries or CALL result sets**
-  ([#6932](https://github.com/gastownhall/beads/pull/6932)). In proxied-server
-  mode, `WITH name(cols) AS (...) SELECT ...` and `WITH RECURSIVE ...` queries
-  were misread as writes and printed `OK, 0 rows affected` with no error; they
-  now return their rows. Statements are now classified with the Dolt SQL
-  parser (shared by the proxied and direct paths): reads return rows, plain
-  writes (including CTE-prefixed `UPDATE`/`DELETE`) commit and report
-  `rows_affected`, and anything that may both write and return rows (`CALL`,
-  `EXPLAIN ANALYZE` of a write, `RETURNING`) or that the parser cannot
-  classify is committed and prints whatever rows it returns, so
-  `CALL DOLT_BRANCH(...)`-style result sets are rendered instead of discarded.
-  Visible changes for scripts: in direct server mode a multi-statement write,
-  or a single write statement the parser cannot classify, now prints `OK` /
-  `{"status":"ok"}` (as proxied mode already did) instead of
-  `OK, N rows affected` / `{"rows_affected":N}`; and `--readonly` now refuses
-  statements it cannot parse (for example `PRAGMA`) instead of treating them
-  as reads.
-
-- **The #6716 fan-in stall is fixed on the proxied-server route and the
-  remaining store routes.** Two blockers of one dependent taken away at the
-  same time (parallel workers closing both, or a close racing a
-  `bd dep remove` or a delete of the other) could leave the dependent
-  `is_blocked=1` and missing from `bd ready` until `bd recompute-blocked`
-  ([#6716](https://github.com/gastownhall/beads/issues/6716)). The post-commit
-  recheck the Dolt store write transactions gained for that issue now also
-  runs on every write the proxied-server (uow/domain-db) route serves, which
-  under `--proxied-server` — the default topology — is `bd close` (single
-  and batch), `bd update --status`, `bd dep remove`, `bd delete`, `bd batch`
-  and `bd serve`; on `RunInTransaction` (`bd batch` direct, `bd cook`,
-  `bd mol squash`/`burn`, and SDK callers that close or update inside a
-  transaction); and on the wisp close, update and delete writers and the
-  legacy dependency removal behind `bd duplicates --merge`. Demote-to-wisp
-  moves a row between planes without taking a blocker away and is unchanged.
-
-- Unblocking two blockers of one dependent at the same time — closing both,
-  or a close racing a `bd dep remove` or a delete of the other — no longer
-  leaves the dependent stuck as blocked and hidden from `bd ready` until
-  `bd recompute-blocked`: a write that takes a blocker away (a close, an
-  update to an inactive status, a dependency removal, a delete) and runs
-  through a Dolt store write transaction now rechecks the dependents it
-  recomputed once that transaction has committed
-  ([#6716](https://github.com/gastownhall/beads/issues/6716)). The
-  proxied-server route and the remaining store routes are covered by the
-  entry above.
-
-- **`bd close` now exits non-zero when any issue in a batch fails to close**
-  ([#6648](https://github.com/gastownhall/beads/issues/6648)). A batch with one
-  refused id used to exit 0 as long as another id closed, so scripts could not
-  tell that part of the batch was left open. The closable ids still close, the
-  refusals are still printed, and a final `Error: N of M issues failed to close`
-  line is added; ids that were already closed still count as success. Both the
-  direct and proxied-server routes behave this way for ids the close policy or
-  the engine refuses. (An id that cannot be *resolved* at all is unchanged and
-  still differs by route: the direct route aborts the whole command before any
-  close runs, while the proxied route refuses that argument and closes the
-  rest.) In `--json` mode the summary is instead a compact JSON line on stderr
-  naming the failed ids, matching `bd update`'s partial-failure report, while
-  stdout keeps the usual closed-issues array. Each `failed[]` entry carries the
-  refusal as the engine worded it, identically on both routes; the `--force`
-  hint and the route's own framing stay on the human-readable stderr line, which
-  is unchanged. `--claim-next` still claims when
-  part of the batch closed — the claim commits inside the batch's own
-  transaction and a sibling's refusal does not roll it back — so the summary
-  names the claimed id rather than leaving it silently assigned.
-
-- **`bd query` no longer silently stops at 50 rows when its output is piped**
-  ([#6229](https://github.com/gastownhall/beads/issues/6229)). `bd list` has
-  treated piped stdout as unlimited since GH#4094, but `bd query` read its
-  `--limit` default of 50 straight through, so `bd query '...' | consumer`
-  dropped every row past 50 with no hint. An unflagged `bd query` now resolves
-  through the same policy as `bd list`: an explicit `--limit` wins, piped
-  stdout is unlimited, agent mode on a terminal gets 20, and a terminal gets 50.
-
-## [1.3.1] - 2026-09-16
-
-### Changed
-
-- **`bd dolt status --json` changes shape on a proxied workspace**
-  ([#6580](https://github.com/gastownhall/beads/pull/6580)). It now emits
-  `{"mode": "proxied-server", "root": ..., "running": <proxy up>, "proxy_pid":
-  ..., "proxy_port": ..., "backend_managed": ..., "backend_running": ...,
-  "backend_pid": ..., "backend_port": ..., "backend_endpoint": ...,
-  "idle_timeout": ...}` instead of the always-false `{"running": false, "pid":
-  0, "port": 0}` — `pid` and `port` are gone, replaced by the `proxy_*` and
-  `backend_*` pairs. `running` no longer reports a bd-managed dolt PID file; it
-  describes the proxy, the endpoint every bd command connects through, so it is
-  now usually true where it used to be always false. `backend_managed` is false
-  on external proxied topologies, where the dolt server is not bd's process to
-  report on and `backend_endpoint` names it instead. Anything parsing the old
-  payload changes behaviour on upgrade. Direct-server, shared, embedded and
-  externally-managed workspaces keep the output they had.
-
-- **`bd config set <dotted.key>` deletes a flat top-level key of the same
-  literal name** ([#6578](https://github.com/gastownhall/beads/pull/6578)).
-  Dotted keys are now written as a nested mapping (see **Fixed** below for why),
-  and where the file already carried the flat spelling — a top-level key whose
-  *name* contains the dot, such as `dolt.host: "10.0.0.1"` — that entry is
-  removed and the value re-emitted under `dolt:`. Only the key being written is
-  touched; other dotted keys, including ones bd did not write, are left exactly
-  as they are.
-
-  `.beads/config.yaml` is not exclusively bd's, so this can be visible outside
-  bd: an external tool that both writes *and* reads flat dotted keys there will
-  stop seeing any value bd migrates this way. Any dotted key bd stores in
-  `config.yaml` rather than the database can collide; in practice that means
-  `dolt.*`, `export.auto`, and `backup.enabled`. If the other writer then
-  re-adds its flat key, the file carries both spellings and bd's own readers
-  disagree — Viper-backed reads (`bd config get`, and the `dolt.auto-start`
-  lookup on the store-open path) return the **flat** value, while
-  `GetStringFromDir` returns the **nested** one, so a `bd config set` can be
-  shadowed by a stale flat entry. Tracked as
-  [#6594](https://github.com/gastownhall/beads/issues/6594). Until that lands,
-  in a workspace whose config another tool maintains, let that tool own its
-  keys, or check `.beads/config.yaml` for a duplicated key after running
-  `bd config set`.
-
-- **Two `bd config set` writes that used to exit 0 now exit 1**
-  ([#6578](https://github.com/gastownhall/beads/pull/6578)), because both wrote
-  a value no reader could see: setting a dotted key under a parent that already
-  holds a scalar (`sync: enabled`, then `bd config set sync.remote`), and
-  setting one in a file whose top level is not a mapping. A script that
-  tolerated the old exit 0 now has to handle the failure.
+- **`dolt.auto-commit=batch` and `off` now take effect on a proxied-server
+  workspace, and `bd dolt commit` works there** ([#6499](https://github.com/gastownhall/beads/pull/6499),
+  [#4995](https://github.com/gastownhall/beads/issues/4995)). Every proxied write used to mint a Dolt history commit
+  whatever `dolt.auto-commit` said, and `bd dolt commit` was refused with
+  `proxy.dolt_commit.unsupported`. Under `batch`/`off` a proxied write now
+  lands in the server's working set without advancing Dolt history, and
+  `bd dolt commit` is the flush point, as on the direct route. Commands that
+  are explicit commit points (`bd batch`, `bd mol bond`/`pour`/`squash`,
+  `bd mol wisp create`, and the wisp half of `bd mol burn`) still commit, and
+  `bd serve` writes still commit per write. `on`, the default, is unchanged.
+  **Behaviour change:** a proxied workspace that set `batch` or `off` and was
+  getting per-write commits anyway now accumulates uncommitted changes until
+  `bd dolt commit`, and `dolt log`, `dolt push` and backups do not see them
+  before that. `bd vc commit`'s proxied refusal now points at `bd dolt commit`.
 
 - **`bd ready` and `bd list --ready` now return issues whose custom status is in
   the `active` category** ([#5918](https://github.com/gastownhall/beads/pull/5918),
@@ -409,25 +281,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`bd dolt start` no longer puts a second sql-server over a proxied
-  workspace's data directory.** On a proxied-server workspace the default root
-  IS `.beads/dolt`, and `bd dolt start` knew nothing about proxied mode: with
-  the proxy quiesced it launched an unsupervised `dolt sql-server` directly
-  over that root, after which ordinary bd commands failed (`invalid
-  connection`) because the relaunched proxy found a foreign server on its
-  port; with the proxy live it instead adopted the proxy's own dolt child into
-  bd's classic PID/port records, leaving two managers for one process. It is
-  now a typed refusal with code `proxy.dolt_start.conflict`. The proxy owns
-  its backend's lifecycle — it starts on demand and `bd dolt stop` shuts it
-  down. Direct-server and embedded workspaces are unaffected.
+- **An explicit `BEADS_DIR` is authoritative during workspace discovery.**
+  When `BEADS_DIR` named a directory without project files yet (missing,
+  empty, or not initialized), discovery ignored it and walked up from the
+  current directory instead, then rebound `BEADS_DIR` to whatever ancestor
+  workspace it found. `bd init` refused with "already initialized" because of
+  the parent workspace, and data commands such as `bd create` and `bd list`
+  read and wrote the parent's store. Discovery now reports no workspace for
+  such a `BEADS_DIR`, so `bd init` initializes the named directory and other
+  commands fail with "no beads database found". `bd import`/`bd setup` and
+  `bd bootstrap` target the named directory when they create a workspace.
+  Behaviour with `BEADS_DIR` unset is unchanged. **Behaviour change:** a
+  `BEADS_DIR` that points at a project root rather than its `.beads`
+  directory (for example `BEADS_DIR=$repo` instead of `BEADS_DIR=$repo/.beads`),
+  or at a `.beads` that does not exist yet, used to work by accident because
+  discovery walked up to the nearest workspace; it now fails with "no beads
+  database found". Point `BEADS_DIR` at the `.beads` directory itself.
+  ([#6938](https://github.com/gastownhall/beads/pull/6938))
 
-- **`bd dolt status` tells the truth on a proxied workspace.** It read the
-  classic PID file, which proxied mode never writes, and so reported `Dolt
-  server: not running` while the proxy was serving CRUD — the wrong answer
-  that sent operators to `bd dolt start` in the first place. It now reads the
-  proxy's own records and reports the proxy and its dolt backend separately,
-  without starting either. The `--json` payload changes shape to carry that —
-  see **Changed** above before parsing it.
+- **A proxied workspace's proxy retires when its Dolt backend exits
+  cleanly.** The proxy noticed its `dolt sql-server` child exiting only when
+  the exit status was non-zero. A backend that shut down gracefully (for
+  example on SIGTERM) left the proxy up and adoptable in front of a dead store:
+  with `--proxied-server-idle-timeout 0` it never went away, `bd dolt status`
+  called it running, and every command failed until `bd dolt stop`. The proxy
+  now retires on any backend exit, as it already did on a crash, so the next bd
+  command (including `bd ping`) starts a fresh proxy and backend. `bd dolt
+  status` no longer reports a proxy whose managed backend is gone as running:
+  the text says "not serving" and the JSON reports `running: false` (with
+  `proxy_pid` still set), including for a stranded proxy started by an older
+  bd. ([#6937](https://github.com/gastownhall/beads/pull/6937))
+
+- **`bd show --watch` works under `--proxied-server`.** It was refused with
+  `proxy.watch.unsupported` although the provider can answer the poll the way
+  `bd list --watch` already does, so every proxied workspace — the default
+  transport for managed-local setups — had no way to watch a bead. The proxied
+  route now shares the direct route's loop: render once, re-read every 2s,
+  redraw only when the issue's status or `updated_at` changes, stop cleanly on
+  Ctrl+C/SIGTERM, and require exactly one id. Each poll opens its own short
+  unit of work, so a long watch never pins a transaction, and a poll that
+  fails (the issue was deleted, the backend blipped) keeps the last render
+  without printing, as on the direct route. On both routes a watch whose id
+  cannot be found now exits 1 instead of 0 ([#6933](https://github.com/gastownhall/beads/pull/6933)).
+
+- **A server-mode workspace with an empty `.beads/dolt` is no longer refused
+  as legacy**
+  ([#5682](https://github.com/gastownhall/beads/issues/5682),
+  [#6935](https://github.com/gastownhall/beads/pull/6935)). bd creates `.beads/dolt` on use even when the data lives on an
+  external Dolt server, and leaves it empty. When the gitignored
+  `.local_version` witness was missing — after a fresh checkout, or when a
+  provisioner created the empty root before `bd init --server --external` —
+  the legacy-upgrade guard refused every command, `bd init` included, as a
+  "legacy Dolt server workspace", and no bd command could repair it. An empty
+  root holds nothing a legacy release could have left, so the guard now admits
+  it: `bd init` writes the witness, and an existing workspace in that state
+  re-seeds it on the next command. A pre-1.0 witness, or a `.beads/dolt` that
+  holds anything, is still refused.
+
+- **`bd types` now lists exactly the types `bd create --type` accepts**
+  ([#6934](https://github.com/gastownhall/beads/pull/6934)). The two resolved
+  the type set through different code and could disagree: a server-mode
+  workspace's `bd types` dropped `.beads/config.yaml` `types.custom` entries
+  once the database had any custom type, although create accepts them; in
+  proxied mode `bd config set storage-class.<type>` checked `config.yaml` alone
+  and refused custom types registered in the database; and the built-in system
+  types `message`, `molecule`, `gate` and `event` were never listed. Every
+  mode now composes custom types by one rule (the `custom_types` table, else
+  the `types.custom` config row, always unioned with `config.yaml`). `bd types`
+  gains a "System types" section, and `bd types --json` an additive
+  `system_types` field; `core_types` and `custom_types` are unchanged. A
+  failure to read the custom types now fails `bd types`, `bd create --graph`
+  and `bd config set storage-class.*` instead of being silently treated as "no
+  custom types".
+
+- **`bd sql` no longer drops the rows of CTE queries or CALL result sets**
+  ([#6932](https://github.com/gastownhall/beads/pull/6932)). In proxied-server
+  mode, `WITH name(cols) AS (...) SELECT ...` and `WITH RECURSIVE ...` queries
+  were misread as writes and printed `OK, 0 rows affected` with no error; they
+  now return their rows. Statements are now classified with the Dolt SQL
+  parser (shared by the proxied and direct paths): reads return rows, plain
+  writes (including CTE-prefixed `UPDATE`/`DELETE`) commit and report
+  `rows_affected`, and anything that may both write and return rows (`CALL`,
+  `EXPLAIN ANALYZE` of a write, `RETURNING`) or that the parser cannot
+  classify is committed and prints whatever rows it returns, so
+  `CALL DOLT_BRANCH(...)`-style result sets are rendered instead of discarded.
+  Visible changes for scripts: in direct server mode a multi-statement write,
+  or a single write statement the parser cannot classify, now prints `OK` /
+  `{"status":"ok"}` (as proxied mode already did) instead of
+  `OK, N rows affected` / `{"rows_affected":N}`; and `--readonly` now refuses
+  statements it cannot parse (for example `PRAGMA`) instead of treating them
+  as reads.
+
+- **Unblocking two blockers of one dependent at the same time no longer leaves
+  the dependent stuck as blocked** ([#6716](https://github.com/gastownhall/beads/issues/6716); [#6719](https://github.com/gastownhall/beads/pull/6719), [#6942](https://github.com/gastownhall/beads/pull/6942)).
+  Closing both blockers in parallel (formula fan-in with parallel workers), or
+  a close racing a `bd dep remove` or a delete of the other, could leave the
+  dependent `is_blocked=1` and missing from `bd ready` until
+  `bd recompute-blocked`. A write that takes a blocker away (a close, an update
+  to an inactive status, a dependency removal, a delete) now rechecks the
+  dependents it recomputed once its transaction has committed. This covers the
+  Dolt store write transactions, every write the proxied-server (uow/domain-db)
+  route serves — under `--proxied-server`, the default topology, that is
+  `bd close` (single and batch), `bd update --status`, `bd dep remove`,
+  `bd delete`, `bd batch` and `bd serve` — `RunInTransaction` (`bd batch`
+  direct, `bd cook`, `bd mol squash`/`burn`, and SDK callers that close or
+  update inside a transaction), the wisp close, update and delete writers, and
+  the legacy dependency removal behind `bd duplicates --merge`. Demote-to-wisp
+  moves a row between planes without taking a blocker away and is unchanged.
+
+- **`bd close` now exits non-zero when any issue in a batch fails to close**
+  ([#6648](https://github.com/gastownhall/beads/issues/6648); [#6740](https://github.com/gastownhall/beads/pull/6740), [#6771](https://github.com/gastownhall/beads/pull/6771)). A batch with one
+  refused id used to exit 0 as long as another id closed, so scripts could not
+  tell that part of the batch was left open. The closable ids still close, the
+  refusals are still printed, and a final `Error: N of M issues failed to close`
+  line is added; ids that were already closed still count as success. Both the
+  direct and proxied-server routes behave this way for ids the close policy or
+  the engine refuses. (An id that cannot be *resolved* at all is unchanged and
+  still differs by route: the direct route aborts the whole command before any
+  close runs, while the proxied route refuses that argument and closes the
+  rest.) In `--json` mode the summary is instead a compact JSON line on stderr
+  naming the failed ids, matching `bd update`'s partial-failure report, while
+  stdout keeps the usual closed-issues array. Each `failed[]` entry carries the
+  refusal as the engine worded it, identically on both routes; the `--force`
+  hint and the route's own framing stay on the human-readable stderr line, which
+  is unchanged. `--claim-next` still claims when
+  part of the batch closed — the claim commits inside the batch's own
+  transaction and a sibling's refusal does not roll it back — so the summary
+  names the claimed id rather than leaving it silently assigned.
+
+- **`bd query` no longer silently stops at 50 rows when its output is piped**
+  ([#6229](https://github.com/gastownhall/beads/issues/6229), [#6744](https://github.com/gastownhall/beads/pull/6744)). `bd list` has
+  treated piped stdout as unlimited since GH#4094, but `bd query` read its
+  `--limit` default of 50 straight through, so `bd query '...' | consumer`
+  dropped every row past 50 with no hint. An unflagged `bd query` now resolves
+  through the same policy as `bd list`: an explicit `--limit` wins, piped
+  stdout is unlimited, agent mode on a terminal gets 20, and a terminal gets 50.
+
+- **Deleting or purging a wisp no longer leaves orphan rows behind on stores
+  without the wisp foreign keys** ([#6563](https://github.com/gastownhall/beads/pull/6563), [#6627](https://github.com/gastownhall/beads/pull/6627), [#6487](https://github.com/gastownhall/beads/issues/6487)).
+  On a store whose `wisp_dependencies` and wisp auxiliary tables lack the
+  migration-0047 FK constraints, every wisp delete (including `bd purge`,
+  `bd mol burn` and wisp GC) left its `wisp_dependencies` edges on both sides
+  and its `wisp_labels`, `wisp_events`, `wisp_comments` and
+  `wisp_child_counters` rows in place, which showed up as dangling parent
+  references and store bloat. The delete paths now remove them. This is a
+  forward fix: orphans already in a store are not cleaned up.
+
+- **A clone missing its local `events`, `bd_events_journal` or `bd_events_seq`
+  table recreates it on open** ([#6547](https://github.com/gastownhall/beads/pull/6547)). Those tables are dolt-ignored, so
+  a fresh clone can arrive at the latest schema version without them, and bd
+  then treated the schema as complete and never created them. Their absence
+  now makes the migration runner replay the migrations that create them, from
+  each table's own floor rather than from zero.
 
 - **The smart migrate gate no longer auto-migrates a clone whose data is behind
   the remote** ([#6575](https://github.com/gastownhall/beads/issues/6575)). The
@@ -529,23 +534,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --force` / `BD_ALLOW_REMOTE_MIGRATE=1` are still consulted before the gate and
   still override it.
 
-- **A dotted config key now round-trips: what `bd config set` writes,
-  `bd config get` and bd's own readers find**
-  ([#6578](https://github.com/gastownhall/beads/pull/6578), bd-zj95). Setting a
-  key like `sync.remote` or `dolt.host` into a `config.yaml` with no matching
-  section appended a key whose *name* contained the dot — a top-level
-  `sync.remote: "..."` — instead of nesting it under `sync:`. Viper finds a key
-  spelled that way; the direct reader `GetStringFromDir` splits on the dot and
-  walks nested mappings, so it does not. The value was set and invisible at the
-  same time depending on which reader asked, and `bd init --remote` in a fresh
-  workspace was the ordinary way in: the remote was recorded and then not found.
-  Dotted keys are written nested now, and `bd config unset` removes the nested
-  form — it only ever matched the flat spelling, so unsetting
-  `sync.remote` silently left the remote live. Keys the write does not own,
-  including dotted ones somebody else put there, are left exactly as they are.
-  Two consequences of the nested write — the flat-key migration and two new
-  failure exits — are under **Changed** above.
-
 - **`bd list --status <s> --ready` honors `--status`**
   ([#5924](https://github.com/gastownhall/beads/pull/5924),
   [#5832](https://github.com/gastownhall/beads/issues/5832)). Combining the two
@@ -642,6 +630,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server that accepts TCP and then stalls cannot block for the caller's whole
   context. Durable rejections and an unresolvable hostname still fail without
   retrying. See **Changed** for the latency this adds against a dead endpoint.
+
+## [1.3.1-rc.1] - 2026-09-16
+
+### Changed
+
+- **`bd dolt status --json` changes shape on a proxied workspace**
+  ([#6580](https://github.com/gastownhall/beads/pull/6580)). It now emits
+  `{"mode": "proxied-server", "root": ..., "running": <proxy up>, "proxy_pid":
+  ..., "proxy_port": ..., "backend_managed": ..., "backend_running": ...,
+  "backend_pid": ..., "backend_port": ..., "backend_endpoint": ...,
+  "idle_timeout": ...}` instead of the always-false `{"running": false, "pid":
+  0, "port": 0}` — `pid` and `port` are gone, replaced by the `proxy_*` and
+  `backend_*` pairs. `running` no longer reports a bd-managed dolt PID file; it
+  describes the proxy, the endpoint every bd command connects through, so it is
+  now usually true where it used to be always false. `backend_managed` is false
+  on external proxied topologies, where the dolt server is not bd's process to
+  report on and `backend_endpoint` names it instead. Anything parsing the old
+  payload changes behaviour on upgrade. Direct-server, shared, embedded and
+  externally-managed workspaces keep the output they had.
+
+- **`bd config set <dotted.key>` deletes a flat top-level key of the same
+  literal name** ([#6578](https://github.com/gastownhall/beads/pull/6578)).
+  Dotted keys are now written as a nested mapping (see **Fixed** below for why),
+  and where the file already carried the flat spelling — a top-level key whose
+  *name* contains the dot, such as `dolt.host: "10.0.0.1"` — that entry is
+  removed and the value re-emitted under `dolt:`. Only the key being written is
+  touched; other dotted keys, including ones bd did not write, are left exactly
+  as they are.
+
+  `.beads/config.yaml` is not exclusively bd's, so this can be visible outside
+  bd: an external tool that both writes *and* reads flat dotted keys there will
+  stop seeing any value bd migrates this way. Any dotted key bd stores in
+  `config.yaml` rather than the database can collide; in practice that means
+  `dolt.*`, `export.auto`, and `backup.enabled`. If the other writer then
+  re-adds its flat key, the file carries both spellings and bd's own readers
+  disagree — Viper-backed reads (`bd config get`, and the `dolt.auto-start`
+  lookup on the store-open path) return the **flat** value, while
+  `GetStringFromDir` returns the **nested** one, so a `bd config set` can be
+  shadowed by a stale flat entry. Tracked as
+  [#6594](https://github.com/gastownhall/beads/issues/6594). Until that lands,
+  in a workspace whose config another tool maintains, let that tool own its
+  keys, or check `.beads/config.yaml` for a duplicated key after running
+  `bd config set`.
+
+- **Two `bd config set` writes that used to exit 0 now exit 1**
+  ([#6578](https://github.com/gastownhall/beads/pull/6578)), because both wrote
+  a value no reader could see: setting a dotted key under a parent that already
+  holds a scalar (`sync: enabled`, then `bd config set sync.remote`), and
+  setting one in a file whose top level is not a mapping. A script that
+  tolerated the old exit 0 now has to handle the failure.
+
+### Fixed
+
+- **`bd dolt start` no longer puts a second sql-server over a proxied
+  workspace's data directory.** On a proxied-server workspace the default root
+  IS `.beads/dolt`, and `bd dolt start` knew nothing about proxied mode: with
+  the proxy quiesced it launched an unsupervised `dolt sql-server` directly
+  over that root, after which ordinary bd commands failed (`invalid
+  connection`) because the relaunched proxy found a foreign server on its
+  port; with the proxy live it instead adopted the proxy's own dolt child into
+  bd's classic PID/port records, leaving two managers for one process. It is
+  now a typed refusal with code `proxy.dolt_start.conflict`. The proxy owns
+  its backend's lifecycle — it starts on demand and `bd dolt stop` shuts it
+  down. Direct-server and embedded workspaces are unaffected.
+
+- **`bd dolt status` tells the truth on a proxied workspace.** It read the
+  classic PID file, which proxied mode never writes, and so reported `Dolt
+  server: not running` while the proxy was serving CRUD — the wrong answer
+  that sent operators to `bd dolt start` in the first place. It now reads the
+  proxy's own records and reports the proxy and its dolt backend separately,
+  without starting either. The `--json` payload changes shape to carry that —
+  see **Changed** above before parsing it.
+
+- **A dotted config key now round-trips: what `bd config set` writes,
+  `bd config get` and bd's own readers find**
+  ([#6578](https://github.com/gastownhall/beads/pull/6578), bd-zj95). Setting a
+  key like `sync.remote` or `dolt.host` into a `config.yaml` with no matching
+  section appended a key whose *name* contained the dot — a top-level
+  `sync.remote: "..."` — instead of nesting it under `sync:`. Viper finds a key
+  spelled that way; the direct reader `GetStringFromDir` splits on the dot and
+  walks nested mappings, so it does not. The value was set and invisible at the
+  same time depending on which reader asked, and `bd init --remote` in a fresh
+  workspace was the ordinary way in: the remote was recorded and then not found.
+  Dotted keys are written nested now, and `bd config unset` removes the nested
+  form — it only ever matched the flat spelling, so unsetting
+  `sync.remote` silently left the remote live. Keys the write does not own,
+  including dotted ones somebody else put there, are left exactly as they are.
+  Two consequences of the nested write — the flat-key migration and two new
+  failure exits — are under **Changed** above.
 
 ## [1.3.0] - 2026-09-15
 
