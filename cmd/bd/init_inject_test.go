@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/templates/agents"
 )
 
 // TestInjectBdBlock covers the four required acceptance scenarios:
@@ -210,6 +212,30 @@ func TestBdInjectBlockNoRetiredMemoryRule(t *testing.T) {
 		if strings.Contains(strings.ToLower(text), "not use memory.md") {
 			t.Errorf("%s still carries the retired rule 'do NOT use MEMORY.md files'", name)
 		}
+	}
+}
+
+// memoryRuleLine returns the first Rules bullet that teaches `bd remember`.
+func memoryRuleLine(t *testing.T, name, text string) string {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "- ") && strings.Contains(line, "bd remember") &&
+			strings.Contains(line, "memory") {
+			return strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("%s carries no Rules bullet teaching bd remember", name)
+	return ""
+}
+
+// TestBdInjectBlockMemoryLineMatchesTemplate pins bda-r5wb: the block written
+// by --inject-agents-md must carry the same memory line as the minimal
+// template it mirrors, so the two cannot drift apart again.
+func TestBdInjectBlockMemoryLineMatchesTemplate(t *testing.T) {
+	inject := memoryRuleLine(t, "init-inject block", bdInjectBlock())
+	tmpl := memoryRuleLine(t, "beads-section-minimal template", agents.RenderSection(agents.ProfileMinimal))
+	if inject != tmpl {
+		t.Errorf("memory line diverges:\n inject:   %q\n template: %q", inject, tmpl)
 	}
 }
 

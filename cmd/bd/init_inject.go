@@ -52,7 +52,7 @@ bd remember "<fact>" --key <k>  # Store persistent knowledge
 
 - Use ` + "`bd`" + ` for ALL task tracking — never TodoWrite / TaskCreate / markdown TODO
 - Run ` + "`bd prime`" + ` at session start for full command reference
-- Use ` + "`bd remember`" + ` for tracker-scoped persistent knowledge; harness-managed memory (MEMORY.md, memory dirs) is a separate mechanism and stays in use
+- Use ` + "`bd remember`" + ` for durable project facts — not per-tool memory files, which fragment across accounts; keep per-operator preferences in your harness's own memory
 - Every change must reference the bd issue ID it addresses
 - Close issues only with a RESULT note citing the commit hash
 
