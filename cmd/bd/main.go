@@ -558,7 +558,11 @@ func loadEnvironment() {
 	if beadsDir := beads.FindBeadsDir(); beadsDir != "" {
 		loadBeadsEnvFile(beadsDir)
 		// Non-fatal warning if .beads/ directory has overly permissive access.
-		config.CheckBeadsDirPermissions(beadsDir)
+		// Skipped for JSON output so `bd ... --json 2>&1` stays parseable;
+		// jsonOutput is already resolved from --json/--format/config here.
+		if !jsonOutput {
+			config.CheckBeadsDirPermissions(beadsDir)
+		}
 	}
 }
 

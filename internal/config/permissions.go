@@ -22,7 +22,12 @@ func EnsureBeadsDir(path string) error {
 
 // CheckBeadsDirPermissions warns to stderr if the .beads directory has
 // group or world-accessible permissions. The check is non-fatal.
+// Setting BD_NO_PERMISSIONS_WARNING=1 silences the warning unconditionally
+// (for deliberately group-writable shared trackers).
 func CheckBeadsDirPermissions(path string) {
+	if os.Getenv("BD_NO_PERMISSIONS_WARNING") == "1" {
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return // directory doesn't exist yet

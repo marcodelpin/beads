@@ -326,3 +326,28 @@ type chmodErrorHandle struct {
 func (h *chmodErrorHandle) Chmod(os.FileMode) error {
 	return h.err
 }
+
+func TestCheckBeadsDirPermissions_EnvVarSilences(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(dir, 0775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0775); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BD_NO_PERMISSIONS_WARNING", "1")
+
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	CheckBeadsDirPermissions(dir)
+
+	w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	if buf.Len() != 0 {
+		t.Errorf("expected no warning with BD_NO_PERMISSIONS_WARNING=1, got: %s", buf.String())
+	}
+}
