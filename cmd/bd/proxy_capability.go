@@ -166,8 +166,10 @@ var (
 	// is threading it through the UOW reader the way `list` already does, so
 	// the refusal itself is the gap.
 	maxRowsRefusal = refused("proxy.max_rows.unsupported", "--max-rows / BEADS_MAX_ROWS is not supported in proxied-server mode", ProxyReasonUnimplemented, trackLongTail)
-	// `list --watch` is routed, so watching is possible over the provider;
-	// nothing else has been wired to it.
+	// The mode-wide default for a --watch that has not been wired to the
+	// provider. Both commands that register the flag (`list`, `show`) poll the
+	// provider and are honored per-command below, so this refuses only a
+	// future --watch until someone routes it.
 	watchRefusal = refused("proxy.watch.unsupported", "watch mode not supported in proxied-server mode", ProxyReasonUnimplemented, trackLongTail)
 )
 
@@ -197,7 +199,7 @@ var proxyCapabilityMatrix = map[ProxyMode]map[ProxyCapability]proxyCapabilityRul
 }
 
 var proxyCommandCapabilities = map[string]map[ProxyMode]map[ProxyCapability]proxyCapabilityRule{
-	"show":            {ProxyModeProxied: {ProxyCapWatch: watchRefusal}},
+	"show":            {ProxyModeProxied: {ProxyCapWatch: honored()}},
 	"list":            {ProxyModeProxied: {ProxyCapWatch: honored(), ProxyCapMaxRows: honored(), ProxyCapRepo: notApplicable()}},
 	"dep tree":        {ProxyModeProxied: {ProxyCapMaxRows: honored()}},
 	"ready":           {ProxyModeProxied: {ProxyCapMaxRows: maxRowsRefusal}},
@@ -304,11 +306,6 @@ func validateProxyCapabilitiesBeforeProvider(cmd *cobra.Command) error {
 	name := cmd.Name()
 	if name == "create" && cmd.Flags().Changed("repo") {
 		return HandleProxyCapabilityError(AssertProxyCapability(ProxyModeProxied, ProxyCapRepo))
-	}
-	if name == "show" {
-		if watch, _ := cmd.Flags().GetBool("watch"); watch {
-			return HandleProxyCapabilityError(AssertProxyCommandCapability("show", ProxyModeProxied, ProxyCapWatch))
-		}
 	}
 	if name == "ready" {
 		maxRows, _, err := resolveMaxRows(cmd)

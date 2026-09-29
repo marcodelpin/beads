@@ -126,7 +126,7 @@ func TestProxyCapabilityCommandRows(t *testing.T) {
 		{"ready", "--max-rows", ProxyOutcomeRefused},
 		{"graph", "--max-rows", ProxyOutcomeRefused},
 		{"find-duplicates", "--max-rows", ProxyOutcomeRefused},
-		{"show", "--watch", ProxyOutcomeRefused},
+		{"show", "--watch", ProxyOutcomeHonored},
 		{"list", "--watch", ProxyOutcomeHonored},
 	}
 	for _, topology := range []ProxyTopology{ProxyTopologyManagedLocal, ProxyTopologyExternalTCP, ProxyTopologyExternalUnix} {
@@ -290,17 +290,32 @@ func TestProxyMaintenanceRefusalLeavesFilesUntouched(t *testing.T) {
 	}
 }
 
+// newProxyFrontDoorCommand builds `bd <use> --<flag>` under a real root. The
+// root matters: the front door keys on a command's path below its root, so a
+// parentless command has no path and matches no rule — which is how a test
+// tree can report success for a refusal that never fired.
+func newProxyFrontDoorCommand(t *testing.T, use, flag string) *cobra.Command {
+	t.Helper()
+	root := &cobra.Command{Use: "bd"}
+	cmd := &cobra.Command{Use: use}
+	cmd.Flags().Bool(flag, false, "")
+	root.AddCommand(cmd)
+	if err := cmd.Flags().Set(flag, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if got := commandRegistryPath(cmd); got != use {
+		t.Fatalf("test command path = %q, want %q", got, use)
+	}
+	return cmd
+}
+
 func TestProxyCapabilityRefusalFrontDoorTextBeforeProvider(t *testing.T) {
 	oldJSON := jsonOutput
 	jsonOutput = false
 	t.Cleanup(func() { jsonOutput = oldJSON })
-	cmd := &cobra.Command{Use: "show"}
-	cmd.Flags().Bool("watch", false, "")
-	if err := cmd.Flags().Set("watch", "true"); err != nil {
-		t.Fatal(err)
-	}
+	cmd := newProxyFrontDoorCommand(t, "create", "repo")
 	got := captureStderr(t, func() { _ = validateProxyCapabilitiesBeforeProvider(cmd) })
-	if !strings.Contains(got, "watch mode not supported in proxied-server mode") {
+	if !strings.Contains(got, "--repo is not supported with --proxied-server") {
 		t.Fatalf("text refusal = %q", got)
 	}
 }
@@ -309,14 +324,12 @@ func TestProxyCapabilityRefusalFrontDoorJSONIncludesCode(t *testing.T) {
 	oldJSON := jsonOutput
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = oldJSON })
-	cmd := &cobra.Command{Use: "show"}
-	cmd.Flags().Bool("watch", false, "")
-	_ = cmd.Flags().Set("watch", "true")
+	cmd := newProxyFrontDoorCommand(t, "create", "repo")
 	out := captureStdout(t, func() error {
 		_ = validateProxyCapabilitiesBeforeProvider(cmd)
 		return nil
 	})
-	if !strings.Contains(out, `"code": "proxy.watch.unsupported"`) {
+	if !strings.Contains(out, `"code": "proxy.repo.unsupported"`) {
 		t.Fatalf("JSON refusal = %q", out)
 	}
 }
@@ -334,6 +347,27 @@ func TestProxyCapabilityRefusalDoesNotNeedProvider(t *testing.T) {
 	})
 	if !strings.Contains(out, `"code": "proxy.repo.unsupported"`) {
 		t.Fatalf("refusal = %q", out)
+	}
+}
+
+// TestProxyFrontDoorAdmitsShowWatch pins that `bd show --watch` reaches the
+// proxied provider. It used to be refused here with proxy.watch.unsupported,
+// although the provider can answer the poll exactly as `list --watch` does.
+func TestProxyFrontDoorAdmitsShowWatch(t *testing.T) {
+	oldJSON := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	cmd := newProxyFrontDoorCommand(t, "show", "watch")
+	var err error
+	out := captureStdout(t, func() error {
+		err = validateProxyCapabilitiesBeforeProvider(cmd)
+		return nil
+	})
+	if err != nil || strings.Contains(out, "proxy.watch.unsupported") {
+		t.Fatalf("front door refused show --watch: err=%v out=%q", err, out)
+	}
+	if err := AssertProxyCommandCapability("show", ProxyModeProxied, ProxyCapWatch); err != nil {
+		t.Fatalf("show --watch capability refused: %v", err)
 	}
 }
 
