@@ -312,10 +312,10 @@ var capabilityProbes = []probe{
 		direct: expectation{
 			outcome: outcomeHonored, reason: reasonNA,
 		},
+		// Routed on every proxied topology by runDoltCommitProxiedServer
+		// (#6499): it is the flush point dolt.auto-commit=batch/off defers to.
 		proxied: expectation{
-			outcome: outcomeRefusedTyped, code: "proxy.dolt_commit.unsupported",
-			substr: "dolt commit is not supported in proxied-server mode",
-			reason: reasonUnimplemented,
+			outcome: outcomeHonored, reason: reasonNA,
 		},
 	},
 	{
