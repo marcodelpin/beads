@@ -221,6 +221,31 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.3.1-rc.2",
+		Date:    "2026-09-29",
+		Changes: []string{
+			"RC: second candidate for the 1.3.1 patch line. Still no schema migration, so upgrading from 1.3.0 or 1.3.1-rc.1 is a binary swap. The 1.3.1-rc.1 entry below still applies.",
+			"NEW: on a proxied-server workspace whose Dolt server bd runs (managed-local, the default), 'bd backup init/sync/status/restore/remove' now work, and 'backup.enabled=true' turns on auto-backup (default stays OFF). On an external or team-server proxied topology the family stays refused with 'proxy.backup.unsupported' and \"reason\": \"design\". Proxied refusals now carry a 'reason' field ('design' or 'unimplemented'). A per-workspace '.beads/backup.lock' serializes backups: 'bd backup sync' fails after 5s if another backup is running.",
+			"NEW: 'bd purge --wisps-plane --older-than <age> --force [--limit N] --json' can replace a raw DELETE FROM wisps retention step. With --limit it purges oldest-closed first and reports 'remaining' and 'has_more'; loop while has_more is true.",
+			"CHANGE: 'bd purge' ALWAYS keeps a closed bead that a not-done bead depends on through parent-child, tracks or blocks, and reports the count as 'live_dependent_skipped'. There is no flag to disable it.",
+			"CHANGE: '--older-than' on 'bd purge' and 'bd prune' takes hour values exactly: '12h' no longer rounds up to a day and '36h' no longer floors to one, so 'bd prune --older-than 12h' now deletes rows closed 12-24 hours ago. Day values (7, 7d, 2w) are unchanged; a value too large to represent is refused.",
+			"CHANGE: 'bd show --watch <id>' works under --proxied-server, and on both routes a watch whose id cannot be found exits 1 instead of 0.",
+			"CHANGE: 'bd sql' classifies statements with the SQL parser. Proxied CTE queries ('WITH ... AS (...) SELECT') return their rows instead of 'OK, 0 rows affected', and CALL result sets are printed. In direct server mode a multi-statement write, or a write the parser cannot classify, prints 'OK' / {\"status\":\"ok\"} instead of 'OK, N rows affected' / {\"rows_affected\":N}. 'bd sql --readonly' refuses statements it cannot parse (e.g. PRAGMA).",
+			"CHANGE: 'bd types' lists exactly what 'bd create --type' accepts, with a new 'System types' section and an additive 'system_types' JSON field. A failure to read custom types now fails 'bd types', 'bd create --graph' and 'bd config set storage-class.*' instead of meaning 'no custom types'.",
+			"CHANGE: an explicit BEADS_DIR is authoritative. Point it at the .beads directory itself: a BEADS_DIR naming a project root, or a .beads that does not exist yet, now fails with 'no beads database found' instead of resolving to the nearest workspace above the current directory. 'bd init' initializes the named directory.",
+			"CHANGE: 'bd close' with several ids exits non-zero when any id fails to close (the rest still close). With --json, a summary naming the failed ids goes to stderr.",
+			"CHANGE: an unflagged piped 'bd query' is no longer capped at 50 rows; it follows the 'bd list' limit policy.",
+			"CHANGE: on a proxied workspace, dolt.auto-commit=batch/off now defers Dolt history commits and 'bd dolt commit' is supported as the flush point. Explicit commit points ('bd batch', 'bd mol bond/pour/squash', 'bd mol wisp create') still commit. The default 'on' is unchanged.",
+			"CHANGE: 'bd ready' and 'bd list --ready' include issues whose custom status is in the 'active' category; 'bd list --status <s> --ready' honors --status; bare 'bd list --wisp-type' is refused (use --include-ephemeral); 'bd doctor' warns about a missing .beads/dolt-server-config.yaml gitignore pattern until 'bd doctor --fix'.",
+			"CHANGE: on a proxied-server workspace or under 'bd serve', opening a store against an unreachable Dolt server retries for up to ~40s before failing, instead of failing at once.",
+			"FIX: two blockers of one dependent removed at the same time (parallel closes, a close racing 'bd dep remove' or a delete) no longer leave the dependent stuck blocked and hidden from 'bd ready' (#6716), on every store route including --proxied-server.",
+			"FIX: a proxy whose Dolt backend exits cleanly now retires, so the next command starts a fresh one; 'bd dolt status' reports it as not serving.",
+			"FIX: a server workspace with an empty .beads/dolt is no longer refused as a legacy workspace; 'bd init' writes the version marker.",
+			"FIX: the smart migrate gate no longer auto-migrates a clone whose data is behind its remote. It stops with 'run bd dolt pull, then retry', and 'bd dolt pull' works from that state.",
+			"FIX: deleting or purging a wisp no longer orphans wisp_dependencies, wisp_labels, wisp_events, wisp_comments or wisp_child_counters rows on stores without the wisp foreign keys (existing orphans are not cleaned). A clone missing its dolt-ignored events tables recreates them on open.",
+		},
+	},
+	{
 		Version: "1.3.1-rc.1",
 		Date:    "2026-09-16",
 		Changes: []string{
