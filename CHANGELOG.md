@@ -393,6 +393,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--json` are unchanged; silence it with `--quiet` or
   `BD_NO_PARTIAL_ID_NOTICE=1`.
 
+- **`bd count` accepts `--has-metadata-key`**
+  ([#6160](https://github.com/gastownhall/beads/issues/6160)), closing the last
+  metadata-filter gap against `bd list`, `bd ready` and `bd search`. A caller
+  counting rows that merely carry a key no longer has to list them and measure
+  the page.
+
 - **`bd count` supports repeatable `--metadata-field key=value` filters**
   ([#6023](https://github.com/gastownhall/beads/issues/6023)), so callers can
   count the same metadata-scoped set `bd list` returns without fetching every
