@@ -589,6 +589,7 @@ go_test(
         "cook_test.go",
         "count_embedded_test.go",
         "count_filter_test.go",
+        "count_include_ephemeral_embedded_test.go",
         "count_proxied_integration_test.go",
         "cpu_profile_test.go",
         "create_atomic_test.go",
