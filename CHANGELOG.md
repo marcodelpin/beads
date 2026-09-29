@@ -110,6 +110,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   up, but it can flip auto-backup on or off for `-C` invocations whose launch
   directory and target differ in remote configuration.
 
+- **`bd show --watch` works under `--proxied-server`.** It was refused with
+  `proxy.watch.unsupported` although the provider can answer the poll the way
+  `bd list --watch` already does, so every proxied workspace — the default
+  transport for managed-local setups — had no way to watch a bead. The proxied
+  route now shares the direct route's loop: render once, re-read every 2s,
+  redraw only when the issue's status or `updated_at` changes, stop cleanly on
+  Ctrl+C/SIGTERM, and require exactly one id. Each poll opens its own short
+  unit of work, so a long watch never pins a transaction, and a poll that
+  fails (the issue was deleted, the backend blipped) keeps the last render
+  without printing, as on the direct route. On both routes a watch whose id
+  cannot be found now exits non-zero instead of 0.
+
 - **Generated git hooks accept uutils coreutils `timeout` as a deadline helper**
   ([#5541](https://github.com/gastownhall/beads/issues/5541)). The managed hook
   section probes `timeout` and `gtimeout` with `--version` and accepted only the
