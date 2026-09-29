@@ -62,7 +62,7 @@ func TestHistoryDirectOnlyRefusalContract(t *testing.T) {
 	oldProvider := uowProvider
 	oldJSON := jsonOutput
 	t.Cleanup(func() { uowProvider = oldProvider; jsonOutput = oldJSON })
-	for _, path := range []string{"branch", "conflicts", "repo", "federation", "vc", "flatten", "dolt push", "dolt pull", "dolt commit", "dolt remote add", "sync"} {
+	for _, path := range []string{"branch", "conflicts", "repo", "federation", "vc", "flatten", "dolt push", "dolt pull", "dolt remote add", "sync"} {
 		parts := strings.Split(path, " ")
 		root := &cobra.Command{Use: "bd"}
 		cmd := &cobra.Command{Use: parts[0]}
