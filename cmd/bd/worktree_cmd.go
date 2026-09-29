@@ -688,12 +688,14 @@ func scrubWorktreeRemovalGitEnvForOS(env []string, goos string) []string {
 	// ScrubRoutingForOS returns a fresh slice, so filtering it in place is safe.
 	result := cleaned[:0]
 	for _, entry := range cleaned {
+		// One shared subprocess key identity: execenv mirrors os/exec's fold, so
+		// this drops exactly the entries a child process would treat as these two
+		// variables -- an independent fold here would diverge from that rule.
+		// ToUpper is not that rule; the two disagree in both directions for
+		// non-ASCII keys on Windows: ToUpper leaves GİT_OPTIONAL_LOCKS unmatched
+		// although Git honors it, and folds GIT_OPTIONAL_LOCKſ onto the literal
+		// although os/exec keeps it distinct.
 		key := worktreeGitEnvKey(entry)
-		// Key identity is the subprocess lookup rule (execenv), not ToUpper.
-		// The two disagree in both directions for non-ASCII keys on Windows:
-		// ToUpper leaves GİT_OPTIONAL_LOCKS unmatched although Git honors it,
-		// and folds GIT_OPTIONAL_LOCKſ onto the literal although os/exec keeps
-		// it distinct.
 		if execenv.KeyEqualForOS(key, "GIT_NO_REPLACE_OBJECTS", goos) ||
 			execenv.KeyEqualForOS(key, "GIT_OPTIONAL_LOCKS", goos) {
 			continue
