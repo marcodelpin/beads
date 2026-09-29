@@ -106,7 +106,14 @@ REGRESSION_TIMEOUT ?= 20m
 # bda-5u7: the GUI-subsystem link (-H=windowsgui, see build target) must key on
 # the build TARGET, not the build HOST. Keying on $(OS) silently shipped a
 # CONSOLE binary on Linux cross-compile (GOOS=windows), regressing the guiflip.
-GOOS_EFFECTIVE := $(shell go env GOOS)
+# bda-e4n6: fall back to the host OS when the go toolchain cannot answer
+# `go env GOOS` (the Windows install-proof CI fixture ships a fake go that
+# only accepts `build`); an explicit GOOS in the environment still wins.
+GOOS_EFFECTIVE := $(or $(GOOS),$(shell go env GOOS 2>/dev/null),$(if $(filter Windows_NT,$(OS)),windows))
+
+# -H=windowsgui keys on the build TARGET (bda-5u7); compiler discovery below
+# keys on the build HOST, since it probes host toolchain binaries (bda-e4n6).
+BD_LDFLAGS = -X main.Build=$(GIT_BUILD)$(if $(filter windows,$(GOOS_EFFECTIVE)), -H=windowsgui)
 
 # Build the bd binary
 # chg-8hnz (marcodelpin/beads fork only): on Windows targets, link as GUI
@@ -120,10 +127,34 @@ GOOS_EFFECTIVE := $(shell go env GOOS)
 # CONSOLE binary named bd.
 build:
 	@echo "Building bd..."
-ifeq ($(GOOS_EFFECTIVE),windows)
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -H=windowsgui" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd
+ifeq ($(OS),Windows_NT)
+	@if [ -n "$$CC" ]; then \
+		echo "Using CC=$$CC"; \
+		go build -tags "$(BUILD_TAGS)" -ldflags="$(BD_LDFLAGS)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd; \
+	elif command -v gcc >/dev/null 2>&1; then \
+		CC=gcc go build -tags "$(BUILD_TAGS)" -ldflags="$(BD_LDFLAGS)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd; \
+	elif command -v clang >/dev/null 2>&1 && clang -dumpmachine 2>/dev/null | grep -qi 'windows.*gnu'; then \
+		CC=clang go build -tags "$(BUILD_TAGS)" -ldflags="$(BD_LDFLAGS)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd; \
+	else \
+		for bin in $(WINDOWS_CGO_BINS); do \
+			if [ -x "$$bin/gcc.exe" ]; then \
+				echo "Using Windows CGO gcc from $$bin"; \
+				PATH="$$bin:$$PATH" CC=gcc go build -tags "$(BUILD_TAGS)" -ldflags="$(BD_LDFLAGS)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd; \
+				exit $$?; \
+			fi; \
+			if [ -x "$$bin/clang.exe" ] && "$$bin/clang.exe" -dumpmachine 2>/dev/null | grep -qi 'windows.*gnu'; then \
+				echo "Using Windows CGO clang from $$bin"; \
+				PATH="$$bin:$$PATH" CC=clang go build -tags "$(BUILD_TAGS)" -ldflags="$(BD_LDFLAGS)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd; \
+				exit $$?; \
+			fi; \
+		done; \
+		echo "ERROR: Windows CGO builds require a GCC-compatible compiler." >&2; \
+		echo "       Install MinGW-w64/MSYS2 gcc or MSYS2 clang/LLVM targeting windows-gnu." >&2; \
+		echo "       Put it on PATH, set CC, or set WINDOWS_CGO_BINS=/path/to/toolchain/bin." >&2; \
+		exit 1; \
+	fi
 else
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="$(BD_LDFLAGS)" -o "$(BD_BUILD_OUTPUT)" ./cmd/bd
 ifeq ($(shell uname),Darwin)
 	@codesign -s - -f "$(BD_BUILD_OUTPUT)" 2>/dev/null || true
 	@echo "Signed bd for macOS"
