@@ -256,6 +256,7 @@ go_test(
         "journal_scope_completeness_test.go",
         "journal_test.go",
         "keyset_search_test.go",
+        "label_rename_test.go",
         "labels_test.go",
         "lease_migration_test.go",
         "lease_test.go",
