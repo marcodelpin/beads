@@ -558,11 +558,7 @@ func loadEnvironment() {
 	if beadsDir := beads.FindBeadsDir(); beadsDir != "" {
 		loadBeadsEnvFile(beadsDir)
 		// Non-fatal warning if .beads/ directory has overly permissive access.
-		// Skipped for JSON output so `bd ... --json 2>&1` stays parseable;
-		// jsonOutput is already resolved from --json/--format/config here.
-		if !jsonOutput {
-			config.CheckBeadsDirPermissions(beadsDir)
-		}
+		noteBeadsDirPermissions(beadsDir)
 	}
 }
 
@@ -747,7 +743,7 @@ func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
 	if err := config.Initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to reinitialize config for selected beads dir: %v\n", err)
 	}
-	config.CheckBeadsDirPermissions(beadsDir)
+	noteBeadsDirPermissions(beadsDir)
 	if err := loadServerModeFromBeadsDir(beadsDir); err != nil {
 		// Warn, don't fatal: this context also serves no-DB commands —
 		// doctor, init, bootstrap, config — which are exactly the repair
@@ -1036,6 +1032,10 @@ var rootCmd = &cobra.Command{
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) (retErr error) {
+		// Emit the .beads permissions warning once, after jsonOutput has
+		// settled on every return path (edt-donk).
+		resetBeadsDirPermissionsWarning()
+		defer flushBeadsDirPermissionsWarning(cmd)
 		if err := clearWorktreeGitRoutingEnv(cmd); err != nil {
 			return err
 		}
