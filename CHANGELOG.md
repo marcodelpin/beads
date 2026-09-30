@@ -530,7 +530,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutation transaction shared by every backend, direct or proxied, and that
   transaction re-verifies `enforce` on its own before committing -- for
   those three, the CLI's pre-check is early feedback, not the only thing
-  standing between an undefined label and the database. `bd label
+  standing between an undefined label and the database. `bd label rename`
+  is judged on its new name only (renaming an undefined label onto a
+  defined one stays allowed, and a defined label's definition moves with
+  it), with the same second check inside its own rename transaction on
+  every backend. `bd label
   propagate` and `bd tag` write through a lower-level path that never
   enters that transaction, so for those two the pre-check IS the only
   enforcement there is. `bd cook --persist` goes further still: it runs no

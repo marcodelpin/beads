@@ -445,9 +445,13 @@ bd config set labels.vocabulary enforce   # write is refused
 
 The check only runs on interactive label writes -- `bd create -l`,
 `bd update --add-label`/`--set-labels`, `bd label add`, `bd label propagate`,
-`bd tag`, and `bd q --labels`. It judges the labels the write would actually
-LAND: removal wins, so `--add-label X --remove-label X` passes even when `X`
-is undefined, because `X` never reaches the issue.
+`bd label rename`, `bd tag`, and `bd q --labels`. It judges the labels the
+write would actually LAND: removal wins, so `--add-label X --remove-label X`
+passes even when `X` is undefined, because `X` never reaches the issue. A
+rename is judged on its new name only, so renaming an undefined label onto a
+defined one is always allowed (that is how you clean up legacy labels under
+`enforce`); and when the old name is itself defined, its definition moves
+with the rename, so the new name ends up defined and is not refused.
 
 **This edge check is advisory, and it is not the only place `enforce` is
 checked -- but it is the only place for every writer.** `bd create`,
@@ -456,7 +460,8 @@ an update patch) all land through the same guarded mutation transaction on
 every backend, direct or proxied, and that transaction re-verifies
 `enforce` on its own before committing -- the edge check above is early,
 named feedback for those three, not the only thing standing between an
-undefined label and the database. `bd label propagate` and `bd tag` write
+undefined label and the database. `bd label rename` gets the same second
+check inside its own rename transaction, on every backend. `bd label propagate` and `bd tag` write
 labels through a lower-level path that never enters that guarded
 transaction, so for those two the edge check above *is* the only
 enforcement: a write that reached the same underlying label write without

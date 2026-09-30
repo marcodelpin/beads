@@ -137,3 +137,35 @@ func TestUndefineLabelInTx_FoldsInGoNotSQL(t *testing.T) {
 		t.Errorf("unmet SQL expectations (a LOWER()-in-SQL query, or a raw-cased needle, would not match): %v", err)
 	}
 }
+
+// TestLabelRenameVocabularyCandidates pins which label a rename is judged on
+// (bda-6x7o): newLabel only, and nothing when the rename carries oldLabel's
+// definition onto newLabel.
+func TestLabelRenameVocabularyCandidates(t *testing.T) {
+	defs := []types.LabelDefinition{{Label: "backend"}, {Label: "server"}, {Label: "Legacy-Def"}}
+	cases := []struct {
+		name, oldLabel, newLabel string
+		want                     []string
+		refused                  bool
+	}{
+		{"undefined to undefined", "legacy", "nonsense", []string{"nonsense"}, true},
+		{"undefined to defined", "legacy", "backend", []string{"backend"}, false},
+		{"defined to free name carries definition", "backend", "api", nil, false},
+		{"case-only respelling carries definition", "backend", "Backend", nil, false},
+		{"defined into other defined key merges", "backend", "server", []string{"server"}, false},
+		{"defined into other key with wrong spelling", "backend", "Server", []string{"Server"}, true},
+		{"old spelling differs from definition", "legacy-def", "fresh", []string{"fresh"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := LabelRenameVocabularyCandidates(defs, tc.oldLabel, tc.newLabel)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("candidates = %v, want %v", got, tc.want)
+			}
+			err := CheckLabelVocabularyAgainst(defs, got)
+			if (err != nil) != tc.refused {
+				t.Fatalf("unexpected verdict for %s -> %s: %v", tc.oldLabel, tc.newLabel, err)
+			}
+		})
+	}
+}

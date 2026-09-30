@@ -294,6 +294,9 @@ func RenameLabelAndDefinitionInTx(ctx context.Context, tx DBTX, oldLabel, newLab
 	if err := types.CheckFieldLen("label", newLabel); err != nil {
 		return 0, 0, nil, false, err
 	}
+	if err := checkLabelRenameVocabularyInTx(ctx, tx, oldLabel, newLabel); err != nil {
+		return 0, 0, nil, false, err
+	}
 	for _, plane := range renameLabelPlanes {
 		r, m, planeIDs, err := renameLabelInPlane(ctx, tx, plane.labelTable, plane.eventTable, oldLabel, newLabel, actor)
 		if err != nil {
