@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -410,12 +410,12 @@ const proxiedServerListenerHost = "127.0.0.1"
 //	}
 func proxiedServerCommitter() (string, string) {
 	name, email := "beads", "beads@localhost"
-	if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.name").Output(); err == nil {
 		if v := strings.TrimSpace(string(out)); v != "" {
 			name = v
 		}
 	}
-	if out, err := exec.Command("git", "config", "user.email").Output(); err == nil {
+	if out, err := execx.GitCommand("config", "user.email").Output(); err == nil {
 		if v := strings.TrimSpace(string(out)); v != "" {
 			email = v
 		}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,7 +90,7 @@ func resolveGitExcludePath(repoPath string) (string, error) {
 	args = append(args, "rev-parse", "--git-common-dir")
 	// #nosec G702 - fixed "git" command; args are constant subcommands plus an internal repoPath,
 	// never attacker-controlled input.
-	probe := exec.Command("git", args...)
+	probe := execx.GitCommand(args...)
 	probe.Env = gitenv.ScrubRouting(os.Environ())
 	out, err := probe.Output()
 	if err != nil {

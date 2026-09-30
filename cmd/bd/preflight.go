@@ -738,9 +738,9 @@ func runFixes(jsonOutput bool) error {
 // Returns (fixed, oldHash, newHash, err).
 func fixNixHash() (bool, string, string, error) {
 	// Check if go.sum has uncommitted changes (same heuristic as runNixHashCheck)
-	cmd1 := exec.Command("git", "diff", "--name-only", "HEAD", "--", "go.sum")
+	cmd1 := execx.GitCommand("diff", "--name-only", "HEAD", "--", "go.sum")
 	out1, _ := cmd1.Output()
-	cmd2 := exec.Command("git", "diff", "--name-only", "--cached", "--", "go.sum")
+	cmd2 := execx.GitCommand("diff", "--name-only", "--cached", "--", "go.sum")
 	out2, _ := cmd2.Output()
 	if len(strings.TrimSpace(string(out1))) == 0 && len(strings.TrimSpace(string(out2))) == 0 {
 		return false, "", "", nil

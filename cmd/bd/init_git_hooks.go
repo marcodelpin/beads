@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -430,7 +430,7 @@ func (c *initHooksContext) configureHooksPath(hooksDir string) error {
 	// nor hooksDir can inject a command. Both reach here from the selected hooks
 	// context and are absolute, and this mirrors the pre-existing
 	// configureBeadsHooksPath in hooks.go.
-	cmd := exec.Command("git", "--git-dir", c.paths.CommonDir, "config", "--local", "core.hooksPath", hooksDir)
+	cmd := execx.GitCommand("--git-dir", c.paths.CommonDir, "config", "--local", "core.hooksPath", hooksDir)
 	cmd.Dir, cmd.Env = c.workDir, c.env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git config failed: %w (output: %s)", err, string(output))

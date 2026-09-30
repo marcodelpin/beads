@@ -921,7 +921,7 @@ func gitTrackedFileContextWithEnv(path string, clean, inherited []string) string
 	for index, env := range [][]string{clean, inherited} {
 		// #nosec G204 G702 - fixed "git" command; dir/base come from the hooks
 		// directory bd itself resolved, not user input
-		cmd := exec.Command("git", "-C", dir, "ls-files", "--error-unmatch", "--", base)
+		cmd := execx.GitCommand("-C", dir, "ls-files", "--error-unmatch", "--", base)
 		cmd.Env = env
 		err := cmd.Run()
 		if err == nil {
@@ -958,7 +958,7 @@ func resolveStandaloneHooksContext() (*initHooksContext, error) {
 		}
 		return &initHooksContext{workDir: workDir, paths: git.HooksContext{HooksDir: dir}, env: clean, inheritedEnv: inherited}, nil
 	}
-	cmd := exec.Command("git", "rev-parse", "--absolute-git-dir")
+	cmd := execx.GitCommand("rev-parse", "--absolute-git-dir")
 	cmd.Dir, cmd.Env = workDir, inherited
 	gitDir, err := cmd.Output()
 	if err != nil {
@@ -2058,7 +2058,7 @@ func isExportFileStagedForDeletion(fullPath string) bool {
 	if err != nil {
 		return false
 	}
-	checkCmd := exec.Command("git", "diff", "--cached", "--diff-filter=D", "--name-only", "--", rel)
+	checkCmd := execx.GitCommand("diff", "--cached", "--diff-filter=D", "--name-only", "--", rel)
 	checkCmd.Dir = dir
 	out, _ := checkCmd.Output()
 	return len(out) > 0

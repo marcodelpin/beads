@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -120,7 +120,7 @@ func resetDataGitURL(url string) string {
 func lsRemoteDoltDataRefs(ctx context.Context, gitURL string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", gitURL, gitDoltDataRef, gitDoltInfoRef) // #nosec G204 -- URL from configured remote
+	cmd := execx.GitCommandContext(ctx, "ls-remote", gitURL, gitDoltDataRef, gitDoltInfoRef) // #nosec G204 -- URL from configured remote
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-remote %s failed: %s: %w", gitURL, strings.TrimSpace(string(out)), err)
@@ -144,7 +144,7 @@ func deleteGitDoltDataRefs(ctx context.Context, gitURL string, refs []string) er
 	for _, ref := range refs {
 		args = append(args, ":"+ref)
 	}
-	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- URL from configured remote, fixed refspecs
+	cmd := execx.GitCommandContext(ctx, args...) // #nosec G204 -- URL from configured remote, fixed refspecs
 	cmd.Env = envWithNoGitHooks()
 	out, err := cmd.CombinedOutput()
 	if err != nil {

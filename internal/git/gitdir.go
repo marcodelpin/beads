@@ -203,7 +203,7 @@ func ResolveWorkTreelessHooksContext(workDir string, env []string) (HooksContext
 	if err != nil {
 		return HooksContext{}, err
 	}
-	probe := exec.Command("git", "rev-parse", "--is-inside-work-tree", "--git-common-dir")
+	probe := execx.GitCommand("rev-parse", "--is-inside-work-tree", "--git-common-dir")
 	probe.Dir, probe.Env = workDir, env
 	output, err := probe.Output()
 	if err != nil {
@@ -222,7 +222,7 @@ func ResolveWorkTreelessHooksContext(workDir string, env []string) (HooksContext
 	if err != nil {
 		return HooksContext{}, fmt.Errorf("failed to resolve common dir path: %w", err)
 	}
-	cmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd := execx.GitCommand("config", "--get", "core.hooksPath")
 	cmd.Dir, cmd.Env = workDir, env
 	// Without a work tree Git runs hooks in the common directory, so it anchors a
 	// relative core.hooksPath in place of the absent work-tree root.
@@ -300,7 +300,7 @@ func GetGitHooksDirFrom(workDir string, env []string) (string, error) {
 	if canonical := canonicalizeCase(workDir); canonical != "" {
 		workDir = canonical
 	}
-	cmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd := execx.GitCommand("config", "--get", "core.hooksPath")
 	cmd.Dir, cmd.Env = workDir, env
 	return gitHooksDir(cmd, func() (*gitContext, error) {
 		ctx := loadGitContext(workDir, env)

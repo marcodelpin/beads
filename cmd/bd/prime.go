@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/steveyegge/beads/internal/execx"
 	"io"
 	"os"
 	"os/exec"
@@ -288,7 +289,7 @@ func primeWorkspaceDir() string {
 // the auto-backup consumer that inherits this directory choice.
 func primeGitCmd(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	if ws := primeWorkspaceDir(); ws != "" {
-		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd := execx.GitCommandContext(ctx, args...)
 		cmd.Dir = ws
 		return cmd, nil
 	}

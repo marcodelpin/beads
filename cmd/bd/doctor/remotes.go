@@ -3,7 +3,7 @@ package doctor
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"github.com/steveyegge/beads/internal/execx"
 	"strings"
 	"time"
 
@@ -81,7 +81,7 @@ func CheckDoltRemoteGitOrigin(repoPath string) DoctorCheck {
 func gitOriginRemoteURL(repoPath string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "remote", "get-url", "origin")
+	cmd := execx.GitCommandContext(ctx, "-C", repoPath, "remote", "get-url", "origin")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
