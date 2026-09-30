@@ -52,6 +52,7 @@ go_test(
     deps = [
         "//internal/formula",
         "//internal/testutil/bazeltest",
+        "//scripts/internal/testbash",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
