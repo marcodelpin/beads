@@ -151,11 +151,20 @@ func UndefineLabelInTx(ctx context.Context, tx DBTX, label string) error {
 
 // ListLabelDefinitionsInTx returns every row in the label vocabulary
 // registry, sorted by label, within an existing transaction.
+//
+// A schema that predates migration 0070 has no label_definitions table and,
+// by construction, no definitions: read-only opens skip migrations and an
+// embedded open can stay on the previous schema, so bd export must still
+// read such a database exactly as before the registry existed. The missing
+// table therefore reads as an empty registry, not an error.
 func ListLabelDefinitionsInTx(ctx context.Context, tx DBTX) ([]types.LabelDefinition, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT label, description, created_at, created_by FROM label_definitions ORDER BY label`,
 	)
 	if err != nil {
+		if isTableNotExistError(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("list label definitions: %w", err)
 	}
 	defer rows.Close()
