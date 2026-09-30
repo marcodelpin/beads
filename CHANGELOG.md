@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-30
+
+First stable release of the 1.3.1 patch line. It ships the same code as
+[1.3.1-rc.2]; the only change since that candidate is the version stamp. The
+full notes are in the [1.3.1-rc.2] and [1.3.1-rc.1] sections below, which
+together cover everything since [1.3.0].
+
+There is **no schema migration**: upgrading from 1.3.0, 1.3.1-rc.1 or
+1.3.1-rc.2 is a binary swap.
+
+### Upgrade notes
+
+- Coming from 1.3.0, read the upgrade notes in [1.3.1-rc.2] and the
+  **Changed** entries in [1.3.1-rc.1]. The rc.1 change most likely to affect
+  scripts is the new `bd dolt status --json` shape on a proxied workspace
+  ([#6580](https://github.com/gastownhall/beads/pull/6580)).
+- Coming from 1.3.1-rc.2, nothing changes in behaviour.
+
 ## [1.3.1-rc.2] - 2026-09-29
 
 Second release candidate for 1.3.1, still a patch line on top of 1.3.0 with
