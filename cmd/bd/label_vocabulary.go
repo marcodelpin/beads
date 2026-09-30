@@ -230,8 +230,8 @@ Defining a label that collides with an already-defined label under a
 DIFFERENT case ("Backend" when "backend" is defined) is refused, naming the
 existing spelling: this registry never holds two case-variant spellings of
 the same word. It does not fold labels already stored on issues in a
-different case -- there is no dedicated rename command yet; reconcile those
-by hand with 'bd label remove <old>' / 'bd label add <new>' on each issue.`,
+different case -- reconcile those with 'bd label rename <old> <new>', which
+moves every issue carrying the stray spelling onto the chosen one.`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
