@@ -81,7 +81,7 @@ func checkLabelVocabularyWithStore(ctx context.Context, store *dolt.DoltStore) D
 		Status:  StatusWarning,
 		Message: strings.Join(parts, "; "),
 		Detail:  strings.Join(details, "; "),
-		Fix:     "Define missing labels with 'bd label define <label>'. Case-variant clusters have no dedicated reconciliation command yet -- pick one spelling and move each issue onto it with 'bd label remove <old>' / 'bd label add <new>'.",
+		Fix:     "Define missing labels with 'bd label define <label>'. Reconcile a case-variant cluster by picking one spelling and running 'bd label rename <old> <new>' for each other spelling.",
 	}
 }
 

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestValidateLabelsVocabularyConfig has no store dependency (a pure string
 // check), so it is deliberately NOT cgo-gated: it must run under the
@@ -45,5 +48,17 @@ func TestNormalizeLabelsVocabularyMode(t *testing.T) {
 				t.Errorf("normalizeLabelsVocabularyMode(%q) = %q, want %q", tt.value, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLabelDefineHelpNamesRenameRemedy pins that `bd label define --help`
+// points case-variant reconciliation at `bd label rename` now that the
+// command exists, instead of the old remove/add-by-hand workaround (bda-ipk9).
+func TestLabelDefineHelpNamesRenameRemedy(t *testing.T) {
+	if !strings.Contains(labelDefineCmd.Long, "bd label rename <old> <new>") {
+		t.Fatalf("label define help must name 'bd label rename <old> <new>':\n%s", labelDefineCmd.Long)
+	}
+	if strings.Contains(labelDefineCmd.Long, "no dedicated rename command") {
+		t.Fatalf("label define help still claims no rename command exists:\n%s", labelDefineCmd.Long)
 	}
 }

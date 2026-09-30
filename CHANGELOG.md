@@ -549,10 +549,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `enforce`) and case-variant label clusters in use across the whole
   workspace (`Backend` and `backend` both on different issues), regardless
   of mode -- the registry cannot itself prevent a clash that already exists
-  on issues written before it did. Neither finding is auto-fixable: today
-  reconciling a case-variant cluster means removing the stray-case label and
-  re-adding the canonical spelling by hand on each issue, since there is no
-  dedicated rename command yet.
+  on issues written before it did. Neither finding is auto-fixable: reconcile
+  a case-variant cluster with `bd label rename <old> <new>`, which moves every
+  issue carrying the stray spelling onto the canonical one.
 
 
 ### Fixed
