@@ -201,3 +201,85 @@ func TestExportImportLabelDefinitionsRoundTrip(t *testing.T) {
 		t.Fatalf("backend not restored: %v", byLabel)
 	}
 }
+
+// TestExportPreVocabularySchema pins the pre-0070 export path: export opens
+// read-only, and read-only opens skip migrations, so a database still on the
+// schema before label_definitions existed must export exactly as it did
+// before the vocabulary registry shipped - issue records only, no error.
+func TestExportPreVocabularySchema(t *testing.T) {
+	if testDoltServerPort == 0 {
+		t.Skip("Dolt test server not available")
+	}
+	if testutil.DoltContainerCrashed() {
+		t.Skipf("Dolt test server crashed: %v", testutil.DoltContainerCrashError())
+	}
+
+	ensureTestMode(t)
+	saved := saveAndRestoreGlobals(t)
+	_ = saved
+
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	dbName := uniqueTestDBName(t)
+	testDBPath := filepath.Join(beadsDir, "dolt")
+	writeTestMetadata(t, testDBPath, dbName)
+	s := newTestStore(t, testDBPath)
+	store = s
+	storeMutex.Lock()
+	storeActive = true
+	storeMutex.Unlock()
+	t.Cleanup(func() {
+		store = nil
+		storeMutex.Lock()
+		storeActive = false
+		storeMutex.Unlock()
+	})
+
+	ctx := context.Background()
+	rootCtx = ctx
+
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"exp-pre-1", "Pre-vocabulary issue", "", "", "", "", "open", 1, "task"); err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DROP TABLE label_definitions`); err != nil {
+		t.Fatalf("drop label_definitions: %v", err)
+	}
+
+	exportFile := filepath.Join(tmpDir, "export.jsonl")
+	exportOutput = exportFile
+	exportAll = false
+	exportIncludeInfra = false
+	exportScrub = false
+	t.Cleanup(func() { exportOutput = "" })
+
+	if err := runExport(nil, nil); err != nil {
+		t.Fatalf("runExport on a pre-0070 schema: %v", err)
+	}
+
+	data, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export file: %v", err)
+	}
+	lines := splitJSONL(data)
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 issue line, got %d", len(lines))
+	}
+	var rec map[string]interface{}
+	if err := json.Unmarshal(lines[0], &rec); err != nil {
+		t.Fatalf("parse line: %v", err)
+	}
+	if rec["_type"] != "issue" || rec["id"] != "exp-pre-1" {
+		t.Fatalf("expected the issue record only, got %s", lines[0])
+	}
+}
