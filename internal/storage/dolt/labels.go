@@ -79,17 +79,12 @@ func (s *DoltStore) GetIssuesByLabel(ctx context.Context, label string) ([]*type
 	return s.GetIssuesByIDs(ctx, ids)
 }
 
-// RenameLabel renames a label across every issue and wisp that carries it.
-// Delegates the sweep to issueops.RenameLabelInTx, which handles the merge
-// degrade and the per-issue journal rows; this method only owns the
-// dolt-specific commit step.
-//
-// The dolt commit is UNCONDITIONAL on the fixed "events"/"labels" table
-// pair, mirroring AddLabel/RemoveLabel: when the rename touched wisps only,
-// those two tables have nothing staged, doltAddAndCommit's own
-// HasStagedChanges guard sees that and skips the commit rather than firing
-// an empty one. Wisp tables are never passed here - they are dolt-ignored,
-// same as AddLabel/RemoveLabel skip the commit entirely for a wisp target.
+// RenameLabel renames a label across every issue and wisp that carries it,
+// delegating the sweep to issueops.RenameLabelInTx and owning only the
+// dolt-specific commit step. The commit targets the fixed "events"/"labels"
+// pair, mirroring AddLabel/RemoveLabel; doltAddAndCommit's own
+// HasStagedChanges guard skips it when a wisp-only rename left those tables
+// untouched.
 func (s *DoltStore) RenameLabel(ctx context.Context, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error) {
 	err = s.withCircuitWrite(ctx, func(ctx context.Context) error {
 		if txErr := s.withRetryTx(ctx, func(tx *sql.Tx) error {

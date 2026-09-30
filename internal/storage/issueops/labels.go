@@ -241,8 +241,8 @@ func removeLabelInTx(ctx context.Context, tx DBTX, labelTable, eventTable, issue
 }
 
 // renameLabelPlanes pairs each label table with the event table journaling
-// its issues, mirroring WispTableRouting's two known planes. Declared once so
-// RenameLabelInTx sweeps both without hardcoding the pairing twice.
+// its issues, so RenameLabelInTx sweeps both without hardcoding the pairing
+// twice.
 var renameLabelPlanes = [2]struct {
 	labelTable string
 	eventTable string
@@ -263,39 +263,16 @@ var renameLabelPlanes = [2]struct {
 var ErrRenameLabelSameName = errors.New("rename label: old and new label are the same")
 
 // RenameLabelInTx renames a label across every issue and wisp that carries
-// it, sweeping the labels table and then the wisp_labels table within an
-// existing transaction. Design: docs/label-taxonomy-best-practices.md Unit A.
-//
-// The rename DEGRADES TO A MERGE, Linear-style: when an issue already
-// carries newLabel, the stale oldLabel row is simply dropped rather than
-// raising a duplicate-key error. merged is the subset of renamed where that
-// happened, so a caller can report "N issues relabeled, M already had <new>"
-// honestly instead of papering over the collision.
-//
-// oldLabel carried by zero issues is an honest no-op: renamed and merged are
-// both 0 and err is nil, matching AddLabelInTx/RemoveLabelInTx's own
-// no-op-is-not-an-error convention for a label edit that changes nothing.
-//
-// ids returns every touched issue and wisp id, both planes concatenated, in
-// the order the sweep found them - for a caller that needs to fire a
-// per-issue side effect (a hook, a dry-run preview) on exactly what changed.
-//
-// Emits one label_renamed event plus one full-snapshot journal row per
-// touched row, the same per-issue journal shape AddLabelInTx and
-// RemoveLabelInTx use (see TestEveryBeadMutatorJournalsOrIsExempt in
-// journal_completeness_test.go). A single batch event was considered and
-// rejected: the journal completeness guard requires every touched
-// work-bead row to be individually replayable, and a batch event has no
-// per-issue row to attach that journal entry to.
-//
-// Each touched durable issue also mints one version row, since its label
-// set changed (see TestEveryBeadMutatorMintsOrIsExempt in
-// version_completeness_test.go); a no-op rename mints nothing.
-//
-// oldLabel and newLabel equal after trimming is refused with
-// ErrRenameLabelSameName rather than treated as a no-op -- see that error's
-// doc for why silently proceeding would wipe the label instead of leaving
-// it alone.
+// it. An issue that already carries newLabel is a merge: the stale oldLabel
+// row is dropped rather than raising a duplicate-key error, and merged
+// counts the subset of renamed where that happened. oldLabel carried by
+// nothing is an honest no-op (renamed, merged both 0, err nil). ids lists
+// every touched issue and wisp id, both planes concatenated. Each touched
+// durable issue mints one version row (its label set changed); a no-op
+// rename mints nothing. oldLabel and
+// newLabel equal after trimming is refused with ErrRenameLabelSameName
+// rather than treated as a no-op -- see that error's doc for why silently
+// proceeding would wipe the label instead of leaving it alone.
 func RenameLabelInTx(ctx context.Context, tx DBTX, oldLabel, newLabel, actor string) (renamed, merged int, ids []string, err error) {
 	if strings.TrimSpace(oldLabel) == strings.TrimSpace(newLabel) {
 		return 0, 0, nil, ErrRenameLabelSameName

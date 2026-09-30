@@ -563,8 +563,13 @@ var labelRenameCmd = &cobra.Command{
 	Short: "Rename a label across every issue and wisp that carries it",
 	Long: "Rename a label everywhere it appears. An issue that already carries " +
 		"the new label keeps it and drops the old one instead of erroring - a " +
-		"merge, reported honestly. Pass --dry-run to preview the blast radius " +
-		"(a count and the first issues) without writing anything.",
+		"merge, reported honestly (the write path measures merged from what " +
+		"the insert actually affected, never from a snapshot check, so its " +
+		"count is correct under concurrent writes). Pass --dry-run to preview " +
+		"the blast radius (a count and the first issues) without writing " +
+		"anything; the preview's merged count is a plain snapshot intersection " +
+		"of two separate reads, so treat it as an estimate, not the number the " +
+		"rename itself will report.",
 	Args:          cobra.ExactArgs(2),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -633,6 +638,18 @@ func runLabelRename(ctx context.Context, args []string, dryRun bool) error {
 		commandDidWrite.Store(true)
 	}
 	if err != nil {
+		// The counts are assigned INSIDE the transaction closure on both
+		// routes (label_proxied_server.go RunTx, dolt/labels.go
+		// withRetryTx), so a Commit failure or retry exhaustion returns
+		// them still holding the rolled-back attempt's numbers - nothing
+		// landed. Only doltAddAndCommit failing after the SQL tx committed
+		// is a genuine partial, and renamed>0 cannot discriminate the two.
+		// Report an UPPER BOUND rather than assert a write that may not
+		// have happened; commandDidWrite above shares the premise but is
+		// fail-safe in the other direction, this message is not.
+		if renamed > 0 {
+			return HandleErrorRespectJSON("%s", labelRenamePartialFailureMessage(renamed, merged, err))
+		}
 		return HandleErrorRespectJSON("label rename: %v", err)
 	}
 	return reportLabelRename(oldLabel, newLabel, renamed, merged, jsonOutput)
@@ -680,6 +697,15 @@ func runLabelRenameDryRun(ctx context.Context, oldLabel, newLabel string) error 
 		return HandleErrorRespectJSON("label rename --dry-run: %v", err)
 	}
 
+	// A preview-only snapshot intersection of two independent reads, NOT the
+	// write path's measured count: renameLabelInPlane derives merged from
+	// what its INSERT IGNORE actually affected, specifically to avoid the
+	// schedule-dependent count a check-then-insert shape used to produce
+	// under a concurrent AddLabel/RemoveLabel between the two reads (see the
+	// comment on that function). This dry-run has no insert to measure
+	// against, so it falls back to exactly that check-then-count shape - an
+	// acceptable estimate for a preview, but callers must not treat it as
+	// authoritative. The flag help and command Long text say so too.
 	alreadyNew := make(map[string]struct{}, len(newIssues))
 	for _, issue := range newIssues {
 		alreadyNew[issue.ID] = struct{}{}
@@ -731,6 +757,18 @@ func runLabelRenameDryRun(ctx context.Context, oldLabel, newLabel string) error 
 	return nil
 }
 
+// labelRenamePartialFailureMessage phrases a failed rename as an UPPER BOUND.
+// Both routes assign the counts inside the transaction closure, so on a Commit
+// failure or retry exhaustion they still hold the rolled-back attempt's numbers
+// and nothing landed; only doltAddAndCommit failing after the SQL transaction
+// committed is a genuine partial, and renamed > 0 cannot tell the two apart.
+// Every number in the sentence is therefore hedged - a definite count here would
+// assert a write that may never have happened.
+func labelRenamePartialFailureMessage(renamed, merged int, err error) string {
+	return fmt.Sprintf("label rename: up to %d issue(s) (of which up to %d merged) may have been renamed before failing: %v",
+		renamed, merged, err)
+}
+
 // reportLabelRename prints what a (non-dry-run) rename landed: an honest
 // zero-issues no-op, or the count plus how many of those were merges.
 func reportLabelRename(oldLabel, newLabel string, renamed, merged int, jsonOut bool) error {
@@ -766,7 +804,7 @@ func init() {
 	labelListCmd.ValidArgsFunction = issueIDCompletion
 	labelPropagateCmd.ValidArgsFunction = issueIDCompletion
 
-	labelRenameCmd.Flags().Bool("dry-run", false, "Preview the blast radius without renaming anything")
+	labelRenameCmd.Flags().Bool("dry-run", false, "Preview the blast radius without renaming anything (merged count is a snapshot intersection, not authoritative - see --help)")
 
 	labelCmd.AddCommand(labelAddCmd)
 	labelCmd.AddCommand(labelRemoveCmd)

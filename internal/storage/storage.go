@@ -409,14 +409,12 @@ type Storage interface {
 	GetLabels(ctx context.Context, issueID string) ([]string, error)
 	GetIssuesByLabel(ctx context.Context, label string) ([]*types.Issue, error)
 	// RenameLabel renames a label across every issue and wisp that carries
-	// it, in one durable sweep. When an issue already carries newLabel the
-	// rename degrades to a merge (the stale oldLabel row is dropped, no
-	// error) rather than raising a duplicate-key conflict - the Linear-style
-	// precedent docs/label-taxonomy-best-practices.md Unit A cites. renamed
-	// is the total count of issues and wisps that carried oldLabel; merged is
-	// the subset of those that already had newLabel; ids lists every touched
-	// id, both planes together. oldLabel carried by nothing is an honest
-	// no-op: renamed and merged are 0, ids is nil, err is nil.
+	// it. An issue that already carries newLabel is a merge (the stale
+	// oldLabel row is dropped, no error) rather than a duplicate-key
+	// conflict. renamed is the count of issues and wisps that carried
+	// oldLabel; merged is the subset that already had newLabel; ids lists
+	// every touched id, both planes together. oldLabel carried by nothing is
+	// an honest no-op: renamed and merged are 0, ids is nil, err is nil.
 	// oldLabel and newLabel equal after trimming is refused with
 	// issueops.ErrRenameLabelSameName instead of treated as a no-op - the
 	// merge branch above would otherwise wipe the label instead of leaving
@@ -717,6 +715,14 @@ type StoreLocator interface {
 // is backed by storage that is not locally measurable.
 type ActiveDatabaseSizer interface {
 	ActiveDatabaseSize(ctx context.Context) (int64, error)
+}
+
+// ExternalGCLocator supplies the authoritative local working directory for
+// the active database's external garbage-collection tool. Implementations
+// return *ErrUnsupported when this instance cannot authorize that operation.
+// Neither a readable size nor a general store path grants this capability.
+type ExternalGCLocator interface {
+	ExternalGCPath(ctx context.Context) (string, error)
 }
 
 // GarbageCollector provides Dolt garbage collection capability.
