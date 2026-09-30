@@ -34,3 +34,12 @@ func GitCommandContext(ctx context.Context, arg ...string) *exec.Cmd {
 	hideConsole(cmd)
 	return cmd
 }
+
+// CommandContext returns exec.CommandContext(ctx, name, arg...) with the same
+// console suppression, for a caller that pins the executable path - git
+// resolved once with exec.LookPath, for example - instead of naming "git".
+func CommandContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, arg...) // #nosec G204 -- executable pinned by the caller
+	hideConsole(cmd)
+	return cmd
+}

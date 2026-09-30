@@ -22,3 +22,13 @@ func TestGitCommandContextArgs(t *testing.T) {
 		t.Errorf("unexpected args: %v", cmd.Args)
 	}
 }
+
+func TestCommandContextKeepsPinnedExecutable(t *testing.T) {
+	cmd := CommandContext(context.Background(), "/opt/git/bin/git", "-c", "core.hooksPath=", "status")
+	if cmd.Path != "/opt/git/bin/git" {
+		t.Errorf("Path = %q, want the pinned executable", cmd.Path)
+	}
+	if len(cmd.Args) != 4 || cmd.Args[0] != "/opt/git/bin/git" || cmd.Args[3] != "status" {
+		t.Errorf("unexpected args: %v", cmd.Args)
+	}
+}

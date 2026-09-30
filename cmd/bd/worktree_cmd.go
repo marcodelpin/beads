@@ -768,7 +768,7 @@ func (git *worktreeRemovalGit) command(ctx context.Context, dir string, args ...
 	gitArgs = append(gitArgs, "-c", "core.hooksPath=", "-c", "core.fsmonitor=false")
 	gitArgs = append(gitArgs, args...)
 
-	command := exec.CommandContext(ctx, git.executable, gitArgs...)
+	command := execx.CommandContext(ctx, git.executable, gitArgs...)
 	command.Dir = dir
 	command.Env = append([]string(nil), git.env...)
 	return command

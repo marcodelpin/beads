@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -49,6 +50,22 @@ func TestNoRawGitSpawn(t *testing.T) {
 				return perr
 			}
 			scanned++
+			execName := ""
+			for _, imp := range file.Imports {
+				if path, _ := strconv.Unquote(imp.Path.Value); path == "os/exec" {
+					execName = "exec"
+					if imp.Name != nil {
+						execName = imp.Name.Name
+					}
+				}
+			}
+			if execName == "" || execName == "_" {
+				return nil
+			}
+			src, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
 			ast.Inspect(file, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -59,7 +76,7 @@ func TestNoRawGitSpawn(t *testing.T) {
 					return true
 				}
 				pkg, ok := sel.X.(*ast.Ident)
-				if !ok || pkg.Name != "exec" {
+				if !ok || pkg.Name != execName {
 					return true
 				}
 				argIdx := -1
@@ -72,11 +89,7 @@ func TestNoRawGitSpawn(t *testing.T) {
 				if argIdx < 0 || len(call.Args) <= argIdx {
 					return true
 				}
-				lit, ok := call.Args[argIdx].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					return true
-				}
-				if name, _ := strconv.Unquote(lit.Value); name == "git" {
+				if namesGit(call.Args[argIdx], src, fset) {
 					offenders = append(offenders, fset.Position(call.Pos()).String())
 				}
 				return true
@@ -96,4 +109,26 @@ func TestNoRawGitSpawn(t *testing.T) {
 		t.Errorf("%d git spawn(s) bypass execx (use execx.GitCommand / execx.GitCommandContext):\n  %s",
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
+}
+
+// namesGit reports whether the executable argument of an exec.Command call
+// names git. A string literal must be exactly "git" or "git.exe". Any other
+// expression (git.executable, gitBin, pinnedGitPath) counts when its source
+// text contains "git", case-insensitive: that catches a git binary resolved
+// once with exec.LookPath and pinned in a variable. It cannot see a variable
+// whose name does not mention git (exe := lookGit(); exec.Command(exe, ...));
+// name such variables after what they hold.
+func namesGit(arg ast.Expr, src []byte, fset *token.FileSet) bool {
+	if lit, ok := arg.(*ast.BasicLit); ok {
+		if lit.Kind != token.STRING {
+			return false
+		}
+		name, _ := strconv.Unquote(lit.Value)
+		return name == "git" || name == "git.exe"
+	}
+	start, end := fset.Position(arg.Pos()).Offset, fset.Position(arg.End()).Offset
+	if start < 0 || end > len(src) || start >= end {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(src[start:end])), "git")
 }

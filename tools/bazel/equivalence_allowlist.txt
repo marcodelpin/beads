@@ -28,4 +28,5 @@ scripts TestBazelNoRemoteEndpointsInTrackedFiles skip  # scans git-tracked files
 scripts TestBazelTestTagsFollowTaxonomy skip  # reads every BUILD file in the checkout; runs under go test
 scripts TestBazelTreeGoSrcsListsEveryPackage skip  # walks the source checkout; runs under go test
 scripts TestCheckTestingShortPassesOnCleanRepoTree skip  # walks the whole checkout; runs under go test
+internal/execx TestNoRawGitSpawn skip  # walks internal/ and cmd/ sources; runs under go test
 scripts TestReleaseFormula* skip  # .beads/ is in .bazelignore, so the formula cannot be data; runs under go test
