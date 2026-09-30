@@ -488,6 +488,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Consumers of the JSONL interchange must dispatch on `_type` instead of
   unmarshalling every line as an issue -- a reader that does not sees a
   titleless issue. See `docs/reference/json-schema.md`.
+  A database still on the pre-0070 schema exports as before (no definitions,
+  no error), and `bd label rename` carries a definition along with the label,
+  merging into the new name's definition when both are defined.
 
 
 ### Fixed
