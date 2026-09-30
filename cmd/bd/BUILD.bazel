@@ -832,6 +832,7 @@ go_test(
         "label_test.go",
         "label_whitespace_warn_test.go",
         "last_touched_guard_test.go",
+        "last_touched_readonly_test.go",
         "last_touched_test.go",
         "legacy_upgrade_guard_config_yaml_test.go",
         "legacy_upgrade_guard_e2e_test.go",
