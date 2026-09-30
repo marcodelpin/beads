@@ -167,6 +167,9 @@ func TestProxiedServerLabel(t *testing.T) {
 		if !strings.Contains(stderr, "Undefined label(s) not in the vocabulary") || !strings.Contains(stderr, `"fourth"`) {
 			t.Errorf("warn must print the vocabulary warning naming the new label, got stderr:\n%s", stderr)
 		}
+		if got := bdProxiedLabelListJSON(t, bd, p.dir, issue.ID); len(got) != 2 || got[0] != "backend" || got[1] != "fourth" {
+			t.Fatalf("labels after warn-mode rename = %v, want [backend fourth]", got)
+		}
 	})
 
 	// rename_definition_only pins the proxied publication of a vocabulary
