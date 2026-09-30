@@ -450,8 +450,13 @@ write would actually LAND: removal wins, so `--add-label X --remove-label X`
 passes even when `X` is undefined, because `X` never reaches the issue. A
 rename is judged on its new name only, so renaming an undefined label onto a
 defined one is always allowed (that is how you clean up legacy labels under
-`enforce`); and when the old name is itself defined, its definition moves
-with the rename, so the new name ends up defined and is not refused.
+`enforce`). When the old name is itself defined and the new name's
+case-folded key is not defined yet (or the rename only changes case), the
+definition moves with the rename, so the new name ends up defined and is not
+refused. If the new name folds onto a different spelling that is already
+defined (`backend` -> `Server` while `server` is defined), the existing
+definition keeps its spelling and the rename is judged, and refused under
+`enforce`, like any other undefined label.
 
 **This edge check is advisory, and it is not the only place `enforce` is
 checked -- but it is the only place for every writer.** `bd create`,
