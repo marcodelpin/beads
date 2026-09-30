@@ -808,6 +808,13 @@ func runLabelRename(ctx context.Context, args []string, dryRun bool) error {
 		return HandleErrorRespectJSON("%v", err)
 	}
 	warnLabelsContainingWhitespace([]string{oldLabel, newLabel})
+	// A rename is an add of newLabel, so it honours labels.vocabulary like
+	// label add does, on both routes and before a dry-run preview (which
+	// would otherwise promise a rename enforce then refuses). The storage
+	// layer repeats the enforce check in-transaction for every front door.
+	if err := checkLabelRenameVocabulary(ctx, oldLabel, newLabel); err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
 
 	if dryRun {
 		return runLabelRenameDryRun(ctx, oldLabel, newLabel)

@@ -150,6 +150,39 @@ func TestProxiedServerLabel(t *testing.T) {
 		}
 	})
 
+	// rename_vocabulary pins that the proxied rename route honours
+	// labels.vocabulary (bda-6x7o): enforce refuses an undefined newLabel and
+	// leaves the old label, undefined->defined still works, warn warns.
+	t.Run("rename_vocabulary", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "lrv")
+		bdProxiedLabel(t, bd, p.dir, "define", "backend")
+		issue := bdProxiedCreate(t, bd, p.dir, "Vocabulary rename target", "-l", "legacy,third")
+		bdProxiedConfig(t, bd, p.dir, "set", "labels.vocabulary", "enforce")
+
+		out := bdProxiedLabelFail(t, bd, p.dir, "rename", "legacy", "nonsense")
+		if !strings.Contains(out, `"nonsense"`) {
+			t.Errorf("refusal must name the undefined label, got:\n%s", out)
+		}
+		if got := bdProxiedLabelListJSON(t, bd, p.dir, issue.ID); len(got) != 2 || got[0] != "legacy" || got[1] != "third" {
+			t.Fatalf("labels after refused rename = %v, want [legacy third]", got)
+		}
+
+		bdProxiedLabel(t, bd, p.dir, "rename", "legacy", "backend")
+		if got := bdProxiedLabelListJSON(t, bd, p.dir, issue.ID); len(got) != 2 || got[0] != "backend" || got[1] != "third" {
+			t.Fatalf("labels after cleanup rename = %v, want [backend third]", got)
+		}
+
+		bdProxiedConfig(t, bd, p.dir, "set", "labels.vocabulary", "warn")
+		_, stderr, err := bdProxiedRunBuffers(t, bd, p.dir, "label", "rename", "third", "fourth")
+		if err != nil {
+			t.Fatalf("warn must not refuse a rename: %v\n%s", err, stderr)
+		}
+		if !strings.Contains(stderr, "Undefined label(s) not in the vocabulary") || !strings.Contains(stderr, `"fourth"`) {
+			t.Errorf("warn must print the vocabulary warning naming the new label, got stderr:\n%s", stderr)
+		}
+	})
+
 	// rename_definition_only pins the proxied publication of a vocabulary
 	// rename no issue carries: renamed == 0, yet the label_definitions row
 	// moved, so the unit of work must still commit (an empty commit message

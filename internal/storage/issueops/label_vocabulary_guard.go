@@ -62,6 +62,48 @@ func checkLabelVocabularyForGuardedWriteInTx(ctx context.Context, tx DBTX, candi
 	return CheckLabelVocabularyAgainst(defs, candidates)
 }
 
+// checkLabelRenameVocabularyInTx is the rename path's in-transaction
+// vocabulary guard (bda-6x7o). A rename is an add of newLabel plus a removal
+// of oldLabel, so only newLabel is judged: renaming AWAY from an undefined
+// label onto a defined one is the cleanup path and must stay open under
+// enforce. It runs inside RenameLabelAndDefinitionInTx, which every backend
+// (embedded, dolt, domain/db) reaches, so the refusal does not depend on the
+// front door. Same fail-open and enforce-only contract as
+// checkLabelVocabularyForGuardedWriteInTx.
+func checkLabelRenameVocabularyInTx(ctx context.Context, tx DBTX, oldLabel, newLabel string) error {
+	cfg, err := getConfigKeysInTx(ctx, tx, LabelsVocabularyConfigKey)
+	if err != nil || cfg[LabelsVocabularyConfigKey] != LabelsVocabularyEnforce {
+		return nil
+	}
+	defs, err := ListLabelDefinitionsInTx(ctx, tx)
+	if err != nil {
+		return nil
+	}
+	return CheckLabelVocabularyAgainst(defs, LabelRenameVocabularyCandidates(defs, oldLabel, newLabel))
+}
+
+// LabelRenameVocabularyCandidates lists the labels a rename of oldLabel to
+// newLabel must have judged against the vocabulary defs, evaluated on the
+// state BEFORE the rename. The answer is newLabel, except when the rename
+// itself carries oldLabel's definition onto newLabel (renameLabelDefinitionInTx):
+// oldLabel is defined under exactly that spelling and newLabel's folded key
+// is either free or the same key (a case-only respelling). Then newLabel ends
+// the transaction defined under exactly its own spelling and there is nothing
+// to judge. When newLabel's folded key is held by a different definition the
+// registry merges into that row and keeps its spelling, so newLabel is judged
+// as written and a spelling mismatch is refused with the usual suggestion.
+func LabelRenameVocabularyCandidates(defs []types.LabelDefinition, oldLabel, newLabel string) []string {
+	known := LabelVocabularySet(defs)
+	oldFolded := strings.ToLower(oldLabel)
+	newFolded := strings.ToLower(newLabel)
+	if spelling, ok := known[oldFolded]; ok && spelling == oldLabel {
+		if _, taken := known[newFolded]; !taken || oldFolded == newFolded {
+			return nil
+		}
+	}
+	return []string{newLabel}
+}
+
 // CheckLabelVocabularyAgainst is the pure predicate-and-message half of the
 // guard, shared with the uow backend's guarded verbs (which read config and
 // definitions through their own use cases rather than a transaction handle).

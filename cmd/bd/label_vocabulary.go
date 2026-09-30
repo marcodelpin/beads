@@ -86,7 +86,7 @@ var unknownVocabularyModeWarnOnce sync.Once
 // checkLabelVocabulary is the write-path enforcement entry point for the
 // labels.vocabulary knob. It is called from the INTERACTIVE label-write call
 // sites only -- create, update --add-label/--labels, label add, tag, quick,
-// the same call-site set that normalizes labels per #5813 -- and NEVER from
+// label rename (through checkLabelRenameVocabulary), the same call-site set that normalizes labels per #5813 -- and NEVER from
 // import/replay, where an undefined label must always be accepted silently
 // regardless of the configured mode.
 //
@@ -97,12 +97,33 @@ func checkLabelVocabulary(ctx context.Context, labels []string) error {
 	if len(labels) == 0 {
 		return nil
 	}
+	return checkLabelVocabularyCandidates(ctx, func([]types.LabelDefinition) []string { return labels })
+}
+
+// checkLabelRenameVocabulary is checkLabelVocabulary for `bd label rename`
+// (bda-6x7o): only newLabel is a candidate, and not even newLabel when the
+// rename carries oldLabel's definition onto it
+// (issueops.LabelRenameVocabularyCandidates). Renaming away from an undefined
+// label onto a defined one is the cleanup path and passes under enforce.
+func checkLabelRenameVocabulary(ctx context.Context, oldLabel, newLabel string) error {
+	return checkLabelVocabularyCandidates(ctx, func(defs []types.LabelDefinition) []string {
+		return issueops.LabelRenameVocabularyCandidates(defs, oldLabel, newLabel)
+	})
+}
+
+// checkLabelVocabularyCandidates reads the mode and the registry once and
+// judges the labels candidates derives from that registry.
+func checkLabelVocabularyCandidates(ctx context.Context, candidates func([]types.LabelDefinition) []string) error {
 	mode, err := readLabelsVocabularyMode(ctx)
 	if err != nil || mode == labelsVocabularyOpen {
 		return nil
 	}
 	defs, err := readLabelDefinitionsForCheck(ctx)
 	if err != nil {
+		return nil
+	}
+	labels := candidates(defs)
+	if len(labels) == 0 {
 		return nil
 	}
 	known := issueops.LabelVocabularySet(defs)
