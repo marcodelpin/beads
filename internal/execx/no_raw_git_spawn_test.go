@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil/bazeltest"
 )
 
 // TestNoRawGitSpawn walks every non-test Go file under internal/ and cmd/ and
@@ -20,6 +22,9 @@ import (
 // upstream imports code that spawns git directly, and a fixed list of call
 // sites cannot see a site that arrives later.
 func TestNoRawGitSpawn(t *testing.T) {
+	if bazeltest.IsBazel() {
+		t.Skip("walks the whole internal/ and cmd/ tree, which a Bazel sandbox does not declare as data; runs under go test")
+	}
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
 	var offenders []string

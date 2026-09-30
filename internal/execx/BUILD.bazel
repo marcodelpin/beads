@@ -13,6 +13,10 @@ go_library(
 
 go_test(
     name = "execx_test",
-    srcs = ["execx_test.go"],
+    srcs = [
+        "execx_test.go",
+        "no_raw_git_spawn_test.go",
+    ],
     embed = [":execx"],
+    deps = ["//internal/testutil/bazeltest"],
 )
