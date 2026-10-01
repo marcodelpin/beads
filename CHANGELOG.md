@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd list` no longer silently drops all but the last repeated filter flag.**
+  `--status`, `--state`, and `--id` were plain string flags, so
+  `bd list --status open --status closed --status pinned` kept only `pinned` —
+  a census over 477 issues quietly answered over 3, with nothing in the output
+  to distinguish the narrowed answer from a correct one. Repeats of those three
+  flags now accumulate (duplicates collapse) instead of overwriting, so
+  `--status open --status closed` selects the same set as
+  `--status open,closed`. The one repeat that does not simply accumulate is one
+  involving `--status all`: `all` cannot be combined with other statuses, so
+  `--status all --status open` is now refused rather than narrowed to `open`.
+  `--type` and `--assignee` are single-valued all the way down — unioning would
+  fail type validation or exact-match nobody — so a repeat of either now refuses
+  loudly instead of silently keeping the last value:
+  `invalid argument "epic" for "-t, --type" flag: --type given more than once
+  (already "bug"); pass a single value`.
+  Single-flag and comma-form spellings behave exactly as before.
+
 - **`bd init --force` can no longer silently recreate a missing server-side
   database as empty** (be-5up5). `--force` is an alias for `--reinit-local`,
   which skips the existing-data guard entirely, and the reinit path's own typed
