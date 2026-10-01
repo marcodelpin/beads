@@ -452,6 +452,7 @@ go_library(
         "@io_opentelemetry_go_otel_trace//:trace",
         "@land_charm_huh_v2//:huh",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_x_mod//module",
         "@org_golang_x_mod//semver",
         "@org_golang_x_term//:term",
     ] + select({
