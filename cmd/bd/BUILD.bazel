@@ -833,6 +833,7 @@ go_test(
         "init_worktree_test.go",
         "jira_max_rows_gate_test.go",
         "jira_test.go",
+        "json_flag_shadow_test.go",
         "kv_embedded_test.go",
         "kv_proxied_integration_test.go",
         "kv_test.go",

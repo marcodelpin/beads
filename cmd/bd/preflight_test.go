@@ -544,29 +544,37 @@ func TestIsBeadsRepo(t *testing.T) {
 	}
 }
 
-// TestPreflightJSONFlagBindsGlobal pins both halves of preflight's --json
-// binding, which is one flag serving two masters. Setting it must write the
-// package global, or every jsonOutput reader (including the front-door refusal
+// TestPreflightJSONInheritsRootFlag pins preflight's --json contract now that
+// the command inherits the root persistent flag instead of registering a local
+// copy. A local copy would shadow the inherited one and is what
+// TestNoSubcommandShadowsRootJSONFlag forbids, so the first check rejects a
+// local flag rather than requiring one.
+//
+// The binding this pins is unchanged, only re-keyed: the root flag is
+// BoolVar'd to the same package global (main.go), so setting it must write
+// jsonOutput, or every jsonOutput reader (including the front-door refusal
 // renderers) stays in text mode while the user asked for JSON. Leaving it
 // unset must report unchanged to commandJSONFlagChanged, which is what lets a
-// config-file `json: true` reach preflight the way it reaches its siblings —
-// a deliberate behavior change from the unbound shadow this replaced, and the
-// reason the CHANGELOG calls it out.
+// config-file `json: true` reach preflight the way it reaches its siblings.
 //
 // The last two subtests drive that config half rather than only asserting the
 // negative direction. flag.Value.Set never sets Changed (only FlagSet.Set
 // does), so the Changed==true branch of commandJSONFlagChanged needs its own
-// case, and the behavior the CHANGELOG announces — configured `json: true`
-// with no flag flipping jsonOutput — only happens inside
-// refreshBoundCommandConfig, so it has to be driven through that function.
-func TestPreflightJSONFlagBindsGlobal(t *testing.T) {
-	flag := preflightCmd.Flags().Lookup("json")
-	if flag == nil {
-		t.Fatal("preflight has no --json flag")
-	}
+// case — driven through the root flag, which is the one an inheriting command
+// now has — and the configured `json: true` with no flag flipping jsonOutput
+// only happens inside refreshBoundCommandConfig, so it has to be driven
+// through that function.
+func TestPreflightJSONInheritsRootFlag(t *testing.T) {
 	rootJSON := preflightCmd.Root().PersistentFlags().Lookup("json")
 	if rootJSON == nil {
 		t.Fatal("root has no persistent --json flag")
+	}
+	// --json is inherited from rootCmd as a persistent flag; a local copy
+	// would shadow it (see TestNoSubcommandShadowsRootJSONFlag). Comparing
+	// against the root flag rather than requiring nil tolerates a sibling test
+	// having already merged the root persistent flags into this command's set.
+	if f := preflightCmd.Flags().Lookup("json"); f != nil && f != rootJSON {
+		t.Error("preflight must not register a local --json; it inherits the root flag")
 	}
 	// refreshBoundCommandConfig consults config only when neither --json nor
 	// its hidden --format alias was given, so this test owns that flag's
@@ -577,15 +585,13 @@ func TestPreflightJSONFlagBindsGlobal(t *testing.T) {
 	}
 
 	oldGlobal := jsonOutput
-	oldValue, oldChanged := flag.Value.String(), flag.Changed
-	oldRootChanged := rootJSON.Changed
+	oldValue, oldRootChanged := rootJSON.Value.String(), rootJSON.Changed
 	oldFormatChanged := rootFormat.Changed
 	// refreshBoundCommandConfig reapplies every config-backed default, not
 	// just json; restore the rest so this test cannot leak into siblings.
 	oldReadonly, oldActor, oldAutoCommit := readonlyMode, actor, doltAutoCommit
 	t.Cleanup(func() {
-		_ = flag.Value.Set(oldValue)
-		flag.Changed = oldChanged
+		_ = rootJSON.Value.Set(oldValue)
 		rootJSON.Changed = oldRootChanged
 		rootFormat.Changed = oldFormatChanged
 		jsonOutput = oldGlobal
@@ -593,9 +599,9 @@ func TestPreflightJSONFlagBindsGlobal(t *testing.T) {
 		config.ResetForTesting()
 	})
 
-	t.Run("flag writes the package global", func(t *testing.T) {
+	t.Run("inherited flag writes the package global", func(t *testing.T) {
 		jsonOutput = false
-		if err := flag.Value.Set("true"); err != nil {
+		if err := rootJSON.Value.Set("true"); err != nil {
 			t.Fatal(err)
 		}
 		if !jsonOutput {
@@ -604,7 +610,6 @@ func TestPreflightJSONFlagBindsGlobal(t *testing.T) {
 	})
 
 	t.Run("neither flag set reports unchanged", func(t *testing.T) {
-		flag.Changed = false
 		rootJSON.Changed = false
 		if commandJSONFlagChanged(preflightCmd) {
 			t.Fatal("preflight reported an explicit --json with neither flag set; the config-file json default would never apply")
@@ -612,9 +617,8 @@ func TestPreflightJSONFlagBindsGlobal(t *testing.T) {
 	})
 
 	t.Run("explicit --json reports changed", func(t *testing.T) {
-		flag.Changed = false
 		rootJSON.Changed = false
-		if err := preflightCmd.Flags().Set("json", "true"); err != nil {
+		if err := preflightCmd.Root().PersistentFlags().Set("json", "true"); err != nil {
 			t.Fatal(err)
 		}
 		if !commandJSONFlagChanged(preflightCmd) {
@@ -629,7 +633,6 @@ func TestPreflightJSONFlagBindsGlobal(t *testing.T) {
 		}
 		config.Set("json", true)
 
-		flag.Changed = false
 		rootJSON.Changed = false
 		rootFormat.Changed = false
 		jsonOutput = false

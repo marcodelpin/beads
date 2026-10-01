@@ -79,13 +79,6 @@ const lintCancellationGrace = 10 * time.Second
 func init() {
 	preflightCmd.Flags().Bool("check", false, "Run checks automatically")
 	preflightCmd.Flags().Bool("fix", false, "Auto-fix issues where possible (vendorHash, version sync)")
-	// Bound to the package global like every other command's local --json.
-	// commandJSONFlagChanged suppresses the config-driven default whenever a
-	// local --json is set, so a flag that does not write the global would
-	// leave `bd preflight --json` with jsonOutput=false — inverting JSON mode
-	// for everything that reads the global, including the front-door error
-	// renderers.
-	preflightCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	preflightCmd.Flags().Bool("skip-lint", false, "Skip lint check explicitly")
 
 	rootCmd.AddCommand(preflightCmd)
