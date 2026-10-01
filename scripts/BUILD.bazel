@@ -34,6 +34,7 @@ go_test(
         "pr_preflight_test.go",
         "pull_dolt_image_test.go",
         "release_script_test.go",
+        "required_suite_test.go",
         "test_script_test.go",
         "upgrade_smoke_loop_test.go",
     ],
