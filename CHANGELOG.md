@@ -490,6 +490,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (non-readonly) `bd show` keeps recording last-touched exactly as before, so
   only consumers driving `bd --readonly … --json` see the change.
 
+- **Markdown bodies now honor the terminal's actual background instead of
+  always rendering dark**
+  ([#5776](https://github.com/gastownhall/beads/pull/5776)).
+  `glamour.WithEnvironmentConfig()` defaults to `styles.DarkStyle` whenever
+  `GLAMOUR_STYLE` is unset, with no regard for the terminal's real
+  background — unlike `internal/ui`'s own adaptive colors, which probe it
+  via `lipgloss.HasDarkBackground`. That left every markdown body's colors
+  wrong on a light-background terminal even though the section header
+  wrapping it adapted correctly. The fix lands at the shared renderer, so it
+  covers every markdown body `bd` prints — DESCRIPTION, DESIGN, NOTES,
+  ACCEPTANCE CRITERIA, and comment bodies, direct and proxied alike — not
+  just `bd show`'s DESCRIPTION field. An explicit `GLAMOUR_STYLE` override
+  still takes priority over the detected background.
+
 ### Added
 
 - **A long-running schema migration now says so instead of going quiet**
