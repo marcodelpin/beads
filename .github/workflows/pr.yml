@@ -320,7 +320,9 @@ jobs:
   # Ubuntu job above selects it by name but compiles it out, and main.yml's
   # Windows job runs only on pushes to main (build/smoke, no go test). Run
   # the liveness pair and native config fixture on Windows so their platform
-  # regressions actually execute at PR time.
+  # regressions actually execute at PR time. The init credential shell
+  # fixtures are a separate concern and run natively in
+  # pr-preflight-platforms, not here.
   test-windows-liveness:
     name: Test (Windows) cmd/bd liveness regression
     runs-on: windows-latest
@@ -614,6 +616,10 @@ jobs:
       - name: Exercise generated Git hook timeout process boundary
         shell: bash
         run: go test '-tags=gms_pure_go' -count=1 -run '^TestGeneratedHookTimeoutProcessBoundary$' ./cmd/bd
+
+      - name: Exercise native init gateway credential shell
+        shell: bash
+        run: bash scripts/ci/test-init-gateway-credential.sh "$RUNNER_OS"
 
       - name: Exercise credential command fixtures on Windows
         if: matrix.os == 'windows-latest'
