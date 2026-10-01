@@ -154,12 +154,12 @@ func TestRenameLabelMovesDefinition(t *testing.T) {
 	})
 }
 
-// TestRenameLabelHonoursVocabularyEnforce pins the in-transaction vocabulary
+// TestRenameLabelHonorsVocabularyEnforce pins the in-transaction vocabulary
 // check on the rename path (bda-6x7o): a rename is an add of newLabel, so
 // under labels.vocabulary=enforce it must not leave issues carrying a label
 // the registry does not define. The check runs inside the storage call, so
 // it holds for every front door, not only for the CLI edge.
-func TestRenameLabelHonoursVocabularyEnforce(t *testing.T) {
+func TestRenameLabelHonorsVocabularyEnforce(t *testing.T) {
 	skipUnlessEmbeddedDolt(t)
 
 	setup := func(t *testing.T, prefix string) *testEnv {
