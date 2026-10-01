@@ -1285,6 +1285,7 @@ go_test(
         "//internal/telemetry",
         "//internal/testutil",
         "//internal/testutil/bazeltest",
+        "//internal/testutil/credentialcmd",
         "//internal/timeparsing",
         "//internal/tracker",
         "//internal/types",
