@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "id_generator.go",
         "label_definition.go",
+        "non_completing_close.go",
         "orphans.go",
         "storage_ext.go",
         "types.go",
@@ -18,6 +19,8 @@ go_test(
     srcs = [
         "explain_test.go",
         "id_generator_test.go",
+        "issue_summary_test.go",
+        "non_completing_close_test.go",
         "storage_class_test.go",
         "types_test.go",
     ],

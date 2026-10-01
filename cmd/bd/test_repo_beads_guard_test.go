@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/migration"
 	"github.com/steveyegge/beads/internal/testutil"
+	"github.com/steveyegge/beads/internal/testutil/credentialcmd"
 )
 
 // warmupCobraFlags forces cobra/pflag's lazy mergePersistentFlags() to run once,
@@ -98,11 +99,16 @@ const suiteRootPrefix = "beads-bd-tests-"
 // Guardrail: ensure the cmd/bd test suite does not touch the real repo .beads state.
 // Disable with BEADS_TEST_GUARD_DISABLE=1 (useful when running tests while actively using beads).
 func TestMain(m *testing.M) {
-	if code, ok := runInitGatewayCredentialHelper(); ok {
+	if code, ok := credentialcmd.Dispatch(); ok {
 		os.Exit(code)
 	}
 	// Delegate to testMainInner so defers run before os.Exit.
-	os.Exit(testMainInner(m))
+	code := testMainInner(m)
+	if err := credentialcmd.Cleanup(); err != nil {
+		fmt.Fprintf(os.Stderr, "credential command fixture cleanup: %v\n", err)
+		code = 1
+	}
+	os.Exit(code)
 }
 
 func testMainInner(m *testing.M) int {
