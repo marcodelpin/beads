@@ -394,6 +394,7 @@ go_test(
         "//internal/storage/storagecontract",
         "//internal/storage/versioncontrolops",
         "//internal/testutil",
+        "//internal/testutil/credentialcmd",
         "//internal/types",
         "//internal/utils",
         "//internal/workapi",
