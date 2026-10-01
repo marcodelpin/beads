@@ -243,6 +243,7 @@ go_library(
         "ping_proxied_server.go",
         "pour.go",
         "preflight.go",
+        "preflight_versions.go",
         "prime.go",
         "prime_divergence.go",
         "prime_proxied_server.go",
@@ -430,6 +431,7 @@ go_library(
         "//internal/uimd",
         "//internal/utils",
         "//internal/validation",
+        "//internal/versioncheck",
         "//internal/workapi",
         "//internal/workspacegate",
         "//internal/worktreeremove",
@@ -1290,6 +1292,7 @@ go_test(
         "//internal/uimd",
         "//internal/utils",
         "//internal/validation",
+        "//internal/versioncheck",
         "//internal/workapi",
         "//internal/workspacegate",
         "//internal/worktreeremove",
@@ -1462,6 +1465,18 @@ exports_files(
 exports_files(
     ["init_safety_help.go"],
     visibility = ["//test/docsync:__pkg__"],
+)
+
+# Release-metadata surfaces gated by //internal/versioncheck's releaseSources
+# table: the canonical version and the Windows PE resource files. Aggregated
+# into //:release_metadata_files, which is what the tests declare as data.
+exports_files(
+    [
+        "version.go",
+        "winres/manifest.xml",
+        "winres/winres.json",
+    ],
+    visibility = ["//:__pkg__"],
 )
 
 # --- begin go_srcs (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
