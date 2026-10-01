@@ -23,6 +23,7 @@ go_test(
         "check_build_tags_test.go",
         "check_doc_freshness_test.go",
         "check_testing_short_test.go",
+        "check_winget_portable_alias_test.go",
         "ci_capability_selector_test.go",
         "ci_workflow_apt_get_timeout_test.go",
         "ci_workflow_test.go",
@@ -85,4 +86,9 @@ exports_files(
 exports_files(
     ["README.md"],
     visibility = ["//:__pkg__"],
+)
+
+exports_files(
+    ["ci/gofmt-bin.sh"],
+    visibility = ["//scripts/prlintmake:__pkg__"],
 )
