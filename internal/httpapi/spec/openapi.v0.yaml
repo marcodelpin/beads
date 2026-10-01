@@ -1789,12 +1789,13 @@ paths:
         ## Planes
 
 
-        A count is DURABLE-PLANE ONLY unless `include_infra` is set. The wisps
-        tier — ephemeral wisps and the `no_history` beads that are durable work
-        stored in that tier — is not counted by default, and `include_infra`
-        changes FOUR things at once rather than one. See that parameter; it is
-        the one place on this operation where a single flag moves the set in
-        more than one direction.
+        A count is DURABLE-PLANE ONLY unless `include_infra` or
+        `include_ephemeral` is set. The wisps tier — ephemeral wisps and the
+        `no_history` beads that are durable work stored in that tier — is not
+        counted by default. `include_ephemeral` admits that tier and changes
+        nothing else; `include_infra` admits it too but changes FOUR things at
+        once rather than one. See that parameter; it is the one place on this
+        operation where a single flag moves the set in more than one direction.
       parameters:
         - name: status
           in: query
@@ -2021,9 +2022,10 @@ paths:
             config load is what this role exists to keep off both front doors.
 
 
-            Unset, the count is durable-plane only and applies none of the four:
-            the historical `bd count` answer, kept exactly so a scripted caller
-            reads the same number it read yesterday.
+            Unset — and with `include_ephemeral` also unset — the count is
+            durable-plane only and applies none of the four: the historical
+            `bd count` answer, kept exactly so a scripted caller reads the same
+            number it read yesterday.
           schema:
             type: boolean
             default: false
