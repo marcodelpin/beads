@@ -80,10 +80,12 @@ var YamlOnlyKeys = map[string]bool{
 	"hierarchy.max-depth": true,
 
 	// Backup settings (must be in yaml so GetValueSource can detect overrides)
-	"backup.enabled":  true,
-	"backup.interval": true,
-	"backup.git-push": true,
-	"backup.git-repo": true,
+	"backup.enabled":            true,
+	"backup.interval":           true,
+	"backup.git-push":           true,
+	"backup.git-repo":           true,
+	"backup.size-cap-mb":        true,
+	"backup.size-warn-interval": true,
 
 	// Import settings
 	"import.auto": true,

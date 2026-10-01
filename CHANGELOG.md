@@ -139,6 +139,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its server through the proxy, so an ambient port does not describe its
   lifecycle.
 
+- **`bd` caps how large the auto-backup destination can grow, instead of
+  growing it forever** ([#6071](https://github.com/gastownhall/beads/pull/6071)).
+  `CALL DOLT_BACKUP('sync', ...)` only ever adds new chunks to the
+  destination — it never prunes ones that became unreachable on the source
+  (history rewrites, superseded data) — and Dolt exposes no supported way to
+  GC a backup destination in place. Left uncapped, the destination could
+  only grow until disk filled; this is the root cause of the 2026-06-19
+  outage, where a 1.7GB store produced a 43GB backup directory. Auto-backup
+  now pauses (nothing is deleted) once the destination reaches
+  `backup.size-cap-mb` (default 2048MB); set it to `0` to disable the cap
+  entirely. The pause is no longer stderr-only: `bd backup status` and its
+  `--json` output now report a `size_cap` object (`enabled`, `cap_mb`,
+  `current_bytes`, `exceeded`), so an agent/CI caller relying on `--json` or
+  `--quiet` can see that auto-backup has stopped instead of reading a
+  reassuring "Last backup" line while nothing further syncs. The remediation
+  advice no longer suggests deleting the backup directory — nothing
+  guarantees a deleted destination is cleanly recreated by the next sync, and
+  the server-side backup remote stays registered against that path; it now
+  points at `backup.size-cap-mb` / `bd backup init <new-path>` instead. The
+  size-cap check itself runs after both the interval throttle and change
+  detection, so it costs nothing on any path that is not about to sync — an
+  idle workspace never reaches it at all, and a paused destination re-arms
+  the interval throttle on the skip, so it is measured at most once per
+  `backup.interval` rather than on every command. `backup.size-warn-interval`
+  (default 24h) controls how often the pause is re-announced. Manual `bd
+  backup` / `bd backup sync` are not capped.
+
 - **`bd doctor` no longer flags a `.local_version` that starts with `v`.** The
   canonical spelling of a Go module version — and the string a build stamped
   from a Go pseudo-version reports and writes into `.local_version` itself —
