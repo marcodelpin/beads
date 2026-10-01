@@ -79,7 +79,11 @@ exports_files(
 )
 
 exports_files(
-    ["ci/fmt-check.sh"],
+    [
+        "ci/fmt-check.sh",
+        "ci/lib/timing.sh",
+        "ci/pr-lint.sh",
+    ],
     visibility = ["//scripts/prlintmake:__pkg__"],
 )
 
