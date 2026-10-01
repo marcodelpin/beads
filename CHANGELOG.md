@@ -133,6 +133,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first. They now accept an optional leading `v`; versions without it are
   unchanged ([#6152](https://github.com/gastownhall/beads/issues/6152)).
 
+- **`bd serve`'s blocked-close refusal names the blockers.** A `409
+  not_closable` for a live blocker — on `issues/{id}:close`, `issues:batchClose`
+  per-item outcomes, `PATCH issues/{id}` into a done status, and
+  `issues:batchApply` — said only "issue is blocked", so an HTTP client could
+  not tell the user what held the close, while `bd close` on the direct and
+  proxied routes prints `cannot close blocked issue: X is blocked by [Y]`. The
+  refusal now carries a `blockers` extension member (`[{id, kind, type}]`,
+  `kind` `local` or `external`, `type` the blocking edge type when known) and a
+  `detail` that opens with the direct route's sentence. The code, the status
+  and the `open_children` discriminator are unchanged. The list travels typed
+  end to end: close refusals are now an `issueops.BlockedError` (still matching
+  `ErrCloseBlocked`, with a byte-identical message), so the server never parses
+  prose to build the member and a client can rebuild the same typed error.
+
 - **The #6716 fan-in stall is fixed on the proxied-server route and the
   remaining store routes.** Two blockers of one dependent taken away at the
   same time (parallel workers closing both, or a close racing a
