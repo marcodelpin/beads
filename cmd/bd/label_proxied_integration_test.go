@@ -136,7 +136,7 @@ func TestProxiedServerLabel(t *testing.T) {
 		}
 	})
 
-	// rename_vocabulary pins that the proxied rename route honours
+	// rename_vocabulary pins that the proxied rename route honors
 	// labels.vocabulary (bda-6x7o): enforce refuses an undefined newLabel and
 	// leaves the old label, undefined->defined still works, warn warns.
 	t.Run("rename_vocabulary", func(t *testing.T) {

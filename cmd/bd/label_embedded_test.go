@@ -589,7 +589,7 @@ func bdLabelRun(t *testing.T, bd, dir string, args ...string) (string, string, e
 	return stdout.String(), stderr.String(), err
 }
 
-// TestEmbeddedLabelRenameVocabulary pins that bd label rename honours
+// TestEmbeddedLabelRenameVocabulary pins that bd label rename honors
 // labels.vocabulary like every other interactive label write (bda-6x7o):
 // newLabel is the only candidate, since a rename is an add of newLabel and a
 // removal of oldLabel.
