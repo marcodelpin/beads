@@ -170,8 +170,13 @@ func readGoreleaserBuilds(t *testing.T) []goreleaserBuild {
 func TestPRCoreRequiresExcludeReadPermissionCoverage(t *testing.T) {
 	workflow := readCIWorkflow(t, "pr.yml")
 	job := workflow.job(t, "pr-core-wrapper")
-	if job.RunsOn != "ubuntu-latest" || job.If != "" || job.ContinueOnError {
+	// Its only condition is D2 step 3's stand-down, where Bazel's PR-core
+	// lane (required instead) runs the test with the same requirement.
+	if job.RunsOn != "ubuntu-latest" || job.If != prLaneLegacyIf || job.ContinueOnError {
 		t.Error("exclude permission coverage must remain in the required Linux PR Core job")
+	}
+	if !contains(bazelPRLaneRCLines["prcore"], "test:prcore --test_env=BEADS_TEST_REQUIRE_EXCLUDE_PERMISSION=1") {
+		t.Error("Bazel's PR-core lane must require actual exclude read-permission coverage where PR Core stands down")
 	}
 	step := job.Steps[job.stepIndex(t, "Run PR core wrapper")]
 	if step.If != "" || (step.ContinueOnError != nil && step.ContinueOnError != false) || strings.TrimSpace(step.Run) != "make ci-pr-core" {
@@ -438,7 +443,10 @@ func TestPRCIGateRequiresJSWasmHookExecution(t *testing.T) {
 	if job.RunsOn != "ubuntu-latest" {
 		t.Errorf("js/wasm hook job runs-on = %q, want ubuntu-latest", job.RunsOn)
 	}
-	if job.If != "" {
+	// Only D2 step 3's stand-down, where Bazel's pure-Go and js/wasm lane
+	// (TestBazelPureJobMirrorsPureGoJob) is required instead
+	// (TestPRLegacyLanesDeferToBazelLanes).
+	if job.If != prLaneLegacyIf {
 		t.Errorf("js/wasm hook job is conditional: %q", job.If)
 	}
 
@@ -571,9 +579,10 @@ func TestStorageDomainUOWJobsUseNestedTimeoutBudgets(t *testing.T) {
 		})
 	}
 
-	// pr.yml's job is the one lane with both the image and the pinned dolt
-	// CLI, so it is where the container and local test servers are compared.
-	job := readCIWorkflow(t, "pr.yml").job(t, "test-domain-uow")
+	// The container and local test servers are compared in pr.yml's own
+	// every-PR job (it was test-domain-uow's first step until D2 step 3;
+	// TestPRDoltServerFingerprintRunsOnEveryPR pins it).
+	job := readCIWorkflow(t, "pr.yml").job(t, prFingerprintJob)
 	const fingerprintStep = "Test Dolt server fingerprint (container + local)"
 	assertStepRunsExactly(t, job, fingerprintStep,
 		"go test -tags gms_pure_go -count=1 -timeout 5m -v -run '^TestDoltServerFingerprint$' ./internal/testutil/")
@@ -876,6 +885,11 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 	assertGoCacheInventory(t, workflows["pr.yml"].job(t, "pr-core-wrapper"), []goCacheStep{
 		restoreModuleCache(), restoreBuildCache("race"),
 	})
+	// D2 step 3: PR Core's environment for ./scripts/..., go vet and the
+	// Bazel-skipped tests; read-only like PR Core.
+	assertGoCacheInventory(t, workflows["pr.yml"].job(t, "scripts-go-checks"), []goCacheStep{
+		restoreModuleCache(), restoreBuildCache("race"),
+	})
 	assertGoCacheInventory(t, workflows["pr.yml"].job(t, "test-macos"), []goCacheStep{
 		restoreModuleCache(), restoreBuildCache("non-race"), restoreBuildCache("race"),
 	})
@@ -896,7 +910,7 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 			"build-artifacts": true, "build-embedded": true, "pr-core-wrapper": true, "test": true, "test-windows": true,
 		},
 		"pr.yml": {
-			"build-artifacts": true, "pr-core-wrapper": true, "test-macos": true, "worktree-remove-windows": true,
+			"build-artifacts": true, "pr-core-wrapper": true, "scripts-go-checks": true, "test-macos": true, "worktree-remove-windows": true,
 			"check-doc-freshness-platforms": true, "pr-preflight-platforms": true, "build-examples": true,
 			"check-release-target-cross-compilation": true,
 		},
@@ -1777,8 +1791,9 @@ const (
 var bazelJobNames = []string{bazelDoltJobName, bazelEmbedJobName, bazelIntegJobName, bazelProxiedJobName, bazelPureJobName, bazelServerJobName, bazelJobName, bazelRBEJobName}
 
 // The lanes that only run remotely (skipped unless the rbe job chose remote);
+// bazel-integration runs remotely or with the read-only cache (bazelIntegIf);
 // every other lane also runs locally.
-var bazelRemoteOnlyJobs = map[string]bool{bazelEmbedJobName: true, bazelIntegJobName: true, bazelProxiedJobName: true, bazelServerJobName: true}
+var bazelRemoteOnlyJobs = map[string]bool{bazelEmbedJobName: true, bazelProxiedJobName: true, bazelServerJobName: true}
 
 // The rbe job's decision step reads exactly one secret, and only to test it
 // for emptiness: its env value is a boolean, not the secret.
@@ -1807,10 +1822,9 @@ var bazelLaneGateIDs = map[string]string{
 	// pr-risk.yml's legacy jobs, like the embedded tier's).
 	bazelProxiedJobName: "BAZEL_PROXIED",
 	bazelServerJobName:  "BAZEL_SERVER_STORAGE",
-	// main.yml's integration jobs, required on same-repo PRs although their
-	// legacy twins run only on push to main. Remote-only: fork and
-	// Dependabot PRs skip it until the farm has a read-only cache for them
-	// (then it becomes local-capable for forks, here and in bazel-gate.sh).
+	// main.yml's integration jobs, required on PRs although their legacy
+	// twins run only on push to main: remotely on same-repo PRs, locally
+	// with the read-only cache (mode cache) on fork and Dependabot PRs.
 	bazelIntegJobName: "BAZEL_INTEGRATION",
 }
 
@@ -1818,11 +1832,14 @@ var bazelLaneGateIDs = map[string]string{
 // turns off has a place to record why.
 var bazelAdvisoryLanes = map[string]string{}
 
-// bazel-integration's if: remote only, and off when a caller passes
-// integration: "off" (pr.yml and bazel-farm.yml pass "on"). A string input:
-// on push and dispatch it is null, and null != 'off', so the lane keeps
-// running on main.
-const bazelIntegIf = "${{ needs.rbe.outputs.enabled == 'true' && inputs.integration != 'off' }}"
+// bazel-integration's if: remote, or local with the read-only cache (mode
+// cache: fork and Dependabot PRs, whose only PR-time integration run it is;
+// a warm run builds and tests only what the PR changed), never plain local
+// (rbe=off: a cold tagged race build of //... on one runner); and off when a
+// caller passes integration: "off" (pr.yml and bazel-farm.yml pass "on"). A
+// string input: on push and dispatch it is null, and null != 'off', so the
+// lane keeps running on main.
+const bazelIntegIf = "${{ (needs.rbe.outputs.mode == 'remote' || needs.rbe.outputs.mode == 'cache') && inputs.integration != 'off' }}"
 
 // pr.yml's call of bazel.yml: exactly these inputs (review D1 v2 N3). An rbe
 // override would put every PR in local mode and ungate the embedded tier
@@ -2273,7 +2290,7 @@ func bazelLaneRunModes(t *testing.T, lane, ifExpr string, with map[string]string
 		if strings.EqualFold(with["integration"], "off") {
 			return map[string]bool{}
 		}
-		return map[string]bool{"remote": true}
+		return map[string]bool{"remote": true, "cache": true}
 	}
 	t.Fatalf("%s if = %q: teach bazelLaneRunModes which modes run it", lane, ifExpr)
 	return nil
@@ -2288,8 +2305,12 @@ type bazelGateScenario struct {
 	outputs       map[string]string // the lanes' outputs ("" = not reported)
 	// pr.yml's bazel-coverage job (D2): its outputs, per retiredTiers
 	// output name ("" = not reported), and its result ("" = success).
-	covered     map[string]string
-	coverage    string
+	covered  map[string]string
+	coverage string
+	// Non-Bazel needs' results that differ from what the jobs' if: give
+	// (success, or skipped for pr.yml's legacy jobs that bazel-coverage
+	// retired, D2 step 3).
+	results     map[string]string
 	wantPass    bool
 	wantMention string // a red gate must name this id
 }
@@ -2329,7 +2350,7 @@ func runPRGateStep(t *testing.T, step ciWorkflowStep, sc bazelGateScenario) (boo
 			}
 			got = sc.covered[m[3]]
 		case m[1] != "bazel" && m[2] == "result":
-			got = "success"
+			got = prLegacyJobResult(m[1], sc)
 		case m[1] != "bazel":
 			t.Fatalf("ci-gate env %s = %q: the gate simulation cannot evaluate it", key, value)
 		case m[2] == "result":
@@ -3105,9 +3126,16 @@ func TestBazelIntegrationJob(t *testing.T) {
 	// A required PR lane: the step must fit a cold compile (the first
 	// GitHub run took 17 minutes end to end) followed by the longest test
 	// action, which .bazelrc caps at its test:integration --test_timeout
-	// (rbe-west's 1200s limit). The job adds setup and log upload, but
-	// stays remote-only short.
+	// (rbe-west's 1200s limit). The job adds setup and log upload. In mode
+	// cache it runs on a 4-CPU GitHub-hosted runner, and with the read-only
+	// cache closed (the farm's kill switch) the whole suite builds and runs
+	// there cold, about 30 minutes simulated: the step keeps twice that.
 	const coldCompileMinutes = 20
+	const cacheClosedMinutes = 30
+	if test.TimeoutMinutes < 2*cacheClosedMinutes {
+		t.Errorf("%s test step timeout-minutes = %d, want at least %d (mode cache with the cache closed: ~%d minutes cold on a GitHub-hosted runner)",
+			bazelIntegJobName, test.TimeoutMinutes, 2*cacheClosedMinutes, cacheClosedMinutes)
+	}
 	actionCapMinutes := 0
 	for line := range bazelrcLines(t) {
 		if v, ok := strings.CutPrefix(line, "test:integration --test_timeout="); ok {
@@ -3524,7 +3552,8 @@ func TestBazelEmbeddedJobMirrorsEmbeddedTier(t *testing.T) {
 		// later --cache_test_results wins over --nocache_test_results).
 		if !strings.HasPrefix(line, "#") && strings.Contains(line, "cache_test_results") &&
 			line != "test:embedded --nocache_test_results" && line != "test:docker --nocache_test_results" &&
-			line != "test:doltserver-proxied --nocache_test_results" && line != "test:doltserver-integration --nocache_test_results" {
+			line != "test:doltserver-proxied --nocache_test_results" && line != "test:doltserver-integration --nocache_test_results" &&
+			line != bazelSoleRunNoCacheLine {
 			t.Errorf(".bazelrc %q: only test:embedded and test:docker set test result caching", line)
 		}
 		if strings.HasPrefix(line, "test:embedded ") && (strings.Contains(line, "-test.short") || strings.Contains(line, "BEADS_TEST_SKIP")) {
@@ -3666,7 +3695,7 @@ func TestBazelPureJobMirrorsPureGoJob(t *testing.T) {
 		t.Errorf("%s PURE_CMD_BD_TESTS = %q, want pr.yml's -short -run selector %q", bazelPureJobName, job.Env["PURE_CMD_BD_TESTS"], m[1])
 	}
 	run := job.step(t, "Run pure-Go cmd/bd test subset (--config=pure)").Run
-	for _, required := range []string{"bazel test --config=pure //cmd/bd:bd_test", `"--test_arg=-test.run=$PURE_CMD_BD_TESTS"`, "(( n > 0 ))"} {
+	for _, required := range []string{"bazel test --config=pure " + bazelSoleRunArg + " //cmd/bd:bd_test", `"--test_arg=-test.run=$PURE_CMD_BD_TESTS"`, "(( n > 0 ))"} {
 		if !strings.Contains(run, required) {
 			t.Errorf("pure subset step does not contain %q:\n%s", required, run)
 		}
@@ -4757,5 +4786,29 @@ func TestBazelGatedLanesNeverRetryFlakyTests(t *testing.T) {
 	}
 	if checked < 10 {
 		t.Fatalf("checked only %d files; is the repository root right?", checked)
+	}
+}
+
+// Every artifact bazel.yml uploads has a fixed name within its run, and a
+// job re-run ("Re-run failed jobs", the documented recovery for a Bazel lane
+// that hit a remote cache eviction or a flake) is the same workflow run:
+// upload-artifact v4+ refuses a second artifact of the same name there
+// (409 Conflict) unless overwrite is set, which would turn a passing retry
+// red. bazel-test uploads the bd package even after its tests fail.
+func TestBazelWorkflowUploadsSurviveJobReruns(t *testing.T) {
+	uploads := 0
+	for name, job := range readCIWorkflow(t, bazelWorkflowName).Jobs {
+		for _, step := range job.Steps {
+			if !strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
+				continue
+			}
+			uploads++
+			if step.With["overwrite"] != "true" {
+				t.Errorf("%s step %q uploads %q without overwrite: true; a job re-run's upload would fail with 409", name, step.Name, step.With["name"])
+			}
+		}
+	}
+	if uploads < 8 {
+		t.Errorf("found %d upload steps in %s, want at least 8", uploads, bazelWorkflowName)
 	}
 }
