@@ -137,9 +137,10 @@ test:doltserver --remote_download_regex=.*/test\.(log|xml)$
 # Proxied-server tier: PR Risk's "Test (Proxied Dolt Cmd N/15)" jobs, as
 # //cmd/bd:bd_proxied_test (dolt-server-proxied tag). Kept out of
 # --config=doltserver because bazel.yml runs that lane locally too (forks,
-# rbe=off), where 15 shards of ~10 minutes, each with a dolt sql-server busy
-# on ~4 cores, do not fit; bazel.yml runs this one only with remote
-# execution, in a job of its own (bazel-proxied). The build is
+# rbe=off), where 30 concurrent shards, each with a dolt sql-server busy on
+# ~4 cores, do not fit regardless of any single shard's wall time; bazel.yml
+# runs this one only with remote execution, in a job of its own
+# (bazel-proxied). The build is
 # --config=doltserver's: race, like PR Risk's /tmp/bd-cmd-test (main.yml's
 # twin job runs build-artifacts' non-race bd-cmd-test, so this is the
 # stricter of the two); the subprocess bd is the non-race bd_for_tests, like
@@ -270,6 +271,20 @@ test:pure --remote_download_regex=.*/test\.xml$
 build:js-wasm --platforms=@rules_go//go/toolchain:js_wasm
 build:js-wasm --use_target_platform_for_tests
 build:js-wasm --remote_download_outputs=toplevel
+
+# D2 step 3: bazel.yml's bazel-test, bazel-pure and bazel-doltserver lanes
+# add this in mode remote only, where (on same-repo PRs) they are the only
+# pre-merge run of pr.yml's legacy PR Core, pure-Go/js-wasm, domain+uow and
+# contract corpus jobs, which ran every test every time (`go test
+# -count=1`) and never retried. Like the retired PR Risk tiers' configs:
+# always execute (a cached PASS would stand in for a run), and no
+# whole-invocation retry after a remote cache eviction ("Lost inputs"),
+# whose exit code outranks a test failure, so a test that failed in the
+# first attempt and passed in the retry would report green. Local and
+# cache runs (forks, Dependabot; their legacy jobs still run) keep cached
+# results.
+test:sole-run --nocache_test_results
+test:sole-run --experimental_remote_cache_eviction_retries=0
 
 # Read-only anonymous cache for fork PRs: rbe-west's rbe-cache endpoint serves
 # action-cache and CAS reads only (writes and Execute are refused by the farm)
