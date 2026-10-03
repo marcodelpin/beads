@@ -1265,6 +1265,14 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 		"main.yml": {
 			"build-artifacts": true, "build-embedded": true, "pr-core-wrapper": true, "test": true, "test-windows": true,
 			"pr-lint-wrapper": true, "go-vet-cache": true, "windows-test-binaries-cache": true,
+			// F7c: blacksmith-setup-go-cache's own restore/save pair seeds the
+			// self-defined blacksmith-sg-v1- cache namespace every advisory
+			// Blacksmith consumer restores from (B2, F7c implementation
+			// report); it is covered by its own
+			// TestBlacksmithSetupGoSeedExistsForAdvisoryConsumers and
+			// TestBlacksmithSetupGoCacheKeysMatchAcrossSeederAndConsumers in
+			// ci_f7c_advisory_test.go, not by assertGoCacheInventory above.
+			"blacksmith-setup-go-cache": true,
 		},
 		"pr.yml": {
 			"build-artifacts": true, "pr-core-wrapper": true, "scripts-go-checks": true, "worktree-remove-windows": true,
@@ -2427,6 +2435,25 @@ const wantRBERunsOn = "${{ (github.event_name == 'push' || github.event_name == 
 // as every other Blacksmith runs-on in this repo.
 const mainWindowsTestBinariesCacheRunsOn = "${{ matrix.runner == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
 
+// F7c: used to define its own sameRepoBlacksmith4vcpu here (same expression
+// as sameRepoBlacksmith2vcpu with the 4 vCPU label, for advisory jobs that
+// compile Go: conformance.yml, regression.yml, migration-test.yml,
+// cross-version-smoke.yml, proxied-local-smoke.yml). F7a independently
+// defined the same const; both are now served by the single shared
+// sameRepoBlacksmith4vcpu in ci_blacksmith_runner_test.go. migration-test.yml's
+// historical-upgrades job uses sameRepoBlacksmith4vcpuNoble instead (below).
+
+// F7c review fix (B1): migration-test.yml's historical-upgrades job cannot
+// use the plain ubuntu-latest fallback that sameRepoBlacksmith4vcpu uses,
+// because the v0.55.4 fixture is dynamically linked against the ICU ABI
+// shipped by Ubuntu 24.04's libicu74 package, and GitHub's ubuntu-latest
+// label is scheduled to move from 24.04 to 26.04 starting 2026-10-19 (see
+// actions/runner-images#14748); 26.04 drops libicu74 entirely. The fallback
+// here is pinned to the literal `ubuntu-24.04` label instead so the
+// non-Blacksmith path keeps working after that migration regardless of when
+// it lands. Do not fold this back into sameRepoBlacksmith4vcpu.
+const sameRepoBlacksmith4vcpuNoble = "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
+
 // pr.yml's call of bazel.yml: exactly these inputs (review D1 v2 N3). An rbe
 // override would put every PR in local mode and ungate the embedded tier
 // while the gate stays self-consistent; integration: "off" would drop the
@@ -2658,6 +2685,26 @@ func TestSameRepoBlacksmithRunners(t *testing.T) {
 			"test-nix": sameRepoBlacksmith4vcpu,
 		},
 		bazelWorkflowName: {bazelRBEJobName: wantRBERunsOn},
+		// F7c: advisory workflows. Each compiles Go (or, for docsync/
+		// broken-links, is cheap enough to size at 2 vCPU per spec-f7.md
+		// §2.2) and moves to Blacksmith for same-repo PRs/merge_group only;
+		// forks, Dependabot and push stay on ubuntu-latest.
+		"conformance.yml":         {"conformance": sameRepoBlacksmith4vcpu},
+		"regression.yml":          {"regression": sameRepoBlacksmith4vcpu},
+		"migration-test.yml":      {"historical-upgrades": sameRepoBlacksmith4vcpuNoble},
+		"cross-version-smoke.yml": {"smoke": sameRepoBlacksmith4vcpu, "versions": sameRepoBlacksmith2vcpu},
+		"docs-mintlify.yml":       {"docsync": sameRepoBlacksmith2vcpu, "broken-links": sameRepoBlacksmith2vcpu},
+		"proxied-local-smoke.yml": {"managed-local-smoke": sameRepoBlacksmith4vcpu},
+		// main.yml's seeder job (B2, F7c implementation report) is the one
+		// Blacksmith job that is NOT gated by the same-repo-PR expression: it
+		// is push-to-main only (always trusted), so it wraps the literal
+		// label in a trivial expression instead (see the job's own comment).
+		// Tracked here so the "no other Blacksmith label leaks" sweep below
+		// also covers main.yml.
+		"main.yml": {
+			"blacksmith-setup-go-cache":   "${{ 'blacksmith-4vcpu-ubuntu-2404' }}",
+			"windows-test-binaries-cache": mainWindowsTestBinariesCacheRunsOn,
+		},
 	}
 	// The two required gates' display names are a stable external contract
 	// (branch protection rule names) - moving them to Blacksmith must not
@@ -2690,7 +2737,13 @@ func TestSameRepoBlacksmithRunners(t *testing.T) {
 	}
 	// No other job in pr.yml or pr-risk.yml may name a Blacksmith label beyond
 	// the ones enumerated in `want` above (F4 added windows-test-binaries).
-	for _, file := range []string{"pr.yml", "pr-risk.yml"} {
+	// Same sweep for the F7c advisory workflows: nothing in them may name a
+	// Blacksmith label beyond the jobs listed in `want` above.
+	for _, file := range []string{
+		"pr.yml", "pr-risk.yml", "main.yml",
+		"conformance.yml", "regression.yml", "migration-test.yml",
+		"cross-version-smoke.yml", "docs-mintlify.yml", "proxied-local-smoke.yml",
+	} {
 		workflow := readCIWorkflow(t, file)
 		allowed := want[file]
 		for name, job := range workflow.Jobs {
