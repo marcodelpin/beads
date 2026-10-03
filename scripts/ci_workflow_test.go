@@ -360,15 +360,18 @@ func TestPRCIGateRequiresReleaseTargetCrossCompilation(t *testing.T) {
 	}
 }
 
-// TestReleaseTargetCrossCompilationMatrixMatchesGoreleaser keeps the pr.yml
-// cross-compilation matrix and the set of shipped release targets in lockstep.
-// The matrix is a hand-enumerated mirror of .goreleaser.yml, so without a guard
-// a newly added release target -- the way freebsd/amd64 once was -- is silently
-// uncovered while a green "release target cross-compilation" check still
-// stands. That is worse than having no check at all, because the check's
-// existence implies the coverage it has quietly lost.
+// TestReleaseTargetCrossCompilationMatrixMatchesGoreleaser keeps
+// scripts/ci/release-targets.txt (F7a: the single source of truth for the
+// pr.yml cross-compilation job's two matrix legs, read by
+// scripts/ci/check-release-cross-compile.sh) and the set of shipped release
+// targets in lockstep. Without a guard a newly added release target -- the
+// way freebsd/amd64 once was -- is silently uncovered while a green "release
+// target cross-compilation" check still stands. That is worse than having no
+// check at all, because the check's existence implies the coverage it has
+// quietly lost.
 func TestReleaseTargetCrossCompilationMatrixMatchesGoreleaser(t *testing.T) {
 	const jobName = "check-release-target-cross-compilation"
+	const manifestPath = "scripts/ci/release-targets.txt"
 
 	// darwin/amd64 and darwin/arm64 are shipped release targets that are
 	// deliberately absent from .goreleaser.yml's builds: release.yml's
@@ -386,24 +389,61 @@ func TestReleaseTargetCrossCompilationMatrixMatchesGoreleaser(t *testing.T) {
 		}
 	}
 
-	got := make(map[string]bool)
-	for _, leg := range readCIWorkflow(t, "pr.yml").job(t, jobName).Strategy.Matrix.Include {
-		goos, _ := leg.Extra["goos"].(string)
-		goarch, _ := leg.Extra["goarch"].(string)
-		if goos == "" || goarch == "" {
-			t.Fatalf("%s matrix leg %v has no goos/goarch", jobName, leg.Extra)
+	// The job itself must still read the manifest, so a future rewrite of the
+	// job that stops threading matrix.group through to the script cannot pass
+	// silently.
+	job := readCIWorkflow(t, "pr.yml").job(t, jobName)
+	groups := append([]string(nil), job.Strategy.Matrix.Group...)
+	sort.Strings(groups)
+	if !reflect.DeepEqual(groups, []string{"desktop", "unix"}) {
+		t.Errorf("%s matrix groups = %v, want [desktop unix]", jobName, groups)
+	}
+	var ranScript bool
+	for _, step := range job.Steps {
+		if strings.Contains(step.Run, "check-release-cross-compile.sh ${{ matrix.group }}") {
+			ranScript = true
 		}
+	}
+	if !ranScript {
+		t.Errorf("%s does not run check-release-cross-compile.sh with matrix.group", jobName)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(sourceRepoRoot(t), manifestPath))
+	if err != nil {
+		t.Fatalf("read %s: %v", manifestPath, err)
+	}
+	got := make(map[string]bool)
+	seenGroups := make(map[string]bool)
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			t.Fatalf("%s: malformed row %q, want 'GOOS GOARCH GROUP'", manifestPath, line)
+		}
+		goos, goarch, group := fields[0], fields[1], fields[2]
+		if group != "unix" && group != "desktop" {
+			t.Fatalf("%s: row %q has unknown group %q", manifestPath, line, group)
+		}
+		seenGroups[group] = true
 		got[goos+"/"+goarch] = true
+	}
+	for _, g := range []string{"unix", "desktop"} {
+		if !seenGroups[g] {
+			t.Errorf("%s: no targets in group %q", manifestPath, g)
+		}
 	}
 
 	for target, source := range want {
 		if !got[target] {
-			t.Errorf("release target %s (%s) is not covered by the %s matrix", target, source, jobName)
+			t.Errorf("release target %s (%s) is not covered by %s", target, source, manifestPath)
 		}
 	}
 	for target := range got {
 		if _, ok := want[target]; !ok {
-			t.Errorf("%s matrix builds %s, which is not a shipped release target", jobName, target)
+			t.Errorf("%s lists %s, which is not a shipped release target", manifestPath, target)
 		}
 	}
 }
@@ -466,9 +506,14 @@ func TestPRCoreRequiresExcludeReadPermissionCoverage(t *testing.T) {
 
 func TestPRComplexityReportIsAdvisoryAndBestEffort(t *testing.T) {
 	workflow := readCIWorkflow(t, "pr.yml")
-	job := workflow.job(t, "complexity-report")
-	if job.RunsOn != "ubuntu-latest" || job.TimeoutMinutes != 0 || job.ContinueOnError {
-		t.Errorf("complexity job must have no job timeout/continue-on-error: runs-on=%q timeout=%d continue=%v", job.RunsOn, job.TimeoutMinutes, job.ContinueOnError)
+	job := workflow.job(t, "advisory-reports")
+	// F7a: advisory-reports (examples build + complexity) moved to a
+	// same-repo Blacksmith runner and gained a generous job-level timeout
+	// (TestSameRepoBlacksmithRunners requires one of every moved job) that is
+	// a backstop against a stuck runner, not a realistic ceiling - every
+	// step underneath still carries its own tight timeout/continue-on-error.
+	if job.RunsOn != sameRepoBlacksmith2vcpu || job.TimeoutMinutes != 60 || job.ContinueOnError {
+		t.Errorf("advisory-reports job must run on same-repo Blacksmith with a backstop timeout/no job continue-on-error: runs-on=%q timeout=%d continue=%v", job.RunsOn, job.TimeoutMinutes, job.ContinueOnError)
 	}
 	if contains(job.Needs, "ci-gate") {
 		t.Errorf("complexity report unexpectedly depends on ci-gate: %v", job.Needs)
@@ -492,7 +537,7 @@ func TestPRComplexityReportIsAdvisoryAndBestEffort(t *testing.T) {
 		t.Errorf("complexity annotation step missing always/warning contract: if=%q run=%q", annotate.If, annotate.Run)
 	}
 	gate := workflow.job(t, "ci-gate")
-	if contains(gate.Needs, "complexity-report") {
+	if contains(gate.Needs, "advisory-reports") {
 		t.Errorf("ci-gate must not require advisory complexity report: %v", gate.Needs)
 	}
 }
@@ -1208,7 +1253,7 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 		restoreModuleCache(), restoreXCompileCache(),
 	})
 	for _, jobName := range []string{
-		"check-doc-freshness-platforms", "pr-preflight-platforms", "build-examples",
+		"check-doc-freshness-platforms", "pr-preflight-platforms", "advisory-reports",
 		"check-release-target-cross-compilation",
 	} {
 		assertGoCacheInventory(t, workflows["pr.yml"].job(t, jobName), []goCacheStep{restoreModuleCache()})
@@ -1223,7 +1268,7 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 		},
 		"pr.yml": {
 			"build-artifacts": true, "pr-core-wrapper": true, "scripts-go-checks": true, "worktree-remove-windows": true,
-			"check-doc-freshness-platforms": true, "pr-preflight-platforms": true, "build-examples": true,
+			"check-doc-freshness-platforms": true, "pr-preflight-platforms": true, "advisory-reports": true,
 			"check-release-target-cross-compilation": true, "pr-lint-wrapper": true, "windows-test-binaries": true,
 		},
 		"pr-risk.yml": {"build-embedded": true},
@@ -1272,7 +1317,7 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 		[]string{"Restore Go module cache"}, []string{"Exercise native date and Bash process boundary"})
 	assertStepsBefore(t, workflows["pr.yml"].job(t, "pr-preflight-platforms"),
 		[]string{"Restore Go module cache"}, []string{"Exercise the real Bash process boundary", "Exercise test.sh prebuilt binary path"})
-	assertStepsBefore(t, workflows["pr.yml"].job(t, "build-examples"),
+	assertStepsBefore(t, workflows["pr.yml"].job(t, "advisory-reports"),
 		[]string{"Restore Go module cache"}, []string{"Type-check every module under examples/"})
 
 	prRiskEmbedded := workflows["pr-risk.yml"].job(t, "build-embedded")
@@ -1336,7 +1381,7 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 		{"pr.yml", "worktree-remove-windows"},
 		{"pr.yml", "check-doc-freshness-platforms"},
 		{"pr.yml", "pr-preflight-platforms"},
-		{"pr.yml", "build-examples"},
+		{"pr.yml", "advisory-reports"},
 		{"pr-risk.yml", "build-embedded"},
 	} {
 		if got := workflows[target.workflow].job(t, target.job).step(t, "Set up Go").ID; got != "setup-go" {
@@ -2001,6 +2046,7 @@ type ciWorkflowMatrix struct {
 	Shard   []int                     `yaml:"shard"`
 	Target  []string                  `yaml:"target"`
 	Check   []string                  `yaml:"check"`
+	Group   []string                  `yaml:"group"`
 	Include []ciWorkflowMatrixInclude `yaml:"include"`
 }
 
@@ -2363,22 +2409,15 @@ const bazelPackageRunsOn = "${{ needs.rbe.outputs.mode == 'remote' && 'blacksmit
 // PR stay GitHub-hosted. Pinned verbatim by TestSameRepoBlacksmithRunners.
 const wantRBERunsOn = "${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
 
-// F3: the same "same-repo PR, or merge_group" Blacksmith expression used by
-// pr.yml's and pr-risk.yml's bazel-coverage/ci-gate/detect-ci-tier jobs - a
-// package-level const so every test that needs it (TestSameRepoBlacksmithRunners,
-// TestPRRiskBazelCoverageJob, ...) reads the one literal.
-const sameRepoBlacksmith2vcpu = "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
-
-// F4: the same same-repo-or-merge_group expression, but selecting the 8vcpu
-// label pr.yml's windows-test-binaries cross-compile job uses (mingw build +
-// two go test -c compiles benefit from the extra cores; forks/Dependabot PRs
-// fall back to ubuntu-latest exactly like the 2vcpu const above).
-const sameRepoBlacksmith8vcpu = "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
+// The sameRepoBlacksmith{2,4,8}vcpu consts and the real-expression evaluator
+// that checks them now live in ci_blacksmith_runner_test.go (shared with
+// F7c; see that file's doc comment for the API F7c rebases onto).
 
 // F4 review SF-1: main.yml's windows-test-binaries-cache job seeds the same
 // cache keys/paths from both runner selections pr.yml's windows-test-binaries
-// job can land on (sameRepoBlacksmith8vcpu above, for same-repo PRs/
-// merge_group; ubuntu-latest for forks/Dependabot). Blacksmith runners can't
+// job can land on (sameRepoBlacksmith8vcpu, defined in
+// ci_blacksmith_runner_test.go, for same-repo PRs/merge_group; ubuntu-latest
+// for forks/Dependabot). Blacksmith runners can't
 // see a GitHub-hosted runner's actions/cache entries (and vice versa) even
 // though both report the same runner.os/runner.arch, so a single-leg seeder
 // only ever warms one of the two consumer paths. matrix.runner (not a
@@ -2597,8 +2636,27 @@ func TestDetectPackageGatesCoversBazelWorkflow(t *testing.T) {
 // forks); every other job below reads only merge_group and pull_request.
 func TestSameRepoBlacksmithRunners(t *testing.T) {
 	want := map[string]map[string]string{
-		"pr.yml":          {"bazel-coverage": sameRepoBlacksmith2vcpu, "ci-gate": sameRepoBlacksmith2vcpu, "windows-test-binaries": sameRepoBlacksmith8vcpu},
-		"pr-risk.yml":     {"bazel-coverage": sameRepoBlacksmith2vcpu, "ci-gate": sameRepoBlacksmith2vcpu, "detect-ci-tier": sameRepoBlacksmith2vcpu},
+		// F7a: cache-free same-repo Linux jobs that restore no GitHub-saved
+		// build cache moved onto same-repo Blacksmith at their measured vCPU
+		// size (module-cache misses on the Blacksmith pool are acceptable
+		// per spec; jobs that need a Blacksmith-side build-cache saver are
+		// F7b's scope, not this one). windows-test-binaries is F4's Linux
+		// mingw cross-compile job, sized at 8vcpu like the cross-compilation
+		// matrix fold below.
+		"pr.yml": {
+			"bazel-coverage": sameRepoBlacksmith2vcpu, "ci-gate": sameRepoBlacksmith2vcpu,
+			"fast-checks":                            sameRepoBlacksmith2vcpu,
+			"advisory-reports":                       sameRepoBlacksmith2vcpu,
+			"test-dolt-server-fingerprint":           sameRepoBlacksmith2vcpu,
+			"check-doc-flags":                        sameRepoBlacksmith4vcpu,
+			"pr-policy-wrapper":                      sameRepoBlacksmith4vcpu,
+			"check-release-target-cross-compilation": sameRepoBlacksmith8vcpu,
+			"windows-test-binaries":                  sameRepoBlacksmith8vcpu,
+		},
+		"pr-risk.yml": {
+			"bazel-coverage": sameRepoBlacksmith2vcpu, "ci-gate": sameRepoBlacksmith2vcpu, "detect-ci-tier": sameRepoBlacksmith2vcpu,
+			"test-nix": sameRepoBlacksmith4vcpu,
+		},
 		bazelWorkflowName: {bazelRBEJobName: wantRBERunsOn},
 	}
 	// The two required gates' display names are a stable external contract
@@ -2642,6 +2700,249 @@ func TestSameRepoBlacksmithRunners(t *testing.T) {
 			if strings.Contains(job.RunsOn, "blacksmith-") {
 				t.Errorf("%s job %s runs-on %q names a Blacksmith label; only %v may", file, name, job.RunsOn, allowed)
 			}
+		}
+	}
+}
+
+// TestBlacksmithJobsReadNoSecrets: F7a's rule that a job whose runs-on can
+// select a Blacksmith label never reads a secret, in any form (job env, job
+// if:, step env, step with:, step if:, or a step's run: body interpolating
+// ${{ secrets.X }}). Blacksmith's ternary already falls back to ubuntu-latest
+// for forks and Dependabot, but the no-secrets rule is a second, independent
+// backstop: even a same-repo Blacksmith run should never need repository
+// secrets for a cache-free, read-only check.
+//
+// Review N-4 (2026-10-03): this also now scans job.If and step.If, since a
+// conditional guarded on a secret (e.g. an if: expression testing
+// secrets.FOO) would otherwise slip past the env/with/run checks below. It
+// does not yet inspect
+// container/services credentials or resolve matrix markers in runs-on
+// (neither ciWorkflowJob field exists today); that is deferred to F7b, which
+// is where container/services and matrix-aware runs-on resolution land.
+func TestBlacksmithJobsReadNoSecrets(t *testing.T) {
+	secretRef := regexp.MustCompile(`\bsecrets\s*(\.|\[)`)
+	for _, file := range []string{"pr.yml", "pr-risk.yml"} {
+		workflow := readCIWorkflow(t, file)
+		for name, job := range workflow.Jobs {
+			if !strings.Contains(job.RunsOn, "blacksmith-") {
+				continue
+			}
+			if secretRef.MatchString(job.If) {
+				t.Errorf("%s job %s if %q reads a secret; Blacksmith-eligible jobs must not", file, name, job.If)
+			}
+			for k, v := range job.Env {
+				if secretRef.MatchString(v) {
+					t.Errorf("%s job %s env %s = %q reads a secret; Blacksmith-eligible jobs must not", file, name, k, v)
+				}
+			}
+			for _, step := range job.Steps {
+				if secretRef.MatchString(step.If) {
+					t.Errorf("%s job %s step %q if %q reads a secret", file, name, step.Name, step.If)
+				}
+				for k, v := range step.Env {
+					if secretRef.MatchString(v) {
+						t.Errorf("%s job %s step %q env %s = %q reads a secret", file, name, step.Name, k, v)
+					}
+				}
+				for k, v := range step.With {
+					if secretRef.MatchString(v) {
+						t.Errorf("%s job %s step %q with %s = %q reads a secret", file, name, step.Name, k, v)
+					}
+				}
+				if secretRef.MatchString(step.Run) {
+					t.Errorf("%s job %s step %q run reads a secret:\n%s", file, name, step.Name, step.Run)
+				}
+			}
+		}
+	}
+}
+
+// TestSameRepoBlacksmithExpressionSemantics now lives in
+// ci_blacksmith_runner_test.go, which evaluates the real
+// sameRepoBlacksmith{2,4,8}vcpu expression strings with a small GitHub
+// Actions expression evaluator instead of a hand-written Go mirror
+// (review SF-3). That file is shared with F7c.
+
+// TestPRCIGateFastChecksTokens pins pr.yml's F7a fold of five formerly
+// standalone jobs (check-build-tags, check-version-consistency,
+// check-migration-hygiene, check-no-beads-changes, fmt-check) into
+// fast-checks' five steps: each step's id, its outputs entry, and the
+// CI_GATE_REQUIRED token/env mapping that lets ci-gate still red the exact
+// same token a failing check reddened before the fold. It also pins the
+// FAST_CHECKS backstop token (the job's own .result), which gives ci-gate.sh
+// one clear line if the whole job is lost before any step reports.
+func TestPRCIGateFastChecksTokens(t *testing.T) {
+	pr := readCIWorkflow(t, "pr.yml")
+	job := pr.job(t, "fast-checks")
+	gate := pr.job(t, "ci-gate")
+	gateStep := gate.step(t, "Evaluate CI gate")
+	required := strings.Fields(gateStep.Env["CI_GATE_REQUIRED"])
+
+	if !contains(gate.Needs, "fast-checks") {
+		t.Errorf("ci-gate does not need fast-checks: %v", gate.Needs)
+	}
+	if !contains(required, "FAST_CHECKS") || gateStep.Env["FAST_CHECKS"] != "${{ needs.fast-checks.result }}" {
+		t.Errorf("ci-gate does not require fast-checks' own result as the FAST_CHECKS backstop: required=%v env=%q", required, gateStep.Env["FAST_CHECKS"])
+	}
+
+	// stepID -> (job output name, CI_GATE_REQUIRED token).
+	mapping := map[string]struct{ output, token string }{
+		"build-tags":          {"build-tags", "CHECK_BUILD_TAGS"},
+		"version-consistency": {"version-consistency", "CHECK_VERSION_CONSISTENCY"},
+		"migration-hygiene":   {"migration-hygiene", "CHECK_MIGRATION_HYGIENE"},
+		"no-beads-changes":    {"no-beads-changes", "CHECK_NO_BEADS_CHANGES"},
+		"fmt":                 {"fmt", "FMT_CHECK"},
+	}
+	for stepID, m := range mapping {
+		step := job.step(t, map[string]string{
+			"build-tags": "Check build-tag policy", "version-consistency": "Check all versions match",
+			"migration-hygiene": "Run migration hygiene checks", "no-beads-changes": "Check for .beads/issues.jsonl changes",
+			"fmt": "Check gofmt",
+		}[stepID])
+		wantIf := "${{ !cancelled() }}"
+		if stepID == "no-beads-changes" {
+			// pull_request-only, same as before the fold: merge_group has no
+			// base_ref to diff against. The CI_GATE_SKIPPED_OK allowlist
+			// below covers exactly that skip on merge_group runs.
+			wantIf = "${{ !cancelled() && github.event_name == 'pull_request' }}"
+		}
+		if step.ID != stepID || step.If != wantIf {
+			t.Errorf("fast-checks step %q: id %q, if %q; want id %q, if %q", step.Name, step.ID, step.If, stepID, wantIf)
+		}
+		wantOutput := "${{ steps." + stepID + ".outcome }}"
+		if job.Outputs[m.output] != wantOutput {
+			t.Errorf("fast-checks outputs.%s = %q, want %q", m.output, job.Outputs[m.output], wantOutput)
+		}
+		if !contains(required, m.token) {
+			t.Errorf("ci-gate CI_GATE_REQUIRED does not include %s", m.token)
+		}
+		wantEnv := "${{ needs.fast-checks.outputs." + m.output + " || 'skipped' }}"
+		if gateStep.Env[m.token] != wantEnv {
+			t.Errorf("ci-gate env %s = %q, want %q", m.token, gateStep.Env[m.token], wantEnv)
+		}
+	}
+	// CHECK_NO_BEADS_CHANGES's step only runs on pull_request; the gate's own
+	// run: script must still allow-list exactly that skip on merge_group,
+	// unchanged by the fold.
+	if !strings.Contains(gateStep.Run, `skipped_ok="CHECK_NO_BEADS_CHANGES"`) {
+		t.Error("ci-gate run script no longer allow-lists CHECK_NO_BEADS_CHANGES's merge_group skip")
+	}
+
+	// Review N-6 (2026-10-03): pin the folded steps' actual commands/env, not
+	// just their id/if/output/token wiring. These three gaps predate F7a (the
+	// standalone jobs were never pinned either), but fast-checks is now one
+	// job, so the cost of covering them here is marginal.
+	buildTags := job.step(t, "Check build-tag policy")
+	for _, want := range []string{
+		"./scripts/check-build-tags.sh",
+		"./scripts/check-go-install-guidance.sh",
+		"./scripts/check-winget-portable-alias.sh",
+	} {
+		if !strings.Contains(buildTags.Run, want) {
+			t.Errorf("fast-checks build-tags step run does not call %s:\n%s", want, buildTags.Run)
+		}
+	}
+	migrationHygiene := job.step(t, "Run migration hygiene checks")
+	const wantBaseSHA = "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
+	if migrationHygiene.Env["BASE_SHA"] != wantBaseSHA {
+		t.Errorf("fast-checks migration-hygiene step env BASE_SHA = %q, want %q", migrationHygiene.Env["BASE_SHA"], wantBaseSHA)
+	}
+}
+
+// Review N-6 (2026-10-03): test-windows-small's dbproxy-server leg must keep
+// building CGO-disabled, same as before the fold.
+func TestPRWindowsSmallDbproxyServerIsCGODisabled(t *testing.T) {
+	pr := readCIWorkflow(t, "pr.yml")
+	job := pr.job(t, "test-windows-small")
+	step := job.step(t, "Run dbproxy server package tests on Windows")
+	if step.Env["CGO_ENABLED"] != "0" {
+		t.Errorf("test-windows-small dbproxy-server step env CGO_ENABLED = %q, want \"0\"", step.Env["CGO_ENABLED"])
+	}
+}
+
+// stepContinueOnError reports whether a step's continue-on-error is truthy
+// (the field unmarshals as `any` because the YAML schema also allows an
+// expression string, which GitHub itself treats as whatever it evaluates to
+// - this test only cares about the literal `true` every current step uses).
+func stepContinueOnError(step ciWorkflowStep) bool {
+	v, ok := step.ContinueOnError.(bool)
+	return ok && v
+}
+
+// TestPRWindowsMakeShellLegsFailTheJob is review SF-1 (2026-10-03):
+// windows-make-shell is a required gate (WINDOWS_MAKE_SHELL). Before this
+// fix, every leg's install/exercise step carried continue-on-error and a
+// hand-written final step reconstructed the job's pass/fail from each step's
+// .outcome - two mutations (an aggregator that always exits 0, and one that
+// silently dropped the MSYS2 install check) both passed the suite, because
+// nothing pinned the aggregator's own correctness. The fix removes the
+// aggregator entirely: every step after checkout keeps `if: !cancelled()`
+// (so a failing leg does not stop later legs from attempting to run), but
+// only the Cygwin *setup* step (a flaky installer download, not a code
+// failure) may carry continue-on-error. Every other step's failure now fails
+// the job directly, with no hand-written logic in between to go stale.
+func TestPRWindowsMakeShellLegsFailTheJob(t *testing.T) {
+	pr := readCIWorkflow(t, "pr.yml")
+	// Only the install/exercise "leg" steps need `if: !cancelled()` (so a
+	// failing leg does not stop a later, independent leg from attempting to
+	// run) and the no-continue-on-error rule; checkout/setup steps that every
+	// leg depends on are deliberately left to run unconditionally.
+	legSteps := map[string][]string{
+		"windows-make-shell": {
+			"Install native GNU Make", "Set up MSYS2 GNU Make", "Set up Cygwin GNU Make",
+			"Warn when Cygwin setup was skipped by a download failure",
+			"Exercise native Windows Make", "Exercise MSYS2-hosted Make", "Exercise Cygwin-hosted Make",
+		},
+		"test-windows-small": {
+			"Run doltversion package tests on Windows", "Run dbproxy server package tests on Windows",
+		},
+	}
+	for jobName, names := range legSteps {
+		job := pr.job(t, jobName)
+		for _, name := range names {
+			step := job.step(t, name)
+			if !strings.Contains(step.If, "!cancelled()") {
+				t.Errorf("%s step %q if = %q, want it to contain !cancelled() so later legs still run after an earlier one fails", jobName, step.Name, step.If)
+			}
+			allowCOE := jobName == "windows-make-shell" && step.ID == "cygwin"
+			if stepContinueOnError(step) && !allowCOE {
+				t.Errorf("%s step %q (id %q) has continue-on-error; only windows-make-shell's Cygwin setup step may, so every other leg's failure reds the job directly", jobName, step.Name, step.ID)
+			}
+			if allowCOE && !stepContinueOnError(step) {
+				t.Errorf("%s Cygwin setup step lost continue-on-error; a flaky installer download would now fail the job", jobName)
+			}
+		}
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Name, "Fail if") {
+				t.Errorf("%s still has a hand-written aggregator step %q; SF-1 replaced aggregators with per-step failure propagation", jobName, step.Name)
+			}
+			if step.ID != "cygwin" && stepContinueOnError(step) {
+				t.Errorf("%s step %q (id %q) has continue-on-error; only windows-make-shell's Cygwin setup step may", jobName, step.Name, step.ID)
+			}
+		}
+	}
+	// The aggregator's job outputs (native/msys2/cygwin) are gone too
+	// (review N-3): nothing reads them once ci-gate only needs the job's own
+	// .result.
+	windowsMakeShell := pr.job(t, "windows-make-shell")
+	if len(windowsMakeShell.Outputs) != 0 {
+		t.Errorf("windows-make-shell outputs = %v, want none (N-3: they were unused)", windowsMakeShell.Outputs)
+	}
+}
+
+// TestPRWindowsMakeShellSetupStepsHaveTimeouts is review SF-2 (2026-10-03):
+// the Cygwin and MSYS2 setup steps download third-party installers from the
+// network; a step timeout bounds how long a hang can block the later legs'
+// exercise steps behind it, instead of consuming the whole 30-minute job
+// timeout (which would also lose native/msys2 coverage, since their exercise
+// steps would never get a chance to run before the job-level cancel).
+func TestPRWindowsMakeShellSetupStepsHaveTimeouts(t *testing.T) {
+	pr := readCIWorkflow(t, "pr.yml")
+	job := pr.job(t, "windows-make-shell")
+	for _, name := range []string{"Set up MSYS2 GNU Make", "Set up Cygwin GNU Make"} {
+		step := job.step(t, name)
+		if step.TimeoutMinutes <= 0 {
+			t.Errorf("windows-make-shell step %q has no timeout-minutes", name)
 		}
 	}
 }
@@ -3016,6 +3317,18 @@ type bazelGateScenario struct {
 	wantMention string // a red gate must name this id
 }
 
+// fastChecksLegacyJobNames: pr.yml's fast-checks job (F7a) output id -> the
+// standalone job name it replaced. Lets the gate simulation resolve
+// needs.fast-checks.outputs.* through the same prLegacyJobResult lookup
+// (and sc.results overrides) the pre-fold standalone jobs used.
+var fastChecksLegacyJobNames = map[string]string{
+	"build-tags":          "check-build-tags",
+	"version-consistency": "check-version-consistency",
+	"migration-hygiene":   "check-migration-hygiene",
+	"no-beads-changes":    "check-no-beads-changes",
+	"fmt":                 "fmt-check",
+}
+
 // runPRGateStep runs pr.yml's actual "Evaluate CI gate" step (its run block,
 // under GitHub's bash flags) with its env evaluated for the scenario: every
 // non-Bazel need succeeded; Bazel expressions read the scenario. An env
@@ -3050,6 +3363,18 @@ func runPRGateStep(t *testing.T, step ciWorkflowStep, sc bazelGateScenario) (boo
 				t.Fatalf("ci-gate env %s = %q: %s has no such tier output", key, value, prRiskCoverageJobName)
 			}
 			got = sc.covered[m[3]]
+		case m[1] == "fast-checks" && m[2] != "result":
+			// F7a: fast-checks folds five formerly-standalone jobs into one
+			// job's steps; ci-gate reads each step's outcome via the job's
+			// outputs instead of a separate job's .result. Resolve through
+			// the same prLegacyJobResult the standalone jobs used, keyed by
+			// their old job name, so sc.results overrides (and the default
+			// "success") work exactly as they did before the fold.
+			legacy, ok := fastChecksLegacyJobNames[m[3]]
+			if !ok {
+				t.Fatalf("ci-gate env %s = %q: fast-checks has no such step output", key, value)
+			}
+			got = prLegacyJobResult(legacy, sc)
 		case m[1] != "bazel" && m[2] == "result":
 			got = prLegacyJobResult(m[1], sc)
 		case m[1] != "bazel":
