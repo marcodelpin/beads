@@ -1023,20 +1023,24 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: echo "result=$JOB_STATUS" >> "$GITHUB_OUTPUT"
 
-  # pr-risk.yml's proxied-server tier, "Test (Proxied Dolt Cmd N/15)", as
-  # --config=doltserver-proxied: //cmd/bd:bd_proxied_test runs the job's
-  # shard script in 15 Bazel shards, so shard k runs exactly job k's tests.
-  # Same build as --config=doltserver (race bd_test, non-race bd_for_tests),
-  # shared with bazel-doltserver through the remote cache. PR Risk builds
-  # its bd-cmd-test with -race, as here; main.yml's test-proxied-cmd twin
-  # uses build-artifacts' non-race bd-cmd-test, so this lane is the stricter
-  # of the two. A job of its own, not gated by any integration switch: it
-  # runs in pr.yml's call and its gate requires it (BAZEL_PROXIED).
+  # Like pr-risk.yml's proxied-server tier, "Test (Proxied Dolt Cmd N/15)",
+  # as --config=doltserver-proxied: //cmd/bd:bd_proxied_test runs the shard
+  # script, so shard k runs exactly that manifest entry's tests. This lane
+  # runs 30 shards of its own (.github/scripts/proxied-cmd-test-shards.txt's
+  # duration-balanced 30-block; see scripts/ci/proxied_test_durations.json),
+  # not the legacy jobs' 15 — shard k here is not the same split as their
+  # shard k. Same build as --config=doltserver (race bd_test, non-race
+  # bd_for_tests), shared with bazel-doltserver through the remote cache.
+  # PR Risk builds its bd-cmd-test with -race, as here; main.yml's
+  # test-proxied-cmd twin uses build-artifacts' non-race bd-cmd-test, so
+  # this lane is the stricter of the two. A job of its own, not gated by
+  # any integration switch: it runs in pr.yml's call and its gate requires
+  # it (BAZEL_PROXIED).
   bazel-proxied:
     name: proxied-server tier
-    # Remote execution only, like bazel-embedded: 15 shards of ~5-10
-    # minutes, each with a dolt sql-server busy on ~4 cores, do not fit a
-    # GitHub-hosted runner.
+    # Remote execution only, like bazel-embedded: 30 concurrent shards, each
+    # running its own dolt sql-server busy on ~4 cores, do not fit a
+    # GitHub-hosted runner regardless of any single shard's wall time.
     # On same-repo pull_requests the legacy jobs stand down (pr-risk.yml's
     # bazel-coverage; D2 step 2), so this lane is then the tier's only PR
     # run and pr.yml's gate requires it to have run here and passed.
@@ -1079,8 +1083,36 @@ jobs:
             exit 1
           fi
 
-      # Remote: the longest shard takes ~5-8 minutes (each shard's Go
-      # timeout is its job's 15m, 1200s Bazel cap), plus a compile.
+      # Remote: each shard's Go timeout is its job's 15m, 1200s Bazel cap,
+      # plus a compile. scripts/ci/proxied_test_durations.json's 176 entries
+      # are each a clean, single-job (no concurrent heavy bazel/dolt job
+      # intentionally started on the box; see that file's header for its
+      # ambient-contention caveat), -test.parallel=4 top-level-test
+      # duration — the exact config this job uses — from a single fresh,
+      # manifest-aligned 30-shard sweep's own <testsuite time> (errors="0",
+      # so a failing-but-complete suite's time is still trustworthy); every
+      # one of the 176 discovered tests completed inside its shard run, so
+      # no `bazel run` leaf-summation workaround was needed this time. See
+      # that file's header for the full methodology, including why an
+      # earlier -test.parallel=1 (serial) capture was replaced: serial
+      # timings don't model this lane (which always runs parallel=4), and
+      # an independent re-review measured near-zero correlation (r=0.08)
+      # between the serial-derived predicted shard load and actual
+      # parallel=4 wall time.
+      #
+      # Measured per-shard wall time for the full 30-shard local sweep that
+      # produced this data: shards ranged from roughly 32s to 341s, with
+      # most clustering well under this job's 25m step timeout / 30m job
+      # timeout. After repacking with these corrected weights, the LPT
+      # estimate clusters every shard within a few seconds of ~355-360s
+      # (sum of all 176 measured durations / 30 shards) — no single test or
+      # small group of tests dominates a shard the way the discarded serial
+      # data wrongly implied. This is a local, single-job measurement, not
+      # a verified RBE forecast (this job has only ever run remote); if a
+      # shard's RBE wall time diverges sharply from this local estimate,
+      # that is RBE throughput differing from local execution, not
+      # necessarily a regression — compare against this job's own recent
+      # run history before assuming a hang.
       - name: bazel test //... --config=doltserver-proxied
         id: test
         timeout-minutes: 25
@@ -1107,7 +1139,7 @@ jobs:
         run: >-
           python3 tools/bazel/check_shard_coverage.py
           --bep "$RUNNER_TEMP/bazel-bep.json"
-          --suite //cmd/bd:bd_proxied_test .github/scripts/proxied-test-shard.sh 15
+          --suite //cmd/bd:bd_proxied_test .github/scripts/proxied-test-shard.sh 30
 
       - name: Upload test logs
         if: ${{ failure() && steps.test.outcome != 'skipped' }}
