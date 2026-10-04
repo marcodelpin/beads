@@ -215,7 +215,7 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 				// bazel.yml's comment on the job).
 				case strings.HasPrefix(mode, "fork-") && !runs && !bazelPackageJobs[name] && !(name == bazelRBEPrewarmJobName && strings.HasPrefix(mode, "fork-")):
 					t.Errorf("%s does not run in mode %s (every lane runs remotely)", name, mode)
-				case mode == "cache" && name == bazelIntegJobName && !runs:
+				case mode == "cache" && (name == bazelIntegJobName || name == bazelCmdDoltJobName) && !runs:
 					t.Errorf("%s does not run in mode cache", name)
 				case mode == "cache" && bazelRemoteOnlyJobs[name] && runs:
 					t.Errorf("remote-only %s runs in mode cache", name)
@@ -277,6 +277,12 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 					wantSkips = append(wantSkips, id)
 				}
 			}
+			// Flag-gated lanes' skips are accepted whatever the flag says.
+			for lane, g := range bazelFlagGatedLanes {
+				if !ran[lane] {
+					wantSkips = append(wantSkips, g.id)
+				}
+			}
 			if len(lanes) == 0 {
 				wantSkips = append(wantSkips, bazelAggregateGateID)
 			}
@@ -306,10 +312,12 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 func checkModeRC(t *testing.T, lane, mode, outputs, rc string, files []string, logs string) {
 	t.Helper()
 	has := func(s string) bool { return strings.Contains(rc, s) }
-	// Every mode: the fetch hardening (key neutral, repository fetching only).
+	// Every mode: the fetch hardening (key neutral, repository fetching only)
+	// and the client heap (R4: a startup option, key neutral).
 	for _, want := range []string{
 		"\ncommon --repo_env=GOPROXY=https://proxy.golang.org|https://proxy.golang.org|direct\n",
 		"\ncommon --http_timeout_scaling=2.0\n",
+		"\nstartup --host_jvm_args=-Xmx4g\n",
 	} {
 		if !has(want) {
 			t.Errorf("%s (mode %s): rc lacks %q:\n%s", lane, mode, strings.TrimSpace(want), rc)
