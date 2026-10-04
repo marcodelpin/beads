@@ -1060,21 +1060,28 @@ func TestDoltTestcontainerStepsDisableRyuk(t *testing.T) {
 // TestNightlyFullTestRunsEmbeddedDoltBatchApplySuite pins the nightly
 // full-test job's embedded-Dolt step: it must set BEADS_TEST_EMBEDDED_DOLT=1
 // (the gate skipUnlessEmbeddedDolt checks) and run exactly
-// TestBatchApplyContract and TestLargeBatchApplyWallClock_Embedded, non-race,
-// after the main "Full Test Suite" step. That main step never sets
-// BEADS_TEST_EMBEDDED_DOLT, so without this step the nightly job would never
-// exercise a real 1000-item apply through the embedded backend at all — see
-// the step's own comment in nightly.yml for why non-race and why these two
-// tests specifically.
+// TestBatchApplyContract, TestLargeBatchApplyWallClock_Embedded and (F1)
+// TestLargeBatchApplyStatementCounts712_Embedded, non-race, after the main
+// "Full Test Suite" step. That main step never sets BEADS_TEST_EMBEDDED_DOLT,
+// so without this step the nightly job would never exercise a real
+// 1000-item apply through the embedded backend, nor the 712-item shape's
+// pinned statement-count baseline, at all — see the step's own comment in
+// nightly.yml for why non-race and why these tests specifically.
 func TestNightlyFullTestRunsEmbeddedDoltBatchApplySuite(t *testing.T) {
 	job := readCIWorkflow(t, "nightly.yml").job(t, "full-test")
 	const stepName = "Embedded Dolt batch-apply suite (non-race)"
-	const wantRun = "go test -tags gms_pure_go -run '^(TestBatchApplyContract|TestLargeBatchApplyWallClock_Embedded)$' ./internal/storage/embeddeddolt"
+	const wantRun = "go test -tags gms_pure_go -timeout 20m -run '^(TestBatchApplyContract|TestLargeBatchApplyWallClock_Embedded|TestLargeBatchApplyStatementCounts712_Embedded)$' ./internal/storage/embeddeddolt"
 	assertStepRunsExactly(t, job, stepName, wantRun)
 	assertStepEnvValue(t, job, stepName, "BEADS_TEST_EMBEDDED_DOLT", "1")
 	assertStepsBefore(t, job, []string{"Full Test Suite (including integration tests)"}, []string{stepName})
 	if strings.Contains(wantRun, "-race") {
 		t.Errorf("embedded-dolt nightly step run = %q, must stay non-race (race dramatically inflates this backend's own wall-clock)", wantRun)
+	}
+	// N4 (F1 review): this step must still run (and report) even if an
+	// earlier nightly step failed, and must carry its own explicit Go
+	// timeout independent of the job-level timeout-minutes.
+	if got := job.step(t, stepName).If; got != "${{ !cancelled() }}" {
+		t.Errorf("embedded-dolt nightly step if = %q, want ${{ !cancelled() }}", got)
 	}
 }
 
@@ -4958,10 +4965,20 @@ func TestBazelEmbeddedJobMirrorsEmbeddedTier(t *testing.T) {
 		}
 		root := sourceRepoRoot(t)
 		rule := bazelRuleBlock(readPolicyFile(t, root, c.pkg+"/BUILD.bazel"), c.target)
+		// c.target's own shard_count is deliberately NOT asserted to equal
+		// shards (pr-risk.yml's matrix size) here: since slice F1, the
+		// Bazel-only bazel-embedded job (bazel.yml) shards both of these
+		// targets on its own duration-balanced manifest block, a different
+		// total from PR Risk's/main.yml's legacy "Test (Embedded Dolt {Cmd
+		// N/20,Storage N/5})" jobs' frozen block (same reasoning as
+		// cmd/bd:bd_proxied_test's noBuildShardPin above, F2). The real
+		// cross-file pin for c.target's shard_count lives in
+		// pr_risk_bazel_coverage_test.go's TestBazelRetiredLanesCheckListedTestsRan,
+		// which ties it to bazel.yml's check_shard_coverage.py argument via
+		// bazelEmbeddedCmdShardCount/bazelEmbeddedStorageShardCount.
 		for _, want := range []string{
 			`srcs = ["//tools/bazel:go_test_manifest_shard.sh"],`,
 			`"$(rootpath //:` + c.script + `)",`,
-			"shard_count = " + strconv.Itoa(shards) + ",",
 			`"BEADS_TEST_EMBEDDED_DOLT": "1"`,
 			`"embedded"`,
 		} {
