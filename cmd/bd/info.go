@@ -221,6 +221,16 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.3.2-rc.1",
+		Date:    "2026-10-05",
+		Changes: []string{
+			"RC: first candidate for 1.3.2, a patch on top of 1.3.1 with no schema migration, so upgrading from 1.3.1 is a binary swap.",
+			"UPGRADE: after upgrading from bd <=1.3.0, run 'bd recompute-blocked' once per workspace (#7037). Migration 0059 (first shipped in 1.3.0) recomputes is_blocked with a recursive query whose parent-child filter is dropped by a Dolt query-planner bug on Dolt servers older than 2.4.0 and on the embedded engine (dolthub/dolt#11886). Blockedness then spreads across relates-to, discovered-from, tracks and other edges, and unblocked beads silently vanish from 'bd ready'. The flag is stored, so the damage persists until recomputed. This includes a workspace now on 1.3.1 that was first created by 1.2.x or earlier. The command is idempotent and reports rows_corrected.",
+			"FIX: 'bd purge' keeps every closed bead in a chain above a live bead, not just the one a live bead points at directly (#7031). A closed root over a closed child over an open grandchild used to lose its root, orphaning the rest; --wisps-plane retention sweeps hit this.",
+			"FIX: auto-backup records the Dolt commit read before the sync as its watermark (#7032). A commit landing during the sync used to be recorded as backed up although the snapshot lacked it, and auto-backup then reported 'no changes' until HEAD moved again.",
+		},
+	},
+	{
 		Version: "1.3.1",
 		Date:    "2026-09-30",
 		Changes: []string{
