@@ -11,6 +11,8 @@ import (
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/servercfg"
 	"github.com/stretchr/testify/require"
+
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // FakeMySQLGreeting is a minimal stand-in for a MySQL handshake packet; only
@@ -41,14 +43,14 @@ func newConfigForListener(t *testing.T, ln net.Listener, logLevel string) server
 	}
 }
 
-// readyWatch returns a startupWatch for port that has already seen dolt's
+// readyWatch returns a StartupWatch for port that has already seen dolt's
 // ready line.
-func readyWatch(t *testing.T, port int) *startupWatch {
+func readyWatch(t *testing.T, port int) *doltserver.StartupWatch {
 	t.Helper()
 	w := newStartupWatch(nil, port)
-	_, err := w.Write([]byte(doltReadyLine + "\n"))
+	_, err := w.Write([]byte(doltserver.DoltReadyLine + "\n"))
 	require.NoError(t, err)
-	require.True(t, w.isReady(), "the watch must be ready before waitReady runs")
+	require.True(t, w.IsReady(), "the watch must be ready before waitReady runs")
 	return w
 }
 
@@ -94,7 +96,7 @@ func shortSocketPath(t *testing.T, name string) string {
 
 // requireNotReady runs waitReady under a 600ms context and asserts that it
 // refuses readiness and gives up shortly after that deadline.
-func requireNotReady(t *testing.T, s *DoltServer, watch *startupWatch, why string) {
+func requireNotReady(t *testing.T, s *DoltServer, watch *doltserver.StartupWatch, why string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()

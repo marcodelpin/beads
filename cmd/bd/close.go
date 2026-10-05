@@ -96,6 +96,28 @@ the flags appear in the command line.`,
 		}
 
 		ctx := rootCtx
+
+		// A8 (beads#4682): a single-id compare-and-swap close bypasses the
+		// batch below entirely -- see close_if_revision.go for why
+		// BatchCloseItem cannot carry this guard.
+		ifRevision, err := parseIfRevisionFlag(cmd)
+		if err != nil {
+			return err
+		}
+		if err := requireSingleIfRevisionID(ifRevision, args); err != nil {
+			return err
+		}
+		if ifRevision != nil {
+			// The bypass below never looks at these three post-close flags, so
+			// honoring them would mean silently dropping what the caller asked
+			// for. Refuse instead of guessing, the same way --continue and
+			// --suggest-next already refuse a multi-id batch below.
+			if continueFlag || suggestNext || claimNext {
+				return HandleErrorRespectJSON("--if-revision does not support --continue, --suggest-next, or --claim-next")
+			}
+			return runCloseDirectIfRevision(ctx, args[0], reasonForCloseIndex(reasons, 0), force, session, *ifRevision)
+		}
+
 		opsCtx, err := issueOpsContext(ctx)
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
@@ -264,11 +286,7 @@ the flags appear in the command line.`,
 			// already-closed issue stays in the array, and this notice is the
 			// only already-closed signal.
 			if !res.Changed {
-				kept := ""
-				if closedIssue != nil {
-					kept = closedIssue.CloseReason
-				}
-				fmt.Fprintf(os.Stderr, "%s already closed (close_reason kept: %q)\n", id, kept)
+				noteAlreadyClosed(id, closedIssue)
 			}
 			if jsonOutput {
 				if closedIssue != nil {
@@ -523,6 +541,8 @@ func init() {
 	closeCmd.Flags().Bool("suggest-next", false, "Show newly unblocked issues after closing")
 	closeCmd.Flags().Bool("claim-next", false, "Automatically claim the next highest priority available issue")
 	closeCmd.Flags().String("session", "", "Claude Code session ID (or set CLAUDE_SESSION_ID env var)")
+	// A8 (beads#4682): bypasses the N-id batch above for a single guarded close.
+	closeCmd.Flags().String("if-revision", "", ifRevisionFlagHelp)
 	closeCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(closeCmd)
 }
