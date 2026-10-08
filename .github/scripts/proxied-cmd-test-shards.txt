@@ -434,6 +434,7 @@
 30 26 TestProxiedServerFindDuplicates
 30 26 TestProxiedServerGateCheck
 30 26 TestProxiedServerGateFrontDoorDirectServerProxyParity
+30 26 TestProxiedServerGatedRendering
 30 26 TestProxiedServerServeAddComment
 30 26 TestProxiedServerServeSettingsWrites
 30 26 TestProxiedServerState
