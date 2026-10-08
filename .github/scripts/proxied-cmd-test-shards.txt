@@ -51,6 +51,7 @@
 #   a doc comment.
 
 15 1 TestProxiedServerBlocked
+15 13 TestProxiedServerClose3
 15 1 TestProxiedServerCompactDolt
 15 1 TestProxiedServerCreate
 15 1 TestProxiedServerDep2
@@ -118,6 +119,7 @@
 
 15 7 TestProxiedServerAssign
 15 7 TestProxiedServerBackupRefusedOnExternalTopology
+15 2 TestProxiedServerClose4
 15 7 TestProxiedServerCount
 15 7 TestProxiedServerGC
 15 7 TestProxiedServerList
@@ -361,6 +363,8 @@
 30 16 TestProxiedServerUpdateConcurrentMetadata
 
 30 17 TestProxiedServerClose
+30 17 TestProxiedServerClose3
+30 17 TestProxiedServerClose4
 30 17 TestProxiedServerConfigConcurrent
 30 17 TestProxiedServerDeleteConcurrent
 30 17 TestProxiedServerIfRevisionGuardUpdate
