@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Backported #6876 to this release line: the post-commit blocked-state
+  recheck now publishes outside its own transaction.** The hotfix batches
+  that ported #6716's fan-in fix ([#6719](https://github.com/gastownhall/beads/pull/6719)/[#6936](https://github.com/gastownhall/beads/pull/6936),
+  [#6942](https://github.com/gastownhall/beads/pull/6942)/[#6947](https://github.com/gastownhall/beads/pull/6947)) carried the recheck in the form #6876
+  later corrected on `main`: the Dolt commit was minted while the recompute's
+  own SQL transaction was still open, so `DOLT_ADD` staged the table from the
+  session's BEGIN-time root and could write concurrently committed `issues`
+  rows back to their BEGIN-time values — reachable only when the recheck
+  runs while unblocking writes are racing on `issues`. The recompute now runs
+  alone in its own retried transaction and the trailing Dolt commit publishes
+  after it commits; a failed trailing commit is counted as
+  `post_tx_commit_dropped` instead of surfacing as a recheck failure.
+
 ## [1.3.2-rc.1] - 2026-10-05
 
 First release candidate for 1.3.2, a patch on top of 1.3.1 with **no schema
