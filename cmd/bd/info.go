@@ -221,6 +221,14 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.3.2-rc.2",
+		Date:    "2026-10-10",
+		Changes: []string{
+			"RC: second candidate for 1.3.2, rc.1 plus one fix, with no schema migration, so upgrading from 1.3.1 or 1.3.2-rc.1 is a binary swap. The rc.1 upgrade note still applies: after upgrading from bd <=1.3.0, run 'bd recompute-blocked' once per workspace (#7037).",
+			"FIX: the post-commit blocked-state recheck publishes its Dolt commit after its own transaction commits (#7030, backport of #6876). Minted inside the transaction, DOLT_ADD staged issues from the BEGIN-time root and could write concurrently committed rows back to their old values while unblocking writes raced. A failed trailing commit now counts as post_tx_commit_dropped instead of a recheck failure.",
+		},
+	},
+	{
 		Version: "1.3.2-rc.1",
 		Date:    "2026-10-05",
 		Changes: []string{
