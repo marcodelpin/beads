@@ -1527,13 +1527,15 @@ func cloneFromRemote(ctx context.Context, beadsDir, remoteURL, dbName string, cf
 	return cloneFromRemoteWithMode(ctx, beadsDir, remoteURL, dbName, cfg, remoteCloneAuto)
 }
 
-// remoteCloneViaEmbedded, remoteCloneViaServer and remoteCloneIntoDataDir run
-// the embedded-engine, the server and the owned data-directory clone
-// cloneFromRemoteWithMode picks. Injectable for testing.
+// remoteCloneViaEmbedded, remoteCloneViaServer, remoteCloneIntoDataDir and
+// remoteCloneViaCLI run the embedded-engine, the server, the owned
+// data-directory and the dolt CLI clone cloneFromRemoteWithMode picks.
+// Injectable for testing.
 var (
 	remoteCloneViaEmbedded = cloneViaEmbedded
 	remoteCloneViaServer   = cloneViaServer
 	remoteCloneIntoDataDir = cloneIntoOwnedDataDir
+	remoteCloneViaCLI      = cloneViaCLI
 )
 
 func cloneFromRemoteWithMode(ctx context.Context, beadsDir, remoteURL, dbName string, cfg *configfile.Config, cloneMode remoteCloneMode) error {
@@ -1583,10 +1585,10 @@ func cloneFromRemoteWithMode(ctx context.Context, beadsDir, remoteURL, dbName st
 		}
 		// No config available — fall through to CLI clone.
 		fmt.Fprintf(os.Stderr, "Warning: server mode detected but no config available, falling back to CLI clone\n")
-		return cloneViaCLI(ctx, beadsDir, remoteURL, dbName)
+		return remoteCloneViaCLI(ctx, beadsDir, remoteURL, dbName)
 
 	default:
-		return cloneViaCLI(ctx, beadsDir, remoteURL, dbName)
+		return remoteCloneViaCLI(ctx, beadsDir, remoteURL, dbName)
 	}
 }
 
@@ -1782,18 +1784,26 @@ func outranksMetadataPort(dial *doltserver.Config) bool {
 // initServerClonePort is the port bd init --server --external clones through:
 // the port of the store init opens right after the clone, so init's own reads
 // and writes find the clone. That store starts from --server-port, or else
-// initStoreServerPort (BEADS_DOLT_SERVER_PORT, the port file, and the shared
-// default in shared-server mode, never config.yaml dolt.port), and the store
-// applies its rule to that (dolt.ResolveServerPort): the legacy BEADS_DOLT_PORT
-// replaces a port bd chose, and DefaultConfig fills in a port nothing named.
+// initStoreServerPort (BEADS_DOLT_SERVER_PORT, the port file for a host bd
+// runs its server at, the shared default in shared-server mode, and for any
+// other host the port every later command in the new workspace resolves under
+// that workspace's own configuration; never the dolt.port of the
+// configuration init loaded), and the store applies its rule to that
+// (dolt.ResolveServerPort): the legacy BEADS_DOLT_PORT replaces a port bd
+// chose, and DefaultConfig fills in a port nothing named unless
+// initStoreServerPort resolved it.
 // When nothing names one it is 0, never 3307: the store opens no such port
 // either, and refuses the unresolved port instead (initServerCloneEndpoint).
 func initServerClonePort(beadsDir string, cfg *configfile.Config) int {
+	host := configfile.DefaultDoltServerHost
+	if cfg != nil {
+		host = cfg.GetDoltServerHost()
+	}
 	storeCfg := &dolt.Config{BeadsDir: beadsDir}
 	if cfg != nil && cfg.DoltServerPort > 0 {
 		storeCfg.ServerPort, storeCfg.ServerPortSource = cfg.DoltServerPort, doltserver.PortSourceCallerExplicit
 	} else {
-		storeCfg.ServerPort, storeCfg.ServerPortSource, storeCfg.ServerPortSharedServer = initStoreServerPort(beadsDir)
+		storeCfg.ServerPort, storeCfg.ServerPortSource, storeCfg.ServerPortSharedServer, storeCfg.ServerPortResolved = initStoreServerPort(beadsDir, host)
 	}
 	dolt.ResolveServerPort(storeCfg)
 	return storeCfg.ServerPort
