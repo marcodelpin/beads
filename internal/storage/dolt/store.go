@@ -44,6 +44,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
+	"github.com/steveyegge/beads/internal/doltversion"
 	"github.com/steveyegge/beads/internal/gittraceenv"
 	"github.com/steveyegge/beads/internal/remedy"
 	"github.com/steveyegge/beads/internal/storage"
@@ -2122,6 +2123,14 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 						return nil, fmt.Errorf("Dolt server unreachable at %s: %w\n\n%s", remedy.PrintedValue(addr), dialErr, hint)
 					}
 				}
+				// Start refused a dolt older than bd's minimum. `bd dolt
+				// start` refuses the same binary, and turning auto-start
+				// off does not help, so the refusal's own upgrade advice is
+				// the whole remedy.
+				if errors.Is(startErr, doltversion.ErrBelowRequiredMin) {
+					return nil, fmt.Errorf("Dolt server unreachable at %s and auto-start refused to start it: %w",
+						remedy.PrintedValue(addr), remedy.PrintedTextError(startErr))
+				}
 				return nil, fmt.Errorf("Dolt server unreachable at %s and auto-start failed: %w\n\n"+
 					"To start manually: bd dolt start\n"+
 					"To disable auto-start: set dolt.auto-start: false in .beads/config.yaml",
@@ -2954,6 +2963,32 @@ func assertGatewaySessionDatabase(ctx context.Context, db *sql.DB, want string) 
 	}
 }
 
+// requireServerDoltVersion refuses a dolt sql-server older than
+// doltversion.RequiredMin, before bd reads or writes anything through q.
+// It is one SELECT dolt_version() on the connection the open already made.
+// Every server-mode open reaches it, whether bd started the server
+// (auto-start, bd dolt start, shared server) or something else did
+// (external host, BEADS_DOLT_SERVER_PORT, gateway).
+//
+// A version that cannot be determined is not refused (see
+// doltversion.CheckServer): the query failing, which a gateway that does
+// not pass dolt_version() through would do, or an answer that is not a
+// version. It is logged under BD_DEBUG and the open goes on, so a failed
+// connection still reports itself through the open's own errors.
+func requireServerDoltVersion(ctx context.Context, q doltversion.RowQuerier, cfg *Config) error {
+	addr := doltutil.ServerAddr(cfg.ServerHost, cfg.ServerPort)
+	if cfg.ServerSocket != "" {
+		addr = cfg.ServerSocket
+	}
+	// The address is configuration, so it is printed the way every other
+	// remedy value is (internal/remedy).
+	subject := "dolt sql-server at " + remedy.PrintedValue(addr)
+	return doltversion.CheckServer(ctx, q, subject, func(err error) {
+		debug.Logf("dolt: could not determine the version of %s; not checking it against the required minimum %s: %v\n",
+			subject, doltversion.RequiredMin, remedy.PrintedError(err))
+	})
+}
+
 // openServerConnection connects to (and if needed creates) the target database
 // on a dolt sql-server via MySQL protocol. See serverConnFacts for what the
 // returned facts mean and why they are not a single bool.
@@ -2990,6 +3025,9 @@ func openServerConnection(ctx context.Context, cfg *Config) (*sql.DB, string, se
 		if err := db.PingContext(ctx); err != nil {
 			return nil, "", serverConnFacts{}, fmt.Errorf("failed to connect to gateway server %s (database %q): %w",
 				doltutil.PrintedServerAddr(cfg.ServerHost, cfg.ServerPort), cfg.Database, remedy.PrintedError(err))
+		}
+		if err := requireServerDoltVersion(ctx, db, cfg); err != nil {
+			return nil, "", serverConnFacts{}, err
 		}
 		// A connect proves the gateway accepted the credential, NOT that it
 		// honored the database name. A gateway scopes connections by
@@ -3051,6 +3089,9 @@ func openServerConnection(ctx context.Context, cfg *Config) (*sql.DB, string, se
 	// signal, databaseNotFoundError, and every error message callers match.
 	pingErr := db.PingContext(ctx)
 	if pingErr == nil {
+		if err := requireServerDoltVersion(ctx, db, cfg); err != nil {
+			return nil, "", serverConnFacts{}, err
+		}
 		connReady = true
 		return db, connStr, serverConnFacts{alreadyExisted: true}, nil
 	}
@@ -3072,6 +3113,11 @@ func openServerConnection(ctx context.Context, cfg *Config) (*sql.DB, string, se
 		return nil, "", serverConnFacts{}, fmt.Errorf("failed to open init connection: %w", err)
 	}
 	defer func() { _ = initDB.Close() }()
+
+	// Refuse an old server before this connection can CREATE DATABASE on it.
+	if err := requireServerDoltVersion(ctx, initDB, cfg); err != nil {
+		return nil, "", serverConnFacts{}, err
+	}
 
 	// Check if the database already exists before deciding whether to create it.
 	// This prevents the shadow database bug: without CreateIfMissing, connecting
@@ -4489,7 +4535,13 @@ func (s *DoltStore) hasCLIDatabase() bool {
 // ensureMatchingCLIRemote materializes the local CLI remote needed before
 // subprocess push/pull/fetch routing. SQL remains the source of truth; the CLI
 // remote is only the local transport surface that dolt subprocesses read.
+//
+// It refuses a dolt on PATH older than doltversion.RequiredMin first
+// (requireCLIDoltBinary), since every caller has chosen the CLI route.
 func (s *DoltStore) ensureMatchingCLIRemote(remote, expectedURL, expectedRef string) error {
+	if err := requireCLIDoltBinary(); err != nil {
+		return err
+	}
 	if s.hasMatchingCLIRemote(remote, expectedURL, expectedRef) {
 		return nil
 	}
@@ -4509,11 +4561,47 @@ func (s *DoltStore) ensureMatchingCLIRemote(remote, expectedURL, expectedRef str
 	return nil
 }
 
-func (s *DoltStore) prepareDoltCLITransfer(ctx context.Context, remote string, creds *remoteCredentials, args ...string) (*exec.Cmd, context.Context, context.CancelFunc) {
+func (s *DoltStore) prepareDoltCLITransfer(ctx context.Context, remote string, creds *remoteCredentials, args ...string) (*exec.Cmd, context.Context, context.CancelFunc, error) {
 	return prepareDoltCLITransferCommand(ctx, s.CLIDir(), creds, s.isS3Remote(ctx, remote), args...)
 }
 
-func prepareDoltCLITransferCommand(ctx context.Context, cliDir string, creds *remoteCredentials, s3Remote bool, args ...string) (*exec.Cmd, context.Context, context.CancelFunc) {
+// requireCLIDoltBinary refuses the dolt binary on PATH that the CLI route
+// (git-protocol, credentialed, cloud-auth and local remotes) runs, when it
+// is older than doltversion.RequiredMin, like every other `dolt` bd runs.
+// When bd's own server holds the database, dolt hands the transfer to that
+// server; otherwise the binary's own engine runs it. The error is the one
+// Start gives (doltserver.RequireDoltBinaryVersion, memoized per binary, so
+// checking at several points of one route forks `dolt version` once). A
+// dolt that is not on PATH is left for the command itself to report, as
+// before.
+//
+// The route checks it as soon as it has chosen the CLI, before it runs
+// anything through the binary: ensureMatchingCLIRemote checks it before
+// `dolt remote` lists, adds or removes the CLI remote, the push routes
+// before prePushFSCK's `dolt fsck`, and prepareDoltCLITransferCommand before
+// the transfer itself. The local-remote route decides with a read-only
+// `dolt remote -v` (hasMatchingCLIRemote) before its first check.
+func requireCLIDoltBinary() error {
+	doltBin, err := exec.LookPath("dolt")
+	if err != nil {
+		return nil
+	}
+	return doltserver.RequireDoltBinaryVersion(doltBin)
+}
+
+// prepareDoltCLITransferCommand builds the `dolt push`/`pull`/`fetch` that
+// runs through the dolt binary on PATH: the route git-protocol,
+// credentialed, cloud-auth and local remotes take. It refuses that binary
+// when it is older than doltversion.RequiredMin, before the transfer runs
+// (see requireCLIDoltBinary).
+func prepareDoltCLITransferCommand(ctx context.Context, cliDir string, creds *remoteCredentials, s3Remote bool, args ...string) (*exec.Cmd, context.Context, context.CancelFunc, error) {
+	if err := requireCLIDoltBinary(); err != nil {
+		op := "dolt transfer"
+		if len(args) > 0 {
+			op = "dolt " + args[0]
+		}
+		return nil, nil, nil, fmt.Errorf("%s: %w", op, err)
+	}
 	ctx, cancel := withCLIExecTimeout(ctx)
 	if len(args) > 0 && creds != nil && creds.username != "" {
 		args = append([]string{args[0], "--user", creds.username}, args[1:]...)
@@ -4535,7 +4623,7 @@ func prepareDoltCLITransferCommand(ctx context.Context, cliDir string, creds *re
 		base = os.Environ()
 	}
 	cmd.Env = gittraceenv.ScrubEnv(base)
-	return cmd, ctx, cancel
+	return cmd, ctx, cancel, nil
 }
 
 // prepareCLIRouteForGitProtocol reports whether the SQL-visible remote uses
@@ -4834,6 +4922,9 @@ func fsckOutputInterrupted(output string) bool {
 // If creds is non-nil, credentials are set on the subprocess environment only,
 // avoiding process-wide env var races with concurrent goroutines.
 func (s *DoltStore) doltCLIPush(ctx context.Context, remote string, force bool, creds *remoteCredentials) error {
+	if err := requireCLIDoltBinary(); err != nil {
+		return fmt.Errorf("dolt push: %w", err)
+	}
 	if err := s.prePushFSCK(ctx); err != nil {
 		return err
 	}
@@ -4842,7 +4933,10 @@ func (s *DoltStore) doltCLIPush(ctx context.Context, remote string, force bool, 
 		args = append(args, "--force")
 	}
 	args = append(args, remote, s.branch)
-	cmd, transferCtx, cancel := s.prepareDoltCLITransfer(ctx, remote, creds, args...)
+	cmd, transferCtx, cancel, err := s.prepareDoltCLITransfer(ctx, remote, creds, args...)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	applyNoGitHooksToCmd(cmd) // GH#3724
 	out, err := cmd.CombinedOutput()
@@ -4867,7 +4961,10 @@ func cliTransferError(op, remote string, transferCtx context.Context, out []byte
 // Used for git-protocol remotes where CALL DOLT_PULL times out through the SQL connection.
 // If creds is non-nil, credentials are set on the subprocess environment only.
 func (s *DoltStore) doltCLIPull(ctx context.Context, remote string, creds *remoteCredentials) error {
-	cmd, transferCtx, cancel := s.prepareDoltCLITransfer(ctx, remote, creds, "pull", remote, s.branch)
+	cmd, transferCtx, cancel, err := s.prepareDoltCLITransfer(ctx, remote, creds, "pull", remote, s.branch)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
