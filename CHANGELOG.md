@@ -995,6 +995,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A nested `bd init --server` no longer creates its database on the
+  enclosing workspace's Dolt server.** In a directory nested in a workspace
+  whose `.beads/config.yaml` names `dolt.port`, `bd init --server` with no
+  port of its own took that port at 127.0.0.1. It created the new database
+  on the enclosing workspace's server and pinned that port in the new
+  workspace's port file, or, with nothing listening, started the new
+  workspace's server on it. Init now resolves the port from the new
+  workspace's own configuration, as it does for a workspace nested in
+  nothing: with no port there it starts a server of the new workspace's
+  own on a port of its own, and with one (such as a user-level `dolt.port`)
+  it uses a server already answering there or starts the new workspace's
+  server on it. The enclosing workspace's own `dolt.auto-start: false` no
+  longer applies to the new workspace. When bd would not start that server
+  (`--external`, `BEADS_DOLT_AUTO_START=0`, `BEADS_DOLT_SERVER_MODE=1`, a
+  credential command), init refuses the unresolved port with the store's
+  advice where it used to join the enclosing server (with a credential
+  command it failed before too, on a database the enclosing server did not
+  hold); with a unix socket it opens through the socket, and with a socket
+  nothing answers on it fails where it used to join the enclosing server
+  over TCP. Joining another workspace's server stays explicit with
+  `--server-port`, `BEADS_DOLT_SERVER_PORT`, `BEADS_DOLT_PORT`, or a
+  `dolt.port` in the new workspace's own config.
+- **`bd init --server` against a local Dolt server you run now clones the
+  remote through that server.** With a live unix socket (`--server-socket`),
+  or a port resolved in a way that declares the server externally managed
+  (`--server-port`, `BEADS_DOLT_SERVER_PORT`, `BEADS_DOLT_PORT`,
+  `BEADS_DOLT_SERVER_MODE=1` with a configured port, or `metadata.json`
+  `dolt_server_port`), and no `--external`, every remote bootstrap init
+  performs (`--remote`, a configured `sync.remote`, or a git origin carrying
+  `refs/dolt/data`) cloned with the dolt CLI into `.beads/dolt`, a directory
+  that server does not serve. It then created an empty database on the
+  server and reported success, so `bd list` showed none of the remote's
+  issues. Init now clones through the server its store opens. If that server
+  already holds the database, init uses it instead of cloning. The clone
+  runs inside that server, so the server must reach the remote (git on its
+  `PATH`, its credentials); when it cannot, init now fails with the server's
+  error where it used to exit 0 with an empty database. bd's own server, the
+  shared server, and a server at 127.0.0.1 that cannot be dialed keep the CLI
+  clone; in the last case init's store then reports, as before, that the
+  setting naming the port declares the server externally managed, so bd did
+  not start one. A server there that answers and refuses init's login is up,
+  so the clone goes through it and fails with that server's error, instead
+  of landing in `.beads/dolt`. A configured socket nothing answers on gives
+  way to TCP at the configured port when a server answers there, as init's
+  store does, and the clone follows the store to that server; with nothing
+  answering on either, the CLI clone stays.
+- **The `bd create --repo` and `bd migrate-personal` refusal of a server-mode
+  target whose metadata names no `dolt_mode` now names the target's own
+  Dolt host.** It said to set only `"dolt_mode": "server"`. An open from
+  another workspace does not read the target's `config.yaml` `dolt.host` or
+  `dolt.port`, so following that remedy dialed another server, or
+  auto-started a bd server inside the target. The remedy now ranks the
+  target's ports as the store does, both for that open and for bd run
+  inside the target: its `.beads/dolt-server.port` (at a host bd runs its
+  server at), the `listener.port` of its Dolt data directory's
+  `config.yaml`, a `dolt.port` (the launching workspace's own for the open
+  from there, the target's own for bd inside it, and a user-level one where
+  either names none), then its `metadata.json` `dolt_server_port`. When the
+  host the target dials (its `metadata.json` `dolt_server_host`, else its
+  own `dolt.host`) is a host bd does not run its server at, the remedy also
+  names `dolt_server_host`, and `dolt_server_port` set to the port bd
+  inside the target dials. It names no port where a `listener.port` decides
+  both opens, and asks for the port its server listens on where nothing
+  names one. `dolt_server_port` is the deprecated metadata field, so routed
+  opens print its deprecation warning, and the `dolt.port` the launching
+  workspace reads still outranks it. Once `dolt_mode` is set nothing
+  refuses the rerun, so neither remedy offers a rerun that dials another
+  port than bd inside the target dials. There `bd create`'s remedy is the
+  edit and then the write inside the target, and `bd migrate-personal`,
+  which cannot run inside its planning repo, says it cannot aim the write
+  at the target's server from there; a remedy that names the launching
+  workspace's `dolt.port` says whether its own configuration or the
+  user-level `config.yaml` sets it. Otherwise, at a host bd does not run
+  its server at, `bd create`'s remedy offers that write beside the rerun
+  when bd inside the target has a port to dial. At bd's own host the
+  remedy keeps "set `dolt_mode`, then rerun" where the rerun dials the port
+  bd inside the target dials, except that `bd create`'s remedy is the write
+  inside the target for a target whose own `config.yaml` or
+  `config.local.yaml` names `dolt.port` and that has no `listener.port`.
 - The batched bulk readers no longer return an issue's rows twice when the
   same id is requested twice. Since the 200-id batching (#6444), an id that
   appeared in two batches had its comments, labels, dependency records,

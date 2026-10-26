@@ -1815,6 +1815,13 @@ func outranksMetadataPort(dial *doltserver.Config) bool {
 // When nothing names one it is 0, never 3307: the store opens no such port
 // either, and refuses the unresolved port instead (initServerCloneEndpoint).
 func initServerClonePort(beadsDir string, cfg *configfile.Config) int {
+	port, _ := initServerClonePortAndSource(beadsDir, cfg)
+	return port
+}
+
+// initServerClonePortAndSource is initServerClonePort with the source the
+// store records for that port.
+func initServerClonePortAndSource(beadsDir string, cfg *configfile.Config) (int, doltserver.PortSource) {
 	host := configfile.DefaultDoltServerHost
 	if cfg != nil {
 		host = cfg.GetDoltServerHost()
@@ -1826,15 +1833,19 @@ func initServerClonePort(beadsDir string, cfg *configfile.Config) int {
 		storeCfg.ServerPort, storeCfg.ServerPortSource, storeCfg.ServerPortSharedServer, storeCfg.ServerPortResolved = initStoreServerPort(beadsDir, host)
 	}
 	dolt.ResolveServerPort(storeCfg)
-	return storeCfg.ServerPort
+	return storeCfg.ServerPort, storeCfg.ServerPortSource
 }
 
 // initServerCloneEndpoint is the endpoint bd init clones into when it clones
-// through a server: cfg's on initServerClonePort's port. With neither a port
+// through a server: cfg's on initServerClonePort's port, over the transport
+// init's store dials there (initCloneSocketTransport): TCP at that port when
+// cfg's unix socket does not answer and TCP does, as the store falls back to
+// it (a DSN that names the socket dials it alone). With neither a port
 // nor a socket there is nothing to dial, and the error wraps
 // dolt.ErrUnresolvedServerPort, as init's store open would refuse. Under
-// BEADS_TEST_MODE=1 a production port is refused too, as New's test-mode
-// guard would never have let the store dial it (dolt.TestModeRefusesPort).
+// BEADS_TEST_MODE=1 a production port is refused too, before anything is
+// probed, as New's test-mode guard would never have let the store dial it
+// (dolt.TestModeRefusesPort).
 func initServerCloneEndpoint(beadsDir string, cfg *configfile.Config) (bootstrapServerProbeConfig, error) {
 	port := initServerClonePort(beadsDir, cfg)
 	ep := serverDialEndpoint(cfg, port)
@@ -1844,6 +1855,7 @@ func initServerCloneEndpoint(beadsDir string, cfg *configfile.Config) (bootstrap
 	if err := dolt.TestModeRefusesPort(beadsDir, port); err != nil {
 		return ep, err
 	}
+	ep.socket = initCloneSocketTransport(ep.socket, ep.host, ep.port)
 	return ep, nil
 }
 
