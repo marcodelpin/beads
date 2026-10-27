@@ -995,6 +995,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd export` and auto-export no longer write JSONL with relations silently
+  dropped** (GH#6870). When a label, dependency, comment or count read fails,
+  `bd export` now exits non-zero and leaves the output file untouched, and
+  auto-export keeps the previous JSONL with a warning and retries on the next
+  write command. Previously both wrote records with those fields empty.
 - **A nested `bd init --server` no longer creates its database on the
   enclosing workspace's Dolt server.** In a directory nested in a workspace
   whose `.beads/config.yaml` names `dolt.port`, `bd init --server` with no
