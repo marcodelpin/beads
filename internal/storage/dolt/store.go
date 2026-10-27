@@ -261,6 +261,11 @@ func autoStartRelease(serverDir string) error {
 // running — we didn't start it, so we don't stop it, but its port file
 // write must still be undone.
 //
+// Stop accepts a server this process launched even where the process list
+// cannot be read (GH#7214), so the restore below does not leave the new
+// server's pid file beside another port. Skipping the restore when a stop
+// fails would reopen the bypass described above.
+//
 // Best-effort throughout: cleanup failures are reported on stderr but never
 // returned, so they cannot mask the caller's fail-closed error, which is the
 // one that matters.
@@ -2026,6 +2031,11 @@ var ensureRunningDetailed = doltserver.EnsureRunningDetailed
 // dolt sql-server process.
 var stopRejectedAutoStartedServer = doltserver.Stop
 
+// dialServer makes newServerMode's fail-fast connection to the server.
+// Declared as a var (matching dialProbe above) so unit tests can stub a dial
+// failure, such as a sandbox refusing the connection, without a live server.
+var dialServer = net.DialTimeout
+
 // newServerMode creates a DoltStore connected to a running dolt sql-server.
 // This path is pure Go and does not require CGO.
 func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
@@ -2077,10 +2087,10 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	var dialErr error
 	if cfg.ServerSocket != "" {
 		addr = cfg.ServerSocket
-		conn, dialErr = net.DialTimeout("unix", cfg.ServerSocket, 500*time.Millisecond)
+		conn, dialErr = dialServer("unix", cfg.ServerSocket, 500*time.Millisecond)
 	} else {
 		addr = doltutil.ServerAddr(cfg.ServerHost, cfg.ServerPort)
-		conn, dialErr = net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		conn, dialErr = dialServer("tcp", addr, 500*time.Millisecond)
 	}
 	if dialErr != nil {
 		// The endpoint comes from metadata.json (dolt_server_host,
@@ -2168,9 +2178,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 					// unreachable").
 					if cfg.ServerPortSharedServer {
 						undoRejectedAutoStart(serverDir, startedByUs, autoStartedDir, portFileSnap, snapErr)
-						if breaker != nil {
-							breaker.RecordFailure()
-						}
+						recordDialFailure(breaker, dialErr)
 						return nil, fmt.Errorf(
 							"Shared Dolt server configured at port %d (source: %s) is unreachable; "+
 								"auto-start started a repo-local server on port %d instead, but bd will "+
@@ -2184,9 +2192,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 					}
 					if cfg.ServerPortSource.IsAuthoritative() {
 						undoRejectedAutoStart(serverDir, startedByUs, autoStartedDir, portFileSnap, snapErr)
-						if breaker != nil {
-							breaker.RecordFailure()
-						}
+						recordDialFailure(breaker, dialErr)
 						return nil, fmt.Errorf(
 							"Dolt server configured at port %d (source: %s) is unreachable; "+
 								"auto-start started a new server on port %d, but bd will not "+
@@ -2209,22 +2215,17 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 				breaker = maybeNewCircuitBreaker(cfg.ServerHost, cfg.ServerPort, cfg.Database)
 			}
 			// Retry connection with longer timeout (server just started)
-			conn, dialErr = net.DialTimeout("tcp", addr, 2*time.Second)
+			conn, dialErr = dialServer("tcp", addr, 2*time.Second)
 			if dialErr != nil {
 				// Release auto-start ref on connection failure
 				if autoStartedDir != "" {
 					_ = autoStartRelease(autoStartedDir)
 				}
-				if breaker != nil {
-					breaker.RecordFailure()
-				}
-				return nil, fmt.Errorf("Dolt server auto-started but still unreachable at %s: %w\n\n"+
-					"Check logs: %s", remedy.PrintedValue(addr), remedy.PrintedError(dialErr), doltserver.LogPath(resolvedBeadsDir))
+				recordDialFailure(breaker, dialErr)
+				return nil, autoStartRedialError(addr, dialErr, startedByUs, doltserver.LogPath(resolvedBeadsDir))
 			}
 		} else {
-			if breaker != nil {
-				breaker.RecordFailure()
-			}
+			recordDialFailure(breaker, dialErr)
 			var hint string
 			if cfg.ServerSocket != "" {
 				// The socket path is metadata.json's dolt_server_socket,
@@ -2599,6 +2600,30 @@ func externallyManagedPortHint(cfg *Config, beadsDir, addr string) string {
 		decl.Setting = "--server-port"
 	}
 	return decl.Advice(addr)
+}
+
+// autoStartRedialError explains newServerMode's failed dial of the server
+// auto-start returned at addr: one it started (startedByUs), or a tracked one
+// it adopted, which it may not have been able to verify (GH#7214). A dial
+// refused by local policy says nothing about the server, so its log would not
+// explain it either.
+func autoStartRedialError(addr string, dialErr error, startedByUs bool, logPath string) error {
+	what := "Dolt server unreachable"
+	if startedByUs {
+		what = "Dolt server auto-started but still unreachable"
+	}
+	var advice string
+	switch {
+	case isLocalDialRefusal(dialErr):
+		advice = fmt.Sprintf("A local policy (a sandbox or firewall) refused the connection, so the server may be healthy.\n"+
+			"Allow bd to connect to %s, or run bd outside the sandbox", remedy.PrintedValue(addr))
+	case startedByUs:
+		advice = "Check logs: " + logPath
+	default:
+		advice = "Check logs: " + logPath + "\n" +
+			"If the recorded server is gone, clear its state: bd dolt stop"
+	}
+	return fmt.Errorf("%s at %s: %w\n\n%s", what, remedy.PrintedValue(addr), remedy.PrintedError(dialErr), advice)
 }
 
 // persistResolvedPortFile records the port a successful local open reached in
