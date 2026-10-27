@@ -140,6 +140,7 @@
 
 40 3 TestActiveDatabaseSizeFailsForMissingEmbeddedDatabase
 40 3 TestActiveDatabaseSizeScopesToActiveEmbeddedDatabase
+40 3 TestArrivalSeq_EmbeddedJournalCollisionMovesTheStamp
 40 3 TestBuildDSN_NoDatabase
 40 3 TestBuildDSN_SpacesInPath
 40 3 TestBuildDSN_WithDatabase
@@ -209,6 +210,7 @@
 40 7 TestLoseVersionLeavesTheEpochTablesCommitted
 40 7 TestMergeAndSettleWithStrategy_ResolvesDeclinedConflict
 
+40 8 TestArrivalSeq_EmbeddedCreateLeavesTheStampOnTheCallersIssue
 40 8 TestDeleterContract
 40 8 TestEmbeddedDependencyEditorRoutesWispSourcedRemovalToTheWispPlane
 40 8 TestEmbeddedMergeAndSettleDirtyWorkingSetSurvivesRefusedMerge
@@ -274,6 +276,7 @@
 40 13 TestEmbeddedRelationsDirectionSelectsTheInverseGraph
 40 13 TestGraphWalkPlansHonorJoinHints
 
+40 14 TestArrivalSeq_EmbeddedReplayedCounterSeedClearsTheStamps
 40 14 TestBatchCreatorContract
 40 14 TestBlockingAnnotatorContract
 40 14 TestCountsIncludeWispDependencies
@@ -286,6 +289,7 @@
 40 14 TestHeartbeatIssueCommitsARefusalOnlyWhenItReadTheIssueEmbedded
 40 14 TestHistory_NullTextColumns
 
+40 15 TestArrivalSeq_EmbeddedSequentialCreatesStampInCommitOrder
 40 15 TestCreateIssuesRejectStaleUpserts
 40 15 TestDecryptPassword_ShortCiphertextClassifiesAsKeyMismatch
 40 15 TestEmbeddedGetMergeBlockersOnAQuietStore
@@ -406,6 +410,7 @@
 40 24 TestIgnoredCursorHealResumeRespectsOperatorOverride
 40 24 TestLargeBatchApplyStatementCountsClassic40_Embedded
 40 24 TestReopenIssue
+40 24 TestUniqueIndexAllowsManyUnstampedWisps
 
 40 25 TestBatchGetterContract
 40 25 TestDatabases
@@ -421,6 +426,7 @@
 40 25 TestReadyWorkPageTotal
 40 25 TestWithPeerAuth_RestoresAbsentEnv
 
+40 26 TestArrivalSeq_EmbeddedConcurrentWritersAreUnique
 40 26 TestEmbeddedIssueOperationsCreateClosedDerivesTheClosedStamp
 40 26 TestEmbeddedMigration0058CleansOrphanedAndInvalidWispDependenciesRowsBeforeAddingConstraints
 40 26 TestEmbeddedOpenForReadOnlyCommand_LenientGate
@@ -603,6 +609,7 @@
 40 39 TestReclaimRefusesForeignReplicaLease
 40 39 TestWorkspaceConfigContract
 
+40 40 TestArrivalSeq_EmbeddedHealRaisesTheCounterPastTheStamps
 40 40 TestCountsWithMissingWispPlaneTables
 40 40 TestEmbeddedBatchCloserDoesNotMutateTheCallerRequest
 40 40 TestEmbeddedBlockedRecheckSettlesWhatTheWriteRecorded
