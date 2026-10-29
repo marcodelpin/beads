@@ -65,6 +65,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   create-coordination cell of every id it retires (4096 shards shared by
   unrelated ids) until it commits, so keep `limit` small, around 100, and loop
   on `remaining`. The new `IDRetention` conformance contract runs on every leg.
+- **`types.retained`: the retention commands keep key-bearing types.** A
+  workspace setting (`issueops.SettingKeyTypesRetained`; a comma-separated
+  list or JSON array of issue types, unknown names allowed) honored by the
+  commands whose selection is a retention policy over closed beads:
+  `bd prune` and `bd purge` (including `--wisps-plane`) without
+  `--retain-ids`, their previews and `POST /v0/beads/issues:sweep`; the
+  decay phase of `bd gc`; `bd admin cleanup`, which refuses `--cascade` while
+  the setting names a type; and the stale-closed-issues `bd doctor --fix`,
+  whose check counts only what the fix deletes. They keep every closed bead
+  of a listed type and report it as `retention_required` (`--json`, and
+  `SweepSkips.RetentionRequired` on the wire behind the new behavior
+  capability `issues.sweep.retainedTypes`; against a server without that
+  token the client reads the setting and refuses a plain sweep when it names
+  a type). A retaining sweep keeps nothing back, so it is the one that
+  deletes those beads, and it retires their ids. A retained bead protects
+  itself only; in a sweep the hold-back runs before the protections and
+  `limit`. The setting is read from the workspace database, never from
+  `config.yaml` (a key there draws a warning): a sweep reads it in the
+  transaction that deletes, and `bd gc`, `bd admin cleanup` and
+  `bd doctor --fix` read it with their selection (from one snapshot, except
+  `bd gc` over HTTP) before they delete; a read error fails the command and
+  deletes nothing. Names are
+  matched through one canonicalizing read, so an alias (`feat`, `mol`) or a
+  case variant of a built-in type (`Chore`) protects the type beads carry,
+  and a malformed name stored past the write check (`[op]`, `op fact`) still
+  protects the names in it; a write refuses only malformed syntax (a
+  bracketed list that is not JSON, a name with a space, quote, bracket or
+  comma, a non-blank value that names no type), and `bd config set-many`
+  checks every pair before it writes. A bd that predates the setting ignores
+  it, so upgrade every bd that runs these commands on a workspace before
+  relying on it. Not in scope, by
+  design: `bd mol wisp gc` (it selects only ephemeral wisps), the
+  `bd doctor` pollution deletes, `bd migrate-personal`, and the deletes that
+  name what they delete (`bd delete`, `bd mol burn`/`squash`,
+  `bd cook --force`, `bd repo remove`, `bd sql`).
 - `bd versions <id>` lists the versions recorded for a bead, and
   `versioned-history.enabled` turns recording on. While it is on, every
   accepted change to a bead created while it is on, or that enters the issues
