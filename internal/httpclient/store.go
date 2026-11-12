@@ -76,13 +76,11 @@ type Store struct {
 // interfaces here would assert a maintenance contract no OSS caller checks.
 var _ storage.DoltStorage = (*Store)(nil)
 
-// IsRemoteBackendStore satisfies storage.RemoteBackendStore. cmd/bd's storage
-// chain wraps this store in the external-dependency policy decorator like any
-// other. The decorator reads this marker only to build its roles on this
-// store's served roles rather than on the legacy methods it refuses
-// (internal/storage/externaldeps/remote_roles.go). It decides whether to stand
-// down through ServerEnforcesExternalDependencyPolicy below, never through
-// this marker.
+// IsRemoteBackendStore satisfies storage.RemoteBackendStore. The
+// external-dependency policy decorator reads it to compose its role views over
+// this store's own roles (its legacy method seam is mostly stubs); it decides
+// whether to stand down through ServerEnforcesExternalDependencyPolicy below,
+// never through this marker.
 func (s *Store) IsRemoteBackendStore() bool { return true }
 
 var _ storage.RemoteBackendStore = (*Store)(nil)
@@ -184,7 +182,7 @@ func open(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
 	if dialer == nil {
 		return nil, fmt.Errorf("%w: cannot dial %s", ErrNoTransport, target)
 	}
-	wire, err := dialer(ctx, target)
+	wire, err := dialShared(ctx, dialer, beadsDir, target)
 	if err != nil {
 		return nil, err
 	}
@@ -253,12 +251,12 @@ func (s *Store) CommitAll(_ context.Context, _ string) (bool, error) { return fa
 // it opportunistically and must not error.
 func (s *Store) CommitPending(_ context.Context, _ string) (bool, error) { return false, nil }
 
-// CommitConfigOnly, the scoped commit after a config or memory write
-// (GH#4078), joins the family for the same D3 reason: the write is durable
-// once the server answers, so there is nothing to flush, and refusing would
-// fail a command whose write already landed. (Fork carry: the method is on the
-// fork's storage.DoltStorage before upstream adds it here in its own form.)
-func (s *Store) CommitConfigOnly(_ context.Context, _ string) error { return nil }
+// CommitConfigOnly and CommitConfigUserKVOnly, the scoped commits after a
+// config or memory write (GH#4078), join the family for the same D3 reason:
+// the write is durable once the server answers, so there is nothing to flush,
+// and refusing would fail a command whose write already landed.
+func (s *Store) CommitConfigOnly(_ context.Context, _ string) error       { return nil }
+func (s *Store) CommitConfigUserKVOnly(_ context.Context, _ string) error { return nil }
 
 // DefineLabel, UndefineLabel and ListLabelDefinitions are the fork's curated
 // label vocabulary registry (storage.LabelVocabularyStore, fork migration

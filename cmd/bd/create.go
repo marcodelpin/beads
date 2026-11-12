@@ -449,8 +449,11 @@ var createCmd = &cobra.Command{
 			defer func() { _ = parentLookupStore.Close() }()
 		}
 
-		var inheritedLabels []string
+		noInheritLabels, _ := cmd.Flags().GetBool("no-inherit-labels")
+		inheritParentLabels := parentID != "" && !noInheritLabels
 		if parentID != "" {
+			// A fail-fast with the message this command has always printed;
+			// the create role refuses a missing parent on its own as well.
 			ctx := rootCtx
 			_, err := parentLookupStore.GetIssue(ctx, parentID)
 			if err != nil {
@@ -459,16 +462,20 @@ var createCmd = &cobra.Command{
 				}
 				return HandleError("failed to check parent issue: %v", err)
 			}
-
-			noInheritLabels, _ := cmd.Flags().GetBool("no-inherit-labels")
-			if !noInheritLabels {
-				inheritedLabels, _ = parentLookupStore.GetLabels(ctx, parentID)
-			}
 		}
 
-		labels = mergeCreateLabels(labels, inheritedLabels)
-
 		if dryRun {
+			// The preview shows what the create role would inherit; the real
+			// create asks the role to inherit (CreateRequest.InheritLabelsFromParent)
+			// inside its own transaction. A failed read is reported, never
+			// previewed as "no labels".
+			if inheritParentLabels {
+				inherited, err := parentLookupStore.GetLabels(rootCtx, parentID)
+				if err != nil {
+					return HandleError("failed to read the labels of parent %s: %v", parentID, err)
+				}
+				labels = mergeCreateLabels(labels, inherited)
+			}
 			return renderDryRun()
 		}
 
@@ -485,14 +492,12 @@ var createCmd = &cobra.Command{
 		}
 
 		createCtx := rootCtx
-		if parentID != "" {
-			childID, err := store.GetNextChildID(rootCtx, parentID)
-			if err != nil {
-				return HandleError("%v", err)
-			}
-			explicitID = childID
-			createCtx = storage.WithReservedChildCounter(createCtx, parentID, childID)
-		}
+		// The --parent child id is minted by the Lifecycle role, on every
+		// backend and route: a create with a ParentID and no id of its own is
+		// <parent>.<n>, minted inside the create's own transaction (conformance
+		// RunIssueOperationsCreateUnderAParentMintsTheNextChildID, served leg
+		// included), and the role stages the advanced counter itself. An
+		// explicit --id never reaches here with a parent (refused above).
 
 		if explicitID != "" {
 			_, err := validation.ValidateIDFormat(explicitID)
@@ -526,7 +531,6 @@ var createCmd = &cobra.Command{
 			Ephemeral:          wisp,
 			NoHistory:          noHistory,
 			StorageClass:       storageClass,
-			CreatedBy:          getActorWithGit(),
 			Owner:              getOwner(),
 			Labels:             labels,
 			MolType:            molType,
@@ -581,9 +585,7 @@ var createCmd = &cobra.Command{
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
-		// Label inheritance stays CLI-side (mergeCreateLabels above) because the
-		// dry-run preview needs it too; asking the facade to inherit as well
-		// would append the parent's labels a second time.
+		// The parent's labels are the role's to inherit, inside the create.
 		//
 		// Fork seam (GH#4379/GH#4378-review D1, internal/spool): wrap the
 		// facade create so a transient server-unreachable error queues the
@@ -611,14 +613,15 @@ var createCmd = &cobra.Command{
 			func() error {
 				var cerr error
 				result, cerr = ops.Create(opsCtx, issueops.CreateRequest{
-					Actor:           createActor,
-					Issue:           issue,
-					ParentID:        parentID,
-					Dependencies:    createDependencyRequests(depSpecs),
-					WaitsFor:        waitsForRequest(waitsForSpec),
-					ForceIDPrefix:   forceCreate,
-					IDPrefix:        createIDPrefixOverride(),
-					DefaultPriority: priorityDefault,
+					Actor:                   createActor,
+					Issue:                   issue,
+					ParentID:                parentID,
+					InheritLabelsFromParent: inheritParentLabels,
+					Dependencies:            createDependencyRequests(depSpecs),
+					WaitsFor:                waitsForRequest(waitsForSpec),
+					ForceIDPrefix:           forceCreate,
+					IDPrefix:                createIDPrefixOverride(),
+					DefaultPriority:         priorityDefault,
 				})
 				return cerr
 			},

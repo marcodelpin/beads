@@ -114,11 +114,12 @@ func (r *issueSQLRepositoryImpl) InsertBatch(ctx context.Context, issues []*type
 // PromoteFromEphemeral promotes an active wisp into the Dolt-versioned issues
 // plane in place: same id, wisp_type retained, labels/dependencies/events/
 // comments carried across to the permanent tables, inbound wisp-targeted
-// dependency edges retargeted, and blocked state recomputed. It delegates to
-// the exact issueops implementation the classic (direct/embedded) route runs,
-// so the two modes cannot drift. The issueops error is returned unwrapped on
-// purpose: the CLI surfaces it verbatim ("wisp <id> not found"), and that
-// text is part of the classic error contract.
+// dependency edges retargeted, and blocked state recomputed. It runs the
+// issueops implementation DoltStorage.PromoteFromEphemeral runs and returns
+// its error unwrapped ("wisp <id> not found"). `bd promote` no longer reaches
+// it on any route: issueops.Promote makes the persistence move instead
+// (MovePersistence below, on this layer), which also carries the child
+// counter.
 func (r *issueSQLRepositoryImpl) PromoteFromEphemeral(ctx context.Context, id, actor string) error {
 	if id == "" {
 		return errors.New("db: PromoteFromEphemeral: id must not be empty")
@@ -782,6 +783,17 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 	if err := types.CheckFieldLen("owner", issue.Owner); err != nil {
 		return err
 	}
+	// The column list must stay in step with the classic writer
+	// (issueops.insertIssueIntoTable) — the shared scanner hydrates whatever
+	// either writer stored, so a column present there and missing here is not
+	// a harmless omission but a silent, writer-dependent data loss. That is
+	// what closed_by_session was: the schema defaults it to '', so an issue
+	// written by this statement read back an empty closing session while the
+	// classic writer kept it. Only Insert without CreateOnly reaches this
+	// statement (CreateIssue callers that leave CreateOnly unset, such as the
+	// quick, todo, gate and batch proxied servers); CreateOnly creates, import
+	// and promotion go through the classic writer.
+	//
 	// Stamp a fresh non-zero row_lock at create, exactly like the classic
 	// insertIssueIntoTable (issueops/helpers.go). Without it a proxied-server
 	// (uow) create leaves row_lock at the schema DEFAULT 0, so the row's
@@ -795,7 +807,7 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			created_at, created_by, owner, updated_at, started_at, closed_at, external_ref, spec_id,
 			compaction_level, compacted_at, compacted_at_commit, original_size,
 			sender, ephemeral, no_history, wisp_type, pinned, is_template,
-			mol_type, work_type, source_system, source_repo, close_reason,
+			mol_type, work_type, source_system, source_repo, close_reason, closed_by_session,
 			event_kind, actor, target, payload,
 			await_type, await_id, timeout_ns, waiters,
 			due_at, defer_until, metadata,
@@ -806,7 +818,7 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?,
@@ -830,6 +842,7 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			external_ref = VALUES(external_ref),
 			source_repo = VALUES(source_repo),
 			close_reason = VALUES(close_reason),
+			closed_by_session = VALUES(closed_by_session),
 			metadata = VALUES(metadata),
 			row_lock = VALUES(row_lock)
 	`, table),
@@ -838,7 +851,7 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 		issue.CreatedAt, issue.CreatedBy, issue.Owner, issue.UpdatedAt, issue.StartedAt, issue.ClosedAt, nullStringPtr(issue.ExternalRef), issue.SpecID,
 		issue.CompactionLevel, issue.CompactedAt, nullStringPtr(issue.CompactedAtCommit), nullIntVal(issue.OriginalSize),
 		issue.Sender, issue.Ephemeral, issue.NoHistory, string(issue.WispType), issue.Pinned, issue.IsTemplate,
-		string(issue.MolType), string(issue.WorkType), issue.SourceSystem, issue.SourceRepo, issue.CloseReason,
+		string(issue.MolType), string(issue.WorkType), issue.SourceSystem, issue.SourceRepo, issue.CloseReason, issue.ClosedBySession,
 		issue.EventKind, issue.Actor, issue.Target, issue.Payload,
 		issue.AwaitType, issue.AwaitID, issue.Timeout.Nanoseconds(), formatJSONStringArray(issue.Waiters),
 		issue.DueAt, issue.DeferUntil, jsonMetadata(issue.Metadata),
@@ -1274,9 +1287,14 @@ func (r *issueSQLRepositoryImpl) UnclaimIssueIfAssignee(ctx context.Context, id,
 // (time.Now().UTC()), same TTL resolution (issueops.LeaseTTL), and the same
 // only-current-owner classification (storage.ErrAlreadyClaimed /
 // ErrNotClaimable) — so classic `bd reclaim` staleness semantics see proxied
-// heartbeats identically. Deliberately NO Dolt commit: the leases table is
-// dolt_ignored (bd-lrgn1), and the cmd layer commits this transaction with
-// uow.RunTxEphemeral (plain SQL COMMIT, nothing in dolt_log).
+// heartbeats identically. Deliberately NO Dolt commit here: a refresh writes
+// only the dolt_ignored leases table (bd-lrgn1). A re-arm is recorded as a
+// mutation (versioned rows), so a caller must commit this unit of work with
+// a message, as the Heartbeater role's uow leg does (uow.RunTxScoped). A
+// refusal is returned as an error, so the caller's unit of work rolls back
+// and the orphaned-lease delete the refusal made is not kept on this door
+// (no production caller reaches it; the role's leg commits refusals, and the
+// live-claim predicate keeps an orphan from ever answering a refresh).
 func (r *issueSQLRepositoryImpl) HeartbeatIssue(ctx context.Context, id, actor string) error {
 	if issueops.IsActiveWispInTx(ctx, r.runner, id) {
 		return fmt.Errorf("db: IssueSQLRepository.HeartbeatIssue: %w: %s is ephemeral", storage.ErrNotClaimable, id)
@@ -1309,6 +1327,13 @@ func (r *issueSQLRepositoryImpl) ReclaimExpiredLeases(ctx context.Context, older
 		return nil, fmt.Errorf("db: IssueSQLRepository.ReclaimExpiredLeases: %w", err)
 	}
 	return out, nil
+}
+
+// RenewLease runs the shared heartbeat body directly on r.runner, Reclaim's
+// bare-passthrough shape: validation, the wisp refusal and the typed
+// refusals all happen inside issueops.ExecuteHeartbeatInTx.
+func (r *issueSQLRepositoryImpl) RenewLease(ctx context.Context, request publicops.HeartbeatRequest) (publicops.HeartbeatResult, error) {
+	return issueops.ExecuteHeartbeatInTx(ctx, r.runner, request)
 }
 
 // Reclaim runs the shared sweep body directly on r.runner, matching GetMany's

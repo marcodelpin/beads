@@ -153,9 +153,10 @@ var legitimatelyUnsupported = map[string]string{
 	// now, kept unwired for CreateIssue's rule rather than for the absence of an
 	// operation. What has not moved is the LEASE row the release deletes: the
 	// role owns that as part of its post-state, and neither of these front doors
-	// can say anything about it, which is why the heartbeat and the reaper above
-	// keep the original reason.
-	"HeartbeatIssue":         "lease: no wire vocabulary",
+	// can say anything about it, which is why the raw reaper keeps the original
+	// reason. The HEARTBEAT has left this list: issues.heartbeat publishes the
+	// lease refresh and both Heartbeater and the legacy
+	// HeartbeatIssue dial it (heartbeater.go).
 	"ReclaimExpiredLeases":   "lease: no wire vocabulary",
 	"UnclaimIssue":           "write: raw release, force flag and all (role: Releaser). Re-routing it would put a second spelling of the transition beside the role's, with a bare error where the role answers the post-state row and its reminted version",
 	"UnclaimIssueIfAssignee": "write: raw conditional release (role: Releaser, via ReleaseRequest.ExpectedAssignee). Its expectation is a STRING where the role's is a POINTER, so it cannot express the one distinction the role's guard is built on — absent means 'do not check' and empty is a refusal, and this signature spells both as \"\"",
@@ -260,7 +261,6 @@ var legitimatelyUnsupported = map[string]string{
 	"GetDependentRecordsForIssues":  "raw read: no multi-id dependents operation",
 	"GetDependents":                 "raw read: no dependents operation off getIssue",
 	"IsBlocked":                     "raw read: role BlockingAnnotator serves this shape",
-	"IsBlockedBatch":                "raw read: role BlockingAnnotator serves this shape",
 	"IterAllDependencyRecords":      "raw read: streaming has no wire shape",
 	"IterDependenciesWithMetadata":  "raw read: streaming has no wire shape",
 	"IterDependentsWithMetadata":    "raw read: streaming has no wire shape",
@@ -281,7 +281,6 @@ var legitimatelyUnsupported = map[string]string{
 	"GetNextChildID":             "raw read: id allocation is a server-side act",
 	"GetStaleIssues":             "raw read: no staleness operation",
 	"GetStatisticsNoBlocked":     "raw read: getStats has no blocked-suppression variant",
-	"SearchIssueIDs":             "raw read: no partial-id search operation (D11)",
 	"SearchIssueSummaries":       "raw read: no summary-projection search operation; SearchIssues (role: Searcher) hydrates full issues, and the wire publishes no narrower searchIssues projection for list-shaped rendering to drop onto",
 	"SearchIssuesWithCounts":     "raw read: no counts-bearing search operation",
 

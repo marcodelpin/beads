@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -473,9 +474,9 @@ Examples:
 
 		ctx := rootCtx
 
-		existing, _ := store.GetConfig(ctx, storageKey)
+		existing, found, _ := directMemoryLookup(ctx, storageKey)
 		verb := "Remembered"
-		if existing != "" {
+		if found {
 			verb = "Updated"
 		}
 		if dedupHit {
@@ -494,7 +495,8 @@ Examples:
 		// Passing --key, or any --valid-*/--tags/--scope flag, states write intent and bypasses
 		// both branches (provenance is auto-captured, so it does NOT count as write intent).
 		if memoryKeyFlag == "" && slugify(insight) == insight && !hasValidity && !hasTags && !hasScope {
-			if existing != "" {
+			if found {
+				existing = parseStoredMemory(existing).Content
 				if jsonOutput {
 					return outputJSON(map[string]interface{}{
 						"key":    key,
@@ -551,8 +553,12 @@ Examples:
 			return HandleErrorRespectJSON("storing memory: %v", err)
 		}
 		commandDidWrite.Store(true)
-		if err := commitConfigWrite(ctx, store, "remember"); err != nil {
-			return HandleErrorRespectJSON("%v", err)
+		// The memory is stored by now, so a commit the kv.* screen refuses or
+		// that fails is a warning, not the command's failure (upstream #7608);
+		// --json gets the same news in memoryCommitFields.
+		commitErr := commitMemoryWrite(ctx, store, "remember")
+		if commitErr != nil {
+			WarnError("%v", commitErr)
 		}
 
 		if budgetLine != "" {
@@ -563,14 +569,15 @@ Examples:
 			action := "remembered"
 			if dedupHit {
 				action = "deduped"
-			} else if existing != "" {
+			} else if found {
 				action = "updated"
 			}
-			result := map[string]string{
+			result := map[string]interface{}{
 				"key":    key,
 				"value":  insight,
 				"action": action,
 			}
+			memoryCommitFields(result, commitErr)
 			if hasValidity {
 				env := parseStoredMemory(storedValue)
 				if env.ValidUntil != "" {
@@ -1060,8 +1067,8 @@ Examples:
 
 		ctx := rootCtx
 
-		existing, _ := store.GetConfig(ctx, storageKey)
-		if existing == "" {
+		existing, found, _ := directMemoryLookup(ctx, storageKey)
+		if !found {
 			if jsonOutput {
 				if jerr := outputJSON(map[string]string{
 					"key":   key,
@@ -1079,17 +1086,23 @@ Examples:
 			return HandleErrorRespectJSON("forgetting memory: %v", err)
 		}
 		commandDidWrite.Store(true)
-		if err := commitConfigWrite(ctx, store, "forget"); err != nil {
-			return HandleErrorRespectJSON("%v", err)
+		// As for remember: the delete landed, so a refused or failed commit
+		// warns and the command still succeeds (upstream #7608).
+		commitErr := commitMemoryWrite(ctx, store, "forget")
+		if commitErr != nil {
+			WarnError("%v", commitErr)
 		}
 
 		if jsonOutput {
-			return outputJSON(map[string]string{
+			payload := map[string]interface{}{
 				"key":     key,
 				"deleted": "true",
-			})
+			}
+			memoryCommitFields(payload, commitErr)
+			return outputJSON(payload)
 		}
-		fmt.Printf("Forgot [%s]: %s\n", key, truncateMemory(existing, 80))
+		// The stored value may be the fork's memory envelope; print its content.
+		fmt.Printf("Forgot [%s]: %s\n", key, truncateMemory(parseStoredMemory(existing).Content, 80))
 		return nil
 	},
 }
@@ -1126,7 +1139,7 @@ Examples:
 		storageKey := kvPrefix + memoryPrefix + key
 
 		ctx := rootCtx
-		value, err := store.GetConfig(ctx, storageKey)
+		value, found, err := directMemoryLookup(ctx, storageKey)
 		if err != nil {
 			return HandleErrorRespectJSON("recalling memory: %v", err)
 		}
@@ -1153,7 +1166,7 @@ Examples:
 			result := map[string]interface{}{
 				"key":   key,
 				"value": content,
-				"found": value != "",
+				"found": found,
 			}
 			if validUntil != "" {
 				result["valid_until"] = validUntil
@@ -1168,18 +1181,31 @@ Examples:
 			if jerr := outputJSON(result); jerr != nil {
 				return jerr
 			}
-			if value == "" {
+			if !found {
 				return SilentExit()
 			}
 			return nil
 		}
-		if value == "" {
+		if !found {
 			fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
 			return SilentExit()
 		}
 		fmt.Printf("%s\n", content)
 		return nil
 	},
+}
+
+// directMemoryLookup reads a memory row on the direct route and reports its
+// presence by ROW EXISTENCE, never by value != "" (upstream #5964): a memory
+// stored as the empty string is present. GetConfig answers "" for an absent
+// key too, so presence comes from the config map.
+func directMemoryLookup(ctx context.Context, storageKey string) (value string, found bool, err error) {
+	all, err := store.GetAllConfig(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	value, found = all[storageKey]
+	return value, found, nil
 }
 
 // truncateMemory shortens a string to maxLen for display.
