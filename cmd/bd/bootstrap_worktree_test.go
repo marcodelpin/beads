@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,7 +26,7 @@ func TestBootstrap_WorktreeFallbackDir(t *testing.T) {
 	}
 
 	run := func(dir string, args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -45,13 +44,13 @@ func TestBootstrap_WorktreeFallbackDir(t *testing.T) {
 	run(mainRepoDir, "commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		cleanupCmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cleanupCmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cleanupCmd.Dir = mainRepoDir
 		_ = cleanupCmd.Run()
 	})
@@ -115,7 +114,7 @@ func TestBootstrap_WorktreeLocalBeadsPreferLocal(t *testing.T) {
 	}
 
 	run := func(dir string, args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -131,13 +130,13 @@ func TestBootstrap_WorktreeLocalBeadsPreferLocal(t *testing.T) {
 	run(mainRepoDir, "commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		cleanupCmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cleanupCmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cleanupCmd.Dir = mainRepoDir
 		_ = cleanupCmd.Run()
 	})
@@ -186,7 +185,7 @@ func TestBootstrap_WorktreeNoBeadsAnywhereStillPointsToMainRepo(t *testing.T) {
 	}
 
 	run := func(dir string, args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -202,13 +201,13 @@ func TestBootstrap_WorktreeNoBeadsAnywhereStillPointsToMainRepo(t *testing.T) {
 	run(mainRepoDir, "commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		cleanupCmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cleanupCmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cleanupCmd.Dir = mainRepoDir
 		_ = cleanupCmd.Run()
 	})

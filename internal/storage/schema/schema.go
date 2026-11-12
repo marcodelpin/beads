@@ -848,6 +848,14 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err := checkMigrateConsent(ctx, db); err != nil {
 		return 0, err
 	}
+	return migrateUpConsented(ctx, db)
+}
+
+// migrateUpConsented is MigrateUp past its consent gate. It exists for the one
+// caller whose consent the gate's version test cannot see: an open holding
+// fresh-bootstrap heal authority, which proves it created the database it is
+// migrating (see MigrateUpWithLock). Every other caller goes through MigrateUp.
+func migrateUpConsented(ctx context.Context, db DBConn) (int, error) {
 	// Re-assert the canonical dolt_ignore patterns before anything else, and
 	// in particular before the migrationWorkNeeded short-circuit: a database
 	// whose migration cursors arrived at-latest without executing the seeding
@@ -1952,6 +1960,11 @@ func scanRowByColumn(rows *sql.Rows) (CallRow, error) {
 // connection. Bodies that invoke a stored procedure (today 0040 and 0041, both
 // CALL DOLT_COMMIT) are routed through DrainCall so their result sets are
 // consumed; all other migrations keep the unchanged ExecContext path.
+//
+// sqlText is always a compile-time embedded migration body (go:embed above;
+// frozen once merged per scripts/check-migration-hygiene.sh) — never runtime
+// or user input. Executing it verbatim is the migration contract, so SAST
+// "SQL injection" findings on this call are accepted by design.
 func execMigrationBody(ctx context.Context, db DBConn, sqlText string) error {
 	if !procedureCallRe.MatchString(sqlText) {
 		_, err := db.ExecContext(ctx, sqlText)

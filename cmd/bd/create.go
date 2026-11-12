@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,6 +166,10 @@ var createCmd = &cobra.Command{
 		if err != nil {
 			return HandleError("%v", err)
 		}
+		// No --priority asks the role for its default (CreateRequest.
+		// DefaultPriority). The flag's displayed default is that same library
+		// constant, so the dry-run preview below still shows what will land.
+		priorityDefault := !cmd.Flags().Changed("priority")
 
 		issueType, _ := cmd.Flags().GetString("type")
 		assignee, _ := cmd.Flags().GetString("assignee")
@@ -584,23 +589,36 @@ var createCmd = &cobra.Command{
 		// facade create so a transient server-unreachable error queues the
 		// whole op (issue + dependency edges) for replay instead of failing.
 		// Permanent errors (incl. RULING R1's ErrAlreadyExists) pass through.
+		if priorityDefault {
+			issue.Priority = 0
+		}
+		// The replay path (store.CreateIssue) does not read DefaultPriority,
+		// so the queued issue carries the default priority explicitly (#7426).
+		spoolIssue := issue
+		if priorityDefault {
+			queued := *issue
+			queued.Priority = issueops.DefaultCreatePriority
+			spoolIssue = &queued
+		}
+		createActor := currentActor()
 		var result issueops.CreateResult
 		spoolRes, err := writeWithSpool(ctx, "create",
 			spoolPayload(map[string]interface{}{
-				"issue":        issue,
-				"actor":        actor,
+				"issue":        spoolIssue,
+				"actor":        createActor,
 				"dependencies": pendingDeps,
 			}),
 			func() error {
 				var cerr error
 				result, cerr = ops.Create(opsCtx, issueops.CreateRequest{
-					Actor:         actor,
-					Issue:         issue,
-					ParentID:      parentID,
-					Dependencies:  createDependencyRequests(depSpecs),
-					WaitsFor:      waitsForRequest(waitsForSpec),
-					ForceIDPrefix: forceCreate,
-					IDPrefix:      createIDPrefixOverride(),
+					Actor:           createActor,
+					Issue:           issue,
+					ParentID:        parentID,
+					Dependencies:    createDependencyRequests(depSpecs),
+					WaitsFor:        waitsForRequest(waitsForSpec),
+					ForceIDPrefix:   forceCreate,
+					IDPrefix:        createIDPrefixOverride(),
+					DefaultPriority: priorityDefault,
 				})
 				return cerr
 			},
@@ -661,7 +679,7 @@ var createCmd = &cobra.Command{
 		}
 
 		if repoPath != "." && targetStore != nil {
-			if err := commitPendingIfEmbedded(ctx, targetStore, actor, doltAutoCommitParams{
+			if err := commitPendingIfEmbedded(ctx, targetStore, currentActor(), doltAutoCommitParams{
 				Command:  "create",
 				IssueIDs: []string{created.ID},
 			}); err != nil {
@@ -1071,7 +1089,7 @@ func init() {
 	createCmd.Flags().String("title", "", "Issue title (alternative to positional argument)")
 	createCmd.Flags().Bool("silent", false, "Output only the issue ID (for scripting)")
 	createCmd.Flags().Bool("dry-run", false, "Preview what would be created without actually creating")
-	registerPriorityFlag(createCmd, "2")
+	registerPriorityFlag(createCmd, strconv.Itoa(issueops.DefaultCreatePriority))
 	createCmd.Flags().StringP("type", "t", "task", "Issue type (bug|feature|task|epic|chore|decision|spike|story|milestone); custom types require types.custom config; aliases: enhancement/feat→feature, dec/adr→decision")
 	createCmd.Flags().StringP("status", "s", "", "Initial status")
 	registerCommonIssueFlags(createCmd)

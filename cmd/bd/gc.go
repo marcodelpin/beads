@@ -278,7 +278,7 @@ Consent flow (recommended):
 							fmt.Printf("  Memory prune: deleted %d expired memor(y/ies) with policy=delete\n", len(deleted))
 						}
 						if !usesSQLServer() && store != nil {
-							if _, err := store.CommitPending(ctx, actor); err != nil {
+							if _, err := store.CommitPending(ctx, currentActor()); err != nil {
 								WarnError("failed to commit after memory prune: %v", err)
 							}
 						}

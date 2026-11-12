@@ -212,8 +212,8 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 
 			var lanes []string
 			for name, job := range workflow.Jobs {
-				if name == bazelRBEJobName {
-					continue
+				if name == bazelRBEJobName || isBazelRRCJob(name) {
+					continue // not lanes: never in a PR call (bazel_rrc_test.go)
 				}
 				runs := bazelLaneRunModes(t, name, job.If, s.with)[mode]
 				switch {
@@ -225,7 +225,9 @@ func TestBazelCacheModeReachesTheRC(t *testing.T) {
 				// no longer forwards the app secrets either, so there is no
 				// audience left for pre-warming in fork-ro or fork-rw (see
 				// bazel.yml's comment on the job).
-				case strings.HasPrefix(mode, "fork-") && !runs && !bazelPackageJobs[name] && !(name == bazelRBEPrewarmJobName && strings.HasPrefix(mode, "fork-")):
+				// Nor does a shadow lane (bazelShadowLanes): mode remote on
+				// same-repo PRs and merge groups only.
+				case strings.HasPrefix(mode, "fork-") && !runs && !bazelPackageJobs[name] && !(name == bazelRBEPrewarmJobName && strings.HasPrefix(mode, "fork-")) && bazelShadowLanes[name] == "":
 					t.Errorf("%s does not run in mode %s (every lane runs remotely)", name, mode)
 				case mode == "cache" && (name == bazelIntegJobName || name == bazelCmdDoltJobName) && !runs:
 					t.Errorf("%s does not run in mode cache", name)

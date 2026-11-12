@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,7 +26,7 @@ func TestReset_WorktreeFindsBeadsDir(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = mainRepoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -45,13 +44,13 @@ func TestReset_WorktreeFindsBeadsDir(t *testing.T) {
 	run("commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cmd.Dir = mainRepoDir
 		_ = cmd.Run()
 	})
@@ -117,7 +116,7 @@ func TestReset_WorktreeNoBeadsReturnsEmpty(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = mainRepoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -133,13 +132,13 @@ func TestReset_WorktreeNoBeadsReturnsEmpty(t *testing.T) {
 	run("commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cmd.Dir = mainRepoDir
 		_ = cmd.Run()
 	})
@@ -167,7 +166,7 @@ func TestReset_WorktreeSubdirFindsBeadsDir(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = mainRepoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -183,13 +182,13 @@ func TestReset_WorktreeSubdirFindsBeadsDir(t *testing.T) {
 	run("commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cmd.Dir = mainRepoDir
 		_ = cmd.Run()
 	})

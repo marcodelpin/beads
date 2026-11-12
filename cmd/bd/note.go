@@ -173,14 +173,15 @@ To read notes on an issue, use: bd show <id>`,
 		updates := map[string]interface{}{
 			issueops.OpAppendNotes: noteText,
 		}
+		noteActor := currentActor()
 		res, err := writeWithSpool(ctx, "note",
 			spoolPayload(map[string]interface{}{
 				"id":      result.ResolvedID,
 				"updates": updates,
-				"actor":   actor,
+				"actor":   noteActor,
 			}),
 			func() error {
-				return issueStore.UpdateIssue(ctx, result.ResolvedID, updates, actor)
+				return issueStore.UpdateIssue(ctx, result.ResolvedID, updates, noteActor)
 			},
 		)
 		if err != nil {
@@ -200,7 +201,7 @@ To read notes on an issue, use: bd show <id>`,
 			fmt.Printf("%s Queued note for replay (server unreachable): %s\n", ui.RenderWarn("!"), result.ResolvedID)
 			return nil
 		}
-		if err := commitPendingIfEmbedded(ctx, issueStore, actor, doltAutoCommitParams{
+		if err := commitPendingIfEmbedded(ctx, issueStore, noteActor, doltAutoCommitParams{
 			Command:  "note",
 			IssueIDs: []string{result.ResolvedID},
 		}); err != nil {

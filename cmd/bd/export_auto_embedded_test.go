@@ -36,7 +36,7 @@ func TestAutoExportGitAddFailureExitsNonZero(t *testing.T) {
 
 	runGit := func(args ...string) {
 		t.Helper()
-		c := exec.Command("git", args...)
+		c := gitCommand(args...)
 		c.Dir = dir
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

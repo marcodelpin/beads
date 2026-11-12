@@ -19,7 +19,7 @@ func runLabelDefineProxiedServer(ctx context.Context, label, description string)
 		return HandleErrorRespectJSON("proxied-server UOW provider not initialized")
 	}
 	err := uow.RunTx(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
-		if err := uw.LabelVocabularyUseCase().Define(ctx, label, description, actor); err != nil {
+		if err := uw.LabelVocabularyUseCase().Define(ctx, label, description, currentActor()); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("bd: label define %s", strings.TrimSpace(label)), nil

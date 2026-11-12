@@ -45,6 +45,9 @@ var roleContractCases = []roleContract{
 		RunBatchApplyAcceptsAnExternalEdgeTarget,
 		RunBatchApplyNormalizesTheWaitsForGate,
 		RunBatchApplyStampsSpawnerIDOnlyWhenNamed,
+		RunBatchApplyCarriesThreadIDOntoTheStoredEdge,
+		RunBatchApplyCarriesThreadIDOntoAnExistingEdge,
+		RunBatchApplyRefusesAThreadIDLongerThanItsColumn,
 		RunBatchApplySplicesAForwardMetadataRef,
 		RunBatchApplySplicesASelfMetadataRef,
 		RunBatchApplyRefusesAMetadataRefNoItemDeclares,
@@ -55,6 +58,11 @@ var roleContractCases = []roleContract{
 		RunBatchApplyReplayMintsANewSetOfRows,
 		RunBatchApplyDoesNotMutateTheCallerRequest,
 		RunBatchApplyRefusesAnUnusableRequest,
+		RunBatchApplyUpdateItemsRefuseATemplate,
+		RunBatchApplySplicesTheMetadataOfATemplateItCreates,
+		RunBatchApplyCloseItemsAnswerToTheCloseGuards,
+		RunBatchApplyRefusesADottedChildGatedOnItsOwnParent,
+		RunBatchApplyAppliesTheDefaultPriority,
 	),
 
 	roleCases("BatchCloser", "BatchCloser()", oncePerRole,
@@ -79,6 +87,7 @@ var roleContractCases = []roleContract{
 		RunBatchCloserAllRefusedBatchRecordsNoHistory,
 		RunBatchCloserDoesNotMutateTheCallerRequest,
 		RunBatchCloserSettlesTheDependersOfWhatItClosed,
+		RunBatchCloserItemsAnswerToTheCloseGuards,
 	),
 
 	roleCases("BatchCreator", "BatchCreator()", oncePerRole,
@@ -96,6 +105,7 @@ var roleContractCases = []roleContract{
 		RunBatchCreatorRecordsNoHistoryForAnEphemeralBatch,
 		RunBatchCreatorDoesNotMutateTheCallerRequest,
 		RunBatchCreatorEchoesSubSecondTimestamps,
+		RunBatchCreatorAppliesTheDefaultPriority,
 	),
 
 	roleCases("BlockingAnnotator", "BlockingAnnotator()", oncePerRole,
@@ -260,6 +270,7 @@ var roleContractCases = []roleContract{
 		RunDependencyEditorSameTypeReAddIsIdempotent,
 		RunDependencyEditorSameTypeReAddWithChangedMetadataMintsOneVersion,
 		RunDependencyEditorSameTypeReAddWithIdenticalMetadataIsANoOp,
+		RunDependencyEditorSameTypeReAddWithChangedThreadMintsOneVersion,
 		RunDependencyEditorRepeatsWithinOneRequestCollapse,
 		RunDependencyEditorAttributesItsEventsToTheActor,
 		RunDependencyEditorRetypeRefusalLeavesTheOriginalEdge,
@@ -293,6 +304,7 @@ var roleContractCases = []roleContract{
 		RunDependencyEditorAcceptsADiamond,
 		RunDependencyEditorGateScopeFollowsTheEdgeType,
 		RunDependencyEditorAcceptsBlockingAcrossIssueTypes,
+		RunDependencyEditorRefusesADottedChildGatedOnItsOwnParent,
 	),
 
 	// The accessor named here is not an accessor at all, alone among these
@@ -431,12 +443,14 @@ var roleContractCases = []roleContract{
 		RunLifecycleExpectedVersionIsCheckedBeforeTheNoOps,
 		RunLifecycleReopenRecordsItsReason,
 		RunLifecycleResultsAreHydratedPostStateSnapshots,
+		RunLifecycleResultsCarryThePostWriteRowVersion,
 		RunLifecycleCloseAndReopenRequireActorAndIssueID,
 		RunLifecycleReopenProvenanceLabelsHistory,
 		RunLifecycleCloseSettlesItsTransitiveAndCrossPlaneDependers,
 		RunLifecycleCloseSettlesTheClosedRowItselfAndItsChild,
 		RunLifecycleCloseOnASpawnersLastChildSatisfiesAWaitsForGate,
 		RunLifecycleReopenReblocksItsDependers,
+		RunLifecycleCloseEnforcesTheCloseGuards,
 	),
 
 	// The accessor-reachable half of Lifecycle.Create, moved out of the staging
@@ -449,6 +463,7 @@ var roleContractCases = []roleContract{
 		RunLifecycleCreateInheritsParentLabels,
 		RunLifecycleCreateWritesEveryScalarField,
 		RunLifecycleCreateEchoesSubSecondTimestamps,
+		RunLifecycleCreateAppliesTheDefaultPriority,
 	),
 
 	roleCases("LifecycleUpdate", "IssueLifecycle()", oncePerRole,
@@ -476,6 +491,8 @@ var roleContractCases = []roleContract{
 		RunLifecycleUpdateParentIDReplacesEveryParent,
 		RunLifecycleUpdatePersistentPreservesUnversionedClass,
 		RunLifecycleUpdateProvenanceLabelsHistory,
+		RunLifecycleUpdateRefusesATemplate,
+		RunLifecycleUpdateAllowTemplateEditsATemplate,
 	),
 
 	roleCases("Memories", "Memories()", oncePerRole,

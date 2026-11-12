@@ -31,7 +31,7 @@ func TestConfigureBeadsHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = mainRepoDir
 		if err := cmd.Run(); err != nil {
 			t.Skipf("git %v failed: %v", args, err)
@@ -47,13 +47,13 @@ func TestConfigureBeadsHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 	run("commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git worktree add failed: %v", err)
 	}
 	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cmd.Dir = mainRepoDir
 		_ = cmd.Run()
 	})
@@ -73,7 +73,7 @@ func TestConfigureBeadsHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 		t.Fatalf("configureBeadsHooksPath failed: %v", err)
 	}
 
-	cmd = exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd = gitCommand("config", "--get", "core.hooksPath")
 	cmd.Dir = mainRepoDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -102,7 +102,7 @@ func TestConfigureSharedHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = mainRepoDir
 		if err := cmd.Run(); err != nil {
 			t.Skipf("git %v failed: %v", args, err)
@@ -118,13 +118,13 @@ func TestConfigureSharedHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 	run("commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git worktree add failed: %v", err)
 	}
 	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cmd.Dir = mainRepoDir
 		_ = cmd.Run()
 	})
@@ -144,7 +144,7 @@ func TestConfigureSharedHooksPath_WorktreeUsesMainRepo(t *testing.T) {
 		t.Fatalf("configureSharedHooksPath failed: %v", err)
 	}
 
-	cmd = exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd = gitCommand("config", "--get", "core.hooksPath")
 	cmd.Dir = mainRepoDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -173,7 +173,7 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = mainRepoDir
 		if err := cmd.Run(); err != nil {
 			t.Skipf("git %v failed: %v", args, err)
@@ -189,13 +189,13 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 	run("commit", "-m", "Initial commit")
 
 	worktreeDir := filepath.Join(tmpDir, "worktree")
-	cmd := exec.Command("git", "worktree", "add", worktreeDir, "HEAD")
+	cmd := gitCommand("worktree", "add", worktreeDir, "HEAD")
 	cmd.Dir = mainRepoDir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git worktree add failed: %v", err)
 	}
 	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cmd := gitCommand("worktree", "remove", "--force", worktreeDir)
 		cmd.Dir = mainRepoDir
 		_ = cmd.Run()
 	})
@@ -209,7 +209,7 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 	if evaluated != "" {
 		hooksPathToSet = evaluated
 	}
-	cmd = exec.Command("git", "config", "core.hooksPath", hooksPathToSet)
+	cmd = gitCommand("config", "core.hooksPath", hooksPathToSet)
 	cmd.Dir = mainRepoDir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git config core.hooksPath failed: %v", err)
@@ -217,12 +217,12 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 
 	run("config", "beads.role", "primary")
 	run("config", "extensions.worktreeConfig", "true")
-	cmd = exec.Command("git", "config", "--worktree", "beads.role", "worktree-only")
+	cmd = gitCommand("config", "--worktree", "beads.role", "worktree-only")
 	cmd.Dir = worktreeDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("configure worktree role: %v\n%s", err, out)
 	}
-	cmd = exec.Command("git", "config", "--worktree", "core.hooksPath", ".beads/hooks")
+	cmd = gitCommand("config", "--worktree", "core.hooksPath", ".beads/hooks")
 	cmd.Dir = worktreeDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("configure worktree hooksPath: %v\n%s", err, out)
@@ -239,25 +239,25 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 		t.Fatalf("resetHooksPathIfBeadsManaged failed: %v", err)
 	}
 
-	cmd = exec.Command("git", "config", "--local", "--get", "core.hooksPath")
+	cmd = gitCommand("config", "--local", "--get", "core.hooksPath")
 	cmd.Dir = mainRepoDir
 	out, _ := cmd.Output()
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("core.hooksPath = %q after reset, want empty", strings.TrimSpace(string(out)))
 	}
-	cmd = exec.Command("git", "config", "--local", "--get", "beads.role")
+	cmd = gitCommand("config", "--local", "--get", "beads.role")
 	cmd.Dir = mainRepoDir
 	out, err = cmd.Output()
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		t.Errorf("main role remains after reset: %q, %v", out, err)
 	}
-	cmd = exec.Command("git", "config", "--worktree", "--get", "beads.role")
+	cmd = gitCommand("config", "--worktree", "--get", "beads.role")
 	cmd.Dir = worktreeDir
 	out, err = cmd.Output()
 	if err != nil || strings.TrimSpace(string(out)) != "worktree-only" {
 		t.Errorf("worktree-specific role changed: %q, %v", out, err)
 	}
-	cmd = exec.Command("git", "config", "--worktree", "--get", "core.hooksPath")
+	cmd = gitCommand("config", "--worktree", "--get", "core.hooksPath")
 	cmd.Dir = worktreeDir
 	out, err = cmd.Output()
 	if err != nil || strings.TrimSpace(string(out)) != ".beads/hooks" {
@@ -283,7 +283,7 @@ func TestResetHooksPathIfBeadsManaged_Worktree(t *testing.T) {
 		if after, err := os.ReadFile(privateConfig); err != nil || string(after) != string(before) {
 			t.Fatalf("private worktree config changed: %v", err)
 		}
-		get := exec.Command("git", "config", "--local", "--get", "beads.role")
+		get := gitCommand("config", "--local", "--get", "beads.role")
 		get.Dir = mainRepoDir
 		out, err := get.Output()
 		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
@@ -306,7 +306,7 @@ func TestConfigureBeadsHooksPath_NormalRepoUnchanged(t *testing.T) {
 	}
 
 	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = repoDir
 		if err := cmd.Run(); err != nil {
 			t.Skipf("git %v failed: %v", args, err)
@@ -336,7 +336,7 @@ func TestConfigureBeadsHooksPath_NormalRepoUnchanged(t *testing.T) {
 		t.Fatalf("configureBeadsHooksPath failed: %v", err)
 	}
 
-	cmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd := gitCommand("config", "--get", "core.hooksPath")
 	cmd.Dir = repoDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -574,7 +574,7 @@ func TestStandaloneHookCommandsUseSelectedContext(t *testing.T) {
 			require.NoError(t, hooksUninstallCmd.RunE(hooksUninstallCmd, nil))
 			_, err := os.Stat(filepath.Join(destination, "pre-commit"))
 			require.ErrorIs(t, err, os.ErrNotExist)
-			query := exec.Command("git", "--git-dir", common, "config", "--local", "--get", "beads.role")
+			query := gitCommand("--git-dir", common, "config", "--local", "--get", "beads.role")
 			query.Dir, query.Env = cwd, gitenv.ScrubRouting(os.Environ())
 			var exit *exec.ExitError
 			require.ErrorAs(t, query.Run(), &exit)
@@ -585,7 +585,7 @@ func TestStandaloneHookCommandsUseSelectedContext(t *testing.T) {
 				// configured keeps .git/hooks shadowed by an emptied directory,
 				// i.e. every hook silently disabled while beads-managed config is
 				// still installed — the GH#4440 contract this command enforces.
-				pathQuery := exec.Command("git", "--git-dir", common, "config", "--local", "--get", "core.hooksPath")
+				pathQuery := gitCommand("--git-dir", common, "config", "--local", "--get", "core.hooksPath")
 				pathQuery.Dir, pathQuery.Env = cwd, gitenv.ScrubRouting(os.Environ())
 				var pathExit *exec.ExitError
 				require.ErrorAs(t, pathQuery.Run(), &pathExit)

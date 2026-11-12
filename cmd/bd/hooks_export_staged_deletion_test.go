@@ -7,7 +7,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -24,7 +23,7 @@ func setupExportStagedDeletionRepo(t *testing.T) (repoDir, filePath string) {
 
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = repoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git %v failed: %v\n%s", args, err, out)
@@ -50,7 +49,7 @@ func TestIsExportFileStagedForDeletion_StagedDeletion(t *testing.T) {
 
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = repoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)
@@ -81,7 +80,7 @@ func TestIsExportFileStagedForDeletion_StagedModificationNotDeletion(t *testing.
 
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = repoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, out)

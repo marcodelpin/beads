@@ -215,7 +215,7 @@ different case -- use 'bd label rename' for that.`,
 		if err := ensureDirectMode("label define requires direct database access"); err != nil {
 			return HandleError("%v", err)
 		}
-		if err := store.DefineLabel(rootCtx, args[0], description, actor); err != nil {
+		if err := store.DefineLabel(rootCtx, args[0], description, currentActor()); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 		commandDidWrite.Store(true)

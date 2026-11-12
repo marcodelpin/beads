@@ -486,7 +486,7 @@ func TestFindPrebuiltBDBinary(t *testing.T) {
 // fails the test on error. Used by bootstrap and init-safety subprocess tests.
 func runGitForBootstrapTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := gitCommand(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -513,7 +513,7 @@ func initGitRepoAt(t *testing.T, dir string) {
 		// Force repo-local hooks so tests ignore any global hooksPath override.
 		{"config", "core.hooksPath", ".git/hooks"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := gitCommand(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s failed: %v\n%s", args[0], err, out)

@@ -190,6 +190,7 @@ func startDoltContainer() error {
 	// tests SKIP ("no test Dolt server running") on these hosts (bda-pjn).
 	_ = os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
 
+	reapStaleDoltContainers()
 	ctr, err := dolt.Run(ctx, DoltDockerImage,
 		dolt.WithDatabase("beads_test"),
 		// Docker port-forwarding makes connections appear as non-localhost
@@ -202,6 +203,7 @@ func startDoltContainer() error {
 		testcontainers.WithHostConfigModifier(func(hc *dockercontainer.HostConfig) {
 			hc.SecurityOpt = append(hc.SecurityOpt, "apparmor=unconfined")
 		}),
+		ownerLabels(),
 	)
 	if err != nil {
 		return fmt.Errorf("starting Dolt container: %w", err)
@@ -449,9 +451,11 @@ func startIsolatedDoltContainer(t *testing.T) *IsolatedDoltContainer {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), serverStartTimeout)
 	defer cancel()
+	reapStaleDoltContainers()
 	ctr, err := dolt.Run(ctx, DoltDockerImage,
 		dolt.WithDatabase("beads_test"),
 		testcontainers.WithEnv(map[string]string{"DOLT_ROOT_HOST": "%"}),
+		ownerLabels(),
 	)
 	if err != nil {
 		t.Fatalf("starting Dolt container: %v", err)

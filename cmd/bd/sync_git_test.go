@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -192,7 +191,7 @@ func TestGitURLToDoltRemote(t *testing.T) {
 func runGitForSyncTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	cmd := gitCommand(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

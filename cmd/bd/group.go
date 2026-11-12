@@ -207,7 +207,7 @@ var groupCreateCmd = &cobra.Command{
 				CreatedBy:   getActorWithGit(),
 				Owner:       getOwner(),
 			})
-			if err := store.CreateIssue(ctx, gateIssue, actor); err != nil {
+			if err := store.CreateIssue(ctx, gateIssue, currentActor()); err != nil {
 				return HandleErrorRespectJSON("creating gate: %v", err)
 			}
 			gate = gateIssue.ID
@@ -216,7 +216,7 @@ var groupCreateCmd = &cobra.Command{
 		if err := store.UpdateIssue(ctx, gate, map[string]interface{}{
 			"status": string(types.StatusDeferred),
 			"notes":  "meta-gate hub focus:" + focus + " — not real work (deferred: hidden from ready, still blocks)",
-		}, actor); err != nil {
+		}, currentActor()); err != nil {
 			return HandleErrorRespectJSON("deferring gate %s: %v", gate, err)
 		}
 		commandDidWrite.Store(true)
@@ -247,12 +247,12 @@ var groupCreateCmd = &cobra.Command{
 				} else {
 					// tx.AddDependency cycle-checks by default and rolls back the whole tx on a cycle.
 					dep := &types.Dependency{IssueID: m, DependsOnID: gate, Type: types.DepBlocks}
-					if err := tx.AddDependency(ctx, dep, actor); err != nil {
+					if err := tx.AddDependency(ctx, dep, currentActor()); err != nil {
 						return fmt.Errorf("dep add %s blocked-by %s: %w", m, gate, err)
 					}
 					wiredNew++
 				}
-				if err := tx.AddLabel(ctx, m, parked, actor); err != nil { // INSERT IGNORE — idempotent
+				if err := tx.AddLabel(ctx, m, parked, currentActor()); err != nil { // INSERT IGNORE — idempotent
 					return fmt.Errorf("label add %s %s: %w", m, parked, err)
 				}
 			}
@@ -335,12 +335,12 @@ var groupReleaseCmd = &cobra.Command{
 		err = transactHonoringAutoCommit(ctx, store, commitMsg, func(tx storage.Transaction) error {
 			for _, m := range members {
 				if !keepDeps && depSet[m] {
-					if err := tx.RemoveDependency(ctx, m, gate, actor); err != nil {
+					if err := tx.RemoveDependency(ctx, m, gate, currentActor()); err != nil {
 						return fmt.Errorf("dep remove %s -> %s: %w", m, gate, err)
 					}
 				}
 				if !keepLabels && slices.Contains(labelMembers, m) {
-					if err := tx.RemoveLabel(ctx, m, parked, actor); err != nil {
+					if err := tx.RemoveLabel(ctx, m, parked, currentActor()); err != nil {
 						return fmt.Errorf("label remove %s %s: %w", m, parked, err)
 					}
 				}
@@ -348,7 +348,7 @@ var groupReleaseCmd = &cobra.Command{
 			if err := tx.UpdateIssue(ctx, gate, map[string]interface{}{
 				"status": string(types.StatusClosed),
 				"notes":  "released group focus:" + focus,
-			}, actor); err != nil {
+			}, currentActor()); err != nil {
 				return fmt.Errorf("close gate %s: %w", gate, err)
 			}
 			return nil

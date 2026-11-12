@@ -40,7 +40,7 @@ func spoolCloseOutcomes(ctx context.Context, batch closeDirectBatch, session str
 		payload := spoolPayload(map[string]interface{}{
 			"id":      item.id,
 			"reason":  item.reason,
-			"actor":   actor,
+			"actor":   currentActor(),
 			"session": session,
 		})
 		entry, err := s.Append(ctx, "close", payload, false, "bd-cli")
