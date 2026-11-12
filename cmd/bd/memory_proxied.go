@@ -81,6 +81,30 @@ func runRememberProxied(cmd *cobra.Command, args []string) error {
 		return rememberBareKeyPath(derived, insight, recalled.Value)
 	}
 
+	// Corpus budget (memories.budget-chars, upstream #6508): the same
+	// front-door check the upstream remember command runs, before the role
+	// writes. OPT-IN, 0 = off; ADVISORY, not atomic.
+	budgetKey, budgetKeyErr := memoryapi.ResolveKey(memoryKeyFlag, insight)
+	var budgetLine string
+	if budget := memoryCorpusBudget(); budget > 0 && budgetKeyErr == nil {
+		corpus, err := memories.List(rootCtx, memoryops.ListRequest{})
+		if err != nil {
+			return HandleErrorRespectJSON("reading the memory corpus for the budget check: %v", err)
+		}
+		line, refuse := rememberBudgetVerdict(corpus.Memories, budgetKey, insight, budget, memoryForceFlag)
+		if refuse {
+			const hint = "raise memories.budget-chars, forget a memory, or pass --force"
+			if jsonOutput {
+				jsonStdoutError(line, hint)
+			} else {
+				fmt.Fprintln(os.Stderr, line)
+				fmt.Fprintf(os.Stderr, "Hint: %s\n", hint)
+			}
+			return SilentExit()
+		}
+		budgetLine = line
+	}
+
 	result, err := memories.Remember(rootCtx, memoryops.RememberRequest{Key: memoryKeyFlag, Content: insight})
 	if err != nil {
 		// The role's validation refusals ARE the shipped sentences - print
@@ -89,6 +113,10 @@ func runRememberProxied(cmd *cobra.Command, args []string) error {
 			return HandleErrorRespectJSON("%s", strings.TrimPrefix(err.Error(), memoryops.ErrValidation.Error()+": "))
 		}
 		return HandleErrorRespectJSON("storing memory: %v", err)
+	}
+
+	if budgetLine != "" {
+		fmt.Fprintln(os.Stderr, budgetLine)
 	}
 
 	// Remembered versus Updated is Replaced, observed in the SAME transaction

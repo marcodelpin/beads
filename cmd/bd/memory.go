@@ -13,7 +13,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/execx"
+	"github.com/steveyegge/beads/internal/memoryapi"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/kvkeys"
 	"github.com/steveyegge/beads/internal/storage/uow"
@@ -178,6 +180,112 @@ func matchesKnownCommand(cmd *cobra.Command, insight string) (string, bool) {
 	return "", false
 }
 
+// memoryForceFlag is `bd remember --force`: write even when the corpus budget
+// would be crossed. It only has meaning when memories.budget-chars is set.
+var memoryForceFlag bool
+
+// memoryConfigInt reads an integer config key (stubbable for tests), the way
+// primeConfigInt does for the prime-side injection caps.
+var memoryConfigInt = func(key string) int {
+	return config.GetInt(key)
+}
+
+// memoryCorpusBudget resolves the memories.budget-chars ceiling. 0 — the
+// default — means OFF, and so does a negative value: the budget is opt-in, and
+// a nonsense setting must not turn into a refusal the operator never asked for.
+func memoryCorpusBudget() int {
+	budget := memoryConfigInt("memories.budget-chars")
+	if budget < 0 {
+		return 0
+	}
+	return budget
+}
+
+// memoryCorpusChars sums len(key)+len(content) over a corpus.
+//
+// The unit is BYTES (Go len), deliberately the same unit prime's
+// --max-memory-chars cap counts in, so the two numbers are comparable. They are
+// not the same MEASURE: prime counts each entry as it renders it — the key and
+// value plus a few bytes of heading or bullet markup per memory, and the
+// compact form truncates long values — so a corpus sitting exactly at a budget
+// equal to prime.max-memory-chars can still have memories elided at injection.
+// A budget meant to keep prime from eliding anything has to sit below that cap.
+func memoryCorpusChars(memories map[string]string) int {
+	total := 0
+	for k, v := range memories {
+		total += len(k) + len(v)
+	}
+	return total
+}
+
+// projectedMemoryCorpusChars is that sum AFTER a write of content under key
+// would apply. An OVERWRITE replaces the key's old content in the sum instead
+// of adding to it — the delta, not the sum — which is what makes editing an
+// existing memory possible at all once a corpus is near its ceiling.
+func projectedMemoryCorpusChars(existing map[string]string, key, content string) int {
+	total := memoryCorpusChars(existing)
+	if old, ok := existing[key]; ok {
+		total -= len(key) + len(old)
+	}
+	return total + len(key) + len(content)
+}
+
+// memoryBudgetLine renders the ONE stderr line the budget check emits, and
+// says whether the write must be refused.
+//
+// Three outcomes, in order of severity:
+//   - over budget, no --force: refuse, naming the override.
+//   - over budget with --force: write, but SAY SO — a forced crossing that
+//     printed nothing would make the budget invisible exactly when it matters.
+//   - at or above 80% of budget and within it: write, warn. That is the whole
+//     point of a budget over a tripwire: the warning arrives while there is
+//     still room to act on it.
+//
+// Below 80%, and whenever the budget is off, it returns "" and the command is
+// silent — byte-identical to the pre-budget behavior.
+//
+// The percentage FLOORS within the budget and CEILINGS over it, and the
+// rounding is not cosmetic: floor(201*100/200) is 100, and "100%" is exactly
+// the at-budget reading this code deliberately ALLOWS — so a floored refusal
+// would report the number of the case it is not. Ceiling above the line makes
+// every over-budget line read 101% or more, and the split is on the VALUE, not
+// on --force, so the same projection never reports two different percentages
+// depending on a flag. Both forms are int64 arithmetic, so a large budget
+// cannot overflow the comparison.
+func memoryBudgetLine(projected, budget int, force bool) (line string, refuse bool) {
+	if budget <= 0 {
+		return "", false
+	}
+	pct := int(int64(projected) * 100 / int64(budget))
+	if projected > budget {
+		pct = int((int64(projected)*100 + int64(budget) - 1) / int64(budget))
+	}
+	switch {
+	case projected > budget && !force:
+		return fmt.Sprintf("bd remember: memory corpus would be %d chars, budget is %d (%d%%) — refused; use --force to override", projected, budget, pct), true
+	case projected > budget:
+		return fmt.Sprintf("bd remember: memory corpus at %d of %d chars (%d%%) — over budget, written anyway (--force)", projected, budget, pct), false
+	case int64(projected)*5 >= int64(budget)*4:
+		return fmt.Sprintf("bd remember: memory corpus at %d of %d chars (%d%%)", projected, budget, pct), false
+	}
+	return "", false
+}
+
+// rememberBudgetVerdict is the whole budget decision as ONE pure function:
+// given the corpus as it stands, the write about to be made, the budget and
+// --force, it answers with the line to print (empty = say nothing) and whether
+// the write must be refused. The command around it only has to fetch the
+// corpus and obey.
+//
+// Keeping it pure is what lets every branch — off, boundary, overwrite delta,
+// force, warn — be pinned by a test that needs neither a database nor cgo.
+func rememberBudgetVerdict(existing map[string]string, key, content string, budget int, force bool) (line string, refuse bool) {
+	if budget <= 0 {
+		return "", false
+	}
+	return memoryBudgetLine(projectedMemoryCorpusChars(existing, key, content), budget, force)
+}
+
 // rememberCmd stores a memory.
 var rememberCmd = &cobra.Command{
 	Use:   `remember "<insight>"`,
@@ -209,6 +317,14 @@ Auto-key dedup (fork-only, on by default):
   reused — preventing sibling keys for content that differs only in
   punctuation, case, or wording-equivalent rephrasing. Pass --no-dedup
   to disable and always create a new key from slugify.
+
+Corpus budget (opt-in, off by default): set the memories.budget-chars config
+key to a byte ceiling for the whole memory corpus (sum of len(key)+len(content)).
+A write that would cross it is refused, and --force overrides; a write that
+lands at or above 80% of the budget warns. With the key unset nothing changes.
+bd prime's --max-memory-chars also counts bytes, but of each memory as
+injected, formatting included, so a budget equal to that cap does not
+guarantee prime injects every memory; set the budget below it for that.
 
 Examples:
   bd remember "always run tests with -race flag"
@@ -244,6 +360,14 @@ Examples:
 		insight := args[0]
 		if strings.TrimSpace(insight) == "" {
 			return HandleErrorRespectJSON("memory content cannot be empty")
+		}
+		// An explicit key must name something: the same rule recall and forget
+		// apply (upstream memoryapi.ValidateKey), so a whitespace-only --key
+		// cannot mint a row no memory operation can name again.
+		if memoryKeyFlag != "" {
+			if _, err := memoryapi.ValidateKey(memoryKeyFlag); err != nil {
+				return HandleErrorRespectJSON("%s", strings.TrimPrefix(err.Error(), memoryops.ErrValidation.Error()+": "))
+			}
 		}
 
 		// Guard against a subcommand-like first argument being silently stored
@@ -392,6 +516,36 @@ Examples:
 				key, insight, key)
 		}
 
+		// Corpus budget (memories.budget-chars, upstream #6508), ported onto
+		// the fork's direct-store write path. OPT-IN, 0 = off: when off the
+		// whole block is skipped and behavior is byte-identical to before.
+		// The key credited for an overwrite is the key this write lands under
+		// (explicit --key, a dedup hit, or the slug). The corpus is measured on
+		// memory CONTENT, the envelope (validity, provenance, tags) unwrapped,
+		// so the unit matches upstream's len(key)+len(content). ADVISORY, not
+		// atomic: the read and the write below are separate operations.
+		var budgetLine string
+		if budget := memoryCorpusBudget(); budget > 0 {
+			all, err := store.GetAllConfig(ctx)
+			if err != nil {
+				return HandleErrorRespectJSON("reading the memory corpus for the budget check: %v", err)
+			}
+			line, refuse := rememberBudgetVerdict(directMemoryCorpus(all), key, insight, budget, memoryForceFlag)
+			if refuse {
+				// The budget line IS the refusal sentence: said once, on one
+				// stream, with the same hint on both routes (upstream #6508).
+				const hint = "raise memories.budget-chars, forget a memory, or pass --force"
+				if jsonOutput {
+					jsonStdoutError(line, hint)
+				} else {
+					fmt.Fprintln(os.Stderr, line)
+					fmt.Fprintf(os.Stderr, "Hint: %s\n", hint)
+				}
+				return SilentExit()
+			}
+			budgetLine = line
+		}
+
 		// Fork: write the (possibly envelope-wrapped) value, not the raw insight.
 		if err := store.SetConfig(ctx, storageKey, storedValue); err != nil {
 			return HandleErrorRespectJSON("storing memory: %v", err)
@@ -399,6 +553,10 @@ Examples:
 		commandDidWrite.Store(true)
 		if err := commitConfigWrite(ctx, store, "remember"); err != nil {
 			return HandleErrorRespectJSON("%v", err)
+		}
+
+		if budgetLine != "" {
+			fmt.Fprintln(os.Stderr, budgetLine)
 		}
 
 		if jsonOutput {
@@ -1041,6 +1199,8 @@ func init() {
 	rememberCmd.Flags().StringVar(&memoryValidUntilFlag, "valid-until", "", "Absolute expiration timestamp (YYYY-MM-DD or RFC3339). Mutually exclusive with --valid-for.")
 	rememberCmd.Flags().StringVar(&memoryExpirePolicyFlag, "expire-policy", "", "What to do after expiration: hide (default), notify, delete")
 
+	rememberCmd.Flags().BoolVar(&memoryForceFlag, "force", false, "Store even when the write would cross the memories.budget-chars corpus budget (no effect when the budget is unset)")
+
 	memoriesCmd.Flags().BoolVar(&memoriesIncludeExpired, "include-expired", false, "Include memories whose fact validity window has expired")
 	memoriesCmd.Flags().BoolVar(&memoriesGCFlag, "gc", false, "Delete expired memories with expire-policy=delete (combine with --gc-only to curate)")
 	memoriesCmd.Flags().BoolVar(&memoriesGCPlan, "gc-plan", false, "Emit a JSON plan of the expired memories that --gc WOULD delete, without modifying anything (mutex with --gc, fork-only)")
@@ -1088,4 +1248,18 @@ func memoriesFromProvider(provider uow.UnitOfWorkProvider) (memoryops.Memories, 
 		return nil, fmt.Errorf("proxied-server provider %T does not offer the persistent-memory surface", provider)
 	}
 	return src.Memories()
+}
+
+// directMemoryCorpus maps every stored memory key (prefix stripped) to its
+// content, the envelope unwrapped, for the corpus budget (upstream #6508).
+func directMemoryCorpus(allConfig map[string]string) map[string]string {
+	fullPrefix := kvPrefix + memoryPrefix
+	corpus := make(map[string]string)
+	for k, v := range allConfig {
+		if !strings.HasPrefix(k, fullPrefix) {
+			continue
+		}
+		corpus[strings.TrimPrefix(k, fullPrefix)] = parseStoredMemory(v).Content
+	}
+	return corpus
 }

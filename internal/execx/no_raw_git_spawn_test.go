@@ -23,10 +23,8 @@ import (
 // upstream imports code that spawns git directly, and a fixed list of call
 // sites cannot see a site that arrives later.
 func TestNoRawGitSpawn(t *testing.T) {
-	if bazeltest.IsBazel() {
-		t.Skip("walks the whole internal/ and cmd/ tree, which a Bazel sandbox does not declare as data; runs under go test")
-	}
-	root := filepath.Join("..", "..")
+	// Under Bazel the tree comes in as //:repo_files data (upstream #7320).
+	root := bazeltest.RepoRoot(t)
 	fset := token.NewFileSet()
 	var offenders []string
 	scanned := 0

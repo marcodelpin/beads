@@ -17,6 +17,30 @@ go_test(
         "execx_test.go",
         "no_raw_git_spawn_test.go",
     ],
+    # Walks internal/ and cmd/: the checkout as Bazel sees it (upstream #7320).
+    data = ["//:repo_files"],
     embed = [":execx"],
     deps = ["//internal/testutil/bazeltest"],
 )
+
+# --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "repo_files",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/*.db",
+            "**/*.exe",
+            "**/*.out",
+            "**/*.prof",
+            "**/*.pyc",
+            "**/*.test",
+            "**/__pycache__/**",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__pkg__"],
+)
+
+# --- end repo_files ---
