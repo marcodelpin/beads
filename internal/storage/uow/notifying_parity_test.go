@@ -165,6 +165,7 @@ func TestRecordingIssueUseCaseCoversItsSurface(t *testing.T) {
 			"History":                      reads,
 			"IterEvents":                   reads,
 			"PreviewDelete":                reads,
+			"ParticipatingIssueIDs":        reads,
 			"PreviewDeleteWisp":            reads,
 			"SearchIssueIDs":               reads,
 			"SearchIssues":                 reads,

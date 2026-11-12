@@ -161,6 +161,11 @@ type providerOptions struct {
 	// same command works, and saying otherwise would be the same class of
 	// wrong guidance in the other direction.
 	proxiedServerMode bool
+	// rotateServerLog lets the proxy start rotate the server log
+	// (proxy.OpenOpts.RotateLogFile). Only the caller knows whether bd owns
+	// that file: bd sets it for its default server.log, never for a log path
+	// the operator chose.
+	rotateServerLog bool
 }
 
 // WithPreview opens the provider for a non-mutating preview command.
@@ -178,6 +183,12 @@ func WithReadOnly() ProviderOption {
 // depends on it, and only the proxied CLI open may set it.
 func WithProxiedServerMode() ProviderOption {
 	return func(o *providerOptions) { o.proxiedServerMode = true }
+}
+
+// WithServerLogRotation lets the proxy start rotate an oversized server log.
+// See providerOptions.rotateServerLog: pass it only for a log bd owns.
+func WithServerLogRotation() ProviderOption {
+	return func(o *providerOptions) { o.rotateServerLog = true }
 }
 
 func applyProviderOptions(opts []ProviderOption) providerOptions {
@@ -392,8 +403,11 @@ func dataBehindAdopter(readOnly bool) *schema.FastForwardAdopter {
 // database cannot be quietly written at a schema this binary believes is
 // behind.
 //
-// This mirrors what embedded mode has done since bd-578h9.5 for its
-// read-only-command intent. Without it, extending the gate to the proxied path
+// This mirrors embedded mode's read-only-command intent (bd-578h9.5), and the
+// warning keeps the body-then-mode-line shape of embeddeddolt's
+// lenientGateWarning: a refusal the smart gate shaped leads with its own
+// UserMessage body, and only the blunt fallback leads with the one-line
+// summary. Without the read-through, extending the gate to the proxied path
 // would newly brick every read on a workspace waiting for its operator to
 // consent — which is the opposite of the contract the gate's own message
 // promises ("read commands keep working against the current schema").
@@ -411,12 +425,17 @@ func readThroughRefusedMigration(ctx context.Context, conn *sql.Conn, database s
 		// the refusal, which is the actionable half.
 		return backoff.Permanent(gateErr)
 	}
-	// #6575: the data-behind stop's remedy is the pull, and the consent verb
-	// this template names does not unlock a remote-backed shared store at all
-	// (schema.SharedConsentCommandForced). Print that stop's own block, which
-	// REPLACES the migrate-or-adopt framing rather than decorating it, and say
-	// only what read-through adds on top.
-	if gateErr.IsDataBehind() {
+	// A refusal the smart gate shaped — any Decision, or the #6575 data-behind
+	// stop — carries its own per-decision body in UserMessage. Print that
+	// block, which REPLACES the template below rather than decorating it, and
+	// say only what read-through adds on top. It keys on the same predicate as
+	// embeddeddolt's lenientGateWarningBody (bd-mfsky, #6660). The template's
+	// consent sentence would contradict each of those bodies: the data-behind
+	// remedy is the pull, adopt and fork-skew say not to migrate here at all,
+	// and on those remote-backed arms the bare verb's consent is never read
+	// (schema.SharedConsentCommandForced). shared-no-remote's body already
+	// prescribes that verb itself.
+	if gateErr.Decision != "" || gateErr.IsDataBehind() {
 		fmt.Fprintf(os.Stderr,
 			"Warning: %[1]s"+
 				"  Read-only command: continuing on schema v%[2]d without migrating.\n"+
