@@ -2,15 +2,19 @@ package testutil
 
 import (
 	"fmt"
-	"github.com/steveyegge/beads/internal/execx"
+	"os"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/execx"
 )
 
 // ForceRepoLocalHooksPath configures a git test repository to use .git/hooks
-// regardless of any global core.hooksPath configuration.
+// regardless of any global core.hooksPath configuration. The write goes to
+// repoDir even when a GIT_DIR or GIT_WORK_TREE leaked into the process.
 func ForceRepoLocalHooksPath(repoDir string) error {
 	cmd := execx.GitCommand("config", "core.hooksPath", ".git/hooks")
 	cmd.Dir = repoDir
+	cmd.Env = WithoutGitRepoLocationEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		trimmed := strings.TrimSpace(string(out))
 		if trimmed != "" {

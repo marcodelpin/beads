@@ -606,6 +606,8 @@ var roleContractCases = []roleContract{
 		RunReaderListWispTypeNarrowsTheAdmittedPlaneRatherThanAdmittingIt,
 		RunReaderListBriefDropsTheFreeFormTextAndNothingElse,
 		RunReaderReadyBriefDropsTheFreeFormTextAndNothingElse,
+		RunReaderListTimeBoundsAreStrictAndWholeSecond,
+		RunReaderListFilterFamiliesNarrowToTheirRows,
 	),
 
 	roleCases("ReadyClaimer", "ReadyClaimer() and IssueReader()", oncePerRole,

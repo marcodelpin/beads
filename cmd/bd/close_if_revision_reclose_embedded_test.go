@@ -9,13 +9,13 @@ import (
 	"testing"
 )
 
-// TestIfRevisionRecloseReportsAlreadyClosed pins the fork's GH#4816 contract
+// TestEmbeddedIfRevisionRecloseReportsAlreadyClosed pins the fork's GH#4816 contract
 // (bda-4myc) on the --if-revision close route that #7203 added: re-closing an
 // already-closed issue at its CURRENT revision is the same idempotent no-op as
 // a plain re-close, so it must not print a "Closed" success line, it must say
 // "already closed" on stderr in both output modes, and the first close_reason
 // must survive.
-func TestIfRevisionRecloseReportsAlreadyClosed(t *testing.T) {
+func TestEmbeddedIfRevisionRecloseReportsAlreadyClosed(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
 	}
