@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -76,7 +78,11 @@ func normalizeLabelsVocabularyMode(value string) string {
 //
 // It fails open on any read error (config unreadable, registry unreadable):
 // a transient problem reading the vocabulary registry must not block, or
-// spuriously warn on, a write that has nothing to do with it.
+// spuriously warn on, a write that has nothing to do with it. One case is
+// not transient: a backend that does not serve the registry at all (the HTTP
+// store answers ListLabelDefinitions with storage.ErrUnsupported). There the
+// check can never run, so with a non-open mode it says so in one stderr line
+// rather than accepting undefined labels in silence (bda-tfok.4.4, codex F8).
 func checkLabelVocabulary(ctx context.Context, labels []string) error {
 	if len(labels) == 0 {
 		return nil
@@ -87,6 +93,11 @@ func checkLabelVocabulary(ctx context.Context, labels []string) error {
 	}
 	defs, err := readLabelDefinitionsForCheck(ctx)
 	if err != nil {
+		var unsupported *storage.ErrUnsupported
+		if errors.As(err, &unsupported) && !debug.IsQuiet() {
+			fmt.Fprintf(os.Stderr, "%s %s=%s: labels not checked, this backend does not serve the label vocabulary registry\n",
+				ui.RenderWarn(glyphWarn), labelsVocabularyConfigKey, mode)
+		}
 		return nil
 	}
 	known := issueops.LabelVocabularySet(defs)
