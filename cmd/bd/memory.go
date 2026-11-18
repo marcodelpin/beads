@@ -510,7 +510,7 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
+		if usesMemoryRole() {
 			return runRememberProxied(cmd, args)
 		}
 		CheckReadonly("remember") // also covers the migration freeze check (dc-6jaq)
@@ -942,7 +942,7 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
+		if usesMemoryRole() {
 			return runMemoriesProxied(args)
 		}
 		evt := metrics.NewCommandEvent("memories")
@@ -1214,7 +1214,7 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
+		if usesMemoryRole() {
 			return runForgetProxied(args)
 		}
 		CheckReadonly("forget")
@@ -1289,7 +1289,7 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesProxiedServer() {
+		if usesMemoryRole() {
 			return runRecallProxied(args)
 		}
 		evt := metrics.NewCommandEvent("recall")

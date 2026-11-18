@@ -8,6 +8,7 @@ package main
 // (gastownhall/main 2632d57e0) adapted to dispatch-from-the-fork-RunE form.
 // Fork-only flags have no role transport yet - they are refused loudly rather
 // than silently dropped (memoryops-role redesign follow-up in sys-iogddl).
+// A remote (HTTP) backend takes this route too (usesMemoryRole, bda-tfok.4.4).
 
 import (
 	"errors"
@@ -22,10 +23,28 @@ import (
 	"github.com/steveyegge/beads/memoryops"
 )
 
+// usesMemoryRole reports whether the memory commands take the memoryops role
+// route below instead of memory.go's direct config-table route: in
+// proxied-server mode, and on a remote (HTTP) backend (bda-tfok.4.4, codex F5).
+// The HTTP store serves memories ONLY through its Memories accessor: its
+// settings document omits kv.memory.* and it refuses SetConfig, so the direct
+// route would list nothing, miss every key and fail every write.
+func usesMemoryRole() bool {
+	return usesProxiedServer() || storeIsRemoteBackend(getStore())
+}
+
 // proxiedMemories hands back the guarded persistent-memory surface for this
-// invocation's proxied-server provider, through the provider's OWN capability
-// accessor - the same two-step proxiedWorkspaceConfig performs.
+// invocation: the proxied-server provider's, through the provider's OWN
+// capability accessor (the same two-step proxiedWorkspaceConfig performs), or
+// else the store's own accessor, which is the remote backend's memory API.
 func proxiedMemories() (memoryops.Memories, error) {
+	if !usesProxiedServer() {
+		st := getStore()
+		if st == nil {
+			return nil, errors.New("memory role: no store open")
+		}
+		return st.Memories()
+	}
 	if uowProvider == nil {
 		return nil, errors.New("proxied-server UOW provider not initialized")
 	}
@@ -39,7 +58,7 @@ func runRememberProxied(cmd *cobra.Command, args []string) error {
 	if memoryNoDedupFlag || memoryNoProvenanceFlag || len(memoryTagsFlag) > 0 ||
 		memoryScopeFlag != "" || memoryValidForFlag != "" || memoryValidUntilFlag != "" ||
 		memoryExpirePolicyFlag != "" {
-		return HandleErrorRespectJSON("fork-only remember flags (--no-dedup, --no-provenance, --tag, --scope, --valid-for, --valid-until, --expire-policy) are not supported in proxied-server mode yet")
+		return HandleErrorRespectJSON("fork-only remember flags (--no-dedup, --no-provenance, --tag, --scope, --valid-for, --valid-until, --expire-policy) are not supported in proxied-server or remote-backend mode yet")
 	}
 
 	evt := metrics.NewCommandEvent("remember")
@@ -132,7 +151,7 @@ func runRememberProxied(cmd *cobra.Command, args []string) error {
 func runMemoriesProxied(args []string) error {
 	if memoriesIncludeExpired || memoriesGCFlag || memoriesGCPlan || memoriesGCOnly != "" ||
 		memoriesNoMemoryBackup || len(memoriesTagsFilter) > 0 || memoriesScopeFilter != "" {
-		return HandleErrorRespectJSON("fork-only memories flags (--include-expired, --gc, --gc-plan, --gc-only, --no-memory-backup, --tag, --scope) are not supported in proxied-server mode yet")
+		return HandleErrorRespectJSON("fork-only memories flags (--include-expired, --gc, --gc-plan, --gc-only, --no-memory-backup, --tag, --scope) are not supported in proxied-server or remote-backend mode yet")
 	}
 
 	evt := metrics.NewCommandEvent("memories")
