@@ -611,38 +611,49 @@ var createCmd = &cobra.Command{
 		if priorityDefault {
 			issue.Priority = 0
 		}
-		// The replay path (store.CreateIssue) does not read DefaultPriority,
-		// so the queued issue carries the default priority explicitly (#7426).
-		spoolIssue := issue
-		if priorityDefault {
-			queued := *issue
-			queued.Priority = issueops.DefaultCreatePriority
-			spoolIssue = &queued
-		}
 		createActor := currentActor()
+		// The replay path (store.CreateIssue) does none of the create role's
+		// preparation, so the queued copy carries explicitly what the role
+		// would have filled in: the default priority (#7426) and the creator
+		// (the role defaults created_by to the request actor,
+		// internal/storage/issueops/public_create.go; bda-tfok.4.3 F2).
+		queued := *issue
+		if priorityDefault {
+			queued.Priority = issueops.DefaultCreatePriority
+		}
+		if queued.CreatedBy == "" {
+			queued.CreatedBy = createActor
+		}
 		var result issueops.CreateResult
-		spoolRes, err := writeWithSpool(ctx, "create",
-			spoolPayload(map[string]interface{}{
-				"issue":        spoolIssue,
-				"actor":        createActor,
-				"dependencies": pendingDeps,
-			}),
-			func() error {
-				var cerr error
-				result, cerr = ops.Create(opsCtx, issueops.CreateRequest{
-					Actor:                   createActor,
-					Issue:                   issue,
-					ParentID:                parentID,
-					InheritLabelsFromParent: inheritParentLabels,
-					Dependencies:            createDependencyRequests(depSpecs),
-					WaitsFor:                waitsForRequest(waitsForSpec),
-					ForceIDPrefix:           forceCreate,
-					IDPrefix:                createIDPrefixOverride(),
-					DefaultPriority:         priorityDefault,
-				})
-				return cerr
-			},
-		)
+		createLive := func() error {
+			var cerr error
+			result, cerr = ops.Create(opsCtx, issueops.CreateRequest{
+				Actor:                   createActor,
+				Issue:                   issue,
+				ParentID:                parentID,
+				InheritLabelsFromParent: inheritParentLabels,
+				Dependencies:            createDependencyRequests(depSpecs),
+				WaitsFor:                waitsForRequest(waitsForSpec),
+				ForceIDPrefix:           forceCreate,
+				IDPrefix:                createIDPrefixOverride(),
+				DefaultPriority:         priorityDefault,
+			})
+			return cerr
+		}
+		var spoolRes spoolOutcome
+		if createNeedsLiveRole(parentID) {
+			// Never queued: createNeedsLiveRole says why.
+			err = createLive()
+		} else {
+			spoolRes, err = writeWithSpool(ctx, "create",
+				spoolPayload(map[string]interface{}{
+					"issue":        &queued,
+					"actor":        createActor,
+					"dependencies": pendingDeps,
+				}),
+				createLive,
+			)
+		}
 		if err != nil {
 			if handled, rendered := reportCreateOfRetiredID(err); handled {
 				return rendered
