@@ -28,6 +28,8 @@ type spoolOutcome struct {
 //   - if returns transient error (IsTransientErr=true) -> write Entry to spool,
 //     return {Spooled:true, OpID}, nil
 //   - if permanent error -> return as-is (caller decides)
+//   - if the global store is a remote backend (HTTP) -> return as-is: its
+//     replay route is unsupported, a queued entry could only dead-letter
 //   - if success -> no spool touch, zero-value outcome
 func writeWithSpool(ctx context.Context, op string, payload []byte, directWrite func() error) (spoolOutcome, error) {
 	var out spoolOutcome
@@ -37,6 +39,15 @@ func writeWithSpool(ctx context.Context, op string, payload []byte, directWrite 
 	}
 
 	if !spool.IsTransientErr(err) {
+		return out, err
+	}
+
+	// A remote bd serve (HTTP backend) cannot replay a queued entry:
+	// spoolDispatch writes through the legacy store methods, which the HTTP
+	// client answers as unsupported, so the entry could only dead-letter
+	// after the command had reported it queued. Surface the transient error
+	// instead (bda-tfok.4.2 F4).
+	if storeIsRemoteBackend(store) {
 		return out, err
 	}
 
