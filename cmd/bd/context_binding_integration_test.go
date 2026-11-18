@@ -4,17 +4,77 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/testutil/bazeltest"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+var (
+	fullCGOBDOnce sync.Once
+	fullCGOBDPath string
+	fullCGOBDErr  error
+)
+
+// buildFullCGOBDBinary returns the path to a bd binary built WITHOUT the
+// gms_pure_go tag (the default/full cgo build). This is a genuinely
+// different build config from buildBDForInitTests (which always passes
+// -tags gms_pure_go), so per bda-9l1 fix-direction (b) ("do NOT merge
+// helpers whose configs genuinely differ") it gets its own cached builder
+// instead of being folded into the shared one. It intentionally does NOT
+// honor BEADS_TEST_BD_BINARY either: a prebuilt binary supplied via that
+// env var is built with gms_pure_go and would silently substitute the
+// wrong build config for this test. It builds cmd/bd by import path from
+// bdSourceDir, like goBuildBDCommand, so it does not depend on the working
+// directory the test runs in.
+func buildFullCGOBDBinary(t *testing.T) string {
+	t.Helper()
+	fullCGOBDOnce.Do(func() {
+		tmpDir, err := testTempDir("bd-full-cgo-test-*")
+		if err != nil {
+			fullCGOBDErr = fmt.Errorf("failed to create temp dir: %w", err)
+			return
+		}
+		binPath := filepath.Join(tmpDir, "bd-under-test")
+		buildCmd := exec.Command("go", "build", "-buildvcs=false", "-o", binPath, bdModulePackage)
+		buildCmd.Dir = bdSourceDir
+		buildCmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			fullCGOBDErr = fmt.Errorf("go build failed: %v\n%s", err, out)
+			return
+		}
+		fullCGOBDPath = binPath
+	})
+	if fullCGOBDErr != nil {
+		t.Fatalf("build full-cgo bd binary: %v", fullCGOBDErr)
+	}
+	return fullCGOBDPath
+}
+
+// contextBindingBDBinary is the bd the context-binding test runs: the full
+// cgo build, checked from its stamped build settings (requireFullCGOBuild).
+// Under Bazel no go toolchain is available to the test and bd is injected
+// through BEADS_TEST_BD_BINARY (a gms_pure_go build), so there the test runs
+// that binary and says that the full-cgo leg is not covered.
+func contextBindingBDBinary(t *testing.T) string {
+	t.Helper()
+	if bazeltest.IsBazel() {
+		t.Log("Bazel: running the injected gms_pure_go bd; the full-cgo build of this test is covered only by go test")
+		return buildBDForInitTests(t)
+	}
+	binPath := buildFullCGOBDBinary(t)
+	requireFullCGOBuild(t, binPath)
+	return binPath
+}
 
 func filteredEnvForContextBinding(keys ...string) []string {
 	strip := make(map[string]struct{}, len(keys))
@@ -103,10 +163,7 @@ func TestListExplicitDBPathRebindsTargetContext(t *testing.T) {
 		t.Fatalf("create issue: %v", err)
 	}
 
-	// Shared once-per-process binary (honors BEADS_TEST_BD_BINARY) instead of
-	// a per-test go build — the in-test link steps dominated cmd/bd's wall
-	// clock (wy-4mtr0).
-	binPath := buildBDForInitTests(t)
+	binPath := contextBindingBDBinary(t)
 
 	listCmd := exec.Command(binPath, "list", "--db", filepath.Join(targetBeadsDir, "dolt"), "--json")
 	listCmd.Dir = callerRepo
