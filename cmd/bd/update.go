@@ -606,11 +606,13 @@ pointless).`,
 			// (not transient) returns the error instead of queueing a refused
 			// write. A guarded write (--claim, --if-assignee, --if-status,
 			// --if-revision) is never spooled at all: updateIsGuarded says why.
+			// Neither is an update of a template: its read-only guard is the
+			// role's, and replay would bypass it.
 			// The replay payload carries the FIELD updates only - label ops and
 			// the reparent were never spooled on this route.
 			var spooled bool
 			var updateErr error
-			if updateIsGuarded(claimFlag, ifAssignee, expectedStatus, ifRevision) {
+			if updateIsGuarded(claimFlag, ifAssignee, expectedStatus, ifRevision, issue.IsTemplate) {
 				updateErr = mutate()
 			} else {
 				spoolable := make(map[string]interface{}, len(updates))

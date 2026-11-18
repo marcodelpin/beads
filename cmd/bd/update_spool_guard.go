@@ -12,6 +12,12 @@ import "github.com/steveyegge/beads/issueops"
 // write queued on a transient failure would later land unconditionally - the
 // overwrite the guard exists to prevent. It fails loud on an unreachable
 // server instead, as --claim always has on this route.
-func updateIsGuarded(claim bool, ifAssignee *string, expectedStatus *issueops.Status, ifRevision *int64) bool {
-	return claim || ifAssignee != nil || expectedStatus != nil || ifRevision != nil
+//
+// isTemplate (the issue snapshot read before the write) is a guard of the same
+// kind: the template read-only check lives in the role's Update
+// (issueops AuthorizeTemplateUpdate), which a transient failure never reaches,
+// and replay's store.UpdateIssue has no template check. Queued, a template
+// update would edit the read-only template on the next drain (bda-tfok.4.2 F3).
+func updateIsGuarded(claim bool, ifAssignee *string, expectedStatus *issueops.Status, ifRevision *int64, isTemplate bool) bool {
+	return claim || ifAssignee != nil || expectedStatus != nil || ifRevision != nil || isTemplate
 }

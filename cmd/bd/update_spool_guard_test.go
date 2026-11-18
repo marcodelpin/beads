@@ -20,6 +20,7 @@ func TestUpdateIsGuarded(t *testing.T) {
 		ifAssignee *string
 		status     *issueops.Status
 		revision   *int64
+		template   bool
 		want       bool
 	}{
 		{name: "bare field update", want: false},
@@ -27,10 +28,11 @@ func TestUpdateIsGuarded(t *testing.T) {
 		{name: "if-assignee", ifAssignee: &assignee, want: true},
 		{name: "if-status", status: &status, want: true},
 		{name: "if-revision", revision: &revision, want: true},
+		{name: "template", template: true, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := updateIsGuarded(tc.claim, tc.ifAssignee, tc.status, tc.revision); got != tc.want {
+			if got := updateIsGuarded(tc.claim, tc.ifAssignee, tc.status, tc.revision, tc.template); got != tc.want {
 				t.Fatalf("updateIsGuarded = %v, want %v", got, tc.want)
 			}
 		})
