@@ -35,6 +35,7 @@ var managedLocalLaneTests = []string{
 	"TestManagedLocalProxiedBackupRestoreRefusedWhileAttached",
 	"TestManagedLocalProxiedPurgeWispsPlaneRetention",
 	"TestManagedLocalProxiedBackendCleanExitRetiresProxy",
+	"TestManagedLocalProxiedCapabilityMatrix",
 }
 
 const (

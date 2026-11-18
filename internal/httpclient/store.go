@@ -276,7 +276,7 @@ func (s *Store) CommitConfigUserKVOnly(_ context.Context, _ string) error { retu
 
 // DefineLabel, UndefineLabel and ListLabelDefinitions are the fork's curated
 // label vocabulary registry (storage.LabelVocabularyStore, fork migration
-// 0073). The HTTP surface has no route for it, so the remote client refuses
+// 0075). The HTTP surface has no route for it, so the remote client refuses
 // them as unsupported instead of answering for a registry it cannot see.
 func (s *Store) DefineLabel(_ context.Context, _, _, _ string) error {
 	return s.unsupported("DefineLabel")

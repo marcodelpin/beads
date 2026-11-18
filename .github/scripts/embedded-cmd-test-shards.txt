@@ -43,11 +43,14 @@
 100 9 TestEmbeddedChildrenConcurrent
 
 100 10 TestEmbeddedCreateScalarAndRelationships
+100 10 TestEmbeddedMemoriesGCConsentOnly
 
+100 11 TestEmbeddedGCConsentPlanForceMutex
 100 11 TestEmbeddedKVConcurrent
 
-100 12 TestEmbeddedGCMemoryPruneSkipFlag
+100 12 TestEmbeddedAutoImportFallback_ConflictSkip_SkipsRetiredRows
 100 12 TestEmbeddedGatedRendering
+100 12 TestEmbeddedMigratePersonal_refusesDependentsLeftInTheProject
 
 100 13 TestEmbeddedListFilteringStatusAndHierarchy
 100 13 TestEmbeddedMigratePersonal_refusesSharedRootFromARig
@@ -69,12 +72,14 @@
 100 18 TestEmbeddedPrune_protectsBeadCitedByCustomStatusBead
 
 100 19 TestEmbeddedLabelConcurrent
+100 19 TestEmbeddedMemoriesGCConsentPlan
 100 19 TestEmbeddedNewDoltStore_StrictReadOnlyRefusesWritesOnFreshDatabase
 
+100 20 TestEmbeddedGCMemoryPrune
 100 20 TestEmbeddedInitRoleRoutingRetainedFork
 100 20 TestEmbeddedMigrateSchema_IdentityMismatchRefusesBeforeApplying
 
-100 21 TestEmbeddedGCMemoryPrune
+100 21 TestEmbeddedArrivalSeqOnEveryJSONRead
 100 21 TestEmbeddedMaxRowsReady
 100 21 TestEmbeddedMigratePersonal_movesIssues
 
@@ -99,18 +104,21 @@
 100 26 TestEmbeddedPersistentPreRunLogsAndSkipsIdentityCheckForFreshEmbeddedWorkspace
 
 100 27 TestEmbeddedDoltRemoteAdd_GitOriginCollision_RefusalMessageCopy
+100 27 TestEmbeddedGCMemoryPruneSkipFlag
 100 27 TestEmbeddedNewDoltStoreFromConfig_DottedDBName
 100 27 TestEmbeddedShipConcurrent
 
 100 28 TestEmbeddedDoltLocalOnly_RemoteAdd_RefusesExitOne
-100 28 TestEmbeddedGCBackupCreated
+100 28 TestEmbeddedForeignPreDoltCloneLeftUnchanged
 100 28 TestEmbeddedHistoryConcurrent
 100 28 TestEmbeddedImportChunkedRealStoreResumeConverges
+100 28 TestEmbeddedRemedyPrinting_init
 
+100 29 TestEmbeddedCreateRepoRefusesRemovedBackendAsTheOpenDoes
 100 29 TestEmbeddedDoltLocalOnly_RemoteAdd_ErrorOnStderr
 100 29 TestEmbeddedEpicCloseEligibleReasonFlag
 100 29 TestEmbeddedImportChunkedNoReadyWindowWithReadinessEdgeIntoCycle
-100 29 TestEmbeddedMemoryDedup
+100 29 TestEmbeddedRemedyPrinting_bootstrap
 
 100 30 TestEmbeddedCloseGuardsAndEpics
 100 30 TestEmbeddedCreateRepoMetadataLessTarget
@@ -160,26 +168,28 @@
 
 100 39 TestEmbeddedIfRevisionRejectsLabelAndParentEdits
 100 39 TestEmbeddedMaxRowsGraph
+100 39 TestEmbeddedMemoriesGCConsentMutex
 100 39 TestEmbeddedNewDoltStoreFromConfig_NoMetadata
 
 100 40 TestEmbeddedIfRevisionOutranksReassignFenceCLI
+100 40 TestEmbeddedIfRevisionRecloseReportsAlreadyClosed
 100 40 TestEmbeddedNewDoltStoreFromConfig_HyphenatedDBName
 100 40 TestEmbeddedUpdateLifecycleClaimParentCommit
 
 100 41 TestEmbeddedDuplicateConcurrent
-100 41 TestEmbeddedMemoriesGCConsentPlan
+100 41 TestEmbeddedGCBackupCreated
 100 41 TestEmbeddedVersionedHistoryFollowsTheStoreItWritesInto
 
 100 42 TestEmbeddedInitAForkAutoContributor
-100 42 TestEmbeddedMemoriesGCConsentOnly
+100 42 TestEmbeddedMemoryDedup
 100 42 TestEmbeddedUpdateIfGuardsFlagValidation
 
+100 43 TestEmbeddedGCSafetyFloor
 100 43 TestEmbeddedIfRevisionMultiIDRejected
 100 43 TestEmbeddedInitExplicitBeadsDirIsAuthoritative
-100 43 TestEmbeddedMemoriesGCConsentMutex
 
 100 44 TestEmbeddedIfRevisionComposesWithIfAssigneeIfStatus
-100 44 TestEmbeddedIfRevisionRecloseReportsAlreadyClosed
+100 44 TestEmbeddedMemoryValidityWindows
 100 44 TestEmbeddedStaleConcurrent
 
 100 45 TestEmbeddedGraph
@@ -195,33 +205,37 @@
 100 48 TestEmbeddedReassignFenceCLI
 
 100 49 TestEmbeddedBackupRestoreStrictReadonly
-100 49 TestEmbeddedGCConsentPlanForceMutex
 100 49 TestEmbeddedInitAPushConsentAndRemoteBootstrap
 100 49 TestEmbeddedMigratePersonal_abortOnNoConfirm
+100 49 TestEmbeddedRemedyPrinting_closeContinue
 
 100 50 TestEmbeddedDiffConcurrent
 100 50 TestEmbeddedDoltRemoteAdd_AllowGitOrigin_WarningOnStderr
-100 50 TestEmbeddedGCConsentPlan
 100 50 TestEmbeddedImportChunkedWaitsForChildImportedLaterStaysBlocked
+100 50 TestEmbeddedRemedyPrinting_unclaim
 100 50 TestEmbeddedVersionOutputShape
 
+100 51 TestEmbeddedCreateTargetRefusesLegacyConfigItWouldHide
 100 51 TestEmbeddedDoltRemoteAdd_AllowGitOrigin_Exits0
-100 51 TestEmbeddedGCConsentOnly
 100 51 TestEmbeddedHistoryAndShowAsOfReadDoltCommits
 100 51 TestEmbeddedImportChunkedStaleRejectedRowKeepsDeferredDepsOut
 100 51 TestEmbeddedInitGitBootstrapRoutingFreshQuiet
+100 51 TestEmbeddedRemedyPrinting_autoRouted
 
 100 52 TestEmbeddedConfigSetOtherKeysSkipTheVersionedHistoryScan
 100 52 TestEmbeddedDoltLocalOnly_Push_LocalStoreCopy
-100 52 TestEmbeddedGCSafetyFloor
 100 52 TestEmbeddedImportChunkedNoReadyWindowAtAnyFreezePoint
+100 52 TestEmbeddedRemedyPrinting_createTarget
+100 52 TestEmbeddedRoutedTargetRefusesLegacyDoltWorkspace
 100 52 TestEmbeddedSwarmConcurrent
 
+100 53 TestEmbeddedDoctorArtifactsCleanKeepsWorkspaceAtRedirectOnlyPath
 100 53 TestEmbeddedDoltLocalOnly_Push_JSON_DisabledStatus
+100 53 TestEmbeddedForeignHistoricalSQLiteWorkspaceLeftUnchanged
 100 53 TestEmbeddedIfRevisionOrdinaryCAS
 100 53 TestEmbeddedImportChunkedMixedRegularWispCrossBucketEdgesWired
 100 53 TestEmbeddedInitSelectedExcludeRoutingStealthDecoyQuiet
-100 53 TestEmbeddedMemoryValidityWindows
+100 53 TestEmbeddedRemedyPrinting_migratePersonal
 
 100 54 TestEmbeddedDiscoveryPinsEnvFileReadonly
 100 54 TestEmbeddedFormatJSONAliasMatchesJSON
@@ -252,12 +266,14 @@
 100 58 TestEmbeddedDoctorUnsupportedProse
 100 58 TestEmbeddedIfRevisionCascadeDelete
 100 58 TestEmbeddedMigratePersonal_abortLeavesLegacyPlanningConfig
+100 58 TestEmbeddedRetainedTypes
 100 58 TestEmbeddedVersionedHistorySwitchRefusesAnUnrecordableGateTimeout
 
 100 59 TestEmbeddedDeferAutoWake
 100 59 TestEmbeddedDoctorSupportedChecks
 100 59 TestEmbeddedIdentityGateRendersSchemaSkewFromForwardDriftedWorkspace
 100 59 TestEmbeddedMigratePersonal_refusesPlanningRepoThatIsTheProject
+100 59 TestEmbeddedRetainIDs
 100 59 TestEmbeddedVersionedHistorySetManyRefusesUnversionableMetadata
 
 100 60 TestEmbeddedCommentsCLI
@@ -467,6 +483,7 @@
 100 83 TestEmbeddedReadyConcurrent
 
 100 84 TestEmbeddedDoltRemoteAdd_GitOriginCollision_Exits1
+100 84 TestEmbeddedGCConsentPlan
 100 84 TestEmbeddedInitGitBootstrapRoutingDecoyInvalid
 100 84 TestEmbeddedInitSelectedExcludeRoutingStealthInvalid
 100 84 TestEmbeddedMigratePersonal_preservesComments
@@ -480,6 +497,7 @@
 
 100 86 TestEmbeddedDoltRemoteAdd_DifferentURL_ProceedsNormally
 100 86 TestEmbeddedExplicitHierarchicalParentEdges
+100 86 TestEmbeddedGCConsentOnly
 100 86 TestEmbeddedInitHooksRouting
 100 86 TestEmbeddedMigratePersonal_noopWhenEmpty
 

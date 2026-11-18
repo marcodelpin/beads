@@ -32,7 +32,12 @@ const (
 	bazelRemoteGateID = "BAZEL_REMOTE"
 	// The decision's fork-repository test: a fork repository's own CI
 	// (not a fork PR into beads) is mode local, so it never reads rbe-cache.
-	bazelForkRepoValue = "${{ github.repository_owner != 'gastownhall' }}"
+	// The owner's id, not its name: an org rename keeps upstream upstream.
+	bazelForkRepoValue = "${{ github.repository_owner_id != '" + gastownhallOwnerID + "' }}"
+	// The gastownhall org's account id (gh api orgs/gastownhall --jq .id):
+	// github.repository_owner_id, and $GITHUB_REPOSITORY_OWNER_ID, in its
+	// runs.
+	gastownhallOwnerID = "255961667"
 )
 
 // rbeFacts: what GitHub evaluates bazel.yml's rbe step's env expressions on.
@@ -245,7 +250,12 @@ func TestPRGateRequiresRemoteBazelLanes(t *testing.T) {
 			t.Errorf("%v: mode %s, every lane that runs in it passed: gate pass = %v, want %v", f, mode, pass, bazelRemoteModes[mode])
 		}
 	}
-	for _, mode := range []string{"remote", "fork-ro", "fork-rw", "cache", "skip"} {
+	// Never mode cache: rbe-cache refuses GitHub-hosted runners, so only an
+	// rbe=cache dispatch reaches it, never a pull_request or merge group.
+	if saw["cache"] {
+		t.Errorf("the fact matrix reached mode cache on a pull_request or merge group: %v", saw)
+	}
+	for _, mode := range []string{"remote", "fork-ro", "fork-rw", "local", "skip"} {
 		if !saw[mode] {
 			t.Errorf("the fact matrix never reached mode %s: %v", mode, saw)
 		}
@@ -260,18 +270,18 @@ func TestPRGateRequiresRemoteBazelLanes(t *testing.T) {
 	}{
 		{"same-repo PR, farm on", rbeFacts{"pull_request", "true", "x", false, false, "", false}, "remote", true},
 		{"same-repo PR, kill switch (var unset)", rbeFacts{"pull_request", "", "x", false, false, "", false}, "skip", false},
-		{"same-repo PR, executor secret missing", rbeFacts{"pull_request", "true", "", false, false, "", false}, "cache", false},
+		{"same-repo PR, executor secret missing", rbeFacts{"pull_request", "true", "", false, false, "", false}, "local", false},
 		{"fork PR, rbe-fork ro", rbeFacts{"pull_request", "true", "", true, false, "ro", false}, "fork-ro", true},
 		{"fork PR, rbe-fork rw", rbeFacts{"pull_request", "", "", true, false, "rw", false}, "fork-rw", true},
-		{"fork PR, rbe-fork closed", rbeFacts{"pull_request", "true", "", true, false, "closed", false}, "cache", false},
-		{"fork PR, mint unreachable", rbeFacts{"pull_request", "true", "", true, false, "", false}, "cache", false},
+		{"fork PR, rbe-fork closed", rbeFacts{"pull_request", "true", "", true, false, "closed", false}, "local", false},
+		{"fork PR, mint unreachable", rbeFacts{"pull_request", "true", "", true, false, "", false}, "local", false},
 		{"Dependabot PR, rbe-fork ro", rbeFacts{"pull_request", "true", "", false, true, "ro", false}, "fork-ro", true},
-		{"Dependabot PR, rbe-fork closed", rbeFacts{"pull_request", "", "", false, true, "closed", false}, "cache", false},
+		{"Dependabot PR, rbe-fork closed", rbeFacts{"pull_request", "", "", false, true, "closed", false}, "local", false},
 		{"merge_group", rbeFacts{"merge_group", "true", "x", false, false, "", false}, "remote", true},
 		{"merge_group, kill switch (var unset)", rbeFacts{"merge_group", "", "x", false, false, "", false}, "skip", false},
-		{"merge_group, executor secret missing", rbeFacts{"merge_group", "true", "", false, false, "", false}, "cache", false},
+		{"merge_group, executor secret missing", rbeFacts{"merge_group", "true", "", false, false, "", false}, "local", false},
 		// A fork repository's own CI: local, never rbe-cache or the mint
-		// (red, as mode cache was there).
+		// (red, as every non-remote mode is).
 		{"fork repository's own PR, mint would say ro", rbeFacts{"pull_request", "", "", true, false, "ro", true}, "local", false},
 		{"fork repository's own PR, var and secret set", rbeFacts{"pull_request", "true", "x", false, false, "", true}, "local", false},
 	} {
@@ -284,6 +294,24 @@ func TestPRGateRequiresRemoteBazelLanes(t *testing.T) {
 		}
 		if pass, log := runPRGateStep(t, gateStep, prGateFor(t, lanesFor[c.f.event], c.f.event, out["mode"])); pass != c.pass {
 			t.Errorf("%s: pr.yml gate pass = %v, want %v\n%s", c.name, pass, c.pass, log)
+		}
+	}
+
+	// A red BAZEL_REMOTE says what to do: in a fork repository's own CI
+	// (always mode local, FORK_REPO) a re-run never helps, so the message
+	// names that case instead of asking for one; in gastownhall a local run
+	// means rbe-fork was closed or refused, and a later re-run may pass.
+	for _, c := range []struct {
+		name, repo, ownerID, want, not string
+	}{
+		{"fork repository's own PR", "someone/beads", "31337", "this is a fork repository's own CI (someone/beads)", "re-run all jobs later"},
+		{"fork PR into beads, rbe-fork closed", mergeQueueOwnRepo, gastownhallOwnerID, "re-run all jobs later", "fork repository's own CI"},
+	} {
+		sc := prGateFor(t, lanes, "pull_request", "local")
+		sc.flags = map[string]string{"GITHUB_REPOSITORY": c.repo, "GITHUB_REPOSITORY_OWNER_ID": c.ownerID}
+		pass, log := runPRGateStep(t, gateStep, sc)
+		if pass || !strings.Contains(log, c.want) || strings.Contains(log, c.not) {
+			t.Errorf("%s: gate pass %v, log lacks %q or says %q:\n%s", c.name, pass, c.want, c.not, log)
 		}
 	}
 

@@ -972,15 +972,20 @@ func TestGoCacheOwnershipTopology(t *testing.T) {
 	assertGoCacheInventory(t, workflows["pr.yml"].job(t, "pr-preflight-platforms"), []goCacheStep{
 		restoreModuleCache(), restoreBuildCache("non-race"),
 	})
+	// windows-make-shell and its saver hold toolchain caches, not Go caches;
+	// TestWindowsMakeShellProvisionsWithoutNetworkInstalls and
+	// TestWindowsMakeShellToolchainSaverMatchesPRJob pin every one of them.
 	assertNoUnmanagedGoCacheSteps(t, workflows, map[string]map[string]bool{
 		"main.yml": {
 			"test": true, "test-windows": true,
 			"blacksmith-macos-go-build-cache": true,
+			"windows-make-shell-toolchains":   true,
 		},
 		"pr.yml": {
 			"worktree-remove-windows":       true,
 			"check-doc-freshness-platforms": true, "pr-preflight-platforms": true, "advisory-reports": true,
 			"test-windows-liveness": true,
+			"windows-make-shell":    true,
 		},
 		"pr-risk.yml": {},
 	})
@@ -1539,14 +1544,13 @@ func TestPinnedDoltCLIMatchesContainerImage(t *testing.T) {
 	}
 }
 
-// TestPinnedDoltCLIAtLeastRecommendedMin guards doltversion.RecommendedMin
-// against the pinned Dolt CLI version (scripts/ci/install-dolt.sh) drifting
-// below it (#7500). TestPinnedDoltCLIMatchesContainerImage holds the container
-// image and tools/bazel/dolt.bzl to that same pin, so this covers every CI
-// Dolt. A pin lowered below RecommendedMin would mean every CI run exercises a
-// Dolt CLI the package's own policy already warns is below the matrix-tested
-// floor.
-func TestPinnedDoltCLIAtLeastRecommendedMin(t *testing.T) {
+// TestPinnedDoltCLIAtLeastRequiredMin guards doltversion.RequiredMin against
+// the pinned Dolt CLI version (scripts/ci/install-dolt.sh) drifting below it
+// (#7500). TestPinnedDoltCLIMatchesContainerImage holds the container image
+// and tools/bazel/dolt.bzl to that same pin, so this covers every CI Dolt. A
+// pin below RequiredMin would make bd refuse every CI server-mode test's
+// server.
+func TestPinnedDoltCLIAtLeastRequiredMin(t *testing.T) {
 	root := sourceRepoRoot(t)
 
 	installer, err := os.ReadFile(filepath.Join(root, "scripts", "ci", "install-dolt.sh"))
@@ -1556,8 +1560,8 @@ func TestPinnedDoltCLIAtLeastRecommendedMin(t *testing.T) {
 	cliVersion := captureOne(t, `(?m)^readonly version="([0-9]+\.[0-9]+\.[0-9]+)"$`, string(installer), "scripts/ci/install-dolt.sh")
 
 	pinned := doltversion.MustParse(cliVersion)
-	if !pinned.AtLeast(doltversion.RecommendedMin) {
-		t.Errorf("pinned Dolt CLI %s is below doltversion.RecommendedMin %s", cliVersion, doltversion.RecommendedMin)
+	if !pinned.AtLeast(doltversion.RequiredMin) {
+		t.Errorf("pinned Dolt CLI %s is below doltversion.RequiredMin %s", cliVersion, doltversion.RequiredMin)
 	}
 }
 
@@ -1852,10 +1856,10 @@ var bazelAdvisoryLanes = map[string]string{
 }
 
 // bazel-integration's if: remote (modes remote, fork-ro, fork-rw: enabled),
-// or local with the read-only cache (mode cache: fork and Dependabot PRs
-// while rbe-fork is closed, whose only PR-time integration run it is; a
-// warm run builds and tests only what the PR changed), never plain local
-// (rbe=off: a cold tagged race build of //... on one runner); and off when a
+// or local with the read-only cache (mode cache: rbe=cache dispatches, on
+// Blacksmith; a warm run builds and tests only what changed), never plain
+// local (rbe=off, and fork and Dependabot PRs while rbe-fork is closed: a
+// cold tagged race build of //... on one runner); and off when a
 // caller passes integration: "off" (pr.yml and bazel-farm.yml pass "on"). A
 // string input: on push and dispatch it is null, and null != 'off', so the
 // lane keeps running on main.
@@ -1906,8 +1910,11 @@ const bazelRBEPrewarmIf = "${{ needs.rbe.outputs.mode == 'remote' }}"
 // F3: the rbe job's own runner (not gated by its own outputs - it decides
 // them). Same-repo PRs and merge_group/push/dispatch/schedule (never forks)
 // get Blacksmith; a pull_request_target farm run and any fork or Dependabot
-// PR stay GitHub-hosted. Pinned verbatim by TestSameRepoBlacksmithRunners.
-const wantRBERunsOn = "${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
+// PR stay GitHub-hosted. Only in gastownhall (gastownhallOwnerID): a fork
+// repository's own CI has no Blacksmith, so there it is GitHub-hosted on
+// every event (TestBazelRBERunnerOutsideGastownhall). Pinned verbatim by
+// TestSameRepoBlacksmithRunners.
+const wantRBERunsOn = "${{ github.repository_owner_id == '" + gastownhallOwnerID + "' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
 
 // The sameRepoBlacksmith{2,4,8}vcpu consts and the real-expression evaluator
 // that checks them now live in ci_blacksmith_runner_test.go (shared with
@@ -2065,10 +2072,11 @@ func TestBazelWorkflowJobsAndExecutionMode(t *testing.T) {
 	}
 	// Every lane needs the rbe job and takes its runner, skip rule and
 	// setup-bazel env from that job's outputs alone. Remote runs use the
-	// Blacksmith pool; fork modes (fork-ro/fork-rw: remote execution with an
-	// rbe-fork-mint certificate, the runner only a client), local and cache
-	// runs (forks while rbe-fork is closed, rbe=off/cache) the GitHub-hosted
-	// runner. Only mode remote gets the secrets; fork modes get
+	// Blacksmith pool, and so do cache runs (rbe=cache dispatches: rbe-cache
+	// refuses GitHub-hosted runners); fork modes (fork-ro/fork-rw: remote
+	// execution with an rbe-fork-mint certificate, the runner only a
+	// client) and local runs (forks while rbe-fork is closed, rbe=off) the
+	// GitHub-hosted runner. Only mode remote gets the secrets; fork modes get
 	// BAZEL_FORK_REMOTE (setup-bazel mints the certificate), cache runs
 	// BAZEL_FORK_CACHE.
 	wantRunsOn := bazelLaneRunsOn
@@ -2277,8 +2285,9 @@ func TestSameRepoBlacksmithRunners(t *testing.T) {
 			// included (ga-96smfk.22). test-windows-liveness and
 			// worktree-remove-windows are sized at 4vcpu (a build plus a
 			// focused test run each); test-windows-small at 2vcpu;
-			// windows-make-shell at 4vcpu (installs three separate Make
-			// toolchains).
+			// windows-make-shell at 4vcpu (provisions three separate Make
+			// toolchains, the label main.yml's windows-make-shell-toolchains
+			// saver seeds them on).
 			"test-windows-liveness":   blacksmithWindows4vcpuRunsOn,
 			"worktree-remove-windows": blacksmithWindows4vcpuRunsOn,
 			"test-windows-small":      blacksmithWindows2vcpuRunsOn,
@@ -2310,6 +2319,9 @@ func TestSameRepoBlacksmithRunners(t *testing.T) {
 			// if: (TestBlacksmithSaverJobsGuardedAgainstPullRequest below),
 			// matching F7c's own saver convention.
 			"test-windows": mainBlacksmithWindows4vcpuRunsOn,
+			// Same guard, seeding windows-make-shell's toolchain caches
+			// (TestWindowsMakeShellToolchainSaverMatchesPRJob).
+			"windows-make-shell-toolchains": mainBlacksmithWindows4vcpuRunsOn,
 			// Same guard, seeding pr.yml's macOS legs.
 			"blacksmith-macos-go-build-cache": mainBlacksmithMacOSGoBuildCacheRunsOn,
 			// The macOS -race -short suite (Linux runs it under Bazel).
@@ -2614,18 +2626,24 @@ func stepContinueOnError(step ciWorkflowStep) bool {
 // nothing pinned the aggregator's own correctness. The fix removes the
 // aggregator entirely: every step after checkout keeps `if: !cancelled()`
 // (so a failing leg does not stop later legs from attempting to run), but
-// only the Cygwin *setup* step (a flaky installer download, not a code
-// failure) may carry continue-on-error. Every other step's failure now fails
-// the job directly, with no hand-written logic in between to go stale.
+// only the Cygwin *setup* steps (windowsMakeShellCygwinSetupIDs: the offline
+// install from the main-saved package cache, which falls back to the online
+// installer, and that installer, a flaky download rather than a code
+// failure) may carry continue-on-error. Every other step's failure, the
+// Cygwin exercise included, fails the job directly, with no hand-written
+// logic in between to go stale.
 func TestPRWindowsMakeShellLegsFailTheJob(t *testing.T) {
 	pr := readCIWorkflow(t, "pr.yml")
-	// Only the install/exercise "leg" steps need `if: !cancelled()` (so a
-	// failing leg does not stop a later, independent leg from attempting to
-	// run) and the no-continue-on-error rule; checkout/setup steps that every
-	// leg depends on are deliberately left to run unconditionally.
+	// Only the per-leg restore/install/exercise steps need `if: !cancelled()`
+	// (so a failing leg does not stop a later, independent leg from
+	// attempting to run) and the no-continue-on-error rule; the checkout,
+	// diagnostics and cache-key steps every leg depends on are deliberately
+	// left to run unconditionally.
 	legSteps := map[string][]string{
 		"windows-make-shell": {
-			"Install native GNU Make", "Set up MSYS2 GNU Make", "Set up Cygwin GNU Make",
+			"Restore cached native GNU Make", "Install native GNU Make",
+			"Set up preinstalled MSYS2", "Restore MSYS2 package cache", "Install MSYS2 GNU Make",
+			"Restore Cygwin package cache", "Install Cygwin GNU Make from the package cache", "Set up Cygwin GNU Make",
 			"Warn when Cygwin setup was skipped by a download failure",
 			"Exercise native Windows Make", "Exercise MSYS2-hosted Make", "Exercise Cygwin-hosted Make",
 		},
@@ -2640,21 +2658,30 @@ func TestPRWindowsMakeShellLegsFailTheJob(t *testing.T) {
 			if !strings.Contains(step.If, "!cancelled()") {
 				t.Errorf("%s step %q if = %q, want it to contain !cancelled() so later legs still run after an earlier one fails", jobName, step.Name, step.If)
 			}
-			allowCOE := jobName == "windows-make-shell" && step.ID == "cygwin"
+			allowCOE := jobName == "windows-make-shell" && windowsMakeShellCygwinSetupIDs[step.ID]
 			if stepContinueOnError(step) && !allowCOE {
-				t.Errorf("%s step %q (id %q) has continue-on-error; only windows-make-shell's Cygwin setup step may, so every other leg's failure reds the job directly", jobName, step.Name, step.ID)
+				t.Errorf("%s step %q (id %q) has continue-on-error; only windows-make-shell's Cygwin setup steps may, so every other leg's failure reds the job directly", jobName, step.Name, step.ID)
 			}
 			if allowCOE && !stepContinueOnError(step) {
-				t.Errorf("%s Cygwin setup step lost continue-on-error; a flaky installer download would now fail the job", jobName)
+				t.Errorf("%s Cygwin setup step %q lost continue-on-error; a broken package cache or a flaky installer download would now fail the job", jobName, step.ID)
 			}
 		}
 		for _, step := range job.Steps {
 			if strings.HasPrefix(step.Name, "Fail if") {
 				t.Errorf("%s still has a hand-written aggregator step %q; SF-1 replaced aggregators with per-step failure propagation", jobName, step.Name)
 			}
-			if step.ID != "cygwin" && stepContinueOnError(step) {
-				t.Errorf("%s step %q (id %q) has continue-on-error; only windows-make-shell's Cygwin setup step may", jobName, step.Name, step.ID)
+			if !(jobName == "windows-make-shell" && windowsMakeShellCygwinSetupIDs[step.ID]) && stepContinueOnError(step) {
+				t.Errorf("%s step %q (id %q) has continue-on-error; only windows-make-shell's Cygwin setup steps may", jobName, step.Name, step.ID)
 			}
+		}
+	}
+	for id := range windowsMakeShellCygwinSetupIDs {
+		found := false
+		for _, step := range pr.job(t, "windows-make-shell").Steps {
+			found = found || step.ID == id
+		}
+		if !found {
+			t.Errorf("windows-make-shell has no Cygwin setup step with id %q", id)
 		}
 	}
 	// The aggregator's job outputs (native/msys2/cygwin) are gone too
@@ -2667,15 +2694,20 @@ func TestPRWindowsMakeShellLegsFailTheJob(t *testing.T) {
 }
 
 // TestPRWindowsMakeShellSetupStepsHaveTimeouts is review SF-2 (2026-10-03):
-// the Cygwin and MSYS2 setup steps download third-party installers from the
-// network; a step timeout bounds how long a hang can block the later legs'
-// exercise steps behind it, instead of consuming the whole 30-minute job
-// timeout (which would also lose native/msys2 coverage, since their exercise
-// steps would never get a chance to run before the job-level cancel).
+// each leg's provisioning step can still reach the network on its fallback
+// path (Chocolatey, MSYS2's mirrors, cygwin.com); a step timeout bounds how
+// long a hang can block the later legs' exercise steps behind it, instead of
+// consuming the whole 40-minute job timeout (which would also lose the other
+// legs' coverage, since their exercise steps would never get a chance to run
+// before the job-level cancel). TestWindowsMakeShellNetworkFallbacksAreBoundedAndRetried
+// checks the retried ones' caps against their own retry budgets.
 func TestPRWindowsMakeShellSetupStepsHaveTimeouts(t *testing.T) {
 	pr := readCIWorkflow(t, "pr.yml")
 	job := pr.job(t, "windows-make-shell")
-	for _, name := range []string{"Set up MSYS2 GNU Make", "Set up Cygwin GNU Make"} {
+	for _, name := range []string{
+		"Install native GNU Make", "Set up preinstalled MSYS2", "Install MSYS2 GNU Make",
+		"Install Cygwin GNU Make from the package cache", "Set up Cygwin GNU Make",
+	} {
 		step := job.step(t, name)
 		if step.TimeoutMinutes <= 0 {
 			t.Errorf("windows-make-shell step %q has no timeout-minutes", name)
@@ -3190,7 +3222,10 @@ var fastChecksLegacyJobNames = map[string]string{
 func runPRGateStep(t *testing.T, step ciWorkflowStep, sc bazelGateScenario) (bool, string) {
 	t.Helper()
 	expr := regexp.MustCompile(`^\$\{\{ needs\.([A-Za-z0-9_-]+)\.(result|outputs\.([A-Za-z0-9_-]+))( \|\| 'skipped')? \}\}$`)
-	env := []string{"PATH=" + os.Getenv("PATH"), "GITHUB_EVENT_NAME=" + sc.event}
+	// GitHub's default variables for a run in gastownhall/beads; sc.flags
+	// (appended after: the last value wins) may move the run to a fork.
+	env := []string{"PATH=" + os.Getenv("PATH"), "GITHUB_EVENT_NAME=" + sc.event,
+		"GITHUB_REPOSITORY=" + mergeQueueOwnRepo, "GITHUB_REPOSITORY_OWNER_ID=" + gastownhallOwnerID}
 	for key, value := range sc.flags {
 		env = append(env, key+"="+value)
 	}
@@ -4112,13 +4147,13 @@ func TestBazelIntegrationJob(t *testing.T) {
 	// GitHub run took 17 minutes end to end) followed by the longest test
 	// action, which .bazelrc caps at its test:integration --test_timeout
 	// (rbe-west's 1200s limit). The job adds setup and log upload. In mode
-	// cache it runs on a 4-CPU GitHub-hosted runner, and with the read-only
+	// cache it runs on a 4-CPU Blacksmith runner, and with the read-only
 	// cache closed (the farm's kill switch) the whole suite builds and runs
 	// there cold, about 30 minutes simulated: the step keeps twice that.
 	const coldCompileMinutes = 20
 	const cacheClosedMinutes = 30
 	if test.TimeoutMinutes < 2*cacheClosedMinutes {
-		t.Errorf("%s test step timeout-minutes = %d, want at least %d (mode cache with the cache closed: ~%d minutes cold on a GitHub-hosted runner)",
+		t.Errorf("%s test step timeout-minutes = %d, want at least %d (mode cache with the cache closed: ~%d minutes cold on a 4-CPU runner)",
 			bazelIntegJobName, test.TimeoutMinutes, 2*cacheClosedMinutes, cacheClosedMinutes)
 	}
 	actionCapMinutes := 0
@@ -5059,10 +5094,11 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 			return
 		}
 		// F3: the rbe job's own runs-on picks a runner venue (Blacksmith vs
-		// ubuntu-latest) for trusted same-repo PRs; it shares some of the
-		// same trust predicates (github.actor, dependabot) as the mode
-		// decision but decides something else entirely (where the decide
-		// step runs, not what it decides) - not a re-derivation of mode.
+		// ubuntu-latest) for trusted same-repo PRs in gastownhall; it shares
+		// some of the same facts (github.actor, dependabot, the owner's id)
+		// as the mode decision but decides something else entirely (where
+		// the decide step runs, not what it decides) - not a re-derivation
+		// of mode.
 		if path == ".jobs."+bazelRBEJobName+".runs-on" {
 			return
 		}
@@ -5111,26 +5147,27 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 		{"var in other case", facts{"True", "on", "grpcs://x", false, false, false, false, ""}, "remote", "true", ""},
 		// Fork and Dependabot pull_request runs: rbe-fork decides. Open:
 		// remote execution with a mint certificate, tier ro or rw. Closed,
-		// refusing, unreachable or nonsense: local execution with the
-		// read-only cache, as before rbe-fork (rbe=cache simulates them);
-		// rbe=off drops the cache too.
+		// refusing, unreachable or nonsense: local execution, never the
+		// read-only cache (rbe-cache refuses GitHub-hosted runners, where
+		// these lanes run). rbe=cache, the only way into mode cache,
+		// simulates them with the cache, from Blacksmith; rbe=off without.
 		{"fork PR, mint ro", facts{"true", "", "", true, false, true, false, "ro"}, "fork-ro", "true", "ro"},
 		{"fork PR, mint rw", facts{"true", "", "", true, false, true, false, "rw"}, "fork-rw", "true", "rw"},
 		{"fork PR, mint ro, var unset (forks cannot read it)", facts{"", "", "", true, false, true, false, "ro"}, "fork-ro", "true", "ro"},
 		{"fork PR somehow with the secret, mint ro", facts{"true", "", "grpcs://x", true, false, true, false, "ro"}, "fork-ro", "true", "ro"},
 		{"Dependabot PR, mint ro", facts{"true", "", "", false, false, true, true, "ro"}, "fork-ro", "true", "ro"},
 		{"Dependabot PR, var unset, mint ro", facts{"", "", "", false, false, true, true, "ro"}, "fork-ro", "true", "ro"},
-		{"fork PR, mint unreachable", facts{"true", "", "", true, false, true, false, ""}, "cache", "false", ""},
-		{"fork PR, mint closed", facts{"true", "", "", true, false, true, false, "closed"}, "cache", "false", ""},
-		{"fork PR, rw tier closed", facts{"true", "", "", true, false, true, false, "rw-closed"}, "cache", "false", ""},
-		{"fork PR, canary refuses", facts{"true", "", "", true, false, true, false, "canary"}, "cache", "false", ""},
-		{"fork PR, mint busy", facts{"true", "", "", true, false, true, false, "busy"}, "cache", "false", ""},
-		{"fork PR, mint answers garbage", facts{"true", "", "", true, false, true, false, "garbage"}, "cache", "false", ""},
-		{"fork PR, mint answers an unknown tier", facts{"true", "", "", true, false, true, false, "evil"}, "cache", "false", ""},
-		{"fork PR, var unset, mint unreachable", facts{"", "", "", true, false, true, false, ""}, "cache", "false", ""},
-		{"fork PR, var false, mint unreachable", facts{"false", "", "", true, false, true, false, ""}, "cache", "false", ""},
-		{"Dependabot PR, mint unreachable", facts{"true", "", "", false, false, true, true, ""}, "cache", "false", ""},
-		{"Dependabot, var unset, mint unreachable", facts{"", "", "", false, false, true, true, ""}, "cache", "false", ""},
+		{"fork PR, mint unreachable", facts{"true", "", "", true, false, true, false, ""}, "local", "false", ""},
+		{"fork PR, mint closed", facts{"true", "", "", true, false, true, false, "closed"}, "local", "false", ""},
+		{"fork PR, rw tier closed", facts{"true", "", "", true, false, true, false, "rw-closed"}, "local", "false", ""},
+		{"fork PR, canary refuses", facts{"true", "", "", true, false, true, false, "canary"}, "local", "false", ""},
+		{"fork PR, mint busy", facts{"true", "", "", true, false, true, false, "busy"}, "local", "false", ""},
+		{"fork PR, mint answers garbage", facts{"true", "", "", true, false, true, false, "garbage"}, "local", "false", ""},
+		{"fork PR, mint answers an unknown tier", facts{"true", "", "", true, false, true, false, "evil"}, "local", "false", ""},
+		{"fork PR, var unset, mint unreachable", facts{"", "", "", true, false, true, false, ""}, "local", "false", ""},
+		{"fork PR, var false, mint unreachable", facts{"false", "", "", true, false, true, false, ""}, "local", "false", ""},
+		{"Dependabot PR, mint unreachable", facts{"true", "", "", false, false, true, true, ""}, "local", "false", ""},
+		{"Dependabot, var unset, mint unreachable", facts{"", "", "", false, false, true, true, ""}, "local", "false", ""},
 		{"dispatch rbe=cache", facts{"true", "cache", "grpcs://x", false, false, false, false, ""}, "cache", "false", ""},
 		{"dispatch rbe=cache, var unset", facts{"", "cache", "", false, false, false, false, ""}, "cache", "false", ""},
 		{"call rbe=CACHE", facts{"true", "CACHE", "grpcs://x", false, false, true, false, ""}, "cache", "false", ""},
@@ -5139,7 +5176,7 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 		{"call rbe=OFF", facts{"true", "OFF", "grpcs://x", false, false, true, false, ""}, "local", "false", ""},
 		{"fork PR rbe=off, mint ro", facts{"true", "off", "", true, false, true, false, "ro"}, "local", "false", ""},
 		{"same-repo, var unset", facts{"", "", "grpcs://x", false, false, true, false, ""}, "skip", "false", ""},
-		{"same-repo without the secret", facts{"true", "", "", false, false, true, false, ""}, "cache", "false", ""},
+		{"same-repo without the secret", facts{"true", "", "", false, false, true, false, ""}, "local", "false", ""},
 		{"var false", facts{"false", "on", "grpcs://x", false, false, false, false, ""}, "skip", "false", ""},
 		// bazel-farm.yml's authorized fork runs: remote or nothing, never
 		// a second local run (pr.yml already runs one). Not a pull_request
@@ -5150,7 +5187,7 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 		{"authorized fork farm, rbe=off", facts{"true", "off", "grpcs://x", true, true, false, false, ""}, "local", "false", ""},
 		// A fork run that is neither a pull_request nor authorized
 		// (pull_request_target without bazel-farm.yml's inputs) stays local.
-		{"fork, not authorized, secret", facts{"true", "", "grpcs://x", true, false, false, false, "ro"}, "cache", "false", ""},
+		{"fork, not authorized, secret", facts{"true", "", "grpcs://x", true, false, false, false, "ro"}, "local", "false", ""},
 	}
 	caseEnv := func(in facts, forkRepo bool) map[string]string {
 		env := map[string]string{
@@ -6214,7 +6251,7 @@ func TestBazelCmdDoltJob(t *testing.T) {
 	job := workflow.job(t, bazelCmdDoltJobName)
 	assertBazelTierStep(t, job, bazelCmdDoltJobName, config)
 	test := job.step(t, "bazel test //... --config="+config)
-	// Mode cache runs the shards on a 4-CPU GitHub-hosted runner; with the
+	// Mode cache runs the shards on a 4-CPU Blacksmith runner; with the
 	// read-only cache closed the cold tagged race build comes first (as in
 	// TestBazelIntegrationJob).
 	if test.TimeoutMinutes < 60 || job.TimeoutMinutes <= test.TimeoutMinutes || job.TimeoutMinutes > test.TimeoutMinutes+15 {
@@ -6461,4 +6498,29 @@ func TestDoltImagePullWorkflowsUseRetryHelper(t *testing.T) {
 			t.Errorf("%s still pulls the Dolt image without retries", name)
 		}
 	}
+}
+
+// The full macOS suite (main.yml's Test (macOS)) runs only after a merge, so
+// a PR that breaks ./scripts on macOS's /bin/bash 3.2 merged green and turned
+// main red (#7818: mapfile and empty "${arr[@]}" under set -u). The PR's
+// macOS leg runs the whole ./scripts package so the required CI gate sees
+// that break before the merge.
+func TestPRWorkflowRunsScriptsPackageOnMacOS(t *testing.T) {
+	const (
+		jobName  = "pr-preflight-platforms"
+		stepName = "Run the scripts package on macOS's Bash"
+	)
+	workflow := readCIWorkflow(t, "pr.yml")
+	job := workflow.job(t, jobName)
+	if job.If != ciScopePlatformsIf || job.ContinueOnError {
+		t.Fatalf("%s is bypassable: if=%q continue-on-error=%v", jobName, job.If, job.ContinueOnError)
+	}
+	step := job.step(t, stepName)
+	if step.If != "matrix.os == 'macos-latest'" || step.Shell != "bash" ||
+		step.Env["GOCACHE"] != goBuildCachePath("non-race") ||
+		(step.ContinueOnError != nil && step.ContinueOnError != false) {
+		t.Fatalf("macOS scripts step is conditional on the wrong host, optional, or misses the restored cache: %+v", step)
+	}
+	assertStepRunsExactly(t, job, stepName, "go test '-tags=gms_pure_go' -count=1 ./scripts")
+	assertStepsBefore(t, job, []string{"Set up Go", "Restore non-race Go build cache"}, []string{stepName})
 }

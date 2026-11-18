@@ -19,10 +19,14 @@ import (
 // and TestAllMigrationsSQLUsesDirectDDLForKnownCLIIncompatibilities).
 
 // TestLatestVersionIncludesMigration0072 (pinning LatestVersion() == 72) is
-// superseded on this fork by TestLatestVersionIncludesMigration0073
-// (migration_0073_label_definitions_test.go) now that the fork-only
-// label_definitions migration takes the next free slot; only one such pin
-// lives at a time.
+// superseded by TestLatestVersionIncludesMigration0073
+// (migration_0073_add_arrival_seq_test.go) now that 0073 claims the next free
+// slot -- only one such pin lives at a time, matching how this test itself
+// already superseded 0071's own version. Its history stands: this slice first
+// claimed 0069 and was renumbered past R7.1's 0071 (gastownhall/beads#6661),
+// upstream's 0069 (gastownhall/beads#6675) and 0070 (gastownhall/beads#6943),
+// because two files sharing a version number panic checkNoDuplicateVersions at
+// store open, before any command's RunE.
 
 const migration0072Up = "0072_add_epoch_minted_addresses.up.sql"
 const migration0072Down = "0072_add_epoch_minted_addresses.down.sql"
