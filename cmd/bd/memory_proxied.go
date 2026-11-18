@@ -109,7 +109,7 @@ func runRememberProxied(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return HandleErrorRespectJSON("reading the memory corpus for the budget check: %v", err)
 		}
-		line, refuse := rememberBudgetVerdict(corpus.Memories, budgetKey, insight, budget, memoryForceFlag)
+		line, refuse := rememberBudgetVerdict(memoryContentCorpus(corpus.Memories), budgetKey, insight, budget, memoryForceFlag)
 		if refuse {
 			const hint = "raise memories.budget-chars, forget a memory, or pass --force"
 			if jsonOutput {

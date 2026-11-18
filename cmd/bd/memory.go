@@ -1448,12 +1448,25 @@ func memoriesFromProvider(provider uow.UnitOfWorkProvider) (memoryops.Memories, 
 // content, the envelope unwrapped, for the corpus budget (upstream #6508).
 func directMemoryCorpus(allConfig map[string]string) map[string]string {
 	fullPrefix := kvPrefix + memoryPrefix
-	corpus := make(map[string]string)
+	stored := make(map[string]string)
 	for k, v := range allConfig {
 		if !strings.HasPrefix(k, fullPrefix) {
 			continue
 		}
-		corpus[strings.TrimPrefix(k, fullPrefix)] = parseStoredMemory(v).Content
+		stored[strings.TrimPrefix(k, fullPrefix)] = v
+	}
+	return memoryContentCorpus(stored)
+}
+
+// memoryContentCorpus maps each memory key to its CONTENT, the fork envelope
+// (provenance, tags, scope, expiry) unwrapped: the one measure the corpus
+// budget applies on every route. The role route's List hands back the stored
+// values raw, so without this its metadata would count toward the budget and
+// refuse a write the direct route accepts (bda-tfok.4.4, codex F7).
+func memoryContentCorpus(stored map[string]string) map[string]string {
+	corpus := make(map[string]string, len(stored))
+	for k, v := range stored {
+		corpus[k] = parseStoredMemory(v).Content
 	}
 	return corpus
 }
