@@ -1,6 +1,7 @@
 package dolt
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -141,6 +142,51 @@ func TestRecordSkippedPreflightResultLocalDialRefusalDoesNotTrip(t *testing.T) {
 			}
 			if got := breaker.State(); got != want {
 				t.Fatalf("circuit state = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// The same local refusal can hit the resolver first: a server named by a host
+// that is not in /etc/hosts makes Go dial the DNS server, and a sandbox
+// refuses that dial. Go reports it as a *net.DNSError whose chain does not
+// reach the errno, so the guard must read it from the DNS error. A resolver
+// dial refused by the remote (ECONNREFUSED) still counts.
+func TestRecordSkippedPreflightResultLocalResolverRefusalDoesNotTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		errno    syscall.Errno
+		wantOpen bool
+	}{
+		{name: "EPERM", errno: syscall.EPERM, wantOpen: false},
+		{name: "EACCES", errno: syscall.EACCES, wantOpen: false},
+		{name: "ECONNREFUSED control", errno: syscall.ECONNREFUSED, wantOpen: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BEADS_TEST_MODE", "")
+			breaker := newTestCircuitBreaker(t)
+			for range circuitFailureThreshold - 1 {
+				breaker.RecordFailure()
+			}
+			resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return nil, &net.OpError{Op: "dial", Net: network, Err: os.NewSyscallError("connect", tc.errno)}
+			}}
+			dialer := net.Dialer{Resolver: resolver}
+			_, dialErr := dialer.DialContext(context.Background(), "tcp", "dolt-resolver-refusal.invalid:3309")
+			var dnsErr *net.DNSError
+			if !errors.As(dialErr, &dnsErr) {
+				t.Fatalf("dial error is not a DNS error, the case under test did not happen: %v", dialErr)
+			}
+			if err := recordSkippedPreflightResult(&Config{ServerHost: "dolt-resolver-refusal.invalid", ServerPort: 3309}, breaker, dialErr); err == nil {
+				t.Fatal("recordSkippedPreflightResult returned nil for a failed dial")
+			}
+			want := circuitClosed
+			if tc.wantOpen {
+				want = circuitOpen
+			}
+			if got := breaker.State(); got != want {
+				t.Fatalf("circuit state = %q, want %q (dial error: %v)", got, want, dialErr)
 			}
 		})
 	}

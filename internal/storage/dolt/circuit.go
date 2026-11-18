@@ -251,8 +251,19 @@ func (cb *circuitBreaker) probe() error {
 // That says nothing about the server, so it must not move the breaker: every
 // process sharing the server reads it, and the ones that can connect would
 // then fail fast.
+//
+// The refusal can also hit the resolver's own dial (a server host that is not
+// in /etc/hosts): Go then returns a *net.DNSError whose chain does not reach
+// the errno, only its text, so that text is read from the DNS error alone.
 func isLocalDialRefusal(err error) bool {
-	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return strings.Contains(dnsErr.Err, syscall.EPERM.Error()) || strings.Contains(dnsErr.Err, syscall.EACCES.Error())
+	}
+	return false
 }
 
 // recordDialFailure records a failed dial of the server on breaker (nil means
