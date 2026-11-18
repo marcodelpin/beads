@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -174,43 +175,14 @@ Consent flow (recommended):
 
 			cutoffDays := gcOlderThan
 			cutoffTime := time.Now().UTC().AddDate(0, 0, -cutoffDays)
-			statusClosed := types.StatusClosed
-			// gc is a scripted internal sweep — opt out of BEADS_MAX_ROWS
-			// (designer §4.1) so a misconfigured env doesn't abort the sweep.
-			filter := types.IssueFilter{
-				Status:        &statusClosed,
-				ClosedBefore:  &cutoffTime,
-				MaxRows:       0,
-				MaxRowsSource: "",
-			}
 
-			// The closed issues and types.retained come from one snapshot, so
-			// the hold-back below uses the setting the selection's snapshot held.
-			closedIssues, retained, err := storage.SearchIssuesWithConfig(ctx, store, "", filter, issueops.SettingKeyTypesRetained)
+			decay, err := gcDecayCandidates(ctx, cutoffTime, onlySet)
 			if err != nil {
 				return HandleErrorRespectJSON("searching closed issues: %v", err)
 			}
-
-			// Upstream now performs the null-safe closed_at + pinned defense natively
-			// (filterClosedDeletionCandidates, PR #4171) — supersedes the fork's prior
-			// inline #3543 mitigation (bda-zpg). Keep the fork-only --only allowlist below.
-			var stats closedDeletionCandidateStats
-			closedIssues, stats = filterClosedDeletionCandidates(closedIssues, &cutoffTime)
-			warnClosedDeletionSafetySkips(stats)
-
-			// Apply --only allowlist if set: keep only issues whose ID is in the set.
-			// (fork-only feature; upstream helper does not cover the curated-subset flow)
-			if onlySet != nil {
-				keep := closedIssues[:0]
-				for _, issue := range closedIssues {
-					if onlySet[issue.ID] {
-						keep = append(keep, issue)
-					}
-				}
-				closedIssues = keep
-			}
-
-			closedIssues, retentionKept = holdBackRetainedTypes(closedIssues, retained)
+			warnClosedDeletionSafetySkips(decay.skips)
+			closedIssues := decay.issues
+			retentionKept = decay.retainedKept
 			if retentionKept > 0 && !jsonOutput {
 				fmt.Println(retainedTypesKeptLine(retentionKept, "closed issue(s)"))
 			}
@@ -492,7 +464,67 @@ type gcPlanOutput struct {
 	Memories      []expiredMemoryCandidate `json:"memories"`
 	IssueCount    int                      `json:"issue_count"`
 	MemoryCount   int                      `json:"memory_count"`
-	HintNextStep  string                   `json:"hint_next_step,omitempty"`
+	// RetentionRequired counts the old closed beads of a retained type
+	// (types.retained) the decay holds back, so the plan leaves them out;
+	// the name is the one the delete path's --json uses. Absent when zero.
+	RetentionRequired int    `json:"retention_required,omitempty"`
+	HintNextStep      string `json:"hint_next_step,omitempty"`
+}
+
+// gcDecaySelection is what `bd gc`'s decay phase would delete, and what it
+// held back.
+type gcDecaySelection struct {
+	issues       []*types.Issue
+	skips        closedDeletionCandidateStats
+	retainedKept int
+}
+
+// gcDecayCandidates selects the closed beads `bd gc`'s decay deletes: closed
+// before cutoff, past the closed_at/pinned safety recheck
+// (filterClosedDeletionCandidates), inside the --only allowlist when one is
+// given (nil = no allowlist), minus the beads of a retained type
+// (holdBackRetainedTypes). The delete path, --plan and --plan-summary all
+// call it, so the plan the operator consents to is the set the delete takes
+// (bda-tfok.4.5: the plans ran their own query and offered retained beads the
+// delete then kept).
+func gcDecayCandidates(ctx context.Context, cutoff time.Time, onlySet map[string]bool) (gcDecaySelection, error) {
+	statusClosed := types.StatusClosed
+	// gc is a scripted internal sweep — opt out of BEADS_MAX_ROWS
+	// (designer §4.1) so a misconfigured env doesn't abort the sweep.
+	filter := types.IssueFilter{
+		Status:        &statusClosed,
+		ClosedBefore:  &cutoff,
+		MaxRows:       0,
+		MaxRowsSource: "",
+	}
+
+	// The closed issues and types.retained come from one snapshot, so
+	// the hold-back below uses the setting the selection's snapshot held.
+	closedIssues, retained, err := storage.SearchIssuesWithConfig(ctx, store, "", filter, issueops.SettingKeyTypesRetained)
+	if err != nil {
+		return gcDecaySelection{}, err
+	}
+
+	// Upstream now performs the null-safe closed_at + pinned defense natively
+	// (filterClosedDeletionCandidates, PR #4171) — supersedes the fork's prior
+	// inline #3543 mitigation (bda-zpg). Keep the fork-only --only allowlist below.
+	var sel gcDecaySelection
+	closedIssues, sel.skips = filterClosedDeletionCandidates(closedIssues, &cutoff)
+
+	// Apply --only allowlist if set: keep only issues whose ID is in the set.
+	// (fork-only feature; upstream helper does not cover the curated-subset flow)
+	if onlySet != nil {
+		keep := closedIssues[:0]
+		for _, issue := range closedIssues {
+			if onlySet[issue.ID] {
+				keep = append(keep, issue)
+			}
+		}
+		closedIssues = keep
+	}
+
+	sel.issues, sel.retainedKept = holdBackRetainedTypes(closedIssues, retained)
+	return sel, nil
 }
 
 // runGCPlan implements `bd gc --plan`. It reads the same candidate set that
@@ -504,30 +536,21 @@ type gcPlanOutput struct {
 // "non mi va bene che bd cancelli le cose vecchie senza chiedere".
 func runGCPlan(olderThanDays int) error {
 	now := time.Now()
-	cutoff := now.AddDate(0, 0, -olderThanDays)
-	statusClosed := types.StatusClosed
+	cutoff := now.UTC().AddDate(0, 0, -olderThanDays)
 
-	closedIssues, err := store.SearchIssues(rootCtx, "", types.IssueFilter{
-		Status:       &statusClosed,
-		ClosedBefore: &cutoff,
-	})
+	decay, err := gcDecayCandidates(rootCtx, cutoff, nil)
 	if err != nil {
 		return HandleError("plan: searching closed issues: %v", err)
 	}
 
 	plan := gcPlanOutput{
-		OlderThanDays: olderThanDays,
-		Now:           now.UTC().Format(time.RFC3339),
-		Issues:        []gcPlanIssue{},
-		Memories:      []expiredMemoryCandidate{},
+		OlderThanDays:     olderThanDays,
+		Now:               now.UTC().Format(time.RFC3339),
+		Issues:            []gcPlanIssue{},
+		Memories:          []expiredMemoryCandidate{},
+		RetentionRequired: decay.retainedKept,
 	}
-	for _, issue := range closedIssues {
-		if issue.Pinned {
-			continue
-		}
-		if issue.ClosedAt == nil || issue.ClosedAt.IsZero() {
-			continue
-		}
+	for _, issue := range decay.issues {
 		closedAt := *issue.ClosedAt
 		plan.Issues = append(plan.Issues, gcPlanIssue{
 			ID:       issue.ID,
@@ -567,13 +590,9 @@ func runGCPlan(olderThanDays int) error {
 // to jq. The JSON contract via --plan stays untouched.
 func runGCPlanSummary(olderThanDays int) error {
 	now := time.Now()
-	cutoff := now.AddDate(0, 0, -olderThanDays)
-	statusClosed := types.StatusClosed
+	cutoff := now.UTC().AddDate(0, 0, -olderThanDays)
 
-	closedIssues, err := store.SearchIssues(rootCtx, "", types.IssueFilter{
-		Status:       &statusClosed,
-		ClosedBefore: &cutoff,
-	})
+	decay, err := gcDecayCandidates(rootCtx, cutoff, nil)
 	if err != nil {
 		return HandleError("plan-summary: searching closed issues: %v", err)
 	}
@@ -586,13 +605,7 @@ func runGCPlanSummary(olderThanDays int) error {
 		ClosedAt time.Time
 	}
 	var rows []issueRow
-	for _, issue := range closedIssues {
-		if issue.Pinned {
-			continue
-		}
-		if issue.ClosedAt == nil || issue.ClosedAt.IsZero() {
-			continue
-		}
+	for _, issue := range decay.issues {
 		closedAt := *issue.ClosedAt
 		rows = append(rows, issueRow{
 			ID:       issue.ID,
@@ -637,6 +650,9 @@ func runGCPlanSummary(olderThanDays int) error {
 		}
 	} else {
 		fmt.Println("ISSUES:\n  (none older than cutoff)")
+	}
+	if decay.retainedKept > 0 {
+		fmt.Println(retainedTypesKeptLine(decay.retainedKept, "closed issue(s)"))
 	}
 
 	fmt.Println()
