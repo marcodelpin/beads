@@ -306,6 +306,7 @@
 100 62 TestEmbeddedUnclaimIfAssigneeCLI
 
 100 63 TestEmbeddedDepAndLinkBatchAutoCommitDoesNotAdvanceHead
+100 63 TestEmbeddedGCPlanHonoursRetainedTypes
 100 63 TestEmbeddedGateCheckLimitCountsOnlyLiveGates
 100 63 TestEmbeddedIfRevisionDeletePreflightGoneParentIsPreconditionFailed
 100 63 TestEmbeddedListPageEdges
