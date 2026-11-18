@@ -3,7 +3,9 @@ package dolt
 import (
 	"errors"
 	"net"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -105,6 +107,42 @@ func TestRecordSkippedPreflightResultConnectionFailure(t *testing.T) {
 	}
 	if got := breaker.State(); got != circuitOpen {
 		t.Fatalf("circuit state = %q, want %q", got, circuitOpen)
+	}
+}
+
+// A dial this process was refused locally (EPERM, EACCES: a sandbox or a
+// firewall rule on this host) never reached the server, so it must not count
+// toward the shared breaker that other processes read. A refused connection
+// (ECONNREFUSED) did reach the host and still counts.
+func TestRecordSkippedPreflightResultLocalDialRefusalDoesNotTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		errno    syscall.Errno
+		wantOpen bool
+	}{
+		{name: "EPERM", errno: syscall.EPERM, wantOpen: false},
+		{name: "EACCES", errno: syscall.EACCES, wantOpen: false},
+		{name: "ECONNREFUSED control", errno: syscall.ECONNREFUSED, wantOpen: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BEADS_TEST_MODE", "")
+			breaker := newTestCircuitBreaker(t)
+			for range circuitFailureThreshold - 1 {
+				breaker.RecordFailure()
+			}
+			dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", tc.errno)}
+			if err := recordSkippedPreflightResult(&Config{ServerHost: "100.122.24.50", ServerPort: 3309}, breaker, dialErr); err == nil {
+				t.Fatal("recordSkippedPreflightResult returned nil for a failed dial")
+			}
+			want := circuitClosed
+			if tc.wantOpen {
+				want = circuitOpen
+			}
+			if got := breaker.State(); got != want {
+				t.Fatalf("circuit state = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

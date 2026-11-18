@@ -2293,7 +2293,11 @@ func recordSkippedPreflightResult(cfg *Config, breaker *circuitBreaker, err erro
 	if !isDialErr && !isConnectionError(err) {
 		return err
 	}
-	if breaker != nil {
+	if isDialErr {
+		// A dial refused by this host (EPERM, EACCES) never reached the server:
+		// recordDialFailure leaves the shared breaker alone for it.
+		recordDialFailure(breaker, err)
+	} else if breaker != nil {
 		breaker.RecordFailure()
 	}
 
