@@ -40,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`BD_OTEL_ENABLED=true`), the OTel resource attached to every exported
   metric and span carried `process.command_args`, the unscrubbed `os.Args`,
   so a `--password=...` flag, search text or an issue title reached the
-  metrics receiver even though the `bd.args` span attribute is scrubbed. The
-  resource also carried `process.executable.path` and `process.owner` (the OS
+  metrics receiver (for the command span's own `bd.args`, see the entry on
+  span content below). The resource also carried `process.executable.path` and `process.owner` (the OS
   user name). bd now builds the resource from explicit detectors and keeps
   only `host.name`, `process.pid`, `process.executable.name` and the Go
   runtime attributes.
@@ -53,6 +53,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`bd.query`), commit messages (`db.commit_msg`), issue ids and config keys
   reached the OTLP metrics receiver. The storage metrics are now labelled by
   `db.operation` only (see Fixed below for the dashboard impact).
+
+- **Telemetry spans no longer carry issue content.** With telemetry on
+  (`BD_OTEL_ENABLED=true`) and the console trace exporter selected
+  (`OTEL_TRACES_EXPORTER=console`, or the legacy `BD_OTEL_STDOUT=true`), the
+  command span's `bd.args` attribute was the command line with only passwords
+  redacted (a `--password` value, the password in a connection string), so
+  issue titles, descriptions, notes, labels, comments, close reasons and
+  search text were exported verbatim. `bd.args` now holds the command path and
+  the long names of the flags that were set, sorted, and never an argument or
+  a flag value: `bd create "title" -d "text" -q` records
+  `create --description --quiet`. It is built from the command bd parsed, not
+  from the raw arguments, so a value that looks like a flag cannot pass for
+  one. The storage spans no longer record search text (`bd.query`), label
+  names (`bd.label`, `bd.label.old`, `bd.label.new`) or commit messages
+  (`db.commit_msg`, which can quote a `bd batch -m` message or a propagated
+  label), and the `hook.stdout` / `hook.stderr` events carry only the number
+  of bytes a hook wrote, not its output. A failed span still records its error
+  message, which can quote the input that failed. **Breaking for dashboards
+  and trace queries:** anything that reads `bd.args` values, for example to
+  extract an issue id or a title, or reads the removed attributes must change;
+  `bd.command` is unchanged. (#8505)
 
 - **A committed `.beads/.env` can no longer copy your environment into bd's
   settings, set a command or bearer token by a name the deny list missed, or
@@ -1281,6 +1302,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd doctor` ranks a release candidate below its release** (#6595). The
+  version comparison split `1.3.1-rc.1` into `1.3.1.1`, so a candidate
+  sorted above its own release and `bd doctor` never told an rc user that
+  the release had shipped. Versions now order by semver 2.0: a pre-release
+  sorts below its release, and its identifiers compare one by one: numbers
+  numerically (`rc.2` < `rc.10`) and below words (`1.0.0-1` <
+  `1.0.0-alpha`), words in ASCII order (`beta` < `rc`); build metadata
+  (`+...`) is ignored. Moving from a candidate to its release now
+  counts as an upgrade, so the one-time post-upgrade notice and
+  `bd upgrade review` cover it, and moving back does not. `bd doctor` reports
+  hooks installed by a candidate as outdated under its release (fix:
+  `bd hooks install --force`), and the Claude plugin check warns when the
+  plugin is a candidate and the release is out. (#6596, by rjgeng)
 - **`bd doctor` no longer flags cross-repository dependencies as orphans,
   and `bd doctor --fix` no longer deletes them** (#4647). `bd dep add` stores
   a bare target under another repository's prefix (`bd dep add bd-abc
@@ -1292,6 +1326,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Consistency also skips `external:` parents; the checks count these edges as
   "not verifiable here". A missing target under a held prefix is still an
   orphan, and under `--deep` an edge whose source is missing is still broken.
+- **A derived `is_blocked` journal record now names the user whose change
+  caused it.** When a mutation flips a bead's readiness — the subject of
+  `bd dep remove` itself, the dependents a close, reopen or status change
+  unblocks or blocks, the descendants of a re-parented or blocked parent —
+  the events journal records that flip as a separate `update`, and that
+  record carried no `actor`. A consumer that holds every record of a user's
+  change to that user read it as system/unknown. Every journaled change a
+  request causes, including derived `is_blocked` updates, now carries that
+  request's actor, the same value the request's own record carries, on every
+  engine and on the post-commit recheck. A derived record still names no one
+  when no request is behind it (a pull's or merge's recompute,
+  `bd recompute-blocked`, `bd doctor --fix`, the Decay-phase deletes of
+  `bd gc` outside proxied-server mode, `bd repo remove`), when the request
+  itself named no actor (for example a served delete or sweep sent without
+  one), when a delete goes through a storage delete call that takes no actor
+  (a local `bd mol burn` or `bd mol squash`, or `bd cook`'s proto delete,
+  whose own `delete` and `dep_remove` records name no one either), or when it
+  comes from a post-commit recheck covering writes by different actors. No
+  wire shape changes: `actor` was already an optional member of every record,
+  so `wire_revision` is unchanged. An out-of-tree backend that runs
+  `conformance.RunRoleContracts` with a journal fixture must now supply
+  `JournalMutations.As`, because the new derived-actor case seeds as one
+  identity and mutates as another (`AddParentChild` and `SetStatus` stay
+  optional), and must stamp the request's actor on its derived `is_blocked`
+  updates.
+- **Moving from a release candidate to its release updates the workspace's
+  version marker** (#6595). Both version comparisons bd runs at startup read
+  the dotted candidates the release tags use as one more release component
+  (`1.4.0-rc.3` as `1.4.0.3`), above their own release: upgrade detection
+  did not count the move to the release as an upgrade (fixed with #6596), and
+  the marker comparison would then have refused to record the release over
+  its candidate. A server workspace moved from 1.4.0-rc.N to 1.4.0 kept the
+  candidate's marker, and `bd doctor` showed `Database: version 1.4.0-rc.N
+  (CLI: 1.4.0)` until a bare `bd migrate`; a proxied-server workspace kept it
+  silently (`bd info --schema`). The marker comparison now ignores
+  everything from the first `-` or `+`, as it already did for an undotted
+  `-rc1`, so a release and its candidates record over each other in either
+  direction, and a candidate of an earlier release is still refused.
 - **The aux row id re-key again skips tables with dolthub/dolt#11131
   encoding drift instead of aborting the migration on every open** (#8372).
   The Dolt 2.6 engine reports the drift as `malformed out-of-band adaptive
@@ -1546,10 +1618,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repository's: push and conflict detection skipped them without a warning
   while `github.last_sync` moved past their local edits, and once the lookup
   worked again a later run could pull a remote edit over an unpushed one, or
-  push a stale bead over a remote edit, with no conflict. v1.3.3 and v1.3.4
-  work this way: they carry #8068 through its backport, #8083. Such a failure
-  now stops the command with an error that names the repository and says
-  what to do, as does a failure to list the local beads.
+  push a stale bead over a remote edit, with no conflict. v1.3.3, v1.3.4 and
+  v1.4.0-rc.1 work this way (the 1.3 releases carry #8068 through its
+  backport, #8083). Such a failure now stops the command with an error that
+  names the repository and says what to do, as does a failure to list the
+  local beads.
 - `bd compact` no longer discards writes that reach `main` while it runs. It
   finished by hard-resetting `main` onto the rebuilt history, which dropped
   changes in `main`'s working set that no Dolt commit held yet (a batch under
