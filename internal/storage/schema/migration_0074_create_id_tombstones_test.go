@@ -21,11 +21,12 @@ const wispIDTombstonesDDL = `CREATE TABLE IF NOT EXISTS wisp_id_tombstones (
     PRIMARY KEY (id)
 );`
 
-// TestLatestVersionIncludesMigration0074 (main 0074, ignored 0030) is
-// superseded on this fork by TestLatestVersionIncludesMigration0075
-// (migration_0075_label_definitions_test.go), which keeps its ignored-plane
-// check, now that the fork-only label_definitions migration takes the next free
-// slot; only one such pin lives at a time.
+// TestLatestVersionIncludesMigration0074 (main 0074) is superseded on this
+// fork by TestLatestVersionIncludesMigration0075
+// (migration_0075_label_definitions_test.go), now that the fork-only
+// label_definitions migration takes the next free slot; only one such pin
+// lives at a time. The ignored-plane pin is upstream's
+// TestLatestIgnoredVersionIncludesMigration0031 (events_preflip_seed_test.go).
 
 // TestMigration0074CreatesBothTombstoneTables is a DB-independent check of the
 // frozen bytes: both tables created with plain IF NOT EXISTS (so the CLI

@@ -21,16 +21,14 @@ import "testing"
 // cut that would apply it had not happened at that rename (bda-tfok), so the
 // renumber again changes no recorded migration hash. It moved to 0075 when
 // upstream took 0073 (arrival_seq) and 0074 (id tombstones); this pin
-// supersedes upstream's TestLatestVersionIncludesMigration0074 and keeps its
-// ignored-plane check (ignored 0030, wisp_id_tombstones), which no fork
-// migration moves. The cut still had not happened, so no recorded hash moves.
+// supersedes upstream's TestLatestVersionIncludesMigration0074. The cut still
+// had not happened, so no recorded hash moves. The ignored-plane pin is not
+// repeated here: no fork migration moves it, and upstream keeps it in
+// TestLatestIgnoredVersionIncludesMigration0031 (events_preflip_seed_test.go),
+// which took it over from 0074's test when ignored 0031 claimed the next slot.
 func TestLatestVersionIncludesMigration0075(t *testing.T) {
 	const want = 75
 	if got := LatestVersion(); got != want {
 		t.Fatalf("LatestVersion() = %d, want %d (label_definitions migration slot claimed by the opt-in label vocabulary)", got, want)
-	}
-	const wantIgnored = 30
-	if got := LatestIgnoredVersion(); got != wantIgnored {
-		t.Fatalf("LatestIgnoredVersion() = %d, want %d (wisp_id_tombstones on fresh clones)", got, wantIgnored)
 	}
 }
