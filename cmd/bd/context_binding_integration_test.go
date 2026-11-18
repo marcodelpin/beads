@@ -39,6 +39,13 @@ var (
 func buildFullCGOBDBinary(t *testing.T) string {
 	t.Helper()
 	fullCGOBDOnce.Do(func() {
+		// Under Bazel there is no go toolchain in the test sandbox; callers take
+		// the injected binary there (contextBindingBDBinary). The gate lives in
+		// this func literal so the host-tool exec policy sees it dominate the exec.
+		if bazeltest.IsBazel() {
+			fullCGOBDErr = fmt.Errorf("full-cgo bd build is not available under Bazel")
+			return
+		}
 		tmpDir, err := testTempDir("bd-full-cgo-test-*")
 		if err != nil {
 			fullCGOBDErr = fmt.Errorf("failed to create temp dir: %w", err)
