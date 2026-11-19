@@ -532,8 +532,6 @@ func expectTransactionCommitRestore(mock sqlmock.Sqlmock, value int, restoreErr 
 	exec.WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
-// expectColumnExists mocks the INFORMATION_SCHEMA.COLUMNS probe still used by
-// the dependency/aux id-column re-key paths (dep_id_backfill.go).
 // expectRenumberHealNoopBefore mocks the label_definitions renumber heal
 // (bda-e080) that runs as the pre-migration repair of main steps
 // labelDefinitionsLowestSlot+1 through labelDefinitionsVersion: one read of
@@ -547,6 +545,8 @@ func expectRenumberHealNoopBefore(mock sqlmock.Sqlmock, version int) {
 		WillReturnRows(sqlmock.NewRows([]string{"version"}))
 }
 
+// expectColumnExists mocks the INFORMATION_SCHEMA.COLUMNS probe still used by
+// the dependency/aux id-column re-key paths (dep_id_backfill.go).
 func expectColumnExists(mock sqlmock.Sqlmock, present bool) {
 	n := 0
 	if present {
