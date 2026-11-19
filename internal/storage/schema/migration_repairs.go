@@ -2,8 +2,11 @@ package schema
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/depid"
 )
@@ -39,6 +42,18 @@ var preMigrationRepairs = map[repairKey]func(context.Context, DBConn) error{
 	{"ignored_schema_migrations", 7}:  ensureWispIsBlockedForRecompute,
 	{"ignored_schema_migrations", 15}: ensureWispIsBlockedForRecompute,
 	{"ignored_schema_migrations", 31}: seedEventsFromPreflipHistory,
+	// The label_definitions renumber heal (bda-e080) runs before every step
+	// that can be the first pending one of a database whose cursor sits on a
+	// slot that migration once held (66 through 74).
+	{"schema_migrations", 67}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 68}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 69}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 70}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 71}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 72}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 73}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 74}: healRenumberedLabelDefinitionsRows,
+	{"schema_migrations", 75}: healRenumberedLabelDefinitionsRows,
 }
 
 // preMigrationRepair dispatches any repair registered for (source, version).
@@ -47,6 +62,155 @@ func (m migrationSource) preMigrationRepair(ctx context.Context, db DBConn, vers
 		return repair(ctx, db)
 	}
 	return nil
+}
+
+// The fork-only label_definitions migration changed slot, never bytes after
+// its first day: 0066, 0067, 0068, 0069 and 0070 on the fork's PR and main
+// lines, then 0073 and 0075 during the bda-tfok.4 sync, each time because
+// upstream took the slot for a migration of its own. A database migrated by a
+// build that held it at slot N recorded (N, <label_definitions hash>). The
+// runner skips every version at or below MAX(version), so a later build never
+// applies upstream's file N there: no issues.participation_generation for a
+// row at 70, no arrival_seq for a row at 73 (bda-e080, decision D:
+// Beads-AGENT docs/adr/0007-label-definitions-renumber-hash-keyed-heal.md).
+const (
+	// labelDefinitionsVersion is the slot the migration holds in this build.
+	labelDefinitionsVersion = 75
+	// labelDefinitionsLowestSlot is the lowest slot it ever shipped under.
+	labelDefinitionsLowestSlot = 66
+)
+
+// labelDefinitionsContentHashes are the SHA-256 values a label_definitions up
+// file has ever been recorded with. The heal is keyed on them and on nothing
+// else: a cursor row carrying any other hash, or none, is upstream's own row,
+// and its file is never re-run.
+var labelDefinitionsContentHashes = []string{
+	// Every slot since the case-folding constraint landed (2026-08-22):
+	// 0066 through 0070, 0073 and 0075.
+	"9c76d11ee4c29c32c226b273642e087458a5d92f31c525885a0794487d70cd00",
+	// The first 0066 body, the same day, before label_folded existed.
+	"0aad420facc23a266a99c40764ec10a70acec6d35095ee12504407e354468fd1",
+}
+
+// healRenumberedLabelDefinitionsRows is the renumber heal. For each
+// schema_migrations row below labelDefinitionsVersion whose content_hash is a
+// label_definitions hash, it runs this build's migration file at that version
+// (the upstream file the row hid) and rewrites the row's hash to that file's
+// own. The label_definitions table and its rows are left alone: this build's
+// own label_definitions step is CREATE TABLE IF NOT EXISTS and records its
+// hash at labelDefinitionsVersion.
+//
+// It is registered before every version from labelDefinitionsLowestSlot+1
+// through labelDefinitionsVersion, so it runs before the FIRST pending step of
+// any database whose cursor sits on a slot the migration once held: a later
+// upstream file can depend on the hidden one (0068 alters the table 0067
+// creates). Once the rows are rewritten nothing matches, and each later call
+// costs one read of schema_migrations. Its writes ride the commit of the step
+// it runs before, which snapshots the working set before its repair.
+//
+// Applying those files out of order is safe because each is guarded DDL
+// (CREATE TABLE IF NOT EXISTS, or an ALTER behind an INFORMATION_SCHEMA probe)
+// that rewrites no row, and none carries a pre-migration repair, an execution
+// plan or an updated_at guard that this path would skip
+// (TestRenumberHealTargetsNeedNoOtherStepMachinery pins that).
+//
+// A database already past labelDefinitionsVersion has no pending step in this
+// range, so the heal never runs there.
+func healRenumberedLabelDefinitionsRows(ctx context.Context, db DBConn) error {
+	// No existence probe: runMigrations, the only caller, writes this step's
+	// (version, content_hash) cursor row right after the repair, so the table
+	// and the column exist wherever the heal runs.
+	versions, err := selectRenumberedLabelDefinitionsVersions(ctx, db)
+	if err != nil || len(versions) == 0 {
+		return err
+	}
+	files := make(map[int]migrationFile)
+	for _, mf := range mainSource.list() {
+		files[mf.version] = mf
+	}
+	for _, version := range versions {
+		mf, ok := files[version]
+		if !ok {
+			return fmt.Errorf("schema_migrations row %d carries the label_definitions content hash, but this build has no migration %04d to apply in its place", version, version)
+		}
+		data, err := mainSource.files.ReadFile(mainSource.dir + "/" + mf.name)
+		if err != nil {
+			return fmt.Errorf("reading migration %s: %w", mf.name, err)
+		}
+		body, err := mainSource.plannedMigrationBody(version, mf.name, data)
+		if err != nil {
+			return fmt.Errorf("planning migration %s: %w", mf.name, err)
+		}
+		if err := execMigrationBody(ctx, db, body); err != nil {
+			return fmt.Errorf("applying %s in place of the label_definitions row at %d: %w", mf.name, version, err)
+		}
+		sum := sha256.Sum256(data)
+		args := append([]any{hex.EncodeToString(sum[:]), version}, labelDefinitionsHashArgs()...)
+		//nolint:gosec // G202: only the placeholder list is concatenated; every value is bound.
+		if _, err := db.ExecContext(ctx,
+			"UPDATE schema_migrations SET content_hash = ? WHERE version = ? AND content_hash IN ("+labelDefinitionsHashPlaceholders()+")",
+			args...); err != nil {
+			return fmt.Errorf("recording %s at schema_migrations row %d: %w", mf.name, version, err)
+		}
+	}
+	return nil
+}
+
+// renumberedLabelDefinitionsVersions is selectRenumberedLabelDefinitionsVersions
+// for a caller that runs before migrate has created the cursor table or its
+// content_hash column (the pre-pass dirty-table guard). A database with
+// neither has no such row, since every build that carried label_definitions
+// recorded a hash. Both are probed with reads that cannot fail before the
+// SELECT runs: a failing statement pins a pooled Dolt session to its old
+// catalog (be-bv7x).
+func renumberedLabelDefinitionsVersions(ctx context.Context, db DBConn) ([]int, error) {
+	hasTable, err := tableInCurrentDatabase(ctx, db, mainSource.cursorTable)
+	if err != nil || !hasTable {
+		return nil, err
+	}
+	hasHash, err := mainSource.hasContentHashColumn(ctx, db)
+	if err != nil || !hasHash {
+		return nil, err
+	}
+	return selectRenumberedLabelDefinitionsVersions(ctx, db)
+}
+
+// selectRenumberedLabelDefinitionsVersions lists, ascending, the
+// schema_migrations versions below labelDefinitionsVersion whose content_hash
+// is a label_definitions hash. A row at or above it is this build's own step
+// or a newer build's slot, which this build cannot interpret. The caller
+// guarantees the cursor table and its content_hash column exist.
+func selectRenumberedLabelDefinitionsVersions(ctx context.Context, db DBConn) ([]int, error) {
+	args := append([]any{labelDefinitionsVersion}, labelDefinitionsHashArgs()...)
+	//nolint:gosec // G202: only the placeholder list is concatenated; every value is bound.
+	rows, err := db.QueryContext(ctx,
+		"SELECT version FROM schema_migrations WHERE version < ? AND content_hash IN ("+labelDefinitionsHashPlaceholders()+") ORDER BY version",
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading label_definitions rows of schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	var versions []int
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("reading label_definitions rows of schema_migrations: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	return versions, rows.Err()
+}
+
+func labelDefinitionsHashArgs() []any {
+	args := make([]any, len(labelDefinitionsContentHashes))
+	for i, h := range labelDefinitionsContentHashes {
+		args[i] = h
+	}
+	return args
+}
+
+func labelDefinitionsHashPlaceholders() string {
+	return strings.TrimSuffix(strings.Repeat("?, ", len(labelDefinitionsContentHashes)), ", ")
 }
 
 // repairV53RigAndSplitTargets is the pre-0053 repair: it backfills the issues

@@ -445,6 +445,7 @@ func expectOnePendingMigrationAtSetting(t *testing.T, mock sqlmock.Sqlmock, tran
 	// Per-step commit (#4566) snapshots the working set before the migration
 	// runs so it can force-stage only the tables this step newly dirties.
 	expectDoltStatusRows(mock)
+	expectRenumberHealNoopBefore(mock, latest)
 	// The pending (latest) migration is 0063_create_provenance_events, a
 	// plain CREATE TABLE body with no bare CALL — execMigrationBody routes
 	// such bodies through ExecContext, not DrainCall.
@@ -533,6 +534,19 @@ func expectTransactionCommitRestore(mock sqlmock.Sqlmock, value int, restoreErr 
 
 // expectColumnExists mocks the INFORMATION_SCHEMA.COLUMNS probe still used by
 // the dependency/aux id-column re-key paths (dep_id_backfill.go).
+// expectRenumberHealNoopBefore mocks the label_definitions renumber heal
+// (bda-e080) that runs as the pre-migration repair of main steps
+// labelDefinitionsLowestSlot+1 through labelDefinitionsVersion: one read of
+// schema_migrations for label_definitions rows below that slot, which finds
+// none in these mocked worlds. Outside that range it expects nothing.
+func expectRenumberHealNoopBefore(mock sqlmock.Sqlmock, version int) {
+	if version <= labelDefinitionsLowestSlot || version > labelDefinitionsVersion {
+		return
+	}
+	mock.ExpectQuery(`SELECT version FROM schema_migrations WHERE version < \? AND content_hash IN`).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}))
+}
+
 func expectColumnExists(mock sqlmock.Sqlmock, present bool) {
 	n := 0
 	if present {

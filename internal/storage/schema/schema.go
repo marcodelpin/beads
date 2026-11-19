@@ -2069,8 +2069,17 @@ func (m migrationSource) pendingMigrationDirtyTables(ctx context.Context, db DBC
 
 	dirtyNames := sortedDirtyTableNames(dirtyBefore)
 	touched := make(map[string]struct{})
+	// The label_definitions renumber heal runs this source's files at the
+	// versions its rows hid, before the first pending step, so those files
+	// count as pending too (bda-e080). The heal only runs while the main pass
+	// has a step in its range, and the rows are only read when one of those
+	// files touches a dirty table, so a guard with nothing to add costs no
+	// query.
+	healTouched := make(map[int][]string)
 	for _, mf := range m.list() {
-		if mf.version <= current {
+		inHealRange := m.cursorTable == mainSource.cursorTable && current < labelDefinitionsVersion &&
+			mf.version >= labelDefinitionsLowestSlot && mf.version < labelDefinitionsVersion
+		if mf.version <= current && !inHealRange {
 			continue
 		}
 		data, err := m.files.ReadFile(m.dir + "/" + mf.name)
@@ -2079,7 +2088,23 @@ func (m migrationSource) pendingMigrationDirtyTables(ctx context.Context, db DBC
 		}
 		sqlText := string(data)
 		for _, table := range dirtyNames {
-			if migrationSQLTouchesTable(sqlText, table) {
+			if !migrationSQLTouchesTable(sqlText, table) {
+				continue
+			}
+			if mf.version <= current {
+				healTouched[mf.version] = append(healTouched[mf.version], table)
+			} else {
+				touched[table] = struct{}{}
+			}
+		}
+	}
+	if len(healTouched) > 0 {
+		versions, err := renumberedLabelDefinitionsVersions(ctx, db)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range versions {
+			for _, table := range healTouched[v] {
 				touched[table] = struct{}{}
 			}
 		}
