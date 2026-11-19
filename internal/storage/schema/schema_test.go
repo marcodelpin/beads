@@ -76,7 +76,7 @@ func TestMigrateUpReturnsDirtyTablesErrorForPreExistingDirtyTable(t *testing.T) 
 	// is behind LatestVersion(), so the || short-circuits before checking
 	// ignoredSource.atLatest or the content-hash/backfill probes.
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", 42)
+	expectMainCursorMax(mock, 42)
 
 	// The pass reads @@dolt_transaction_commit before its first write (#4470).
 	expectTransactionCommitRead(mock, 0)
@@ -95,7 +95,7 @@ func TestMigrateUpReturnsDirtyTablesErrorForPreExistingDirtyTable(t *testing.T) 
 	// MigrateUp now captures the pre-pass main cursor up front (it drives the
 	// aux-rekey dirtyBefore exemption); v42 (behind latest) is read here.
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", 42)
+	expectMainCursorMax(mock, 42)
 	// auxRekeyExemptTables reads the ignored cursor to see which passes' markers
 	// are pending, then each pass's clone-local re-key state. This mocked world
 	// has no ignored cursor table and no local_metadata, so every read stops at
@@ -110,7 +110,7 @@ func TestMigrateUpReturnsDirtyTablesErrorForPreExistingDirtyTable(t *testing.T) 
 	// pendingMigrationDirtyTables re-reads the current version and finds
 	// migration 0043 touches the dirty `dependencies` table.
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", 42)
+	expectMainCursorMax(mock, 42)
 	// The ignored series is intersected before either series migrates
 	// (#5816); with no ignored cursor table its read stops at the probe.
 	expectCursorProbe(mock, "ignored_schema_migrations", false)

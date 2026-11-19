@@ -694,7 +694,7 @@ func TestMigrationWorkNeededWhenWispTablesAbsent(t *testing.T) {
 	defer db.Close()
 
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion())
+	expectMainCursorMax(mock, LatestVersion())
 	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
 	expectShowTable(mock, ignoredSource.sentinelTables[0], false)
@@ -723,7 +723,7 @@ func TestMigrationWorkNeededWhenLeaseGrantedNodeAbsent(t *testing.T) {
 	defer db.Close()
 
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion())
+	expectMainCursorMax(mock, LatestVersion())
 	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
 	for _, table := range ignoredSource.sentinelTables {

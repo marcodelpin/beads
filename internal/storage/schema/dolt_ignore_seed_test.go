@@ -175,7 +175,7 @@ func TestSeedDoltIgnorePatternsDegradesToBlindWriteOnPartialRead(t *testing.T) {
 	// candidates but errors mid-stream: rows 0..failAt-1 scan cleanly, then the
 	// stream fails, leaving present partially populated.
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", mainVersion)
+	expectMainCursorMax(mock, mainVersion)
 	args := make([]driver.Value, 0, len(candidates))
 	rows := sqlmock.NewRows([]string{"pattern"})
 	for _, pattern := range candidates {

@@ -29,7 +29,7 @@ import (
 func expectConvergedFastPathMiss(mock sqlmock.Sqlmock, database string) {
 	expectSessionPutOnDatabase(mock, database)
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion()-1)
+	expectMainCursorMax(mock, LatestVersion()-1)
 }
 
 // testDatabaseSelector stands in for the selector uow injects: it issues the
@@ -92,7 +92,7 @@ func expectNoMigrationWorkNeeded(mock sqlmock.Sqlmock) {
 // reporting mainVersion (which may be ahead of this binary's latest).
 func expectNoMigrationWorkNeededAtVersion(mock sqlmock.Sqlmock, mainVersion int) {
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", mainVersion)
+	expectMainCursorMax(mock, mainVersion)
 	expectCursorProbe(mock, "ignored_schema_migrations", true)
 	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
 	expectIgnoredSentinelProbes(mock, true)
@@ -100,7 +100,6 @@ func expectNoMigrationWorkNeededAtVersion(mock sqlmock.Sqlmock, mainVersion int)
 	expectContentHashColumnExists(mock)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_types", "count", 1)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_statuses", "count", 1)
-	expectNoRenumberedLabelDefinitionsRows(mock)
 }
 
 // expectDoltIgnoreRead mocks the read-only dolt_ignore probe, returning
@@ -265,7 +264,7 @@ func TestMigrateUpWithLockTakesLockWhenBehind(t *testing.T) {
 	// Fast path: right database, but the main cursor is behind -> work needed.
 	expectCurrentDatabase(mock, "testdb")
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion()-1)
+	expectMainCursorMax(mock, LatestVersion()-1)
 
 	lockName := MigrationLockName("testdb")
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT GET_LOCK(?, ?)")).
@@ -528,7 +527,7 @@ func TestAlreadyConvergedProbesTheLockLast(t *testing.T) {
 
 	expectCurrentDatabase(mock, "testdb")
 	expectCursorProbe(mock, "schema_migrations", true)
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion()-1)
+	expectMainCursorMax(mock, LatestVersion()-1)
 
 	converged, err := alreadyConverged(context.Background(), db, "testdb", nil)
 	if err != nil {

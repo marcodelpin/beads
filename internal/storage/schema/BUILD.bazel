@@ -13,6 +13,7 @@ go_library(
         "dirty_tables_error.go",
         "events_preflip_seed.go",
         "ignored_cursor_untrack.go",
+        "label_definitions_cursor.go",
         "lock.go",
         "migrate_consent.go",
         "migration_body_plans.go",

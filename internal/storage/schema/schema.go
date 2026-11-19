@@ -734,10 +734,17 @@ var versionGatedDoltIgnorePatterns = []struct {
 // qualifies. The cursor table may not exist yet (first-ever run, before
 // mainSource.migrate bootstraps it): treat that as version 0 and skip the
 // gated ones — the flip migration registers its own pattern when it applies.
-func doltIgnoreSeedCandidates(ctx context.Context, db DBConn) []string {
+//
+// The one cursor error it returns is the label_definitions refusal
+// (bda-e080): the seed is the first write of a consented MigrateUp, so a
+// history the pass refuses must stop here, before that write.
+func doltIgnoreSeedCandidates(ctx context.Context, db DBConn) ([]string, error) {
 	candidates := make([]string, 0, len(doltIgnorePatterns)+len(versionGatedDoltIgnorePatterns))
 	candidates = append(candidates, doltIgnorePatterns...)
 	mainVersion, err := mainSource.currentVersion(ctx, db)
+	if IsRenumberedLabelDefinitionsError(err) {
+		return nil, err
+	}
 	if err != nil {
 		mainVersion = 0
 	}
@@ -747,7 +754,7 @@ func doltIgnoreSeedCandidates(ctx context.Context, db DBConn) []string {
 		}
 		candidates = append(candidates, gated.pattern)
 	}
-	return candidates
+	return candidates, nil
 }
 
 // missingDoltIgnorePatterns reports which candidates have no row in
@@ -840,8 +847,12 @@ func missingDoltIgnorePatterns(ctx context.Context, db DBConn, candidates []stri
 // labeled commit (keyed off the changed return value) so the heal converges
 // in one pass instead of riding along inside an unrelated later commit.
 func seedDoltIgnorePatterns(ctx context.Context, db DBConn) (bool, error) {
+	candidates, err := doltIgnoreSeedCandidates(ctx, db)
+	if err != nil {
+		return false, err
+	}
 	changed := false
-	for _, pattern := range missingDoltIgnorePatterns(ctx, db, doltIgnoreSeedCandidates(ctx, db)) {
+	for _, pattern := range missingDoltIgnorePatterns(ctx, db, candidates) {
 		res, err := db.ExecContext(ctx, "INSERT IGNORE INTO dolt_ignore VALUES (?, true)", pattern)
 		if err != nil {
 			return changed, fmt.Errorf("seeding dolt_ignore pattern %q: %w", pattern, err)
@@ -1337,18 +1348,7 @@ func migrationWorkNeeded(ctx context.Context, db DBConn) (bool, error) {
 	if !hasIgnoredHash {
 		return true, nil
 	}
-	needsBackfill, err := needsBackfilledCustomStatusesCustomTypes(ctx, db)
-	if err != nil || needsBackfill {
-		return needsBackfill, err
-	}
-	// A label_definitions row hidden at an old slot is work at any cursor: a
-	// heal-less build can have moved the cursor past it (bda-3xdc). One read
-	// of schema_migrations, whose content_hash column was proved above.
-	hidden, err := selectRenumberedLabelDefinitionsVersions(ctx, db)
-	if err != nil {
-		return false, err
-	}
-	return len(hidden) > 0, nil
+	return needsBackfilledCustomStatusesCustomTypes(ctx, db)
 }
 
 func committableDirtyTables(ctx context.Context, db DBConn) (map[string]dirtyTableState, error) {
@@ -1838,6 +1838,13 @@ func (m migrationSource) readCursor(ctx context.Context, db DBConn) (int, []sche
 		}
 		return 0, nil, fmt.Errorf("reading %s version: %w", m.cursorTable, err)
 	}
+	// A fork label_definitions row at a slot upstream now owns does not count
+	// when nothing sits above it, and a shape that rule cannot read is refused
+	// here, so every caller of the cursor sees the same answer (bda-e080).
+	current, err = m.applyLabelDefinitionsCursorRule(ctx, db, current)
+	if err != nil {
+		return 0, nil, err
+	}
 	if current == 0 {
 		return 0, nil, nil
 	}
@@ -2080,16 +2087,8 @@ func (m migrationSource) pendingMigrationDirtyTables(ctx context.Context, db DBC
 
 	dirtyNames := sortedDirtyTableNames(dirtyBefore)
 	touched := make(map[string]struct{})
-	// The label_definitions renumber heal runs this source's files at the
-	// versions its rows hid, on every main pass whatever the cursor, so those
-	// files count as pending too (bda-e080, bda-3xdc). The rows are only read
-	// when one of those files touches a dirty table, so a guard with nothing
-	// to add costs no query.
-	healTouched := make(map[int][]string)
 	for _, mf := range m.list() {
-		inHealRange := m.cursorTable == mainSource.cursorTable &&
-			mf.version >= labelDefinitionsLowestSlot && mf.version < labelDefinitionsVersion
-		if mf.version <= current && !inHealRange {
+		if mf.version <= current {
 			continue
 		}
 		data, err := m.files.ReadFile(m.dir + "/" + mf.name)
@@ -2098,23 +2097,7 @@ func (m migrationSource) pendingMigrationDirtyTables(ctx context.Context, db DBC
 		}
 		sqlText := string(data)
 		for _, table := range dirtyNames {
-			if !migrationSQLTouchesTable(sqlText, table) {
-				continue
-			}
-			if mf.version <= current {
-				healTouched[mf.version] = append(healTouched[mf.version], table)
-			} else {
-				touched[table] = struct{}{}
-			}
-		}
-	}
-	if len(healTouched) > 0 {
-		versions, err := renumberedLabelDefinitionsVersions(ctx, db)
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range versions {
-			for _, table := range healTouched[v] {
+			if migrationSQLTouchesTable(sqlText, table) {
 				touched[table] = struct{}{}
 			}
 		}
@@ -2366,21 +2349,8 @@ func (m migrationSource) migrate(ctx context.Context, db DBConn, upTo int) (int,
 		return 0, columnAdded, err
 	}
 
-	// commitEachStep gates the per-migration commit to the production path
-	// (upTo==0) on the main source. MigrateUpTo's test-support path (upTo>0)
-	// and the dolt-ignored source (its cursor and tables are never committed to
-	// shared history) both keep the single terminal commit MigrateUp runs.
-	commitEachStep := upTo == 0 && m.cursorTable == mainSource.cursorTable
-
 	if current >= target {
-		if !commitEachStep {
-			return 0, columnAdded, nil
-		}
-		// No pending step, so runMigrations does not run and cannot carry the
-		// label_definitions renumber heal: a database a heal-less build moved
-		// to this cursor can still hide a row at an old slot (bda-3xdc).
-		healed, err := healRenumberedLabelDefinitionsAtLatest(ctx, db)
-		return healed, columnAdded, err
+		return 0, columnAdded, nil
 	}
 	// The replay below re-creates every lost table empty; say so first.
 	for _, st := range lost {
@@ -2389,6 +2359,11 @@ func (m migrationSource) migrate(ctx context.Context, db DBConn, upTo int) (int,
 		}
 	}
 
+	// commitEachStep gates the per-migration commit to the production path
+	// (upTo==0) on the main source. MigrateUpTo's test-support path (upTo>0)
+	// and the dolt-ignored source (its cursor and tables are never committed to
+	// shared history) both keep the single terminal commit MigrateUp runs.
+	commitEachStep := upTo == 0 && m.cursorTable == mainSource.cursorTable
 	count, err := runMigrations(ctx, db, m, current, target, commitEachStep)
 	return count, columnAdded, err
 }
@@ -2432,11 +2407,6 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 		rowCount, rowCountErr := issueRowCounter(ctx, db)
 		emitLargeRigNotice(progress, rowCount, rowCountErr)
 	}
-
-	// The label_definitions renumber heal is due once per main pass, before
-	// the first pending step above labelDefinitionsLowestSlot (see
-	// healRenumberedLabelDefinitionsRows for why that step).
-	healDue := src.cursorTable == mainSource.cursorTable
 
 	count := 0
 	for _, mf := range src.list() {
@@ -2486,15 +2456,6 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 			return count, fmt.Errorf("snapshotting updated_at before migration %s: %w", mf.name, err)
 		}
 
-		if healDue && mf.version > labelDefinitionsLowestSlot {
-			healDue = false
-			healed, err := healRenumberedLabelDefinitionsRows(ctx, db)
-			if err != nil {
-				return count, fmt.Errorf("label_definitions renumber heal before migration %s: %w", mf.name, err)
-			}
-			count += healed
-		}
-
 		if err := src.preMigrationRepair(ctx, db, mf.version); err != nil {
 			return count, fmt.Errorf("pre-repair for migration %s: %w", mf.name, err)
 		}
@@ -2532,7 +2493,7 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 		}
 		sum := sha256.Sum256(data)
 		contentHash := hex.EncodeToString(sum[:])
-		if _, err := db.ExecContext(ctx, "INSERT IGNORE INTO "+src.cursorTable+" (version, content_hash) VALUES (?, ?)", mf.version, contentHash); err != nil {
+		if err := recordMigrationStep(ctx, db, src, mf.version, contentHash); err != nil {
 			return count, fmt.Errorf("recording %s in %s: %w", mf.name, src.cursorTable, err)
 		}
 		count++

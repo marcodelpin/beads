@@ -18,6 +18,7 @@ func expectGateCurrentVersion(mock sqlmock.Sqlmock, version int) {
 	expectCursorProbe(mock, "schema_migrations", true)
 	mock.ExpectQuery(maxVersionQuery).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(version))
+	expectLabelCursorRows(mock, version)
 }
 
 func TestCheckRemoteMigrateGate(t *testing.T) {

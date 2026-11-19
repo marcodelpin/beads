@@ -42,9 +42,7 @@ func TestCheckSchemaSkew_EqualVersion_NoError(t *testing.T) {
 	}
 	defer db.Close()
 
-	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(LatestVersion()))
+	expectMainCursor(mock, LatestVersion())
 
 	if err := checkSchemaSkew(context.Background(), db); err != nil {
 		t.Fatalf("checkSchemaSkew = %v, want nil when DB at binary version", err)
@@ -62,9 +60,7 @@ func TestCheckSchemaSkew_OneAhead_ReturnsSchemaSkewError(t *testing.T) {
 	defer db.Close()
 
 	dbVersion := LatestVersion() + 1
-	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(dbVersion))
+	expectMainCursor(mock, dbVersion)
 
 	got := checkSchemaSkew(context.Background(), db)
 	if got == nil {
@@ -93,9 +89,7 @@ func TestCheckSchemaSkew_ThreeAhead_ReturnsSchemaSkewError(t *testing.T) {
 	defer db.Close()
 
 	dbVersion := LatestVersion() + 3
-	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(dbVersion))
+	expectMainCursor(mock, dbVersion)
 
 	got := checkSchemaSkew(context.Background(), db)
 	if got == nil {
@@ -126,9 +120,7 @@ func TestCheckSchemaSkew_EscapeHatch_ReturnsNilAndWarns(t *testing.T) {
 	defer db.Close()
 
 	dbVersion := LatestVersion() + 3
-	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(dbVersion))
+	expectMainCursor(mock, dbVersion)
 
 	// Capture stderr to verify warning is emitted.
 	origStderr := os.Stderr
@@ -207,9 +199,7 @@ func TestCheckForwardDrift_Conn_Ahead(t *testing.T) {
 	defer conn.Close()
 
 	dbVersion := LatestVersion() + 2
-	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(dbVersion))
+	expectMainCursor(mock, dbVersion)
 
 	got := CheckForwardDrift(ctx, conn)
 	if !IsSchemaSkewError(got) {
@@ -333,6 +323,7 @@ func expectMainCursor(mock sqlmock.Sqlmock, version int) {
 	expectCursorProbe(mock, "schema_migrations", true)
 	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(version))
+	expectLabelCursorRows(mock, version)
 }
 
 // expectIssuesColumns mocks missingColumns' read of issues: the table probe,
