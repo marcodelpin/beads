@@ -152,6 +152,14 @@ var (
 	// an intentional empty JSONL artifact instead of treating it as ambiguous.
 	commandMayEmptyJSONLExport atomic.Bool
 
+	// commandSkipsPostRunMaintenance is set by a check that promises to leave
+	// the workspace untouched although its command is not in readOnlyCommands:
+	// `bd doctor --check=export` inspects the very file post-run auto-export
+	// rewrites and stages (GH#6955). It turns the whole post-command
+	// maintenance net off for this invocation (runsPostCommandMaintenance);
+	// the other doctor modes keep it.
+	commandSkipsPostRunMaintenance atomic.Bool
+
 	// commandDeletedIssueIDs is the in-process handoff from the delete
 	// commands to post-run auto-export: ids this command hard-deleted are
 	// PROVEN gone, so the export's orphan guard skips them instead of
@@ -283,8 +291,12 @@ func effectiveRootStorePolicy(cmdName string, strictReadonly bool) rootStorePoli
 // serve never reached this branch at all (PersistentPostRunE only closes the
 // provider there); server and shared-server mode do, so the exclusion has to be
 // stated rather than inherited.
+//
+// An invocation that promised to write nothing is excluded the same way, through
+// commandSkipsPostRunMaintenance: a read-only diagnostic must not refresh,
+// stage, back up or push anything on its way out.
 func runsPostCommandMaintenance(cmdName string, strictReadonly bool) bool {
-	if cmdName == serveCmdName {
+	if cmdName == serveCmdName || commandSkipsPostRunMaintenance.Load() {
 		return false
 	}
 	return effectiveRootStorePolicy(cmdName, strictReadonly).runMaintenance
@@ -459,6 +471,11 @@ func printGlobalDatabaseConsentHint(w io.Writer, e *schema.RemoteMigrateGateErro
 	if e != nil && e.IsDataBehind() && e.Shared {
 		consent = schema.SharedConsentCommandForcedGlobal
 	}
+	// A proxied front door refuses the bare verb (gastownhall/beads#6656), so
+	// the shared-no-remote stop there names the forced one, as its block does.
+	if e != nil && e.Proxied && e.Decision == "shared-no-remote" {
+		consent = schema.SharedConsentCommandForcedGlobal
+	}
 	fmt.Fprintf(w,
 		"\n  This command targeted the global database (--global), so run the\n"+
 			"  migrate step with the same flag:\n"+
@@ -508,6 +525,11 @@ func renderTypedOpenError(err error) bool {
 			fmt.Fprint(os.Stderr, consentErr.UserMessage())
 			printGlobalDatabaseConsentHint(os.Stderr, nil)
 		}
+		return true
+	}
+	// #5699: a migration stopped on schema-encoding drift names the step and
+	// the operator-supervised recovery instead of a raw engine error.
+	if renderSchemaEncodingDrift(err) {
 		return true
 	}
 	return false
@@ -1227,7 +1249,7 @@ func init() {
 	// Register persistent flags
 	rootCmd.PersistentFlags().StringVarP(&changeDir, "directory", "C", "", "Change to this directory before running the command (like git -C)")
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Database path (default: auto-discover .beads/*.db). In proxied-server mode, a value that isn't an existing path is treated as a database name override (see --database)")
-	rootCmd.PersistentFlags().StringVar(&databaseFlag, "database", "", "Run against a different server database for this invocation, without changing the project's configured database (proxied-server mode only)")
+	rootCmd.PersistentFlags().StringVar(&databaseFlag, "database", "", "Run against a different server database for this invocation, without changing the project's configured database (proxied-server mode only). Refused when it holds another beads project; a database with no beads project identity is allowed; set BEADS_SKIP_IDENTITY_CHECK=1 to override. Team-server workspaces always check identity")
 	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	rootCmd.PersistentFlags().String("format", "", "Output format (json). Alias for --json")
@@ -1385,6 +1407,7 @@ var rootCmd = &cobra.Command{
 		// Reset per-command write tracking (used by Dolt auto-commit).
 		commandDidWrite.Store(false)
 		commandMayEmptyJSONLExport.Store(false)
+		commandSkipsPostRunMaintenance.Store(false)
 		commandDeletedIssueIDs.reset()
 		commandDidExplicitDoltCommit = false
 		commandDidWriteTipMetadata = false
@@ -2116,6 +2139,13 @@ var rootCmd = &cobra.Command{
 			autoMigrateOnVersionBump(beadsDir)
 		}
 
+		// One warning per command for an old no-db=true: the identity
+		// preview and the real open below both run under this pre-run, so
+		// neither prints it.
+		if msg := config.NoDBObsoleteWarning(); msg != "" {
+			WarnError("%s", msg)
+		}
+
 		// Initialize direct storage access
 		var err error
 
@@ -2170,6 +2200,7 @@ var rootCmd = &cobra.Command{
 		// never consulted it. IsDoltServerMode is a superset of
 		// HostImpliesServerMode, so nothing that reached server mode before
 		// stops reaching it now.
+		metadataAbsent := false
 		if cfg == nil && configfile.DefaultConfig().IsDoltServerMode() {
 			logConfigDiscovery(beadsDir, "no metadata.json; env/config.yaml select server mode")
 			cfg = configfile.DefaultConfig()
@@ -2207,14 +2238,9 @@ var rootCmd = &cobra.Command{
 			}
 		} else if cfgErr == nil {
 			logConfigDiscovery(beadsDir, "config discovery")
-			// Load returned (nil, nil) — no config file found.
-			// Fall back to the canonical default database name; matches the
-			// behavior of newDoltStoreFromConfig / newReadOnlyStoreFromConfig
-			// (see store_factory.go). Without this, embeddeddolt.New rejects
-			// the empty database name with "database name must not be empty
-			// (caller should default to \"beads\")".
-			fmt.Fprintf(os.Stderr, "warning: no beads configuration found in %s; using default database name %q\n", beadsDir, configfile.DefaultDoltDatabase)
-			doltCfg.Database = configfile.DefaultDoltDatabase
+			// Load returned (nil, nil) — no config file found. The database
+			// is named below, once shared-server mode has had its say.
+			metadataAbsent = true
 		}
 		// Honor shared-server mode even when no project config was found
 		// (cfg == nil) or the parse failed. The override inside the
@@ -2229,6 +2255,26 @@ var rootCmd = &cobra.Command{
 			if cmdCtx != nil {
 				cmdCtx.ServerMode = doltCfg.ServerMode
 			}
+		}
+		if metadataAbsent {
+			// An embedded workspace without metadata.json opens the database
+			// resolveMetadatalessEmbeddedDatabase names — the same one the
+			// identity preview and the store factories resolve — rather than
+			// the literal default, which created a second database beside
+			// the workspace's own (GH#4135). Server mode keeps the default
+			// name, and so does --global, which names its database below: a
+			// refused local selection must not preempt it. Without a name
+			// embeddeddolt.New rejects the open with "database name must not
+			// be empty".
+			selection := metadatalessDatabaseSelection{Database: configfile.DefaultDoltDatabase, Source: "the default"}
+			if !doltCfg.ServerMode && !doltCfg.ProxiedServer && !globalFlag {
+				var err error
+				if selection, err = resolveMetadatalessEmbeddedDatabase(beadsDir); err != nil {
+					return HandleError("%v", err)
+				}
+			}
+			fmt.Fprintf(os.Stderr, "warning: no beads configuration found in %s; using database %q (%s)\n", remedy.PrintedValue(beadsDir), selection.Database, selection.Source)
+			doltCfg.Database = selection.Database
 		}
 		// Defensive: embeddeddolt.New rejects an empty database name, so
 		// default it even on paths that never set one.

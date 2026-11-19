@@ -35,6 +35,12 @@ func installDirectMemoryStore(t *testing.T, stored map[string]string) *directMem
 	store = fake
 	setStoreActive(true)
 	saveForkRememberFlags(t)
+	// The direct route captures provenance on every write, so a write stores
+	// an envelope; pin a fixed one (memory_fork_seams_test.go clears it for
+	// upstream's tests in this binary).
+	savedProv := forkMemoryProvenance
+	t.Cleanup(func() { forkMemoryProvenance = savedProv })
+	forkMemoryProvenance = func() memoryProvenance { return memoryProvenance{Path: "/fork-test"} }
 	return fake
 }
 

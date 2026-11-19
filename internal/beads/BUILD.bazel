@@ -15,6 +15,7 @@ go_library(
         "//internal/execx",
         "//internal/git",
         "//internal/gitenv",
+        "//internal/remedy",
         "//internal/storage",
         "//internal/storage/backends",
         "//internal/utils",
