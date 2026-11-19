@@ -34,6 +34,12 @@ import (
 // route (proxied server or remote backend). The sentence is shipped output.
 var errForkRememberFlagsOnRole = errors.New("fork-only remember flags (--no-dedup, --no-provenance, --tag, --scope, --valid-for, --valid-until, --expire-policy) are not supported in proxied-server or remote-backend mode yet")
 
+// forkMemoryProvenance captures the provenance a direct-route write records.
+// It is a variable so the in-process tests that drive upstream's RunE through
+// a fake role can run without it (memory_fork_seams_test.go): those tests pin
+// the stored content byte for byte, and provenance is captured automatically.
+var forkMemoryProvenance = captureMemoryProvenance
+
 // forkRemember is one `bd remember` invocation's fork state.
 type forkRemember struct {
 	active   bool   // direct route: the fork envelope path is on
@@ -50,20 +56,40 @@ func anyForkRememberFlag() bool {
 		memoryExpirePolicyFlag != ""
 }
 
+// forkRememberPrecheck gives the refusals the fork's routes gave before the
+// command guard, in the same order: on a role route the fork flags; on the
+// direct route empty content, an explicit key that names nothing, and content
+// that derives no key.
+func forkRememberPrecheck(insight string) error {
+	if usesMemoryRole() {
+		if anyForkRememberFlag() {
+			return errForkRememberFlagsOnRole
+		}
+		return nil
+	}
+	if strings.TrimSpace(insight) == "" {
+		return errors.New("memory content cannot be empty")
+	}
+	if memoryKeyFlag != "" {
+		if _, err := memoryapi.ValidateKey(memoryKeyFlag); err != nil {
+			return errors.New(strings.TrimPrefix(err.Error(), memoryops.ErrValidation.Error()+": "))
+		}
+		return nil
+	}
+	if memoryapi.DeriveKey(insight) == "" && memoryFingerprint(insight) == "" {
+		return errors.New("could not generate key from content; use --key to specify one")
+	}
+	return nil
+}
+
 // newForkRemember parses the fork flags and, on the direct route, builds the
 // envelope the role will store. It refuses before anything is opened or read.
 func newForkRemember(insight string) (*forkRemember, error) {
 	f := &forkRemember{}
 	if usesMemoryRole() {
-		if anyForkRememberFlag() {
-			return nil, errForkRememberFlagsOnRole
-		}
 		return f, nil
 	}
 	f.active = true
-	if strings.TrimSpace(insight) == "" {
-		return nil, errors.New("memory content cannot be empty")
-	}
 
 	var (
 		validFor   time.Duration
@@ -92,7 +118,7 @@ func newForkRemember(insight string) (*forkRemember, error) {
 	// write intent for the bare-key read path.
 	var prov memoryProvenance
 	if !memoryNoProvenanceFlag {
-		prov = captureMemoryProvenance()
+		prov = forkMemoryProvenance()
 	}
 	hasProvenance := prov.SessionID != "" || prov.Commit != "" || prov.Path != ""
 
@@ -142,7 +168,7 @@ func (f *forkRemember) resolveKey(memories memoryops.Memories, insight string) (
 		// Best effort, as on the old direct route: a failed read only means
 		// no dedup for this write.
 		if listed, err := memories.List(rootCtx, memoryops.ListRequest{}); err == nil {
-			if key, ok := findDuplicateMemoryKey(prefixedMemoryPlane(listed.Memories), insight); ok {
+			if key, ok := findDuplicateMemoryKey(prefixedMemoryPlane(listed.Memories), insight); ok && key != "" {
 				f.dedup = true
 				return key, nil
 			}
@@ -156,6 +182,25 @@ func (f *forkRemember) resolveKey(memories memoryops.Memories, insight string) (
 		return "", errors.New("could not generate key from content; use --key to specify one")
 	}
 	return key, nil
+}
+
+// readKey is the key a bare-key read looks up: the dedup match when there is
+// one (the fork's route recalled the memory the content fingerprint named),
+// else the read's own key.
+func (f *forkRemember) readKey(own, resolved string) string {
+	if f.dedup {
+		return resolved
+	}
+	return own
+}
+
+// recalledContent is what a bare-key read prints: on the direct route the
+// envelope's content, elsewhere the stored value unchanged (as upstream).
+func (f *forkRemember) recalledContent(stored string) string {
+	if f.active {
+		return parseStoredMemory(stored).Content
+	}
+	return stored
 }
 
 // prefixedMemoryPlane turns a role listing (user key -> stored value) into the

@@ -558,6 +558,12 @@ Examples:
 
 		insight := args[0]
 
+		// Fork seam (bda-nchm): the refusals the fork's routes gave before the
+		// command guard keep their precedence (memory_fork.go).
+		if err := forkRememberPrecheck(insight); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+
 		// Guard against a subcommand-like first argument being silently stored
 		// as memory content. `bd remember` is a leaf command, so a mistaken
 		// `bd remember recall` (or any bare bd command name) would otherwise
@@ -591,6 +597,14 @@ Examples:
 			return HandleError("%v", err)
 		}
 
+		// Fork seam: dedup by content fingerprint (a bare-key read follows it, as
+		// the fork's route did), and the insight's own key for an envelope write
+		// (memory_fork.go). Off the direct route this is --key.
+		key, err := fork.resolveKey(memories, insight)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+
 		// Desire path + footgun guard: `bd remember <x>` is a WRITE whose positional arg is
 		// the CONTENT, not a key -- but "remember X" reads as a getter in English, so agents
 		// routinely type `bd remember some-key` meaning "do you remember X?". The tell-tale of
@@ -614,11 +628,11 @@ Examples:
 		// first; that check is the role's now, so the condition has to say it.
 		derived := memoryapi.DeriveKey(insight)
 		if memoryKeyFlag == "" && derived != "" && derived == insight && !fork.writeIntent() {
-			recalled, err := memories.Recall(rootCtx, memoryops.RecallRequest{Key: derived})
+			recalled, err := memories.Recall(rootCtx, memoryops.RecallRequest{Key: fork.readKey(derived, key)})
 			if err != nil {
 				return HandleErrorRespectJSON("recalling memory: %v", err)
 			}
-			return rememberBareKeyPath(derived, insight, parseStoredMemory(recalled.Value).Content, recalled.Found)
+			return rememberBareKeyPath(fork.readKey(derived, key), insight, fork.recalledContent(recalled.Value), recalled.Found)
 		}
 
 		// Corpus budget (memories.budget-chars, OPT-IN, 0 = off). The
@@ -642,13 +656,6 @@ Examples:
 		// content, a whitespace-only --key, content that derives no key) skips
 		// the budget: Remember refuses it below with its own validation
 		// sentence, and a refused write crosses nothing.
-		// Fork seam: dedup by content fingerprint, and the insight's own key for
-		// an envelope write (memory_fork.go). Off the direct route this is --key.
-		key, err := fork.resolveKey(memories, insight)
-		if err != nil {
-			return HandleErrorRespectJSON("%v", err)
-		}
-
 		budgetKey, budgetKeyErr := memoryapi.ResolveKey(key, insight)
 		var budgetLine string
 		if budget := memoryCorpusBudget(); budget > 0 && budgetKeyErr == nil {
