@@ -157,28 +157,33 @@ func (s *refusingMemoryStore) CommitConfigUserKVOnly(context.Context, string) er
 	return s.commitErr
 }
 
-// Fork: the direct route of bd remember/forget (cmd/bd/memory.go, with the
-// memory envelope) reads and writes the config table itself instead of going
-// through the Memories role, so the fake serves those reads and writes from
-// the same map.
+// Fork: the direct route of bd forget/recall (cmd/bd/memory.go, with the
+// memory envelope) reads and writes the config table itself, while bd remember
+// writes through the Memories role (bda-nchm). In production both name one
+// row, kv.memory.<key>; the fake keeps the role's user keys, so the config
+// side strips that prefix and the two planes meet on the same map entry.
+func refusingMemoryKey(key string) string {
+	return strings.TrimPrefix(key, kvPrefix+memoryPrefix)
+}
+
 func (s *refusingMemoryStore) GetConfig(_ context.Context, key string) (string, error) {
-	return s.memories.stored[key], nil
+	return s.memories.stored[refusingMemoryKey(key)], nil
 }
 
 func (s *refusingMemoryStore) SetConfig(_ context.Context, key, value string) error {
-	s.memories.stored[key] = value
+	s.memories.stored[refusingMemoryKey(key)] = value
 	return nil
 }
 
 func (s *refusingMemoryStore) DeleteConfig(_ context.Context, key string) error {
-	delete(s.memories.stored, key)
+	delete(s.memories.stored, refusingMemoryKey(key))
 	return nil
 }
 
 func (s *refusingMemoryStore) GetAllConfig(context.Context) (map[string]string, error) {
 	all := make(map[string]string, len(s.memories.stored))
 	for k, v := range s.memories.stored {
-		all[k] = v
+		all[kvPrefix+memoryPrefix+k] = v
 	}
 	return all, nil
 }

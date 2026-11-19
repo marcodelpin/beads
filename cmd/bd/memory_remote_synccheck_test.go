@@ -62,6 +62,11 @@ func (*remoteMemoryStore) IsRemoteBackendStore() bool { return true }
 
 func (s *remoteMemoryStore) Memories() (memoryops.Memories, error) { return s.memories, nil }
 
+// CommitConfigUserKVOnly is the HTTP store's: a no-op (internal/httpclient
+// store.go). bd remember now runs upstream's RunE on this route too, and that
+// RunE commits the memory write (a no-op here, as on the real backend).
+func (*remoteMemoryStore) CommitConfigUserKVOnly(context.Context, string) error { return nil }
+
 func (*remoteMemoryStore) GetAllConfig(context.Context) (map[string]string, error) {
 	return map[string]string{}, nil
 }
