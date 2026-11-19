@@ -120,3 +120,24 @@ func TestForkRememberDedupIgnoresEmptyKeyRow(t *testing.T) {
 		t.Fatalf("bd remember 'take notes': err=%v stderr=%q remembered=%q, want one write under take-notes", err, stderr, fake.memories.remembered)
 	}
 }
+
+// codex nchm-r2 finding 1: a blank stored key (bd import accepts one) is no
+// dedup match, and the scan goes on to a real match whatever the map order.
+func TestForkRememberDedupSkipsBlankKeys(t *testing.T) {
+	t.Run("only a blank key matches", func(t *testing.T) {
+		fake := installDirectMemoryStore(t, map[string]string{" ": "take notes"})
+		_, stderr, err := runRemember(t, "take notes")
+		if err != nil || len(fake.memories.remembered) != 1 || fake.memories.remembered[0] != "take-notes" {
+			t.Fatalf("err=%v stderr=%q remembered=%q, want one write under take-notes", err, stderr, fake.memories.remembered)
+		}
+	})
+	t.Run("a blank key beside a real match", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			fake := installDirectMemoryStore(t, map[string]string{"": "Take notes!", " ": "take  notes", "notes": "take notes"})
+			_, stderr, err := runRemember(t, "take notes")
+			if err != nil || len(fake.memories.remembered) != 1 || fake.memories.remembered[0] != "notes" {
+				t.Fatalf("try %d: err=%v stderr=%q remembered=%q, want the write under notes", i, err, stderr, fake.memories.remembered)
+			}
+		}
+	})
+}

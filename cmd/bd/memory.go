@@ -161,6 +161,12 @@ func findDuplicateMemoryKey(allConfig map[string]string, insight string) (string
 		if !strings.HasPrefix(k, fullPrefix) {
 			continue
 		}
+		// A blank user key (bd import accepts one) names nothing a write can
+		// land under: skip it so the scan can reach a real match (bda-nchm,
+		// codex nchm-r2).
+		if strings.TrimSpace(strings.TrimPrefix(k, fullPrefix)) == "" {
+			continue
+		}
 		// Unwrap envelope so plain-text and validity-windowed memories
 		// can dedup against each other.
 		existingContent := parseStoredMemory(v).Content
