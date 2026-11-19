@@ -70,8 +70,8 @@ var labelDefinitionsContentHashes = []string{
 // RenumberedLabelDefinitionsError refuses a schema_migrations history in which
 // a fork label_definitions row cannot be read as a plain renumber: a migration
 // row sits above it (so the files below that row may never have run, and the
-// files above may have run against a schema missing them), or the row carries
-// the first 0066 body. The migration pass stops before any write and the row is
+// files above may have run against a schema missing them), the row carries
+// the first 0066 body, or the ledger below it is sparse. The migration pass stops before any write and the row is
 // left as it is; repairing such a database is a consented, manual act
 // (bda-xdmh).
 type RenumberedLabelDefinitionsError struct {
@@ -83,11 +83,18 @@ type RenumberedLabelDefinitionsError struct {
 	Above int
 	// AboveHash is that row's content_hash, "" when NULL or when Above is 0.
 	AboveHash string
+	// Sparse marks a ledger whose highest counting row below the
+	// label_definitions row, Below, is under 65 (codex bda-e080-r2 add 2).
+	Sparse bool
+	Below  int
 }
 
 func (e *RenumberedLabelDefinitionsError) Error() string {
 	var why string
 	switch {
+	case e.Sparse:
+		why = fmt.Sprintf("the highest row below it is %d, while every build that recorded label_definitions had applied 0001..0065 first, "+
+			"so rows are missing below it (a restore or an import) and reading the cursor as %d would replay migrations this database may already hold", e.Below, e.Below)
 	case e.Above == 0:
 		why = "it carries the first 0066 label_definitions body, whose table has no label_folded column"
 	case e.Version == 66 && e.Above == 67 && e.AboveHash == forkJournalActorAt67Hash:
@@ -230,6 +237,15 @@ func (m migrationSource) applyLabelDefinitionsCursorRule(ctx context.Context, db
 	//nolint:gosec // G202: cursorTable is a migration-series constant; hidden is bound.
 	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable+" WHERE version < ?", hidden).Scan(&current); err != nil {
 		return 0, fmt.Errorf("reading %s version below the label_definitions row %d: %w", m.cursorTable, hidden, err)
+	}
+	// Every build that recorded label_definitions had applied 0001..0065 first
+	// (fork main 772a42ceb), so a highest counting row under 65 is a sparse
+	// ledger, not a renumber: read as 0 it is a "fresh database" every gate
+	// lets migrate from 0001, read as 39 it schedules 0040 (codex bda-e080-r2
+	// add 2). 65 is dense: the holes from 66 up are ordinary pending steps.
+	// The hidden row carries the modern hash: the floor refused the first body.
+	if current < labelDefinitionsLowestSlot-1 {
+		return 0, &RenumberedLabelDefinitionsError{Version: hidden, Hash: labelDefinitionsHash, Sparse: true, Below: current}
 	}
 	return current, nil
 }

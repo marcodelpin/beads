@@ -591,6 +591,25 @@ type refusalCase struct {
 	// above it (0 for a refusal of the row's own body), hash the row's hash.
 	row, above int
 	hash       string
+	// sparse and below: a sparse-ledger refusal and the highest row below
+	// the label_definitions row it names (codex bda-e080-r2 add 2).
+	sparse bool
+	below  int
+}
+
+// forgeSparseLedger builds a populated database restored or imported with a
+// sparse schema_migrations: every row above keepThrough deleted except a
+// label_definitions row at 70 (codex bda-e080-r2 add 2). keepThrough 0 leaves
+// that row alone.
+func (d *planTestDB) forgeSparseLedger(keepThrough int) {
+	d.t.Helper()
+	if _, err := schema.MigrateUp(d.ctx, d.conn); err != nil {
+		d.t.Fatalf("converge the fixture with MigrateUp: %v", err)
+	}
+	d.createLabelDefinitionsWithRow()
+	d.exec("DELETE FROM schema_migrations WHERE version > ? AND version <> 70", keepThrough)
+	d.exec("UPDATE schema_migrations SET content_hash = ? WHERE version = 70", labelDefsMigrationHash)
+	d.commit(fmt.Sprintf("fixture: sparse ledger, rows through %d and label_definitions at 70", keepThrough))
 }
 
 var refusalCases = []refusalCase{
@@ -654,18 +673,36 @@ var refusalCases = []refusalCase{
 		},
 		row: 66, above: 67, hash: labelDefsMigrationHash,
 	},
+	{
+		// codex bda-e080-r2 add 2: read as cursor 0 this populated database
+		// was a fresh one, migrated from 0001 without consent.
+		name:  "sparse_only70",
+		forge: func(d *planTestDB) { d.forgeSparseLedger(0) },
+		row:   70, hash: labelDefsMigrationHash, sparse: true, below: 0,
+	},
+	{
+		// Read as cursor 39, a consented pass scheduled 0040 and its
+		// DOLT_COMMIT('-Am').
+		name:  "sparse_through39",
+		forge: func(d *planTestDB) { d.forgeSparseLedger(39) },
+		row:   70, hash: labelDefsMigrationHash, sparse: true, below: 39,
+	},
 }
 
 // requireLabelDefinitionsRefusal fails unless err is the cursor rule's refusal
-// naming row and above.
-func requireLabelDefinitionsRefusal(t *testing.T, err error, row, above int) {
+// of tc: its row, the row above it, and for a sparse ledger the row below it.
+func requireLabelDefinitionsRefusal(t *testing.T, err error, tc refusalCase) {
 	t.Helper()
+	row, above := tc.row, tc.above
 	var refusal *schema.RenumberedLabelDefinitionsError
 	if !errors.As(err, &refusal) {
 		t.Fatalf("got %v, want a *schema.RenumberedLabelDefinitionsError naming row %d", err, row)
 	}
 	if refusal.Version != row || refusal.Above != above {
 		t.Errorf("refusal names row %d above %d, want row %d above %d", refusal.Version, refusal.Above, row, above)
+	}
+	if refusal.Sparse != tc.sparse || refusal.Below != tc.below {
+		t.Errorf("refusal sparse=%v below %d, want sparse=%v below %d", refusal.Sparse, refusal.Below, tc.sparse, tc.below)
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("schema_migrations row %d ", row)) {
 		t.Errorf("refusal %q does not name row %d", err, row)
@@ -674,7 +711,8 @@ func requireLabelDefinitionsRefusal(t *testing.T, err error, row, above int) {
 
 // TestMigrateUpRefusesALabelDefinitionsShapeItCannotRead pins the refusals:
 // a label_definitions row under a genuine row (bda-3xdc, codex #3), the first
-// 0066 body (codex #4) and the fork 0066+0067 shape. With consent (the
+// 0066 body (codex #4), the fork 0066+0067 shape and a sparse ledger below the
+// row (codex bda-e080-r2 add 2). With consent (the
 // default here, as for `bd migrate`) and without it (codex #5: an ordinary
 // open), MigrateUp returns an error naming the row and writes nothing, and
 // every cursor read refuses the same way.
@@ -699,7 +737,7 @@ func TestMigrateUpRefusesALabelDefinitionsShapeItCannotRead(t *testing.T) {
 				}
 
 				_, err := schema.MigrateUp(d.ctx, d.conn)
-				requireLabelDefinitionsRefusal(t, err, tc.row, tc.above)
+				requireLabelDefinitionsRefusal(t, err, tc)
 
 				if got := d.headHash(); got != headBefore {
 					t.Errorf("HEAD moved from %s to %s on a refused pass", headBefore, got)
@@ -711,7 +749,7 @@ func TestMigrateUpRefusesALabelDefinitionsShapeItCannotRead(t *testing.T) {
 					t.Errorf("schema_migrations row %d content_hash = %q after a refused pass, want it intact at %q", tc.row, got, tc.hash)
 				}
 				_, err = schema.CurrentVersion(d.ctx, d.conn)
-				requireLabelDefinitionsRefusal(t, err, tc.row, tc.above)
+				requireLabelDefinitionsRefusal(t, err, tc)
 			})
 		}
 	}

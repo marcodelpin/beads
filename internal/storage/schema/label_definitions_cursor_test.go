@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -115,6 +116,16 @@ func TestHiddenLabelDefinitionsFloor(t *testing.T) {
 		{name: "first_0066_body", rows: rowsFrom(66, old), refuse: 66},
 		{name: "fork_0066_0067", rows: rowsFrom(66, L, 67, forkJournalActorAt67Hash), refuse: 66, above: 67},
 	}
+	// Every slot label_definitions ever held, each on a dense ledger below it:
+	// the range check must cover 66..74 with no gap (codex bda-e080-r2).
+	for v := labelDefinitionsLowestSlot; v < labelDefinitionsVersion; v++ {
+		cases = append(cases, struct {
+			name          string
+			rows          []schemaMigrationsRow
+			want          int
+			refuse, above int
+		}{name: fmt.Sprintf("every_slot_%d", v), rows: rowsFrom(append(genuineThrough(v-1), v, L)...), want: v})
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := hiddenLabelDefinitionsFloor(tc.rows)
@@ -141,7 +152,7 @@ func TestHiddenLabelDefinitionsFloor(t *testing.T) {
 	}
 }
 
-// TestRenumberedLabelDefinitionsErrorNamesTheShape pins the three refusal
+// TestRenumberedLabelDefinitionsErrorNamesTheShape pins the four refusal
 // texts, so `bd doctor` and the failing open say which shape they met.
 func TestRenumberedLabelDefinitionsErrorNamesTheShape(t *testing.T) {
 	for _, tc := range []struct {
@@ -151,6 +162,7 @@ func TestRenumberedLabelDefinitionsErrorNamesTheShape(t *testing.T) {
 		{&RenumberedLabelDefinitionsError{Version: 66, Hash: labelDefinitionsFirstBodyHash}, "no label_folded column"},
 		{&RenumberedLabelDefinitionsError{Version: 66, Hash: labelDefinitionsHash, Above: 67, AboveHash: forkJournalActorAt67Hash}, "events journal actor"},
 		{&RenumberedLabelDefinitionsError{Version: 70, Hash: labelDefinitionsHash, Above: 71, AboveHash: upstreamHash}, "row 71 above it"},
+		{&RenumberedLabelDefinitionsError{Version: 70, Hash: labelDefinitionsHash, Sparse: true, Below: 39}, "the highest row below it is 39"},
 	} {
 		msg := tc.err.Error()
 		if !strings.Contains(msg, tc.want) || !strings.Contains(msg, "row is left as it is") {
@@ -285,18 +297,24 @@ func TestCurrentVersionAppliesTheLabelDefinitionsCursorRule(t *testing.T) {
 func TestRecordMigrationStepReplacesOnlyALabelDefinitionsRow(t *testing.T) {
 	ctx := context.Background()
 	insert := regexp.QuoteMeta("INSERT IGNORE INTO ")
-	for _, tc := range []struct {
+	type stepCase struct {
 		name    string
 		src     migrationSource
 		version int
 		replace bool
-	}{
-		{name: "main70", src: mainSource, version: 70, replace: true},
-		{name: "main66", src: mainSource, version: 66, replace: true},
+	}
+	cases := []stepCase{
 		{name: "main75", src: mainSource, version: 75, replace: false},
 		{name: "main40", src: mainSource, version: 40, replace: false},
 		{name: "ignored10", src: ignoredSource, version: 10, replace: false},
-	} {
+		// Inside the replacement range, so only the series guard keeps the
+		// ignored series' row (codex bda-e080-r2).
+		{name: "ignored70", src: ignoredSource, version: 70, replace: false},
+	}
+	for v := labelDefinitionsLowestSlot; v < labelDefinitionsVersion; v++ {
+		cases = append(cases, stepCase{name: fmt.Sprintf("main%d", v), src: mainSource, version: v, replace: true})
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			if err != nil {
@@ -319,5 +337,187 @@ func TestRecordMigrationStepReplacesOnlyALabelDefinitionsRow(t *testing.T) {
 				t.Errorf("unmet SQL expectations: %v", err)
 			}
 		})
+	}
+}
+
+// TestApplyLabelDefinitionsCursorRuleRefusesASparseLedger is codex
+// bda-e080-r2 additional finding 2. Every build that recorded label_definitions
+// had applied 0001..0065 first (fork main 772a42ceb), so a hidden
+// label_definitions row whose highest counting row below it is under 65 is a
+// sparse ledger: a restore, an import or rows deleted by hand. Read as cursor 0
+// it is a "fresh database" that every gate lets migrate from 0001 without
+// consent; read as 39 a consented pass schedules 0040 and its DOLT_COMMIT -Am.
+// The rule refuses it instead. 65 itself is the dense case: the holes from 66
+// up are ordinary pending steps (holes_c2d3c8a28).
+func TestApplyLabelDefinitionsCursorRuleRefusesASparseLedger(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// below is the highest row under the label_definitions row at 70.
+		below  int
+		refuse bool
+	}{
+		{name: "only70", below: 0, refuse: true},
+		{name: "through39", below: 39, refuse: true},
+		{name: "through64", below: 64, refuse: true},
+		{name: "through65", below: 65, refuse: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			expectLabelCursorRowsReturning(mock, rowsFrom(70, labelDefinitionsHash))
+			mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations WHERE version < \?`).
+				WithArgs(70).WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(tc.below))
+
+			got, err := mainSource.applyLabelDefinitionsCursorRule(ctx, db, 70)
+			if !tc.refuse {
+				if err != nil || got != tc.below {
+					t.Fatalf("applyLabelDefinitionsCursorRule = (%d, %v), want (%d, nil)", got, err, tc.below)
+				}
+			} else {
+				var refusal *RenumberedLabelDefinitionsError
+				if !errors.As(err, &refusal) {
+					t.Fatalf("applyLabelDefinitionsCursorRule = (%d, %v), want a *RenumberedLabelDefinitionsError for a sparse ledger", got, err)
+				}
+				if refusal.Version != 70 || refusal.Hash != labelDefinitionsHash || !refusal.Sparse || refusal.Below != tc.below || refusal.Above != 0 {
+					t.Errorf("refusal = %+v, want row 70, the label hash, Sparse, Below %d, Above 0", *refusal, tc.below)
+				}
+				if msg := err.Error(); !strings.Contains(msg, "schema_migrations row 70 ") || !strings.Contains(msg, "row is left as it is") {
+					t.Errorf("refusal %q does not name row 70 and say it is left intact", msg)
+				}
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet SQL expectations: %v", err)
+			}
+		})
+	}
+}
+
+// TestLabelDefinitionsCursorRuleSkipsTheIgnoredSeries pins the series guard:
+// the ignored series never holds label_definitions, so its cursor is MAX as
+// read and a label-hash row at 70 there counts. The mock expects no statement,
+// so a rule that read the ignored series' rows fails here (codex bda-e080-r2:
+// the ignored10 case sat outside the range and could not see the guard).
+func TestLabelDefinitionsCursorRuleSkipsTheIgnoredSeries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	got, err := ignoredSource.applyLabelDefinitionsCursorRule(context.Background(), db, 70)
+	if err != nil || got != 70 {
+		t.Fatalf("ignored series applyLabelDefinitionsCursorRule(70) = (%d, %v), want (70, nil): the row counts", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet SQL expectations: %v", err)
+	}
+}
+
+// refusedLedgerAtLatest is the bda-3xdc ledger at this binary's latest: a
+// label_definitions row at 70 under upstream's 71..74, label_definitions at
+// its own slot, and upstream's rows above that. MAX(version) is latest, so
+// only the rows the cursor rule reads tell it from a converged database.
+func refusedLedgerAtLatest() []schemaMigrationsRow {
+	pairs := append(genuineThrough(69), 70, labelDefinitionsHash)
+	for v := 71; v < labelDefinitionsVersion; v++ {
+		pairs = append(pairs, v, upstreamHash)
+	}
+	pairs = append(pairs, labelDefinitionsVersion, labelDefinitionsHash)
+	for v := labelDefinitionsVersion + 1; v <= LatestVersion(); v++ {
+		pairs = append(pairs, v, upstreamHash)
+	}
+	return rowsFrom(pairs...)
+}
+
+// TestAlreadyConvergedDeclinesOnALedgerTheCursorRuleRefuses drives the
+// converged fast path with the cursor rule's read returning label rows (codex
+// bda-e080-r2: the converged mocks returned no rows, so a rule that ran the
+// query and ignored its result stayed green). Everything after the main cursor
+// answers as a converged database does, so a rule that ignored the rows would
+// walk the whole fast path and skip the lock and the refusal.
+func TestAlreadyConvergedDeclinesOnALedgerTheCursorRuleRefuses(t *testing.T) {
+	conn, mock, cleanup := newMockConn(t)
+	defer cleanup()
+
+	expectCurrentDatabase(mock, "testdb")
+	expectCursorProbe(mock, "schema_migrations", true)
+	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion())
+	expectLabelCursorRowsReturning(mock, refusedLedgerAtLatest())
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
+	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
+	expectIgnoredSentinelProbes(mock, true)
+	expectContentHashColumnExists(mock)
+	expectContentHashColumnExists(mock)
+	expectScalar(mock, "SELECT COUNT(*) FROM custom_types", "count", 1)
+	expectScalar(mock, "SELECT COUNT(*) FROM custom_statuses", "count", 1)
+	expectDoltIgnoreRead(mock, unqualifiedDoltIgnore, seededIgnorePatterns(LatestVersion()))
+	expectIgnoredCursorGate(mock, "", false, nil, false)
+	expectMigrationLockProbe(mock, "testdb", 1)
+
+	converged, err := alreadyConverged(context.Background(), conn, "testdb", nil)
+	if err != nil {
+		t.Fatalf("alreadyConverged: %v", err)
+	}
+	if converged {
+		t.Fatal("alreadyConverged = true on a ledger the cursor rule refuses: the open would skip the lock and never see the refusal")
+	}
+}
+
+// TestRemoteMigrateGatesRefuseALedgerTheCursorRuleRefuses drives the remote
+// and shared-store gates with the cursor rule's read returning label rows
+// (codex bda-e080-r2). The refused bda-3xdc ledger at latest must not read as
+// "already current", and the sparse ledger {(70, label hash)} must not read as
+// a fresh database, which both gates let migrate (additional finding 2). The
+// second cursor read is mocked too, so on the bda-3xdc ledger a rule that
+// ignored the rows gets a nil from the gate, not an unexpected-statement error.
+func TestRemoteMigrateGatesRefuseALedgerTheCursorRuleRefuses(t *testing.T) {
+	t.Setenv(SmartGateEnv, "0")
+	gates := map[string]func(context.Context, DBConn) error{
+		"remote": CheckRemoteMigrateGate,
+		"shared": func(ctx context.Context, db DBConn) error {
+			return CheckSharedStoreMigrateGate(ctx, db, "", nil, nil)
+		},
+	}
+	ledgers := []struct {
+		name   string
+		max    int
+		rows   []schemaMigrationsRow
+		below  int // the MAX read below the hidden row, -1 when the rule refuses first
+		sparse bool
+	}{
+		{name: "bda3xdc_at_latest", max: LatestVersion(), rows: refusedLedgerAtLatest(), below: -1},
+		{name: "sparse_only70", max: 70, rows: rowsFrom(70, labelDefinitionsHash), below: 0, sparse: true},
+	}
+	for gateName, gate := range gates {
+		for _, lg := range ledgers {
+			t.Run(gateName+"/"+lg.name, func(t *testing.T) {
+				db, mock, err := sqlmock.New()
+				if err != nil {
+					t.Fatalf("sqlmock.New: %v", err)
+				}
+				defer db.Close()
+				for i := 0; i < 2; i++ { // CurrentVersion, then PendingVersions on the mutant path
+					expectCursorProbe(mock, "schema_migrations", true)
+					expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", lg.max)
+					expectLabelCursorRowsReturning(mock, lg.rows)
+					if lg.below >= 0 {
+						mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations WHERE version < \?`).
+							WithArgs(70).WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(lg.below))
+					}
+				}
+
+				err = gate(context.Background(), db)
+				var refusal *RenumberedLabelDefinitionsError
+				if !errors.As(err, &refusal) {
+					t.Fatalf("%s gate = %v, want a *RenumberedLabelDefinitionsError", gateName, err)
+				}
+				if refusal.Version != 70 || refusal.Sparse != lg.sparse {
+					t.Errorf("refusal = %+v, want row 70 sparse=%v", *refusal, lg.sparse)
+				}
+			})
+		}
 	}
 }
