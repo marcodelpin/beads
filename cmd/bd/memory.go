@@ -30,6 +30,43 @@ import (
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
 const memoryPrefix = kvkeys.MemoryPrefix
 
+// openMemories hands back the persistent-memory role for whichever route this
+// invocation is on, each through its OWN capability accessor — the store's for
+// the direct route and the provider's for the proxied one.
+//
+// directRequirement is the message `ensureDirectMode` reports when a workspace
+// is reachable by neither route. It is per-verb because the shipped text names
+// the verb.
+func openMemories(directRequirement string) (memoryops.Memories, error) {
+	if usesProxiedServer() {
+		return proxiedMemories()
+	}
+	if err := ensureDirectMode(directRequirement); err != nil {
+		return nil, err
+	}
+	return store.Memories()
+}
+
+// noteDirectMemoryWrite marks the invocation as having written, which is what
+// the auto-commit epilogue in main.go keys on.
+//
+// It is DIRECT-ROUTE ONLY, and both halves of that matter. A direct memory
+// write lands in the Dolt working set and nothing else commits it, so a verb
+// that forgets to call this stores a memory that exists until the process exits
+// and then sits uncommitted — visible to the session that wrote it and to
+// nothing after. A proxied write already committed inside the role's unit of
+// work, so flagging it there would ask the epilogue to commit a second time on
+// a route with nothing outstanding.
+//
+// The RunEs cannot make that distinction themselves: openMemories hides which
+// route they are on, which is the point. So the guard lives here, once, the way
+// noteDirectConfigWrite does for the settings plane.
+func noteDirectMemoryWrite() {
+	if !usesProxiedServer() {
+		commandDidWrite.Store(true)
+	}
+}
+
 // memoryKeyFlag allows explicit key override for bd remember.
 var memoryKeyFlag string
 
@@ -122,6 +159,12 @@ func findDuplicateMemoryKey(allConfig map[string]string, insight string) (string
 	fullPrefix := kvPrefix + memoryPrefix
 	for k, v := range allConfig {
 		if !strings.HasPrefix(k, fullPrefix) {
+			continue
+		}
+		// A blank user key (bd import accepts one) names nothing a write can
+		// land under: skip it so the scan can reach a real match (bda-nchm,
+		// codex nchm-r2).
+		if strings.TrimSpace(strings.TrimPrefix(k, fullPrefix)) == "" {
 			continue
 		}
 		// Unwrap envelope so plain-text and validity-windowed memories
@@ -291,14 +334,49 @@ func rememberBudgetVerdict(existing map[string]string, key, content string, budg
 	return memoryBudgetLine(projectedMemoryCorpusChars(existing, key, content), budget, force)
 }
 
+// isBareMemoryKey reports whether a `bd remember` argument is shaped like a
+// key rather than like content: one or more runs of lowercase ASCII letters
+// and digits, joined by single dots or hyphens. It has no length or segment
+// cap, so it accepts every non-empty key memoryapi.DeriveKey mints and also
+// the longer and dotted keys an explicit --key stores.
+//
+// It is a CLI intent decision, not a key rule: --key accepts any string, and
+// a key outside this shape (uppercase, an underscore, a space, a doubled or
+// trailing separator) is still read with bd recall. Such arguments keep the
+// content path, as do the empty and separator-only ones the role refuses.
+func isBareMemoryKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	atStart := true // at the start of the string or just after a separator
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case 'a' <= c && c <= 'z', '0' <= c && c <= '9':
+			atStart = false
+		case c == '.' || c == '-':
+			if atStart {
+				return false
+			}
+			atStart = true
+		default:
+			return false
+		}
+	}
+	return !atStart
+}
+
 // rememberBareKeyPath implements the desire-path / footgun guard for
 // `bd remember <bare-slug>` (no --key): a bare slug naming an EXISTING memory
 // is recalled instead of stored; a bare slug naming nothing is refused. The
-// caller only invokes it when memoryKeyFlag == "" and the insight round-trips
-// through memoryapi.DeriveKey unchanged, having already read the key. As in
+// caller only invokes it when memoryKeyFlag == "" and the insight is a bare
+// key (isBareMemoryKey), having already read that exact key. As in
 // printRecallResult, presence is found (row existence), never existing != "":
 // a bare slug naming a memory stored as the empty string recalls it.
-func rememberBareKeyPath(key, insight, existing string, found bool) error {
+//
+// suggestion, when not empty, is a key holding a memory that the refusal
+// should point at (the bare key's derived key); it is named in a separate
+// hint, never recalled in the key's place.
+func rememberBareKeyPath(key, insight, existing string, found bool, suggestion string) error {
 	if found {
 		if jsonOutput {
 			return outputJSON(map[string]interface{}{
@@ -316,11 +394,18 @@ func rememberBareKeyPath(key, insight, existing string, found bool) error {
 		return nil
 	}
 	keyArg, keyNote := remedy.CommandArg(runtime.GOOS, key, "<key>")
-	return HandleErrorRespectJSON(
+	message := fmt.Sprintf(
 		"no memory named %q to recall -- and refusing to store a bare key-like token as its own content. "+
 			"bd remember WRITES (its positional arg is CONTENT, not a key). "+
 			"To browse keys: bd memories. To store it anyway, run: bd remember %q --key %s%s",
 		key, insight, keyArg, keyNote)
+	if suggestion == "" {
+		return HandleErrorRespectJSON("%s", message)
+	}
+	suggestionArg, suggestionNote := remedy.CommandArg(runtime.GOOS, suggestion, "<key>")
+	return HandleErrorWithHintRespectJSON(message, fmt.Sprintf(
+		"did you mean %s? A memory exists under that derived key; to read it, run: bd recall %s%s",
+		remedy.PrintedWord(suggestion), suggestionArg, suggestionNote))
 }
 
 // printRememberResult renders the `bd remember` success output. commitErr is
@@ -510,9 +595,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if usesMemoryRole() {
-			return runRememberProxied(cmd, args)
-		}
 		CheckReadonly("remember") // also covers the migration freeze check (dc-6jaq)
 
 		evt := metrics.NewCommandEvent("remember")
@@ -522,21 +604,12 @@ Examples:
 			}
 		}()
 
-		if err := ensureDirectMode("remember requires direct database access"); err != nil {
-			return HandleError("%v", err)
-		}
-
 		insight := args[0]
-		if strings.TrimSpace(insight) == "" {
-			return HandleErrorRespectJSON("memory content cannot be empty")
-		}
-		// An explicit key must name something: the same rule recall and forget
-		// apply (upstream memoryapi.ValidateKey), so a whitespace-only --key
-		// cannot mint a row no memory operation can name again.
-		if memoryKeyFlag != "" {
-			if _, err := memoryapi.ValidateKey(memoryKeyFlag); err != nil {
-				return HandleErrorRespectJSON("%s", strings.TrimPrefix(err.Error(), memoryops.ErrValidation.Error()+": "))
-			}
+
+		// Fork seam (bda-nchm): the refusals the fork's routes gave before the
+		// command guard keep their precedence (memory_fork.go).
+		if err := forkRememberPrecheck(insight); err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		// Guard against a subcommand-like first argument being silently stored
@@ -546,6 +619,11 @@ Examples:
 		// intended (GH#4401). A genuine insight is a phrase, so only a single
 		// bare word that matches a known command is treated as suspect, and an
 		// explicit --key signals deliberate intent and bypasses the guard.
+		//
+		// It stays at the FRONT DOOR and stays FIRST: it reads the cobra command
+		// tree, which no role can see, and it must answer before any storage is
+		// opened so that `bd remember list` in a directory with no workspace
+		// still says "looks like a command".
 		if memoryKeyFlag == "" {
 			if name, ok := matchesKnownCommand(cmd, insight); ok {
 				return HandleErrorWithHintRespectJSON(
@@ -555,155 +633,114 @@ Examples:
 			}
 		}
 
-		// Generate or use provided key.
-		// Fork-only dedup: when no --key is provided and --no-dedup is not set,
-		// look for an existing memory whose normalized content matches the new
-		// insight. If found, reuse its key so we update in place instead of
-		// creating a sibling entry under a new slug.
-		key := memoryKeyFlag
-		dedupHit := false
-		if key == "" {
-			if !memoryNoDedupFlag {
-				if all, err := store.GetAllConfig(rootCtx); err == nil {
-					if existingKey, ok := findDuplicateMemoryKey(all, insight); ok {
-						key = existingKey
-						dedupHit = true
-					}
-				}
-			}
-			if key == "" {
-				key = slugify(insight)
-			}
-		}
-		if key == "" {
-			return HandleErrorRespectJSON("could not generate key from content; use --key to specify one")
-		}
-
-		// Parse fact-validity flags. Any flag set means we'll store an
-		// envelope instead of plain text. Mutually exclusive: --valid-for vs
-		// --valid-until.
-		var (
-			validFor   time.Duration
-			validUntil time.Time
-		)
-		if strings.TrimSpace(memoryValidForFlag) != "" {
-			d, err := parseValidFor(memoryValidForFlag)
-			if err != nil {
-				return HandleErrorRespectJSON("invalid --valid-for: %v", err)
-			}
-			validFor = d
-		}
-		if strings.TrimSpace(memoryValidUntilFlag) != "" {
-			t, err := parseValidUntil(memoryValidUntilFlag)
-			if err != nil {
-				return HandleErrorRespectJSON("invalid --valid-until: %v", err)
-			}
-			validUntil = t
-		}
-		if err := validatePolicy(memoryExpirePolicyFlag); err != nil {
+		// Fork seam (bda-nchm): the fork flags are parsed, and on the direct
+		// route the envelope built, before anything is opened (memory_fork.go).
+		fork, err := newForkRemember(insight)
+		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 
-		hasValidity := validFor > 0 || !validUntil.IsZero() || memoryExpirePolicyFlag != ""
-
-		// Capture fork-only provenance (bda-97j): session_id from env, git
-		// HEAD if cwd is a repo, and the cwd itself. All best-effort —
-		// missing fields stay empty.
-		var prov memoryProvenance
-		if !memoryNoProvenanceFlag {
-			prov = captureMemoryProvenance()
-		}
-		hasProvenance := prov.SessionID != "" || prov.Commit != "" || prov.Path != ""
-
-		// Fork-only classification (bda-5to): trim tags/scope; empties drop.
-		var tagsClean []string
-		for _, t := range memoryTagsFlag {
-			if s := strings.TrimSpace(t); s != "" {
-				tagsClean = append(tagsClean, s)
-			}
-		}
-		scopeClean := strings.TrimSpace(memoryScopeFlag)
-		hasTags := len(tagsClean) > 0
-		hasScope := scopeClean != ""
-
-		// Default storage is plain text for backward compatibility — only
-		// build an envelope when the user has asked for validity semantics
-		// OR when fork-only provenance was captured OR tags/scope are set.
-		storedValue := insight
-		if hasValidity || hasProvenance || hasTags || hasScope {
-			v, err := buildMemoryEnvelope(insight, time.Now(), validFor, validUntil, memoryExpirePolicyFlag, prov, tagsClean, scopeClean)
-			if err != nil {
-				return HandleErrorRespectJSON("%v", err)
-			}
-			storedValue = v
+		memories, err := openMemories("remember requires direct database access")
+		if err != nil {
+			return HandleError("%v", err)
 		}
 
-		storageKey := kvPrefix + memoryPrefix + key
-
-		ctx := rootCtx
-
-		existing, found, _ := directMemoryLookup(ctx, storageKey)
-		verb := "Remembered"
-		if found {
-			verb = "Updated"
-		}
-		if dedupHit {
-			verb = "Deduped (updated)"
+		// Fork seam: dedup by content fingerprint (a bare-key read follows it, as
+		// the fork's route did), and the insight's own key for an envelope write
+		// (memory_fork.go). Off the direct route this is --key.
+		key, err := fork.resolveKey(memories, insight)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
 
-		// Desire path + footgun guard (upstream #4545): `bd remember <x>` is a WRITE whose
-		// positional arg is the CONTENT, not a key -- but "remember X" reads as a getter in
-		// English, so agents routinely type `bd remember some-key` meaning "do you remember X?".
-		// The tell-tale of a mistyped read is content that round-trips through slugify unchanged
-		// (a bare slug); real prose insights never do. When that happens and no explicit --key
-		// was given AND no fork write-intent flag (validity/tags/scope) was set:
+		// Desire path + footgun guard: `bd remember <x>` is a WRITE whose positional arg is
+		// the CONTENT, not a key -- but "remember X" reads as a getter in English, so agents
+		// routinely type `bd remember some-key` meaning "do you remember X?". The tell-tale of
+		// a mistyped read is content shaped like a key (isBareMemoryKey: a lowercase slug);
+		// real prose insights never are. When that happens and no explicit --key was given:
 		//   - the key EXISTS  -> pave the desire path: recall it instead of writing
 		//   - no such key     -> refuse; storing a key-like token as its own content would
 		//                        create a junk memory that hides the mistake
-		// Passing --key, or any --valid-*/--tags/--scope flag, states write intent and bypasses
-		// both branches (provenance is auto-captured, so it does NOT count as write intent).
-		if memoryKeyFlag == "" && slugify(insight) == insight && !hasValidity && !hasTags && !hasScope {
-			if found {
-				existing = parseStoredMemory(existing).Content
-				if jsonOutput {
-					return outputJSON(map[string]interface{}{
-						"key":    key,
-						"value":  existing,
-						"found":  true,
-						"action": "recalled",
-					})
-				}
-				fmt.Fprintf(os.Stderr,
-					"(recalled %q -- a bare existing key READS. To overwrite: `bd remember \"<new content>\" --key %s`)\n",
-					key, key)
-				fmt.Printf("%s\n", existing)
-				return nil
+		// Passing --key states write intent and bypasses both branches.
+		//
+		// It stays ABOVE the role because it decides WHETHER TO WRITE AT ALL, and
+		// because it exists to disambiguate English: an HTTP POST is not ambiguous
+		// and must not inherit it. The read below is a plain Recall, so this whole
+		// branch touches nothing.
+		//
+		// The read is of the argument ITSELF, never of its derivation (GH#7275).
+		// The old test, DeriveKey(insight) == insight, missed every key the
+		// derivation changes -- more than eight segments, over 60 bytes, a dot --
+		// and sent those reads on to Remember, which stored the key as content
+		// under the derived key and overwrote whatever memory was there.
+		if memoryKeyFlag == "" && isBareMemoryKey(insight) && !fork.writeIntent() {
+			recalled, err := memories.Recall(rootCtx, memoryops.RecallRequest{Key: fork.readKey(insight, key)})
+			if err != nil {
+				return HandleErrorRespectJSON("recalling memory: %v", err)
 			}
-			return HandleErrorRespectJSON(
-				"no memory named %q to recall -- and refusing to store a bare key-like token as its own content. "+
-					"`bd remember` WRITES (its positional arg is CONTENT, not a key). "+
-					"To store it anyway: `bd remember %q --key %s`. To browse keys: `bd memories`",
-				key, insight, key)
+			// On a miss the derived key is read for a SUGGESTION only: its
+			// memory answers a different question, so the refusal names the
+			// key and never its content.
+			var suggestion string
+			if derived := memoryapi.DeriveKey(insight); !recalled.Found && derived != "" && derived != insight {
+				alt, err := memories.Recall(rootCtx, memoryops.RecallRequest{Key: derived})
+				if err != nil {
+					return HandleErrorRespectJSON("recalling memory: %v", err)
+				}
+				if alt.Found {
+					suggestion = derived
+				}
+			}
+			return rememberBareKeyPath(fork.readKey(insight, key), insight, fork.recalledContent(recalled.Value), recalled.Found, suggestion)
 		}
 
-		// Corpus budget (memories.budget-chars, upstream #6508), ported onto
-		// the fork's direct-store write path. OPT-IN, 0 = off: when off the
-		// whole block is skipped and behavior is byte-identical to before.
-		// The key credited for an overwrite is the key this write lands under
-		// (explicit --key, a dedup hit, or the slug). The corpus is measured on
-		// memory CONTENT, the envelope (validity, provenance, tags) unwrapped,
-		// so the unit matches upstream's len(key)+len(content). ADVISORY, not
-		// atomic: the read and the write below are separate operations.
+		// Corpus budget (memories.budget-chars, OPT-IN, 0 = off). The
+		// wheelhouse-side tripwire only REPORTS the corpus size, so the corpus
+		// re-trips red every few days and nothing ever stops the write that
+		// crossed the line. This is the stop.
+		//
+		// It sits here, between the read-shaped branches above and the write
+		// below, because it is the last thing that can decide NOT to write —
+		// and above the role because a budget is a front-door policy, not a
+		// property of the memory plane (an HTTP POST must not inherit it).
+		//
+		// When the budget is off the whole block is skipped: no extra List, no
+		// output, nothing. Behavior is then byte-identical to the pre-budget
+		// command, which is what TestRememberBudgetVerdictOffIsSilent and the embedded
+		// budget_off_is_silent case pin.
+		//
+		// The key an overwrite is credited against is ResolveKey's, the one
+		// rule every Remember implementation lands a write under, so it cannot
+		// drift from the store's key. A write ResolveKey refuses (empty
+		// content, a whitespace-only --key, content that derives no key) skips
+		// the budget: Remember refuses it below with its own validation
+		// sentence, and a refused write crosses nothing.
+		budgetKey, budgetKeyErr := memoryapi.ResolveKey(key, insight)
 		var budgetLine string
-		if budget := memoryCorpusBudget(); budget > 0 {
-			all, err := store.GetAllConfig(ctx)
+		if budget := memoryCorpusBudget(); budget > 0 && budgetKeyErr == nil {
+			// ADVISORY, not atomic: this List and the Remember below are
+			// separate transactions, so two concurrent writers can both measure
+			// a corpus inside the budget and both land, leaving it over. The
+			// budget is a guardrail against a corpus drifting past its ceiling
+			// one deliberate write at a time, not a hard limit — no locking.
+			corpus, err := memories.List(rootCtx, memoryops.ListRequest{})
 			if err != nil {
 				return HandleErrorRespectJSON("reading the memory corpus for the budget check: %v", err)
 			}
-			line, refuse := rememberBudgetVerdict(directMemoryCorpus(all), key, insight, budget, memoryForceFlag)
+			line, refuse := rememberBudgetVerdict(memoryContentCorpus(corpus.Memories), budgetKey, insight, budget, memoryForceFlag)
 			if refuse {
-				// The budget line IS the refusal sentence: said once, on one
-				// stream, with the same hint on both routes (upstream #6508).
+				// The budget line IS the refusal sentence, so it prints as
+				// itself: routing it through HandleError would prefix it with
+				// "Error: " and reword text agents will match on.
+				//
+				// It is said ONCE, on exactly one stream, the way
+				// HandleErrorWithHintRespectJSON does it: --json gets only the
+				// machine-readable envelope on stdout (printing the prose to
+				// stderr as well would make the same refusal arrive twice),
+				// and every other route gets the bare sentence on stderr,
+				// where it can never corrupt structured output. Both routes
+				// carry the same hint, so a terminal user is offered the same
+				// ways out as a JSON consumer.
 				const hint = "raise memories.budget-chars, forget a memory, or pass --force"
 				if jsonOutput {
 					jsonStdoutError(line, hint)
@@ -713,18 +750,31 @@ Examples:
 				}
 				return SilentExit()
 			}
+			// Not a refusal: the write happens first and the line reports the
+			// corpus that now exists, so no line ever describes a write that
+			// did not land.
 			budgetLine = line
 		}
 
-		// Fork: write the (possibly envelope-wrapped) value, not the raw insight.
-		if err := store.SetConfig(ctx, storageKey, storedValue); err != nil {
+		result, err := memories.Remember(rootCtx, memoryops.RememberRequest{Key: key, Content: fork.storedContent(insight)})
+		if err != nil {
+			// The role's two refusals ARE this command's shipped sentences —
+			// "memory content cannot be empty" and "could not generate key from
+			// content; use --key to specify one" — so they print as themselves.
+			// Wrapping would reword output an agent may be matching on into
+			// "storing memory: validation failed: ..." to say the same thing.
+			if errors.Is(err, memoryops.ErrValidation) {
+				return HandleErrorRespectJSON("%s", strings.TrimPrefix(err.Error(), memoryops.ErrValidation.Error()+": "))
+			}
 			return HandleErrorRespectJSON("storing memory: %v", err)
 		}
-		commandDidWrite.Store(true)
-		// The memory is stored by now, so a commit the kv.* screen refuses or
-		// that fails is a warning, not the command's failure (upstream #7608);
-		// --json gets the same news in memoryCommitFields.
-		commitErr := commitMemoryWrite(ctx, store, "remember")
+		noteDirectMemoryWrite()
+		// The memory is stored by now, so a commit the kv.* screen refuses (a
+		// dirty internal key such as `bd rename-prefix` leaves) or that fails
+		// is a warning, not the command's failure: exit 1 would report a write
+		// that landed as one that did not. v1.0.1 (#3052) warned and carried on
+		// the same way; --json gets the same news in memoryCommitFields.
+		commitErr := commitMemoryWrite(rootCtx, store, "remember")
 		if commitErr != nil {
 			WarnError("%v", commitErr)
 		}
@@ -733,41 +783,14 @@ Examples:
 			fmt.Fprintln(os.Stderr, budgetLine)
 		}
 
-		if jsonOutput {
-			action := "remembered"
-			if dedupHit {
-				action = "deduped"
-			} else if found {
-				action = "updated"
-			}
-			result := map[string]interface{}{
-				"key":    key,
-				"value":  insight,
-				"action": action,
-			}
-			memoryCommitFields(result, commitErr)
-			if hasValidity {
-				env := parseStoredMemory(storedValue)
-				if env.ValidUntil != "" {
-					result["valid_until"] = env.ValidUntil
-				}
-				if env.ExpirePolicy != "" {
-					result["expire_policy"] = env.ExpirePolicy
-				}
-			}
-			return outputJSON(result)
+		// Remembered versus Updated is Replaced, observed in the SAME
+		// transaction as the write. The shipped code read the row first and
+		// described a moment that had already passed.
+		verb := "Remembered"
+		if result.Replaced {
+			verb = "Updated"
 		}
-		suffix := ""
-		if hasValidity {
-			env := parseStoredMemory(storedValue)
-			if env.ValidUntil != "" {
-				suffix = fmt.Sprintf(" (valid until %s, policy=%s)", env.ValidUntil, env.effectivePolicy())
-			} else if env.ExpirePolicy != "" {
-				suffix = fmt.Sprintf(" (policy=%s)", env.effectivePolicy())
-			}
-		}
-		fmt.Printf("%s [%s]: %s%s\n", verb, key, truncateMemory(insight, 80), suffix)
-		return nil
+		return fork.printResult(verb, result.Key, insight, result.Value, commitErr)
 	},
 }
 
