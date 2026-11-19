@@ -1,17 +1,20 @@
 package schema
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 // The label_definitions renumber heal (bda-e080) is keyed on the recorded
-// content hash. These tests pin the three facts the key and the out-of-order
-// application rest on; the database-backed RED/GREEN pair lives in
+// content hash and due on every main pass whatever the cursor (bda-3xdc).
+// These tests pin the facts the key, the out-of-order application and the
+// at-latest work term rest on; the database-backed RED/GREEN cases live in
 // internal/storage/dolt/label_definitions_renumber_heal_test.go.
 
 // TestLabelDefinitionsHashesCoverTheShippedFile pins labelDefinitionsVersion
@@ -41,21 +44,65 @@ func TestLabelDefinitionsHashesCoverTheShippedFile(t *testing.T) {
 	}
 }
 
-// TestRenumberHealRunsBeforeEveryPossibleFirstPendingStep pins the
-// registration range: a database whose cursor sits on any slot the migration
-// once held (labelDefinitionsLowestSlot through labelDefinitionsVersion-1) has
-// the next version as its first pending step, and the heal must run before it.
-func TestRenumberHealRunsBeforeEveryPossibleFirstPendingStep(t *testing.T) {
-	heal := reflect.ValueOf(healRenumberedLabelDefinitionsRows).Pointer()
-	for v := labelDefinitionsLowestSlot + 1; v <= labelDefinitionsVersion; v++ {
-		repair, ok := preMigrationRepairs[repairKey{mainSource.cursorTable, v}]
-		if !ok {
-			t.Errorf("no pre-migration repair before main %d: a cursor at %d would skip the label_definitions renumber heal", v, v-1)
-			continue
-		}
-		if reflect.ValueOf(repair).Pointer() != heal {
-			t.Errorf("pre-migration repair before main %d is not healRenumberedLabelDefinitionsRows", v)
-		}
+// expectAtLatestUpToRenumberRead mocks migrationWorkNeeded on a database
+// whose cursors are at latest, whose content_hash columns exist and whose
+// custom tables need no backfill: everything up to its last term, the
+// renumber heal's read of schema_migrations.
+func expectAtLatestUpToRenumberRead(mock sqlmock.Sqlmock) {
+	expectCursorProbe(mock, "schema_migrations", true)
+	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", LatestVersion())
+	expectCursorProbe(mock, "ignored_schema_migrations", true)
+	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM ignored_schema_migrations", "version", LatestIgnoredVersion())
+	expectIgnoredSentinelProbes(mock, true)
+	expectContentHashColumnExists(mock)
+	expectContentHashColumnExists(mock)
+	expectScalar(mock, "SELECT COUNT(*) FROM custom_types", "count", 1)
+	expectScalar(mock, "SELECT COUNT(*) FROM custom_statuses", "count", 1)
+}
+
+// TestMigrationWorkNeededSeesALabelDefinitionsRowHiddenBelowTheCursor pins
+// bda-3xdc at the short-circuit: a database at the latest version can still
+// hide a label_definitions row at an old slot (a heal-less build moved its
+// cursor past it), and MigrateUp only reaches the heal if migrationWorkNeeded
+// reports that row as work. With no such row the term is one read and the
+// answer stays "no work", so a converged open writes nothing.
+func TestMigrationWorkNeededSeesALabelDefinitionsRowHiddenBelowTheCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hidden []int
+		want   bool
+	}{
+		{name: "row70", hidden: []int{70}, want: true},
+		{name: "row73", hidden: []int{73}, want: true},
+		{name: "none", hidden: nil, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+
+			expectAtLatestUpToRenumberRead(mock)
+			rows := sqlmock.NewRows([]string{"version"})
+			for _, v := range tc.hidden {
+				rows.AddRow(v)
+			}
+			mock.ExpectQuery(`SELECT version FROM schema_migrations WHERE version < \? AND content_hash IN`).
+				WithArgs(labelDefinitionsVersion, labelDefinitionsContentHashes[0], labelDefinitionsContentHashes[1]).
+				WillReturnRows(rows)
+
+			needed, err := migrationWorkNeeded(context.Background(), db)
+			if err != nil {
+				t.Fatalf("migrationWorkNeeded: %v", err)
+			}
+			if needed != tc.want {
+				t.Errorf("migrationWorkNeeded at latest with label_definitions rows hidden at %v = %v, want %v", tc.hidden, needed, tc.want)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet SQL expectations: %v", err)
+			}
+		})
 	}
 }
 
@@ -66,7 +113,6 @@ func TestRenumberHealRunsBeforeEveryPossibleFirstPendingStep(t *testing.T) {
 // own, and rewrites no row. A file that needs any of these would need the
 // heal to grow the same machinery before it may run there.
 func TestRenumberHealTargetsNeedNoOtherStepMachinery(t *testing.T) {
-	heal := reflect.ValueOf(healRenumberedLabelDefinitionsRows).Pointer()
 	files := map[int]migrationFile{}
 	for _, mf := range mainSource.list() {
 		files[mf.version] = mf
@@ -84,8 +130,8 @@ func TestRenumberHealTargetsNeedNoOtherStepMachinery(t *testing.T) {
 		if _, ok := updatedAtGuards[key]; ok {
 			t.Errorf("%s has an updated_at guard the heal does not apply", mf.name)
 		}
-		if repair, ok := preMigrationRepairs[key]; ok && reflect.ValueOf(repair).Pointer() != heal {
-			t.Errorf("%s has a pre-migration repair of its own the heal does not run", mf.name)
+		if _, ok := preMigrationRepairs[key]; ok {
+			t.Errorf("%s has a pre-migration repair the heal does not run", mf.name)
 		}
 		data, err := mainSource.files.ReadFile(mainSource.dir + "/" + mf.name)
 		if err != nil {

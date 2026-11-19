@@ -256,6 +256,7 @@ func TestMigrateUpSeedsIgnorePatternsWhenNoWorkNeeded(t *testing.T) {
 	expectContentHashColumnExists(mock)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_types", "count", 1)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_statuses", "count", 1)
+	expectNoRenumberedLabelDefinitionsRows(mock)
 	// The seed inserted rows and no migration pass follows to commit them, so
 	// MigrateUp must commit the heal itself, scoped and labeled.
 	mock.ExpectQuery(regexp.QuoteMeta("CALL DOLT_ADD('dolt_ignore')")).
@@ -302,6 +303,7 @@ func TestMigrateUpSkipsSeedCommitWhenNothingChanged(t *testing.T) {
 	expectContentHashColumnExists(mock)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_types", "count", 1)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_statuses", "count", 1)
+	expectNoRenumberedLabelDefinitionsRows(mock)
 
 	applied, err := MigrateUp(context.Background(), db)
 	if err != nil {
@@ -532,17 +534,25 @@ func expectTransactionCommitRestore(mock sqlmock.Sqlmock, value int, restoreErr 
 	exec.WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
-// expectRenumberHealNoopBefore mocks the label_definitions renumber heal
-// (bda-e080) that runs as the pre-migration repair of main steps
-// labelDefinitionsLowestSlot+1 through labelDefinitionsVersion: one read of
-// schema_migrations for label_definitions rows below that slot, which finds
-// none in these mocked worlds. Outside that range it expects nothing.
-func expectRenumberHealNoopBefore(mock sqlmock.Sqlmock, version int) {
-	if version <= labelDefinitionsLowestSlot || version > labelDefinitionsVersion {
-		return
-	}
+// expectNoRenumberedLabelDefinitionsRows mocks the label_definitions renumber
+// heal's read of schema_migrations (bda-e080, bda-3xdc) finding no row.
+// migrationWorkNeeded issues it last on an at-latest database, and every main
+// pass issues it once, before its first pending step above
+// labelDefinitionsLowestSlot.
+func expectNoRenumberedLabelDefinitionsRows(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`SELECT version FROM schema_migrations WHERE version < \? AND content_hash IN`).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}))
+}
+
+// expectRenumberHealNoopBefore mocks the once-per-pass renumber heal read for
+// a main pass whose first pending step is version: expected only when that
+// step is above labelDefinitionsLowestSlot, finding no row in these mocked
+// worlds.
+func expectRenumberHealNoopBefore(mock sqlmock.Sqlmock, version int) {
+	if version <= labelDefinitionsLowestSlot {
+		return
+	}
+	expectNoRenumberedLabelDefinitionsRows(mock)
 }
 
 // expectColumnExists mocks the INFORMATION_SCHEMA.COLUMNS probe still used by

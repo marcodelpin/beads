@@ -260,3 +260,186 @@ func TestMigrateUpLeavesAGenuineUpstreamSlotAlone(t *testing.T) {
 		})
 	}
 }
+
+// labelDefsSlot is the slot label_definitions holds in this build, which is
+// also the latest main version.
+const labelDefsSlot = 75
+
+func (d *planTestDB) headHash() string {
+	d.t.Helper()
+	var h string
+	if err := d.conn.QueryRowContext(d.ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&h); err != nil {
+		d.t.Fatalf("read HEAD: %v", err)
+	}
+	return h
+}
+
+// forgeRowHiddenBelowLatest builds the database a heal-less 0075 build (fork
+// main ef3698cee..6088a3c0d) left behind when it opened a database that
+// carried label_definitions at tc.slot (bda-3xdc): that build applied every
+// later step, recorded label_definitions again at labelDefsSlot and moved the
+// cursor there, but never applied upstream's file at tc.slot. So the cursor is
+// at labelDefsSlot, the label_definitions hash sits at labelDefsSlot AND still
+// at tc.slot, and issues lacks tc.column. Built from a whole MigrateUp (both
+// series, every backfill, so nothing else is pending and the open can
+// short-circuit) with that row's hash replaced and that column dropped, the
+// technique the genuine negatives use; the state is committed, as that
+// build's per-step commits left it.
+func (d *planTestDB) forgeRowHiddenBelowLatest(tc renumberSlotCase) {
+	d.t.Helper()
+	if _, err := schema.MigrateUp(d.ctx, d.conn); err != nil {
+		d.t.Fatalf("converge the fixture with MigrateUp: %v", err)
+	}
+	d.createLabelDefinitionsWithRow()
+	d.exec("ALTER TABLE issues DROP COLUMN " + tc.column)
+	d.exec("UPDATE schema_migrations SET content_hash = ? WHERE version = ?", labelDefsMigrationHash, tc.slot)
+	d.commit(fmt.Sprintf("fixture: heal-less 0075 build moved the cursor past label_definitions at slot %d", tc.slot))
+	if got := schemaVersion(d.t, d); got != labelDefsSlot {
+		d.t.Fatalf("fixture cursor = %d, want %d", got, labelDefsSlot)
+	}
+	if got := d.cursorHash("schema_migrations", tc.slot); got != labelDefsMigrationHash {
+		d.t.Fatalf("fixture schema_migrations row %d content_hash = %q, want the label_definitions hash", tc.slot, got)
+	}
+	if got := d.cursorHash("schema_migrations", labelDefsSlot); got != labelDefsMigrationHash {
+		d.t.Fatalf("fixture schema_migrations row %d content_hash = %q, want the label_definitions hash", labelDefsSlot, got)
+	}
+	if d.columnPresent("issues", tc.column) {
+		d.t.Fatalf("fixture still has issues.%s", tc.column)
+	}
+}
+
+// TestMigrateUpHealsALabelDefinitionsRowHiddenBelowTheCursor is bda-3xdc's
+// RED/GREEN pair: a database already at cursor 75 that still carries the
+// label_definitions hash at 70 (or 73) has no pending step, and must still get
+// upstream's 0070 (or 0073) from MigrateUp, committed.
+func TestMigrateUpHealsALabelDefinitionsRowHiddenBelowTheCursor(t *testing.T) {
+	for _, tc := range renumberSlotCases {
+		t.Run(fmt.Sprintf("slot%d", tc.slot), func(t *testing.T) {
+			skipIfNoDolt(t)
+			acquireTestSlot()
+			t.Cleanup(releaseTestSlot)
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+			t.Cleanup(cancel)
+
+			d := newPlanTestDB(t, ctx)
+			d.forgeRowHiddenBelowLatest(tc)
+			headBefore := d.headHash()
+
+			applied, err := schema.MigrateUp(ctx, d.conn)
+			if err != nil {
+				t.Fatalf("MigrateUp: %v", err)
+			}
+
+			if !d.columnPresent("issues", tc.column) {
+				t.Errorf("after MigrateUp issues.%s is missing: a database at cursor %d with the label_definitions hash still at row %d was never healed (bda-3xdc)",
+					tc.column, labelDefsSlot, tc.slot)
+			}
+			if applied < 1 {
+				t.Errorf("MigrateUp applied = %d, want at least 1: the heal applied %s", applied, tc.file)
+			}
+			if got, want := d.cursorHash("schema_migrations", tc.slot), migrationFileHash(t, tc.file); got != want {
+				t.Errorf("schema_migrations row %d content_hash = %q, want %s's %q", tc.slot, got, tc.file, want)
+			}
+			if got := d.cursorHash("schema_migrations", labelDefsSlot); got != labelDefsMigrationHash {
+				t.Errorf("schema_migrations row %d content_hash = %q, want the label_definitions hash %q", labelDefsSlot, got, labelDefsMigrationHash)
+			}
+			if got, want := schemaVersion(t, d), schema.LatestVersion(); got != want {
+				t.Errorf("schema cursor after MigrateUp = %d, want latest %d", got, want)
+			}
+			if n := d.count("SELECT COUNT(*) FROM label_definitions WHERE label = ?", labelDefsSurvivorLabel); n != 1 {
+				t.Errorf("label_definitions rows for %q after MigrateUp = %d, want 1: the heal must keep the vocabulary", labelDefsSurvivorLabel, n)
+			}
+			// No step is pending, so the heal commits as a step of its own.
+			if n := d.count("SELECT COUNT(*) FROM dolt_status WHERE table_name IN ('issues', 'schema_migrations')"); n != 0 {
+				t.Errorf("dolt_status lists %d of issues/schema_migrations after MigrateUp, want 0: the heal must land in a commit", n)
+			}
+			if d.headHash() == headBefore {
+				t.Errorf("HEAD did not move: the heal recorded no commit")
+			}
+			if n := d.count("SELECT COUNT(*) FROM dolt_log WHERE message LIKE ?", "%"+tc.file+" (label_definitions renumber heal)%"); n != 1 {
+				t.Errorf("dolt_log holds %d commits naming the heal of %s, want 1", n, tc.file)
+			}
+
+			applied, err = schema.MigrateUp(ctx, d.conn)
+			if err != nil {
+				t.Fatalf("second MigrateUp: %v", err)
+			}
+			if applied != 0 {
+				t.Errorf("second MigrateUp applied %d migrations, want 0", applied)
+			}
+		})
+	}
+}
+
+// TestMigrateUpAtLatestWithNoHiddenRowWritesNothing is the negative of the
+// at-latest heal: a converged database at cursor 75 whose only
+// label_definitions row is this build's own (at 75) gets no extra write from
+// it, neither a working-set change nor a commit.
+func TestMigrateUpAtLatestWithNoHiddenRowWritesNothing(t *testing.T) {
+	skipIfNoDolt(t)
+	acquireTestSlot()
+	t.Cleanup(releaseTestSlot)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	t.Cleanup(cancel)
+
+	d := newPlanTestDB(t, ctx)
+	if _, err := schema.MigrateUp(ctx, d.conn); err != nil {
+		t.Fatalf("first MigrateUp: %v", err)
+	}
+	if got := schemaVersion(t, d); got != labelDefsSlot {
+		t.Fatalf("cursor after the first MigrateUp = %d, want %d", got, labelDefsSlot)
+	}
+	if got := d.cursorHash("schema_migrations", labelDefsSlot); got != labelDefsMigrationHash {
+		t.Fatalf("schema_migrations row %d content_hash = %q, want the label_definitions hash", labelDefsSlot, got)
+	}
+	if n := d.count("SELECT COUNT(*) FROM dolt_status"); n != 0 {
+		t.Fatalf("dolt_status lists %d tables after the first MigrateUp, want a clean working set to compare against", n)
+	}
+	headBefore := d.headHash()
+
+	applied, err := schema.MigrateUp(ctx, d.conn)
+	if err != nil {
+		t.Fatalf("MigrateUp at latest: %v", err)
+	}
+	if applied != 0 {
+		t.Errorf("MigrateUp at latest with no hidden row applied %d, want 0", applied)
+	}
+	if got := d.headHash(); got != headBefore {
+		t.Errorf("HEAD moved from %s to %s: MigrateUp at latest with no hidden row committed something", headBefore, got)
+	}
+	if n := d.count("SELECT COUNT(*) FROM dolt_status"); n != 0 {
+		t.Errorf("dolt_status lists %d tables after MigrateUp at latest, want 0", n)
+	}
+}
+
+// TestMigrateUpRefusesTheAtLatestHealOverADirtyTableItAlters is the
+// dirty-table contract for the at-latest heal: with the cursor at 75 the file
+// it runs in place of the row at 70 still counts as pending, so an
+// uncommitted issues write stops the pass before anything runs.
+func TestMigrateUpRefusesTheAtLatestHealOverADirtyTableItAlters(t *testing.T) {
+	skipIfNoDolt(t)
+	acquireTestSlot()
+	t.Cleanup(releaseTestSlot)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	t.Cleanup(cancel)
+
+	tc := renumberSlotCases[0]
+	d := newPlanTestDB(t, ctx)
+	d.forgeRowHiddenBelowLatest(tc)
+	d.exec("INSERT INTO issues (id, title, description, design, acceptance_criteria, notes) VALUES ('heal-dirty-75', 'uncommitted', '', '', '', '')")
+
+	_, err := schema.MigrateUp(ctx, d.conn)
+	var dirty *schema.DirtyTablesError
+	if !errors.As(err, &dirty) {
+		t.Fatalf("MigrateUp at cursor %d over an uncommitted issues write with %s still to heal = %v, want *schema.DirtyTablesError", labelDefsSlot, tc.file, err)
+	}
+	if !slices.Contains(dirty.Tables, "issues") {
+		t.Errorf("DirtyTablesError.Tables = %v, want it to name issues (altered by the healed %s)", dirty.Tables, tc.file)
+	}
+	if d.columnPresent("issues", tc.column) {
+		t.Errorf("issues.%s exists after the refused pass: the heal ran before the guard", tc.column)
+	}
+	if got := d.cursorHash("schema_migrations", tc.slot); got != labelDefsMigrationHash {
+		t.Errorf("schema_migrations row %d content_hash = %q after the refused pass, want it unchanged", tc.slot, got)
+	}
+}

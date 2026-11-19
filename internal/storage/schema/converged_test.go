@@ -100,6 +100,7 @@ func expectNoMigrationWorkNeededAtVersion(mock sqlmock.Sqlmock, mainVersion int)
 	expectContentHashColumnExists(mock)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_types", "count", 1)
 	expectScalar(mock, "SELECT COUNT(*) FROM custom_statuses", "count", 1)
+	expectNoRenumberedLabelDefinitionsRows(mock)
 }
 
 // expectDoltIgnoreRead mocks the read-only dolt_ignore probe, returning

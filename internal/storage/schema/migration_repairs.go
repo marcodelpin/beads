@@ -42,18 +42,11 @@ var preMigrationRepairs = map[repairKey]func(context.Context, DBConn) error{
 	{"ignored_schema_migrations", 7}:  ensureWispIsBlockedForRecompute,
 	{"ignored_schema_migrations", 15}: ensureWispIsBlockedForRecompute,
 	{"ignored_schema_migrations", 31}: seedEventsFromPreflipHistory,
-	// The label_definitions renumber heal (bda-e080) runs before every step
-	// that can be the first pending one of a database whose cursor sits on a
-	// slot that migration once held (66 through 74).
-	{"schema_migrations", 67}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 68}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 69}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 70}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 71}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 72}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 73}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 74}: healRenumberedLabelDefinitionsRows,
-	{"schema_migrations", 75}: healRenumberedLabelDefinitionsRows,
+	// The label_definitions renumber heal (bda-e080) is deliberately not
+	// registered here: it is due on every main pass whatever the cursor,
+	// including a pass with no pending step at all, which a repair keyed to a
+	// pending version cannot express (bda-3xdc). runMigrations and migrate
+	// call it directly; see healRenumberedLabelDefinitionsRows.
 }
 
 // preMigrationRepair dispatches any repair registered for (source, version).
@@ -100,49 +93,100 @@ var labelDefinitionsContentHashes = []string{
 // own label_definitions step is CREATE TABLE IF NOT EXISTS and records its
 // hash at labelDefinitionsVersion.
 //
-// It is registered before every version from labelDefinitionsLowestSlot+1
-// through labelDefinitionsVersion, so it runs before the FIRST pending step of
-// any database whose cursor sits on a slot the migration once held: a later
-// upstream file can depend on the hidden one (0068 alters the table 0067
-// creates). Once the rows are rewritten nothing matches, and each later call
-// costs one read of schema_migrations. Its writes ride the commit of the step
-// it runs before, which snapshots the working set before its repair.
+// It runs once per main-source pass, whatever the cursor (bda-3xdc). A
+// database does not need to sit on an old slot to hide a row: a build that
+// carried label_definitions at labelDefinitionsVersion WITHOUT this heal
+// (fork main ef3698cee..6088a3c0d) applied every later step past a cursor at
+// 70 or 73, recorded label_definitions again at labelDefinitionsVersion and
+// moved the cursor there, leaving the old row and the skipped file behind.
+// So:
+//   - On a pass with pending steps, runMigrations calls it before the first
+//     pending step above labelDefinitionsLowestSlot. That step precedes every
+//     later file that can depend on a hidden one (0068 alters the table 0067
+//     creates) and follows any replay of earlier steps that re-creates a
+//     table a hidden file alters. Its writes ride that step's commit, which
+//     snapshots the working set before the heal runs.
+//   - On a pass with none (the cursor at or past this build's latest),
+//     migrate calls healRenumberedLabelDefinitionsAtLatest, which commits the
+//     heal as a step of its own. migrationWorkNeeded reports a matching row
+//     as work, so MigrateUp does not short-circuit past such a database.
+//
+// Once the rows are rewritten nothing matches, and each later call costs one
+// read of schema_migrations.
 //
 // Applying those files out of order is safe because each is guarded DDL
 // (CREATE TABLE IF NOT EXISTS, or an ALTER behind an INFORMATION_SCHEMA probe)
 // that rewrites no row, and none carries a pre-migration repair, an execution
 // plan or an updated_at guard that this path would skip
-// (TestRenumberHealTargetsNeedNoOtherStepMachinery pins that).
+// (TestRenumberHealTargetsNeedNoOtherStepMachinery pins that). The files are
+// frozen upstream files, so a database past this build's latest gets the same
+// bytes a newer build would apply there.
 //
-// A database already past labelDefinitionsVersion has no pending step in this
-// range, so the heal never runs there.
-func healRenumberedLabelDefinitionsRows(ctx context.Context, db DBConn) error {
-	// No existence probe: runMigrations, the only caller, writes this step's
-	// (version, content_hash) cursor row right after the repair, so the table
-	// and the column exist wherever the heal runs.
+// It returns how many migration files it applied, one per healed row.
+func healRenumberedLabelDefinitionsRows(ctx context.Context, db DBConn) (int, error) {
+	// No existence probe: both callers run after migrate has created the
+	// cursor table and its content_hash column.
 	versions, err := selectRenumberedLabelDefinitionsVersions(ctx, db)
 	if err != nil || len(versions) == 0 {
-		return err
+		return 0, err
 	}
+	if _, err := applyRenumberedLabelDefinitionsHeal(ctx, db, versions); err != nil {
+		return 0, err
+	}
+	return len(versions), nil
+}
+
+// healRenumberedLabelDefinitionsAtLatest is the heal on a production main
+// pass with no pending step: the cursor sits at or past this build's latest
+// version, so runMigrations does not run and no step commit can carry the
+// heal. When nothing matches it costs one read and writes nothing. Otherwise
+// it snapshots the working set, heals, and commits the tables the heal newly
+// dirtied with the cursor table, the way commitMigrationStep commits a step,
+// so a kill after the heal leaves none of its DDL in the working set.
+func healRenumberedLabelDefinitionsAtLatest(ctx context.Context, db DBConn) (int, error) {
+	versions, err := selectRenumberedLabelDefinitionsVersions(ctx, db)
+	if err != nil || len(versions) == 0 {
+		return 0, err
+	}
+	dirtyBefore, err := dirtyTables(ctx, db, true)
+	if err != nil {
+		return 0, fmt.Errorf("snapshotting dirty tables before the label_definitions renumber heal: %w", err)
+	}
+	names, err := applyRenumberedLabelDefinitionsHeal(ctx, db, versions)
+	if err != nil {
+		return 0, err
+	}
+	stepName := strings.Join(names, ", ") + " (label_definitions renumber heal)"
+	if err := commitMigrationStep(ctx, db, mainSource.cursorTable, stepName, dirtyBefore); err != nil {
+		return 0, fmt.Errorf("committing the label_definitions renumber heal: %w", err)
+	}
+	return len(versions), nil
+}
+
+// applyRenumberedLabelDefinitionsHeal applies this build's file at each of
+// versions and rewrites that row's content_hash to the file's own, returning
+// the applied file names in order.
+func applyRenumberedLabelDefinitionsHeal(ctx context.Context, db DBConn, versions []int) ([]string, error) {
 	files := make(map[int]migrationFile)
 	for _, mf := range mainSource.list() {
 		files[mf.version] = mf
 	}
+	names := make([]string, 0, len(versions))
 	for _, version := range versions {
 		mf, ok := files[version]
 		if !ok {
-			return fmt.Errorf("schema_migrations row %d carries the label_definitions content hash, but this build has no migration %04d to apply in its place", version, version)
+			return nil, fmt.Errorf("schema_migrations row %d carries the label_definitions content hash, but this build has no migration %04d to apply in its place", version, version)
 		}
 		data, err := mainSource.files.ReadFile(mainSource.dir + "/" + mf.name)
 		if err != nil {
-			return fmt.Errorf("reading migration %s: %w", mf.name, err)
+			return nil, fmt.Errorf("reading migration %s: %w", mf.name, err)
 		}
 		body, err := mainSource.plannedMigrationBody(version, mf.name, data)
 		if err != nil {
-			return fmt.Errorf("planning migration %s: %w", mf.name, err)
+			return nil, fmt.Errorf("planning migration %s: %w", mf.name, err)
 		}
 		if err := execMigrationBody(ctx, db, body); err != nil {
-			return fmt.Errorf("applying %s in place of the label_definitions row at %d: %w", mf.name, version, err)
+			return nil, fmt.Errorf("applying %s in place of the label_definitions row at %d: %w", mf.name, version, err)
 		}
 		sum := sha256.Sum256(data)
 		args := append([]any{hex.EncodeToString(sum[:]), version}, labelDefinitionsHashArgs()...)
@@ -150,10 +194,11 @@ func healRenumberedLabelDefinitionsRows(ctx context.Context, db DBConn) error {
 		if _, err := db.ExecContext(ctx,
 			"UPDATE schema_migrations SET content_hash = ? WHERE version = ? AND content_hash IN ("+labelDefinitionsHashPlaceholders()+")",
 			args...); err != nil {
-			return fmt.Errorf("recording %s at schema_migrations row %d: %w", mf.name, version, err)
+			return nil, fmt.Errorf("recording %s at schema_migrations row %d: %w", mf.name, version, err)
 		}
+		names = append(names, mf.name)
 	}
-	return nil
+	return names, nil
 }
 
 // renumberedLabelDefinitionsVersions is selectRenumberedLabelDefinitionsVersions
