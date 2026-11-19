@@ -110,6 +110,13 @@ func AssessSchemaFixGate(path string) FixGate {
 	ctx := context.Background()
 	dbVer, err := schema.CurrentVersion(ctx, db)
 	if err != nil || dbVer == 0 {
+		if err != nil {
+			// Say why: a refused migration history names the row to look at
+			// (bda-e080). Backticks become single quotes, as Reason requires.
+			undetermined.Reason = "database schema version could not be determined (" +
+				strings.ReplaceAll(err.Error(), "`", "'") + "); " +
+				"'bd doctor --fix' may apply migrations blind; resolve the database state first"
+		}
 		return undetermined
 	}
 

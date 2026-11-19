@@ -547,3 +547,172 @@ func TestMigrateUpAtLatestWritesNothing(t *testing.T) {
 		t.Errorf("dolt_status lists %d tables after MigrateUp at latest, want 0", n)
 	}
 }
+
+// Refused shapes. Each fixture is committed; the refused pass must leave HEAD,
+// the working set and the label_definitions row exactly as they were.
+
+// forgeRowHiddenUnderAGenuineRow builds the database a heal-less 0075 build
+// (fork main ef3698cee..6088a3c0d) left behind when it opened a database that
+// carried label_definitions at tc.slot (bda-3xdc): it applied every later
+// step, recorded label_definitions again at labelDefsSlot and moved the cursor
+// there, but never applied upstream's file at tc.slot. Built from a whole
+// MigrateUp with that row's hash replaced and that column dropped.
+func (d *planTestDB) forgeRowHiddenUnderAGenuineRow(tc renumberSlotCase) {
+	d.t.Helper()
+	if _, err := schema.MigrateUp(d.ctx, d.conn); err != nil {
+		d.t.Fatalf("converge the fixture with MigrateUp: %v", err)
+	}
+	d.createLabelDefinitionsWithRow()
+	d.exec("ALTER TABLE issues DROP COLUMN " + tc.column)
+	d.exec("UPDATE schema_migrations SET content_hash = ? WHERE version = ?", labelDefsMigrationHash, tc.slot)
+	d.commit(fmt.Sprintf("fixture: heal-less 0075 build moved the cursor past label_definitions at slot %d", tc.slot))
+}
+
+// labelDefsFirstBodyHash and labelDefsFirstBodyTable are the first 0066
+// label_definitions body (fork main 772a42ceb, 2026-08-22): no label_folded.
+const (
+	labelDefsFirstBodyHash  = "0aad420facc23a266a99c40764ec10a70acec6d35095ee12504407e354468fd1"
+	labelDefsFirstBodyTable = `CREATE TABLE IF NOT EXISTS label_definitions (
+    label VARCHAR(255) NOT NULL PRIMARY KEY,
+    description TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(255)
+)`
+	// forkJournalActorAt67Hash is upstream's events journal actor as fork
+	// main carried it at 0067, under label_definitions at 0066 (61037a5ce).
+	forkJournalActorAt67Hash = "b6b01225af1406d3199332d3e42764d0276ed60ec2caa81477e5015b4f5a2295"
+)
+
+type refusalCase struct {
+	name string
+	// forge builds and commits the fixture.
+	forge func(d *planTestDB)
+	// row is the label_definitions row the refusal names, above the row
+	// above it (0 for a refusal of the row's own body), hash the row's hash.
+	row, above int
+	hash       string
+}
+
+var refusalCases = []refusalCase{
+	{
+		name:  "bda3xdc_slot70",
+		forge: func(d *planTestDB) { d.forgeRowHiddenUnderAGenuineRow(renumberSlotCases[0]) },
+		row:   70, above: 71, hash: labelDefsMigrationHash,
+	},
+	{
+		name:  "bda3xdc_slot73",
+		forge: func(d *planTestDB) { d.forgeRowHiddenUnderAGenuineRow(renumberSlotCases[1]) },
+		row:   73, above: 74, hash: labelDefsMigrationHash,
+	},
+	{
+		// codex bda-e080-r1 #3: builds 7575525a4, 3e49992c0 and d2b2a983e
+		// in turn record label rows at 67 and 68, upstream 0069 (whose ALTERs
+		// took their SELECT 1 branch: issue_versions did not exist) and a
+		// label row at 70.
+		name: "codex3_genuine69",
+		forge: func(d *planTestDB) {
+			if _, err := schema.MigrateUpTo(d.ctx, d.conn, 66); err != nil {
+				d.t.Fatalf("migrate main to 66: %v", err)
+			}
+			d.createLabelDefinitionsWithRow()
+			for _, v := range []int{67, 68} {
+				d.exec("INSERT INTO schema_migrations (version, content_hash) VALUES (?, ?)", v, labelDefsMigrationHash)
+			}
+			d.exec("INSERT INTO schema_migrations (version, content_hash) VALUES (69, ?)",
+				migrationFileHash(d.t, "0069_widen_issue_versions_datetime_precision.up.sql"))
+			d.exec("INSERT INTO schema_migrations (version, content_hash) VALUES (70, ?)", labelDefsMigrationHash)
+			d.commit("fixture: codex #3, label rows at 67/68/70 around a genuine 69")
+		},
+		row: 67, above: 69, hash: labelDefsMigrationHash,
+	},
+	{
+		// codex #4: the first 0066 body, whose table lacks label_folded.
+		name: "first_0066_body",
+		forge: func(d *planTestDB) {
+			if _, err := schema.MigrateUpTo(d.ctx, d.conn, 65); err != nil {
+				d.t.Fatalf("migrate main to 65: %v", err)
+			}
+			d.exec(labelDefsFirstBodyTable)
+			d.exec("INSERT INTO label_definitions (label, description) VALUES (?, ?)", labelDefsSurvivorLabel, "first body")
+			d.exec("INSERT INTO schema_migrations (version, content_hash) VALUES (66, ?)", labelDefsFirstBodyHash)
+			d.commit("fixture: fork main 772a42ceb, first 0066 label_definitions body")
+		},
+		row: 66, above: 0, hash: labelDefsFirstBodyHash,
+	},
+	{
+		// Fork main until 2026-09-25 (61037a5ce): label_definitions at 0066
+		// and upstream's journal actor refiled at 0067.
+		name: "fork_0066_0067",
+		forge: func(d *planTestDB) {
+			if _, err := schema.MigrateUpTo(d.ctx, d.conn, 66); err != nil {
+				d.t.Fatalf("migrate main to 66: %v", err)
+			}
+			d.createLabelDefinitionsWithRow()
+			d.exec("UPDATE schema_migrations SET content_hash = ? WHERE version = 66", labelDefsMigrationHash)
+			d.exec("INSERT INTO schema_migrations (version, content_hash) VALUES (67, ?)", forkJournalActorAt67Hash)
+			d.commit("fixture: fork main 61037a5ce, label_definitions at 0066, journal actor at 0067")
+		},
+		row: 66, above: 67, hash: labelDefsMigrationHash,
+	},
+}
+
+// requireLabelDefinitionsRefusal fails unless err is the cursor rule's refusal
+// naming row and above.
+func requireLabelDefinitionsRefusal(t *testing.T, err error, row, above int) {
+	t.Helper()
+	var refusal *schema.RenumberedLabelDefinitionsError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("got %v, want a *schema.RenumberedLabelDefinitionsError naming row %d", err, row)
+	}
+	if refusal.Version != row || refusal.Above != above {
+		t.Errorf("refusal names row %d above %d, want row %d above %d", refusal.Version, refusal.Above, row, above)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("schema_migrations row %d ", row)) {
+		t.Errorf("refusal %q does not name row %d", err, row)
+	}
+}
+
+// TestMigrateUpRefusesALabelDefinitionsShapeItCannotRead pins the refusals:
+// a label_definitions row under a genuine row (bda-3xdc, codex #3), the first
+// 0066 body (codex #4) and the fork 0066+0067 shape. With consent (the
+// default here, as for `bd migrate`) and without it (codex #5: an ordinary
+// open), MigrateUp returns an error naming the row and writes nothing, and
+// every cursor read refuses the same way.
+func TestMigrateUpRefusesALabelDefinitionsShapeItCannotRead(t *testing.T) {
+	for _, tc := range refusalCases {
+		for _, consented := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/consent=%v", tc.name, consented), func(t *testing.T) {
+				d := newLabelCursorTestDB(t)
+				tc.forge(d)
+				if got := d.cursorHash("schema_migrations", tc.row); got != tc.hash {
+					t.Fatalf("fixture schema_migrations row %d content_hash = %q, want %q", tc.row, got, tc.hash)
+				}
+				headBefore := d.headHash()
+				if n := d.count("SELECT COUNT(*) FROM dolt_status"); n != 0 {
+					t.Fatalf("fixture leaves %v in the working set, want it clean", d.dirtyTableNames())
+				}
+				if !consented {
+					schema.SetLocalMigrateConsent(false)
+					t.Cleanup(func() { schema.SetLocalMigrateConsent(true) })
+					t.Setenv(schema.AllowMigrateEnv, "")
+					t.Setenv(schema.AllowRemoteMigrateEnv, "")
+				}
+
+				_, err := schema.MigrateUp(d.ctx, d.conn)
+				requireLabelDefinitionsRefusal(t, err, tc.row, tc.above)
+
+				if got := d.headHash(); got != headBefore {
+					t.Errorf("HEAD moved from %s to %s on a refused pass", headBefore, got)
+				}
+				if n := d.count("SELECT COUNT(*) FROM dolt_status"); n != 0 {
+					t.Errorf("dolt_status lists %v after a refused pass, want nothing", d.dirtyTableNames())
+				}
+				if got := d.cursorHash("schema_migrations", tc.row); got != tc.hash {
+					t.Errorf("schema_migrations row %d content_hash = %q after a refused pass, want it intact at %q", tc.row, got, tc.hash)
+				}
+				_, err = schema.CurrentVersion(d.ctx, d.conn)
+				requireLabelDefinitionsRefusal(t, err, tc.row, tc.above)
+			})
+		}
+	}
+}

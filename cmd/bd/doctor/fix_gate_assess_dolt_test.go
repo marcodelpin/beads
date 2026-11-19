@@ -189,6 +189,36 @@ func TestAssessSchemaFixGate_RealDolt(t *testing.T) {
 			},
 			verify: failClosed,
 		},
+		{
+			// bda-e080: a fork label_definitions row under a genuine row is a
+			// history the cursor rule refuses; the gate fails closed and names
+			// the row, so bd doctor shows what to look at.
+			name: "refused label_definitions history",
+			setup: func(t *testing.T, db *sql.DB) {
+				if _, err := db.ExecContext(t.Context(),
+					"CREATE TABLE schema_migrations (version INT NOT NULL PRIMARY KEY, content_hash CHAR(64))"); err != nil {
+					t.Fatalf("create schema_migrations: %v", err)
+				}
+				for _, row := range []struct {
+					v int
+					h string
+				}{
+					{69, "upstream"},
+					{70, "9c76d11ee4c29c32c226b273642e087458a5d92f31c525885a0794487d70cd00"},
+					{71, "upstream"},
+				} {
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO schema_migrations (version, content_hash) VALUES (?, ?)", row.v, row.h); err != nil {
+						t.Fatalf("insert version %d: %v", row.v, err)
+					}
+				}
+			},
+			verify: func(t *testing.T, g FixGate) {
+				failClosed(t, g)
+				if !strings.Contains(g.Reason, "schema_migrations row 70 ") {
+					t.Errorf("Reason = %q, want it to name schema_migrations row 70", g.Reason)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
