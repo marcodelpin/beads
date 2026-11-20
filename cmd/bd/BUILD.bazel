@@ -1576,6 +1576,7 @@ go_test(
         "//internal/storage/kvkeys",
         "//internal/storage/memoryops",
         "//internal/storage/schema",
+        "//internal/storage/schema/schematest",
         "//internal/storage/uow",
         "//internal/storage/versioncontrolops",
         "//internal/telemetry",

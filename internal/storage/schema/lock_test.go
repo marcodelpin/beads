@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/steveyegge/beads/internal/storage/schema/schematest"
 )
 
 func TestMigrationLockNameUsesRawNameWhenBounded(t *testing.T) {
@@ -558,9 +560,10 @@ func expectScalar(mock sqlmock.Sqlmock, query, column string, value any) {
 
 // expectMainCursorMax mocks the main cursor read after its existence probe:
 // MAX(version), then the label_definitions cursor rule's read (bda-e080).
+// It is schematest's, the one copy the sqlmock fixtures of other packages use
+// too (bda-bmz7), so every schema test that reads the cursor pins it.
 func expectMainCursorMax(mock sqlmock.Sqlmock, version int) {
-	expectScalar(mock, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", "version", version)
-	expectLabelCursorRows(mock, version)
+	schematest.ExpectMainCursorMax(mock, version)
 }
 
 // expectLabelCursorRows mocks the label_definitions cursor rule's read of the
@@ -569,15 +572,21 @@ func expectMainCursorMax(mock sqlmock.Sqlmock, version int) {
 // slot. The rule itself is pinned with rows that match, in
 // label_definitions_cursor_test.go.
 func expectLabelCursorRows(mock sqlmock.Sqlmock, version int) {
-	if version < labelDefinitionsLowestSlot {
-		return
-	}
-	mock.ExpectQuery(regexp.QuoteMeta(labelCursorRowsQuery)).
-		WithArgs(labelDefinitionsLowestSlot).
-		WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash"}))
+	schematest.ExpectLabelCursorRows(mock, version)
 }
 
-const labelCursorRowsQuery = "SELECT * FROM schema_migrations WHERE version >= ? ORDER BY version"
+const labelCursorRowsQuery = schematest.LabelCursorRowsQuery
+
+// TestSchematestMirrorsTheCursorRule pins the slot schematest mirrors: a
+// schematest that waited for the row scan from a different version would
+// leave the fixtures outside this package wrong at the versions in between,
+// while every fixture here, at versions on one side, still passed.
+func TestSchematestMirrorsTheCursorRule(t *testing.T) {
+	if schematest.LabelDefinitionsLowestSlot != labelDefinitionsLowestSlot {
+		t.Fatalf("schematest.LabelDefinitionsLowestSlot = %d, want labelDefinitionsLowestSlot %d",
+			schematest.LabelDefinitionsLowestSlot, labelDefinitionsLowestSlot)
+	}
+}
 
 // expectCursorProbe mocks the existence probe that migrationSource.currentVersion
 // issues before it ever reads the cursor table: the schemata read proving the

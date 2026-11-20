@@ -16,6 +16,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/steveyegge/beads/internal/storage/schema"
+	"github.com/steveyegge/beads/internal/storage/schema/schematest"
 )
 
 // expectCursorProbe mocks the information_schema existence probe that
@@ -32,10 +33,12 @@ func expectCursorProbe(mock sqlmock.Sqlmock, table string, exists bool) {
 	mock.ExpectQuery("^SHOW TABLES$").WillReturnRows(rows)
 }
 
+// expectVersionQuery mocks one main cursor read: the existence probe, then
+// MAX(version) and, from the label_definitions slot up, the cursor rule's row
+// scan (schematest, bda-bmz7).
 func expectVersionQuery(mock sqlmock.Sqlmock, version int) {
 	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(version))
+	schematest.ExpectMainCursorMax(mock, version)
 }
 
 func newVersionMockDB(t *testing.T) (sqlmock.Sqlmock, schema.DBConn, func()) {

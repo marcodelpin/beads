@@ -18,9 +18,7 @@ import (
 // existing database: CurrentVersion, PendingVersions, and the remote count.
 func expectSharedGateProbe(mock sqlmock.Sqlmock, current, remotes int) {
 	for i := 0; i < 2; i++ { // CurrentVersion, then PendingVersions
-		expectCursorProbe(mock, "schema_migrations", true)
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")).
-			WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(current))
+		expectVersionQuery(mock, current)
 	}
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dolt_remotes`).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(remotes))
@@ -38,9 +36,7 @@ func expectBehindDatabaseThroughPreparation(mock sqlmock.Sqlmock, database strin
 	expectDatabaseExistsProbe(mock, database, true)
 	mock.ExpectExec(regexp.QuoteMeta("USE `" + database + "`")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	expectCursorProbe(mock, "schema_migrations", true)
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(current))
+	expectVersionQuery(mock, current)
 
 	lockName := schema.MigrationLockName(database)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT GET_LOCK(?, ?)")).

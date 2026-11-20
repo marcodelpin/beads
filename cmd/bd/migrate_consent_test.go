@@ -11,6 +11,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/spf13/pflag"
 	"github.com/steveyegge/beads/internal/storage/schema"
+	"github.com/steveyegge/beads/internal/storage/schema/schematest"
 )
 
 // renderMigrateConsentJSON routes a wrapped consent refusal through
@@ -284,8 +285,9 @@ func runLocalConsentGate(t *testing.T, cmdline string, consents bool) error {
 				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 			mock.ExpectQuery("^SHOW TABLES$").
 				WillReturnRows(sqlmock.NewRows([]string{"Tables_in_beads"}).AddRow("schema_migrations"))
-			mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
-				WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(schema.LatestVersion() - 1))
+			// MAX(version), then the label_definitions cursor rule's row scan
+			// (bda-bmz7).
+			schematest.ExpectMainCursorMax(mock, schema.LatestVersion()-1)
 		}
 	}
 
