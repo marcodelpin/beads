@@ -819,6 +819,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **On macOS, bd no longer reads `~/Library/Application
+  Support/bd/config.yaml` or `~/Library/Application Support/beads/PRIME.md`.**
+  Probing those paths on every launch could raise a macOS 26 privacy prompt
+  ("would like to access data from other apps"). bd now resolves its macOS
+  user config directory as it does on Linux: `$XDG_CONFIG_HOME` when set,
+  otherwise `~/.config`. That directory holds both files, `bd/config.yaml` and
+  `beads/PRIME.md`, so the defaults are `~/.config/bd/config.yaml` and
+  `~/.config/beads/PRIME.md`, and a set `XDG_CONFIG_HOME` is now honored on
+  macOS for both. Apart from `bd doctor`, bd reads the old config only when
+  the new one has no `metrics.disabled` (normally once, after upgrading). It
+  then carries your metrics settings (`metrics.disabled`, `metrics.endpoint`,
+  `metrics.notice_shown`) into the new config, keeping any value the new
+  config already sets, and in the same write the per-machine settings
+  `bd config set` writes there: `node_id` unless the new config sets it or
+  `bd config unset` removed it, and `mail.delegate` and
+  `dolt.remotesapi-port` only when bd creates the new config (bd read those
+  two from `~/.config/bd/config.yaml` alone whenever it existed). If the old
+  file exists but cannot be read or parsed, nothing is carried, metrics are
+  left off and bd says so (`bd metrics on` re-enables them). If the new config
+  cannot be written (for example, a read-only `~/.config`), bd does not touch
+  the old folder and metrics stay off on macOS until the user config sets
+  `metrics.disabled` or `BD_DISABLE_METRICS` is set (`BD_DISABLE_METRICS` set
+  to `0`, `false` or empty turns metrics on). Metrics on macOS also stay off,
+  silently, when the user config has a commented-out `metrics` block,
+  unparseable YAML, a top level that is not a mapping (for example a file
+  holding only `---`), a `metrics` key that is not a section, a dangling
+  symlink or a non-bool `metrics.disabled`; `bd metrics on` or
+  `bd metrics off` settles it (first fix unparseable YAML, a non-mapping top
+  level or a non-section `metrics` key, and create the target folder of a
+  dangling symlink). On macOS bd leaves a `.lock` file named after the user
+  config (`config.yaml.lock`), or after its target when the config is a
+  symlink to an existing file. Other settings left in the old file stop
+  applying. So do the per-machine settings when bd never reads the old file:
+  `BD_DISABLE_METRICS` or `DO_NOT_TRACK` turns metrics off, the new config
+  already has `metrics.disabled`, or one of the cases above keeps bd out of
+  the old folder. Without `node_id`, the guard that keeps `bd reclaim` from
+  reverting leases another replica granted is off. Run `bd doctor` to list the
+  settings that differ and the commands to move them. On every platform, a
+  dangling `config.yaml` symlink no longer crashes bd at startup, and shell
+  completion no longer writes the user config. Paths and output are unchanged
+  on Linux and Windows.
+  ([#8113](https://github.com/gastownhall/beads/issues/8113))
 - **`bd dolt pull` on an embedded rig with no remote exits 0 (bd-e2q8zs).**
   It prints `No remote is configured — skipping.` and the setup guidance,
   as server mode already did; in embedded mode it used to exit 1. A pull
@@ -1447,6 +1489,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transaction on that connection could keep merge conflicts or constraint
   violations in the working set instead of rolling back.
 
+- **The Go SDK opens a proxied-server workspace through its bd proxy**
+  (#8323). `beads.OpenBestAvailable` and `OpenBestAvailableWith` had no
+  proxied-server arm: a cgo build fell through to embedded Dolt and silently
+  created and migrated a second, empty database at `.beads/embeddeddolt`
+  beside the one the proxy serves, and a `CGO_ENABLED=0` build returned the
+  embedded-requires-CGO error. Both builds now open the workspace through the
+  bd proxy, as `bd` does, with the same identity check, fresh-store refusal,
+  events journal and versioned history. A running proxy is adopted; with
+  none, one is started from `bd` on `PATH`. With no `bd` there, or with a
+  running proxy that a bd older than 1.4 started (which the library leaves
+  running rather than stopping it under the older bd processes that share
+  it), the open fails with the new `beads.ErrProxyUnavailable`, having
+  created no embedded store and started or stopped no proxy. A managed-local
+  workspace also needs `dolt` on `PATH`, even to adopt a running proxy.
+  `Close` leaves the shared proxy running. The store serves the common issue,
+  label, dependency, comment, config, ready-work and claim methods and
+  `RunInTransaction` (whose callback runs once); the rest return a typed
+  `beads.ErrUnsupported`. Its Dolt commits carry no `--author`, unlike
+  `DoltStore`'s. An environment that forces server mode
+  (`BEADS_DOLT_SERVER_MODE` or `BEADS_DOLT_SHARED_SERVER`) and names the port
+  in `BEADS_DOLT_SERVER_PORT` still opens a proxied workspace on the direct
+  server arm, at that port; forced server mode without a named port now goes
+  through the proxy. Schema refusals are matchable with the newly exported
+  `beads.SchemaSkewError`, `beads.RemoteMigrateGateError` and
+  `beads.MigrateConsentError`. `Open`, `OpenFromConfig` and `OpenGated` are
+  unchanged. See `engdocs/EMBEDDING_OVER_PROXIED_SERVER.md` §8.
 - **`bd doctor` ranks a release candidate below its release** (#6595). The
   version comparison split `1.3.1-rc.1` into `1.3.1.1`, so a candidate
   sorted above its own release and `bd doctor` never told an rc user that
