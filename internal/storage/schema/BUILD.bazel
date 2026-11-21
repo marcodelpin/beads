@@ -187,6 +187,7 @@ go_test(
         "migration_watchdog_test.go",
         "progress_gate_test.go",
         "progress_test.go",
+        "proxied_remote_refusal_test.go",
         "remote_migrate_gate_test.go",
         "schema_skew_test.go",
         "schema_test.go",
